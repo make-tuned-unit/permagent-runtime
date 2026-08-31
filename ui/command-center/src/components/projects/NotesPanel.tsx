@@ -25,7 +25,7 @@ import { FiTrash2, FiMic, FiSquare, FiLoader, FiExternalLink, FiCopy, FiCheck, F
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { useDictation } from '../../hooks/useDictation';
-import { font } from '../../styles/tokens';
+import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -185,7 +185,7 @@ export function NotesPanel({ project }: { project: Project }) {
           onChange={e => setTitle(e.target.value)}
           placeholder="Title (optional)"
           style={{
-            fontSize: 12, padding: '6px 9px', borderRadius: 7,
+            fontSize: textSize.caption, padding: '6px 9px', borderRadius: 7,
             background: colors.inputBg, border: `1px solid ${colors.border}`,
             color: colors.text, fontFamily: font.body, outline: 'none',
           }}
@@ -200,7 +200,7 @@ export function NotesPanel({ project }: { project: Project }) {
           placeholder="Write a note… it lands in your project's Brain."
           rows={3}
           style={{
-            fontSize: 12, padding: '7px 9px', borderRadius: 7, resize: 'vertical', minHeight: 56,
+            fontSize: textSize.caption, padding: '7px 9px', borderRadius: 7, resize: 'vertical', minHeight: 56,
             background: colors.inputBg, border: `1px solid ${colors.border}`,
             color: colors.text, fontFamily: font.body, lineHeight: 1.5, outline: 'none',
           }}
@@ -218,7 +218,7 @@ export function NotesPanel({ project }: { project: Project }) {
               '--pa-btn-radius': '7px',
               '--pa-btn-weight': 600,
               fontFamily: font.body,
-              fontSize: 12,
+              fontSize: textSize.caption,
             } as CSSProperties}
           >
             {saving ? 'Saving…' : 'Save note'}
@@ -262,16 +262,16 @@ export function NotesPanel({ project }: { project: Project }) {
       </div>
 
       {(error || dictationError) && (
-        <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{error || dictationError}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error || dictationError}</div>
       )}
 
       {status === 'loading' && (
-        <div style={{ fontSize: 11, color: colors.textDim }}>Loading notes…</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading notes…</div>
       )}
 
       {status === 'error' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load notes.</span>
+          <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load notes.</span>
           <Button
             colors={colors}
             variant="bare"
@@ -283,7 +283,7 @@ export function NotesPanel({ project }: { project: Project }) {
               '--pa-btn-pad': '0',
               '--pa-btn-weight': 600,
               fontFamily: font.body,
-              fontSize: 11,
+              fontSize: textSize.micro,
             } as CSSProperties}
           >
             Retry
@@ -330,7 +330,7 @@ export function NotesPanel({ project }: { project: Project }) {
                     }}
                   />
                   <div style={{
-                    flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: colors.text,
+                    flex: 1, minWidth: 0, fontSize: textSize.caption, fontWeight: 600, color: colors.text,
                     whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                   }}>
                     {note.title || firstLine(note.body)}
@@ -375,7 +375,7 @@ export function NotesPanel({ project }: { project: Project }) {
                 {isOpen && (
                   <div style={{ padding: '0 10px 8px 29px' }}>
                     <div style={{
-                      fontSize: 12, color: colors.textMuted, lineHeight: 1.5, whiteSpace: 'pre-wrap',
+                      fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, whiteSpace: 'pre-wrap',
                       overflowWrap: 'anywhere',
                     }}>
                       {note.body}

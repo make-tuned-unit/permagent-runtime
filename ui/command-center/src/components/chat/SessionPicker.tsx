@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -76,7 +76,7 @@ export function SessionPicker() {
           display: 'flex', justifyContent: 'flex-start', gap: 4, maxWidth: '100%',
           // `.pa-btn` normalises to 11px/14px; this control is the agent name at
           // 13px on the app's own leading, and its height is pure line-height.
-          fontSize: 13, lineHeight: 1.5, fontFamily: font.body,
+          fontSize: textSize.small, lineHeight: 1.5, fontFamily: font.body,
         } as CSSProperties}
       >
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
@@ -105,7 +105,7 @@ export function SessionPicker() {
               '--pa-btn-pad': '8px 12px',
               '--pa-btn-radius': '0',
               width: '100%', justifyContent: 'flex-start', gap: 6,
-              fontSize: 12, fontFamily: font.body,
+              fontSize: textSize.caption, fontFamily: font.body,
               // Only the bottom edge is drawn — `.pa-btn`'s `border` shorthand
               // paints all four, so this one longhand has to stay inline.
               borderBottom: `1px solid ${colors.border}`,
@@ -136,7 +136,7 @@ export function SessionPicker() {
                     out on the button itself would put the name and the message
                     count back on the same line. */}
                 <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1 }}>
-                  <span style={{ fontSize: 12, color: isCurrent ? colors.cyan : colors.text, fontFamily: font.body }}>
+                  <span style={{ fontSize: textSize.caption, color: isCurrent ? colors.cyan : colors.text, fontFamily: font.body }}>
                     {session.name || `Session ${session.id}`}
                   </span>
                   {session.updated_at && (

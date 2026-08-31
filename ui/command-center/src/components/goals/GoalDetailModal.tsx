@@ -24,7 +24,7 @@ import { useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { removeRoadmapGoal, setGoalAutoApprove, setGoalDependencies } from '../../lib/roadmapClient';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { DetailModal } from '../common/DetailModal';
@@ -238,7 +238,7 @@ export function GoalDetailModal({
   const footer = cancellable || (isGoal && !removed && !cancelledState) ? (
     confirming ? (
       <>
-        <span style={{ flex: 1, fontSize: 12, color: colors.textMuted }}>
+        <span style={{ flex: 1, fontSize: textSize.caption, color: colors.textMuted }}>
           Cancel this goal? Its worker is killed immediately.
         </span>
         <Button
@@ -262,7 +262,7 @@ export function GoalDetailModal({
       </>
     ) : confirmingRemove ? (
       <>
-        <span style={{ flex: 1, fontSize: 12, color: colors.textMuted }}>
+        <span style={{ flex: 1, fontSize: textSize.caption, color: colors.textMuted }}>
           Remove from roadmap? Dependents are rewired onto this goal's own dependencies
           {cancellable ? ' and the goal is cancelled' : ''}.
         </span>
@@ -314,18 +314,18 @@ export function GoalDetailModal({
   return (
     <DetailModal title={card?.title ?? 'Goal'} badge={badge} onClose={onClose} footer={footer}>
       {loading ? (
-        <div style={{ padding: '32px 0', textAlign: 'center', fontSize: 12, color: colors.textDim }}>
+        <div style={{ padding: '32px 0', textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
           Loading…
         </div>
       ) : loadError || !card ? (
-        <div style={{ padding: '32px 0', textAlign: 'center', fontSize: 12, color: colors.textMuted }}>
+        <div style={{ padding: '32px 0', textAlign: 'center', fontSize: textSize.caption, color: colors.textMuted }}>
           Couldn't load this goal.
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {card.description && (
             <div style={{
-              fontSize: 13, color: colors.textMuted, lineHeight: 1.5,
+              fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.5,
               whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
             }}>
               {card.description}
@@ -347,14 +347,14 @@ export function GoalDetailModal({
           {isGoal && (
             <div>
               <div style={{
-                fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+                fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
                 textTransform: 'uppercase', letterSpacing: '0.04em',
               }}>
                 Auto-approve
               </div>
               <label style={{
                 marginTop: 6, display: 'flex', alignItems: 'center', gap: 8,
-                fontSize: 12, color: colors.text,
+                fontSize: textSize.caption, color: colors.text,
                 cursor: autoApproveTogglable ? 'pointer' : 'default',
                 opacity: autoApproveTogglable ? 1 : 0.6,
               }}>
@@ -369,12 +369,12 @@ export function GoalDetailModal({
                   {togglingAutoApprove ? ' — saving…' : ''}
                 </span>
               </label>
-              <div style={{ marginTop: 4, fontSize: 11, color: colors.textDim }}>
+              <div style={{ marginTop: 4, fontSize: textSize.micro, color: colors.textDim }}>
                 Only a verified pass auto-approves; failures still wait for you.
               </div>
               {autoApproveError && (
                 <div style={{
-                  marginTop: 6, fontSize: 12, color: colors.danger,
+                  marginTop: 6, fontSize: textSize.caption, color: colors.danger,
                   borderRadius: radius.md, border: `1px solid ${colors.danger}`,
                   background: colors.danger + '14', padding: '8px 12px',
                 }}>
@@ -389,7 +389,7 @@ export function GoalDetailModal({
             <div>
               <div style={{
                 display: 'flex', alignItems: 'center', gap: 8,
-                fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+                fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
                 textTransform: 'uppercase', letterSpacing: '0.04em',
               }}>
                 <span>Dependencies</span>
@@ -410,7 +410,7 @@ export function GoalDetailModal({
                       '--pa-btn-pad': '0 4px',
                       '--pa-btn-radius': `${radius.xs}px`,
                       fontFamily: font.mono,
-                      fontSize: 11,
+                      fontSize: textSize.micro,
                       marginLeft: -4,
                     } as CSSProperties}
                   >
@@ -421,14 +421,14 @@ export function GoalDetailModal({
               {editingDeps ? (
                 <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {projectGoals.filter(g => g.id !== cardId).length === 0 ? (
-                    <span style={{ fontSize: 12, color: colors.textDim }}>
+                    <span style={{ fontSize: textSize.caption, color: colors.textDim }}>
                       No other goals in this project to depend on.
                     </span>
                   ) : (
                     projectGoals.filter(g => g.id !== cardId).map(g => (
                       <label key={g.id} style={{
                         display: 'flex', alignItems: 'center', gap: 8,
-                        fontSize: 12, color: colors.text, cursor: 'pointer',
+                        fontSize: textSize.caption, color: colors.text, cursor: 'pointer',
                       }}>
                         <input
                           type="checkbox"
@@ -470,7 +470,7 @@ export function GoalDetailModal({
                   </div>
                 </div>
               ) : (
-                <div style={{ marginTop: 6, fontSize: 12, color: colors.text }}>
+                <div style={{ marginTop: 6, fontSize: textSize.caption, color: colors.text }}>
                   {dependsOn.length === 0
                     ? <span style={{ color: colors.textDim }}>None — this is a root goal.</span>
                     : dependsOn.map(d => (
@@ -480,7 +480,7 @@ export function GoalDetailModal({
               )}
               {depsError && (
                 <div style={{
-                  marginTop: 6, fontSize: 12, color: colors.danger,
+                  marginTop: 6, fontSize: textSize.caption, color: colors.danger,
                   borderRadius: radius.md, border: `1px solid ${colors.danger}`,
                   background: colors.danger + '14', padding: '8px 12px',
                 }}>
@@ -492,7 +492,7 @@ export function GoalDetailModal({
 
           {removed && (
             <div style={{
-              fontSize: 12, color: colors.text,
+              fontSize: textSize.caption, color: colors.text,
               borderRadius: radius.md, border: `1px solid ${colors.border}`,
               background: colors.cyanSoft, padding: '8px 12px',
             }}>
@@ -509,7 +509,7 @@ export function GoalDetailModal({
           */}
           <div>
             <div style={{
-              fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+              fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
               textTransform: 'uppercase', letterSpacing: '0.04em',
             }}>
               Evidence
@@ -519,7 +519,7 @@ export function GoalDetailModal({
 
           {cancelledState && (
             <div style={{
-              fontSize: 12, color: colors.text,
+              fontSize: textSize.caption, color: colors.text,
               borderRadius: radius.md, border: `1px solid ${colors.danger}`,
               background: colors.danger + '14', padding: '8px 12px',
             }}>
@@ -528,7 +528,7 @@ export function GoalDetailModal({
           )}
           {cancelError && (
             <div style={{
-              fontSize: 12, color: colors.danger,
+              fontSize: textSize.caption, color: colors.danger,
               borderRadius: radius.md, border: `1px solid ${colors.danger}`,
               background: colors.danger + '14', padding: '8px 12px',
             }}>
@@ -549,11 +549,11 @@ function MetaGrid({ colors, rows }: {
     <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 14px' }}>
       {rows.map(([k, v]) => (
         <div key={k} style={{ display: 'contents' }}>
-          <span style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, whiteSpace: 'nowrap' }}>
+          <span style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, whiteSpace: 'nowrap' }}>
             {k}
           </span>
           <span style={{
-            fontSize: 12, color: colors.text, wordBreak: 'break-word', userSelect: 'text',
+            fontSize: textSize.caption, color: colors.text, wordBreak: 'break-word', userSelect: 'text',
           }}>
             {v}
           </span>
@@ -577,7 +577,7 @@ function ghostVars(colors: ReturnType<typeof useTheme>['colors']): CSSProperties
     '--pa-btn-pad': '6px 14px',
     '--pa-btn-radius': `${radius.md}px`,
     fontFamily: font.body,
-    fontSize: 12,
+    fontSize: textSize.caption,
     lineHeight: '18px',
   } as CSSProperties;
 }
@@ -594,7 +594,7 @@ function dangerVars(colors: ReturnType<typeof useTheme>['colors']): CSSPropertie
     '--pa-btn-radius': `${radius.md}px`,
     '--pa-btn-weight': 500,
     fontFamily: font.body,
-    fontSize: 12,
+    fontSize: textSize.caption,
     lineHeight: '18px',
   } as CSSProperties;
 }

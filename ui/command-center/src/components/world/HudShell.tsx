@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { COLORS } from './constants';
-import { radius } from '../../styles/tokens';
+import { radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -164,7 +164,7 @@ export function Section({ title, trimColor, children }: {
 
 export function StatRow({ label, value }: { label: string; value: string | number }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, lineHeight: 1.6 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: textSize.micro, lineHeight: 1.6 }}>
       <span style={{ color: '#9CA3AF' }}>{label}</span>
       <span style={{ color: COLORS.primaryMarble, fontWeight: 500 }}>{String(value)}</span>
     </div>
@@ -204,7 +204,7 @@ const headerStyle: React.CSSProperties = {
   justifyContent: 'space-between',
   alignItems: 'center',
   padding: '10px 14px 6px',
-  fontSize: 13,
+  fontSize: textSize.small,
   color: COLORS.primaryMarble,
   borderBottom: `1px solid ${COLORS.marbleVeining}20`,
   marginBottom: 0,
@@ -216,7 +216,7 @@ const closeBtnVars = {
   '--pa-btn-bg-hover': 'rgba(255,255,255,0.06)',
   '--pa-btn-pad': '2px 4px',
   '--pa-btn-radius': `${radius.xs}px`,
-  fontSize: 14,
+  fontSize: textSize.body,
   lineHeight: 1,
 } as CSSProperties;
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo, type CSSProperties } from 'react';
-import { ease, font, radius } from '../../styles/tokens';
+import { ease, font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
@@ -287,7 +287,7 @@ export function BrainView() {
           <h2 style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, color: colors.text }}>
             Can't reach the Brain
           </h2>
-          <p style={{ fontFamily: font.body, fontSize: 13, color: colors.textMuted, maxWidth: 340, textAlign: 'center', lineHeight: 1.5 }}>
+          <p style={{ fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted, maxWidth: 340, textAlign: 'center', lineHeight: 1.5 }}>
             The memory graph didn't load. It may be a brief hiccup — try again.
           </p>
           <Button
@@ -305,7 +305,7 @@ export function BrainView() {
               '--pa-btn-pad': '8px 18px',
               '--pa-btn-radius': `${radius.md}px`,
               '--pa-btn-weight': 600,
-              marginTop: 4, fontSize: 13, lineHeight: 1.5,
+              marginTop: 4, fontSize: textSize.small, lineHeight: 1.5,
             } as CSSProperties}
           >Try again</Button>
         </div>
@@ -320,7 +320,7 @@ export function BrainView() {
           background: 'radial-gradient(ellipse 70% 50% at 50% 45%, rgba(0,213,255,0.04) 0%, transparent 70%)',
         }}>
           <Mobius size={160} state={reduceMotion ? 'idle' : 'thinking'} />
-          <p style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, letterSpacing: '0.06em' }}>
+          <p style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, letterSpacing: '0.06em' }}>
             recalling the graph…
           </p>
         </div>
@@ -336,7 +336,7 @@ export function BrainView() {
           <h2 style={{ fontFamily: font.display, fontSize: 22, fontWeight: 700, color: colors.text, marginTop: 24 }}>
             Your agent's memory grows here.
           </h2>
-          <p style={{ fontFamily: font.body, fontSize: 14, color: colors.textMuted, marginTop: 8 }}>
+          <p style={{ fontFamily: font.body, fontSize: textSize.body, color: colors.textMuted, marginTop: 8 }}>
             Begin a conversation.
           </p>
         </div>
@@ -354,7 +354,7 @@ export function BrainView() {
           border: `1px solid ${theme === 'silver' ? colors.cyan + '20' : 'rgba(0,213,255,0.12)'}`, borderRadius: radius.pill,
         }}>
           <Mobius size={28} state="idle" logoMode />
-          <span style={{ fontFamily: font.display, fontSize: 13, fontWeight: 700, color: colors.text }}>
+          <span style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 700, color: colors.text }}>
             {data?.self.name || 'Agent'}'s mind
           </span>
         </div>
@@ -371,7 +371,7 @@ export function BrainView() {
             }}
             placeholder="try a name or project…"
             style={{
-              width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
+              width: '100%', fontFamily: font.body, fontSize: textSize.small, color: colors.text,
               background: theme === 'silver' ? 'rgba(255,255,255,0.92)' : 'rgba(20,28,48,0.65)', backdropFilter: 'blur(12px)',
               border: `1px solid ${glass.border}`, borderRadius: radius.pill,
               padding: '9px 16px', outline: 'none',
@@ -524,12 +524,12 @@ export function BrainView() {
           background: theme === 'silver' ? 'rgba(255,255,255,0.95)' : 'rgba(20,28,48,0.9)', backdropFilter: 'blur(12px)',
           border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
           boxShadow: theme === 'silver' ? '0 2px 12px rgba(30,37,48,0.10)' : 'none',
-          fontFamily: font.body, fontSize: 12, color: colors.text,
+          fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
           pointerEvents: 'none',
         }}>
           <div style={{ fontWeight: 600 }}>{hover.label}</div>
           {hover.note && hover.note !== hover.label && (
-            <div style={{ color: colors.textMuted, marginTop: 2, fontSize: 11 }}>{hover.note.slice(0, 120)}</div>
+            <div style={{ color: colors.textMuted, marginTop: 2, fontSize: textSize.micro }}>{hover.note.slice(0, 120)}</div>
           )}
         </div>
       )}
@@ -604,7 +604,7 @@ export function BrainView() {
             </span>
 
             {/* Name / title */}
-            <h3 style={{ fontFamily: font.display, fontSize: 20, fontWeight: 700, color: colors.text, margin: '8px 0 12px' }}>
+            <h3 style={{ fontFamily: font.display, fontSize: textSize.title, fontWeight: 700, color: colors.text, margin: '8px 0 12px' }}>
               {selected.label}
             </h3>
 
@@ -616,7 +616,7 @@ export function BrainView() {
               const degree = data?.edges?.filter(e => e.from === selected.id || e.to === selected.id).length ?? 0;
               const memLinks = data?.memories?.filter(m => m.ent.includes(selected.id)).length ?? 0;
               return (<>
-                <p style={{ fontFamily: font.body, fontSize: 13, color: colors.textMuted, lineHeight: 1.6, margin: '0 0 16px' }}>
+                <p style={{ fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, margin: '0 0 16px' }}>
                   {selected.note || 'No description yet — the Librarian writes one on its next run.'}
                 </p>
 
@@ -627,7 +627,7 @@ export function BrainView() {
                         <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.06em', minWidth: 84 }}>
                           {f.field_name.replace(/_/g, ' ')}
                         </span>
-                        <span style={{ fontFamily: font.body, fontSize: 12, color: colors.text, flex: 1, overflowWrap: 'anywhere' }}>
+                        <span style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.text, flex: 1, overflowWrap: 'anywhere' }}>
                           {f.source_url ? (
                             <a href={f.source_url} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>{f.value}</a>
                           ) : f.value}
@@ -661,7 +661,7 @@ export function BrainView() {
                       '--pa-btn-radius': `${radius.md}px`,
                       '--pa-btn-weight': 600,
                       alignSelf: 'flex-start', marginBottom: 16,
-                      fontFamily: font.body, fontSize: 12, lineHeight: 1.5,
+                      fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5,
                     } as CSSProperties}
                   >
                     Open project →
@@ -715,12 +715,12 @@ export function BrainView() {
                   {/* Scrollable content area */}
                   <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 14 }}>
                     {mem.description && (
-                      <p style={{ fontFamily: font.body, fontSize: 13, color: colors.text, lineHeight: 1.7, margin: 0 }}>
+                      <p style={{ fontFamily: font.body, fontSize: textSize.small, color: colors.text, lineHeight: 1.7, margin: 0 }}>
                         {mem.description}
                       </p>
                     )}
                     <p style={{
-                      fontFamily: font.mono, fontSize: 11, color: colors.textMuted, lineHeight: 1.6, margin: 0,
+                      fontFamily: font.mono, fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.6, margin: 0,
                       padding: '10px 12px', background: theme === 'silver' ? 'rgba(30,37,48,0.04)' : 'rgba(0,0,0,0.2)', borderRadius: radius.md,
                       whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                     }}>
@@ -729,9 +729,9 @@ export function BrainView() {
                     {mem.why && (
                       <details>
                         <summary style={{
-                          fontFamily: font.body, fontSize: 11, color: colors.textDim, cursor: 'pointer',
+                          fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, cursor: 'pointer',
                         }}>Why this?</summary>
-                        <p style={{ fontFamily: font.mono, fontSize: 11, color: colors.textMuted, margin: '6px 0 0' }}>
+                        <p style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textMuted, margin: '6px 0 0' }}>
                           {mem.why}
                         </p>
                       </details>
@@ -778,7 +778,7 @@ export function BrainView() {
                                 '--pa-btn-pad': '4px 10px',
                                 '--pa-btn-radius': `${radius.pill}px`,
                                 '--pa-btn-weight': 500,
-                                fontFamily: font.body, fontSize: 11,
+                                fontFamily: font.body, fontSize: textSize.micro,
                               } as CSSProperties}
                             >{ent.name}</Button>
                           );
@@ -856,7 +856,7 @@ function Stat({ label, value, tone, title }: {
     <div style={{ textAlign: 'center' }} title={title}>
       <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginBottom: 2, textTransform: 'uppercase' }}>{label}</div>
       <div style={{
-        fontFamily: font.body, fontSize: 13, fontWeight: 600,
+        fontFamily: font.body, fontSize: textSize.small, fontWeight: 600,
         color: tone === 'stale' ? colors.stale : colors.text,
       }}>{value}</div>
     </div>

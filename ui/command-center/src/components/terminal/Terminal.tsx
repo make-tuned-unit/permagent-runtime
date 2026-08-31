@@ -6,7 +6,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import { useEventBus } from '../../lib/eventBus';
 import { useTheme } from '../../styles/useTheme';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { getXtermTheme } from './xtermTheme';
 import { onRepaintRegain } from '../../lib/repaintOnRegain';
@@ -131,7 +131,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       const term = new XTerm({
         theme: getXtermTheme(theme, colors),
         fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, "DejaVu Sans Mono", monospace',
-        fontSize: 13,
+        fontSize: textSize.small,
         // MUST stay 1.0. Extra leading inserts a gap between rows that the
         // glyph cannot bridge, so every vertical box-drawing rule (│ ┃ ║) is
         // sliced into dashes and long horizontal rules (─ ━) drift off the
@@ -741,7 +741,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
                 '--pa-btn-fg-hover': colors.text,
                 '--pa-btn-bg-hover': 'transparent',
                 '--pa-btn-pad': '0',
-                fontSize: 12,
+                fontSize: textSize.caption,
               } as CSSProperties}
             >
               <FiX size={12} />
@@ -758,7 +758,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
                 '--pa-btn-pad': '4px 8px',
                 '--pa-btn-radius': `${radius.xs}px`,
                 fontFamily: font.body,
-                fontSize: 12,
+                fontSize: textSize.caption,
                 gap: 4,
               } as CSSProperties}
             >
@@ -772,7 +772,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
                 '--pa-btn-pad': '4px 8px',
                 '--pa-btn-radius': `${radius.xs}px`,
                 fontFamily: font.body,
-                fontSize: 12,
+                fontSize: textSize.caption,
                 gap: 4,
               } as CSSProperties}
             >

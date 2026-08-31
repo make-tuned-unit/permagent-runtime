@@ -1,7 +1,7 @@
 import { useState, useCallback, useId, type CSSProperties } from 'react';
 import { FiChevronRight, FiChevronDown, FiCheck, FiX, FiCopy } from 'react-icons/fi';
 import type { ToolCall } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { GmailSearchResult } from './GmailSearchResult';
@@ -106,7 +106,7 @@ export function ToolResult({ call }: { call: ToolCall }) {
             : `${radius.md}px`,
           display: 'flex', width: '100%', justifyContent: 'flex-start',
           textAlign: 'left', gap: 8, borderWidth: 0,
-          fontFamily: font.mono, fontSize: 11,
+          fontFamily: font.mono, fontSize: textSize.micro,
         } as CSSProperties}
       >
         {expanded

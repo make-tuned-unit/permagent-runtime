@@ -3,7 +3,7 @@ import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { relativeTimeAgo } from '../../lib/time-decay';
 import { isSafeHttpUrl } from '../../lib/url';
-import { font } from '../../styles/tokens';
+import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -128,14 +128,14 @@ export function EcosystemPanel({ project }: { project: Project }) {
             '--pa-btn-pad': '0',
             '--pa-btn-weight': 'inherit',
             fontFamily: font.body,
-            fontSize: 11,
+            fontSize: textSize.micro,
           } as CSSProperties}
         >
           {requested ? `${agentName} is researching…` : 'Refresh intelligence'}
         </Button>
       )}
     >
-      {status === 'loading' && <div style={{ color: colors.textDim, fontSize: 11 }}>Loading intelligence…</div>}
+      {status === 'loading' && <div style={{ color: colors.textDim, fontSize: textSize.micro }}>Loading intelligence…</div>}
       {status === 'error' && (
         <Button
           colors={colors}
@@ -156,7 +156,7 @@ export function EcosystemPanel({ project }: { project: Project }) {
         </Button>
       )}
       {status === 'ready' && groups.every(([, items]) => items.length === 0) && (
-        <div style={{ color: colors.textDim, fontSize: 11 }}>No researched intelligence yet.</div>
+        <div style={{ color: colors.textDim, fontSize: textSize.micro }}>No researched intelligence yet.</div>
       )}
       {status === 'ready' && freshness && (
         <div style={{ color: colors.textDim, fontSize: 10 }}>Last researched {freshness}</div>
@@ -170,7 +170,7 @@ export function EcosystemPanel({ project }: { project: Project }) {
             {items.map(item => (
               <div key={item.id} style={{ borderLeft: `2px solid ${colors.cyan}`, paddingLeft: 9 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                  <div style={{ color: colors.text, fontSize: 12, fontWeight: 600 }}>{item.name}</div>
+                  <div style={{ color: colors.text, fontSize: textSize.caption, fontWeight: 600 }}>{item.name}</div>
                   <Button
                     colors={colors}
                     variant="bare"
@@ -184,14 +184,14 @@ export function EcosystemPanel({ project }: { project: Project }) {
                       '--pa-btn-bg-hover': 'transparent',
                       '--pa-btn-pad': '2px',
                       '--pa-btn-weight': 'inherit',
-                      fontSize: 14,
+                      fontSize: textSize.body,
                       lineHeight: 1,
                     } as CSSProperties}
                   >
                     ×
                   </Button>
                 </div>
-                {item.note && <div style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>{item.note}</div>}
+                {item.note && <div style={{ color: colors.textMuted, fontSize: textSize.micro, marginTop: 2 }}>{item.note}</div>}
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 3, fontSize: 10 }}>
                   {isSafeHttpUrl(item.source_url) ? (
                     <a href={item.source_url} target="_blank" rel="noreferrer" style={{ color: colors.cyan }}>Source</a>

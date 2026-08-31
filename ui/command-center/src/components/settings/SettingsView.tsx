@@ -3,7 +3,7 @@ import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
 import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse, type IncidentView } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
-import { font, radius, setDensity as setDensityFn, setIdleAnim, setMobiusGlow, setReduceMotion as setReduceMotionFn, setShowHeroMobius, setTheme as setThemeFn, type IdleAnim, type ThemePref, type UIDensity } from '../../styles/tokens';
+import { font, radius, setDensity as setDensityFn, setIdleAnim, setMobiusGlow, setReduceMotion as setReduceMotionFn, setShowHeroMobius, setTheme as setThemeFn, type IdleAnim, type ThemePref, type UIDensity, textSize } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import {
@@ -67,12 +67,12 @@ const ghost = (colors: C): React.CSSProperties => ({
   '--pa-btn-radius': `${radius.md}px`,
   '--pa-btn-weight': 500,
   height: 32,
-  fontFamily: font.body, fontSize: 12, gap: 6,
+  fontFamily: font.body, fontSize: textSize.caption, gap: 6,
 } as React.CSSProperties);
 const selectStyle = (colors: C): React.CSSProperties => ({
   height: 34, padding: '0 12px', borderRadius: radius.md,
   background: colors.inputBg, border: `1px solid ${colors.border}`,
-  color: colors.text, fontFamily: font.body, fontSize: 13,
+  color: colors.text, fontFamily: font.body, fontSize: textSize.small,
   minWidth: 240, cursor: 'pointer',
 });
 
@@ -175,7 +175,7 @@ function PersonaPanel() {
     if (ok) setDirty(false);
   };
 
-  if (loading) return <div style={{ color: colors.textDim, fontSize: 13 }}>Loading persona...</div>;
+  if (loading) return <div style={{ color: colors.textDim, fontSize: textSize.small }}>Loading persona...</div>;
   return (
     <div>
       <H1 sub="Shape how your agent thinks, talks, and decides. Changes take effect at the start of the next conversation.">Persona</H1>
@@ -211,7 +211,7 @@ function PersonaPanel() {
               onBlur={addTrait}
               placeholder="Add a custom trait — type and press Enter"
               style={{
-                width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
+                width: '100%', fontFamily: font.body, fontSize: textSize.small, color: colors.text,
                 background: colors.inputBg, border: `1px solid ${colors.border}`,
                 borderRadius: radius.md, padding: '8px 12px', outline: 'none',
               }}
@@ -220,7 +220,7 @@ function PersonaPanel() {
         </Row>
       </Section>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}>
-        {error && <span style={{ fontSize: 12, color: colors.danger }}>{error}</span>}
+        {error && <span style={{ fontSize: textSize.caption, color: colors.danger }}>{error}</span>}
         {/* Failed initial load: offer a retry instead of leaving a form that
             reads as broken (#167). Saving still works from the form's values. */}
         {error === 'Failed to load persona' && !data && (
@@ -238,7 +238,7 @@ function PersonaPanel() {
               '--pa-btn-border-hover': colors.borderHi,
               '--pa-btn-pad': '6px 14px',
               '--pa-btn-radius': `${radius.md}px`,
-              fontSize: 12, fontFamily: font.body,
+              fontSize: textSize.caption, fontFamily: font.body,
             } as CSSProperties}
           >
             Retry
@@ -342,7 +342,7 @@ export function MemoryPanel({ goto }: { goto?: (key: string) => void }) {
               button with no handler is worse than no button. They return
               with real endpoints behind them. */}
         </div>
-        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 12, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 12, lineHeight: 1.5 }}>
           Browse and audit everything remembered in the Brain view. Retirement
           of stale, low-signal memories is handled by the Librarian's nightly
           pruning — configure it under Models.
@@ -378,7 +378,7 @@ export function ApprovalsStrip() {
         padding: '9px 12px', marginBottom: 12, borderRadius: radius.md,
         background: colors.bgDeeper, border: `1px solid ${colors.border}`,
       }}>
-        <span style={{ fontSize: 12, color: pending > 0 ? colors.text : colors.textMuted }}>
+        <span style={{ fontSize: textSize.caption, color: pending > 0 ? colors.text : colors.textMuted }}>
           {data === null
             ? 'Checking the Decision Inbox…'
             : `Pending approvals: ${pending}`}
@@ -442,7 +442,7 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
       <H1 sub="How much your agent can do without checking in. Higher autonomy = faster, but more rope.">Autonomy &amp; guardrails</H1>
       <Section title="Default autonomy" sub="Live — this writes the daemon's tool-approval mode and applies to new turns.">
         {trustError && (
-          <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{trustError}</div>
+          <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{trustError}</div>
         )}
         <ApprovalsStrip />
         {(() => {
@@ -452,7 +452,7 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
           // daemon isn't running.
           const envNotice = trustEnvOverrideNotice(effectiveTrust, trust);
           return envNotice ? (
-            <div style={{ marginBottom: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: 12, lineHeight: 1.5 }}>
+            <div style={{ marginBottom: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: textSize.caption, lineHeight: 1.5 }}>
               {envNotice}
             </div>
           ) : null;
@@ -473,25 +473,25 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
                     opacity: trust === null ? 0.5 : locked && !current ? 0.55 : 1,
                   }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 4 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: current ? colors.cyan : colors.text }}>{opt.l}</span>
+                    <span style={{ fontSize: textSize.small, fontWeight: 600, color: current ? colors.cyan : colors.text }}>{opt.l}</span>
                     {locked && (
                       <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: colors.textMuted, border: `1px solid ${colors.border}`, borderRadius: radius.pill, padding: '1px 6px' }}>Soon</span>
                     )}
                   </div>
-                  <div style={{ fontSize: 11, color: colors.textMuted }}>{opt.d}</div>
+                  <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>{opt.d}</div>
                 </button>
               );
             })}
           </div>
         </Row>
-        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 10, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 10, lineHeight: 1.5 }}>
           Per-tool approval (Ask every time / Smart approve) is temporarily
           locked here while the approval pipeline is hardened. Approval prompts
           already land in the <strong>Decision Inbox</strong> on your Dashboard —
           these modes become selectable once the re-enable gate ships.
         </div>
         {trust !== null && !SELECTABLE_TRUST_MODES.has(trust) && (
-          <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: 12, lineHeight: 1.5 }}>
+          <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: textSize.caption, lineHeight: 1.5 }}>
             You're on a per-tool-approval mode: tool calls pause until you
             approve them in the <strong>Decision Inbox</strong> on your
             Dashboard. If a turn seems stuck, answer the pending approval
@@ -551,7 +551,7 @@ function ToolsPanel({ goto }: PanelProps) {
       <H1 sub="Tools your agent can use. These follow the Model Context Protocol — connect a server and the agent can call into it.">Tools &amp; MCPs</H1>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 12, color: colors.textMuted }}>{enabledCount} of {extensions.length} enabled</span>
+        <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>{enabledCount} of {extensions.length} enabled</span>
       </div>
       {needKeys.length > 0 && (
         // API keys are managed in Search & tools, not here. Without this the
@@ -562,7 +562,7 @@ function ToolsPanel({ goto }: PanelProps) {
           padding: '9px 12px', marginBottom: 14, borderRadius: radius.md,
           background: colors.bgDeeper, border: `1px solid ${colors.border}`,
         }}>
-          <span style={{ fontSize: 12, color: colors.textMuted }}>
+          <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>
             {needKeys.map(extensionLabel).join(' and ')} need API keys.
           </span>
           <Button colors={colors} style={ghost(colors)} onClick={() => goto('search')}>
@@ -571,17 +571,17 @@ function ToolsPanel({ goto }: PanelProps) {
         </div>
       )}
       {loading ? (
-        <div style={{ color: colors.textDim, fontSize: 13 }}>Loading extensions...</div>
+        <div style={{ color: colors.textDim, fontSize: textSize.small }}>Loading extensions...</div>
       ) : extensions.length === 0 ? (
-        <Section title="No extensions"><div style={{ color: colors.textMuted, fontSize: 13 }}>No MCP tools or extensions configured.</div></Section>
+        <Section title="No extensions"><div style={{ color: colors.textMuted, fontSize: textSize.small }}>No MCP tools or extensions configured.</div></Section>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
           {extensions.map((ext, i) => (
             <div key={ext.name || `ext-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
-              <div style={{ width: 32, height: 32, borderRadius: radius.md, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{extensionLabel(ext).charAt(0).toUpperCase() || '?'}</div>
+              <div style={{ width: 32, height: 32, borderRadius: radius.md, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: textSize.small, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{extensionLabel(ext).charAt(0).toUpperCase() || '?'}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{extensionLabel(ext)}</div>
-                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div style={{ fontSize: textSize.small, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{extensionLabel(ext)}</div>
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {ext.type}{ext.bundled ? ' · bundled' : ''} · {ext.available_tools?.length ?? 0} tools
                   {(ext.env_keys?.length ?? 0) > 0 && ` · needs ${ext.env_keys!.join(', ')}`}
                 </div>
@@ -759,20 +759,20 @@ function RoleModelRow({
   return (
     <Row label={label} hint={hint}>
       <div data-testid={testId}>
-      <div style={{ fontFamily: font.mono, fontSize: 13, color: colors.text, marginBottom: 10 }}>
+      <div style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, marginBottom: 10 }}>
         {effective.display}
         {effective.suffix && (
-          <span style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted, marginLeft: 8 }}>
+          <span style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginLeft: 8 }}>
             · {effective.suffix}
           </span>
         )}
       </div>
       {warn && (
-        <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>
           provider and model must be set together, or neither
         </div>
       )}
-      {error && <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{error}</div>}
+      {error && <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <div style={{ width: 160 }}>
           <TextInput
@@ -1039,7 +1039,7 @@ export function ModelsPanel({ goto }: PanelProps) {
       <Section title="Providers" sub="Provider credentials live in the API keys tab — add or update a key there, then route to it below.">
         {/* One-line primary readout (condensed from Governance → Models; the
             full editor is redundant with the provider modal on API keys). */}
-        <div style={{ fontSize: 13, color: colors.text, fontFamily: font.mono, marginBottom: 12 }}>
+        <div style={{ fontSize: textSize.small, color: colors.text, fontFamily: font.mono, marginBottom: 12 }}>
           {primary === null
             ? 'Loading primary model…'
             : `${primary.model ?? '—'} · provider: ${primary.provider ?? 'default'}${primary.mode ? ` · mode: ${primary.mode}` : ''}`}
@@ -1078,10 +1078,10 @@ export function ModelsPanel({ goto }: PanelProps) {
             the wrong resolver here would tell the operator the wrong thing. */}
         <Row label="Voice" hint="spoken turns">
           <div data-testid="role-row-voice">
-            <div style={{ fontFamily: font.mono, fontSize: 13, color: colors.text, marginBottom: 10 }}>
+            <div style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, marginBottom: 10 }}>
               {describeVoiceRoute(voiceProvider, voiceModel)}
             </div>
-            {voiceError && <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{voiceError}</div>}
+            {voiceError && <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{voiceError}</div>}
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <div style={{ width: 160 }}>
                 <TextInput
@@ -1130,19 +1130,19 @@ export function ModelsPanel({ goto }: PanelProps) {
       {/* ── Ollama Status ────────────────────────────────────────── */}
       <Section title="Local models (Ollama)">
         {!ollama ? (
-          <Row label="Status" hint="Checking..."><span style={{ fontSize: 12, color: colors.textDim }}>Loading...</span></Row>
+          <Row label="Status" hint="Checking..."><span style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading...</span></Row>
         ) : !ollama.reachable ? (
           <Row label="Status" hint="Ollama is not running. Install from ollama.com and run 'ollama serve'.">
-            <span style={{ fontSize: 12, color: colors.danger }}>Ollama not running</span>
+            <span style={{ fontSize: textSize.caption, color: colors.danger }}>Ollama not running</span>
           </Row>
         ) : (
           <>
             <Row label="Connection" hint="Ollama at localhost:11434">
-              <span style={{ fontSize: 12, color: colors.cyan }}>Connected</span>
+              <span style={{ fontSize: textSize.caption, color: colors.cyan }}>Connected</span>
             </Row>
             {ollama.installed.length === 0 ? (
               <Row label="Models" hint="No models installed. Run 'ollama pull qwen2.5:3b' to get started.">
-                <span style={{ fontSize: 12, color: colors.textDim }}>None</span>
+                <span style={{ fontSize: textSize.caption, color: colors.textDim }}>None</span>
               </Row>
             ) : (
               ollama.installed.map(m => {
@@ -1169,7 +1169,7 @@ export function ModelsPanel({ goto }: PanelProps) {
       {schedule && (
         <Section title="Librarian schedule">
           {libError && (
-            <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{libError}</div>
+            <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{libError}</div>
           )}
           <Row label="Enabled" hint="Run the Librarian on a daily schedule to describe memories.">
             <Toggle on={schedule.enabled} onChange={v => handleScheduleChange({ enabled: v })} label="Nightly librarian pass" />
@@ -1193,10 +1193,10 @@ export function ModelsPanel({ goto }: PanelProps) {
                   onChange={e => handleScheduleChange({ duration_minutes: Math.max(15, Math.min(720, parseInt(e.target.value) || 15)) })}
                   style={{ ...selectStyle(colors), minWidth: 100, width: 'auto' }}
                 />
-                <span style={{ fontSize: 11, color: colors.textDim, marginLeft: 6 }}>min</span>
+                <span style={{ fontSize: textSize.micro, color: colors.textDim, marginLeft: 6 }}>min</span>
               </Row>
               <Row label="Model" hint="Ollama model used by the Librarian. Installed models only.">
-                <span style={{ fontSize: 13, color: colors.text, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: textSize.small, color: colors.text, display: 'flex', alignItems: 'center', gap: 8 }}>
                   <select
                     style={{ ...selectStyle(colors), width: 'auto', minWidth: 160 }}
                     value={schedule.model}
@@ -1216,7 +1216,7 @@ export function ModelsPanel({ goto }: PanelProps) {
                 <Toggle on={schedule.pruning_enabled ?? false} onChange={v => handleScheduleChange({ pruning_enabled: v })} />
               </Row>
               <Row label="Next run" hint={nextRunText(schedule)}>
-                <span style={{ fontSize: 12, color: colors.textMuted }}>{nextRunText(schedule)}</span>
+                <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>{nextRunText(schedule)}</span>
               </Row>
             </>
           )}
@@ -1235,7 +1235,7 @@ export function ModelsPanel({ goto }: PanelProps) {
                 '--pa-btn-pad': '0 14px',
                 '--pa-btn-radius': `${radius.sm}px`,
                 '--pa-btn-weight': 600,
-                height: 30, fontSize: 12, fontFamily: font.body,
+                height: 30, fontSize: textSize.caption, fontFamily: font.body,
               } as CSSProperties}
             >
               {runningNow ? 'Warming...' : 'Run Librarian now'}
@@ -1251,11 +1251,11 @@ export function ModelsPanel({ goto }: PanelProps) {
         sub="The Guard — born of the Strix pentest engine — probes your own projects for security flaws. Each sweep scans ONE active project (rotating through them, least-recently-scanned first) and files a security report with a fix plan as a note on that project, plus a findings checklist on its Overview. Requires the external `strix` scanner and Docker: locally, or on the host in `strix_docker_ssh` (rsync there, scan against that machine's Docker, pull `.strix` back). A forwarded Docker socket is not enough. The cadence below is a cost dial that applies once the Guard is on: every sweep runs on your API credits. Changes apply within ~15 minutes — no restart needed."
       >
         {strixError && (
-          <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{strixError}</div>
+          <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{strixError}</div>
         )}
         <Row label="Enable the Guard" hint="Off by default — a scanner that runs live exploit tooling is switched on deliberately, never by upgrade.">
           {strix === null ? (
-            <span style={{ fontSize: 12, color: colors.textDim }}>Loading…</span>
+            <span style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading…</span>
           ) : (
             <Toggle on={strix} onChange={saveStrix} />
           )}
@@ -1264,7 +1264,7 @@ export function ModelsPanel({ goto }: PanelProps) {
             exactly one config key and no agent-scoped write path, so every one of
             them upserts `strix_enabled`. Saying so — and pointing at the other
             two — is what stops the next person hunting for "the real" switch. */}
-        <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, padding: '2px 0 10px' }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, padding: '2px 0 10px' }}>
           This is the same switch as Settings → Features and the Guard's own page under
           Settings → Agents — one config key (<code style={{ fontFamily: font.mono }}>strix_enabled</code>),
           so flipping it anywhere is the same flag.
@@ -1279,7 +1279,7 @@ export function ModelsPanel({ goto }: PanelProps) {
                 '--pa-btn-fg': colors.cyan,
                 '--pa-btn-bg-hover': 'transparent',
                 '--pa-btn-pad': '0',
-                fontFamily: font.body, fontSize: 11, textDecoration: 'underline',
+                fontFamily: font.body, fontSize: textSize.micro, textDecoration: 'underline',
               } as CSSProperties}
             >
               All worker switches
@@ -1294,7 +1294,7 @@ export function ModelsPanel({ goto }: PanelProps) {
                 '--pa-btn-fg': colors.cyan,
                 '--pa-btn-bg-hover': 'transparent',
                 '--pa-btn-pad': '0',
-                fontFamily: font.body, fontSize: 11, textDecoration: 'underline',
+                fontFamily: font.body, fontSize: textSize.micro, textDecoration: 'underline',
               } as CSSProperties}
             >
               The Guard's agent page
@@ -1306,7 +1306,7 @@ export function ModelsPanel({ goto }: PanelProps) {
             value={strixHours}
             onChange={e => saveStrixHours(Number(e.target.value))}
             style={{
-              background: colors.inputBg, color: colors.text, fontSize: 12,
+              background: colors.inputBg, color: colors.text, fontSize: textSize.caption,
               border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '4px 8px',
             }}
           >
@@ -1322,7 +1322,7 @@ export function ModelsPanel({ goto }: PanelProps) {
             ? 'Docker and strix run on this machine. This Mac rsyncs the project there and pulls .strix back — a forwarded Docker socket is not enough.'
             : 'Unset: scans on this Mac, which needs local Docker and strix. Set strix_docker_ssh in ~/.permagent/config.yaml to scan on another host.'}
         >
-          <span style={{ fontSize: 12, color: colors.text, fontFamily: font.mono }}>
+          <span style={{ fontSize: textSize.caption, color: colors.text, fontFamily: font.mono }}>
             {strixDockerSsh ?? 'this Mac'}
           </span>
         </Row>
@@ -1334,7 +1334,7 @@ export function ModelsPanel({ goto }: PanelProps) {
         sub="The Watcher reaches out at most about once a day with the ONE thing genuinely worth your attention — news grounded in your active projects, or a memory thread that went quiet. Separately, it delivers the Financier's overbought sell signals on stocks you already hold (daily per symbol; does not use that taste budget). Teach it here: topics you want followed, and subjects it should never raise again. Changes apply at its next check — no restart needed."
       >
         {watcherError && (
-          <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{watcherError}</div>
+          <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{watcherError}</div>
         )}
         <Row label="Topics to follow" hint="Comma-separated. Treated as relevant by your say-so, alongside subjects inferred from your active projects.">
           <input
@@ -1344,7 +1344,7 @@ export function ModelsPanel({ goto }: PanelProps) {
             onKeyDown={e => { if (e.key === 'Enter') saveWatcherList('watcher_topics', watcherTopics); }}
             placeholder="e.g. local-first software, prediction markets"
             style={{
-              width: 260, fontFamily: font.body, fontSize: 12, color: colors.text,
+              width: 260, fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
               background: colors.inputBg, border: `1px solid ${colors.border}`,
               borderRadius: radius.sm, padding: '6px 10px', outline: 'none',
             }}
@@ -1358,7 +1358,7 @@ export function ModelsPanel({ goto }: PanelProps) {
             onKeyDown={e => { if (e.key === 'Enter') saveWatcherList('watcher_muted_subjects', watcherMuted); }}
             placeholder="e.g. crypto prices"
             style={{
-              width: 260, fontFamily: font.body, fontSize: 12, color: colors.text,
+              width: 260, fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
               background: colors.inputBg, border: `1px solid ${colors.border}`,
               borderRadius: radius.sm, padding: '6px 10px', outline: 'none',
             }}
@@ -1436,7 +1436,7 @@ function AppearancePanel() {
                 onBlur={e => { if (!on) e.currentTarget.style.borderColor = 'transparent'; }}
               >
                 <div style={{ height: 96, borderRadius: radius.md, background: th.g, border: `1px solid ${colors.border}` }} />
-                <div style={{ fontSize: 12, padding: '8px 4px', textAlign: 'center', color: on ? colors.cyan : colors.text }}>{th.l}</div>
+                <div style={{ fontSize: textSize.caption, padding: '8px 4px', textAlign: 'center', color: on ? colors.cyan : colors.text }}>{th.l}</div>
               </div>
             );
           })}
@@ -1498,7 +1498,7 @@ function ShortcutsPanel() {
         <Section key={grp.g} title={grp.g}>
           {grp.items.map(([l, keys]) => (
             <div key={l} style={{ display: 'flex', alignItems: 'center', padding: '12px 0', borderTop: `1px solid ${colors.border}` }}>
-              <span style={{ fontSize: 13, flex: 1 }}>{l}</span>
+              <span style={{ fontSize: textSize.small, flex: 1 }}>{l}</span>
               <div style={{ display: 'flex', gap: 4 }}>{keys.map((k, i) => <Kbd key={i}>{k}</Kbd>)}</div>
             </div>
           ))}
@@ -1584,7 +1584,7 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
     <div>
       <H1 sub="Your data is yours. Everything is local-first today.">Data &amp; privacy</H1>
       <Section title="Local-first">
-        <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.6, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span>
             Memory and traces live on this machine. To make the boundary
             enforced — blocking every cloud inference call — use Sovereignty.
@@ -1595,7 +1595,7 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
       <Section title="Diagnostics" sub="Live — an off-by-default opt-in written to the daemon's consent gate.">
         <Row label="Share product analytics" hint="Anonymous usage and timing. Never your prompts."><Toggle on={!!analytics} onChange={saveAnalytics} /></Row>
         {consentError && (
-          <div style={{ fontSize: 12, color: colors.danger, padding: '2px 0 8px' }}>{consentError}</div>
+          <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '2px 0 8px' }}>{consentError}</div>
         )}
       </Section>
       <Section title="Crash report" sub="Export a redacted crash report to attach to a support message. Written locally — home paths, keys, tokens, emails, and UUIDs are redacted first. Nothing is uploaded.">
@@ -1613,24 +1613,24 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
               '--pa-btn-bg-active': colors.surface,
               '--pa-btn-pad': '6px 12px',
               '--pa-btn-radius': `${radius.sm}px`,
-              fontSize: 12,
+              fontSize: textSize.caption,
             } as CSSProperties}
           >{exporting ? 'Exporting…' : 'Export redacted crash report'}</Button>
         </div>
         {exportError && (
-          <div style={{ fontSize: 12, color: colors.danger, padding: '6px 0' }}>{exportError}</div>
+          <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '6px 0' }}>{exportError}</div>
         )}
         {exportResult && (
           <div style={{ padding: '8px 0' }}>
-            <div style={{ fontSize: 12, color: colors.textDim }}>
+            <div style={{ fontSize: textSize.caption, color: colors.textDim }}>
               {exportResult.reportCount === 0
                 ? 'No crash reports captured. Saved an empty redacted bundle to:'
                 : `${exportResult.reportCount} crash report(s) redacted and saved to:`}
             </div>
-            <div style={{ fontSize: 12, color: colors.text, fontFamily: font.mono, wordBreak: 'break-all', padding: '2px 0 6px' }}>{exportResult.path}</div>
-            <div style={{ fontSize: 11, color: colors.textDim, paddingBottom: 4 }}>Preview (exactly what would be shared):</div>
+            <div style={{ fontSize: textSize.caption, color: colors.text, fontFamily: font.mono, wordBreak: 'break-all', padding: '2px 0 6px' }}>{exportResult.path}</div>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim, paddingBottom: 4 }}>Preview (exactly what would be shared):</div>
             <pre style={{
-              fontSize: 11, fontFamily: font.mono, color: colors.text, background: colors.surface,
+              fontSize: textSize.micro, fontFamily: font.mono, color: colors.text, background: colors.surface,
               border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: 8, margin: 0,
               maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             }}>{exportResult.content}</pre>
@@ -1690,7 +1690,7 @@ function SovereigntyPanel() {
       <H1 sub="Make the data boundary real. With sovereign mode on, every model call stays on this machine — cloud providers are refused (fail-closed), not just deprioritized.">Sovereignty</H1>
 
       {error && (
-        <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{error}</div>
+        <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{error}</div>
       )}
 
       <Section title="Sovereign mode" sub="Live — writes the daemon's global sovereign flag, enforced at the provider choke point for every session.">
@@ -1720,14 +1720,14 @@ function SovereigntyPanel() {
               '--pa-btn-pad': '0 18px',
               '--pa-btn-radius': `${radius.md}px`,
               '--pa-btn-weight': 600,
-              height: 32, fontFamily: font.body, fontSize: 12,
+              height: 32, fontFamily: font.body, fontSize: textSize.caption,
             } as CSSProperties}
           >
             {status === null ? '…' : status.enabled ? 'Allow cloud again' : 'Pull the cable'}
           </Button>
         </Row>
         {status?.enabled && !status.localProviderAvailable && (
-          <div style={{ fontSize: 12, color: colors.warning, padding: '2px 0 8px' }}>
+          <div style={{ fontSize: textSize.caption, color: colors.warning, padding: '2px 0 8px' }}>
             No local provider (Ollama or local-inference) is registered — with sovereign mode on, inference will be refused until one is available.
           </div>
         )}
@@ -1750,14 +1750,14 @@ function SovereigntyPanel() {
               '--pa-btn-bg-active': colors.surface,
               '--pa-btn-pad': '4px 10px',
               '--pa-btn-radius': `${radius.sm}px`,
-              fontSize: 12,
+              fontSize: textSize.caption,
             } as CSSProperties}
           >Refresh</Button>
         </Row>
         {log === null ? (
-          <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>Loading audit log…</div>
+          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>Loading audit log…</div>
         ) : log.length === 0 ? (
-          <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>
+          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>
             Nothing has left this machine yet. Every cloud call will be recorded here.
           </div>
         ) : (
@@ -1769,13 +1769,13 @@ function SovereigntyPanel() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {log.map(e => (
                   <div key={e.id} style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: 12, alignItems: 'center', padding: '8px 10px', borderRadius: radius.md, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
-                    <div style={{ fontSize: 12, color: colors.textMuted, fontFamily: font.mono }} title={`${new Date(e.ts).toLocaleString()}${e.sessionId ? ' · ' + e.sessionId : ''} · ${e.contentHash.slice(0, 12)}…`}>
+                    <div style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: font.mono }} title={`${new Date(e.ts).toLocaleString()}${e.sessionId ? ' · ' + e.sessionId : ''} · ${e.contentHash.slice(0, 12)}…`}>
                       {timeAgo(e.ts) || e.ts}
                     </div>
-                    <div style={{ fontSize: 12, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${e.provider} · ${e.model}`}>
+                    <div style={{ fontSize: textSize.caption, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${e.provider} · ${e.model}`}>
                       <span style={{ color: colors.textMuted }}>{e.provider}</span> · {e.model}
                     </div>
-                    <div style={{ fontSize: 12, color: colors.textMuted }}>{e.kind}</div>
+                    <div style={{ fontSize: textSize.caption, color: colors.textMuted }}>{e.kind}</div>
                     <div>
                       <span style={{
                         fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase',
@@ -1863,7 +1863,7 @@ function IncidentsStrip() {
       </div>
       {incidents.map(i => (
         <div key={i.id} style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '5px 0', borderBottom: `1px solid ${colors.border}` }}>
-          <span style={{ fontSize: 12, color: colors.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${i.user_goal} — ${i.observation}`}>
+          <span style={{ fontSize: textSize.caption, color: colors.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${i.user_goal} — ${i.observation}`}>
             [{i.surface}] {i.observation}
           </span>
           <span style={{ fontSize: 10, color: colors.textDim, fontFamily: 'monospace' }}>{i.mechanism}</span>
@@ -1936,7 +1936,7 @@ function PairingQrCode({ value, size = 112 }: { value: string; size?: number }) 
   try {
     matrix = makeQrMatrix(value);
   } catch {
-    return <span style={{ fontSize: 11 }}>QR unavailable — shorten the hub address or copy the link.</span>;
+    return <span style={{ fontSize: textSize.micro }}>QR unavailable — shorten the hub address or copy the link.</span>;
   }
   const quiet = 4;
   // Module extent of the symbol itself, in QR modules — distinct from `size`,
@@ -2035,7 +2035,7 @@ function DevicesPanel() {
             background: hubUp === false ? colors.danger : colors.cyan,
             boxShadow: hubUp === false ? 'none' : `0 0 8px ${colors.cyan}`,
           }} />
-          <span style={{ fontSize: 13, color: colors.text }}>
+          <span style={{ fontSize: textSize.small, color: colors.text }}>
             {isHub
               ? 'Everything lives here — your memories, projects, and models. Keep this machine on so your other devices can reach Permagent.'
               : hubUp === false
@@ -2051,7 +2051,7 @@ function DevicesPanel() {
           </Button>
         )}
         {detail >= 1 && (
-          <p style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.6, margin: '10px 0 0' }}>
+          <p style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.6, margin: '10px 0 0' }}>
             Permagent works like a home base with visitors: the hub is the one machine that runs
             the Permagent daemon and stores every memory, project, and model. Phones, laptops,
             and tablets are companions — they show you everything and let you act from anywhere,
@@ -2060,7 +2060,7 @@ function DevicesPanel() {
           </p>
         )}
         {detail >= 2 && (
-          <p style={{ fontSize: 12, color: colors.textDim, lineHeight: 1.6, margin: '10px 0 0' }}>
+          <p style={{ fontSize: textSize.caption, color: colors.textDim, lineHeight: 1.6, margin: '10px 0 0' }}>
             Under the hood: the hub's daemon (permagentd) serves the API and this very interface
             over your private Tailscale network; companions authenticate with the pairing token
             (a bearer secret — no accounts). There is exactly one writable Brain, so nothing
@@ -2074,12 +2074,12 @@ function DevicesPanel() {
       {/* #628: the device registry — named companions, last-seen, revocation. */}
       <Section title="Paired devices" sub="Every companion has its own key. Revoking one locks out that device only — nothing else re-pairs.">
         {devices === null && (
-          <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>
+          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>
             Device list unavailable — is the daemon reachable?
           </div>
         )}
         {devices?.length === 0 && (
-          <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>
+          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>
             No devices paired yet. Create a pairing link below.
           </div>
         )}
@@ -2115,7 +2115,7 @@ function DevicesPanel() {
             ) : (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 {d.revoked ? (
-                  <span style={{ fontSize: 11, fontWeight: 600, color: colors.danger }}>REVOKED</span>
+                  <span style={{ fontSize: textSize.micro, fontWeight: 600, color: colors.danger }}>REVOKED</span>
                 ) : (
                   <>
                     <Button
@@ -2184,7 +2184,7 @@ function DevicesPanel() {
                   .finally(() => setAccessBusy(false));
               }}
             />
-            <span style={{ fontSize: 12, color: colors.textMuted }}>
+            <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>
               {accessBusy ? 'Applying…'
                 : access?.enabled ? `Live at ${access.serve_url}`
                 : 'This machine only'}
@@ -2193,7 +2193,7 @@ function DevicesPanel() {
         </Row>
         <Row label="Tailnet" hint={tailnet?.running ? 'Detected — address filled in automatically.' : tailnet?.installed ? 'Tailscale is installed but not connected.' : 'Tailscale not detected on this machine.'}>
           {tailnet?.running ? (
-            <span style={{ fontSize: 12, color: colors.cyan }}>● Connected{tailnet.magic_dns_name ? ` — ${tailnet.magic_dns_name}` : ''}</span>
+            <span style={{ fontSize: textSize.caption, color: colors.cyan }}>● Connected{tailnet.magic_dns_name ? ` — ${tailnet.magic_dns_name}` : ''}</span>
           ) : (
             <Button
               colors={colors}
@@ -2244,7 +2244,7 @@ function DevicesPanel() {
           </div>
         </Row>
         {pairError && (
-          <div style={{ fontSize: 12, color: colors.danger, padding: '2px 0 6px' }}>{pairError}</div>
+          <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '2px 0 6px' }}>{pairError}</div>
         )}
         <Row label="Pairing URL" hint={claim
           ? `Open this on the new device's browser. One-time: it goes inert after first use, and expires ${new Date(claim.expiresAt).toLocaleTimeString()}.`
@@ -2258,12 +2258,12 @@ function DevicesPanel() {
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, minWidth: 0 }}>
               <div style={{ flexShrink: 0, textAlign: 'center' }}>
                 <PairingQrCode value={pairingUrl} size={196} />
-                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 6 }}>
                   Scan with your iPhone
                 </div>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0, paddingTop: 2 }}>
-                <span style={{ fontSize: 11, color: colors.textDim }}>
+                <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
                   Open Permagent on the phone and scan this. No typing.
                 </span>
                 <code style={{
@@ -2295,14 +2295,14 @@ function DevicesPanel() {
               </div>
             </div>
           ) : (
-            <span style={{ fontSize: 12, color: colors.textDim }}>
+            <span style={{ fontSize: textSize.caption, color: colors.textDim }}>
               No active pairing link — name the device above and create one; the
               QR code to scan appears here.
             </span>
           )}
         </Row>
         <Row label="Security" hint="The URL carries a one-time claim code — the new device swaps it for its own key on first load, so the link stops being a secret after one use. Each device's key can be revoked above without touching the others.">
-          <span style={{ fontSize: 12, color: colors.textMuted }}>Links are single-use and expire in 10 minutes.</span>
+          <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>Links are single-use and expire in 10 minutes.</span>
         </Row>
       </Section>
     </div>
@@ -2367,7 +2367,7 @@ export function SettingsView() {
                     '--pa-btn-radius': `${radius.md}px`,
                     '--pa-btn-weight': on ? 600 : 500,
                     width: '100%', justifyContent: 'flex-start', textAlign: 'left',
-                    fontFamily: font.body, fontSize: 13,
+                    fontFamily: font.body, fontSize: textSize.small,
                   } as CSSProperties}
                 >
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>

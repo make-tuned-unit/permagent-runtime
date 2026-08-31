@@ -4,7 +4,7 @@ import { ROSTER } from './agents';
 import { useOrchestratorName } from './shared/useOrchestratorName';
 import { useCommandCenter } from '../../lib/store';
 import { agentIdForWorldAgent } from '../../lib/worldAgentIds';
-import { radius } from '../../styles/tokens';
+import { radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -46,7 +46,7 @@ export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps
         flashSuccess={false}
         style={triggerVars}
       >
-        <span style={{ fontSize: 11, color: COLORS.primaryMarble }}>
+        <span style={{ fontSize: textSize.micro, color: COLORS.primaryMarble }}>
           {selected ? displayName(selected.id, selected.name) : 'Select agent'}
         </span>
         <span style={{ fontSize: 10, color: '#6B7280', marginLeft: 6 }}>
@@ -158,6 +158,6 @@ const itemVars = {
   justifyContent: 'space-between',
   width: '100%',
   fontFamily: 'monospace',
-  fontSize: 11,
+  fontSize: textSize.micro,
   textAlign: 'left',
 } as CSSProperties;

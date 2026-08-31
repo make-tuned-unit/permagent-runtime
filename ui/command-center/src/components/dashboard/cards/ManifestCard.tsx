@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
-import { radius, font } from '../../../styles/tokens';
+import { radius, font, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Stat, SectionTitle, EmptyNote } from '../atoms';
 import { apiFetch } from '../../../lib/api';
@@ -190,7 +190,7 @@ export function ManifestCard({ manifest }: Props) {
         <SectionTitle title={manifest.name} />
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 10 }}>
           {data?.note && (
-            <div style={{ fontFamily: font.body, fontSize: 12, color: colors.textDim, textAlign: 'center' }}>
+            <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textDim, textAlign: 'center' }}>
               {data.note}
             </div>
           )}
@@ -206,7 +206,7 @@ export function ManifestCard({ manifest }: Props) {
                 style={{
                   flex: 1, padding: '6px 10px', borderRadius: radius.sm,
                   border: `1px solid ${colors.border}`, background: colors.bg,
-                  color: colors.text, fontFamily: font.body, fontSize: 12, outline: 'none',
+                  color: colors.text, fontFamily: font.body, fontSize: textSize.caption, outline: 'none',
                 }}
               />
               <Button
@@ -218,7 +218,7 @@ export function ManifestCard({ manifest }: Props) {
                 style={{
                   '--pa-btn-pad': '6px 12px',
                   '--pa-btn-radius': `${radius.sm}px`,
-                  fontFamily: font.body, fontSize: 12,
+                  fontFamily: font.body, fontSize: textSize.caption,
                 } as CSSProperties}
               >
                 {configBusy ? '…' : 'Set'}
@@ -240,7 +240,7 @@ export function ManifestCard({ manifest }: Props) {
                 '--pa-btn-pad': '6px 14px',
                 '--pa-btn-radius': `${radius.md}px`,
                 '--pa-btn-weight': 600,
-                alignSelf: 'center', fontFamily: font.body, fontSize: 12,
+                alignSelf: 'center', fontFamily: font.body, fontSize: textSize.caption,
               } as CSSProperties}
             >
               {manifest.configure!.label}
@@ -386,8 +386,8 @@ export function ManifestCard({ manifest }: Props) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {cells.map((c, i) => (
               <div key={i} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
-                <span style={{ fontFamily: font.body, fontSize: 12, color: colors.textDim }}>{c.label}</span>
-                <span style={{ fontFamily: font.body, fontSize: 13, fontWeight: 600, color: c.accent ? colors.cyan : colors.text }}>{c.value}</span>
+                <span style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textDim }}>{c.label}</span>
+                <span style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: c.accent ? colors.cyan : colors.text }}>{c.value}</span>
               </div>
             ))}
           </div>
@@ -398,11 +398,11 @@ export function ManifestCard({ manifest }: Props) {
             {cells.map((c, i) => (
               <div key={i} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, padding: '6px 0', borderBottom: i < cells.length - 1 ? `1px solid ${colors.border}` : 'none' }}>
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontFamily: font.body, fontSize: 13, fontWeight: 500, color: colors.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.label}</div>
-                  {c.sub && <div style={{ fontFamily: font.body, fontSize: 11, color: colors.textDim, marginTop: 1 }}>{c.sub}</div>}
+                  <div style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.label}</div>
+                  {c.sub && <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, marginTop: 1 }}>{c.sub}</div>}
                 </div>
                 {c.value !== '' && c.value != null && (
-                  <span style={{ fontFamily: font.body, fontSize: 12, color: c.accent ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{c.value}</span>
+                  <span style={{ fontFamily: font.body, fontSize: textSize.caption, color: c.accent ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{c.value}</span>
                 )}
               </div>
             ))}

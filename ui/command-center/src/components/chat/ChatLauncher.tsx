@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
-import { ease, font, radius } from '../../styles/tokens';
+import { ease, font, radius, textSize } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
@@ -221,7 +221,7 @@ export function ChatLauncher() {
       // (the hardcoded black glow was invisible on the light themes).
       border: `1px solid ${hovered ? colors.cyan : colors.borderHi}`,
       color: colors.cyan, cursor: 'pointer',
-      fontFamily: font.body, fontSize: 13, fontWeight: 600,
+      fontFamily: font.body, fontSize: textSize.small, fontWeight: 600,
       boxShadow: colors.cardShadow,
       // Tactile feedback: lift on hover, settle on press.
       transform: pressed ? 'scale(0.97)' : hovered ? 'translateY(-2px)' : 'translateY(0)',

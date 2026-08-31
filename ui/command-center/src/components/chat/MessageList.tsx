@@ -1,7 +1,7 @@
 import { useRef, useEffect, useMemo, useState, useCallback, type CSSProperties } from 'react';
 import { FiChevronDown, FiMessageSquare, FiVolume2 } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { MessageBubble } from './MessageBubble';
@@ -186,7 +186,7 @@ export function MessageList() {
                 '--pa-btn-pad': '0',
                 '--pa-btn-weight': 600,
                 fontFamily: font.body,
-                fontSize: 12,
+                fontSize: textSize.caption,
               } as CSSProperties}
             >
               Retry
@@ -263,7 +263,7 @@ export function MessageList() {
               '--pa-btn-pad': '4px 12px',
               '--pa-btn-radius': `${radius.pill}px`,
               fontFamily: font.mono,
-              fontSize: 11,
+              fontSize: textSize.micro,
               gap: 4,
               boxShadow: colors.cardShadow,
             } as CSSProperties}

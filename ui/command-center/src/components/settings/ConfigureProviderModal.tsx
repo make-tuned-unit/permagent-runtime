@@ -4,7 +4,7 @@ import { api } from '../../lib/api';
 import type { SecretSourcesResponse } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { ProviderInfo } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import {
@@ -611,7 +611,7 @@ export function ConfigureProviderModal({
                 '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
                 '--pa-btn-pad': '6px 16px',
                 '--pa-btn-radius': `${radius.xs}px`,
-                fontSize: 14,
+                fontSize: textSize.body,
               } as CSSProperties}
             >
               Cancel
@@ -626,7 +626,7 @@ export function ConfigureProviderModal({
                 '--pa-btn-pad': '6px 16px',
                 '--pa-btn-radius': `${radius.xs}px`,
                 fontFamily: font.display,
-                fontSize: 14,
+                fontSize: textSize.body,
               } as CSSProperties}
             >
               {saving ? 'Saving...' : 'Save'}

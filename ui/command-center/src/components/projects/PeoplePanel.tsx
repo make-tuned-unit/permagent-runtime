@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -106,7 +106,7 @@ export function PeoplePanel({ project }: { project: Project }) {
             '--pa-btn-pad': '0',
             '--pa-btn-weight': 'inherit',
             fontFamily: font.body,
-            fontSize: 11,
+            fontSize: textSize.micro,
           } as CSSProperties}
         >
           {picking ? 'Close' : '+ Associate'}
@@ -122,16 +122,16 @@ export function PeoplePanel({ project }: { project: Project }) {
       )}
 
       {associateError && (
-        <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>
           {associateError}
         </div>
       )}
 
       {status === 'loading' ? (
-        <div style={{ fontSize: 11, color: colors.textDim }}>Loading people…</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading people…</div>
       ) : status === 'error' ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load people.</span>
+          <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load people.</span>
           <Button
             colors={colors}
             variant="bare"
@@ -143,14 +143,14 @@ export function PeoplePanel({ project }: { project: Project }) {
               '--pa-btn-pad': '0',
               '--pa-btn-weight': 600,
               fontFamily: font.body,
-              fontSize: 11,
+              fontSize: textSize.micro,
             } as CSSProperties}
           >
             Retry
           </Button>
         </div>
       ) : people.length === 0 ? (
-        <div style={{ fontSize: 11, color: colors.textDim }}>No people associated yet.</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>No people associated yet.</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {people.map(p => (
@@ -183,9 +183,9 @@ export function PeoplePanel({ project }: { project: Project }) {
                 fontFamily: font.body,
               } as CSSProperties}
             >
-              <span style={{ fontSize: 12, color: colors.text, flexShrink: 0 }}>{p.display_name}</span>
+              <span style={{ fontSize: textSize.caption, color: colors.text, flexShrink: 0 }}>{p.display_name}</span>
               <span style={{
-                fontSize: 11, color: colors.textDim, minWidth: 0,
+                fontSize: textSize.micro, color: colors.textDim, minWidth: 0,
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>
                 {p.project_role || p.role || ''}
@@ -196,11 +196,11 @@ export function PeoplePanel({ project }: { project: Project }) {
       )}
       {meetings.length > 0 && (
         <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '.04em' }}>
             Meetings
           </div>
           {meetings.slice(0, 8).map(m => (
-            <div key={m.id} style={{ fontSize: 11, color: colors.text, padding: '4px 0', borderBottom: `1px solid ${colors.border}` }}>
+            <div key={m.id} style={{ fontSize: textSize.micro, color: colors.text, padding: '4px 0', borderBottom: `1px solid ${colors.border}` }}>
               <span style={{ fontWeight: 600 }}>{m.display_name}</span>
               <span style={{ color: colors.textDim }}> · {m.title}</span>
             </div>
@@ -247,17 +247,17 @@ function AssociatePicker({ colors, excludeIds, onPick }: {
         onChange={e => setQuery(e.target.value)}
         placeholder="Search people…"
         style={{
-          fontSize: 12, padding: '6px 9px', borderRadius: 7,
+          fontSize: textSize.caption, padding: '6px 9px', borderRadius: 7,
           background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
           color: colors.text, fontFamily: font.body, outline: 'none',
         }}
       />
       {status === 'loading' ? (
-        <div style={{ fontSize: 11, color: colors.textDim, padding: '2px 2px' }}>Searching…</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, padding: '2px 2px' }}>Searching…</div>
       ) : status === 'error' ? (
-        <div style={{ fontSize: 11, color: colors.danger, padding: '2px 2px' }}>Couldn't search the directory.</div>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, padding: '2px 2px' }}>Couldn't search the directory.</div>
       ) : candidates.length === 0 ? (
-        <div style={{ fontSize: 11, color: colors.textDim, padding: '2px 2px' }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, padding: '2px 2px' }}>
           {results.length === 0 ? 'No people in the directory.' : 'No more to add.'}
         </div>
       ) : (
@@ -284,9 +284,9 @@ function AssociatePicker({ colors, excludeIds, onPick }: {
                 fontFamily: font.body,
               } as CSSProperties}
             >
-              <span style={{ fontSize: 12, flexShrink: 0 }}>{p.display_name}</span>
+              <span style={{ fontSize: textSize.caption, flexShrink: 0 }}>{p.display_name}</span>
               <span style={{
-                fontSize: 11, color: colors.textDim, minWidth: 0,
+                fontSize: textSize.micro, color: colors.textDim, minWidth: 0,
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>
                 {[p.role, p.company].filter(Boolean).join(' · ')}

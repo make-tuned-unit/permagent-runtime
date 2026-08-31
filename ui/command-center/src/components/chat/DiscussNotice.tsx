@@ -15,7 +15,7 @@
  */
 
 import { type CSSProperties } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
 import { Button } from '../common/Button';
@@ -43,7 +43,7 @@ export function DiscussNotice() {
         border: `1px solid ${accent}`,
         background: notice.tone === 'error' ? 'transparent' : colors.cyanSoft,
         fontFamily: font.body,
-        fontSize: 11,
+        fontSize: textSize.micro,
         lineHeight: 1.5,
         color: notice.tone === 'error' ? colors.danger : colors.textMuted,
       }}
@@ -60,7 +60,7 @@ export function DiscussNotice() {
           '--pa-btn-fg-hover': colors.text,
           '--pa-btn-bg-hover': 'transparent',
           '--pa-btn-pad': '0',
-          flexShrink: 0, fontSize: 13, lineHeight: 1,
+          flexShrink: 0, fontSize: textSize.small, lineHeight: 1,
         } as CSSProperties}
       >
         ×

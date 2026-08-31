@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'r
 import { FiActivity, FiBookOpen, FiCheckSquare, FiFileText, FiRefreshCw } from 'react-icons/fi';
 import { api, apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -87,10 +87,10 @@ export function ActivityPanel({ project }: { project: Project }) {
         <FiRefreshCw size={12} />
       </Button>
     ) : undefined}>
-      {status === 'loading' && <div style={{ fontSize: 11, color: colors.textDim }}>Loading activity…</div>}
+      {status === 'loading' && <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading activity…</div>}
       {status === 'error' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load activity.</span>
+          <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load activity.</span>
           <Button
             colors={colors}
             variant="bare"
@@ -102,7 +102,7 @@ export function ActivityPanel({ project }: { project: Project }) {
               '--pa-btn-pad': '0',
               '--pa-btn-weight': 600,
               fontFamily: font.body,
-              fontSize: 11,
+              fontSize: textSize.micro,
             } as CSSProperties}
           >
             Retry
@@ -110,7 +110,7 @@ export function ActivityPanel({ project }: { project: Project }) {
         </div>
       )}
       {status === 'ready' && items.length === 0 && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, color: colors.textDim }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: textSize.micro, color: colors.textDim }}>
           <FiActivity size={13} /> No project activity yet.
         </div>
       )}
@@ -120,8 +120,8 @@ export function ActivityPanel({ project }: { project: Project }) {
             <div key={item.id} style={{ display: 'flex', gap: 9, padding: '8px 10px', borderRadius: 7, background: rowVeil, border: `1px solid ${colors.border}` }}>
               <span style={{ color: colors.cyan, marginTop: 2, flexShrink: 0 }}>{icon(item.kind)}</span>
               <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontSize: 12, color: colors.text, fontWeight: 600 }}>{item.title}</div>
-                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.detail}</div>
+                <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>{item.title}</div>
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.detail}</div>
                 <div style={{ fontSize: 10, color: colors.textDim, marginTop: 3 }}>{formatActivityTime(item.timestamp)}</div>
               </div>
             </div>

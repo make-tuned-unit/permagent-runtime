@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { ease, font, radius, type ThemeColors } from '../../styles/tokens';
+import { ease, font, radius, type ThemeColors, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { PrimaryButton, GhostLink, Glass, Particles, Select, type SelectOption } from './atoms';
 import { Mobius } from '../mobius/Mobius';
@@ -342,10 +342,10 @@ export function MomentHardware({ onAdvance }: Props) {
               }} />
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
-              <span style={{ fontFamily: font.mono, fontSize: 11, color: colors.textMuted }}>
+              <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textMuted }}>
                 {pullStatus.length > 50 ? pullStatus.slice(0, 50) + '...' : pullStatus}
               </span>
-              <span style={{ fontFamily: font.mono, fontSize: 11, color: colors.cyan }}>
+              <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.cyan }}>
                 {pullProgress}%
               </span>
             </div>
@@ -409,10 +409,10 @@ function HwStat({ label, value }: { label: string; value: string }) {
   const { colors } = useTheme();
   return (
     <div style={{ textAlign: 'center' }}>
-      <div style={{ fontFamily: font.mono, fontSize: 11, color: colors.textMuted, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+      <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textMuted, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
         {label}
       </div>
-      <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text }}>
+      <div style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>
         {value}
       </div>
     </div>
@@ -425,11 +425,11 @@ const h1Style = (c: ThemeColors) => ({
 } as const);
 
 const subtitleStyle = (c: ThemeColors) => ({
-  fontFamily: font.body, fontSize: 14, color: c.textMuted,
+  fontFamily: font.body, fontSize: textSize.body, color: c.textMuted,
   marginBottom: 24, textAlign: 'center' as const, lineHeight: 1.6,
 } as const);
 
 const fineprint = (c: ThemeColors) => ({
-  fontFamily: font.body, fontSize: 12, color: c.textDim,
+  fontFamily: font.body, fontSize: textSize.caption, color: c.textDim,
   lineHeight: 1.5, textAlign: 'center' as const, margin: 0,
 } as const);

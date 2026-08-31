@@ -4,7 +4,7 @@ import { Terminal } from './Terminal';
 import { useTheme } from '../../styles/useTheme';
 import { registerDropZone } from '../../lib/native-drag-drop';
 import { resolvePtyInjection } from './terminalDrop';
-import { font } from '../../styles/tokens';
+import { font, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { CycleTabsButton } from '../build/CycleTabsButton';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
@@ -516,7 +516,7 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
                 // above, so the hover rule keeps working.
                 borderWidth: '0 1px 0 0',
                 fontFamily: font.mono,
-                fontSize: 11,
+                fontSize: textSize.micro,
                 gap: 6,
               } as CSSProperties}
             >

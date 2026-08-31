@@ -4,7 +4,7 @@ import { api } from '../../lib/api';
 import type { SecretSourcesResponse } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { ProviderInfo } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { AddCustomProviderModal } from './AddCustomProviderModal';
@@ -156,7 +156,7 @@ export function ProvidersSection() {
                 data-testid={`providers-tab-${id}`}
                 onClick={() => setTab(id)}
                 style={{
-                  fontSize: 12, fontFamily: font.body,
+                  fontSize: textSize.caption, fontFamily: font.body,
                   '--pa-btn-pad': '5px 12px',
                   '--pa-btn-radius': `${radius.sm}px`,
                   '--pa-btn-border': 'transparent',

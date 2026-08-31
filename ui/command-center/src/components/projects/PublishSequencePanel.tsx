@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -123,7 +123,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
     '--pa-btn-radius': `${radius.sm}px`,
     '--pa-btn-weight': 600,
     fontFamily: font.body,
-    fontSize: 11,
+    fontSize: textSize.micro,
   } as CSSProperties);
   const tinyBtn: CSSProperties = {
     '--pa-btn-bg': 'rgba(255,255,255,0.03)',
@@ -137,7 +137,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
     // resting shape must not change under the migration.
     '--pa-btn-radius': '5px',
     fontFamily: font.body,
-    fontSize: 11,
+    fontSize: textSize.micro,
     lineHeight: 1,
   } as CSSProperties;
 
@@ -152,14 +152,14 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
     >
       {editing ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
             Ordered steps run after commit + push before the change is live.
             Commands may source secrets from the project's .env.local — never
             paste secret values here.
           </div>
           {draft.map((row, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 11, color: colors.textDim, width: 14, flexShrink: 0, textAlign: 'right' }}>
+              <span style={{ fontSize: textSize.micro, color: colors.textDim, width: 14, flexShrink: 0, textAlign: 'right' }}>
                 {i + 1}.
               </span>
               <input
@@ -171,7 +171,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
                 style={{
                   flex: 1, minWidth: 0, padding: '6px 8px', borderRadius: radius.sm,
                   background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
-                  color: colors.text, fontFamily: font.mono, fontSize: 11, outline: 'none',
+                  color: colors.text, fontFamily: font.mono, fontSize: textSize.micro, outline: 'none',
                 }}
               />
               <input
@@ -183,7 +183,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
                 style={{
                   width: 62, flexShrink: 0, padding: '6px 8px', borderRadius: radius.sm,
                   background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
-                  color: colors.text, fontFamily: font.mono, fontSize: 11, outline: 'none',
+                  color: colors.text, fontFamily: font.mono, fontSize: textSize.micro, outline: 'none',
                 }}
               />
               <Button colors={colors} onClick={() => moveRow(i, -1)} disabled={saving || i === 0} aria-label={`Move step ${i + 1} up`} style={tinyBtn}>↑</Button>
@@ -207,25 +207,25 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
             </Button>
           </div>
           {saveError && (
-            <div style={{ fontSize: 11, color: colors.warning }}>{saveError}</div>
+            <div style={{ fontSize: textSize.micro, color: colors.warning }}>{saveError}</div>
           )}
         </div>
       ) : steps.length === 0 ? (
-        <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
           None — a git push is treated as live. If going live needs more
           (seed the prod DB, redeploy…), add the ordered steps here so agents
           stop reporting "pushed" as "live".
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
             After push, these run in order before the change is live:
           </div>
           {steps.map((s, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-              <span style={{ fontSize: 11, color: colors.textDim, flexShrink: 0 }}>{i + 1}.</span>
+              <span style={{ fontSize: textSize.micro, color: colors.textDim, flexShrink: 0 }}>{i + 1}.</span>
               <span style={{
-                fontFamily: font.mono, fontSize: 11, color: colors.text, minWidth: 0,
+                fontFamily: font.mono, fontSize: textSize.micro, color: colors.text, minWidth: 0,
                 overflowWrap: 'anywhere',
               }}>
                 {s.command}

@@ -6,7 +6,7 @@
  */
 
 import { useState } from 'react';
-import { font, radius, tabularNums } from '../../../styles/tokens';
+import { font, radius, tabularNums, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { useDecisions } from '../decisions/useDecisions';
 import { DecisionInbox } from '../decisions/DecisionInbox';
@@ -64,7 +64,7 @@ export function DecisionsCard({ activeCount }: Props = {}) {
       >
         {/* Kicker */}
         <div style={{
-          fontFamily: font.body, fontSize: 11, fontWeight: 600,
+          fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600,
           letterSpacing: '0.10em', textTransform: 'uppercase',
           color: colors.textDim, marginBottom: 6,
         }}>
@@ -78,9 +78,9 @@ export function DecisionsCard({ activeCount }: Props = {}) {
             <span style={{
               width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
               background: colors.success + '26', color: colors.success,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: textSize.micro,
             }}>✓</span>
-            <span style={{ fontSize: 12, color: colors.textMuted }}>
+            <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>
               All clear — {goals} goal{goals === 1 ? '' : 's'} in flight
             </span>
           </div>
@@ -88,33 +88,33 @@ export function DecisionsCard({ activeCount }: Props = {}) {
           <>
             {/* Stat-style count */}
             <div style={{
-              fontFamily: font.display, fontSize: 32, fontWeight: 600,
+              fontFamily: font.display, fontSize: textSize.display, fontWeight: 600,
               letterSpacing: '-0.02em', ...tabularNums,
               color: count > 0 ? colors.cyan : colors.text,
             }}>
               {data === null ? '—' : count}
             </div>
-            <div style={{ fontFamily: font.body, fontSize: 13, fontWeight: 600, color: colors.text, marginTop: 2 }}>
+            <div style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text, marginTop: 2 }}>
               {data === null
                 ? `Checking with ${agentName}…`
                 : `${agentName} needs ${count} answer${count === 1 ? '' : 's'}`}
             </div>
             {oldest && (
-              <div style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, marginTop: 6 }}>
+              <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, marginTop: 6 }}>
                 oldest waiting {formatAge(oldest)}
               </div>
             )}
             {attention > 0 && (
-              <div style={{ fontFamily: font.body, fontSize: 11, color: '#e8a33d', marginTop: 6 }}>
+              <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: '#e8a33d', marginTop: 6 }}>
                 {attention} parked goal{attention === 1 ? '' : 's'} need{attention === 1 ? 's' : ''} your attention
               </div>
             )}
             {handled > 0 && (
-              <div style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted, marginTop: 14 }}>
+              <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginTop: 14 }}>
                 {agentName} handled {handled} routine item{handled === 1 ? '' : 's'} overnight →
               </div>
             )}
-            <div style={{ marginTop: 'auto', fontFamily: font.body, fontSize: 12, fontWeight: 500, color: colors.cyan }}>
+            <div style={{ marginTop: 'auto', fontFamily: font.body, fontSize: textSize.caption, fontWeight: 500, color: colors.cyan }}>
               Review →
             </div>
           </>

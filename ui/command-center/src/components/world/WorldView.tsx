@@ -24,7 +24,7 @@ import { AgentPicker } from './AgentPicker';
 import { PerfProbe, perfProbeEnabled, devDprOverride } from './shared/PerfProbe';
 import { useWorldVisibility } from './atmosphere/useWorldVisibility';
 import { installDevHarness } from './atmosphere/devHarness';
-import { getReduceMotion, radius } from '../../styles/tokens';
+import { getReduceMotion, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { TourMode } from './camera/TourMode';
@@ -68,7 +68,7 @@ function LoadingShimmer() {
         background: COLORS.deepVoid,
         fontFamily: 'monospace',
         color: COLORS.neonCyan,
-        fontSize: 14,
+        fontSize: textSize.body,
       }}
     >
       <div style={{ textAlign: 'center' }}>
@@ -581,7 +581,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
             // `.pa-btn`'s press scale cannot apply to this one button.
             transform: 'translateX(-50%)',
             fontFamily: 'JetBrains Mono, monospace',
-            fontSize: 11,
+            fontSize: textSize.micro,
             letterSpacing: '0.18em',
             boxShadow: `0 0 18px ${COLORS.neonCyan}33`,
             backdropFilter: 'blur(4px)',

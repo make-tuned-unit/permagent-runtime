@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { font, ease, duration, radius } from '../../styles/tokens';
+import { font, ease, duration, radius, textSize } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, Particles, WizardHeading, WizardSubhead } from './atoms';
 import { useTheme } from '../../styles/useTheme';
@@ -45,10 +45,10 @@ export function MomentCalibration({ onAdvance }: Props) {
                 boxShadow: active ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
                 textAlign: 'left', transition: `all ${duration.base}ms ${ease.out}`,
               }}>
-              <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text, marginBottom: 4 }}>
+              <div style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text, marginBottom: 4 }}>
                 {p.label}
               </div>
-              <div style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted, lineHeight: 1.4 }}>
+              <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.4 }}>
                 {p.traits.join(' · ')}
               </div>
             </button>

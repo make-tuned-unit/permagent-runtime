@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useState, type CSSProperties } from 'react';
-import { font, radius, type } from '../../styles/tokens';
+import { font, radius, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
@@ -210,7 +210,7 @@ function ModeToggle({ mode, onChange }: { mode: PeopleMode; onChange: (m: People
               '--pa-btn-pad': '3px 11px',
               '--pa-btn-radius': `${radius.sm}px`,
               '--pa-btn-weight': active ? 600 : 500,
-              fontFamily: font.body, fontSize: 12,
+              fontFamily: font.body, fontSize: textSize.caption,
             } as CSSProperties}
           >
             {t.label}

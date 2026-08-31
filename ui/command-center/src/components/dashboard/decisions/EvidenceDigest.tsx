@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useId, useState, type CSSProperties } from 'react';
-import { font, radius } from '../../../styles/tokens';
+import { font, radius, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { decisionsClient } from './client';
 import type { DispatchEvidenceData, EvidenceDigestData, IndependentReviewDetail } from './types';
@@ -46,14 +46,14 @@ export function EvidenceDigest({ projectId, goalId }: { projectId: string; goalI
 
   if (state.kind === 'loading') {
     return (
-      <div style={{ marginTop: 12, fontSize: 12, color: colors.textDim, fontFamily: font.body }}>
+      <div style={{ marginTop: 12, fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body }}>
         Loading evidence…
       </div>
     );
   }
   if (state.kind === 'none') {
     return (
-      <div style={{ marginTop: 12, fontSize: 12, color: colors.textDim, fontFamily: font.body }}>
+      <div style={{ marginTop: 12, fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body }}>
         No verification evidence has been recorded for this item yet.
       </div>
     );
@@ -85,7 +85,7 @@ function DispatchEvidenceView({ ev }: { ev: DispatchEvidenceData }) {
     <div style={{ marginTop: 12 }}>
       <div style={{
         borderRadius: radius.sm, border: `1px solid ${colors.border}`,
-        padding: '10px 14px', fontFamily: font.body, fontSize: 12,
+        padding: '10px 14px', fontFamily: font.body, fontSize: textSize.caption,
         color: colors.textMuted, display: 'flex', flexDirection: 'column', gap: 6,
       }}>
         <SummaryRow ok={ev.commits.length > 0} text={headline} />
@@ -110,7 +110,7 @@ function DispatchEvidenceView({ ev }: { ev: DispatchEvidenceData }) {
             '--pa-btn-radius': '0',
             '--pa-btn-weight': 400,
             alignSelf: 'flex-start',
-            fontSize: 11, fontFamily: font.body,
+            fontSize: textSize.micro, fontFamily: font.body,
           } as CSSProperties}
         >
           {showDetails ? 'Hide proof of work ▾' : 'Show proof of work ▸'}
@@ -121,7 +121,7 @@ function DispatchEvidenceView({ ev }: { ev: DispatchEvidenceData }) {
         <pre id={detailsId} style={{
           margin: '8px 0 0', borderRadius: radius.sm,
           background: colors.codeBg, padding: '12px 14px',
-          fontFamily: font.mono, fontSize: 11, lineHeight: 1.6,
+          fontFamily: font.mono, fontSize: textSize.micro, lineHeight: 1.6,
           color: colors.textMuted,
           whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
         }}>
@@ -172,7 +172,7 @@ function DigestView({ digest }: { digest: EvidenceDigestData }) {
       {/* Plain-language summary layer — server-built one-liners, verbatim */}
       <div style={{
         borderRadius: radius.sm, border: `1px solid ${colors.border}`,
-        padding: '10px 14px', fontFamily: font.body, fontSize: 12,
+        padding: '10px 14px', fontFamily: font.body, fontSize: textSize.caption,
         color: colors.textMuted, display: 'flex', flexDirection: 'column', gap: 6,
       }}>
         <SummaryRow ok={checksOk} text={cs.one_line} />
@@ -201,7 +201,7 @@ function DigestView({ digest }: { digest: EvidenceDigestData }) {
             '--pa-btn-radius': '0',
             '--pa-btn-weight': 400,
             alignSelf: 'flex-start',
-            fontSize: 11, fontFamily: font.body,
+            fontSize: textSize.micro, fontFamily: font.body,
           } as CSSProperties}
         >
           {showDetails ? 'Hide details ▾' : 'Show details ▸'}
@@ -213,7 +213,7 @@ function DigestView({ digest }: { digest: EvidenceDigestData }) {
         <pre id={detailsId} style={{
           margin: '8px 0 0', borderRadius: radius.sm,
           background: colors.codeBg, padding: '12px 14px',
-          fontFamily: font.mono, fontSize: 11, lineHeight: 1.6,
+          fontFamily: font.mono, fontSize: textSize.micro, lineHeight: 1.6,
           color: colors.textMuted,
           whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
         }}>

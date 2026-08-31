@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type CSSProperties } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useProjects, Project } from './useProjects';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
@@ -104,17 +104,17 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
           zIndex: 50, padding: '4px 0',
         }}>
           {loading && (
-            <div style={{ padding: '10px 12px', fontSize: 11, color: colors.textDim, fontFamily: font.body }}>
+            <div style={{ padding: '10px 12px', fontSize: textSize.micro, color: colors.textDim, fontFamily: font.body }}>
               Loading your projects…
             </div>
           )}
 
           {!loading && error && (
             <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: colors.danger, fontFamily: font.body }}>
+              <div style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.danger, fontFamily: font.body }}>
                 Couldn't load your projects
               </div>
-              <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.body, lineHeight: 1.45 }}>
+              <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.body, lineHeight: 1.45 }}>
                 The projects service didn't respond. Check that the daemon is running.
               </div>
               <Button colors={colors} type="button" onClick={() => retry()}>Retry</Button>
@@ -123,7 +123,7 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
 
           {!loading && !error && projects.length === 0 && (
             <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
-              <div style={{ fontSize: 12, color: colors.textMuted, fontFamily: font.body, lineHeight: 1.45 }}>
+              <div style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: font.body, lineHeight: 1.45 }}>
                 No active projects yet — add one in Projects.
               </div>
               <Button
@@ -211,7 +211,7 @@ project, onLaunch, onVisit }: {
           '--pa-btn-radius': `${radius.sm}px`,
           display: 'flex', width: '100%', textAlign: 'left',
           justifyContent: 'flex-start', gap: 8,
-          fontFamily: font.body, fontSize: 12,
+          fontFamily: font.body, fontSize: textSize.caption,
         } as CSSProperties}
       >
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

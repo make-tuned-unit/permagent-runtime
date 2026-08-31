@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -8,7 +8,7 @@ export function H1({ children, sub }: { children: React.ReactNode; sub?: string 
   return (
     <div style={{ marginBottom: 28 }}>
       <div style={{ fontFamily: font.display, fontSize: 24, fontWeight: 600, letterSpacing: '-0.02em', color: colors.text }}>{children}</div>
-      {sub && <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 6, maxWidth: 580, lineHeight: 1.55 }}>{sub}</div>}
+      {sub && <div style={{ fontSize: textSize.small, color: colors.textMuted, marginTop: 6, maxWidth: 580, lineHeight: 1.55 }}>{sub}</div>}
     </div>
   );
 }
@@ -17,8 +17,8 @@ export function Section({ title, sub, children }: { title: string; sub?: string;
   const { colors } = useTheme();
   return (
     <div style={{ marginBottom: 28, padding: 24, borderRadius: radius.md, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
-      <div style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: sub ? 4 : 16 }}>{title}</div>
-      {sub && <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 18, lineHeight: 1.5 }}>{sub}</div>}
+      <div style={{ fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: sub ? 4 : 16 }}>{title}</div>
+      {sub && <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: 18, lineHeight: 1.5 }}>{sub}</div>}
       {children}
     </div>
   );
@@ -29,8 +29,8 @@ export function Row({ label, hint, children }: { label: string; hint?: string; c
   return (
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 24, padding: '14px 0', borderTop: `1px solid ${colors.border}` }}>
       <div style={{ width: 200, flexShrink: 0, paddingTop: 6 }}>
-        <div style={{ fontSize: 13, fontWeight: 500, color: colors.text }}>{label}</div>
-        {hint && <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>{hint}</div>}
+        <div style={{ fontSize: textSize.small, fontWeight: 500, color: colors.text }}>{label}</div>
+        {hint && <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>{hint}</div>}
       </div>
       <div style={{ flex: 1 }}>{children}</div>
     </div>
@@ -82,7 +82,7 @@ export function Chip({ on, onClick, children }: { on: boolean; onClick?: () => v
         '--pa-btn-radius': `${radius.pill}px`,
         '--pa-btn-weight': 500,
         fontFamily: font.body,
-        fontSize: 12,
+        fontSize: textSize.caption,
       } as CSSProperties}
     >
       {children}
@@ -104,7 +104,7 @@ export function Slider({ value, onChange, min = 0, max = 100, suffix, disabled =
       <input type="range" min={min} max={max} value={value} disabled={disabled}
         onChange={e => onChange?.(Number(e.target.value))}
         style={{ flex: 1, accentColor: colors.cyan, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.55 : 1 }} />
-      <span style={{ fontFamily: font.mono, fontSize: 12, color: colors.textMuted, minWidth: 50, textAlign: 'right' }}>{value}{suffix}</span>
+      <span style={{ fontFamily: font.mono, fontSize: textSize.caption, color: colors.textMuted, minWidth: 50, textAlign: 'right' }}>{value}{suffix}</span>
     </div>
   );
 }
@@ -114,7 +114,7 @@ export function Kbd({ children }: { children: React.ReactNode }) {
   return (
     <span style={{
       display: 'inline-block', padding: '2px 7px',
-      fontFamily: font.mono, fontSize: 11, color: colors.text,
+      fontFamily: font.mono, fontSize: textSize.micro, color: colors.text,
       background: colors.border,
       border: `1px solid ${colors.border}`,
       borderRadius: 5, minWidth: 22, textAlign: 'center',
@@ -144,7 +144,7 @@ export function SectionLabel({ children }: { children: React.ReactNode }) {
   const { colors } = useTheme();
   return (
     <div style={{
-      fontFamily: font.body, fontSize: 11, fontWeight: 600,
+      fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600,
       letterSpacing: '0.10em', textTransform: 'uppercase', color: colors.textDim,
     }}>
       {children}
@@ -163,11 +163,11 @@ export function StatRow({ left, sub, right }: { left: React.ReactNode; sub?: Rea
       background: colors.bgDeeper, border: `1px solid ${colors.border}`,
     }}>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {left}
         </div>
         {sub != null && (
-          <div style={{ fontSize: 11, color: colors.textMuted, fontFamily: font.mono, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {sub}
           </div>
         )}
@@ -204,7 +204,7 @@ export function SaveButton({ onClick, disabled, saving }: {
         '--pa-btn-pad': '8px 20px',
         '--pa-btn-radius': `${radius.md}px`,
         fontFamily: font.body,
-        fontSize: 13,
+        fontSize: textSize.small,
       } as CSSProperties}
     >
       {saving ? 'Saving...' : 'Save'}

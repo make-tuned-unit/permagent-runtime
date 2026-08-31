@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { ease, font, radius } from '../../styles/tokens';
+import { ease, font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { api, apiFetch } from '../../lib/api';
@@ -90,7 +90,7 @@ const segmentedTab = (colors: ThemeColors, selected: boolean): CSSProperties => 
   '--pa-btn-pad': '5px 12px',
   '--pa-btn-radius': `${radius.sm}px`,
   '--pa-btn-weight': selected ? 600 : 500,
-  fontSize: 12,
+  fontSize: textSize.caption,
   fontFamily: font.body,
   outline: 'none',
 } as CSSProperties);
@@ -677,7 +677,7 @@ export function GrowView() {
           aria-label="Select project"
           style={{
             background: colors.bgDeeper, color: colors.text, border: `1px solid ${colors.border}`,
-            borderRadius: radius.md, padding: '6px 10px', fontSize: 13, fontFamily: font.body,
+            borderRadius: radius.md, padding: '6px 10px', fontSize: textSize.small, fontFamily: font.body,
           }}
         >
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -720,12 +720,12 @@ export function GrowView() {
           {lens === 'strategy' && (
           <section>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '0 0 12px' }}>
-              <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Go-to-market strategy</h3>
+              <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Go-to-market strategy</h3>
               <Button
                 colors={colors}
                 onClick={() => send(runAllPrompt(active.name))}
                 title={`${agentName} researches every pillar and fills these cards with the results`}
-                style={{ ...growAccent(colors, '6px 14px'), '--pa-btn-weight': 600, fontSize: 12 } as CSSProperties}
+                style={{ ...growAccent(colors, '6px 14px'), '--pa-btn-weight': 600, fontSize: textSize.caption } as CSSProperties}
               >✦ Generate</Button>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
@@ -754,7 +754,7 @@ export function GrowView() {
           {lens === 'calendar' && (
           <section>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 12px' }}>
-              <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Content calendar</h3>
+              <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Content calendar</h3>
               <span style={{ fontSize: 10, color: colors.textDim, background: colors.bgDeeper, padding: '1px 6px', borderRadius: radius.pill, fontVariantNumeric: 'tabular-nums' }}>{posts.length}</span>
               <div style={{ flex: 1 }} />
               <Button
@@ -772,7 +772,7 @@ export function GrowView() {
             <ProjectChannels projectId={active.id} colors={colors} />
             {postsMutationError && (
               <div role="alert" style={{
-                fontSize: 12, color: colors.danger, marginBottom: 10,
+                fontSize: textSize.caption, color: colors.danger, marginBottom: 10,
                 background: colors.bgDeeper, border: `1px solid ${colors.border}`,
                 borderRadius: radius.md, padding: '8px 10px',
               }}>
@@ -791,7 +791,7 @@ export function GrowView() {
             ) : posts.length === 0 ? (
               <div style={{
                 border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: 28,
-                textAlign: 'center', fontSize: 12, color: colors.textDim,
+                textAlign: 'center', fontSize: textSize.caption, color: colors.textDim,
               }}>
                 No posts yet. Draft one with {agentName} above — it is written in this project's voice, a still is generated, and Approve schedules it on this project's connected accounts when you are ready.
               </div>
@@ -808,7 +808,7 @@ export function GrowView() {
           )}
         </div>
       ) : (
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: colors.textDim, fontSize: 13 }}>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: colors.textDim, fontSize: textSize.small }}>
           Create a project in the Projects tab, then grow it here.
         </div>
       )}
@@ -877,20 +877,20 @@ function PillarCard({
   if (editing) {
     return (
       <div style={shell}>
-        <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text }}>{label}</div>
+        <div style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>{label}</div>
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           autoFocus
           rows={6}
           style={{
-            width: '100%', resize: 'vertical', fontSize: 12, lineHeight: 1.5,
+            width: '100%', resize: 'vertical', fontSize: textSize.caption, lineHeight: 1.5,
             fontFamily: font.body, color: colors.text, background: 'transparent',
             border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: 8,
             outline: 'none',
           }}
         />
-        {saveError && <span style={{ fontSize: 11, color: colors.danger }}>Couldn't save — try again.</span>}
+        {saveError && <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't save — try again.</span>}
         <div style={{ display: 'flex', gap: 8 }}>
           <Button colors={colors} onClick={() => commit()} disabled={saving} style={{ ...growAccent(colors), '--pa-btn-weight': 600 } as CSSProperties}>
             {saving ? 'Saving…' : 'Save'}
@@ -910,7 +910,7 @@ function PillarCard({
           stroke={saved ? colors.cyan : colors.textMuted} strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
           <path d={PILLAR_ICONS[pillarKey] ?? PILLAR_ICONS.value} />
         </svg>
-        <span style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text, flex: 1 }}>{label}</span>
+        <span style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text, flex: 1 }}>{label}</span>
         {saved && (
           <Button
             colors={colors}
@@ -925,7 +925,7 @@ function PillarCard({
       {saved ? (
         <>
           <div style={{
-            fontSize: 12, color: colors.text, lineHeight: 1.55,
+            fontSize: textSize.caption, color: colors.text, lineHeight: 1.55,
             whiteSpace: 'pre-wrap', overflowWrap: 'break-word',
           }}>{saved.content}</div>
 
@@ -963,8 +963,8 @@ function PillarCard({
         </>
       ) : (
         <>
-          <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, flex: 1 }}>{hint}</div>
-          <span style={{ fontSize: 11, color: colors.textDim, fontFamily: font.body }}>
+          <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, flex: 1 }}>{hint}</div>
+          <span style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.body }}>
             ✦ Generate fills this in
           </span>
         </>
@@ -991,14 +991,14 @@ function BrandCard({
     borderRadius: radius.lg, padding: 16, display: 'flex', flexDirection: 'column', gap: 10, minHeight: 120,
   };
   const field: CSSProperties = {
-    width: '100%', fontSize: 12, fontFamily: font.body, color: colors.text,
+    width: '100%', fontSize: textSize.caption, fontFamily: font.body, color: colors.text,
     background: colors.bgDeeper, border: `1px solid ${colors.border}`, borderRadius: radius.sm,
     padding: '6px 8px', boxSizing: 'border-box',
   };
   if (editing) {
     return (
       <div style={shell}>
-        <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text }}>Brand</div>
+        <div style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>Brand</div>
         <textarea value={draft.voice} onChange={(e) => setDraft({ ...draft, voice: e.target.value })} placeholder="Voice" rows={3} style={field} />
         <textarea value={draft.origin} onChange={(e) => setDraft({ ...draft, origin: e.target.value })} placeholder="Why this was built" rows={3} style={field} />
         <div style={{ display: 'flex', gap: 6 }}>
@@ -1036,15 +1036,15 @@ function BrandCard({
   return (
     <div style={shell}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text }}>Brand</div>
+        <div style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>Brand</div>
         <div style={{ flex: 1 }} />
         <Button colors={colors} type="button" onClick={onAsk} style={growChip()}>Ask {agentName}</Button>
         <Button colors={colors} type="button" onClick={() => { setDraft(brand); setEditing(true); }} style={growChip()}>Edit</Button>
       </div>
       {filled ? (
         <>
-          {brand.voice && <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{brand.voice}</div>}
-          {brand.origin && <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{brand.origin}</div>}
+          {brand.voice && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>{brand.voice}</div>}
+          {brand.origin && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>{brand.origin}</div>}
           <div style={{ display: 'flex', gap: 6 }}>
             {[['bg', brand.bg], ['fg', brand.fg], ['accent', brand.accent]].filter(([, v]) => v).map(([k, v]) => (
               <span key={k} style={{ fontSize: 10, fontFamily: font.mono, color: colors.textDim }}>{k} {v}</span>
@@ -1052,7 +1052,7 @@ function BrandCard({
           </div>
         </>
       ) : (
-        <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>
           Voice, palette, and why this project was built. Empty until you save a kit for this project — nothing is shared across projects.
         </div>
       )}
@@ -1092,7 +1092,7 @@ function PostizConnect({ colors }: { colors: ThemeColors }) {
       .catch(() => setConfigured(false));
   }, []);
   const field: CSSProperties = {
-    fontSize: 11, fontFamily: font.mono, color: colors.text, background: colors.bgDeeper,
+    fontSize: textSize.micro, fontFamily: font.mono, color: colors.text, background: colors.bgDeeper,
     border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '4px 6px',
   };
   const save = async () => {
@@ -1109,7 +1109,7 @@ function PostizConnect({ colors }: { colors: ThemeColors }) {
     } finally { setBusy(false); }
   };
   return (
-    <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 8 }}>
       Posting uses your Postiz account (Cloud by default). {configured ? 'API key saved.' : 'Not connected — Approve stays on this calendar until you save a key and log in to a network for this project.'}
       {' '}
       <Button colors={colors} variant="bare" type="button" onClick={() => setOpen((v) => !v)} style={growLink(colors)}>
@@ -1190,7 +1190,7 @@ function ProjectChannels({ projectId, colors }: { projectId: string; colors: The
   const anyBound = NETWORKS.some((n) => channels[n.id]?.integrationId);
 
   return (
-    <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 12 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 12 }}>
       <div style={{ marginBottom: 8 }}>
         {anyBound
           ? 'Approve schedules this post on the connected account for that channel.'
@@ -1258,7 +1258,7 @@ function HiggsfieldConnect({ colors }: { colors: ThemeColors }) {
       .catch(() => setConfigured(false));
   }, []);
   const field: CSSProperties = {
-    fontSize: 11, fontFamily: font.mono, color: colors.text, background: colors.bgDeeper,
+    fontSize: textSize.micro, fontFamily: font.mono, color: colors.text, background: colors.bgDeeper,
     border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '4px 6px',
   };
   const save = async () => {
@@ -1275,7 +1275,7 @@ function HiggsfieldConnect({ colors }: { colors: ThemeColors }) {
     } finally { setBusy(false); }
   };
   return (
-    <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 12 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 12 }}>
       Reels use your Higgsfield account. {configured ? 'Connected.' : 'Not connected — stills still generate locally.'}
       {' '}
       <Button colors={colors} variant="bare" type="button" onClick={() => setOpen((v) => !v)} style={growLink(colors)}>
@@ -1336,7 +1336,7 @@ function CalendarLens({
       {groups.map((group) => (
         <div key={group.day}>
           <div style={{
-            fontFamily: font.mono, fontSize: 11, color: colors.textDim,
+            fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim,
             textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8,
           }}>{group.label}</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1496,7 +1496,7 @@ function CalendarPostRow({
             onChange={(e) => setTitle(e.target.value)}
             aria-label="Post title"
             style={{
-              width: '100%', fontSize: 13, fontWeight: 600, fontFamily: font.body,
+              width: '100%', fontSize: textSize.small, fontWeight: 600, fontFamily: font.body,
               color: colors.text, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
               borderRadius: radius.sm, padding: '6px 8px', marginBottom: 6, boxSizing: 'border-box',
             }}
@@ -1507,7 +1507,7 @@ function CalendarPostRow({
             aria-label="Post body"
             rows={3}
             style={{
-              width: '100%', fontSize: 12, fontFamily: font.body, lineHeight: 1.5,
+              width: '100%', fontSize: textSize.caption, fontFamily: font.body, lineHeight: 1.5,
               color: colors.textMuted, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
               borderRadius: radius.sm, padding: '6px 8px', resize: 'vertical', boxSizing: 'border-box',
             }}
@@ -1515,19 +1515,19 @@ function CalendarPostRow({
         </>
       ) : (
         <>
-          <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{post.title}</div>
+          <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{post.title}</div>
           {post.description && (
-            <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>{post.description}</div>
+            <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>{post.description}</div>
           )}
         </>
       )}
         </div>
       </div>
       {media.mediaError && (
-        <div style={{ fontSize: 11, color: colors.textDim, marginTop: 8 }}>{media.mediaError}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 8 }}>{media.mediaError}</div>
       )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, alignItems: 'center' }}>
-        <label style={{ fontSize: 11, color: colors.textDim, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <label style={{ fontSize: textSize.micro, color: colors.textDim, display: 'flex', alignItems: 'center', gap: 6 }}>
           Schedule
           <input
             type="datetime-local"
@@ -1540,14 +1540,14 @@ function CalendarPostRow({
               void saveSchedule(when, status);
             }}
             style={{
-              fontSize: 11, fontFamily: font.body, color: colors.text,
+              fontSize: textSize.micro, fontFamily: font.body, color: colors.text,
               background: colors.bgDeeper, border: `1px solid ${colors.border}`,
               borderRadius: radius.sm, padding: '4px 6px',
             }}
           />
         </label>
         {status !== 'draft' && (
-        <label style={{ fontSize: 11, color: colors.textDim, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <label style={{ fontSize: textSize.micro, color: colors.textDim, display: 'flex', alignItems: 'center', gap: 6 }}>
           Status
           <select
             aria-label="Post status"
@@ -1555,7 +1555,7 @@ function CalendarPostRow({
             disabled={busy}
             onChange={(e) => void saveSchedule(when, e.target.value as PostStatus)}
             style={{
-              fontSize: 11, fontFamily: font.body, color: colors.text,
+              fontSize: textSize.micro, fontFamily: font.body, color: colors.text,
               background: colors.bgDeeper, border: `1px solid ${colors.border}`,
               borderRadius: radius.sm, padding: '4px 6px',
             }}
@@ -1591,7 +1591,7 @@ function CalendarPostRow({
             placeholder="Taste notes for a new still — copy stays"
             rows={2}
             style={{
-              flex: 1, fontSize: 11, fontFamily: font.body, color: colors.text,
+              flex: 1, fontSize: textSize.micro, fontFamily: font.body, color: colors.text,
               background: colors.bgDeeper, border: `1px solid ${colors.border}`,
               borderRadius: radius.sm, padding: '6px 8px', resize: 'vertical',
               boxSizing: 'border-box',
@@ -1657,7 +1657,7 @@ function PostStill({
 
 function LoadingState({ colors, label, inline }: { colors: ThemeColors; label: string; inline?: boolean }) {
   const body = (
-    <div style={{ fontSize: 12, color: colors.textDim }}>{label}</div>
+    <div style={{ fontSize: textSize.caption, color: colors.textDim }}>{label}</div>
   );
   if (inline) {
     return (
@@ -1672,12 +1672,12 @@ function LoadingState({ colors, label, inline }: { colors: ThemeColors; label: s
 function ErrorState({ colors, message, onRetry, inline }: { colors: ThemeColors; message: string; onRetry: () => void; inline?: boolean }) {
   const body = (
     <div style={{ textAlign: 'center' }}>
-      <div style={{ fontSize: 13, color: colors.text, marginBottom: 4 }}>{message}</div>
-      <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 12 }}>Something went wrong reaching the server.</div>
+      <div style={{ fontSize: textSize.small, color: colors.text, marginBottom: 4 }}>{message}</div>
+      <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 12 }}>Something went wrong reaching the server.</div>
       <Button
         colors={colors}
         onClick={onRetry}
-        style={{ ...growAccent(colors, '6px 14px'), fontSize: 12 }}
+        style={{ ...growAccent(colors, '6px 14px'), fontSize: textSize.caption }}
       >Retry</Button>
     </div>
   );
@@ -2117,7 +2117,7 @@ function ActionVerify({
   const select: CSSProperties = {
     background: colors.bgDeeper, border: `1px solid ${colors.border}`,
     borderRadius: radius.sm, padding: '3px 6px', color: colors.text,
-    fontFamily: font.body, fontSize: 11,
+    fontFamily: font.body, fontSize: textSize.micro,
   };
 
   // On the shelf there is nothing to say unless a check actually confirmed
@@ -2131,7 +2131,7 @@ function ActionVerify({
   if (!identity) {
     return (
       <div style={rule}>
-        <span style={{ fontSize: 11, color: colors.textDim }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
           This action has no saved record yet, so it can’t be verified. Run “Review again” to
           save it.
         </span>
@@ -2180,7 +2180,7 @@ function ActionVerify({
             <span>{provenance.label}</span>
           </div>
           {target && identity.targetDir && (
-            <span style={{ fontSize: 11, color: colors.textDim }}>
+            <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
               Pre-registered before the baseline was frozen: {target} should go{' '}
               {identity.targetDir}
               {identity.verifiedAt && ` · verified ${new Date(identity.verifiedAt).toLocaleDateString()}`}
@@ -2214,7 +2214,7 @@ function ActionVerify({
                     <span style={{ ...label, color: colors.textDim }}>provisional</span>
                   )}
                   {showsDelta && (
-                    <span style={{ fontFamily: font.mono, fontSize: 11, color: meta.color }}>
+                    <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: meta.color }}>
                       {o.deltaPct! > 0 ? '+' : ''}{(o.deltaPct! * 100).toFixed(0)}%
                     </span>
                   )}
@@ -2222,11 +2222,11 @@ function ActionVerify({
                 {/* The rationale is body text, always. It carries the numbers
                     the verdict rests on, and a verdict whose reasoning is
                     hidden in a tooltip cannot be argued with. */}
-                <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+                <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>
                   {o.rationale}
                 </div>
                 {o.confounders.length > 0 && (
-                  <div style={{ fontSize: 11, color: colors.textDim }}>
+                  <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
                     Overlapping changes: {o.confounders.map((c) => c.title).join(', ')}
                   </div>
                 )}
@@ -2240,7 +2240,7 @@ function ActionVerify({
             // looks broken.
             const due = windowDueAt(identity.verifiedAt, FIRST_WINDOW_DAYS);
             return (
-              <span style={{ fontSize: 11, color: colors.textDim }}>
+              <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
                 Measuring. The first {FIRST_WINDOW_DAYS}-day reading is due
                 {due ? ` ${due.toLocaleDateString()}` : ''}, then {14} and {FINAL_WINDOW_DAYS} days.
               </span>
@@ -2288,7 +2288,7 @@ function ActionVerify({
               suggested before predictions existed). */}
           {predicted ? (
             <>
-              <span style={{ fontSize: 11, color: colors.textDim }}>
+              <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
                 I expect this to move{' '}
                 <strong style={{ color: colors.text }}>{predictedLabel}</strong>{' '}
                 <strong style={{ color: colors.text }}>
@@ -2316,7 +2316,7 @@ function ActionVerify({
             </>
           ) : (
             <>
-              <span style={{ fontSize: 11, color: colors.textDim }}>
+              <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
                 {identity.targetMetric || identity.targetDir
                   ? 'I couldn’t say what this should move, so pick the metric before checking it.'
                   : 'Say what this should move before checking it — a metric picked after the result is known can’t be wrong.'}
@@ -2374,7 +2374,7 @@ function ActionVerify({
               they can all come back empty — the action IS verified, on the
               user's word, and heading that list with "what confirmed it" would
               dress four failed checks up as corroboration. */}
-          <span style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+          <span style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>
             {result.verified
               ? ((result.checks ?? []).some((c) => c.passed)
                 ? 'What confirmed it'
@@ -2386,7 +2386,7 @@ function ActionVerify({
               `checks`. A missing list must cost the evidence line, not take the
               whole Grow tab down with a TypeError. */}
           {(result.checks ?? []).map((c) => (
-            <div key={c.id} style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+            <div key={c.id} style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
               <span style={{ color: c.passed ? colors.success : colors.textDim }}>
                 {c.passed ? '✓' : '·'}
               </span>{' '}
@@ -2486,12 +2486,12 @@ function TrackingRail({ identity, colors }: { identity: ActionIdentity; colors: 
               padding: '1px 6px',
             }}>commit {identity.verifiedCommit.slice(0, 8)}</span>
           ) : (
-            <span style={{ fontSize: 11, color: colors.textDim }}>
+            <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
               {verifiedByMeta(identity.verifiedBy).label}
             </span>
           )}
           {identity.verifiedAt && (
-            <span style={{ fontSize: 11, color: colors.textDim }}>
+            <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
               verified {new Date(identity.verifiedAt).toLocaleDateString()}
             </span>
           )}
@@ -2499,21 +2499,21 @@ function TrackingRail({ identity, colors }: { identity: ActionIdentity; colors: 
       )}
       {/* Stored, not recomputed — see `verifiedDetail` on `ActionIdentity`. */}
       {identity.verifiedDetail && (
-        <span style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
           {identity.verifiedDetail}
         </span>
       )}
 
       <span style={label}>Measuring against</span>
       {identity.baseline ? (
-        <span style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
           Baseline frozen {new Date(identity.baseline.takenAt).toLocaleDateString()}. Windows
           start {identity.baseline.pivot} — the change day itself is in neither half.
         </span>
       ) : (
         // Never a zero. A baseline of nought would render as "there was no
         // traffic before the change", which is a claim nothing here can make.
-        <span style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
           No baseline was frozen for this action, so its windows cannot be compared.
         </span>
       )}
@@ -2524,7 +2524,7 @@ function TrackingRail({ identity, colors }: { identity: ActionIdentity; colors: 
           return (
             <div key={w.days} style={{
               display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap',
-              fontSize: 11, color: colors.textDim,
+              fontSize: textSize.micro, color: colors.textDim,
             }}>
               <span style={{ ...label, minWidth: 52 }}>{w.days}-day</span>
               <span style={{
@@ -2722,7 +2722,7 @@ function ActionCard({
   const smallButton: CSSProperties = {
     background: colors.surface, border: `1px solid ${colors.border}`,
     borderRadius: radius.sm, padding: '3px 10px', cursor: 'pointer',
-    color: colors.text, fontFamily: font.body, fontSize: 11,
+    color: colors.text, fontFamily: font.body, fontSize: textSize.micro,
   };
   const smallBtn = growSmall(colors);
 
@@ -2742,7 +2742,7 @@ function ActionCard({
             borderRadius: radius.pill, padding: '1px 7px', flexShrink: 0,
           }}>{action.category}</span>
         )}
-        <span style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text }}>
+        <span style={{ fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>
           {action.title}
         </span>
         <div style={{ flex: 1 }} />
@@ -2773,7 +2773,7 @@ function ActionCard({
           its own suggestion. */}
       {transfer && (
         <div style={{ marginBottom: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <span style={{ fontSize: 11, color: colors.textDim }}>
+          <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
             {transfer.helped > 0
               ? `Worked on ${transfer.helped} of ${transfer.projects} other project(s)`
                 + ` — on projects like this one, ${transfer.segmentHelped} of`
@@ -2790,7 +2790,7 @@ function ActionCard({
               }}>Where that comes from</summary>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 4 }}>
                 {transfer.examples.map((ex, xi) => (
-                  <div key={`${ex.projectName}-${xi}`} style={{ fontSize: 11, color: colors.textDim }}>
+                  <div key={`${ex.projectName}-${xi}`} style={{ fontSize: textSize.micro, color: colors.textDim }}>
                     &ldquo;{ex.title}&rdquo; on {ex.projectName} —{' '}
                     {verdictMeta(ex.verdict, colors).label}
                     {ex.deltaPct !== null && (
@@ -2809,18 +2809,18 @@ function ActionCard({
           no longer holds reads as a missing figure rather than as no figure. */}
       {action.evidence && (
         <div style={{
-          fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+          fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
           borderLeft: `2px solid ${colors.border}`, paddingLeft: 8, marginBottom: 6,
         }}>{action.evidence}</div>
       )}
-      <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5 }}>
+      <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.5 }}>
         {action.recommendation}
       </div>
 
       {/* Ordered steps: an action nobody knows how to start is an observation
           wearing an action's clothes. */}
       {action.steps?.length > 0 && (
-        <ol style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12, color: colors.textMuted, lineHeight: 1.6 }}>
+        <ol style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.6 }}>
           {action.steps.map((step, si) => <li key={si}>{step}</li>)}
         </ol>
       )}
@@ -2870,7 +2870,7 @@ function ActionCard({
           </div>
           <pre style={{
             margin: 0, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-            borderRadius: radius.md, padding: 10, fontSize: 11, fontFamily: font.mono,
+            borderRadius: radius.md, padding: 10, fontSize: textSize.micro, fontFamily: font.mono,
             color: colors.textMuted, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             maxHeight: 200, overflowY: 'auto',
           }}>{directive}</pre>
@@ -2942,7 +2942,7 @@ function ActionCard({
         </div>
       )}
       {moveError && (
-        <div style={{ marginTop: 6, fontSize: 11, color: colors.danger }}>{moveError}</div>
+        <div style={{ marginTop: 6, fontSize: textSize.micro, color: colors.danger }}>{moveError}</div>
       )}
     </div>
   );
@@ -3120,7 +3120,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
 
       <section style={{ marginTop: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-          <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
+          <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
             From your analytics
           </h3>
           <div style={{ flex: 1 }} />
@@ -3154,7 +3154,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
               '--pa-btn-border-hover': colors.borderHi,
               '--pa-btn-pad': '5px 12px',
               '--pa-btn-radius': `${radius.md}px`,
-              fontFamily: font.body, fontSize: 12, gap: 6,
+              fontFamily: font.body, fontSize: textSize.caption, gap: 6,
             } as CSSProperties}
           >
             {busyGenerating
@@ -3168,7 +3168,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
             daemon, so this is true whether or not this tab is open. */}
         {busyGenerating && (
           <div style={{
-            fontSize: 11, color: colors.textDim, marginBottom: 10,
+            fontSize: textSize.micro, color: colors.textDim, marginBottom: 10,
             display: 'flex', alignItems: 'center', gap: 6,
           }}>
             <FiLoader size={11} className="pa-spin" aria-hidden />
@@ -3181,14 +3181,14 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
 
         {actionsState === 'loading' && <SkeletonCards colors={colors} count={2} height={92} />}
         {actionsState === 'error' && (
-          <div style={{ fontSize: 12, color: colors.danger }}>Couldn&rsquo;t load actions.</div>
+          <div style={{ fontSize: textSize.caption, color: colors.danger }}>Couldn&rsquo;t load actions.</div>
         )}
 
         {/* An empty list ALWAYS explains itself — silence is indistinguishable
             from breakage, and this panel is allowed to have nothing to say. */}
         {actionsState === 'ready' && !hasActions && !busyGenerating && (
           <div style={{
-            fontSize: 12, color: colors.textMuted, background: colors.bgDeeper,
+            fontSize: textSize.caption, color: colors.textMuted, background: colors.bgDeeper,
             border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: 12,
           }}>
             {/* An empty Actions list with a full Tracking list is not "nothing
@@ -3271,7 +3271,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
           <section style={{ marginTop: 18 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
               <h3 style={{
-                fontFamily: font.mono, fontSize: 11, color: colors.textDim,
+                fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim,
                 textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0,
               }}>Completed ({tracking.length})</h3>
               <span style={{ fontSize: 10, color: colors.textDim }}>
@@ -3543,7 +3543,7 @@ function GrowAnalytics({
   return (
     <>
       <div style={{
-        fontSize: 11, color: colors.textDim, background: colors.bgDeeper,
+        fontSize: textSize.micro, color: colors.textDim, background: colors.bgDeeper,
         border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '8px 12px', marginBottom: 4,
       }}>
         Analytics for <strong style={{ color: colors.text }}>{project.name}</strong>, collected by
@@ -3622,11 +3622,11 @@ function GrowAnalytics({
 
       {/* Funnel */}
       <section style={{ marginTop: 8 }}>
-        <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 12px' }}>Growth funnel</h3>
+        <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 12px' }}>Growth funnel</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {funnel.map((f) => (
             <div key={f.stage} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ width: 96, fontSize: 12, color: colors.textMuted, textAlign: 'right', flexShrink: 0 }}>{f.stage}</div>
+              <div style={{ width: 96, fontSize: textSize.caption, color: colors.textMuted, textAlign: 'right', flexShrink: 0 }}>{f.stage}</div>
               <div style={{ flex: 1, height: 26, background: colors.bgDeeper, borderRadius: radius.sm, overflow: 'hidden', position: 'relative' }}>
                 {f.source ? (
                   <div style={{
@@ -3641,7 +3641,7 @@ function GrowAnalytics({
                 )}
               </div>
               <div style={{
-                minWidth: 40, textAlign: 'right', flexShrink: 0, fontFamily: font.mono, fontSize: 12,
+                minWidth: 40, textAlign: 'right', flexShrink: 0, fontFamily: font.mono, fontSize: textSize.caption,
                 color: colors.text, fontVariantNumeric: 'tabular-nums',
               }}>{f.source ? f.value?.toLocaleString() : ''}</div>
             </div>
@@ -3821,7 +3821,7 @@ function FirstPartyAnalyticsPanel({
     '--pa-btn-border-hover': colors.borderHi,
     '--pa-btn-pad': '6px 12px',
     '--pa-btn-radius': `${radius.md}px`,
-    fontSize: 12,
+    fontSize: textSize.caption,
   } as React.CSSProperties;
 
   if (setupState === 'error') {
@@ -3838,8 +3838,8 @@ function FirstPartyAnalyticsPanel({
       <div style={shell}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>Self-hosted analytics</div>
-            <div style={{ fontSize: 11, color: colors.textDim, marginTop: 2 }}>
+            <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>Self-hosted analytics</div>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 2 }}>
               Your daemon collects pageviews directly — no third-party account, your data stays here.
             </div>
           </div>
@@ -3860,7 +3860,7 @@ function FirstPartyAnalyticsPanel({
   return (
     <div style={shell}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>
+        <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>
           Self-hosted analytics
           {receiving && (
             <span style={{ marginLeft: 8, fontSize: 10, color: colors.cyan, fontFamily: font.mono }}>
@@ -3873,7 +3873,7 @@ function FirstPartyAnalyticsPanel({
 
       {!receiving && (
         <>
-          <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
             <b style={{ color: colors.text }}>Step 1.</b> Copy the install brief below and give it to
             a coding agent inside this project's repo. It builds the relay: visitors beacon
             same-origin to your own app, which buffers events in your own database.
@@ -3908,7 +3908,7 @@ function FirstPartyAnalyticsPanel({
               style={{
                 flex: '1 1 260px', background: colors.bgDeeper, color: colors.text,
                 border: `1px solid ${colors.border}`, borderRadius: radius.md,
-                padding: '6px 10px', fontSize: 12, fontFamily: font.mono,
+                padding: '6px 10px', fontSize: textSize.caption, fontFamily: font.mono,
               }}
             />
             <Button
@@ -3933,7 +3933,7 @@ function FirstPartyAnalyticsPanel({
           </div>
           {verifyResult && (
             <div style={{
-              fontSize: 11, fontFamily: font.mono, whiteSpace: 'pre-wrap',
+              fontSize: textSize.micro, fontFamily: font.mono, whiteSpace: 'pre-wrap',
               background: colors.bgDeeper, borderRadius: radius.md, padding: 10,
               border: `1px solid ${verifyResult.verified ? colors.border : colors.danger}`,
               color: verifyResult.verified ? colors.textMuted : colors.text,
@@ -4040,7 +4040,7 @@ function FirstPartyAnalyticsPanel({
                 background: colors.bgDeeper, border: `1px solid ${colors.border}`,
                 borderRadius: radius.md, padding: '8px 10px',
               }}>
-                <div style={{ fontFamily: font.display, fontSize: 20, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+                <div style={{ fontFamily: font.display, fontSize: textSize.title, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
                 <div style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 2 }}>{label}</div>
                 <div style={{ fontSize: 9, color: colors.textDim, marginTop: 1 }}>{sub}</div>
               </div>
@@ -4057,7 +4057,7 @@ function FirstPartyAnalyticsPanel({
             )}
           </div>
           {(stats.aeoVisits ?? 0) > 0 && (
-            <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 8 }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginBottom: 8 }}>
               <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em', textTransform: 'uppercase' }}>AEO</span>
               {' '}{(stats.aeoVisits ?? 0).toLocaleString()} answer-engine visit{(stats.aeoVisits === 1) ? '' : 's'}
             </div>
@@ -4073,9 +4073,9 @@ function FirstPartyAnalyticsPanel({
             ] as const).map(([label, rows]) => (
               <div key={label}>
                 <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
-                {rows.length === 0 && <div style={{ fontSize: 11, color: colors.textDim }}>—</div>}
+                {rows.length === 0 && <div style={{ fontSize: textSize.micro, color: colors.textDim }}>—</div>}
                 {rows.slice(0, 5).map((r) => (
-                  <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11, color: colors.textMuted, padding: '2px 0' }}>
+                  <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: textSize.micro, color: colors.textMuted, padding: '2px 0' }}>
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
                     <span style={{ fontFamily: font.mono, color: colors.text }}>{r.count.toLocaleString()}</span>
                   </div>
@@ -4182,8 +4182,8 @@ function AnalyticsConnectionPanel({
         display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
       }}>
         <div style={{ flex: 1, minWidth: 220 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>Connect analytics</div>
-          <div style={{ fontSize: 11, color: colors.textDim, marginTop: 3, lineHeight: 1.5 }}>
+          <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>Connect analytics</div>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 3, lineHeight: 1.5 }}>
             Point the funnel at your existing Plausible or GoatCounter account — a read-only stats
             fetch, your data stays where it is.
           </div>
@@ -4191,7 +4191,7 @@ function AnalyticsConnectionPanel({
         <Button
           colors={colors}
           onClick={() => setShowForm(true)}
-          style={{ ...growAccent(colors, '7px 14px'), fontSize: 12 }}
+          style={{ ...growAccent(colors, '7px 14px'), fontSize: textSize.caption }}
         >Connect analytics</Button>
       </div>
     );
@@ -4223,8 +4223,8 @@ function AnalyticsConnectionPanel({
           width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
           background: statsFailed ? colors.warning : colors.success,
         }} />
-        <span style={{ fontSize: 12, fontWeight: 600, color: colors.text }}>{providerLabel}</span>
-        <span style={{ fontSize: 11, color: colors.textMuted, fontFamily: font.mono }}>
+        <span style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text }}>{providerLabel}</span>
+        <span style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono }}>
           {conn.baseUrl}{conn.siteId ? ` · ${conn.siteId}` : ''}
         </span>
         <div style={{ flex: 1 }} />
@@ -4240,10 +4240,10 @@ function AnalyticsConnectionPanel({
         >{disconnecting ? 'Disconnecting…' : 'Disconnect'}</Button>
       </div>
       {statsLine && (
-        <div style={{ fontSize: 11, color: statsFailed ? colors.warning : colors.textMuted }}>{statsLine}</div>
+        <div style={{ fontSize: textSize.micro, color: statsFailed ? colors.warning : colors.textMuted }}>{statsLine}</div>
       )}
       {testResult && (
-        <div style={{ fontSize: 11, color: testResult.ok ? colors.success : colors.warning }}>{testResult.message}</div>
+        <div style={{ fontSize: textSize.micro, color: testResult.ok ? colors.success : colors.warning }}>{testResult.message}</div>
       )}
     </div>
   );
@@ -4300,7 +4300,7 @@ function AnalyticsConnectForm({
 
   const fieldStyle: CSSProperties = {
     background: colors.bgDeeper, color: colors.text, border: `1px solid ${colors.border}`,
-    borderRadius: radius.md, padding: '6px 10px', fontSize: 12, fontFamily: font.body, width: '100%',
+    borderRadius: radius.md, padding: '6px 10px', fontSize: textSize.caption, fontFamily: font.body, width: '100%',
     boxSizing: 'border-box',
   };
   const labelStyle: CSSProperties = {
@@ -4313,7 +4313,7 @@ function AnalyticsConnectForm({
       background: colors.surface, border: `1px solid ${colors.border}`,
       borderRadius: radius.lg, padding: 16, display: 'flex', flexDirection: 'column', gap: 12,
     }}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>
+      <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>
         {conn?.connected ? 'Edit analytics connection' : 'Connect analytics'}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
@@ -4369,7 +4369,7 @@ function AnalyticsConnectForm({
           : 'Plausible: the site id is the domain as it appears in Plausible. Create a Stats API key under Settings → API keys.'}
         {' '}Read-only — this never writes to your analytics account.
       </div>
-      {error && <div style={{ fontSize: 11, color: colors.warning }}>{error}</div>}
+      {error && <div style={{ fontSize: textSize.micro, color: colors.warning }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8 }}>
         {/* The unsaveable state keeps its own muted chrome — it is what says
             "there is nothing here to save yet" before the button is pressed. */}
@@ -4386,7 +4386,7 @@ function AnalyticsConnectForm({
             '--pa-btn-border-hover': canSave ? colors.cyan : colors.border,
             '--pa-btn-pad': '6px 14px',
             '--pa-btn-radius': `${radius.md}px`,
-            fontFamily: font.body, fontSize: 12,
+            fontFamily: font.body, fontSize: textSize.caption,
           } as CSSProperties}
         >{saving ? 'Saving…' : 'Save connection'}</Button>
         <Button
@@ -4398,7 +4398,7 @@ function AnalyticsConnectForm({
             '--pa-btn-border': colors.border,
             '--pa-btn-pad': '6px 14px',
             '--pa-btn-radius': `${radius.md}px`,
-            fontFamily: font.body, fontSize: 12,
+            fontFamily: font.body, fontSize: textSize.caption,
           } as CSSProperties}
         >Cancel</Button>
       </div>
@@ -4443,7 +4443,7 @@ function GrowthInboxSection({
   return (
     <section>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '0 0 12px', flexWrap: 'wrap' }}>
-        <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
+        <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
           Your growth moves this week
         </h3>
         {hasSignal && signal && (
@@ -4460,7 +4460,7 @@ function GrowthInboxSection({
       ) : !inbox ? null : empty ? (
         <div style={{
           border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: 28,
-          textAlign: 'center', fontSize: 12, color: colors.textDim, lineHeight: 1.6,
+          textAlign: 'center', fontSize: textSize.caption, color: colors.textDim, lineHeight: 1.6,
         }}>
           Not enough signal yet. Publish a post or ship a goal and I'll start surfacing your 2-3
           highest-leverage growth moves here each week — ranked, no guesswork.
@@ -4472,7 +4472,7 @@ function GrowthInboxSection({
           ) : (
             <div style={{
               border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '12px 14px',
-              fontSize: 12, color: colors.textMuted, background: colors.surface,
+              fontSize: textSize.caption, color: colors.textMuted, background: colors.surface,
             }}>
               You're on track — no urgent moves this week. Keep doing what's working below.
             </div>
@@ -4536,8 +4536,8 @@ function MoveCard({ move, colors, projectName }: {
           {move.evidenceCount} {move.evidenceCount === 1 ? 'signal' : 'signals'}
         </span>
       </div>
-      <div style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>{move.title}</div>
-      <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{move.why}</div>
+      <div style={{ fontSize: textSize.body, fontWeight: 600, color: colors.text }}>{move.title}</div>
+      <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>{move.why}</div>
       <div style={{ display: 'flex', marginTop: 2 }}>
         <Button
           colors={colors}
@@ -4566,10 +4566,10 @@ function WinsStrip({ wins, colors }: { wins: GrowthWin[]; colors: ThemeColors })
             background: colors.surface, border: `1px solid ${colors.border}`,
             borderLeft: `3px solid ${colors.success}`, borderRadius: radius.md, padding: '10px 12px',
           }}>
-            <span aria-hidden style={{ color: colors.success, fontSize: 13, lineHeight: '18px' }}>✓</span>
+            <span aria-hidden style={{ color: colors.success, fontSize: textSize.small, lineHeight: '18px' }}>✓</span>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{w.title}</div>
-              <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, marginTop: 2 }}>{w.why}</div>
+              <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{w.title}</div>
+              <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginTop: 2 }}>{w.why}</div>
             </div>
           </div>
         ))}

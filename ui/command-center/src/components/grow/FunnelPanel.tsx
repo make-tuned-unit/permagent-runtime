@@ -15,7 +15,7 @@
 // that bots are excluded, and how many rows could not be sequenced.
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { apiFetch } from '../../lib/api';
@@ -227,7 +227,7 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
   const controlStyle: React.CSSProperties = {
     background: colors.bgDeeper, color: colors.text,
     border: `1px solid ${colors.border}`, borderRadius: radius.md,
-    padding: '5px 8px', fontSize: 11, fontFamily: font.mono,
+    padding: '5px 8px', fontSize: textSize.micro, fontFamily: font.mono,
   };
   // The builder's controls sit on the same chrome as its selects, so the look
   // is expressed as `--pa-btn-*` rather than inline `background`/`color`: an
@@ -248,11 +248,11 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
       borderRadius: radius.lg, padding: 16, display: 'flex', flexDirection: 'column', gap: 10,
     }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-        <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
+        <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
           Conversion funnel
         </h3>
         {state === 'ready' && data && entered > 0 && (
-          <span style={{ fontSize: 11, color: colors.textMuted, fontFamily: font.mono }}>
+          <span style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono }}>
             {Math.round(data.conversionRate * 100)}% of {unit} convert
             {data.value > 0 && <> · {data.value.toLocaleString()} value</>}
             {' '}· last {DAYS}d
@@ -324,20 +324,20 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
       </div>
 
       {options && !hasOptions && (
-        <div style={{ fontSize: 11, color: colors.textDim }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
           No events or pageviews recorded for this project in the last {DAYS} days — there is
           nothing to build a funnel from yet.
         </div>
       )}
       {state === 'idle' && hasOptions && (
-        <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
           Pick an ordered sequence of steps. A {identityLabel(identity).slice(0, -1)} counts at a step
           only after passing every earlier one <em>in order</em> — a bookmark landing on /thanks
           never “converts”. Bots are excluded.
         </div>
       )}
       {state === 'error' && (
-        <div style={{ fontSize: 11, color: colors.danger }}>
+        <div style={{ fontSize: textSize.micro, color: colors.danger }}>
           Couldn’t compute the funnel — check the steps (1–{MAX_STEPS}) and try again.
         </div>
       )}
@@ -345,7 +345,7 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
       {state === 'ready' && data && (
         <>
           {entered === 0 ? (
-            <div style={{ fontSize: 11, color: colors.textDim }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
               No {unit} entered this funnel in the last {DAYS} days.
             </div>
           ) : (
@@ -356,7 +356,7 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
                 return (
                   <div key={`${s.label}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <div style={{
-                      width: 140, fontSize: 11, color: colors.textMuted, textAlign: 'right',
+                      width: 140, fontSize: textSize.micro, color: colors.textMuted, textAlign: 'right',
                       flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                       fontFamily: font.mono,
                     }} title={s.label}>{s.label}</div>
@@ -373,7 +373,7 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
                     </div>
                     <div style={{
                       minWidth: 44, textAlign: 'right', flexShrink: 0, fontFamily: font.mono,
-                      fontSize: 12, color: colors.text, fontVariantNumeric: 'tabular-nums',
+                      fontSize: textSize.caption, color: colors.text, fontVariantNumeric: 'tabular-nums',
                     }}>{s.sessions.toLocaleString()}</div>
                     <div style={{
                       minWidth: 190, flexShrink: 0, fontSize: 10, fontFamily: font.mono,

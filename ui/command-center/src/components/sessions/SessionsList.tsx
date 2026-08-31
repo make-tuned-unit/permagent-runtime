@@ -3,7 +3,7 @@ import { FiPlus, FiTrash2, FiMessageSquare, FiX } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
 import { toast } from '../../lib/notifications';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -326,7 +326,7 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
                   '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
                   '--pa-btn-pad': '6px 12px',
                   '--pa-btn-radius': `${radius.xs}px`,
-                  fontSize: 14,
+                  fontSize: textSize.body,
                 } as CSSProperties}
               >
                 Cancel
@@ -342,7 +342,7 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
                   '--pa-btn-border-hover': 'transparent',
                   '--pa-btn-pad': '6px 12px',
                   '--pa-btn-radius': `${radius.xs}px`,
-                  fontSize: 14,
+                  fontSize: textSize.body,
                 } as CSSProperties}
               >
                 Delete

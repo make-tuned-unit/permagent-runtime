@@ -10,7 +10,7 @@
 import { useState, useCallback, useId, type CSSProperties } from 'react';
 import { useLiveGoals } from '../../../lib/useLiveGoals';
 import { FiX } from 'react-icons/fi';
-import { font, radius, ease } from '../../../styles/tokens';
+import { font, radius, ease, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
 import type { useDecisions } from './useDecisions';
@@ -102,18 +102,18 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                 '--pa-btn-pad': '2px 4px',
                 '--pa-btn-radius': `${radius.xs}px`,
                 '--pa-btn-weight': 400,
-                fontFamily: font.body, fontSize: 12,
+                fontFamily: font.body, fontSize: textSize.caption,
               } as CSSProperties}
             >
               ← Back
             </Button>
           )}
-          <span style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text, flex: 1 }}>
+          <span style={{ fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text, flex: 1 }}>
             {view === 'history' ? 'History' : 'Decision inbox'}
           </span>
           {view === 'list' && total > 0 && (
             <span style={{
-              fontFamily: font.mono, fontSize: 11, color: colors.cyan,
+              fontFamily: font.mono, fontSize: textSize.micro, color: colors.cyan,
               background: colors.cyanSoft, borderRadius: radius.pill, padding: '2px 8px',
             }}>
               {total} pending
@@ -143,7 +143,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
           {view === 'history' ? (
             <HistoryList items={history} />
           ) : loading && !data ? (
-            <div style={{ padding: '48px 18px', textAlign: 'center', fontSize: 12, color: colors.textDim }}>
+            <div style={{ padding: '48px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
               Checking with {agentName}…
             </div>
           ) : error && !data ? (
@@ -151,10 +151,10 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                all-clear (2026-07 wiring audit D4): a dead daemon looked
                identical to a clear inbox. */
             <div style={{ padding: '48px 18px', textAlign: 'center' }}>
-              <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}>
+              <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: 4 }}>
                 Couldn't reach the decision inbox.
               </div>
-              <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 14 }}>
+              <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 14 }}>
                 This is a connection problem, not an empty inbox.
               </div>
               {/* No success tick: `refresh` swallows its own failure, so a
@@ -176,7 +176,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                   '--pa-btn-pad': '5px 14px',
                   '--pa-btn-radius': `${radius.md}px`,
                   '--pa-btn-weight': 600,
-                  fontFamily: font.body, fontSize: 12,
+                  fontFamily: font.body, fontSize: textSize.caption,
                 } as CSSProperties}
               >
                 Retry
@@ -188,10 +188,10 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                 width: 34, height: 34, borderRadius: '50%',
                 background: colors.success + '26', color: colors.success,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 16, margin: '0 auto 10px',
+                fontSize: textSize.heading, margin: '0 auto 10px',
               }}>✓</div>
-              <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}>No decisions needed.</div>
-              <div style={{ fontSize: 11, color: colors.textDim }}>
+              <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: 4 }}>No decisions needed.</div>
+              <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
                 {goals} goal{goals === 1 ? '' : 's'} in flight.
               </div>
             </div>
@@ -218,12 +218,12 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                         borderBottom: `1px solid ${colors.border}`,
                       }}
                     >
-                      <span style={{ fontSize: 12, color: colors.text, flex: 1 }}>{g.title}</span>
+                      <span style={{ fontSize: textSize.caption, color: colors.text, flex: 1 }}>{g.title}</span>
                       <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim }}>
                         {g.state_binding}
                       </span>
                       {g.reason && (
-                        <span style={{ fontSize: 11, color: colors.textMuted, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.reason}>
+                        <span style={{ fontSize: textSize.micro, color: colors.textMuted, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.reason}>
                           {g.reason}
                         </span>
                       )}
@@ -265,7 +265,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                     '--pa-btn-pad': '10px',
                     '--pa-btn-radius': '0',
                     display: 'flex', width: '100%',
-                    fontFamily: font.body, fontSize: 12,
+                    fontFamily: font.body, fontSize: textSize.caption,
                   } as CSSProperties}
                 >
                   +{moreCount} more decision{moreCount === 1 ? '' : 's'}
@@ -307,11 +307,11 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                       width: 8, height: 8, borderRadius: '50%',
                       background: colors.success, flexShrink: 0,
                     }} />
-                    <span style={{ fontSize: 13, fontWeight: 500, color: colors.text, flex: 1 }}>
+                    <span style={{ fontSize: textSize.small, fontWeight: 500, color: colors.text, flex: 1 }}>
                       {agentName} handled {handled} routine item{handled === 1 ? '' : 's'} overnight
                     </span>
                     <span style={{
-                      color: colors.textDim, fontSize: 11,
+                      color: colors.textDim, fontSize: textSize.micro,
                       transform: tier1Open ? 'rotate(90deg)' : 'none',
                       transition: reduceMotion ? 'none' : `transform 150ms ${ease.out}`,
                     }}>▸</span>
@@ -319,7 +319,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                   {tier1Open && (
                     <div id={tier1Id}>
                       {history === null ? (
-                        <div style={{ padding: '10px 18px 10px 36px', fontSize: 12, color: colors.textDim }}>
+                        <div style={{ padding: '10px 18px 10px 36px', fontSize: textSize.caption, color: colors.textDim }}>
                           Loading…
                         </div>
                       ) : (
@@ -328,7 +328,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                             key={row.id}
                             style={{
                               display: 'flex', alignItems: 'center', gap: 10,
-                              padding: '8px 18px 8px 36px', fontSize: 12,
+                              padding: '8px 18px 8px 36px', fontSize: textSize.caption,
                               color: colors.textMuted,
                               borderTop: `1px solid ${colors.border}`,
                               fontFamily: font.body,
@@ -339,7 +339,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                             }}>
                               {row.headline}
                             </span>
-                            <span style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, flexShrink: 0 }}>
+                            <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, flexShrink: 0 }}>
                               {formatAge(row.created_at)}
                             </span>
                             <Button
@@ -356,7 +356,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                                 '--pa-btn-pad': '0',
                                 '--pa-btn-radius': '0',
                                 '--pa-btn-weight': 400,
-                                fontSize: 11, fontFamily: font.body,
+                                fontSize: textSize.micro, fontFamily: font.body,
                                 flexShrink: 0,
                               } as CSSProperties}
                             >
@@ -393,7 +393,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                 '--pa-btn-pad': '0',
                 '--pa-btn-radius': '0',
                 '--pa-btn-weight': 400,
-                fontSize: 12, fontFamily: font.body,
+                fontSize: textSize.caption, fontFamily: font.body,
               } as CSSProperties}
             >
               History →
@@ -412,14 +412,14 @@ function HistoryList({ items }: { items: HistoryItem[] | null }) {
   const agentName = persona?.display_name ?? 'your agent';
   if (items === null) {
     return (
-      <div style={{ padding: '32px 18px', textAlign: 'center', fontSize: 12, color: colors.textDim }}>
+      <div style={{ padding: '32px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
         Loading…
       </div>
     );
   }
   if (items.length === 0) {
     return (
-      <div style={{ padding: '32px 18px', textAlign: 'center', fontSize: 12, color: colors.textDim }}>
+      <div style={{ padding: '32px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
         Nothing here yet.
       </div>
     );
@@ -446,16 +446,16 @@ function HistoryList({ items }: { items: HistoryItem[] | null }) {
               {item.tier === 1 ? agentName : 'you'}
             </span>
             <span style={{
-              fontSize: 13, fontWeight: 500, color: colors.text, flex: 1,
+              fontSize: textSize.small, fontWeight: 500, color: colors.text, flex: 1,
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
             }}>
               {item.headline}
             </span>
-            <span style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, flexShrink: 0 }}>
+            <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, flexShrink: 0 }}>
               {formatAge(item.created_at)}
             </span>
           </div>
-          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+          <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 4 }}>
             {resolutionText(item, agentName)}
           </div>
         </div>

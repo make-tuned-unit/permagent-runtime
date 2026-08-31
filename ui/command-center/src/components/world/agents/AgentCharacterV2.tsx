@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { getReduceMotion } from '../../../styles/tokens';
+import { getReduceMotion, textSize } from '../../../styles/tokens';
 import { ENV, type AgentHudState } from '../shared/palette';
 import { getAgentRuntimeStates } from '../shared/agentStatus';
 import type { AgentIdentity } from './roster';
@@ -461,7 +461,7 @@ export function AgentCharacterV2({
               color: ENV.neonCyan,
               padding: '4px 12px',
               borderRadius: '6px',
-              fontSize: '13px',
+              fontSize: `${textSize.small}px`,
               fontFamily: 'monospace',
               border: `1px solid ${ENV.neonCyan}40`,
               whiteSpace: 'nowrap',

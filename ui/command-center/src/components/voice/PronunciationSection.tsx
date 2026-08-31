@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { api, type PronunciationEntry, type UnresolvedPronunciation } from '../../lib/api';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Row, TextInput } from '../settings/atoms';
 import { Button } from '../common/Button';
@@ -20,7 +20,7 @@ const btnVars = (colors: C): CSSProperties => ({
   '--pa-btn-radius': `${radius.md}px`,
   height: 30,
   fontFamily: font.body,
-  fontSize: 12,
+  fontSize: textSize.caption,
   whiteSpace: 'nowrap',
 } as CSSProperties);
 
@@ -102,7 +102,7 @@ export function PronunciationSection() {
               Save
             </Button>
           </div>
-          {error && <span style={{ fontSize: 12, color: colors.danger }}>{error}</span>}
+          {error && <span style={{ fontSize: textSize.caption, color: colors.danger }}>{error}</span>}
         </div>
       </Row>
       {unresolved.length > 0 && (
@@ -127,7 +127,7 @@ export function PronunciationSection() {
         <Row label="Saved" hint="Applied on the next spoken sentence.">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {savedWords.map(w => (
-              <div key={w} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontFamily: font.body }}>
+              <div key={w} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: textSize.small, fontFamily: font.body }}>
                 <span style={{ color: colors.text, fontWeight: 500 }}>{w}</span>
                 <span style={{ color: colors.textMuted }}>{saved[w].sounds_like}</span>
                 <Button
@@ -163,10 +163,10 @@ function UnresolvedRow({
   const [like, setLike] = useState('');
   return (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-      <span style={{ fontSize: 13, fontFamily: font.body, color: colors.text, minWidth: 80 }}>
+      <span style={{ fontSize: textSize.small, fontFamily: font.body, color: colors.text, minWidth: 80 }}>
         {item.word}
       </span>
-      <span style={{ fontSize: 11, color: colors.textMuted }}>×{item.spelled_out_times}</span>
+      <span style={{ fontSize: textSize.micro, color: colors.textMuted }}>×{item.spelled_out_times}</span>
       <div style={{ flex: 1, minWidth: 140 }}>
         <TextInput value={like} onChange={setLike} placeholder="sounds like" />
       </div>

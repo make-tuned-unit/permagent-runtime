@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react';
-import { font } from '../../styles/tokens';
+import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 /**
@@ -44,7 +44,7 @@ export function ReasoningBlock({ thinking, hasAnswer }: { thinking: string; hasA
           '--pa-btn-pad': '2px 0',
           gap: 6,
           fontFamily: font.mono,
-          fontSize: 11,
+          fontSize: textSize.micro,
           letterSpacing: '0.04em',
         } as CSSProperties}
       >

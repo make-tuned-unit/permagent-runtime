@@ -1,4 +1,4 @@
-import { font, radius } from '../../../styles/tokens';
+import { font, radius, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Mobius, type MobiusState } from '../../mobius/Mobius';
 import type { DashboardAgent } from '../useDashboard';
@@ -25,7 +25,7 @@ export function HeroCard({ agent, activeCount }: Props) {
     }}>
       <div style={{ flex: 1 }}>
         <div style={{
-          fontFamily: font.body, fontSize: 11, fontWeight: 600,
+          fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600,
           letterSpacing: '0.14em', textTransform: 'uppercase',
           color: colors.cyan, marginBottom: 12,
         }}>
@@ -42,7 +42,7 @@ export function HeroCard({ agent, activeCount }: Props) {
             <>{agent.name} is<br />ready</>
           )}
         </div>
-        <div style={{ fontSize: 14, color: colors.textMuted, lineHeight: 1.5, maxWidth: 360 }}>
+        <div style={{ fontSize: textSize.body, color: colors.textMuted, lineHeight: 1.5, maxWidth: 360 }}>
           {activeCount > 0
             ? `${activeCount} active goal${activeCount > 1 ? 's' : ''} in flight`
             : 'Ready when you are.'}

@@ -3,7 +3,7 @@ import { COLORS } from './constants';
 import { api, eventsWsUrl } from '../../lib/api';
 import { wireEventType } from '../../lib/wireEvent';
 import { HudShell, Section, StatRow } from './HudShell';
-import { radius } from '../../styles/tokens';
+import { radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -262,7 +262,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
     >
       {/* Phase task description */}
       <div style={{ padding: '4px 14px 8px' }}>
-        <span style={{ fontSize: 11, color: '#9CA3AF' }}>
+        <span style={{ fontSize: textSize.micro, color: '#9CA3AF' }}>
           {status.current_task}
         </span>
       </div>
@@ -271,7 +271,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
       {(status.current_memory || stream.tokens) && (
         <Section title="CURRENT MEMORY" trimColor={COLORS.neonAmber}>
           {status.current_memory && (
-            <div style={{ fontSize: 11, color: '#D1D5DB', marginBottom: 4 }}>
+            <div style={{ fontSize: textSize.micro, color: '#D1D5DB', marginBottom: 4 }}>
               <span style={{ color: COLORS.neonAmber, fontWeight: 600 }}>
                 {status.current_memory.key}
               </span>
@@ -292,7 +292,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
           )}
           {stream.tokens && (
             <div style={{
-              fontSize: 11,
+              fontSize: textSize.micro,
               color: COLORS.neonCyan,
               whiteSpace: 'pre-wrap',
               maxHeight: 80,
@@ -347,7 +347,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
       {/* Error */}
       {status.error_message && (
         <Section title="ERROR" trimColor="#EF4444">
-          <div style={{ fontSize: 11, color: '#EF4444', wordBreak: 'break-word' }}>
+          <div style={{ fontSize: textSize.micro, color: '#EF4444', wordBreak: 'break-word' }}>
             {status.error_message}
           </div>
         </Section>
@@ -387,7 +387,7 @@ const actionBtnVars = {
   '--pa-btn-radius': `${radius.xs}px`,
   '--pa-btn-weight': 600,
   width: '100%',
-  fontSize: 11,
+  fontSize: textSize.micro,
   fontFamily: 'monospace',
   letterSpacing: '0.05em',
 } as CSSProperties;

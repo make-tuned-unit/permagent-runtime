@@ -2,6 +2,7 @@ import { useState, type CSSProperties } from 'react';
 import { versionBannerState, type VersionSkew } from '../../lib/version';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { textSize } from '../../styles/tokens';
 
 /**
  * Non-blocking banner surfaced when the desktop app and daemon versions drift.
@@ -42,7 +43,7 @@ export function VersionSkewBanner({ skew }: { skew: VersionSkew | null }) {
           '--pa-btn-fg': fg,
           '--pa-btn-bg-hover': 'transparent',
           '--pa-btn-pad': '0',
-          fontSize: 12,
+          fontSize: textSize.caption,
         } as CSSProperties}
       >
         ✕

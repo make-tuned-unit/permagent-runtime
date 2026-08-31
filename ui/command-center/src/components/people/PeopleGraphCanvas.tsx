@@ -12,7 +12,7 @@ import { Canvas } from '@react-three/fiber';
 import { Html, Line, OrbitControls } from '@react-three/drei';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { DirectoryPerson } from '../projects/types';
 import { isBridge, isYou, layoutPeopleGraph, type GraphNode } from './peopleGraph';
@@ -88,7 +88,7 @@ export function PeopleGraph() {
           left: 24,
           zIndex: 2,
           width: 240,
-          fontSize: 12,
+          fontSize: textSize.caption,
           fontFamily: font.body,
           padding: '6px 10px',
           borderRadius: radius.sm,
@@ -99,19 +99,19 @@ export function PeopleGraph() {
         }}
       />
       {status === 'loading' && (
-        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: colors.textDim, fontFamily: font.body, fontSize: 12 }}>
+        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: colors.textDim, fontFamily: font.body, fontSize: textSize.caption }}>
           Loading people…
         </div>
       )}
       {status === 'error' && (
-        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: colors.danger, fontFamily: font.body, fontSize: 12 }}>
+        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: colors.danger, fontFamily: font.body, fontSize: textSize.caption }}>
           Couldn't load people.
         </div>
       )}
       {status === 'ready' && filtered.length === 0 && query.trim() !== '' && (
         <div style={{
           position: 'absolute', top: 48, left: 24, zIndex: 2,
-          color: colors.textDim, fontFamily: font.body, fontSize: 12,
+          color: colors.textDim, fontFamily: font.body, fontSize: textSize.caption,
         }}>
           No people match that search.
         </div>
@@ -229,7 +229,7 @@ function PersonNode({
         <Html center sprite style={{ pointerEvents: 'none', transform: 'translateY(-18px)' }}>
           <div style={{
             fontFamily: font.body,
-            fontSize: 11,
+            fontSize: textSize.micro,
             fontWeight: 600,
             color: '#fff',
             background: 'rgba(8,10,16,0.78)',
@@ -269,7 +269,7 @@ function PersonNode({
             bottom: '100%',
             transform: 'translate(-50%, -8px)',
             fontFamily: font.body,
-            fontSize: 11,
+            fontSize: textSize.micro,
             fontWeight: 600,
             color: '#fff',
             background: 'rgba(8,10,16,0.78)',

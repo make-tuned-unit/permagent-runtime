@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, type CSSProperties } from 'react';
 import { FiChevronDown } from 'react-icons/fi';
 import { useCommandCenter, type ProviderInfo } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -160,7 +160,7 @@ export function ModelPicker() {
                     justifyContent: 'space-between',
                     textAlign: 'left',
                     fontFamily: font.mono,
-                    fontSize: 11,
+                    fontSize: textSize.micro,
                   } as CSSProperties}
                 >
                   <span className="truncate">{m.model}</span>

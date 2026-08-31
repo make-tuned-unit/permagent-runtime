@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo, type CSSProperties, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { font, ease, duration, radius } from '../../styles/tokens';
+import { font, ease, duration, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -22,7 +22,7 @@ export function WizardSubhead({ children, style = {} }: { children: ReactNode; s
   const { colors } = useTheme();
   return (
     <p style={{
-      fontFamily: font.body, fontSize: 14, lineHeight: 1.5, color: colors.textMuted,
+      fontFamily: font.body, fontSize: textSize.body, lineHeight: 1.5, color: colors.textMuted,
       margin: '8px 0 0', textAlign: 'center', maxWidth: 400,
       ...style,
     }}>{children}</p>
@@ -60,7 +60,7 @@ children, disabled, onClick, full, style = {} }: {
         '--pa-btn-pad': '12px 20px',
         '--pa-btn-radius': `${radius.md}px`,
         '--pa-btn-weight': 600,
-        fontFamily: font.body, fontSize: 14, letterSpacing: '-0.01em',
+        fontFamily: font.body, fontSize: textSize.body, letterSpacing: '-0.01em',
         height: 44, minWidth: 140, width: full ? '100%' : 'auto',
         boxShadow: disabled ? 'none' : hover
           ? `0 0 0 4px ${colors.purpleSoft}, 0 8px 24px ${colors.purpleGlow}`
@@ -93,7 +93,7 @@ children, onClick, style = {} }: {
         '--pa-btn-pad': '6px 2px',
         '--pa-btn-radius': '0',
         '--pa-btn-weight': 500,
-        fontFamily: font.body, fontSize: 13, lineHeight: 1.5,
+        fontFamily: font.body, fontSize: textSize.small, lineHeight: 1.5,
         ...style,
       } as CSSProperties}
     >{children}</Button>
@@ -115,7 +115,7 @@ value, onChange, placeholder, type = 'text', onKeyDown, onBlur, autoFocus, ariaL
       aria-label={ariaLabel} onKeyDown={onKeyDown}
       onFocus={() => setFocus(true)} onBlur={() => { setFocus(false); onBlur?.(); }}
       style={{
-        width: '100%', fontFamily: font.body, fontSize: 14, fontWeight: 400,
+        width: '100%', fontFamily: font.body, fontSize: textSize.body, fontWeight: 400,
         color: colors.text,
         background: colors.inputBg,
         border: focus ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
@@ -143,7 +143,7 @@ export function Textarea({
       placeholder={placeholder} rows={rows} spellCheck={false}
       onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
       style={{
-        width: '100%', fontFamily: font.body, fontSize: 14, fontWeight: 400,
+        width: '100%', fontFamily: font.body, fontSize: textSize.body, fontWeight: 400,
         color: colors.text, background: colors.inputBg, resize: 'none', lineHeight: 1.6,
         border: focus ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
         borderRadius: radius.md, padding: '13px 14px', outline: 'none',
@@ -207,7 +207,7 @@ value, onChange, options, style = {} }: {
         '--pa-btn-radius': `${radius.md}px`,
         '--pa-btn-weight': 500,
         width: '100%', justifyContent: 'space-between',
-        fontFamily: font.body, fontSize: 14, lineHeight: 1.5,
+        fontFamily: font.body, fontSize: textSize.body, lineHeight: 1.5,
         boxShadow: open ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
       } as CSSProperties}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -239,7 +239,7 @@ value, onChange, options, style = {} }: {
               onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); } }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 10, padding: '10px 10px', borderRadius: radius.sm,
-                fontFamily: font.body, fontSize: 13, color: colors.text,
+                fontFamily: font.body, fontSize: textSize.small, color: colors.text,
                 background: selected ? colors.cyanSoft : 'transparent', cursor: 'pointer',
               }}
               onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLElement).style.background = colors.surfaceHi; }}
@@ -249,7 +249,7 @@ value, onChange, options, style = {} }: {
             >
               {o.dot && <span style={{ width: 8, height: 8, borderRadius: '50%', background: o.dot }} />}
               <span style={{ flex: 1 }}>{o.label}</span>
-              {o.note && <span style={{ fontSize: 11, color: colors.textMuted }}>{o.note}</span>}
+              {o.note && <span style={{ fontSize: textSize.micro, color: colors.textMuted }}>{o.note}</span>}
             </div>
             );
           })}
@@ -296,7 +296,7 @@ onClick }: { onClick: () => void }) {
         '--pa-btn-pad': '6px 10px 6px 6px',
         '--pa-btn-radius': `${radius.md}px`,
         '--pa-btn-weight': 500,
-        fontFamily: font.body, fontSize: 13, lineHeight: 1.5,
+        fontFamily: font.body, fontSize: textSize.small, lineHeight: 1.5,
       } as CSSProperties}
     >
       {/* `Button` folds its children into one label span, so the arrow and the

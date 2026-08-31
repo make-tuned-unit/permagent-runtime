@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { CyborgCharacterModel } from './components/world/agents/CyborgCharacter';
 import { AGENT_TRIM } from './components/world/shared/palette';
 import { Button } from './components/common/Button';
-import { radius } from './styles/tokens';
+import { radius, textSize } from './styles/tokens';
 import { useTheme } from './styles/useTheme';
 
 // Trim colors come from the world palette SOT (Henry's old neon-cyan preset
@@ -100,7 +100,7 @@ export default function CyborgTest() {
               '--pa-btn-pad': '6px 14px',
               '--pa-btn-radius': `${radius.sm}px`,
               fontFamily: 'monospace',
-              fontSize: 13,
+              fontSize: textSize.small,
             } as CSSProperties}
           >
             {p.label}
@@ -111,7 +111,7 @@ export default function CyborgTest() {
       {/* Info */}
       <div style={{
         position: 'absolute', bottom: 16, left: 16,
-        color: '#666', fontFamily: 'monospace', fontSize: 12,
+        color: '#666', fontFamily: 'monospace', fontSize: textSize.caption,
       }}>
         B1 Cyborg Character Test — orbit with mouse, switch presets above
       </div>

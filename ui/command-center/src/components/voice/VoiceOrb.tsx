@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { orbAmp, orbBands, orbMotionFor, orbSpin } from './orbDrive';
 import { useTheme } from '../../styles/useTheme';
-import { ease, font, radius } from '../../styles/tokens';
+import { ease, font, radius, textSize } from '../../styles/tokens';
 
 /**
  * VoiceOrb — the full-window conversation-mode takeover.
@@ -368,7 +368,7 @@ export function VoiceOrb({
               style={{
                 marginTop: 8,
                 fontFamily: font.body,
-                fontSize: 11,
+                fontSize: textSize.micro,
                 fontWeight: 700,
                 letterSpacing: '0.16em',
                 textTransform: 'uppercase',
@@ -385,7 +385,7 @@ export function VoiceOrb({
         <span
           style={{
             fontFamily: font.display,
-            fontSize: 13,
+            fontSize: textSize.small,
             fontWeight: 600,
             letterSpacing: '0.1em',
             textTransform: 'uppercase',
@@ -395,7 +395,7 @@ export function VoiceOrb({
         >
           {label}
         </span>
-        <span style={{ fontFamily: font.body, fontSize: 11, color: colors.textDim }}>
+        <span style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim }}>
           click anywhere to end the conversation
         </span>
       </div>

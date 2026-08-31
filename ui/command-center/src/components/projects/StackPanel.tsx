@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiEdit2, FiExternalLink, FiPlus, FiTrash2, FiX } from 'react-icons/fi';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
-import { font } from '../../styles/tokens';
+import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -158,7 +158,7 @@ export function StackPanel({ project }: { project: Project }) {
   };
 
   const inputStyle: React.CSSProperties = {
-    fontSize: 12, padding: '6px 9px', borderRadius: 7,
+    fontSize: textSize.caption, padding: '6px 9px', borderRadius: 7,
     background: colors.inputBg, border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none',
   };
@@ -183,7 +183,7 @@ export function StackPanel({ project }: { project: Project }) {
               '--pa-btn-weight': 600,
               gap: 4,
               fontFamily: font.body,
-              fontSize: 11,
+              fontSize: textSize.micro,
             } as CSSProperties}
           >
             <FiX size={11} /> Cancel
@@ -201,7 +201,7 @@ export function StackPanel({ project }: { project: Project }) {
               '--pa-btn-weight': 600,
               gap: 4,
               fontFamily: font.body,
-              fontSize: 11,
+              fontSize: textSize.micro,
             } as CSSProperties}
           >
             <FiPlus size={11} /> Add service
@@ -266,7 +266,7 @@ export function StackPanel({ project }: { project: Project }) {
                 '--pa-btn-radius': '7px',
                 '--pa-btn-weight': 600,
                 fontFamily: font.body,
-                fontSize: 12,
+                fontSize: textSize.caption,
               } as CSSProperties}
             >
               {saving ? 'Saving…' : form.id ? 'Save changes' : 'Add to stack'}
@@ -279,16 +279,16 @@ export function StackPanel({ project }: { project: Project }) {
       )}
 
       {error && (
-        <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{error}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error}</div>
       )}
 
       {status === 'loading' && (
-        <div style={{ fontSize: 11, color: colors.textDim }}>Loading stack…</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading stack…</div>
       )}
 
       {status === 'error' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load the stack.</span>
+          <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load the stack.</span>
           <Button
             colors={colors}
             variant="bare"
@@ -300,7 +300,7 @@ export function StackPanel({ project }: { project: Project }) {
               '--pa-btn-pad': '0',
               '--pa-btn-weight': 600,
               fontFamily: font.body,
-              fontSize: 11,
+              fontSize: textSize.micro,
             } as CSSProperties}
           >
             Retry
@@ -309,7 +309,7 @@ export function StackPanel({ project }: { project: Project }) {
       )}
 
       {status === 'ready' && entries.length === 0 && !form && (
-        <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
           No services yet — add the ones this project runs on and which account
           you use for each. Reference only: no passwords or secrets, ever.
         </div>
@@ -339,28 +339,28 @@ export function StackPanel({ project }: { project: Project }) {
                   >
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: colors.text }}>
+                        <span style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text }}>
                           {entry.service_name}
                         </span>
                         {entry.identity ? (
                           <span
                             title="The login identity used for this service on this project"
                             style={{
-                              fontSize: 11, color: colors.cyan, fontFamily: font.mono,
+                              fontSize: textSize.micro, color: colors.cyan, fontFamily: font.mono,
                               overflowWrap: 'anywhere',
                             }}
                           >
                             {entry.identity}
                           </span>
                         ) : (
-                          <span style={{ fontSize: 11, color: colors.textDim, fontStyle: 'italic' }}>
+                          <span style={{ fontSize: textSize.micro, color: colors.textDim, fontStyle: 'italic' }}>
                             no identity recorded
                           </span>
                         )}
                       </div>
                       {entry.notes && (
                         <div style={{
-                          fontSize: 11, color: colors.textMuted, lineHeight: 1.5,
+                          fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5,
                           marginTop: 2, overflowWrap: 'anywhere',
                         }}>
                           {entry.notes}

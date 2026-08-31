@@ -20,6 +20,7 @@ import { Button } from '../../common/Button';
 import { useTheme } from '../../../styles/useTheme';
 import { useCommandCenter } from '../../../lib/store';
 import { type SkillState } from '../../../lib/store';
+import { textSize } from '../../../styles/tokens';
 
 export function SkillsSection() {
   const { colors } = useTheme();
@@ -56,7 +57,7 @@ export function SkillsSection() {
         </Button>
         <span
           style={{
-            fontSize: 12,
+            fontSize: textSize.caption,
             color: skillsError ? colors.warning : colors.textMuted,
             lineHeight: 1.5,
           }}

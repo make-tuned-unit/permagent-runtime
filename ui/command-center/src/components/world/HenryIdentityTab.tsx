@@ -4,7 +4,7 @@ import { Section, StatRow } from './HudShell';
 import { useIdentityStore } from '../../stores/identityStore';
 import { computePortalEligibility } from '../../utils/portalEligibility';
 import { SBT_CONTRACT } from '../../config/chain';
-import { radius } from '../../styles/tokens';
+import { radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -85,7 +85,7 @@ export function HenryIdentityTab() {
   if (!id) {
     return (
       <div style={{ padding: '20px 14px', textAlign: 'center' }}>
-        <div style={{ fontSize: 11, color: MUTED, lineHeight: 1.6 }}>
+        <div style={{ fontSize: textSize.micro, color: MUTED, lineHeight: 1.6 }}>
           Awaiting first verification
         </div>
       </div>
@@ -105,7 +105,7 @@ export function HenryIdentityTab() {
         />
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: COLORS.primaryMarble }}>
+            <span style={{ fontSize: textSize.body, fontWeight: 600, color: COLORS.primaryMarble }}>
               {id.name}
             </span>
             {connectivity !== 'ok' && (
@@ -248,7 +248,7 @@ function LinkRow({ label, value, href }: { label: string; value: string; href?: 
       style={{
         display: 'flex',
         justifyContent: 'space-between',
-        fontSize: 11,
+        fontSize: textSize.micro,
         lineHeight: 1.6,
         cursor: clickable ? 'pointer' : 'default',
       }}
@@ -285,7 +285,7 @@ function CheckRow({ label, pass, detail, warn }: {
   const icon = pass ? '✓' : '✗';
   const color = pass ? CHECK_PASS : warn ? CHECK_WARN : CHECK_FAIL;
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, lineHeight: 1.6 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: textSize.micro, lineHeight: 1.6 }}>
       <span style={{ color: '#9CA3AF' }}>
         <span style={{ color, marginRight: 4 }}>{icon}</span>
         {label}

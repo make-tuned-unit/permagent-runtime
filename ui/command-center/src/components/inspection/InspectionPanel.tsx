@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, type CSSProperties } from 'react';
-import { ease, font, radius } from '../../styles/tokens';
+import { ease, font, radius, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { api } from '../../lib/api';
 import { wireEventType } from '../../lib/wireEvent';
@@ -165,7 +165,7 @@ export function InspectionPanel({ onClose }: Props) {
       background: colors.surface, backdropFilter: 'blur(24px)',
       borderLeft: `1px solid ${colors.borderHi}`,
       display: 'flex', flexDirection: 'column',
-      fontFamily: font.body, fontSize: 12,
+      fontFamily: font.body, fontSize: textSize.caption,
       boxShadow: colors.cardShadow,
     }}>
       {/* Header */}
@@ -173,7 +173,7 @@ export function InspectionPanel({ onClose }: Props) {
         padding: '12px 16px', borderBottom: `1px solid ${colors.border}`,
         display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
       }}>
-        <span style={{ flex: 1, fontWeight: 600, fontSize: 13, color: colors.text }}>
+        <span style={{ flex: 1, fontWeight: 600, fontSize: textSize.small, color: colors.text }}>
           What your agent sees
         </span>
         <Button
@@ -297,7 +297,7 @@ export function InspectionPanel({ onClose }: Props) {
                 }}>
                   {surface.replace(/Picker$/, '')}
                 </span>
-                <span style={{ color: colors.textMuted, fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ color: colors.textMuted, fontSize: textSize.micro, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {type}
                 </span>
               </div>
@@ -332,7 +332,7 @@ export function InspectionPanel({ onClose }: Props) {
             '--pa-btn-radius': '0',
             '--pa-btn-weight': 600,
             display: 'flex', width: '100%', justifyContent: 'flex-start', gap: 6,
-            borderWidth: 0, fontSize: 11,
+            borderWidth: 0, fontSize: textSize.micro,
           } as CSSProperties}
         >
           <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}
@@ -353,7 +353,7 @@ export function InspectionPanel({ onClose }: Props) {
                       {m.wing}
                     </span>
                   )}
-                  <span style={{ color: colors.textMuted, fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span style={{ color: colors.textMuted, fontSize: textSize.micro, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {m.content.split('\n')[0]}
                   </span>
                 </div>
@@ -386,7 +386,7 @@ export function InspectionPanel({ onClose }: Props) {
             '--pa-btn-radius': '0',
             '--pa-btn-weight': 600,
             display: 'flex', width: '100%', justifyContent: 'flex-start', gap: 6,
-            borderWidth: 0, fontSize: 11,
+            borderWidth: 0, fontSize: textSize.micro,
           } as CSSProperties}
         >
           <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}

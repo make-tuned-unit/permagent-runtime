@@ -31,7 +31,7 @@ import { createPortal } from 'react-dom';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
 import { toast } from '../../lib/notifications';
-import { ease, font, radius } from '../../styles/tokens';
+import { ease, font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useMeetingDictation, formatElapsed } from '../../hooks/useMeetingDictation';
 import { Button } from '../common/Button';
@@ -209,7 +209,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
       '--pa-btn-radius': '7px',
       '--pa-btn-weight': kind === 'primary' ? 600 : 400,
       fontFamily: font.body,
-      fontSize: 11,
+      fontSize: textSize.micro,
     } as CSSProperties;
   };
 
@@ -271,7 +271,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
           margin: open ? '0 8px' : '0 auto',
           cursor: state === 'finishing' ? 'default' : 'pointer',
           transition: `all 200ms ${ease.out}`,
-          fontFamily: font.body, fontSize: 13,
+          fontFamily: font.body, fontSize: textSize.small,
           textAlign: 'left',
         } as CSSProperties}
       >
@@ -320,10 +320,10 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               padding: 16, fontFamily: font.body,
             }}
           >
-            <div style={{ fontSize: 14, fontWeight: 600, color: colors.text, marginBottom: 4 }}>
+            <div style={{ fontSize: textSize.body, fontWeight: 600, color: colors.text, marginBottom: 4 }}>
               Record a meeting
             </div>
-            <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, marginBottom: 10 }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginBottom: 10 }}>
               {systemAudio
                 ? "Records BOTH sides — your microphone and this Mac's audio output, which is the other participants. The audio is transcribed on this device and never uploaded. Saved as a note on the project you pick."
                 : "Records your own voice from this machine's microphone (not the other side of a call), transcribes it on this device — the audio is never uploaded — and saves the transcript as a note on the project you pick when you stop."}
@@ -342,7 +342,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 sovereignty endpoint — say a local provider EXISTS, not that it
                 is the configured one, and a privacy line that is right most of
                 the time is worse than one that is always right. */}
-            <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, marginBottom: 10 }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginBottom: 10 }}>
               Afterwards the transcript text is sent to your configured model to
               write the summary and pull out to-dos. Configure a local model, or
               turn on Sovereign mode, to keep the text on this device too.
@@ -356,7 +356,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             {canCaptureSystem && (
               <label style={{
                 display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 10,
-                fontSize: 11, color: colors.textMuted, lineHeight: 1.5, cursor: 'pointer',
+                fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, cursor: 'pointer',
               }}>
                 <input
                   type="checkbox"
@@ -376,12 +376,12 @@ export function MeetingRecorder({ open }: { open: boolean }) {
 
             {systemAudioError && (
               <div style={{
-                fontSize: 11, color: colors.danger, marginBottom: 8, lineHeight: 1.5,
+                fontSize: textSize.micro, color: colors.danger, marginBottom: 8, lineHeight: 1.5,
               }}>{systemAudioError}</div>
             )}
 
             {loadError && (
-              <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
                 Couldn't load projects.
                 <Button
                   colors={colors}
@@ -392,13 +392,13 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                     '--pa-btn-bg-hover': 'transparent',
                     '--pa-btn-pad': '0',
                     '--pa-btn-weight': 600,
-                    fontFamily: font.body, fontSize: 11,
+                    fontFamily: font.body, fontSize: textSize.micro,
                   } as CSSProperties}
                 >Retry</Button>
               </div>
             )}
             {!loadError && projects === null && (
-              <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 8 }}>Loading projects…</div>
+              <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 8 }}>Loading projects…</div>
             )}
 
             {projects !== null && projects.length > FILTER_THRESHOLD && (
@@ -412,7 +412,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                   marginBottom: 8, padding: '6px 8px', borderRadius: 7,
                   background: colors.inputBg, color: colors.text,
                   border: `1px solid ${colors.border}`, outline: 'none',
-                  fontFamily: font.body, fontSize: 12,
+                  fontFamily: font.body, fontSize: textSize.caption,
                 }}
               />
             )}
@@ -420,7 +420,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             {projects !== null && (
               <div style={{ overflow: 'auto', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
                 {visibleProjects.length === 0 && (
-                  <div style={{ fontSize: 11, color: colors.textDim }}>
+                  <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
                     {projects.length === 0 ? 'No projects available.' : 'No project matches that.'}
                   </div>
                 )}
@@ -445,7 +445,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                       // The list is a column of full-width rows: the name reads
                       // from the left edge, not from the middle of the row.
                       justifyContent: 'flex-start',
-                      textAlign: 'left', fontSize: 12, fontFamily: font.body,
+                      textAlign: 'left', fontSize: textSize.caption, fontFamily: font.body,
                     } as CSSProperties}
                   >
                     {p.name}
@@ -470,7 +470,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                   '--pa-btn-fg-hover': colors.text,
                   '--pa-btn-pad': '7px 14px',
                   '--pa-btn-radius': '7px',
-                  fontFamily: font.body, fontSize: 12,
+                  fontFamily: font.body, fontSize: textSize.caption,
                 } as CSSProperties}
               >
                 Cancel
@@ -489,7 +489,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                   '--pa-btn-pad': '7px 14px',
                   '--pa-btn-radius': '7px',
                   '--pa-btn-weight': 600,
-                  fontFamily: font.body, fontSize: 12,
+                  fontFamily: font.body, fontSize: textSize.caption,
                 } as CSSProperties}
               >
                 Start recording
@@ -507,7 +507,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
       {newestDraft && state === 'idle' && createPortal(
         <div style={{ ...cardStyle(colors.borderHi), maxWidth: 340 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: colors.text }}>
+            <div style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text }}>
               Interrupted recording recovered
             </div>
             {recoveredDrafts.length > 1 && (
@@ -516,7 +516,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               </span>
             )}
           </div>
-          <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
             A recording for "{newestDraft.projectName}" was cut off before it was
             saved. The transcribed part survived — save it as the meeting note,
             or let it go.
@@ -525,7 +525,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               could render: the button simply sprang back to "Save the
               transcript" and the user had no idea why. */}
           {error && (
-            <div style={{ fontSize: 11, color: colors.danger, lineHeight: 1.4 }}>{error}</div>
+            <div style={{ fontSize: textSize.micro, color: colors.danger, lineHeight: 1.4 }}>{error}</div>
           )}
           <div style={{ display: 'flex', gap: 8 }}>
             <Button
@@ -576,13 +576,13 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 animation: 'pa-rec-pulse 1.4s ease-in-out infinite', flexShrink: 0,
               }} />
             )}
-            <span style={{ fontSize: 12, fontWeight: 600, color: state === 'error' ? colors.danger : colors.text }}>
+            <span style={{ fontSize: textSize.caption, fontWeight: 600, color: state === 'error' ? colors.danger : colors.text }}>
               {state === 'recording' && `Recording ${formatElapsed(elapsedSeconds)}`}
               {state === 'finishing' && 'Transcribing & writing your notes…'}
               {state === 'error' && 'Meeting dictation'}
             </span>
             {target && (
-              <span style={{ fontSize: 11, color: colors.textDim, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              <span style={{ fontSize: textSize.micro, color: colors.textDim, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 → {target.projectName}
               </span>
             )}
@@ -635,7 +635,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                   height: expanded ? 260 : 96,
                   background: colors.inputBg, color: colors.text,
                   border: `1px solid ${colors.border}`, borderRadius: radius.md,
-                  padding: '8px 10px', fontFamily: font.body, fontSize: 12,
+                  padding: '8px 10px', fontFamily: font.body, fontSize: textSize.caption,
                   lineHeight: 1.6, outline: 'none',
                   transition: `height 220ms ${ease.out}`,
                 }}
@@ -653,11 +653,11 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               shown it — the user recorded a whole call believing both sides
               were captured. Surface it here, where they are looking. */}
           {state === 'recording' && systemAudioError && (
-            <div style={{ fontSize: 11, color: colors.danger, lineHeight: 1.4 }}>{systemAudioError}</div>
+            <div style={{ fontSize: textSize.micro, color: colors.danger, lineHeight: 1.4 }}>{systemAudioError}</div>
           )}
 
           {error && (
-            <div style={{ fontSize: 11, color: colors.danger, lineHeight: 1.4 }}>{error}</div>
+            <div style={{ fontSize: textSize.micro, color: colors.danger, lineHeight: 1.4 }}>{error}</div>
           )}
 
           <div style={{ display: 'flex', gap: 8 }}>

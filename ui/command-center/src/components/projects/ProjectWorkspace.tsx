@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type CSSProperties } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { ProjectKanban } from './ProjectsView';
@@ -66,7 +66,7 @@ export function ProjectWorkspace({ project, projects, onSwitchProject, onBack, o
             '--pa-btn-bg-active': 'transparent',
             '--pa-btn-pad': '4px 8px',
             '--pa-btn-radius': `${radius.sm}px`,
-            fontSize: 12,
+            fontSize: textSize.caption,
             fontFamily: font.body,
             gap: 4,
           } as CSSProperties}
@@ -129,7 +129,7 @@ function ProjectSwitcher({ project, projects, onSwitch }: {
           '--pa-btn-pad': '2px 4px',
           '--pa-btn-radius': `${radius.xs}px`,
           '--pa-btn-weight': 600,
-          fontFamily: font.display, fontSize: 14, letterSpacing: '-0.01em',
+          fontFamily: font.display, fontSize: textSize.body, letterSpacing: '-0.01em',
         } as CSSProperties}
       >
         {project.name}
@@ -169,7 +169,7 @@ function ProjectSwitcher({ project, projects, onSwitch }: {
                   justifyContent: 'flex-start',
                   textAlign: 'left',
                   fontFamily: font.body,
-                  fontSize: 12,
+                  fontSize: textSize.caption,
                 } as CSSProperties}
               >
                 {p.name}
@@ -215,7 +215,7 @@ function ViewToggle({ lens, onChange }: { lens: ProjectLens; onChange: (l: Proje
               '--pa-btn-pad': '4px 12px',
               '--pa-btn-radius': `${radius.sm}px`,
               '--pa-btn-weight': active ? 600 : 500,
-              fontFamily: font.body, fontSize: 12,
+              fontFamily: font.body, fontSize: textSize.caption,
             } as CSSProperties}
           >
             {t.label}

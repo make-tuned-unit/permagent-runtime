@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { FiZap, FiX } from 'react-icons/fi';
 import { api, type PacksResponse } from '../../lib/api';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -64,7 +64,7 @@ export function RoleRoutingPrompt({ variant = 'banner' }: { variant?: RoleRoutin
             '--pa-btn-bg-hover': 'transparent',
             '--pa-btn-pad': '0',
             fontFamily: font.mono,
-            fontSize: 11,
+            fontSize: textSize.micro,
           } as CSSProperties}
         >
           {applying ? 'Applying…' : 'Apply recommended routing'}
@@ -123,7 +123,7 @@ export function RoleRoutingPrompt({ variant = 'banner' }: { variant?: RoleRoutin
                 '--pa-btn-pad': '4px 12px',
                 '--pa-btn-radius': `${radius.sm}px`,
                 fontFamily: font.mono,
-                fontSize: 11,
+                fontSize: textSize.micro,
               } as CSSProperties}
             >
               {applying ? 'Applying…' : 'Apply recommended routing'}
@@ -139,7 +139,7 @@ export function RoleRoutingPrompt({ variant = 'banner' }: { variant?: RoleRoutin
                 '--pa-btn-pad': '4px 8px',
                 '--pa-btn-radius': `${radius.sm}px`,
                 fontFamily: font.mono,
-                fontSize: 11,
+                fontSize: textSize.micro,
               } as CSSProperties}
             >
               <FiX size={12} className="inline mr-0.5" />

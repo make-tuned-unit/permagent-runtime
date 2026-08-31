@@ -1,6 +1,6 @@
 import { FiEdit2, FiX, FiPlus, FiRotateCcw } from 'react-icons/fi';
 
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from './useDashboard';
@@ -180,8 +180,8 @@ export function Dashboard() {
           // Initial load failed with nothing to show — an explicit, recoverable
           // dead-end instead of a spinner that never resolves.
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, textAlign: 'center', fontFamily: font.body }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: colors.danger }}>Couldn't load the dashboard</div>
-            <div style={{ fontSize: 11, color: colors.textDim, maxWidth: 320, lineHeight: 1.5 }}>
+            <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.danger }}>Couldn't load the dashboard</div>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim, maxWidth: 320, lineHeight: 1.5 }}>
               The daemon didn't respond. Check that it's running, then try again.
             </div>
             <Button
@@ -199,7 +199,7 @@ export function Dashboard() {
                 '--pa-btn-pad': '5px 14px',
                 '--pa-btn-radius': `${radius.sm}px`,
                 '--pa-btn-weight': 600,
-                marginTop: 6, fontSize: 11, fontFamily: font.body,
+                marginTop: 6, fontSize: textSize.micro, fontFamily: font.body,
               } as CSSProperties}
             >
               Try again
@@ -290,7 +290,7 @@ export function Dashboard() {
         <div style={{
           flexShrink: 0, padding: '8px 32px',
           background: colors.cyanSoft, borderBottom: `1px solid ${colors.border}`,
-          fontFamily: font.body, fontSize: 12, color: colors.cyan,
+          fontFamily: font.body, fontSize: textSize.caption, color: colors.cyan,
           display: 'flex', alignItems: 'center', gap: 8,
         }}>
           <FiEdit2 size={12} />
@@ -407,7 +407,7 @@ export function Dashboard() {
             pointerEvents: 'none',
             zIndex: 100,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontFamily: font.body, fontSize: 12, fontWeight: 600,
+            fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600,
             color: colors.cyan,
             boxShadow: colors.elevationOverlay,
           }}>
@@ -439,7 +439,7 @@ export function Dashboard() {
           }}
         >
           <FiPlus size={16} style={{ color: colors.textMuted }} />
-          <span style={{ fontFamily: font.body, fontSize: 13, color: colors.textMuted }}>
+          <span style={{ fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted }}>
             Add card
           </span>
         </div>
@@ -533,7 +533,7 @@ function SaveIndicator({ state }: { state: SaveState }) {
   const c = config[state];
   return (
     <span style={{
-      fontFamily: font.body, fontSize: 11, fontWeight: 500,
+      fontFamily: font.body, fontSize: textSize.micro, fontWeight: 500,
       color: c.color, transition: 'opacity 200ms ease',
     }}>
       {c.label}

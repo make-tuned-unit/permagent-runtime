@@ -14,7 +14,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import type { BrainGraph, GraphEntity } from '../brain/useBrainData';
 import { useTheme } from '../../styles/useTheme';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 
@@ -232,7 +232,7 @@ export function Echo() {
         >
           ✦ ECHO
         </div>
-        <div style={{ fontFamily: font.body, fontSize: 14, color: colors.text, lineHeight: 1.4 }}>
+        <div style={{ fontFamily: font.body, fontSize: textSize.body, color: colors.text, lineHeight: 1.4 }}>
           You wove{' '}
           <Button
             colors={colors}
@@ -300,7 +300,7 @@ function primaryBtn(colors: ReturnType<typeof useTheme>['colors']): CSSPropertie
     '--pa-btn-radius': '9px',
     '--pa-btn-weight': 600,
     fontFamily: font.body,
-    fontSize: 12,
+    fontSize: textSize.caption,
     whiteSpace: 'nowrap',
   } as CSSProperties;
 }
@@ -316,7 +316,7 @@ function ghostBtn(colors: ReturnType<typeof useTheme>['colors']): CSSProperties 
     '--pa-btn-pad': '7px 12px',
     '--pa-btn-radius': '9px',
     fontFamily: font.body,
-    fontSize: 12,
+    fontSize: textSize.caption,
     whiteSpace: 'nowrap',
   } as CSSProperties;
 }
@@ -333,6 +333,6 @@ function dismissBtn(colors: ReturnType<typeof useTheme>['colors']): CSSPropertie
     '--pa-btn-weight': 400,
     width: 26,
     height: 26,
-    fontSize: 12,
+    fontSize: textSize.caption,
   } as CSSProperties;
 }

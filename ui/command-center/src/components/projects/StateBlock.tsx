@@ -9,7 +9,7 @@
  */
 
 import { type CSSProperties } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -29,9 +29,9 @@ export function StateBlock({ tone, title, detail, onRetry, compact }: {
       textAlign: 'center', padding: compact ? '20px 16px' : '40px 24px',
       color: colors.textMuted, fontFamily: font.body,
     }}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: accent }}>{title}</div>
+      <div style={{ fontSize: textSize.small, fontWeight: 600, color: accent }}>{title}</div>
       {detail && (
-        <div style={{ fontSize: 11, color: colors.textDim, maxWidth: 320, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, maxWidth: 320, lineHeight: 1.5 }}>
           {detail}
         </div>
       )}
@@ -49,7 +49,7 @@ export function StateBlock({ tone, title, detail, onRetry, compact }: {
             '--pa-btn-radius': `${radius.sm}px`,
             '--pa-btn-weight': 600,
             marginTop: 6,
-            fontSize: 11,
+            fontSize: textSize.micro,
             fontFamily: font.body,
           } as CSSProperties}
         >

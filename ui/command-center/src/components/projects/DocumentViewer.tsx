@@ -19,7 +19,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { FiDownload, FiX } from 'react-icons/fi';
 import { api } from '../../lib/api';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import type { ProjectDocument } from './types';
@@ -128,7 +128,7 @@ export function DocumentViewer({ projectId, doc, onClose }: {
           borderBottom: `1px solid ${colors.border}`,
         }}>
           <span style={{
-            fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text,
+            fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text,
             flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
             {doc.filename}
@@ -185,7 +185,7 @@ function renderContent(
 
     case 'markdown':
       return text !== null
-        ? <div className="markdown-body" style={{ padding: '18px 22px', fontSize: 13, lineHeight: 1.6, color: colors.text }}>
+        ? <div className="markdown-body" style={{ padding: '18px 22px', fontSize: textSize.small, lineHeight: 1.6, color: colors.text }}>
             <ReactMarkdown>{text}</ReactMarkdown>
           </div>
         : <Loading colors={colors} />;
@@ -196,7 +196,7 @@ function renderContent(
     case 'text':
       return text !== null
         ? <pre style={{
-            margin: 0, padding: '18px 22px', fontFamily: font.mono, fontSize: 12,
+            margin: 0, padding: '18px 22px', fontFamily: font.mono, fontSize: textSize.caption,
             lineHeight: 1.55, color: colors.text, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
           }}>{text}</pre>
         : <Loading colors={colors} />;
@@ -208,7 +208,7 @@ function renderContent(
           height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center',
           justifyContent: 'center', gap: 14, padding: 24, textAlign: 'center',
         }}>
-          <div style={{ fontSize: 13, color: colors.textMuted }}>
+          <div style={{ fontSize: textSize.small, color: colors.textMuted }}>
             No inline preview for <span style={{ fontFamily: font.mono }}>{doc.mime_type || 'this type'}</span>.
           </div>
           <Button
@@ -221,7 +221,7 @@ function renderContent(
               '--pa-btn-border-hover': colors.borderHi,
               '--pa-btn-pad': '8px 14px',
               '--pa-btn-radius': `${radius.md}px`,
-              fontSize: 12,
+              fontSize: textSize.caption,
               gap: 8,
             } as CSSProperties}
           >
@@ -241,7 +241,7 @@ function CsvTable({ text, colors }: { text: string; colors: ReturnType<typeof us
   const [head, ...body] = rows;
   return (
     <div style={{ padding: 16, overflow: 'auto' }}>
-      <table style={{ borderCollapse: 'collapse', fontSize: 12, fontFamily: font.mono, color: colors.text }}>
+      <table style={{ borderCollapse: 'collapse', fontSize: textSize.caption, fontFamily: font.mono, color: colors.text }}>
         <thead>
           <tr>
             {head.map((cell, i) => (
@@ -326,11 +326,11 @@ function IconButton({ title, onClick, colors, children }: {
 }
 
 function Loading({ colors }: { colors: ReturnType<typeof useTheme>['colors'] }) {
-  return <div style={{ padding: 24, fontSize: 12, color: colors.textDim }}>Loading…</div>;
+  return <div style={{ padding: 24, fontSize: textSize.caption, color: colors.textDim }}>Loading…</div>;
 }
 
 function Notice({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: React.ReactNode }) {
-  return <div style={{ padding: 24, fontSize: 12, color: colors.textDim }}>{children}</div>;
+  return <div style={{ padding: 24, fontSize: textSize.caption, color: colors.textDim }}>{children}</div>;
 }
 
 export function formatSize(bytes: number): string {

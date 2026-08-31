@@ -7,6 +7,7 @@ import { Button } from '../common/Button';
 import { Chip } from '../common/Chip';
 import { navigateToTool } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
+import { textSize } from '../../styles/tokens';
 
 // The Financier — market research and the Finance tab ledger. Reports numbers;
 // never sizes a position and cannot place an order. Live state comes from the
@@ -54,7 +55,7 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
   return (
     <HudShell visible={visible} onClose={onClose} title="THE FINANCIER" statusPill={statusPill}>
       <div style={{ padding: '4px 14px 8px' }}>
-        <span style={{ fontSize: 11, color: '#9CA3AF', lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5 }}>
           Owns the Finance tab. The Orchestrator can see the board and
           queries this desk for prices, the ledger, and Polybot. The Watcher
           delivers overbought holding alerts. Keys stay in the keychain;
@@ -71,7 +72,7 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
       </Section>
 
       <Section title="THE LEASH" trimColor={COLORS.neonAmber}>
-        <div style={{ fontSize: 11, color: '#D1D5DB', lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
           No size advice. Permagent does not hold CLOB keys. Starting Polybot
           lets that bot trade on Polymarket.
         </div>
@@ -97,14 +98,14 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
             '--pa-btn-pad': '6px 10px',
             '--pa-btn-radius': '3px',
             '--pa-btn-weight': 600,
-            fontSize: 11,
+            fontSize: textSize.micro,
             letterSpacing: '0.04em',
           } as CSSProperties}
         >
           OPEN THE FINANCE TAB
         </Button>
         {tabHint && (
-          <div style={{ fontSize: 11, color: '#9CA3AF', marginTop: 8 }}>
+          <div style={{ fontSize: textSize.micro, color: '#9CA3AF', marginTop: 8 }}>
             The Finance tab is not in this workspace yet — it is added on the next daemon start.
           </div>
         )}
@@ -115,7 +116,7 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
 
 function Bullet({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ fontSize: 11, color: '#D1D5DB', lineHeight: 1.7, display: 'flex', gap: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.7, display: 'flex', gap: 8 }}>
       <span style={{ color: FINANCIER_TRIM }}>·</span>
       <span>{children}</span>
     </div>

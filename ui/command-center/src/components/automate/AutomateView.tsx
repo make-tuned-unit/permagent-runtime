@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import type { CSSProperties } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
 import { cronToEnglish } from '../../lib/schedule-format';
@@ -646,7 +646,7 @@ export function AutomateView() {
                 style={{
                   width: 180, padding: '5px 10px', borderRadius: radius.sm,
                   background: colors.surface, border: `1px solid ${colors.border}`,
-                  color: colors.text, fontSize: 12, fontFamily: font.mono, outline: 'none',
+                  color: colors.text, fontSize: textSize.caption, fontFamily: font.mono, outline: 'none',
                 }}
                 onKeyDown={e => { if (e.key === 'Escape') { setSearch(''); setShowSearch(false); } }}
               />
@@ -682,7 +682,7 @@ export function AutomateView() {
                 '--pa-btn-pad': '6px 14px',
                 '--pa-btn-radius': `${radius.md}px`,
                 fontFamily: font.body,
-                fontSize: 12,
+                fontSize: textSize.caption,
               } as CSSProperties}
             >+ Create {AUTOMATION.one}</Button>
           </>}
@@ -701,7 +701,7 @@ export function AutomateView() {
             background: withAlpha(colors.success, 0.1), border: `1px solid ${withAlpha(colors.success, 0.25)}`,
             display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
           }}>
-            <span style={{ fontSize: 13, color: colors.success, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <span style={{ fontSize: textSize.small, color: colors.success, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               &#10003; "{completionToast.name}" completed.
             </span>
             <Button
@@ -715,7 +715,7 @@ export function AutomateView() {
                 '--pa-btn-pad': '5px 12px',
                 '--pa-btn-radius': `${radius.md}px`,
                 fontFamily: font.body,
-                fontSize: 12,
+                fontSize: textSize.caption,
                 flexShrink: 0,
               } as CSSProperties}
             >Review result</Button>
@@ -729,7 +729,7 @@ export function AutomateView() {
                 '--pa-btn-fg-hover': colors.text,
                 '--pa-btn-bg-hover': 'transparent',
                 '--pa-btn-pad': '0',
-                fontSize: 16,
+                fontSize: textSize.heading,
                 lineHeight: 1.5,
               } as CSSProperties}
             >&times;</Button>
@@ -743,7 +743,7 @@ export function AutomateView() {
             background: withAlpha(colors.danger, 0.1), border: `1px solid ${withAlpha(colors.danger, 0.25)}`,
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           }}>
-            <span style={{ fontSize: 13, color: colors.danger }}>{runError}</span>
+            <span style={{ fontSize: textSize.small, color: colors.danger }}>{runError}</span>
             <Button
               colors={colors}
               variant="bare"
@@ -754,7 +754,7 @@ export function AutomateView() {
                 '--pa-btn-fg-hover': colors.text,
                 '--pa-btn-bg-hover': 'transparent',
                 '--pa-btn-pad': '0',
-                fontSize: 16,
+                fontSize: textSize.heading,
                 lineHeight: 1.5,
               } as CSSProperties}
             >&times;</Button>
@@ -767,10 +767,10 @@ export function AutomateView() {
             padding: '32px 28px', borderRadius: radius.lg, marginBottom: 24,
             background: colors.surface, border: `1px solid ${colors.border}`, textAlign: 'center',
           }}>
-            <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, marginBottom: 8 }}>
+            <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, marginBottom: 8 }}>
               Your agent can do a lot already
             </div>
-            <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.6, maxWidth: 420, margin: '0 auto' }}>
+            <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, maxWidth: 420, margin: '0 auto' }}>
               Try asking {agentName} to summarize your Downloads folder — if you like the result,
               ask to remember how. Skills appear here when you save them.
             </div>
@@ -783,7 +783,7 @@ export function AutomateView() {
                   '--pa-btn-pad': '8px 20px',
                   '--pa-btn-radius': `${radius.md}px`,
                   fontFamily: font.body,
-                  fontSize: 13,
+                  fontSize: textSize.small,
                 } as CSSProperties}
               >Schedule a task</Button>
             </div>
@@ -797,7 +797,7 @@ export function AutomateView() {
                 '--pa-btn-bg-hover': 'transparent',
                 '--pa-btn-pad': '0',
                 fontFamily: font.body,
-                fontSize: 11,
+                fontSize: textSize.micro,
                 marginTop: 12,
               } as CSSProperties}
             >or browse what your agent can do &rarr;</Button>
@@ -827,7 +827,7 @@ export function AutomateView() {
             ) : runsError && allRuns.length === 0 ? (
               <SectionState kind="error" message={runsError} onRetry={() => { setRunsLoading(true); fetchAllSessions(); }} />
             ) : allRuns.length === 0 ? (
-              <div style={{ fontSize: 12, color: colors.textDim, padding: '8px 0' }}>
+              <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '8px 0' }}>
                 No runs yet. History appears here once an {AUTOMATION.one} runs — use "Run Now" on one to try it.
               </div>
             ) : (
@@ -860,8 +860,8 @@ export function AutomateView() {
                         textAlign: 'left',
                       } as CSSProperties}
                     >
-                      <span style={{ fontSize: 11, color: colors.success }}>&#10003;</span>
-                      <span style={{ fontSize: 12, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
+                      <span style={{ fontSize: textSize.micro, color: colors.success }}>&#10003;</span>
+                      <span style={{ fontSize: textSize.caption, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
                       <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{run.messageCount} msgs</span>
                       <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{timeAgo(run.createdAt)}</span>
                     </button>
@@ -884,7 +884,7 @@ export function AutomateView() {
             ) : jobsError && jobs.length === 0 ? (
               <SectionState kind="error" message={`Couldn't load automations. ${jobsError}`} onRetry={() => { setJobsLoading(true); fetchJobs(); }} />
             ) : filteredJobs.length === 0 ? (
-              <div style={{ fontSize: 12, color: colors.textDim, padding: '8px 0' }}>
+              <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '8px 0' }}>
                 {q
                   ? `No ${AUTOMATION.many} match "${search.trim()}".`
                   : `No ${AUTOMATION.many} yet. Click "+ Create ${AUTOMATION.one}" to schedule your first one.`}
@@ -906,17 +906,17 @@ export function AutomateView() {
         {/* ── LEARNED ── */}
         <Section title="Learned" count={filteredSkills.length + filteredProposals.length}>
           {skillsLoading ? (
-            <div style={{ fontSize: 12, color: colors.textDim }}>Loading...</div>
+            <div style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading...</div>
           ) : filteredSkills.length === 0 && filteredProposals.length === 0 ? (
             <div style={{
               padding: '20px 24px', borderRadius: radius.lg,
               background: withAlpha(colors.purple, 0.04), border: `1px solid ${withAlpha(colors.purple, 0.12)}`,
             }}>
-              <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.6 }}>
+              <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6 }}>
                 When you repeat tasks, {agentName} notices patterns and offers to save them.
                 Your first skill will appear here.
               </div>
-              <div style={{ fontSize: 12, color: colors.textDim, marginTop: 8 }}>
+              <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: 8 }}>
                 Try asking {agentName} to do something twice — like "summarize my Downloads folder"
                 — and you'll be offered a way to remember how.
               </div>
@@ -932,10 +932,10 @@ export function AutomateView() {
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                     <div style={{ width: 8, height: 8, borderRadius: '50%', background: colors.warning }} />
-                    <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{proposal.description}</div>
+                    <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{proposal.description}</div>
                     <span style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors.warning, 0.15), color: colors.warning }}>PROPOSED</span>
                   </div>
-                  <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>
+                  <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>
                     Seen {proposal.occurrence_count} time{proposal.occurrence_count !== 1 ? 's' : ''} using {proposal.tool_used}
                   </div>
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -960,7 +960,7 @@ export function AutomateView() {
                       style={actionVars(colors)}
                     >Dismiss</Button>
                     {proposalError === proposal.argument_shape_hash && (
-                      <span style={{ fontSize: 11, color: colors.danger }}>
+                      <span style={{ fontSize: textSize.micro, color: colors.danger }}>
                         Couldn't save this skill. The daemon may be down.
                       </span>
                     )}
@@ -1003,10 +1003,10 @@ export function AutomateView() {
                       }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                         <div style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor }} />
-                        <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{skill.name}</div>
+                        <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{skill.name}</div>
                         <span style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: tierBg, color: tierFg }}>{tier}</span>
                       </div>
-                      {skill.description && <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>{skill.description}</div>}
+                      {skill.description && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>{skill.description}</div>}
                       <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
                         Used {uses} time{uses !== 1 ? 's' : ''} &middot; {skill.status}
                       </div>
@@ -1040,7 +1040,7 @@ export function AutomateView() {
                 '--pa-btn-fg-hover': colors.text,
                 '--pa-btn-bg-hover': 'transparent',
                 '--pa-btn-pad': '4px 0',
-                fontSize: 12,
+                fontSize: textSize.caption,
                 fontFamily: font.body,
                 textAlign: 'left',
               } as CSSProperties}
@@ -1060,7 +1060,7 @@ export function AutomateView() {
                   '--pa-btn-fg-hover': colors.text,
                   '--pa-btn-bg-hover': 'transparent',
                   '--pa-btn-pad': '0 0 8px',
-                  fontSize: 11,
+                  fontSize: textSize.micro,
                   fontFamily: font.body,
                   textAlign: 'left',
                 } as CSSProperties}
@@ -1085,7 +1085,7 @@ export function AutomateView() {
                         '--pa-btn-radius': `${radius.md}px`,
                         '--pa-btn-weight': 400,
                         fontFamily: font.body,
-                        fontSize: 12,
+                        fontSize: textSize.caption,
                         // Two stacked lines, so the chip's height is real: keep
                         // the leading the raw button inherited rather than
                         // `.pa-btn`'s 14px, which would close the gap.
@@ -1159,7 +1159,7 @@ function SectionState({ kind, message, onRetry }: {
   const { colors } = useTheme();
   if (kind === 'loading') {
     return (
-      <div style={{ fontSize: 12, color: colors.textDim, padding: '8px 0' }}>{message}</div>
+      <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '8px 0' }}>{message}</div>
     );
   }
   return (
@@ -1168,7 +1168,7 @@ function SectionState({ kind, message, onRetry }: {
       padding: '12px 16px', borderRadius: radius.md,
       background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.2)}`,
     }}>
-      <span style={{ fontSize: 12, color: colors.danger, flex: 1, minWidth: 0 }}>{message}</span>
+      <span style={{ fontSize: textSize.caption, color: colors.danger, flex: 1, minWidth: 0 }}>{message}</span>
       {onRetry && (
         <Button
           colors={colors}
@@ -1244,7 +1244,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
           width: 8, height: 8, borderRadius: '50%', background: statusColor, flexShrink: 0,
           boxShadow: job.currently_running ? `0 0 8px ${statusColor}` : 'none',
         }} />
-        <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
+        <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
         {job.version && (
           <span style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: colors.border, color: colors.textDim }}>
             v{job.version}
@@ -1262,7 +1262,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
           {job.currently_running ? 'RUNNING' : job.paused ? 'PAUSED' : 'SCHEDULED'}
         </span>
       </div>
-      {desc && <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' } as React.CSSProperties}>{desc}</div>}
+      {desc && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' } as React.CSSProperties}>{desc}</div>}
       <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginBottom: 10 }}>
         {schedule} &middot; {job.last_run ? `Ran ${timeAgo(job.last_run)}` : 'Never run yet'}
         {!!job.run_count && <> &middot; {job.run_count} run{job.run_count === 1 ? '' : 's'}</>}
@@ -1370,11 +1370,11 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
         <div style={{ width: 10, height: 10, borderRadius: '50%', background: statusColor, boxShadow: job.currently_running ? `0 0 8px ${statusColor}` : 'none' }} />
         <div style={{ fontSize: 18, fontWeight: 600, fontFamily: font.display }}>{name}</div>
-        {job.version && <span style={{ fontSize: 11, fontFamily: font.mono, color: colors.textDim }}>v{job.version}</span>}
+        {job.version && <span style={{ fontSize: textSize.micro, fontFamily: font.mono, color: colors.textDim }}>v{job.version}</span>}
       </div>
-      {job.description && <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.6, marginBottom: 16 }}>{job.description}</div>}
+      {job.description && <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, marginBottom: 16 }}>{job.description}</div>}
       {hasUpdate && (
-        <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: radius.md, background: withAlpha(colors.warning, 0.08), border: `1px solid ${withAlpha(colors.warning, 0.2)}`, fontSize: 12, color: colors.warning }}>
+        <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: radius.md, background: withAlpha(colors.warning, 0.08), border: `1px solid ${withAlpha(colors.warning, 0.2)}`, fontSize: textSize.caption, color: colors.warning }}>
           Update available (v{job.embedded_version}). Reset to default to apply.
         </div>
       )}
@@ -1392,7 +1392,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
         <ReferenceIdField id={job.id} />
       </div>
       {job.last_status === 'error' && job.last_error && (
-        <div style={{ marginBottom: 20, padding: '8px 12px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, fontSize: 11, color: colors.danger, fontFamily: font.mono, wordBreak: 'break-word' }}>
+        <div style={{ marginBottom: 20, padding: '8px 12px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, fontSize: textSize.micro, color: colors.danger, fontFamily: font.mono, wordBreak: 'break-word' }}>
           Last error: {job.last_error}
         </div>
       )}
@@ -1421,7 +1421,7 @@ function ExtensionDetail({ ext }: { ext: ExtensionInfo }) {
   return (
     <>
       <div style={{ fontSize: 18, fontWeight: 600, fontFamily: font.display, marginBottom: 8 }}>{ext.display_name}</div>
-      <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.6, marginBottom: 16 }}>{ext.description}</div>
+      <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, marginBottom: 16 }}>{ext.description}</div>
       <MetaField label="Type" value={ext.type} />
       <div style={{ marginTop: 16 }}>
         <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', color: colors.textDim, marginBottom: 6, letterSpacing: '0.05em' }}>
@@ -1430,11 +1430,11 @@ function ExtensionDetail({ ext }: { ext: ExtensionInfo }) {
         {ext.available_tools.length > 0 ? (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {ext.available_tools.map(t => (
-              <span key={t} style={{ fontSize: 11, fontFamily: font.mono, padding: '3px 8px', borderRadius: radius.sm, background: colors.border, color: colors.textMuted }}>{t}</span>
+              <span key={t} style={{ fontSize: textSize.micro, fontFamily: font.mono, padding: '3px 8px', borderRadius: radius.sm, background: colors.border, color: colors.textMuted }}>{t}</span>
             ))}
           </div>
         ) : (
-          <div style={{ fontSize: 12, color: colors.textDim }}>Tool list not available — tools are loaded at runtime.</div>
+          <div style={{ fontSize: textSize.caption, color: colors.textDim }}>Tool list not available — tools are loaded at runtime.</div>
         )}
       </div>
     </>
@@ -1555,7 +1555,7 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
           still a hover away. */}
       <div
         data-testid="run-detail-when"
-        style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, marginBottom: 12, fontVariantNumeric: 'tabular-nums' }}
+        style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, marginBottom: 12, fontVariantNumeric: 'tabular-nums' }}
       >
         <AsOf asOf={run.createdAt} /> &middot; {run.messageCount} msgs &middot; {run.totalTokens ?? 0} tokens
       </div>
@@ -1572,7 +1572,7 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
           '--pa-btn-radius': `${radius.sm}px`,
           '--pa-btn-weight': 600,
           fontFamily: font.body,
-          fontSize: 12,
+          fontSize: textSize.caption,
           gap: 6,
           marginBottom: 20,
         } as CSSProperties}
@@ -1583,7 +1583,7 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
         {' '}Open conversation
       </Button>
       {loading ? (
-        <div style={{ fontSize: 12, color: colors.textDim }}>Loading results...</div>
+        <div style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading results...</div>
       ) : findings.length > 0 ? (
         <>
           <FindingsPanel findings={findings} actionInFlight={actionInFlight} onAction={handleAction} onBulkAction={handleBulkAction} totalRecovered={totalRecovered} allActioned={allActioned} lifetime={lifetime} />
@@ -1596,7 +1596,7 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
       ) : loadError ? (
         <SectionState kind="error" message="Couldn't load this run's report." onRetry={() => setReloadTick(t => t + 1)} />
       ) : (
-        <div style={{ fontSize: 12, color: colors.textDim, padding: '4px 0' }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '4px 0' }}>
           No report was captured for this run.
         </div>
       )}
@@ -1637,7 +1637,7 @@ function ReferenceIdField({ id }: { id: string }) {
           '--pa-btn-fg-hover': colors.text,
           '--pa-btn-bg-hover': 'transparent',
           '--pa-btn-pad': '0',
-          fontSize: 12,
+          fontSize: textSize.caption,
           fontFamily: font.mono,
           gap: 6,
           justifyContent: 'flex-start',
@@ -1662,7 +1662,7 @@ function MetaField({ label, value, mono }: { label: string; value: string; mono?
   return (
     <div>
       <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', color: colors.textDim, marginBottom: 2, letterSpacing: '0.05em' }}>{label}</div>
-      <div style={{ fontSize: 12, color: colors.textMuted, fontFamily: mono ? font.mono : font.body }}>{value}</div>
+      <div style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: mono ? font.mono : font.body }}>{value}</div>
     </div>
   );
 }
@@ -1733,7 +1733,7 @@ export function DeleteAutomationControl({ name, onDelete }: {
   // The sentence and any failure take a whole line of their own (the action
   // rows wrap), so the question is readable rather than squeezed between buttons.
   const line: React.CSSProperties = {
-    flexBasis: '100%', fontSize: 11, fontFamily: font.body, lineHeight: 1.5, marginTop: 2,
+    flexBasis: '100%', fontSize: textSize.micro, fontFamily: font.body, lineHeight: 1.5, marginTop: 2,
   };
 
   return (
@@ -1796,7 +1796,7 @@ function ReportToggle({ text, createdAt, tokens }: { text: string; createdAt: st
           '--pa-btn-pad': '8px 0',
           gap: 8,
           justifyContent: 'flex-start',
-          fontSize: 11,
+          fontSize: textSize.micro,
           fontFamily: font.body,
         } as CSSProperties}
       >
@@ -1819,14 +1819,14 @@ function RenderedReport({ text }: { text: string }) {
   while (i < lines.length) {
     const line = lines[i];
     if (!line.trim()) { i++; continue; }
-    if (line.startsWith('# ')) { elements.push(<div key={i} style={{ fontSize: 16, fontWeight: 700, fontFamily: font.display, color: colors.text, marginTop: 16, marginBottom: 8 }}>{renderInline(line.slice(2), colors)}</div>); i++; continue; }
-    if (line.startsWith('## ')) { elements.push(<div key={i} style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, color: colors.text, marginTop: 14, marginBottom: 6 }}>{renderInline(line.slice(3), colors)}</div>); i++; continue; }
-    if (line.startsWith('### ')) { elements.push(<div key={i} style={{ fontSize: 13, fontWeight: 600, color: colors.cyan, marginTop: 12, marginBottom: 4 }}>{renderInline(line.slice(4), colors)}</div>); i++; continue; }
+    if (line.startsWith('# ')) { elements.push(<div key={i} style={{ fontSize: textSize.heading, fontWeight: 700, fontFamily: font.display, color: colors.text, marginTop: 16, marginBottom: 8 }}>{renderInline(line.slice(2), colors)}</div>); i++; continue; }
+    if (line.startsWith('## ')) { elements.push(<div key={i} style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, color: colors.text, marginTop: 14, marginBottom: 6 }}>{renderInline(line.slice(3), colors)}</div>); i++; continue; }
+    if (line.startsWith('### ')) { elements.push(<div key={i} style={{ fontSize: textSize.small, fontWeight: 600, color: colors.cyan, marginTop: 12, marginBottom: 4 }}>{renderInline(line.slice(4), colors)}</div>); i++; continue; }
     if (line.match(/^---+$/)) { elements.push(<hr key={i} style={{ border: 'none', borderTop: `1px solid ${colors.border}`, margin: '12px 0' }} />); i++; continue; }
-    if (line.startsWith('```')) { const codeLines: string[] = []; i++; while (i < lines.length && !lines[i].startsWith('```')) { codeLines.push(lines[i]); i++; } i++; elements.push(<pre key={`code-${i}`} style={{ padding: '10px 12px', borderRadius: radius.sm, background: colors.bgDeeper, border: `1px solid ${colors.border}`, fontSize: 11, fontFamily: font.mono, color: colors.textMuted, overflow: 'auto', margin: '6px 0', lineHeight: 1.5 }}>{codeLines.join('\n')}</pre>); continue; }
-    if (line.match(/^\s*-\s/)) { const bl: string[] = []; while (i < lines.length && lines[i].match(/^\s*-\s/)) { bl.push(lines[i].replace(/^\s*-\s/, '')); i++; } elements.push(<div key={`b-${i}`} style={{ margin: '4px 0 4px 4px' }}>{bl.map((b, j) => <div key={j} style={{ display: 'flex', gap: 8, marginBottom: 3, fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}><span style={{ color: colors.cyan, flexShrink: 0, marginTop: 1 }}>&#8226;</span><span>{renderInline(b, colors)}</span></div>)}</div>); continue; }
-    if (line.match(/^\d+\.\s/)) { const nl: string[] = []; while (i < lines.length && lines[i].match(/^\d+\.\s/)) { nl.push(lines[i].replace(/^\d+\.\s/, '')); i++; } elements.push(<div key={`n-${i}`} style={{ margin: '4px 0 4px 4px' }}>{nl.map((n, j) => <div key={j} style={{ display: 'flex', gap: 8, marginBottom: 3, fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}><span style={{ color: colors.textDim, flexShrink: 0, fontFamily: font.mono, fontSize: 11, minWidth: 16 }}>{j + 1}.</span><span>{renderInline(n, colors)}</span></div>)}</div>); continue; }
-    elements.push(<div key={i} style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.6, marginBottom: 4 }}>{renderInline(line, colors)}</div>); i++;
+    if (line.startsWith('```')) { const codeLines: string[] = []; i++; while (i < lines.length && !lines[i].startsWith('```')) { codeLines.push(lines[i]); i++; } i++; elements.push(<pre key={`code-${i}`} style={{ padding: '10px 12px', borderRadius: radius.sm, background: colors.bgDeeper, border: `1px solid ${colors.border}`, fontSize: textSize.micro, fontFamily: font.mono, color: colors.textMuted, overflow: 'auto', margin: '6px 0', lineHeight: 1.5 }}>{codeLines.join('\n')}</pre>); continue; }
+    if (line.match(/^\s*-\s/)) { const bl: string[] = []; while (i < lines.length && lines[i].match(/^\s*-\s/)) { bl.push(lines[i].replace(/^\s*-\s/, '')); i++; } elements.push(<div key={`b-${i}`} style={{ margin: '4px 0 4px 4px' }}>{bl.map((b, j) => <div key={j} style={{ display: 'flex', gap: 8, marginBottom: 3, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}><span style={{ color: colors.cyan, flexShrink: 0, marginTop: 1 }}>&#8226;</span><span>{renderInline(b, colors)}</span></div>)}</div>); continue; }
+    if (line.match(/^\d+\.\s/)) { const nl: string[] = []; while (i < lines.length && lines[i].match(/^\d+\.\s/)) { nl.push(lines[i].replace(/^\d+\.\s/, '')); i++; } elements.push(<div key={`n-${i}`} style={{ margin: '4px 0 4px 4px' }}>{nl.map((n, j) => <div key={j} style={{ display: 'flex', gap: 8, marginBottom: 3, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}><span style={{ color: colors.textDim, flexShrink: 0, fontFamily: font.mono, fontSize: textSize.micro, minWidth: 16 }}>{j + 1}.</span><span>{renderInline(n, colors)}</span></div>)}</div>); continue; }
+    elements.push(<div key={i} style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.6, marginBottom: 4 }}>{renderInline(line, colors)}</div>); i++;
   }
   return <div>{elements}</div>;
 }
@@ -1837,7 +1837,7 @@ function renderInline(text: string, colors: { text: string; cyan: string; border
     const bold = remaining.match(/^(.*?)\*\*(.+?)\*\*(.*)/s);
     if (bold) { if (bold[1]) parts.push(<span key={key++}>{bold[1]}</span>); parts.push(<strong key={key++} style={{ color: colors.text, fontWeight: 600 }}>{bold[2]}</strong>); remaining = bold[3]; continue; }
     const code = remaining.match(/^(.*?)`(.+?)`(.*)/s);
-    if (code) { if (code[1]) parts.push(<span key={key++}>{code[1]}</span>); parts.push(<code key={key++} style={{ fontFamily: font.mono, fontSize: 11, padding: '1px 4px', borderRadius: 3, background: colors.border, color: colors.cyan }}>{code[2]}</code>); remaining = code[3]; continue; }
+    if (code) { if (code[1]) parts.push(<span key={key++}>{code[1]}</span>); parts.push(<code key={key++} style={{ fontFamily: font.mono, fontSize: textSize.micro, padding: '1px 4px', borderRadius: 3, background: colors.border, color: colors.cyan }}>{code[2]}</code>); remaining = code[3]; continue; }
     parts.push(<span key={key++}>{remaining}</span>); break;
   }
   return parts.length === 1 ? parts[0] : <>{parts}</>;
@@ -1924,11 +1924,11 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
         <div style={{ fontSize: 22, fontWeight: 700, fontFamily: font.display, color: allActioned ? colors.success : colors.text }}>
           {recoveryHeadline(allActioned, totalRecovered, totalPendingBytes)}
         </div>
-        <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 4 }}>
+        <div style={{ fontSize: textSize.small, color: colors.textMuted, marginTop: 4 }}>
           {allActioned ? `All ${findings.length} items cleaned.` : `${totalPending} items across ${groups.size} locations.`}
         </div>
         {lifetimeLine && (
-          <div style={{ fontSize: 12, color: colors.textDim, marginTop: 6, fontVariantNumeric: 'tabular-nums' }}>
+          <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: 6, fontVariantNumeric: 'tabular-nums' }}>
             {lifetimeLine}
           </div>
         )}
@@ -1942,7 +1942,7 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
               '--pa-btn-radius': `${radius.md}px`,
               '--pa-btn-weight': 700,
               fontFamily: font.body,
-              fontSize: 14,
+              fontSize: textSize.body,
               marginTop: 14,
             } as CSSProperties}
           >
@@ -1996,10 +1996,10 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
                   </div>
                 </button>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, color: allDone ? colors.success : colors.text }}>{groupName}</div>
-                  <div style={{ fontSize: 12, color: colors.textDim, marginTop: 2 }}>{allDone ? `Cleaned — ${formatBytes(groupRecovered)}` : `${pending.length} items · ${formatBytes(pendingBytes)}`}</div>
+                  <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, color: allDone ? colors.success : colors.text }}>{groupName}</div>
+                  <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: 2 }}>{allDone ? `Cleaned — ${formatBytes(groupRecovered)}` : `${pending.length} items · ${formatBytes(pendingBytes)}`}</div>
                 </div>
-                {allDone ? <div style={{ padding: '8px 16px', borderRadius: radius.md, background: withAlpha(colors.success, 0.1), color: colors.success, fontSize: 12, fontWeight: 600 }}>Done</div> : (
+                {allDone ? <div style={{ padding: '8px 16px', borderRadius: radius.md, background: withAlpha(colors.success, 0.1), color: colors.success, fontSize: textSize.caption, fontWeight: 600 }}>Done</div> : (
                   <Button
                     colors={colors}
                     variant="primary"
@@ -2009,7 +2009,7 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
                       '--pa-btn-radius': `${radius.md}px`,
                       '--pa-btn-weight': 700,
                       fontFamily: font.body,
-                      fontSize: 13,
+                      fontSize: textSize.small,
                     } as CSSProperties}
                   >Clean — {formatBytes(pendingBytes)}</Button>
                 )}
@@ -2070,13 +2070,13 @@ pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, busy, err
   return (
     <div style={{ marginBottom: 16, borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${colors.borderHi}`, background: colors.bgDeeper }}>
       <div style={{ padding: '16px 20px', borderBottom: `1px solid ${colors.border}` }}>
-        <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display }}>
+        <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display }}>
           Review — {eligible.length} item{eligible.length === 1 ? '' : 's'}, {formatBytes(totalBytes)} total
         </div>
         {breakdown.length > 0 && (
           <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3 }}>
             {breakdown.map(b => (
-              <div key={b.category} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: colors.textMuted, fontFamily: font.mono }}>
+              <div key={b.category} style={{ display: 'flex', justifyContent: 'space-between', fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono }}>
                 <span style={{ color: categoryColor(b.category, colors) }}>{b.label}</span>
                 <span>{b.count} item{b.count === 1 ? '' : 's'} &middot; {formatBytes(b.bytes)}</span>
               </div>
@@ -2091,7 +2091,7 @@ pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, busy, err
               onChange={e => onToggleRegenerable(e.target.checked)}
               style={{ accentColor: colors.warning }}
             />
-            <span style={{ fontSize: 12, color: colors.textMuted }}>
+            <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>
               also remove regenerable caches (re-downloads {formatBytes(regenerableBytes)})
             </span>
           </label>
@@ -2108,11 +2108,11 @@ pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, busy, err
               <div key={f.id} style={{ padding: '6px 0', borderTop: `1px solid ${colors.border}` }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <CategoryBadge category={category} />
-                  <span style={{ fontSize: 12, color: colors.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.path}</span>
-                  <span style={{ fontSize: 11, color: colors.textMuted, fontFamily: font.mono, flexShrink: 0 }}>{formatBytes(f.size_bytes)}</span>
+                  <span style={{ fontSize: textSize.caption, color: colors.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.path}</span>
+                  <span style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono, flexShrink: 0 }}>{formatBytes(f.size_bytes)}</span>
                 </div>
                 {f.consequence && (
-                  <div style={{ fontSize: 11, color: colors.danger, marginTop: 3, marginLeft: 2 }}>{f.consequence}</div>
+                  <div style={{ fontSize: textSize.micro, color: colors.danger, marginTop: 3, marginLeft: 2 }}>{f.consequence}</div>
                 )}
               </div>
             );
@@ -2120,7 +2120,7 @@ pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, busy, err
         </div>
       )}
       {error && (
-        <div style={{ padding: '10px 20px', fontSize: 12, color: colors.danger, background: withAlpha(colors.danger, 0.08) }}>{error}</div>
+        <div style={{ padding: '10px 20px', fontSize: textSize.caption, color: colors.danger, background: withAlpha(colors.danger, 0.08) }}>{error}</div>
       )}
       <div style={{ padding: '12px 20px', display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: `1px solid ${colors.border}` }}>
         <Button colors={colors} onClick={onCancel} style={actionVars(colors)}>Cancel</Button>
@@ -2148,9 +2148,9 @@ finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a
   const needsSecondConfirm = requiresSecondConfirm(finding);
   const [confirming, setConfirming] = useState(false);
 
-  if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.success, 0.05), border: `1px solid ${withAlpha(colors.success, 0.12)}` }}><span style={{ fontSize: 12, color: colors.success }}>Trashed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: 11, color: colors.success, fontFamily: font.mono, fontVariantNumeric: 'tabular-nums' }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
-  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: 12, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={finding.error_message || undefined}>{finding.error_message || fileName}</span><Button colors={colors} onClick={() => onAction('trash', needsSecondConfirm || undefined)} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '2px 6px', fontSize: 10, flexShrink: 0 } as CSSProperties}>Retry</Button></div>;
-  if (finding.action_taken) return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: 12, color: colors.textMuted }}>Kept</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
+  if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.success, 0.05), border: `1px solid ${withAlpha(colors.success, 0.12)}` }}><span style={{ fontSize: textSize.caption, color: colors.success }}>Trashed</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: textSize.micro, color: colors.success, fontFamily: font.mono, fontVariantNumeric: 'tabular-nums' }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
+  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: textSize.caption, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={finding.error_message || undefined}>{finding.error_message || fileName}</span><Button colors={colors} onClick={() => onAction('trash', needsSecondConfirm || undefined)} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '2px 6px', fontSize: 10, flexShrink: 0 } as CSSProperties}>Retry</Button></div>;
+  if (finding.action_taken) return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: textSize.caption, color: colors.textMuted }}>Kept</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
 
   const handleTrashClick = () => {
     if (needsSecondConfirm) { setConfirming(true); return; }
@@ -2162,12 +2162,12 @@ finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <div style={{ fontSize: 12, fontWeight: 500, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</div>
+            <div style={{ fontSize: textSize.caption, fontWeight: 500, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</div>
             <CategoryBadge category={category} />
           </div>
           <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>{formatBytes(finding.size_bytes)}{finding.age_days != null && <> &middot; {finding.age_days}d old</>}</div>
           {(category === 'in_use' || category === 'managed_by_macos') && finding.consequence && (
-            <div style={{ fontSize: 11, color: categoryColor(category, colors), marginTop: 3 }}>{finding.consequence}</div>
+            <div style={{ fontSize: textSize.micro, color: categoryColor(category, colors), marginTop: 3 }}>{finding.consequence}</div>
           )}
         </div>
         <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
@@ -2177,8 +2177,8 @@ finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a
       </div>
       {confirming && (
         <div style={{ padding: '10px 12px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.25)}` }}>
-          <div style={{ fontSize: 12, color: colors.text, fontWeight: 600, marginBottom: 4 }}>Are you sure?</div>
-          {finding.consequence && <div style={{ fontSize: 12, color: colors.danger, marginBottom: 8 }}>{finding.consequence}</div>}
+          <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600, marginBottom: 4 }}>Are you sure?</div>
+          {finding.consequence && <div style={{ fontSize: textSize.caption, color: colors.danger, marginBottom: 8 }}>{finding.consequence}</div>}
           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
             <Button colors={colors} onClick={() => setConfirming(false)} style={{ ...actionVars(colors), '--pa-btn-pad': '3px 10px' } as CSSProperties}>Cancel</Button>
             <Button
@@ -2272,7 +2272,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   ];
   const fieldStyle = {
     width: '100%', padding: '8px 12px', borderRadius: radius.sm, background: colors.surface,
-    border: `1px solid ${colors.border}`, color: colors.text, fontSize: 13, fontFamily: font.body,
+    border: `1px solid ${colors.border}`, color: colors.text, fontSize: textSize.small, fontFamily: font.body,
     outline: 'none', boxSizing: 'border-box' as const,
   };
 
@@ -2281,22 +2281,22 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
       <div style={{ width: 480, maxHeight: '80vh', overflowY: 'auto', background: colors.bg, borderRadius: radius.lg, border: `1px solid ${colors.border}`, padding: 28 }}>
         <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 600, marginBottom: 20 }}>New Automation</div>
 
-        <label style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>What should we call this?</label>
+        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>What should we call this?</label>
         <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g., Weekly Cleanup" style={{
           width: '100%', padding: '8px 12px', borderRadius: radius.sm, background: colors.surface,
-          border: `1px solid ${colors.border}`, color: colors.text, fontSize: 13, fontFamily: font.body,
+          border: `1px solid ${colors.border}`, color: colors.text, fontSize: textSize.small, fontFamily: font.body,
           outline: 'none', marginBottom: 16, boxSizing: 'border-box',
         }} />
 
-        <label style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>What should the agent do?</label>
+        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>What should the agent do?</label>
         <textarea value={prompt} onChange={e => setPrompt(e.target.value)}
           placeholder="Scan my Downloads folder for files older than 30 days..." rows={4} style={{
             width: '100%', padding: '8px 12px', borderRadius: radius.sm, background: colors.surface,
-            border: `1px solid ${colors.border}`, color: colors.text, fontSize: 13, fontFamily: font.body,
+            border: `1px solid ${colors.border}`, color: colors.text, fontSize: textSize.small, fontFamily: font.body,
             outline: 'none', resize: 'vertical', marginBottom: 16, boxSizing: 'border-box',
           }} />
 
-        <label style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>When should it run?</label>
+        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>When should it run?</label>
         <div style={{ display: 'flex', gap: 4, marginBottom: 12, background: colors.surface, borderRadius: radius.sm, padding: 3, border: `1px solid ${colors.border}` }}>
           {kindTabs.map(t => (
             <Button
@@ -2311,7 +2311,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
                 '--pa-btn-radius': `${radius.sm}px`,
                 '--pa-btn-weight': kind === t.id ? 600 : 400,
                 fontFamily: font.body,
-                fontSize: 12,
+                fontSize: textSize.caption,
                 flex: 1,
               } as CSSProperties}
             >{t.label}</Button>
@@ -2324,14 +2324,14 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
               {CRON_PRESETS.map((preset, i) => (
                 <label key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '4px 0' }}>
                   <input type="radio" name="cron" checked={selectedPreset === i} onChange={() => setSelectedPreset(i)} style={{ accentColor: colors.cyan }} />
-                  <span style={{ fontSize: 13, color: selectedPreset === i ? colors.text : colors.textMuted }}>{preset.label}</span>
+                  <span style={{ fontSize: textSize.small, color: selectedPreset === i ? colors.text : colors.textMuted }}>{preset.label}</span>
                 </label>
               ))}
             </div>
             {selectedPreset === CRON_PRESETS.length - 1 && (
               <div style={{ marginBottom: 12 }}>
                 <input value={customCron} onChange={e => setCustomCron(e.target.value)} placeholder="0 9 * * 1-5" style={{ ...fieldStyle, fontFamily: font.mono }} />
-                {customCron.trim() && <div style={{ fontSize: 11, color: colors.textDim, marginTop: 4, fontFamily: font.mono }}>Preview: {cronToEnglish(customCron)}</div>}
+                {customCron.trim() && <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 4, fontFamily: font.mono }}>Preview: {cronToEnglish(customCron)}</div>}
               </div>
             )}
           </>
@@ -2356,16 +2356,16 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
 
         {kind !== 'interval' && (
           <div style={{ marginBottom: 12 }}>
-            <label style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>Timezone (optional)</label>
+            <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>Timezone (optional)</label>
             <input value={tz} onChange={e => setTz(e.target.value)} placeholder="UTC, +05:30, -08:00" style={{ ...fieldStyle, fontFamily: font.mono }} />
           </div>
         )}
 
-        <label style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>Retries on failure</label>
+        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>Retries on failure</label>
         <input type="number" min={0} max={10} value={maxRetries} onChange={e => setMaxRetries(e.target.value)} style={{ ...fieldStyle, marginBottom: 4 }} />
-        <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 16 }}>0 = no retry. If retries are exhausted, the job is escalated to your Decision Inbox.</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 16 }}>0 = no retry. If retries are exhausted, the job is escalated to your Decision Inbox.</div>
 
-        {error && <div style={{ fontSize: 12, color: colors.danger, marginBottom: 12 }}>{error}</div>}
+        {error && <div style={{ fontSize: textSize.caption, color: colors.danger, marginBottom: 12 }}>{error}</div>}
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <Button
@@ -2377,7 +2377,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
               '--pa-btn-pad': '8px 16px',
               '--pa-btn-radius': `${radius.sm}px`,
               fontFamily: font.body,
-              fontSize: 12,
+              fontSize: textSize.caption,
             } as CSSProperties}
           >Cancel</Button>
           <Button
@@ -2389,7 +2389,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
               '--pa-btn-pad': '8px 20px',
               '--pa-btn-radius': `${radius.sm}px`,
               fontFamily: font.body,
-              fontSize: 12,
+              fontSize: textSize.caption,
             } as CSSProperties}
           >{saving ? 'Creating...' : 'Create Automation'}</Button>
         </div>

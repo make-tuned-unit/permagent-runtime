@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Mobius } from '../mobius/Mobius';
@@ -136,22 +136,22 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
             <Glass key={p.id} padding={14}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text }}>{p.displayName}</div>
+                  <div style={{ fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>{p.displayName}</div>
                   {p.id === 'tavily' && !done && (
                     <span style={{ fontFamily: font.body, fontSize: 10, fontWeight: 600, color: colors.cyan, border: `1px solid ${colors.cyan}55`, borderRadius: radius.sm, padding: '1px 6px' }}>
                       EASIEST — NO CARD
                     </span>
                   )}
                 </div>
-                {done && <span style={{ fontSize: 11, color: colors.cyan }}>{r.verified ? '✓ Working' : '✓ Connected'}</span>}
+                {done && <span style={{ fontSize: textSize.micro, color: colors.cyan }}>{r.verified ? '✓ Working' : '✓ Connected'}</span>}
               </div>
-              <div style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
+              <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginTop: 2 }}>
                 {p.description} {p.freeTierNote}
               </div>
 
               {!r.guiding && !done && (
                 <div style={{ marginTop: 10 }}>
-                  <PrimaryButton onClick={() => openKeyPage(p)} style={{ height: 38, fontSize: 13 }}>
+                  <PrimaryButton onClick={() => openKeyPage(p)} style={{ height: 38, fontSize: textSize.small }}>
                     Open the key page — I'll guide you
                   </PrimaryButton>
                 </div>
@@ -160,16 +160,16 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
               {r.guiding && (
                 <>
                   <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: radius.md, background: `${colors.cyan}0D`, border: `1px solid ${colors.cyan}22` }}>
-                    <div style={{ fontFamily: font.body, fontSize: 11, fontWeight: 600, color: colors.text, marginBottom: 6 }}>
+                    <div style={{ fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600, color: colors.text, marginBottom: 6 }}>
                       On the page that just opened:
                     </div>
                     {p.setupSteps.map((s, i) => (
-                      <div key={i} style={{ display: 'flex', gap: 8, fontFamily: font.body, fontSize: 11, color: colors.textMuted, lineHeight: 1.7 }}>
+                      <div key={i} style={{ display: 'flex', gap: 8, fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.7 }}>
                         <span style={{ color: colors.cyan, fontWeight: 600, flexShrink: 0 }}>{i + 1}.</span>
                         <span>{s}</span>
                       </div>
                     ))}
-                    <GhostLink onClick={() => openKeyPage(p)} style={{ fontSize: 11, marginTop: 4 }}>
+                    <GhostLink onClick={() => openKeyPage(p)} style={{ fontSize: textSize.micro, marginTop: 4 }}>
                       Page didn't open? Click to try again ↗
                     </GhostLink>
                   </div>
@@ -191,7 +191,7 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
                         '--pa-btn-radius': `${radius.md}px`,
                         '--pa-btn-weight': 600,
                         height: 44, whiteSpace: 'nowrap',
-                        fontFamily: font.body, fontSize: 13,
+                        fontFamily: font.body, fontSize: textSize.small,
                       } as CSSProperties}
                     >{r.busy ? 'Testing…' : 'Save & test'}</Button>
                   </div>
@@ -199,17 +199,17 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
               )}
 
               {r.error && (
-                <div role="alert" style={{ fontFamily: font.body, fontSize: 11, color: colors.danger, marginTop: 8 }}>
+                <div role="alert" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.danger, marginTop: 8 }}>
                   {r.error}
                 </div>
               )}
               {r.verify && (
-                <div role={r.verify.ok ? 'status' : 'alert'} style={{ fontFamily: font.body, fontSize: 11, color: r.verify.ok ? colors.cyan : colors.warning, marginTop: 8 }}>
+                <div role={r.verify.ok ? 'status' : 'alert'} style={{ fontFamily: font.body, fontSize: textSize.micro, color: r.verify.ok ? colors.cyan : colors.warning, marginTop: 8 }}>
                   {r.verify.ok ? '✓ ' : ''}{r.verify.message}
                   {!r.verify.ok && (
                     <>
                       {' '}
-                      <GhostLink onClick={() => runProbe(p)} style={{ fontSize: 11 }}>Test again</GhostLink>
+                      <GhostLink onClick={() => runProbe(p)} style={{ fontSize: textSize.micro }}>Test again</GhostLink>
                     </>
                   )}
                 </div>

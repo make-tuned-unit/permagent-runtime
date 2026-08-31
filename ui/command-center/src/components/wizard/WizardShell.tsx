@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from 'react';
-import { duration, ease, radius } from '../../styles/tokens';
+import { duration, ease, radius, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { ProgressDots, BackChevron } from './atoms';
 import { MomentWelcome } from './MomentWelcome';
@@ -170,7 +170,7 @@ export function WizardShell({ onComplete }: Props) {
           display: 'flex', alignItems: 'center', gap: 12, maxWidth: 560,
           padding: '10px 16px', borderRadius: 10, zIndex: 10,
           background: colors.bgDeeper, border: `1px solid ${colors.danger}66`,
-          fontFamily: font.body, fontSize: 12, color: colors.text,
+          fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
         }}>
           <span style={{ color: colors.danger }}>
             Couldn't save your setup ({saveError}).
@@ -190,7 +190,7 @@ export function WizardShell({ onComplete }: Props) {
               '--pa-btn-pad': '4px 12px',
               '--pa-btn-radius': `${radius.md}px`,
               '--pa-btn-weight': 600,
-              fontFamily: font.body, fontSize: 12, lineHeight: 1.5, flexShrink: 0,
+              fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5, flexShrink: 0,
             } as CSSProperties}
           >{saving ? 'Retrying…' : 'Retry'}</Button>
           <Button
@@ -207,7 +207,7 @@ export function WizardShell({ onComplete }: Props) {
               '--pa-btn-pad': '0',
               '--pa-btn-radius': '0',
               '--pa-btn-weight': 400,
-              fontFamily: font.body, fontSize: 12, lineHeight: 1.5,
+              fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5,
               textDecoration: 'underline', flexShrink: 0,
             } as CSSProperties}
           >Continue anyway</Button>

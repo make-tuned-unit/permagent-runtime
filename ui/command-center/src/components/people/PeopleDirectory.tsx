@@ -25,7 +25,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { contactLabel, isFollowUpDue, isQuiet } from './contactAge';
 import type { DirectoryPerson } from '../projects/types';
@@ -87,7 +87,7 @@ export function PeopleDirectory() {
     '--pa-btn-pad': '0',
     '--pa-btn-weight': 400,
     fontFamily: font.body,
-    fontSize: 11,
+    fontSize: textSize.micro,
   } as CSSProperties);
   const openPersonDetail = useCommandCenter(s => s.openPersonDetail);
   const bumpPeople = useCommandCenter(s => s.bumpPeople);
@@ -218,7 +218,7 @@ export function PeopleDirectory() {
           style={{
             flex: 1,
             maxWidth: 320,
-            fontSize: 12,
+            fontSize: textSize.caption,
             fontFamily: font.body,
             padding: '6px 10px',
             borderRadius: radius.sm,
@@ -254,7 +254,7 @@ export function PeopleDirectory() {
             }}
             placeholder="Full name"
             style={{
-              fontSize: 12,
+              fontSize: textSize.caption,
               fontFamily: font.body,
               padding: '6px 10px',
               borderRadius: radius.sm,
@@ -277,20 +277,20 @@ export function PeopleDirectory() {
         </div>
       )}
 
-      {addError && <div style={{ fontSize: 11, color: colors.textDim }}>{addError}</div>}
+      {addError && <div style={{ fontSize: textSize.micro, color: colors.textDim }}>{addError}</div>}
 
       {attributesBlank && status === 'ready' && (
-        <div style={{ fontSize: 11, color: colors.textDim }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
           Showing names only — the Brain isn't available, so roles, companies and
           contact details can't be read right now.
         </div>
       )}
 
       {status === 'loading' ? (
-        <div style={{ fontSize: 11, color: colors.textDim }}>Loading people…</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading people…</div>
       ) : status === 'error' ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load people.</span>
+          <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load people.</span>
           <Button
             colors={colors}
             variant="bare"
@@ -302,13 +302,13 @@ export function PeopleDirectory() {
           </Button>
         </div>
       ) : people.length === 0 ? (
-        <div style={{ fontSize: 11, color: colors.textDim }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
           {debouncedQuery.trim() ? 'No people match that search.' : 'No people yet.'}
         </div>
       ) : (
         <>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono }}>
               {visible.length} {visible.length === 1 ? 'person' : 'people'}
               {unassignedCount > 0 && ` · ${unassignedCount} in no project`}
             </div>
@@ -360,9 +360,9 @@ export function PeopleDirectory() {
                   fontFamily: font.body,
                 } as CSSProperties}
               >
-                <span style={{ fontSize: 12, fontWeight: 600 }}>{p.display_name}</span>
+                <span style={{ fontSize: textSize.caption, fontWeight: 600 }}>{p.display_name}</span>
                 {(p.role || p.company) && (
-                  <span style={{ fontSize: 11, color: colors.textDim }}>
+                  <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
                     {[p.role, p.company].filter(Boolean).join(' · ')}
                   </span>
                 )}

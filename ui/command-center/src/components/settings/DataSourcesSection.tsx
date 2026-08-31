@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
-import { font, radius, type } from '../../styles/tokens';
+import { font, radius, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Toggle } from '../common/Toggle';
@@ -188,7 +188,7 @@ export function DataSourcesSection() {
           >
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{e.name}</div>
+                <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{e.name}</div>
                 <div style={{ ...type.caption, color: colors.textMuted, marginTop: 2 }}>{e.description}</div>
                 <div style={{ ...type.caption, color: colors.textDim, marginTop: 4 }}>
                   Auth {e.auth || 'No'}
@@ -213,7 +213,7 @@ export function DataSourcesSection() {
                   value={keyDraft[e.slug] ?? ''}
                   onChange={(ev) => setKeyDraft((d) => ({ ...d, [e.slug]: ev.target.value }))}
                   style={{
-                    flex: 1, fontFamily: font.mono, fontSize: 11, color: colors.text,
+                    flex: 1, fontFamily: font.mono, fontSize: textSize.micro, color: colors.text,
                     background: colors.inputBg, border: `1px solid ${colors.border}`,
                     borderRadius: radius.sm, padding: '6px 8px', outline: 'none', minWidth: 0,
                   }}

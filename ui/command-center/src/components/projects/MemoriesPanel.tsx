@@ -22,7 +22,7 @@ import { FiExternalLink, FiRefreshCw } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { projectMemoryPreview } from '../brain/brainMemoryFocus';
-import { font } from '../../styles/tokens';
+import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -97,12 +97,12 @@ export function MemoriesPanel({ project }: { project: Project }) {
       }
     >
       {status === 'loading' && (
-        <div style={{ fontSize: 11, color: colors.textDim }}>Recalling memories…</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Recalling memories…</div>
       )}
 
       {status === 'error' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load memories.</span>
+          <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load memories.</span>
           <Button
             colors={colors}
             variant="bare"
@@ -114,7 +114,7 @@ export function MemoriesPanel({ project }: { project: Project }) {
               '--pa-btn-pad': '0',
               '--pa-btn-weight': 600,
               fontFamily: font.body,
-              fontSize: 11,
+              fontSize: textSize.micro,
             } as CSSProperties}
           >
             Retry
@@ -123,7 +123,7 @@ export function MemoriesPanel({ project }: { project: Project }) {
       )}
 
       {status === 'ready' && memories.length === 0 && (
-        <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.55 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.55 }}>
           Nothing linked yet. Notes you write, documents you drop, and this
           project's indexed code land in your Brain and surface here — each one
           clickable straight to where it lives.
@@ -150,7 +150,7 @@ export function MemoriesPanel({ project }: { project: Project }) {
                 {/* Librarian description reads best; before enrichment it's null,
                     so fall back to the raw content the Brain stored. */}
                 <div style={{
-                  fontSize: 12, color: colors.text, lineHeight: 1.5,
+                  fontSize: textSize.caption, color: colors.text, lineHeight: 1.5,
                   display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
                 }}>
                   {m.description || m.content || '(empty memory)'}

@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect } from 'react';
 import type { CameraMode } from './types';
 import { COLORS } from './constants';
-import { radius } from '../../styles/tokens';
+import { radius, textSize } from '../../styles/tokens';
 
 interface WorldHUDProps {
   mode: CameraMode;
@@ -49,7 +49,7 @@ export function WorldHUD({
     alignItems: 'flex-end',
     gap: 8,
     fontFamily: 'monospace',
-    fontSize: 12,
+    fontSize: textSize.caption,
     color: COLORS.neonCyan,
     pointerEvents: 'none',
     zIndex: 10,
@@ -93,7 +93,7 @@ export function WorldHUD({
             padding: '8px 16px',
             borderRadius: radius.md,
             fontFamily: 'monospace',
-            fontSize: 14,
+            fontSize: textSize.body,
             border: `1px solid ${COLORS.neonCyan}40`,
             pointerEvents: 'none',
             zIndex: 10,

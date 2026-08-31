@@ -15,7 +15,7 @@
 import { useEffect, useId, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { FiX } from 'react-icons/fi';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 interface Props {
@@ -111,7 +111,7 @@ export function DetailModal({ title, badge, onClose, footer, children }: Props) 
           borderBottom: `1px solid ${colors.border}`,
         }}>
           <span id={titleId} style={{
-            fontFamily: font.display, fontSize: 14, fontWeight: 600,
+            fontFamily: font.display, fontSize: textSize.body, fontWeight: 600,
             color: colors.text, flex: 1, minWidth: 0,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>

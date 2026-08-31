@@ -15,7 +15,7 @@ import { useState, useEffect, useRef, useCallback, type CSSProperties } from 're
 import {
   FiFlag, FiHelpCircle, FiCheckCircle, FiBookOpen, FiBell, FiAlertTriangle, FiActivity,
 } from 'react-icons/fi';
-import { font, radius } from '../../../styles/tokens';
+import { font, radius, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
 import { SectionTitle } from '../atoms';
@@ -203,7 +203,7 @@ export function TimelineCard() {
                   '--pa-btn-bg-active': active ? colors.cyanGlow : colors.surface,
                   '--pa-btn-pad': '3px 9px',
                   '--pa-btn-radius': `${radius.pill}px`,
-                  fontFamily: font.body, fontSize: 11,
+                  fontFamily: font.body, fontSize: textSize.micro,
                 } as CSSProperties}
               >
                 {chip.label}
@@ -222,7 +222,7 @@ export function TimelineCard() {
                 border: `1px solid ${actor ? colors.cyan : colors.border}`,
                 background: 'transparent',
                 color: actor ? colors.cyan : colors.textDim,
-                fontFamily: font.body, fontSize: 11,
+                fontFamily: font.body, fontSize: textSize.micro,
                 cursor: 'pointer',
               }}
             >
@@ -234,11 +234,11 @@ export function TimelineCard() {
         {items.length === 0 ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}>
+              <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: 4 }}>
                 {loading ? 'Loading activity…' : filtered ? 'Nothing matches this filter' : 'No activity yet'}
               </div>
               {!loading && !filtered && (
-                <div style={{ fontSize: 11, color: colors.textDim }}>
+                <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
                   Goal moves, decisions, and librarian runs will appear here
                 </div>
               )}
@@ -252,7 +252,7 @@ export function TimelineCard() {
                   position: 'sticky', top: 0, zIndex: 1,
                   padding: '6px 0 4px',
                   background: colors.surface,
-                  fontFamily: font.body, fontSize: 11, fontWeight: 600,
+                  fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600,
                   letterSpacing: '0.10em', textTransform: 'uppercase',
                   color: colors.textDim,
                 }}>{group.label}</div>
@@ -287,7 +287,7 @@ export function TimelineCard() {
                   '--pa-btn-pad': '7px 0',
                   '--pa-btn-radius': `${radius.md}px`,
                   width: '100%', margin: '10px 0 4px',
-                  fontFamily: font.body, fontSize: 12,
+                  fontFamily: font.body, fontSize: textSize.caption,
                 } as CSSProperties}
               >
                 {loadingMore ? 'Loading…' : 'Show earlier'}
@@ -366,12 +366,12 @@ function TimelineRow({ item, isLast, onOpenDecisions }: {
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{
-          fontFamily: font.body, fontSize: 13, fontWeight: 500, color: colors.text,
+          fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{item.title}</div>
         {item.detail && (
           <div style={{
-            fontSize: 11, color: colors.textMuted, marginTop: 1,
+            fontSize: textSize.micro, color: colors.textMuted, marginTop: 1,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>{item.detail}</div>
         )}
@@ -381,7 +381,7 @@ function TimelineRow({ item, isLast, onOpenDecisions }: {
         flexShrink: 0,
       }}>{item.actor}</span>
       <span style={{
-        fontFamily: font.body, fontSize: 11, color: colors.textDim,
+        fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim,
         flexShrink: 0, minWidth: 44, textAlign: 'right',
       }}>{timeLabel(item.ts)}</span>
     </div>

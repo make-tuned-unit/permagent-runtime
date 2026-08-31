@@ -1,6 +1,6 @@
 import { type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -31,7 +31,7 @@ export function WorkspaceSaveErrorChip() {
         zIndex: 95, display: 'flex', alignItems: 'center', gap: 10,
         padding: '6px 12px', borderRadius: radius.md,
         background: colors.surface, border: `1px solid ${colors.border}`,
-        boxShadow: colors.cardShadow, fontFamily: font.body, fontSize: 11,
+        boxShadow: colors.cardShadow, fontFamily: font.body, fontSize: textSize.micro,
       }}
       title={failure.message}
     >
@@ -52,7 +52,7 @@ export function WorkspaceSaveErrorChip() {
           '--pa-btn-pad': '0',
           '--pa-btn-weight': 600,
           fontFamily: font.body,
-          fontSize: 11,
+          fontSize: textSize.micro,
         } as CSSProperties}
       >
         Retry
@@ -68,7 +68,7 @@ export function WorkspaceSaveErrorChip() {
           '--pa-btn-bg-hover': 'transparent',
           '--pa-btn-pad': '0',
           fontFamily: font.body,
-          fontSize: 11,
+          fontSize: textSize.micro,
         } as CSSProperties}
       >
         Dismiss

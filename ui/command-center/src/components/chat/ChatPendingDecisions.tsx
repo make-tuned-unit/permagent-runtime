@@ -8,7 +8,7 @@
  */
 
 import { useState, type CSSProperties } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { useDecisions } from '../dashboard/decisions/useDecisions';
@@ -142,15 +142,15 @@ function ChatDecisionCard({
         gap: 8,
       }}
     >
-      <div style={{ fontFamily: font.body, fontSize: 12, color: colors.text, lineHeight: 1.4 }}>
+      <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.text, lineHeight: 1.4 }}>
         {d.headline}
       </div>
       {err && (
-        <div style={{ fontSize: 11, color: colors.danger }}>{err}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.danger }}>{err}</div>
       )}
       {pending ? (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span style={{ fontSize: 11, color: colors.textMuted }}>
+          <span style={{ fontSize: textSize.micro, color: colors.textMuted }}>
             {pending.answer === 'reject' ? 'Confirm reject?' : 'Confirm approve?'}
           </span>
           <Button
@@ -233,6 +233,6 @@ function btn(colors: ReturnType<typeof useTheme>['colors'], primary: boolean): C
     '--pa-btn-radius': `${radius.sm}px`,
     '--pa-btn-weight': 600,
     fontFamily: font.body,
-    fontSize: 11,
+    fontSize: textSize.micro,
   } as CSSProperties;
 }

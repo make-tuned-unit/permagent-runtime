@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
-import { duration, ease, font, radius, tabularNums, type } from '../../styles/tokens';
+import { duration, ease, font, radius, tabularNums, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { api, apiFetch, uploadFinanceStatement } from '../../lib/api';
@@ -1436,7 +1436,7 @@ function PickRow({
           >
             ▸
           </span>
-          <strong style={{ fontSize: 13, fontWeight: 600 }}>{pick.ticker}</strong>
+          <strong style={{ fontSize: textSize.small, fontWeight: 600 }}>{pick.ticker}</strong>
           {pick.companyName && (
             <span style={{ ...type.caption, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {pick.companyName}
@@ -1981,7 +1981,7 @@ function Field({
 function SectionTitle({ children, colors }: { children: string; colors: ThemeColors }) {
   return (
     <h2 style={{
-      fontSize: 11,
+      fontSize: textSize.micro,
       fontWeight: 600,
       color: colors.textMuted,
       textTransform: 'uppercase',

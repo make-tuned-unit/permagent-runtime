@@ -27,7 +27,7 @@
 
 import { useEffect, useId, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { font, radius } from '../../../styles/tokens';
+import { font, radius, textSize } from '../../../styles/tokens';
 import { Button } from '../../common/Button';
 import { useTheme } from '../../../styles/useTheme';
 import type { AnswerBody, Decision } from './types';
@@ -308,12 +308,12 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           {badge.label}
         </span>
         <span style={{
-          fontSize: 13, fontWeight: 600, color: colors.text, flex: 1,
+          fontSize: textSize.small, fontWeight: 600, color: colors.text, flex: 1,
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
         }}>
           {d.headline}
         </span>
-        <span style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, flexShrink: 0 }}>
+        <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, flexShrink: 0 }}>
           {formatAge(d.created_at)}
         </span>
       </div>
@@ -338,13 +338,13 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
               '--pa-btn-radius': '0',
               '--pa-btn-weight': 400,
               display: 'flex', justifyContent: 'flex-start', marginTop: 4,
-              fontSize: 11, fontFamily: font.body,
+              fontSize: textSize.micro, fontFamily: font.body,
             } as CSSProperties}
           >
             Goal: {d.goal_title}
           </Button>
         ) : (
-          <div style={{ fontSize: 11, color: colors.textDim, marginTop: 4 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 4 }}>
             Goal: {d.goal_title}
           </div>
         )
@@ -353,7 +353,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
       {/* Detail: technical why/attribution, verbatim (S2) */}
       {d.detail && (
         <div style={{
-          fontSize: 12, color: colors.textMuted, marginTop: 4,
+          fontSize: textSize.caption, color: colors.textMuted, marginTop: 4,
           whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
           maxHeight: 96, overflow: 'auto',
         }}>
@@ -367,24 +367,24 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           wraps/scrolls instead so the full command stays inspectable. */}
       {checkApproval && (
         <div style={{ marginTop: 8 }}>
-          <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 4 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 4 }}>
             Command
           </div>
           <pre style={{
             margin: 0, borderRadius: radius.sm, background: colors.codeBg,
-            padding: '10px 12px', fontFamily: font.mono, fontSize: 12,
+            padding: '10px 12px', fontFamily: font.mono, fontSize: textSize.caption,
             lineHeight: 1.6, color: colors.text, maxHeight: 240,
             overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             userSelect: 'text',
           }}>
             {checkApproval.command}
           </pre>
-          <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 6 }}>
             <span style={{ color: colors.textDim }}>in </span>
             <span style={{ fontFamily: font.mono, overflowWrap: 'anywhere' }}>{checkApproval.cwd}</span>
           </div>
           {checkApproval.reason && (
-            <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+            <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 4 }}>
               {checkApproval.reason}
             </div>
           )}
@@ -400,14 +400,14 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
             const source = typeof item.source_url === 'string' ? item.source_url : null;
             return (
               <div key={`${kind}-${name}-${index}`} style={{ borderLeft: `2px solid ${colors.purpleBright}`, paddingLeft: 9 }}>
-                <div style={{ color: colors.text, fontSize: 12, fontWeight: 600 }}>{kind}: {name}</div>
-                {note && <div style={{ color: colors.textMuted, fontSize: 11 }}>{note}</div>}
+                <div style={{ color: colors.text, fontSize: textSize.caption, fontWeight: 600 }}>{kind}: {name}</div>
+                {note && <div style={{ color: colors.textMuted, fontSize: textSize.micro }}>{note}</div>}
                 {source && isSafeHttpUrl(source) ? (
-                  <a href={source} target="_blank" rel="noreferrer" style={{ color: colors.cyan, fontSize: 11 }}>
+                  <a href={source} target="_blank" rel="noreferrer" style={{ color: colors.cyan, fontSize: textSize.micro }}>
                     Source
                   </a>
                 ) : source ? (
-                  <span style={{ color: colors.textMuted, fontSize: 11 }}>Source</span>
+                  <span style={{ color: colors.textMuted, fontSize: textSize.micro }}>Source</span>
                 ) : null}
               </div>
             );
@@ -441,7 +441,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
               '--pa-btn-radius': '0',
               '--pa-btn-weight': 400,
               marginTop: 6,
-              fontSize: 11, fontFamily: font.body,
+              fontSize: textSize.micro, fontFamily: font.body,
             } as CSSProperties}
           >
             {argsOpen ? 'Hide full arguments ▾' : 'Show full arguments ▸'}
@@ -450,7 +450,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
             <pre id={argsId} style={{
               margin: '6px 0 0', borderRadius: radius.sm,
               background: colors.codeBg, padding: '10px 12px',
-              fontFamily: font.mono, fontSize: 11, lineHeight: 1.6,
+              fontFamily: font.mono, fontSize: textSize.micro, lineHeight: 1.6,
               color: colors.textMuted, maxHeight: 240, overflow: 'auto',
               whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
             }}>
@@ -466,7 +466,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           <span style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
             borderRadius: radius.pill, background: colors.cyanSoft,
-            color: colors.cyan, fontSize: 11, fontWeight: 500, padding: '3px 10px',
+            color: colors.cyan, fontSize: textSize.micro, fontWeight: 500, padding: '3px 10px',
           }}>
             {agentName} recommends · {recommended.label}
           </span>
@@ -479,7 +479,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           display: 'flex', alignItems: 'center', gap: 8, marginTop: 10,
           borderRadius: radius.md, border: `1px solid ${colors.warning}`,
           background: colors.warning + '14', padding: '8px 12px',
-          fontSize: 12, color: colors.text,
+          fontSize: textSize.caption, color: colors.text,
         }}>
           Someone already answered this — refreshing…
         </div>
@@ -490,14 +490,14 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           borderRadius: radius.md, border: `1px solid ${colors.borderHi}`,
           background: colors.cyanSoft, padding: '8px 12px',
         }}>
-          <span style={{ fontSize: 12, color: colors.text, flex: 1, minWidth: 180 }}>
+          <span style={{ fontSize: textSize.caption, color: colors.text, flex: 1, minWidth: 180 }}>
             {pending.effectText}
           </span>
           {/* Informed reject (#458): the work is already pushed — say so loudly
               BEFORE the reject is confirmed. Reject stays enabled (advisory). */}
           {pending.body.answer === 'reject' && pushedRejectWarning(d.kind, pushTarget) && (
             <span role="alert" style={{
-              flexBasis: '100%', order: -1, fontSize: 12, fontWeight: 600,
+              flexBasis: '100%', order: -1, fontSize: textSize.caption, fontWeight: 600,
               color: colors.warning, display: 'flex', gap: 6, alignItems: 'baseline',
             }}>
               <span aria-hidden="true">⚠</span>
@@ -514,7 +514,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
                 flexBasis: '100%', width: '100%', boxSizing: 'border-box', resize: 'vertical',
                 borderRadius: radius.md, border: `1px solid ${colors.border}`,
                 background: colors.inputBg, color: colors.text,
-                fontFamily: font.body, fontSize: 12, padding: '8px 10px', outline: 'none',
+                fontFamily: font.body, fontSize: textSize.caption, padding: '8px 10px', outline: 'none',
               }}
             />
           )}
@@ -523,7 +523,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           </Btn>
           <Btn disabled={submitting} onClick={() => { setPending(null); setAnswerErr(null); }}>Cancel</Btn>
           {answerErr && (
-            <span role="alert" style={{ fontSize: 11, color: colors.danger, flexBasis: '100%' }}>
+            <span role="alert" style={{ fontSize: textSize.micro, color: colors.danger, flexBasis: '100%' }}>
               Couldn't send: {answerErr}
             </span>
           )}
@@ -540,7 +540,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
               width: '100%', boxSizing: 'border-box', resize: 'vertical',
               borderRadius: radius.md, border: `1px solid ${colors.border}`,
               background: colors.inputBg, color: colors.text,
-              fontFamily: font.body, fontSize: 12, padding: '8px 10px', outline: 'none',
+              fontFamily: font.body, fontSize: textSize.caption, padding: '8px 10px', outline: 'none',
             }}
           />
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
@@ -566,7 +566,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
            answer='edit': the daemon keeps the revision AND learns the
            draft→revision delta (edit-as-training, decision_inbox/learn.rs). */
         <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 6 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 6 }}>
             Revise the draft, then accept — your version becomes the answer and {agentName} learns the change.
           </div>
           <textarea
@@ -577,7 +577,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
               width: '100%', boxSizing: 'border-box', resize: 'vertical',
               borderRadius: radius.md, border: `1px solid ${colors.border}`,
               background: colors.inputBg, color: colors.text,
-              fontFamily: font.body, fontSize: 12, padding: '8px 10px', outline: 'none',
+              fontFamily: font.body, fontSize: textSize.caption, padding: '8px 10px', outline: 'none',
             }}
           />
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
@@ -693,7 +693,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
                 '--pa-btn-pad': '4px',
                 '--pa-btn-radius': `${radius.xs}px`,
                 '--pa-btn-weight': 400,
-                fontSize: 11, fontFamily: font.body,
+                fontSize: textSize.micro, fontFamily: font.body,
               } as CSSProperties}
             >
               Cancel goal
@@ -720,7 +720,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
                 '--pa-btn-radius': `${radius.xs}px`,
                 '--pa-btn-weight': 400,
                 marginLeft: 'auto',
-                fontSize: 11, fontFamily: font.body,
+                fontSize: textSize.micro, fontFamily: font.body,
               } as CSSProperties}
             >
               Evidence {evidenceOpen ? '▾' : '▸'}
@@ -732,7 +732,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
       {/* Cancel failure surfaced inline — never silently swallowed (#503) */}
       {cancelErr && (
         <div style={{
-          marginTop: 8, fontSize: 12, color: colors.danger,
+          marginTop: 8, fontSize: textSize.caption, color: colors.danger,
           borderRadius: radius.md, border: `1px solid ${colors.danger}`,
           background: colors.danger + '14', padding: '6px 10px',
         }}>
@@ -751,7 +751,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
             width: '100%', boxSizing: 'border-box', resize: 'vertical', marginTop: 8,
             borderRadius: radius.md, border: `1px solid ${colors.border}`,
             background: colors.inputBg, color: colors.text,
-            fontFamily: font.body, fontSize: 12, padding: '8px 10px', outline: 'none',
+            fontFamily: font.body, fontSize: textSize.caption, padding: '8px 10px', outline: 'none',
           }}
         />
       )}
@@ -828,7 +828,7 @@ function Btn({ variant = 'ghost', danger = false, disabled = false, onClick, chi
         '--pa-btn-pad': '5px 14px',
         '--pa-btn-radius': `${radius.md}px`,
         '--pa-btn-weight': primary ? 600 : 500,
-        fontFamily: font.body, fontSize: 12,
+        fontFamily: font.body, fontSize: textSize.caption,
       } as CSSProperties}
     >
       {children}

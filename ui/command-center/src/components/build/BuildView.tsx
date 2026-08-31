@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, type CSSProperties } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { useDashboard } from '../dashboard/useDashboard';
@@ -62,7 +62,7 @@ function ToggleChip({
         '--pa-btn-pad': '0 12px',
         '--pa-btn-radius': `${radius.md}px`,
         height: 30,
-        fontSize: 12,
+        fontSize: textSize.caption,
         gap: 6,
         opacity: active ? 1 : 0.7,
       } as CSSProperties}
@@ -276,7 +276,7 @@ export function BuildView() {
               '--pa-btn-pad': '0 14px',
               '--pa-btn-radius': `${radius.md}px`,
               height: 30,
-              fontSize: 12,
+              fontSize: textSize.caption,
               boxShadow: `0 0 14px ${colors.cyanGlow}`,
             } as CSSProperties}
           >Take over</Button>

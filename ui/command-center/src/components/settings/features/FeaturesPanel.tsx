@@ -20,7 +20,7 @@ import { H1, Row, Section } from '../atoms';
 import { Button } from '../../common/Button';
 import { Toggle } from '../../common/Toggle';
 import { api, type CouncilMembers, type CouncilSeat } from '../../../lib/api';
-import { font } from '../../../styles/tokens';
+import { font, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import {
   conciergePreconditionCopy,
@@ -106,11 +106,11 @@ export function FeaturesPanel({ goto }: PanelProps) {
             <Row key={row.key} label={row.label} hint={row.what}>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
                 {value === null ? (
-                  <span style={{ fontSize: 12, color: colors.textDim, paddingTop: 4 }}>Loading…</span>
+                  <span style={{ fontSize: textSize.caption, color: colors.textDim, paddingTop: 4 }}>Loading…</span>
                 ) : (
                   <Toggle on={value} onChange={v => save(row.key, v)} />
                 )}
-                <div style={{ flex: 1, fontSize: 11, color: colors.textMuted, lineHeight: 1.5, paddingTop: 3 }}>
+                <div style={{ flex: 1, fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, paddingTop: 3 }}>
                   <div>{row.effect}</div>
                   {isConcierge && (
                     <div
@@ -144,7 +144,7 @@ export function FeaturesPanel({ goto }: PanelProps) {
         />
       )}
 
-      <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+      <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>
         Each worker is listed under{' '}
         <Button
           colors={colors}
@@ -155,7 +155,7 @@ export function FeaturesPanel({ goto }: PanelProps) {
             '--pa-btn-bg-hover': 'transparent',
             '--pa-btn-pad': '0',
             fontFamily: font.body,
-            fontSize: 12,
+            fontSize: textSize.caption,
             textDecoration: 'underline',
           } as CSSProperties}
         >
@@ -205,13 +205,13 @@ function CouncilSeats({
       sub="Every connected chat-completion provider sits on the Council unless you drop it here. Coding CLIs (Claude Code, Cursor, Codex) are workers, not debate seats. Unchecking a toy local model keeps it from spending a seat next to Claude."
     >
       {!members && !error && (
-        <div style={{ fontSize: 12, color: colors.textDim }}>Loading seats…</div>
+        <div style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading seats…</div>
       )}
       {error && (
-        <div style={{ fontSize: 12, color: colors.danger }}>{error}</div>
+        <div style={{ fontSize: textSize.caption, color: colors.danger }}>{error}</div>
       )}
       {members && seats.length === 0 && (
-        <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>
           No connected chat providers. Connect a key under Settings → Models, then they will appear here.
         </div>
       )}
@@ -224,7 +224,7 @@ function CouncilSeats({
             style={{
               display: 'flex', alignItems: 'center', gap: 10,
               padding: '8px 0', borderTop: `1px solid ${colors.border}`,
-              fontSize: 13, color: colors.text, cursor: 'pointer',
+              fontSize: textSize.small, color: colors.text, cursor: 'pointer',
             }}
           >
             <input
@@ -234,7 +234,7 @@ function CouncilSeats({
             />
             <span style={{ flex: 1 }}>
               {seat.display_name}
-              <span style={{ color: colors.textDim, marginLeft: 8, fontFamily: font.body, fontSize: 11 }}>
+              <span style={{ color: colors.textDim, marginLeft: 8, fontFamily: font.body, fontSize: textSize.micro }}>
                 {seat.model}
               </span>
             </span>

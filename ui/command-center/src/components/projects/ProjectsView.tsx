@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
@@ -182,7 +182,7 @@ export function ProjectsView() {
 
   if (loading) {
     return (
-      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, color: colors.textMuted, fontFamily: font.body, fontSize: 13 }}>
+      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, color: colors.textMuted, fontFamily: font.body, fontSize: textSize.small }}>
         Loading projects...
       </div>
     );
@@ -376,7 +376,7 @@ projects, onOpenProject, onStatusChange }: {
                   fontSize: 10, transform: isOpen ? 'rotate(90deg)' : 'none',
                   transition: 'transform 150ms', display: 'inline-block',
                 }}>▶</span>
-                <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                <span style={{ fontSize: textSize.micro, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                   {col.label}
                 </span>
                 <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: radius.md }}>
@@ -406,7 +406,7 @@ projects, onOpenProject, onStatusChange }: {
                 </div>
               )}
               {isOpen && colProjects.length === 0 && (
-                <div id={shelfId} style={{ padding: '4px 14px 12px', fontSize: 11, color: colors.textDim }}>Empty.</div>
+                <div id={shelfId} style={{ padding: '4px 14px 12px', fontSize: textSize.micro, color: colors.textDim }}>Empty.</div>
               )}
             </div>
           );
@@ -453,12 +453,12 @@ project, onOpen, onDragStart }: {
             DEFAULT
           </span>
         )}
-        <span style={{ fontSize: 13, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span style={{ fontSize: textSize.small, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {project.name}
         </span>
       </div>
       {project.description && (
-        <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {project.description}
         </div>
       )}
@@ -698,7 +698,7 @@ export function ProjectKanban({ project }: { project: Project }) {
 
   if (loading) {
     return (
-      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, color: colors.textMuted, fontFamily: font.body, fontSize: 13 }}>
+      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, color: colors.textMuted, fontFamily: font.body, fontSize: textSize.small }}>
         Loading board...
       </div>
     );
@@ -753,7 +753,7 @@ export function ProjectKanban({ project }: { project: Project }) {
             >
               {/* Column header */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 4px 10px', borderBottom: `1px solid ${colors.border}` }}>
-                <span style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', flex: 1 }}>
+                <span style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', flex: 1 }}>
                   {col.name}
                 </span>
                 <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: radius.md }}>
@@ -809,7 +809,7 @@ export function ProjectKanban({ project }: { project: Project }) {
                       padding: '6px 8px', borderRadius: radius.sm,
                       background: colors.inputBg,
                       border: `1px solid ${colors.border}`,
-                      color: colors.text, fontFamily: font.body, fontSize: 12,
+                      color: colors.text, fontFamily: font.body, fontSize: textSize.caption,
                       outline: 'none',
                     }}
                   />
@@ -826,7 +826,7 @@ export function ProjectKanban({ project }: { project: Project }) {
                         '--pa-btn-pad': '4px 0',
                         '--pa-btn-radius': '5px',
                         '--pa-btn-weight': 600,
-                        flex: 1, fontSize: 11, fontFamily: font.body,
+                        flex: 1, fontSize: textSize.micro, fontFamily: font.body,
                       } as CSSProperties}
                     >
                       Add
@@ -841,7 +841,7 @@ export function ProjectKanban({ project }: { project: Project }) {
                         '--pa-btn-border-hover': colors.borderHi,
                         '--pa-btn-pad': '4px 8px',
                         '--pa-btn-radius': '5px',
-                        fontSize: 11, fontFamily: font.body,
+                        fontSize: textSize.micro, fontFamily: font.body,
                       } as CSSProperties}
                     >
                       Cancel
@@ -864,7 +864,7 @@ export function ProjectKanban({ project }: { project: Project }) {
                     // owns the 1px width and the (hoverable) color, so only the
                     // style is overridden here.
                     borderStyle: 'dashed',
-                    marginTop: 8, fontSize: 11, fontFamily: font.body,
+                    marginTop: 8, fontSize: textSize.micro, fontFamily: font.body,
                   } as CSSProperties}
                 >
                   + Add card
@@ -893,7 +893,7 @@ export function ProjectKanban({ project }: { project: Project }) {
           padding: '6px 10px', borderRadius: radius.sm,
           background: colors.surface, border: `1px solid ${colors.cyan}`,
           boxShadow: colors.elevationRaised,
-          fontSize: 12, fontWeight: 500, color: colors.text,
+          fontSize: textSize.caption, fontWeight: 500, color: colors.text,
           pointerEvents: 'none', zIndex: 9999, maxWidth: 200,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>
@@ -957,7 +957,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
       onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = highlighted ? colors.cyan : colors.border; }}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-        <div style={{ fontSize: 12, fontWeight: 500, flex: 1, minWidth: 0 }}>{card.title}</div>
+        <div style={{ fontSize: textSize.caption, fontWeight: 500, flex: 1, minWidth: 0 }}>{card.title}</div>
         {/* Visible, keyboard-reachable menu trigger — right-click still works too.
             stopPropagation on pointer-down so opening the menu never starts a drag.
 
@@ -988,7 +988,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
             '--pa-btn-radius': `${radius.sm}px`,
             flexShrink: 0,
             width: 28, height: 28, marginTop: -4, marginRight: -6,
-            lineHeight: 1, fontSize: 14,
+            lineHeight: 1, fontSize: textSize.body,
             transition: reduceMotion ? 'none' : undefined,
           } as CSSProperties}
         >
@@ -1076,7 +1076,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
                 '--pa-btn-pad': '5px 8px',
                 '--pa-btn-radius': `${radius.xs}px`,
                 width: '100%', justifyContent: 'flex-start', textAlign: 'left',
-                fontSize: 11, fontFamily: font.body,
+                fontSize: textSize.micro, fontFamily: font.body,
               } as CSSProperties}
             >
               Cancel goal
@@ -1095,7 +1095,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
                 '--pa-btn-pad': '5px 8px',
                 '--pa-btn-radius': `${radius.xs}px`,
                 width: '100%', justifyContent: 'flex-start', textAlign: 'left',
-                fontSize: 11, fontFamily: font.body,
+                fontSize: textSize.micro, fontFamily: font.body,
               } as CSSProperties}
             >
               {dueDate ? 'Change due date' : 'Set due date'}
@@ -1114,7 +1114,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
                 '--pa-btn-pad': '5px 8px',
                 '--pa-btn-radius': `${radius.xs}px`,
                 width: '100%', justifyContent: 'flex-start', textAlign: 'left',
-                fontSize: 11, fontFamily: font.body,
+                fontSize: textSize.micro, fontFamily: font.body,
               } as CSSProperties}
             >
               Clear due date
@@ -1131,7 +1131,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
               '--pa-btn-pad': '5px 8px',
               '--pa-btn-radius': `${radius.xs}px`,
               width: '100%', justifyContent: 'flex-start', textAlign: 'left',
-              fontSize: 11, fontFamily: font.body,
+              fontSize: textSize.micro, fontFamily: font.body,
             } as CSSProperties}
           >
             Delete card

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, type CSSProperties, type ReactNode } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { apiFetch, api } from '../../lib/api';
@@ -100,7 +100,7 @@ export function ProjectOverview({ project, onProjectUpdated }: {
               '--pa-btn-pad': '11px 14px',
               '--pa-btn-radius': `${radius.lg}px`,
               '--pa-btn-weight': 600,
-              fontFamily: font.body, fontSize: 13,
+              fontFamily: font.body, fontSize: textSize.small,
               gap: 8,
             } as CSSProperties}
           >
@@ -208,20 +208,20 @@ function SummaryPanel({ project, onProjectUpdated }: {
       ) : (
         <>
           <div style={{
-            fontSize: 12, color: project.description ? colors.textMuted : colors.textDim,
+            fontSize: textSize.caption, color: project.description ? colors.textMuted : colors.textDim,
             marginTop: 6, lineHeight: 1.55,
           }}>
             {project.description || 'No description yet.'}
           </div>
           {brief ? (
             <div style={{
-              fontSize: 12, color: colors.text, marginTop: 10, lineHeight: 1.6,
+              fontSize: textSize.caption, color: colors.text, marginTop: 10, lineHeight: 1.6,
               whiteSpace: 'pre-wrap', borderTop: `1px solid ${colors.border}`, paddingTop: 10,
             }}>
               {brief}
             </div>
           ) : (
-            <div style={{ fontSize: 11, color: colors.textDim, marginTop: 10 }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 10 }}>
               No brief yet — Edit to add one.
             </div>
           )}
@@ -267,9 +267,9 @@ export function WatcherInsightsPanel({ project }: { project: Project }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {insights.map(i => (
           <div key={i.created_at} style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
-            <span style={{ color: colors.purpleBright, fontSize: 11, flexShrink: 0, lineHeight: '18px' }}>◆</span>
+            <span style={{ color: colors.purpleBright, fontSize: textSize.micro, flexShrink: 0, lineHeight: '18px' }}>◆</span>
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.55 }}>{i.text}</div>
+              <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.55 }}>{i.text}</div>
               {/* The cards the observation is about. Without these the reader
                   is told something stalled and given no way to reach it. */}
               {(i.cards ?? []).length > 0 && (
@@ -373,7 +373,7 @@ function StrixFindingsPanel({ project }: { project: Project }) {
         : 'Never scanned — waiting on the Guard’s first sweep of this project.';
     return (
       <Panel title="Security — from the Guard">
-        <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>{text}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>{text}</div>
       </Panel>
     );
   }
@@ -393,14 +393,14 @@ function StrixFindingsPanel({ project }: { project: Project }) {
               {f.severity}
             </span>
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, color: colors.text, lineHeight: 1.5 }}>{f.title}</div>
+              <div style={{ fontSize: textSize.caption, color: colors.text, lineHeight: 1.5 }}>{f.title}</div>
               <div style={{ fontSize: 10, color: colors.textDim, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {f.cwe && <span>{f.cwe}</span>}
                 {f.location && <span style={{ fontFamily: font.mono }}>{f.location}</span>}
                 <span>{formatDate(f.found_at)}</span>
               </div>
               {f.remediation && (
-                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 3, lineHeight: 1.5 }}>
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 3, lineHeight: 1.5 }}>
                   {f.remediation}
                 </div>
               )}
@@ -435,8 +435,8 @@ function KeyFactsPanel({ project }: { project: Project }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {facts.map(f => (
           <div key={f.label} style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-            <span style={{ fontSize: 11, color: colors.textDim, width: 88, flexShrink: 0 }}>{f.label}</span>
-            <span style={{ fontSize: 12, color: colors.text, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <span style={{ fontSize: textSize.micro, color: colors.textDim, width: 88, flexShrink: 0 }}>{f.label}</span>
+            <span style={{ fontSize: textSize.caption, color: colors.text, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {f.value}
             </span>
           </div>
@@ -447,7 +447,7 @@ function KeyFactsPanel({ project }: { project: Project }) {
         {project.rootPath && <RootPathRow project={project} />}
         {project.tags.length > 0 && (
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-            <span style={{ fontSize: 11, color: colors.textDim, width: 88, flexShrink: 0 }}>Tags</span>
+            <span style={{ fontSize: textSize.micro, color: colors.textDim, width: 88, flexShrink: 0 }}>Tags</span>
             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
               {project.tags.map((tag, ti) => (
                 <span key={`${tag}-${ti}`} style={{
@@ -498,7 +498,7 @@ function RootPathRow({ project }: { project: Project }) {
 
   return (
     <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-      <span style={{ fontSize: 11, color: colors.textDim, width: 88, flexShrink: 0 }}>Root path</span>
+      <span style={{ fontSize: textSize.micro, color: colors.textDim, width: 88, flexShrink: 0 }}>Root path</span>
       <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
         <Mono>
           <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -518,7 +518,7 @@ function RootPathRow({ project }: { project: Project }) {
               '--pa-btn-pad': '3px 9px',
               '--pa-btn-radius': `${radius.sm}px`,
               '--pa-btn-weight': 600,
-              fontSize: 11, fontFamily: font.body,
+              fontSize: textSize.micro, fontFamily: font.body,
               transition: reduceMotion ? 'none' : undefined,
             } as CSSProperties}
           >
@@ -542,7 +542,7 @@ function RootPathRow({ project }: { project: Project }) {
               '--pa-btn-border-hover': colors.borderHi,
               '--pa-btn-pad': '3px 9px',
               '--pa-btn-radius': `${radius.sm}px`,
-              fontSize: 11, fontFamily: font.body,
+              fontSize: textSize.micro, fontFamily: font.body,
               transition: reduceMotion ? 'none' : undefined,
             } as CSSProperties}
           >
@@ -668,7 +668,7 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
       action={<Button colors={colors} variant="bare" className="hover:underline" onClick={startEditing} style={panelActionVars(colors)}>Edit</Button>}
     >
       {links.length === 0 ? (
-        <div style={{ fontSize: 11, color: colors.textDim }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
           No links yet — Edit to add website, repo, or social links.
         </div>
       ) : (
@@ -687,7 +687,7 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
                 '--pa-btn-pad': '7px 9px',
                 '--pa-btn-radius': `${radius.sm}px`,
                 gap: 8, textAlign: 'left', justifyContent: 'flex-start',
-                fontFamily: font.body, fontSize: 12, width: '100%',
+                fontFamily: font.body, fontSize: textSize.caption, width: '100%',
               } as CSSProperties}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={colors.cyan} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
@@ -695,7 +695,7 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
                 <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
               </svg>
               <span style={{ flexShrink: 0, color: colors.textMuted }}>{link.label}</span>
-              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: colors.textDim, fontSize: 11 }}>
+              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: colors.textDim, fontSize: textSize.micro }}>
                 {link.url}
               </span>
             </Button>
@@ -748,9 +748,9 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
           onRetry={onRetry}
         />
       ) : loading ? (
-        <div style={{ fontSize: 11, color: colors.textDim }}>Loading tasks…</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading tasks…</div>
       ) : total === 0 ? (
-        <div style={{ fontSize: 11, color: colors.textDim }}>No tasks yet.</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>No tasks yet.</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {ordered.map(col => {
@@ -780,7 +780,7 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
                         onClick={isGoal ? () => onOpenGoal(card.id) : undefined}
                         onKeyDown={isGoal ? e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenGoal(card.id); } } : undefined}
                         style={{
-                          fontSize: 12, padding: '4px 8px', borderRadius: radius.sm,
+                          fontSize: textSize.caption, padding: '4px 8px', borderRadius: radius.sm,
                           background: rowVeil,
                           color: colors.text, cursor: isGoal ? 'pointer' : 'default',
                           display: 'flex', alignItems: 'center', gap: 6,
@@ -822,7 +822,7 @@ function panelActionVars(colors: ThemeColors): CSSProperties {
     '--pa-btn-bg-hover': 'transparent',
     '--pa-btn-bg-active': 'transparent',
     '--pa-btn-pad': '0',
-    fontSize: 11, fontFamily: font.body,
+    fontSize: textSize.micro, fontFamily: font.body,
   } as CSSProperties;
 }
 
@@ -836,7 +836,7 @@ function fieldLabel(colors: ThemeColors): React.CSSProperties {
 
 function fieldInput(colors: ThemeColors): React.CSSProperties {
   return {
-    fontSize: 12, fontFamily: font.body, color: colors.text,
+    fontSize: textSize.caption, fontFamily: font.body, color: colors.text,
     background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
     borderRadius: radius.sm, padding: '6px 8px', outline: 'none',
     textTransform: 'none', letterSpacing: 'normal', fontWeight: 400,
@@ -855,7 +855,7 @@ function EditControls({ saving, error, onSave, onCancel }: {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       {error && (
-        <div role="alert" style={{ fontSize: 11, color: colors.danger }}>
+        <div role="alert" style={{ fontSize: textSize.micro, color: colors.danger }}>
           Couldn't save: {error}
         </div>
       )}
@@ -876,7 +876,7 @@ function EditControls({ saving, error, onSave, onCancel }: {
             '--pa-btn-pad': '4px 12px',
             '--pa-btn-radius': `${radius.sm}px`,
             '--pa-btn-weight': 600,
-            fontSize: 11, fontFamily: font.body,
+            fontSize: textSize.micro, fontFamily: font.body,
           } as CSSProperties}
         >
           {saving ? 'Saving…' : 'Save'}
@@ -893,7 +893,7 @@ function EditControls({ saving, error, onSave, onCancel }: {
             '--pa-btn-bg-hover': 'transparent',
             '--pa-btn-pad': '4px 12px',
             '--pa-btn-radius': `${radius.sm}px`,
-            fontSize: 11, fontFamily: font.body,
+            fontSize: textSize.micro, fontFamily: font.body,
           } as CSSProperties}
         >
           Cancel
@@ -921,7 +921,7 @@ function StatusPill({ status }: { status: string }) {
 }
 
 function Mono({ children }: { children: ReactNode }) {
-  return <span style={{ fontFamily: font.mono, fontSize: 11 }}>{children}</span>;
+  return <span style={{ fontFamily: font.mono, fontSize: textSize.micro }}>{children}</span>;
 }
 
 function formatDate(iso: string): string {

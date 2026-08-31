@@ -1,7 +1,7 @@
 import { useEffect, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { summarizeTraceEvent } from '../../lib/traceEvents';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -45,7 +45,7 @@ export function ExecutionTrace({ onClose }: { onClose?: () => void } = {}) {
               '--pa-btn-radius': `${radius.md}px`,
               height: 26,
               fontFamily: font.body,
-              fontSize: 12,
+              fontSize: textSize.caption,
             } as CSSProperties}
           >Close</Button>
         )}

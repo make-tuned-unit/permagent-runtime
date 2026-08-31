@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
-import { ease, font, radius } from '../../styles/tokens';
+import { ease, font, radius, textSize } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { Button } from '../common/Button';
 import type { GraphMemory, GraphEntity } from './useBrainData';
@@ -238,13 +238,13 @@ export function BrainList({
         ))}
 
         {showMemories && displayLoading && (
-          <div style={{ padding: 20, textAlign: 'center', fontFamily: font.mono, fontSize: 11, color: colors.textDim }}>
+          <div style={{ padding: 20, textAlign: 'center', fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim }}>
             Loading...
           </div>
         )}
 
         {showMemories && !displayLoading && displayError && displayMemories.length === 0 && (
-          <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: 13 }}>
+          <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: textSize.small }}>
             <div style={{ color: colors.textMuted, marginBottom: 10 }}>
               {isSearch ? `Could not search your Brain: ${displayError}` : "Couldn't load memories."}
             </div>
@@ -263,7 +263,7 @@ export function BrainList({
                   '--pa-btn-pad': '5px 14px',
                   '--pa-btn-radius': `${radius.md}px`,
                   '--pa-btn-weight': 600,
-                  fontSize: 12, lineHeight: 1.5, fontFamily: font.body,
+                  fontSize: textSize.caption, lineHeight: 1.5, fontFamily: font.body,
                 } as CSSProperties}
               >
                 Retry
@@ -273,7 +273,7 @@ export function BrainList({
         )}
 
         {showMemories && !displayLoading && !displayError && displayMemories.length === 0 && (
-          <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: 13, color: colors.textMuted }}>
+          <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted }}>
             {isSearch ? `No memories match "${searchQuery}" — try a name or project.` : 'No memories yet.'}
           </div>
         )}
@@ -345,7 +345,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
       {/* Title row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
         <div style={{
-          fontFamily: font.body, fontSize: 13, fontWeight: 600, color: colors.text,
+          fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: 12,
         }}>
           {highlightText(title, highlightTerms, colors)}
@@ -364,7 +364,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
       {/* Description preview */}
       {descPreview && (
         <div style={{
-          fontFamily: font.body, fontSize: 12, color: colors.textMuted, lineHeight: 1.5,
+          fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5,
           marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis',
           display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
         }}>
@@ -468,14 +468,14 @@ function EntityRow({ entity, selected, onClick }: {
         </span>
       </span>
       <span style={{
-        fontFamily: font.body, fontSize: 13, fontWeight: 600, color: colors.text,
+        fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text,
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
       }}>
         {entity.name}
       </span>
       {entity.note && (
         <span style={{
-          fontFamily: font.body, fontSize: 11, color: colors.textMuted,
+          fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           maxWidth: 200, flexShrink: 1,
         }}>

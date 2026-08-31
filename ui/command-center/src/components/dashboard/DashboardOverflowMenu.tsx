@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, type CSSProperties } from 'react';
 import { FiMoreVertical } from 'react-icons/fi';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -90,7 +90,7 @@ export function DashboardOverflowMenu({ items }: Props) {
                 '--pa-btn-radius': '0',
                 display: 'flex', width: '100%',
                 justifyContent: 'flex-start',
-                fontFamily: font.body, fontSize: 13,
+                fontFamily: font.body, fontSize: textSize.small,
               } as CSSProperties}
             >
               {/* One row inside the primitive's label span, so the icon keeps

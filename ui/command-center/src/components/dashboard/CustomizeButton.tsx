@@ -14,7 +14,7 @@
 
 import { type CSSProperties } from 'react';
 import { FiCheck, FiEdit2 } from 'react-icons/fi';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { Button } from '../common/Button';
 
@@ -47,7 +47,7 @@ export function CustomizeButton({
         '--pa-btn-pad': '5px 14px',
         '--pa-btn-radius': `${radius.md}px`,
         fontFamily: font.body,
-        fontSize: 12,
+        fontSize: textSize.caption,
       } as CSSProperties}
     >
       {/* The primitive wraps its children in one span, so the icon and the word

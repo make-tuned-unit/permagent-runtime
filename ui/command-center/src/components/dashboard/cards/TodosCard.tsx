@@ -1,5 +1,5 @@
 import { memo, useState, type CSSProperties } from 'react';
-import { radius } from '../../../styles/tokens';
+import { radius, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
 import { SectionTitle, EmptyNote } from '../atoms';
@@ -55,10 +55,10 @@ export const TodosCard = memo(function TodosCard({ todos }: Props) {
         // "nothing due" — and here the difference is "you're clear" versus
         // "you have no idea what's due". Say which one it is.
         <Centered>
-          <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 6 }}>
+          <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: 6 }}>
             Couldn't load your to-dos
           </div>
-          <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 10 }}>{error}</div>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 10 }}>{error}</div>
           <Button
             colors={colors}
             type="button"
@@ -74,7 +74,7 @@ export const TodosCard = memo(function TodosCard({ todos }: Props) {
               '--pa-btn-pad': '4px 10px',
               '--pa-btn-radius': `${radius.sm}px`,
               '--pa-btn-weight': 400,
-              fontSize: 11,
+              fontSize: textSize.micro,
             } as CSSProperties}
           >Try again</Button>
         </Centered>
@@ -192,7 +192,7 @@ function TodoRow({
             if (e.key === 'Escape') setEditing(false);
           }}
           style={{
-            fontSize: 11, padding: '2px 4px', colorScheme: 'inherit',
+            fontSize: textSize.micro, padding: '2px 4px', colorScheme: 'inherit',
             borderRadius: radius.sm, border: `1px solid ${colors.border}`,
             background: colors.surface, color: colors.text,
           }}
@@ -240,7 +240,7 @@ function TodoRow({
           '--pa-btn-radius': `${radius.sm}px`,
           '--pa-btn-weight': 400,
           width: 20, height: 20, flexShrink: 0, lineHeight: '18px',
-          fontSize: 13,
+          fontSize: textSize.small,
           // Revealed by the ROW's hover, not this button's — keep it inline.
           visibility: hovered ? 'visible' : 'hidden',
         } as CSSProperties}

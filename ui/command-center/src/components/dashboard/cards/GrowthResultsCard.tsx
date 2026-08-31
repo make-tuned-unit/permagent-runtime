@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from 'react';
-import { font, radius } from '../../../styles/tokens';
+import { font, radius, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { SectionTitle, EmptyNote, StatCompact } from '../atoms';
 import { apiFetch } from '../../../lib/api';
@@ -130,7 +130,7 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
                     }}
                   >
                     <span style={{
-                      fontFamily: font.body, fontSize: 12, color: colors.text,
+                      fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                       minWidth: 0, flex: 1,
                     }}>{row.projectName}</span>

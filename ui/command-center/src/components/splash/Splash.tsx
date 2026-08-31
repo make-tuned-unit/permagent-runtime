@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { font, ease } from '../../styles/tokens';
+import { font, ease, textSize } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { useTheme } from '../../styles/useTheme';
 
@@ -55,7 +55,7 @@ export function Splash({ onDone }: Props) {
         *   capitalization without explicit user instruction.
         * ========================= */}
       <p style={{
-        fontFamily: font.display, fontSize: 14, fontWeight: 600,
+        fontFamily: font.display, fontSize: textSize.body, fontWeight: 600,
         color: colors.textMuted, letterSpacing: '0.08em',
         textTransform: 'none',
         marginTop: 28,

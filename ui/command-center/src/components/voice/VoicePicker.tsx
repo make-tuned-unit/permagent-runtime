@@ -1,6 +1,6 @@
 import { type CSSProperties } from 'react';
 import { useTheme } from '../../styles/useTheme';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useVoices, useVoicePreview } from '../../lib/useVoices';
 import { Button } from '../common/Button';
 
@@ -9,7 +9,7 @@ type C = ReturnType<typeof useTheme>['colors'];
 const selectStyle = (colors: C): React.CSSProperties => ({
   height: 34, padding: '0 12px', borderRadius: radius.md,
   background: colors.inputBg, border: `1px solid ${colors.border}`,
-  color: colors.text, fontFamily: font.body, fontSize: 13,
+  color: colors.text, fontFamily: font.body, fontSize: textSize.small,
   flex: 1, cursor: 'pointer',
 });
 /** The picker's two controls, expressed for the shared button primitive: the
@@ -26,7 +26,7 @@ const btnVars = (colors: C): CSSProperties => ({
   '--pa-btn-radius': `${radius.md}px`,
   height: 34,
   fontFamily: font.body,
-  fontSize: 13,
+  fontSize: textSize.small,
   whiteSpace: 'nowrap',
 } as CSSProperties);
 
@@ -47,17 +47,17 @@ export function VoicePicker({
   const { voices, ready, loading, status, downloadPercent, downloadError, startDownload } = useVoices();
   const { preview, playingId, error: previewError } = useVoicePreview();
 
-  if (loading) return <span style={{ color: colors.textDim, fontSize: 13 }}>Loading voices…</span>;
+  if (loading) return <span style={{ color: colors.textDim, fontSize: textSize.small }}>Loading voices…</span>;
 
   if (!ready) {
     const downloading = !!status?.downloading || (downloadPercent > 0 && downloadPercent < 100);
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <span style={{ color: colors.textDim, fontSize: 13 }}>
+        <span style={{ color: colors.textDim, fontSize: textSize.small }}>
           Voice models aren’t downloaded yet (~353&nbsp;MB, one time). Download to enable spoken voice.
         </span>
         {downloading
-          ? <div style={{ fontSize: 12, color: colors.textDim }}>Downloading… {downloadPercent}%</div>
+          ? <div style={{ fontSize: textSize.caption, color: colors.textDim }}>Downloading… {downloadPercent}%</div>
           : (
             // `startDownload` reports its own failure into `downloadError` and
             // resolves either way, so the tick could not tell the two apart.
@@ -70,7 +70,7 @@ export function VoicePicker({
               Download voice models
             </Button>
           )}
-        {downloadError && <span style={{ fontSize: 12, color: colors.danger }}>{downloadError}</span>}
+        {downloadError && <span style={{ fontSize: textSize.caption, color: colors.danger }}>{downloadError}</span>}
       </div>
     );
   }
@@ -107,7 +107,7 @@ export function VoicePicker({
         title="Preview this voice"
         style={btnVars(colors)}
       >{playingId ? '…' : '▶ Preview'}</Button>
-      {previewError && <span style={{ fontSize: 12, color: colors.danger }}>{previewError}</span>}
+      {previewError && <span style={{ fontSize: textSize.caption, color: colors.danger }}>{previewError}</span>}
     </div>
   );
 }

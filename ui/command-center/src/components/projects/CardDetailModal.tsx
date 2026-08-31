@@ -25,7 +25,7 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { DetailModal } from '../common/DetailModal';
@@ -193,11 +193,11 @@ export function CardDetailModal({
 
   return (
     <DetailModal title={card?.title ?? 'Card'} badge={badge} onClose={onClose} footer={footer}>
-      {loading && <div style={{ fontSize: 12, color: colors.textMuted }}>Loading card…</div>}
+      {loading && <div style={{ fontSize: textSize.caption, color: colors.textMuted }}>Loading card…</div>}
 
       {loadError && !loading && (
         <div style={{
-          fontSize: 12, color: colors.danger,
+          fontSize: textSize.caption, color: colors.danger,
           borderRadius: radius.md, border: `1px solid ${colors.danger}`,
           background: colors.danger + '14', padding: '8px 12px',
         }}>
@@ -234,7 +234,7 @@ export function CardDetailModal({
                   onChange={e => setDraftDueDate(e.target.value)}
                   style={{ ...inputStyle(colors), width: 200 }}
                 />
-                <div style={{ fontSize: 11, color: colors.textDim, marginTop: 4 }}>
+                <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 4 }}>
                   A to-do only reaches the Home tab&apos;s list once it has a due date. Clear the
                   field to take it off that list; the card stays on the board either way.
                 </div>
@@ -243,7 +243,7 @@ export function CardDetailModal({
           ) : (
             <>
               <Field label="Description">
-                <div style={{ fontSize: 12, color: card.description ? colors.text : colors.textDim, whiteSpace: 'pre-wrap', userSelect: 'text' }}>
+                <div style={{ fontSize: textSize.caption, color: card.description ? colors.text : colors.textDim, whiteSpace: 'pre-wrap', userSelect: 'text' }}>
                   {card.description || 'No description.'}
                 </div>
               </Field>
@@ -270,7 +270,7 @@ export function CardDetailModal({
 
           {saveError && (
             <div style={{
-              fontSize: 12, color: colors.danger,
+              fontSize: textSize.caption, color: colors.danger,
               borderRadius: radius.md, border: `1px solid ${colors.danger}`,
               background: colors.danger + '14', padding: '8px 12px',
             }}>
@@ -288,7 +288,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   return (
     <div>
       <div style={{
-        fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+        fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
         textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6,
       }}>
         {label}
@@ -306,10 +306,10 @@ function MetaGrid({ colors, rows }: {
     <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 14px' }}>
       {rows.map(([k, v]) => (
         <div key={k} style={{ display: 'contents' }}>
-          <span style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, whiteSpace: 'nowrap' }}>
+          <span style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, whiteSpace: 'nowrap' }}>
             {k}
           </span>
-          <span style={{ fontSize: 12, color: colors.text, wordBreak: 'break-word', userSelect: 'text' }}>
+          <span style={{ fontSize: textSize.caption, color: colors.text, wordBreak: 'break-word', userSelect: 'text' }}>
             {v}
           </span>
         </div>
@@ -323,7 +323,7 @@ function inputStyle(colors: ReturnType<typeof useTheme>['colors']): React.CSSPro
     width: '100%', boxSizing: 'border-box', padding: '7px 9px',
     borderRadius: radius.md, border: `1px solid ${colors.border}`,
     background: colors.inputBg, color: colors.text,
-    fontFamily: font.body, fontSize: 12, outline: 'none',
+    fontFamily: font.body, fontSize: textSize.caption, outline: 'none',
   };
 }
 
@@ -339,6 +339,6 @@ function ghostVars(colors: ReturnType<typeof useTheme>['colors']): CSSProperties
     '--pa-btn-bg-hover': 'transparent',
     '--pa-btn-pad': '6px 14px',
     '--pa-btn-radius': `${radius.md}px`,
-    fontFamily: font.body, fontSize: 12,
+    fontFamily: font.body, fontSize: textSize.caption,
   } as CSSProperties;
 }

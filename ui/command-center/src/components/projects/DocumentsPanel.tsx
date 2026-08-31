@@ -16,7 +16,7 @@ import { FiFile, FiTrash2, FiUploadCloud } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { projectMemoryPreview } from '../brain/brainMemoryFocus';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -123,7 +123,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
               '--pa-btn-pad': '0',
               '--pa-btn-weight': 'inherit',
               fontFamily: font.body,
-              fontSize: 11,
+              fontSize: textSize.micro,
             } as CSSProperties}
           >
             {busy ? 'Uploading…' : '+ Upload'}
@@ -158,7 +158,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
             padding: '10px 12px', marginBottom: docs.length ? 8 : 0, cursor: 'pointer',
-            borderRadius: radius.md, fontSize: 11,
+            borderRadius: radius.md, fontSize: textSize.micro,
             color: dragging ? colors.cyan : colors.textDim,
             border: `1px dashed ${dragging ? colors.cyan : colors.border}`,
             background: dragging ? colors.cyanSoft : 'transparent',
@@ -170,16 +170,16 @@ export function DocumentsPanel({ project }: { project: Project }) {
         </div>
 
         {error && (
-          <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{error}</div>
+          <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error}</div>
         )}
 
         {status === 'loading' && (
-          <div style={{ fontSize: 11, color: colors.textDim }}>Loading documents…</div>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading documents…</div>
         )}
 
         {status === 'error' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load documents.</span>
+            <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load documents.</span>
             <Button
               colors={colors}
               variant="bare"
@@ -191,7 +191,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
                 '--pa-btn-pad': '0',
                 '--pa-btn-weight': 600,
                 fontFamily: font.body,
-                fontSize: 11,
+                fontSize: textSize.micro,
               } as CSSProperties}
             >
               Retry
@@ -234,7 +234,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
                   } as CSSProperties}
                 >
                   <FiFile size={13} color={colors.textMuted} style={{ flexShrink: 0 }} />
-                  <span style={{ fontSize: 12, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span style={{ fontSize: textSize.caption, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {doc.filename}
                   </span>
                   <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0 }}>{formatSize(doc.size_bytes)}</span>

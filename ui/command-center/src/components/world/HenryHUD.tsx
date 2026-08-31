@@ -2,7 +2,7 @@ import { useState, useEffect, type CSSProperties } from 'react';
 import { COLORS } from './constants';
 import { AGENT_TRIM } from './shared/palette';
 import { api } from '../../lib/api';
-import { radius } from '../../styles/tokens';
+import { radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { HudShell, Section, StatRow, useTabReset } from './HudShell';
@@ -170,7 +170,7 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
       {/* State badge area (current tool indicator) */}
       {status.current_tool && (
         <div style={{ padding: '4px 14px 0' }}>
-          <span style={{ fontSize: 11, color: COLORS.neonAmber }}>
+          <span style={{ fontSize: textSize.micro, color: COLORS.neonAmber }}>
             <span style={spinnerStyle}>◠</span> processing…
           </span>
         </div>
@@ -180,7 +180,7 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
       {status.active_sessions.length > 0 && (
         <Section title="ACTIVE SESSIONS" trimColor={HENRY_TRIM}>
           {status.active_sessions.slice(0, 3).map((s) => (
-            <div key={s.id} style={{ fontSize: 11, lineHeight: 1.6 }}>
+            <div key={s.id} style={{ fontSize: textSize.micro, lineHeight: 1.6 }}>
               <span style={{ color: COLORS.primaryMarble }}>{truncate(s.name, 32)}</span>
               <span style={{ color: '#6B7280', marginLeft: 8 }}>{relativeTime(s.started_at)}</span>
             </div>
@@ -250,7 +250,7 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
                     '--pa-btn-bg-hover': 'rgba(255,255,255,0.06)',
                     '--pa-btn-pad': '2px 4px',
                     '--pa-btn-radius': `${radius.xs}px`,
-                    marginLeft: 'auto', fontSize: 11, lineHeight: 1,
+                    marginLeft: 'auto', fontSize: textSize.micro, lineHeight: 1,
                   } as CSSProperties}
                 >
                   ✓
@@ -313,7 +313,7 @@ const briefingFromStyle: React.CSSProperties = {
 };
 
 const briefingSummaryStyle: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: textSize.micro,
   marginTop: 2,
   lineHeight: 1.4,
 };

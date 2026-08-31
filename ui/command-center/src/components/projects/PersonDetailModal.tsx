@@ -39,7 +39,7 @@ import { apiFetch } from '../../lib/api';
 import { hapticSuccess } from '../../lib/haptic';
 import { navigateToTool, useCommandCenter } from '../../lib/store';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
-import { ease, font, radius } from '../../styles/tokens';
+import { ease, font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Chip } from '../common/Chip';
@@ -599,7 +599,7 @@ export function PersonDetailModal({
   // both MergePersonPanel and the deleted card carry their own actions.
   const footer = deletedReport ? undefined : merging ? undefined : confirming ? (
     <>
-      <span style={{ flex: 1, fontSize: 12, color: colors.textMuted }}>
+      <span style={{ flex: 1, fontSize: textSize.caption, color: colors.textMuted }}>
         Remove {view.display_name} from this project?
       </span>
       <Button colors={colors} onClick={() => setConfirming(false)} disabled={removing} style={ghostVars(colors)}>
@@ -610,7 +610,7 @@ export function PersonDetailModal({
       </Button>
     </>
   ) : deleteStep === 1 ? (
-    <span style={{ flex: 1, fontSize: 12, color: colors.textMuted }}>
+    <span style={{ flex: 1, fontSize: textSize.caption, color: colors.textMuted }}>
       Confirm below to delete {view.display_name}.
     </span>
   ) : (
@@ -678,7 +678,7 @@ export function PersonDetailModal({
               onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
             />
             {association && (
-              <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono }}>
+              <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono }}>
                 {association.project_role ? `${association.project_role} · ` : ''}Associated {fmtTime(association.associated_at)}
               </div>
             )}
@@ -731,7 +731,7 @@ export function PersonDetailModal({
 
             {error && (
               <div style={{
-                fontSize: 12, color: colors.danger,
+                fontSize: textSize.caption, color: colors.danger,
                 borderRadius: radius.md, border: `1px solid ${colors.danger}`,
                 background: colors.danger + '14', padding: '8px 12px',
               }}>
@@ -762,9 +762,9 @@ function MergeResultCard({ colors, report, undoing, undoReport, undoError, onUnd
       borderRadius: radius.md, border: `1px solid ${colors.cyan}`,
       background: colors.cyanSoft, padding: '10px 12px',
     }}>
-      <div style={{ fontSize: 12, color: colors.text }}>{report.summary}</div>
+      <div style={{ fontSize: textSize.caption, color: colors.text }}>{report.summary}</div>
       {undoReport ? (
-        <div style={{ fontSize: 11, color: colors.textMuted }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>
           Undone — restored {undoReport.restored_name} ({undoReport.meetings_restored} meeting{undoReport.meetings_restored === 1 ? '' : 's'},{' '}
           {undoReport.project_links_restored} project link{undoReport.project_links_restored === 1 ? '' : 's'}).
           {undoReport.not_reverted.length > 0 && (
@@ -778,7 +778,7 @@ function MergeResultCard({ colors, report, undoing, undoReport, undoError, onUnd
           <Button colors={colors} onClick={onUndo} pending={undoing} disabled={undoing} style={miniVars(colors)}>
             {undoing ? 'Undoing…' : 'Undo merge'}
           </Button>
-          {undoError && <span style={{ fontSize: 11, color: colors.danger }}>{undoError}</span>}
+          {undoError && <span style={{ fontSize: textSize.micro, color: colors.danger }}>{undoError}</span>}
         </div>
       )}
     </div>
@@ -806,17 +806,17 @@ function DeleteWarningCard({ colors, name, meetingsCount, projectsCount, deletin
       borderRadius: radius.md, border: `1px solid ${colors.danger}`,
       background: colors.danger + '14', padding: '10px 12px',
     }}>
-      <div style={{ fontSize: 12, color: colors.text, fontWeight: 600 }}>
+      <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>
         Delete {name}? This can't be undone.
       </div>
-      <div style={{ fontSize: 11, color: colors.textMuted }} data-testid="delete-warning-counts">
+      <div style={{ fontSize: textSize.micro, color: colors.textMuted }} data-testid="delete-warning-counts">
         This deletes {meetingsCount} logged meeting{meetingsCount === 1 ? '' : 's'} and{' '}
         {projectsCount == null
           ? "an unknown number of project links — that list didn't load"
           : `${projectsCount} project link${projectsCount === 1 ? '' : 's'}`}
         {' '}for {name}.
       </div>
-      {error && <div style={{ fontSize: 11, color: colors.danger }}>{error}</div>}
+      {error && <div style={{ fontSize: textSize.micro, color: colors.danger }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8 }}>
         <Button colors={colors} onClick={onCancel} disabled={deleting} style={ghostVars(colors)}>Keep</Button>
         <Button colors={colors} onClick={onConfirm} pending={deleting} disabled={deleting} style={dangerVars(colors)}>
@@ -837,7 +837,7 @@ function DeletedCard({ colors, report, onClose }: {
 }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ fontSize: 13, color: colors.text }}>
+      <div style={{ fontSize: textSize.small, color: colors.text }}>
         Deleted {report.display_name}: {report.meetings_deleted} meeting{report.meetings_deleted === 1 ? '' : 's'},{' '}
         {report.project_links_deleted} project link{report.project_links_deleted === 1 ? '' : 's'},{' '}
         {report.graph_edges_deleted} graph edge{report.graph_edges_deleted === 1 ? '' : 's'},{' '}
@@ -845,7 +845,7 @@ function DeletedCard({ colors, report, onClose }: {
       </div>
       {report.retained.length > 0 && (
         <div style={{
-          fontSize: 11, color: colors.textMuted, borderRadius: radius.md,
+          fontSize: textSize.micro, color: colors.textMuted, borderRadius: radius.md,
           border: `1px solid ${colors.border}`, padding: '8px 10px',
         }}>
           <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 4 }}>
@@ -932,8 +932,8 @@ function RelatedPeople({ colors, rows, people, status, adding, targetId, predica
     {status === 'error' && <Small colors={colors}>Couldn't load relationships.</Small>}
     {status === 'ready' && rows.length === 0 && !adding && <Small colors={colors}>No related people yet.</Small>}
     {rows.map(row => <div key={`${row.from_entity_uuid}-${row.to_entity_uuid}-${row.predicate}`} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${colors.border}` }}>
-      <span style={{ color: colors.text, fontSize: 12, fontWeight: 600 }}>{row.other_person.display_name}</span>
-      <span style={{ color: colors.textDim, fontSize: 11 }}>{row.predicate.replace(/_/g, ' ')}</span><span style={{ flex: 1 }} />
+      <span style={{ color: colors.text, fontSize: textSize.caption, fontWeight: 600 }}>{row.other_person.display_name}</span>
+      <span style={{ color: colors.textDim, fontSize: textSize.micro }}>{row.predicate.replace(/_/g, ' ')}</span><span style={{ flex: 1 }} />
       <Button colors={colors} variant="bare" aria-label={`Remove ${row.other_person.display_name} relationship`} onClick={() => onRemove(row)} style={iconVars(colors)}><FiTrash2 size={12} /></Button>
     </div>)}
     {adding && <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6, marginTop: 8 }}>
@@ -980,12 +980,12 @@ function MeetingsSection({ colors, personName, rows, projects, status, adding, t
     {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: 8, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}>
       <span style={{ color: colors.cyan, marginTop: 2 }}><FiCalendar size={12} /></span>
       <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ fontSize: 12, color: colors.text, fontWeight: 600 }}>{row.title}</div>
-        <div style={{ fontSize: 11, color: colors.textMuted }}>{fmtTime(row.starts_at)}{row.calendar_synced ? ' · Calendar' : ''}{row.calendar_uid ? ' · from iCal' : ''}</div>
-        {row.notes ? <div style={{ fontSize: 11, color: colors.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.notes}</div> : null}
+        <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>{row.title}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>{fmtTime(row.starts_at)}{row.calendar_synced ? ' · Calendar' : ''}{row.calendar_uid ? ' · from iCal' : ''}</div>
+        {row.notes ? <div style={{ fontSize: textSize.micro, color: colors.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.notes}</div> : null}
         {row.follow_up_at && !row.follow_up_done && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-            <span style={{ fontSize: 11, color: colors.cyan }}>Follow up {fmtTime(row.follow_up_at)}{row.follow_up_note ? ` · ${row.follow_up_note}` : ''}</span>
+            <span style={{ fontSize: textSize.micro, color: colors.cyan }}>Follow up {fmtTime(row.follow_up_at)}{row.follow_up_note ? ` · ${row.follow_up_note}` : ''}</span>
             <Button colors={colors} aria-label="Mark follow-up done" onClick={() => onFollowUpDone(row)} style={miniVars(colors)}><FiCheck size={12} />Done</Button>
           </div>
         )}
@@ -1001,7 +1001,7 @@ function MeetingsSection({ colors, personName, rows, projects, status, adding, t
         </select>
       )}
       <textarea aria-label="Meeting notes" value={notes} onChange={e => onNotes(e.target.value)} placeholder="What you covered" rows={3} style={{ ...control(colors), resize: 'vertical' }} />
-      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: colors.text }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: textSize.caption, color: colors.text }}>
         <input aria-label="Schedule a follow-up" type="checkbox" checked={followUp} onChange={e => onFollowUp(e.target.checked)} />
         Follow up in a week
       </label>
@@ -1025,12 +1025,12 @@ function PersonActivityTimeline({ colors, rows, status, onRetry }: { colors: Ret
     {status === 'loading' && <Small colors={colors}>Loading activity…</Small>}
     {status === 'error' && <Small colors={colors}>Couldn't load activity. <Button colors={colors} variant="bare" className="hover:underline" onClick={onRetry} style={linkVars(colors)}>Retry</Button></Small>}
     {status === 'ready' && rows.length === 0 && <Small colors={colors}>No activity referencing this person yet.</Small>}
-    {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: 8, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}><span style={{ color: colors.cyan, marginTop: 2 }}>{icon(row.kind)}</span><div style={{ minWidth: 0 }}><div style={{ fontSize: 12, color: colors.text, fontWeight: 600 }}>{row.title}</div><div style={{ fontSize: 11, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.detail}</div><div style={{ fontSize: 10, color: colors.textDim }}>{fmtTime(row.timestamp)}</div></div></div>)}
+    {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: 8, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}><span style={{ color: colors.cyan, marginTop: 2 }}>{icon(row.kind)}</span><div style={{ minWidth: 0 }}><div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>{row.title}</div><div style={{ fontSize: textSize.micro, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.detail}</div><div style={{ fontSize: 10, color: colors.textDim }}>{fmtTime(row.timestamp)}</div></div></div>)}
   </section>;
 }
 
-function SectionLabel({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '.04em' }}>{children}</div>; }
-function Small({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: 11, color: colors.textDim, marginTop: 6 }}>{children}</div>; }
+function SectionLabel({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '.04em' }}>{children}</div>; }
+function Small({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 6 }}>{children}</div>; }
 
 /** A profile link rendered as a button: clicking navigates the in-app browser
  *  on the Build tab. Not an <a href>, deliberately — an anchor would hand the
@@ -1079,7 +1079,7 @@ function EditForm({ colors, personName, draft, onChange }: {
           <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={{
               display: 'flex', alignItems: 'center', gap: 8,
-              fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+              fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
               textTransform: 'uppercase', letterSpacing: '0.04em',
             }}>
               {label}
@@ -1166,7 +1166,7 @@ function PersonDetailShell({
         flexShrink: 0,
       }}>
         <span style={{
-          fontFamily: font.display, fontSize: 16, fontWeight: 600,
+          fontFamily: font.display, fontSize: textSize.heading, fontWeight: 600,
           color: colors.text, flex: 1, minWidth: 0,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>
@@ -1234,7 +1234,7 @@ function PersonDetailShell({
 
 function inputStyle(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
   return {
-    fontSize: 12, padding: '6px 9px', borderRadius: radius.md,
+    fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
     background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none', width: '100%',
     boxSizing: 'border-box',
@@ -1266,7 +1266,7 @@ function miniVars(colors: Vars): CSSProperties {
     '--pa-btn-bg-hover': 'transparent',
     '--pa-btn-pad': '4px 7px',
     '--pa-btn-radius': `${radius.md}px`,
-    fontFamily: font.body, fontSize: 11,
+    fontFamily: font.body, fontSize: textSize.micro,
   } as CSSProperties;
 }
 
@@ -1286,7 +1286,7 @@ function linkVars(colors: Vars): CSSProperties {
     '--pa-btn-bg-hover': 'transparent',
     '--pa-btn-bg-active': 'transparent',
     '--pa-btn-pad': '0',
-    fontFamily: font.body, fontSize: 11,
+    fontFamily: font.body, fontSize: textSize.micro,
   } as CSSProperties;
 }
 
@@ -1299,7 +1299,7 @@ function ghostVars(colors: Vars): CSSProperties {
     '--pa-btn-bg-hover': 'transparent',
     '--pa-btn-pad': '6px 14px',
     '--pa-btn-radius': `${radius.md}px`,
-    fontFamily: font.body, fontSize: 12,
+    fontFamily: font.body, fontSize: textSize.caption,
   } as CSSProperties;
 }
 
@@ -1314,7 +1314,7 @@ function primaryVars(colors: Vars): CSSProperties {
     '--pa-btn-border-hover': colors.cyan,
     '--pa-btn-pad': '6px 14px',
     '--pa-btn-radius': `${radius.md}px`,
-    fontFamily: font.body, fontSize: 12,
+    fontFamily: font.body, fontSize: textSize.caption,
   } as CSSProperties;
 }
 
@@ -1329,7 +1329,7 @@ function dangerVars(colors: Vars): CSSProperties {
     '--pa-btn-border-hover': colors.danger,
     '--pa-btn-pad': '6px 14px',
     '--pa-btn-radius': `${radius.md}px`,
-    fontFamily: font.body, fontSize: 12,
+    fontFamily: font.body, fontSize: textSize.caption,
   } as CSSProperties;
 }
 

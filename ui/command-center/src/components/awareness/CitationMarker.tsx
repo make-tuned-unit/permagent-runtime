@@ -3,7 +3,7 @@ import type { ProbedMemoryRef, RecalledMemoryRef } from '../../lib/store';
 import { useCommandCenter } from '../../lib/store';
 import type { BrainMemoryTarget } from '../brain/brainMemoryFocus';
 import { probedFocusTarget, recalledFocusTarget } from './citationFocus';
-import { ease, font, radius, type ThemeColors } from '../../styles/tokens';
+import { ease, font, radius, type ThemeColors, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 interface Props {
@@ -101,7 +101,7 @@ export function CitationMarker({ probed, recalled }: Props) {
                 <span style={{ flex: 1 }} />
                 <OpenArrow color={colors.purple} />
               </div>
-              <div style={{ fontSize: 11, fontFamily: font.body, color: colors.textMuted, lineHeight: 1.3 }}>
+              <div style={{ fontSize: textSize.micro, fontFamily: font.body, color: colors.textMuted, lineHeight: 1.3 }}>
                 {m.content_summary}
               </div>
             </button>
@@ -128,7 +128,7 @@ export function CitationMarker({ probed, recalled }: Props) {
                 <span style={{ flex: 1 }} />
                 <OpenArrow color={colors.purple} />
               </div>
-              <div style={{ fontSize: 11, fontFamily: font.body, color: colors.textMuted, lineHeight: 1.3 }}>
+              <div style={{ fontSize: textSize.micro, fontFamily: font.body, color: colors.textMuted, lineHeight: 1.3 }}>
                 {m.content_summary}
               </div>
             </button>

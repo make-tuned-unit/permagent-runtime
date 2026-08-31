@@ -1,6 +1,6 @@
 import { type CSSProperties } from 'react';
 import { FiPlus, FiX, FiGlobe, FiExternalLink } from 'react-icons/fi';
-import { font } from '../../styles/tokens';
+import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { CycleTabsButton } from '../build/CycleTabsButton';
@@ -72,7 +72,7 @@ export function BrowserTabs({
                 '--pa-btn-pad': '6px 12px',
                 '--pa-btn-radius': '0',
                 fontFamily: font.mono,
-                fontSize: 11,
+                fontSize: textSize.micro,
                 gap: 6,
                 borderRight: `1px solid ${colors.border}`,
               } as CSSProperties}

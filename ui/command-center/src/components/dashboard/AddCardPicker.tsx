@@ -1,6 +1,6 @@
 import { type CSSProperties } from 'react';
 import { FiPlus, FiX } from 'react-icons/fi';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import type { CardRegistryEntry } from './cards/registry';
@@ -45,7 +45,7 @@ export function AddCardPicker({ registry, currentCardTypes, onSelect, onClose }:
           padding: '14px 18px',
           borderBottom: `1px solid ${colors.border}`,
         }}>
-          <span style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text }}>
+          <span style={{ fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>
             Add card
           </span>
           <Button
@@ -72,7 +72,7 @@ export function AddCardPicker({ registry, currentCardTypes, onSelect, onClose }:
           {available.length === 0 ? (
             <div style={{
               padding: '24px 18px', textAlign: 'center',
-              fontSize: 13, color: colors.textMuted,
+              fontSize: textSize.small, color: colors.textMuted,
             }}>
               All card types are already added
             </div>
@@ -106,7 +106,7 @@ export function AddCardPicker({ registry, currentCardTypes, onSelect, onClose }:
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontFamily: font.body, fontSize: 13, fontWeight: 500, color: colors.text }}>
+                    <span style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text }}>
                       {entry.name}
                     </span>
                     {entry.source && entry.source !== 'built-in' && (
@@ -119,7 +119,7 @@ export function AddCardPicker({ registry, currentCardTypes, onSelect, onClose }:
                       </span>
                     )}
                   </div>
-                  <div style={{ fontFamily: font.body, fontSize: 11, color: colors.textDim, marginTop: 1 }}>
+                  <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, marginTop: 1 }}>
                     {entry.description}
                   </div>
                 </div>

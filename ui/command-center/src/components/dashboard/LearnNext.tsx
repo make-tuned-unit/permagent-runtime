@@ -13,7 +13,7 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { useCommandCenter } from '../../lib/store';
 import { setSpeakReplies } from '../../lib/speakReplies';
@@ -179,7 +179,7 @@ export function LearnNext() {
           <span>✦ LEARN NEXT</span>
           {progress && <span style={{ color: colors.textMuted }}>{progress}</span>}
         </div>
-        <div style={{ fontFamily: font.body, fontSize: 14, color: colors.text, lineHeight: 1.4 }}>
+        <div style={{ fontFamily: font.body, fontSize: textSize.body, color: colors.text, lineHeight: 1.4 }}>
           You haven&apos;t tried{' '}
           <span style={{ fontWeight: 700, color: colors.cyan }}>{item.display_name}</span> yet —{' '}
           <span style={{ color: colors.textMuted }}>{summarize(item.what_it_does)}.</span>
@@ -210,7 +210,7 @@ export function LearnNext() {
               '--pa-btn-radius': '9px',
               '--pa-btn-weight': 400,
               fontFamily: font.body,
-              fontSize: 12,
+              fontSize: textSize.caption,
               whiteSpace: 'nowrap',
             } as CSSProperties}
           >
@@ -233,7 +233,7 @@ export function LearnNext() {
             '--pa-btn-radius': '9px',
             '--pa-btn-weight': 600,
             fontFamily: font.body,
-            fontSize: 12,
+            fontSize: textSize.caption,
             whiteSpace: 'nowrap',
           } as CSSProperties}
         >
@@ -258,7 +258,7 @@ export function LearnNext() {
             '--pa-btn-weight': 400,
             width: 26,
             height: 26,
-            fontSize: 12,
+            fontSize: textSize.caption,
           } as CSSProperties}
         >
           ✕

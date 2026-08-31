@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
-import { ease, font, radius } from '../../styles/tokens';
+import { ease, font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Mobius } from '../mobius/Mobius';
@@ -109,7 +109,7 @@ function SidebarRow({
         display: 'flex', gap: 12,
         justifyContent: open ? 'flex-start' : 'center',
         margin: open ? '0 8px' : '0 auto',
-        fontFamily: font.body, fontSize: 13,
+        fontFamily: font.body, fontSize: textSize.small,
         textAlign: 'left',
       } as CSSProperties}
     >
@@ -281,7 +281,7 @@ export function Sidebar() {
             width: 'calc(100% - 16px)', height: 32,
             margin: '4px 8px 0',
             gap: 8,
-            fontFamily: font.body, fontSize: 11,
+            fontFamily: font.body, fontSize: textSize.micro,
           } as CSSProperties}
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">

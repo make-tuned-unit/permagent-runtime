@@ -15,7 +15,7 @@
  * really has gone says so and can be removed.
  */
 
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ManifestStatus } from './cards/useCardRegistry';
 
@@ -48,13 +48,13 @@ export function MissingCard({ type, status }: { type: string; status: ManifestSt
       }}
     >
       <div style={{
-        fontSize: 12,
+        fontSize: textSize.caption,
         fontWeight: 600,
         color: status === 'error' ? colors.warning : colors.textMuted,
       }}>
         {title}
       </div>
-      <div style={{ fontSize: 11, color: colors.textDim, maxWidth: 280, lineHeight: 1.5 }}>
+      <div style={{ fontSize: textSize.micro, color: colors.textDim, maxWidth: 280, lineHeight: 1.5 }}>
         {detail}
       </div>
       <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>{type}</div>

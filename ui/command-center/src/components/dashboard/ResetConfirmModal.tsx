@@ -1,5 +1,5 @@
 import { useEffect, type CSSProperties } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -39,13 +39,13 @@ export function ResetConfirmModal({ onConfirm, onCancel }: Props) {
         }}
       >
         <div style={{
-          fontFamily: font.display, fontSize: 16, fontWeight: 600,
+          fontFamily: font.display, fontSize: textSize.heading, fontWeight: 600,
           color: colors.text, marginBottom: 10,
         }}>
           Reset dashboard?
         </div>
         <div style={{
-          fontFamily: font.body, fontSize: 13, color: colors.textMuted,
+          fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted,
           lineHeight: 1.5, marginBottom: 24,
         }}>
           This will restore the default layout. Your current arrangement will be lost.
@@ -66,7 +66,7 @@ export function ResetConfirmModal({ onConfirm, onCancel }: Props) {
               '--pa-btn-pad': '7px 16px',
               '--pa-btn-radius': `${radius.md}px`,
               '--pa-btn-weight': 400,
-              fontFamily: font.body, fontSize: 13,
+              fontFamily: font.body, fontSize: textSize.small,
             } as CSSProperties}
           >
             Cancel
@@ -86,7 +86,7 @@ export function ResetConfirmModal({ onConfirm, onCancel }: Props) {
               '--pa-btn-pad': '7px 16px',
               '--pa-btn-radius': `${radius.md}px`,
               '--pa-btn-weight': 500,
-              fontFamily: font.body, fontSize: 13,
+              fontFamily: font.body, fontSize: textSize.small,
             } as CSSProperties}
           >
             Reset

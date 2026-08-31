@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useId, type CSSProperties } from 'react';
 import { FiX, FiEye, FiEyeOff } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import {
@@ -319,7 +319,7 @@ export function AddCustomProviderModal({ onClose }: Props) {
               '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
               '--pa-btn-pad': '6px 16px',
               '--pa-btn-radius': `${radius.xs}px`,
-              fontSize: 14,
+              fontSize: textSize.body,
             } as CSSProperties}
           >
             {created ? 'Done' : 'Cancel'}
@@ -335,7 +335,7 @@ export function AddCustomProviderModal({ onClose }: Props) {
                 '--pa-btn-pad': '6px 16px',
                 '--pa-btn-radius': `${radius.xs}px`,
                 fontFamily: font.display,
-                fontSize: 14,
+                fontSize: textSize.body,
               } as CSSProperties}
             >
               {submitting ? 'Creating…' : 'Create & test'}

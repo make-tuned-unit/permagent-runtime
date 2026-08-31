@@ -31,7 +31,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { ease, radius } from '../../styles/tokens';
+import { ease, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 /** `false` means "it failed" — the same signal `Button` takes. */
@@ -146,7 +146,7 @@ export function Toggle({ on, onChange, disabled = false, disabledReason, label, 
         </div>
       </button>
       {message && (
-        <span style={{ fontSize: 12, color: colors.danger, lineHeight: 1.4, maxWidth: 420 }}>
+        <span style={{ fontSize: textSize.caption, color: colors.danger, lineHeight: 1.4, maxWidth: 420 }}>
           {message}
         </span>
       )}

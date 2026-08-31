@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { api } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 
 /**
@@ -104,7 +104,7 @@ export function DevRootsSection() {
     padding: '8px 0', borderBottom: `1px solid ${colors.border}`,
   };
   const pathStyle: React.CSSProperties = {
-    fontFamily: font.mono, fontSize: 12, color: colors.text, wordBreak: 'break-all',
+    fontFamily: font.mono, fontSize: textSize.caption, color: colors.text, wordBreak: 'break-all',
   };
   // The look these two row links had, expressed the one way the primitive can
   // also give them a press: an inline `color` would win over `.pa-btn:hover` in
@@ -114,23 +114,23 @@ export function DevRootsSection() {
     '--pa-btn-fg': colors.cyan,
     '--pa-btn-bg-hover': 'transparent',
     '--pa-btn-pad': '0',
-    fontFamily: font.body, fontSize: 12, flexShrink: 0,
+    fontFamily: font.body, fontSize: textSize.caption, flexShrink: 0,
   } as CSSProperties;
 
   return (
     <div>
-      <div style={{ fontFamily: font.body, fontSize: 12, color: colors.textMuted, marginBottom: 10, maxWidth: 620, lineHeight: 1.6 }}>
+      <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, marginBottom: 10, maxWidth: 620, lineHeight: 1.6 }}>
         Used to find your projects, reclaim disk space from old build caches, and
         open the right checkout. With nothing set here those features fall back to
         guessing, and a wrong guess doesn't fail loudly — it just finds nothing.
       </div>
 
       {loading && (
-        <div style={{ fontFamily: font.body, fontSize: 12, color: colors.textMuted }}>Loading…</div>
+        <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted }}>Loading…</div>
       )}
 
       {!loading && roots.length === 0 && (
-        <div style={{ fontFamily: font.body, fontSize: 12, color: colors.warning, marginBottom: 8 }}>
+        <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.warning, marginBottom: 8 }}>
           Nothing set — features that look for your code are guessing right now.
         </div>
       )}
@@ -144,7 +144,7 @@ export function DevRootsSection() {
 
       {discovered.length > 0 && (
         <div style={{ marginTop: 14 }}>
-          <div style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>
+          <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginBottom: 4 }}>
             Also found on this machine (a git repository was actually detected in each):
           </div>
           {discovered.map(p => (
@@ -165,7 +165,7 @@ export function DevRootsSection() {
           style={{
             flex: 1, height: 34, padding: '0 10px', borderRadius: radius.md,
             background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-            color: colors.text, fontFamily: font.mono, fontSize: 12, outline: 'none',
+            color: colors.text, fontFamily: font.mono, fontSize: textSize.caption, outline: 'none',
           }}
         />
         <Button
@@ -186,7 +186,7 @@ export function DevRootsSection() {
             '--pa-btn-radius': `${radius.md}px`,
             '--pa-btn-weight': 600,
             height: 34, flexShrink: 0,
-            fontFamily: font.body, fontSize: 12,
+            fontFamily: font.body, fontSize: textSize.caption,
           } as CSSProperties}
         >{busy ? 'Checking…' : 'Add folder'}</Button>
       </div>
@@ -195,7 +195,7 @@ export function DevRootsSection() {
         <div
           role={note.kind === 'error' ? 'alert' : 'status'}
           style={{
-            fontFamily: font.body, fontSize: 11, marginTop: 8,
+            fontFamily: font.body, fontSize: textSize.micro, marginTop: 8,
             color: note.kind === 'error' ? colors.danger : note.kind === 'warn' ? colors.warning : colors.cyan,
           }}
         >{note.text}</div>

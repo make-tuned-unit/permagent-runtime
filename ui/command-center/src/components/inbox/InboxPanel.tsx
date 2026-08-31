@@ -13,7 +13,7 @@ import {
   statusLabel,
   type RouteDestination,
 } from './inboxRouting';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -168,7 +168,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
         '--pa-btn-radius': `${radius.sm}px`,
         height: 24,
         fontFamily: font.body,
-        fontSize: 11,
+        fontSize: textSize.micro,
         whiteSpace: 'nowrap',
       } as CSSProperties}
     >{label}</Button>
@@ -180,7 +180,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '20px 32px', borderBottom: `1px solid ${colors.border}` }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, letterSpacing: '-0.01em' }}>Downloads inbox</div>
-            <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
+            <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 2 }}>
               Files you download in the in-app browser land here — send them to the Brain, a project, or the post scheduler. You choose; nothing is routed for you.
             </div>
           </div>
@@ -194,16 +194,16 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
               '--pa-btn-radius': `${radius.md}px`,
               height: 30,
               fontFamily: font.body,
-              fontSize: 12,
+              fontSize: textSize.caption,
             } as CSSProperties}
           >Close</Button>
         </div>
       )}
       <div style={{ flex: 1, overflow: 'auto', padding: embedded ? '16px 20px' : '20px 32px' }}>
         {files === null ? (
-          <div style={{ color: colors.textDim, fontSize: 13 }}>Loading inbox…</div>
+          <div style={{ color: colors.textDim, fontSize: textSize.small }}>Loading inbox…</div>
         ) : files.length === 0 ? (
-          <div style={{ color: colors.textMuted, fontSize: 13, padding: '24px 0' }}>
+          <div style={{ color: colors.textMuted, fontSize: textSize.small, padding: '24px 0' }}>
             {error ?? 'Your inbox is empty. Download a file in the in-app browser — send it to Brain and it becomes searchable memory.'}
           </div>
         ) : (
@@ -219,12 +219,12 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
               return (
                 <div key={f.id} style={{ borderRadius: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
                   <div style={{ display: 'grid', gridTemplateColumns: COLS, gap: 12, alignItems: 'center', padding: '12px 12px 4px' }}>
-                    <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13, fontWeight: 600 }} title={f.filename}>{f.filename}</div>
-                    <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: colors.textMuted }} title={f.original_url ?? undefined}>{sourceLabel(f.original_url)}</div>
-                    <div style={{ fontSize: 12, color: colors.textMuted, fontFamily: font.mono }}>{formatBytes(f.size_bytes)}</div>
-                    <div style={{ fontSize: 12, color: colors.textMuted }}>{receivedLabel(f.created_at)}</div>
+                    <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: textSize.small, fontWeight: 600 }} title={f.filename}>{f.filename}</div>
+                    <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: textSize.caption, color: colors.textMuted }} title={f.original_url ?? undefined}>{sourceLabel(f.original_url)}</div>
+                    <div style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: font.mono }}>{formatBytes(f.size_bytes)}</div>
+                    <div style={{ fontSize: textSize.caption, color: colors.textMuted }}>{receivedLabel(f.created_at)}</div>
                     <div
-                      style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: f.project_id ? colors.text : colors.textDim }}
+                      style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: textSize.caption, color: f.project_id ? colors.text : colors.textDim }}
                       title={projectLabel(f.project_id, projects) ?? 'Not filed to a project yet'}
                     >{projectLabel(f.project_id, projects) ?? '—'}</div>
                     <div>
@@ -239,7 +239,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                     {actionBtn('Project…', 'File it as a document on a project', () => openPicker(f, 'project'), !routable, rowPick?.destination === 'project')}
                     {actionBtn('Post…', 'Draft it as a social post card on a project board', () => openPicker(f, 'scheduler'), !routable, rowPick?.destination === 'scheduler')}
                     {result && (
-                      <span style={{ fontSize: 11, color: result.ok ? colors.textMuted : colors.danger, marginLeft: 6 }}>
+                      <span style={{ fontSize: textSize.micro, color: result.ok ? colors.textMuted : colors.danger, marginLeft: 6 }}>
                         {result.text}
                       </span>
                     )}
@@ -249,7 +249,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                       <select
                         value={rowPick.projectId}
                         onChange={e => setPick({ ...rowPick, projectId: e.target.value })}
-                        style={{ height: 26, borderRadius: radius.sm, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.text, fontFamily: font.body, fontSize: 12, maxWidth: 280 }}
+                        style={{ height: 26, borderRadius: radius.sm, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.text, fontFamily: font.body, fontSize: textSize.caption, maxWidth: 280 }}
                       >
                         <option value="" disabled>
                           {projects === null ? 'Loading projects…' : projects.length === 0 ? 'No projects yet' : 'Choose a project'}

@@ -11,7 +11,7 @@ import {
   type AppNotification,
 } from '../../lib/notifications';
 import { navigateToTool, useCommandCenter } from '../../lib/store';
-import { font, radius, ease } from '../../styles/tokens';
+import { font, radius, ease, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -87,7 +87,7 @@ export function NotificationHost() {
           boxShadow: colors.elevationFloating, padding: 8,
         }}>
           {items.length === 0 ? (
-            <div style={{ padding: 18, textAlign: 'center', fontSize: 12, color: colors.textDim }}>
+            <div style={{ padding: 18, textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
               Nothing needs you — all quiet.
             </div>
           ) : items.map((n) => (
@@ -101,9 +101,9 @@ export function NotificationHost() {
               background: n.read ? 'transparent' : colors.cyanSoft,
               border: 'none', color: colors.text,
             }}>
-              <div style={{ fontFamily: font.body, fontSize: 12, fontWeight: 600 }}>{n.title}</div>
+              <div style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600 }}>{n.title}</div>
               {n.body && (
-                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, lineHeight: 1.4 }}>{n.body}</div>
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 2, lineHeight: 1.4 }}>{n.body}</div>
               )}
               <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginTop: 3 }}>
                 {new Date(n.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -134,8 +134,8 @@ export function NotificationHost() {
                 color: colors.text, animation: `pa-toast-in 220ms ${ease.out}`,
               }}
             >
-              <div style={{ fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan }}>{n.title}</div>
-              {n.body && <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>{n.body}</div>}
+              <div style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600, color: colors.cyan }}>{n.title}</div>
+              {n.body && <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 2 }}>{n.body}</div>}
             </button>
             <Button
               colors={colors}
@@ -148,7 +148,7 @@ export function NotificationHost() {
                 '--pa-btn-fg-hover': colors.text,
                 '--pa-btn-pad': '0',
                 position: 'absolute', top: 6, right: 6, width: 18, height: 18,
-                fontSize: 13, lineHeight: 1,
+                fontSize: textSize.small, lineHeight: 1,
               } as CSSProperties}
             >
               ×

@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useImperativeHandle, forwardRef, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { useBrowserContentBridge } from '../../hooks/useBrowserContentBridge';
@@ -1254,7 +1254,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
                       '--pa-btn-bg-active': colors.cyanGlow,
                       '--pa-btn-pad': '6px 12px',
                       '--pa-btn-radius': `${radius.sm}px`,
-                      fontFamily: font.body, fontSize: 12,
+                      fontFamily: font.body, fontSize: textSize.caption,
                     } as CSSProperties}
                   >
                     {site}

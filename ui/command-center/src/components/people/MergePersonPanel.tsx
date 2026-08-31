@@ -14,7 +14,7 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import type { DirectoryPerson, DuplicateSuggestion, MergePreview, MergeReport, Person } from '../projects/types';
@@ -222,7 +222,7 @@ function PickStep({
 }) {
   return (
     <>
-      <div style={{ fontSize: 12, color: colors.textMuted }}>
+      <div style={{ fontSize: textSize.caption, color: colors.textMuted }}>
         Merge another record into <strong style={{ color: colors.text }}>{personName}</strong>. Pick who they're the same person as.
       </div>
 
@@ -242,10 +242,10 @@ function PickStep({
           onClick={() => onPick(other)}
                     style={rowBtn(colors)}
         >
-          <span style={{ fontSize: 12, color: colors.text, fontWeight: 600 }}>{other.display_name}</span>
-          <span style={{ fontSize: 11, color: colors.cyan, fontFamily: font.mono, flexShrink: 0 }}>{Math.round(score * 100)}%</span>
+          <span style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>{other.display_name}</span>
+          <span style={{ fontSize: textSize.micro, color: colors.cyan, fontFamily: font.mono, flexShrink: 0 }}>{Math.round(score * 100)}%</span>
           {reasons.length > 0 && (
-            <span style={{ fontSize: 11, color: colors.textDim, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <span style={{ fontSize: textSize.micro, color: colors.textDim, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {reasons.join(', ')}
             </span>
           )}
@@ -275,8 +275,8 @@ function PickStep({
               onClick={() => onPick({ entity_uuid: p.entity_uuid, display_name: p.display_name })}
                             style={rowBtn(colors)}
             >
-              <span style={{ fontSize: 12, color: colors.text }}>{p.display_name}</span>
-              <span style={{ fontSize: 11, color: colors.textDim, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span style={{ fontSize: textSize.caption, color: colors.text }}>{p.display_name}</span>
+              <span style={{ fontSize: textSize.micro, color: colors.textDim, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {[p.role, p.company].filter(Boolean).join(' · ')}
               </span>
             </Button>
@@ -312,7 +312,7 @@ function PreviewStep({
   const disabled = status !== 'ready' || confirming;
   return (
     <>
-      <div style={{ fontSize: 12, color: colors.text }}>
+      <div style={{ fontSize: textSize.caption, color: colors.text }}>
         Keep <strong>{survivor.display_name}</strong>, absorb <strong>{duplicate.display_name}</strong>.
       </div>
       <div style={{ display: 'flex', gap: 6 }}>
@@ -330,7 +330,7 @@ function PreviewStep({
 
       {status === 'ready' && preview && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ fontSize: 12, color: colors.text }}>
+          <div style={{ fontSize: textSize.caption, color: colors.text }}>
             {preview.meetings} meeting{preview.meetings === 1 ? '' : 's'} move
             {preview.open_follow_ups > 0 ? `, ${preview.open_follow_ups} with an open follow-up` : ''}.
           </div>
@@ -339,7 +339,7 @@ function PreviewStep({
             <SectionLabel colors={colors}>Project links</SectionLabel>
             {preview.project_links.length === 0 && <Small colors={colors}>No project links to move.</Small>}
             {preview.project_links.map(link => (
-              <div key={link.project_id} style={{ fontSize: 11, color: colors.textMuted, padding: '3px 0' }}>
+              <div key={link.project_id} style={{ fontSize: textSize.micro, color: colors.textMuted, padding: '3px 0' }}>
                 <span style={{ color: colors.text }}>{link.project_name}</span>
                 {link.role ? ` · ${link.role}` : ''}
                 {' — '}
@@ -354,13 +354,13 @@ function PreviewStep({
             <SectionLabel colors={colors}>Fields copied onto {survivor.display_name}</SectionLabel>
             {preview.fields.length === 0 && <Small colors={colors}>No fields to copy.</Small>}
             {preview.fields.map(f => (
-              <div key={f.field_name} style={{ fontSize: 11, color: colors.textMuted, padding: '3px 0' }}>
+              <div key={f.field_name} style={{ fontSize: textSize.micro, color: colors.textMuted, padding: '3px 0' }}>
                 <span style={{ color: colors.text }}>{f.field_name}</span> → {f.value}
                 <span style={{ color: colors.textDim }}> ({f.source})</span>
               </div>
             ))}
             {preview.fields_kept_from_survivor.length > 0 && (
-              <div style={{ fontSize: 11, color: colors.textDim, marginTop: 4 }}>
+              <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 4 }}>
                 Kept from {survivor.display_name}: {preview.fields_kept_from_survivor.join(', ')}
               </div>
             )}
@@ -373,13 +373,13 @@ function PreviewStep({
             </section>
           )}
 
-          <div style={{ fontSize: 11, color: colors.textDim }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
             {preview.graph_edges} graph edge{preview.graph_edges === 1 ? '' : 's'} move.
           </div>
 
           {preview.retained.length > 0 && (
             <div style={{
-              fontSize: 11, color: colors.textMuted, borderRadius: radius.md,
+              fontSize: textSize.micro, color: colors.textMuted, borderRadius: radius.md,
               border: `1px solid ${colors.border}`, padding: '8px 10px',
             }}>
               <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 4 }}>
@@ -392,7 +392,7 @@ function PreviewStep({
       )}
 
       {confirmError && (
-        <div style={{ fontSize: 12, color: colors.danger }}>{confirmError}</div>
+        <div style={{ fontSize: textSize.caption, color: colors.danger }}>{confirmError}</div>
       )}
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
@@ -408,15 +408,15 @@ function PreviewStep({
 // ── shared bits ────────────────────────────────────────────────────────────
 
 function SectionLabel({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: React.ReactNode }) {
-  return <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '.04em' }}>{children}</div>;
+  return <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '.04em' }}>{children}</div>;
 }
 function Small({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: React.ReactNode }) {
-  return <div style={{ fontSize: 11, color: colors.textDim, marginTop: 4 }}>{children}</div>;
+  return <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 4 }}>{children}</div>;
 }
 
 function inputStyle(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
   return {
-    fontSize: 12, padding: '6px 9px', borderRadius: radius.md,
+    fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
     background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none', width: '100%', boxSizing: 'border-box',
   };
@@ -464,7 +464,7 @@ function miniBtn(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
     '--pa-btn-weight': 400,
     gap: 3,
     fontFamily: font.body,
-    fontSize: 11,
+    fontSize: textSize.micro,
   } as CSSProperties;
 }
 
@@ -481,7 +481,7 @@ function ghostBtn(colors: ReturnType<typeof useTheme>['colors']): CSSProperties 
     '--pa-btn-radius': `${radius.md}px`,
     '--pa-btn-weight': 400,
     fontFamily: font.body,
-    fontSize: 12,
+    fontSize: textSize.caption,
   } as CSSProperties;
 }
 
@@ -498,7 +498,7 @@ function dangerBtn(colors: ReturnType<typeof useTheme>['colors']): CSSProperties
     '--pa-btn-radius': `${radius.md}px`,
     '--pa-btn-weight': 500,
     fontFamily: font.body,
-    fontSize: 12,
+    fontSize: textSize.caption,
   } as CSSProperties;
 }
 
@@ -511,6 +511,6 @@ function linkBtn(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
     '--pa-btn-pad': '0',
     '--pa-btn-weight': 400,
     fontFamily: font.body,
-    fontSize: 11,
+    fontSize: textSize.micro,
   } as CSSProperties;
 }

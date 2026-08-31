@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { FiSquare } from 'react-icons/fi';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { apiFetch } from '../../lib/api';
@@ -109,27 +109,27 @@ export function RunRoster() {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-        <div style={{ fontFamily: font.display, fontSize: 13, fontWeight: 600, color: colors.text, letterSpacing: 0.2 }}>
+        <div style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 600, color: colors.text, letterSpacing: 0.2 }}>
           Agents at work
         </div>
-        <span style={{ fontSize: 11, color: colors.textDim, fontFamily: font.body }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.body }}>
           {activeCount > 0 ? `${activeCount} active` : 'all resting'}
         </span>
       </div>
 
       {status === 'loading' && (
-        <div style={{ fontSize: 12, color: colors.textDim, fontFamily: font.body }}>Loading…</div>
+        <div style={{ fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body }}>Loading…</div>
       )}
 
       {stopError && (
-        <div style={{ fontSize: 11, color: colors.danger, fontFamily: font.body, marginBottom: 8 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, fontFamily: font.body, marginBottom: 8 }}>
           {stopError}
         </div>
       )}
 
       {status === 'error' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 12, color: colors.danger, fontFamily: font.body }}>Couldn't load activity.</span>
+          <span style={{ fontSize: textSize.caption, color: colors.danger, fontFamily: font.body }}>Couldn't load activity.</span>
           <Button
             colors={colors}
             variant="bare"
@@ -140,7 +140,7 @@ export function RunRoster() {
               '--pa-btn-pad': '0',
               '--pa-btn-weight': 600,
               fontFamily: font.body,
-              fontSize: 11,
+              fontSize: textSize.micro,
             } as CSSProperties}
           >
             Retry
@@ -149,7 +149,7 @@ export function RunRoster() {
       )}
 
       {status === 'ready' && sorted.length === 0 && (
-        <div style={{ fontSize: 12, color: colors.textDim, fontFamily: font.body, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body, lineHeight: 1.5 }}>
           Nothing running — your workers rest until their next tick.
         </div>
       )}
@@ -183,7 +183,7 @@ export function RunRoster() {
                   </span>
                 </div>
                 {r.detail && (
-                  <div style={{ fontSize: 11, color: colors.textMuted, fontFamily: font.body, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  <div style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.body, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {r.detail}
                   </div>
                 )}

@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { font, radius } from '../../../styles/tokens';
+import { font, radius, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { useOrchestratorName } from '../../world/shared/useOrchestratorName';
 import { Mobius } from '../../mobius/Mobius';
@@ -66,16 +66,16 @@ const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
         <Mobius size={36} state={mobiusState} logoMode />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{
-            fontFamily: font.body, fontSize: 13, fontWeight: 600, color: colors.text,
+            fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>{goal.title}</div>
-          <div style={{ fontFamily: font.mono, fontSize: 11, color: colors.cyan }}>
+          <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.cyan }}>
             {goal.hold_note ? 'Held' : (STATE_LABEL[goal.state] ?? goal.state)}
             {goal.assigned_to ? ` · ${goal.assigned_to}` : ''}
           </div>
           {(goal.hold_note || goal.routing_note) && (
             <div style={{
-              fontFamily: font.body, fontSize: 11, color: colors.textMuted,
+              fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted,
               marginTop: 6, lineHeight: 1.4,
             }}>
               {goal.hold_note || goal.routing_note}

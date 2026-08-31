@@ -54,6 +54,36 @@ export const type = {
   label:   { fontSize: 11, lineHeight: '14px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' },
 } as const;
 
+/**
+ * The ramp's sizes on their own — the same eight roles, nothing added.
+ *
+ * `type` bundles size with line-height, weight and tracking, and spreading it
+ * is the right call when the element is that whole role. But the app also
+ * writes a thousand-odd sizes into style objects that already own their weight
+ * and their leading (`{ fontSize: 11, color: …, lineHeight: 1.5 }`), and for
+ * those, spreading `...type.micro` would change the rendering — it carries
+ * `fontWeight: 500` and a 14px leading with it. So they used to re-type the
+ * number instead, and the ramp had 1,372 hand-written competitors.
+ *
+ * `textSize` is the size half, so a caller who needs only the size can still
+ * name the role. It is derived from `type` and cannot drift from it. There is
+ * no `label` entry: `label` is a role you spread whole, for its tracking and
+ * its uppercase; its size is `micro`.
+ *
+ * Off-ramp sizes (9, 10, 18, 22, 26, 28, 36, and the half-pixels) are NOT here
+ * and are not getting an entry. Eight roles is the number; see
+ * `textScale.test.ts`, which freezes the ones already written.
+ */
+export const textSize = {
+  display: type.display.fontSize,
+  title: type.title.fontSize,
+  heading: type.heading.fontSize,
+  body: type.body.fontSize,
+  small: type.small.fontSize,
+  caption: type.caption.fontSize,
+  micro: type.micro.fontSize,
+} as const;
+
 /** Tabular figures — aligned numerals for metrics/counts/timers (never prose),
  *  so digits don't reflow as values change. Spread onto any numeric display. */
 export const tabularNums = { fontVariantNumeric: 'tabular-nums' } as const;
@@ -97,7 +127,7 @@ export const shadow = {
   card: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
 } as const;
 
-export const tokens = { color, font, type, tabularNums, ease, duration, radius, shadow } as const;
+export const tokens = { color, font, type, textSize, tabularNums, ease, duration, radius, shadow } as const;
 export type DesignTokens = typeof tokens;
 
 // ── Theme gradients + colors ────────────────────────────────────────

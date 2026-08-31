@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
-import { font, radius, type } from '../../styles/tokens';
+import { font, radius, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button, MIN_PENDING_MS, SUCCESS_FLASH_MS } from '../common/Button';
 import { requiredKeysSet } from './financeLabs';
@@ -158,7 +158,7 @@ export function PolybotKeys({
                   onChange={(e) => patch(f.key, { input: e.target.value })}
                   placeholder={f.hint}
                   style={{
-                    flex: 1, fontFamily: font.mono, fontSize: 11, color: colors.text,
+                    flex: 1, fontFamily: font.mono, fontSize: textSize.micro, color: colors.text,
                     background: colors.inputBg, border: `1px solid ${colors.border}`,
                     borderRadius: radius.sm, padding: '6px 8px', outline: 'none',
                   }}

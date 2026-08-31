@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Mobius } from '../mobius/Mobius';
@@ -145,18 +145,18 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 22, width: '100%', maxWidth: 480 }}>
         {loading && (
-          <div style={{ fontFamily: font.body, fontSize: 12, color: colors.textMuted, textAlign: 'center' }}>
+          <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, textAlign: 'center' }}>
             Looking for repositories…
           </div>
         )}
 
         {!loading && candidates.length === 0 && (
           <Glass padding={14}>
-            <div style={{ fontFamily: font.body, fontSize: 12, color: colors.text }}>
+            <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.text }}>
               I looked under {home || 'your home folder'} and didn't find any git
               repositories.
             </div>
-            <div style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+            <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginTop: 4 }}>
               That's fine — type the folder below, or skip and tell me later in
               Settings.
             </div>
@@ -174,7 +174,7 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
                   onChange={() => toggle(p)}
                   style={{ accentColor: colors.cyan, width: 16, height: 16, flexShrink: 0 }}
                 />
-                <span style={{ fontFamily: font.mono, fontSize: 12, color: on ? colors.text : colors.textMuted, wordBreak: 'break-all' }}>
+                <span style={{ fontFamily: font.mono, fontSize: textSize.caption, color: on ? colors.text : colors.textMuted, wordBreak: 'break-all' }}>
                   {p}
                 </span>
               </label>
@@ -207,19 +207,19 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
                   '--pa-btn-radius': `${radius.md}px`,
                   '--pa-btn-weight': 600,
                   height: 44, whiteSpace: 'nowrap',
-                  fontFamily: font.body, fontSize: 13,
+                  fontFamily: font.body, fontSize: textSize.small,
                 } as CSSProperties}
               >{checking ? 'Checking…' : 'Add'}</Button>
             </div>
 
             {check && !check.exists && (
-              <div role="alert" style={{ fontFamily: font.body, fontSize: 11, color: colors.danger, marginTop: 8 }}>
+              <div role="alert" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.danger, marginTop: 8 }}>
                 There's no folder at {check.resolved}. Check the spelling — I'd
                 rather tell you now than accept it and find nothing later.
               </div>
             )}
             {check?.exists && !check.has_repositories && (
-              <div role="status" style={{ fontFamily: font.body, fontSize: 11, color: colors.warning, marginTop: 8 }}>
+              <div role="status" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.warning, marginTop: 8 }}>
                 Added {check.resolved} — though I don't see any git repositories
                 in there yet.
               </div>
@@ -229,7 +229,7 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
       </div>
 
       {saveError && (
-        <div role="alert" style={{ fontFamily: font.body, fontSize: 11, color: colors.danger, marginTop: 12, maxWidth: 470, textAlign: 'center' }}>
+        <div role="alert" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.danger, marginTop: 12, maxWidth: 470, textAlign: 'center' }}>
           Couldn't save that ({saveError}). Try again, or skip and set it in
           Settings.
         </div>
