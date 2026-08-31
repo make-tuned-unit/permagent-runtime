@@ -1,0 +1,144 @@
+/**
+ * No hand-rolled `<button>` in a migrated directory.
+ *
+ * This is the gate, not the fix. `Button` was documented as "the app's one
+ * button primitive" and still lost 491 to 1, because nothing anywhere said no.
+ * An inline `style` object cannot express `:hover` or `:active` at all, so
+ * every one of those 491 was pressable with no acknowledgement and disable-able
+ * with no visible difference — and each one that was fixed by hand was fixed
+ * differently, which is how the app ended up with three separate button
+ * contracts.
+ *
+ * The rule, inside a gated directory: a `<button>` element is allowed only when
+ * it wears `.pa-btn` — the shared interaction rules — and has a reason not to
+ * be a `Button`. There are exactly two such reasons, and both are about
+ * semantics the primitive would flatten:
+ *
+ *   1. DISCLOSURE TOGGLES (`aria-expanded` + `aria-controls`). Precedent:
+ *      commit 4883d2f2, Finance's pick row. There is nothing to await, so the
+ *      pending floor and the success tick are the wrong signals for it, and
+ *      `Button` would displace the aria pairing that actually describes what
+ *      pressing it does. It still gets hover, press and focus, through the
+ *      class rather than through a pair of mouse handlers.
+ *   2. ROLE-BEARING CONTROLS (`role="tab"`, `role="switch"`, `role="menuitem"`,
+ *      `role="option"`). Same argument: the role is the description, and
+ *      `Button` renders a plain button.
+ *
+ * `components/common/` is exempt wholesale — it is where primitives are
+ * written, and a primitive has to render an element eventually.
+ *
+ * TO EXTEND: add your directory to `GATED` in the same commit that migrates it.
+ * That is the whole protocol. A directory not listed here is not yet migrated,
+ * which is a statement about the frontier rather than a licence.
+ */
+
+import { describe, expect, it } from 'vitest';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const SRC = fileURLToPath(new URL('../..', import.meta.url));
+
+/** Directories whose controls are on the primitive. Grows one commit at a time. */
+const GATED = [
+  'components/finance',
+  'components/sessions',
+];
+
+/**
+ * Files carrying a raw `<button>` that is neither a disclosure toggle nor
+ * role-bearing, and that has a specific reason to stay. Each entry is a
+ * standing exception with a name on it; the second test deletes entries that
+ * have stopped being true, so this cannot quietly become a parking lot.
+ */
+const STANDING_EXCEPTIONS: Record<string, string> = {};
+
+function sourceFiles(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    if (entry === 'node_modules') continue;
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) { sourceFiles(full, out); continue; }
+    if (!/\.tsx?$/.test(entry)) continue;
+    if (/\.(test|spec)\.tsx?$/.test(entry)) continue;
+    out.push(full);
+  }
+  return out;
+}
+
+/** Every `<button …>` opening tag, whole, with the line it starts on. Braces
+ *  and quotes are tracked so the `>` of an arrow function inside an attribute
+ *  does not look like the end of the tag. */
+export function buttonOpeningTags(src: string): { line: number; tag: string }[] {
+  const found: { line: number; tag: string }[] = [];
+  const re = /<button(?=[\s/>])/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    let i = m.index + '<button'.length;
+    let depth = 0;
+    let quote: string | null = null;
+    for (; i < src.length; i += 1) {
+      const c = src[i];
+      if (quote) {
+        if (c === quote && src[i - 1] !== '\\') quote = null;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === '`') { quote = c; continue; }
+      if (c === '{') depth += 1;
+      else if (c === '}') depth -= 1;
+      else if (c === '>' && depth === 0) break;
+    }
+    found.push({
+      line: src.slice(0, m.index).split('\n').length,
+      tag: src.slice(m.index, i + 1),
+    });
+  }
+  return found;
+}
+
+/** Wears the shared interaction rules, and has a semantic `Button` would lose. */
+function isPermittedRawButton(tag: string): boolean {
+  const wearsClass = /className=(?:"[^"]*\bpa-btn\b|'[^']*\bpa-btn\b|\{[^}]*pa-btn)/.test(tag);
+  if (!wearsClass) return false;
+  return /\baria-expanded[=\s]/.test(tag) || /\brole=/.test(tag);
+}
+
+function offendersIn(dirs: string[]): string[] {
+  const out: string[] = [];
+  for (const dir of dirs) {
+    for (const file of sourceFiles(join(SRC, dir))) {
+      const rel = file.slice(SRC.length);
+      if (rel in STANDING_EXCEPTIONS) continue;
+      const src = readFileSync(file, 'utf8');
+      for (const { line, tag } of buttonOpeningTags(src)) {
+        if (isPermittedRawButton(tag)) continue;
+        out.push(`${rel}:${line}`);
+      }
+    }
+  }
+  return out;
+}
+
+describe('button primitive adoption', () => {
+  it('leaves no hand-rolled button in a migrated directory', () => {
+    expect(
+      offendersIn(GATED),
+      'use <Button> from components/common/Button. A disclosure toggle or a '
+        + 'role-bearing control may stay a <button>, but must carry className="pa-btn".',
+    ).toEqual([]);
+  });
+
+  it('keeps no standing exception that has stopped being true', () => {
+    const stale = Object.keys(STANDING_EXCEPTIONS).filter(rel => {
+      const src = readFileSync(join(SRC, rel), 'utf8');
+      return buttonOpeningTags(src).every(isPermittedRawButton);
+    });
+    expect(stale, 'this file no longer needs its exception — delete the entry').toEqual([]);
+  });
+
+  it('names only directories that exist', () => {
+    const missing = GATED.filter(d => {
+      try { return !statSync(join(SRC, d)).isDirectory(); } catch { return true; }
+    });
+    expect(missing).toEqual([]);
+  });
+});
