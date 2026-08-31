@@ -21,6 +21,14 @@ use std::path::Path;
 const MAX_EXTENSIONS: usize = 5;
 const MAX_TOOLS: usize = 50;
 
+/// One resolution of "who is this agent", shared by the system prompt and the
+/// public accessors so they can never disagree.
+struct ResolvedPersona {
+    block: String,
+    display_name: String,
+    opening_greeting: String,
+}
+
 pub struct PromptManager {
     system_prompt_override: Option<String>,
     system_prompt_extras: IndexMap<String, String>,
@@ -268,41 +276,11 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             .filter(|(extensions, tools)| *extensions > MAX_EXTENSIONS || *tools > MAX_TOOLS);
 
         // Read persona for system prompt. Worker override takes precedence.
-        let (persona_block, display_name) =
-            if let Some((ref block, ref name)) = self.manager.persona_block_override {
-                (block.clone(), name.clone())
-            } else {
-                let persona = match self
-                    .manager
-                    .persona
-                    .as_ref()
-                    .and_then(|p| p.try_read().ok())
-                {
-                    // Live read succeeded: this is the source of truth. Refresh
-                    // the last-known-good cache so a later contended turn has a
-                    // current value to fall back to (renames included).
-                    Some(guard) => {
-                        let persona = guard.clone();
-                        if let Ok(mut cache) = self.manager.last_good_persona.write() {
-                            *cache = Some(persona.clone());
-                        }
-                        persona
-                    }
-                    // Live read failed (lock contention, e.g. a concurrent
-                    // identity hot-reload). Fall back to the last-known-good
-                    // value rather than silently reverting to the default
-                    // ("Aria") persona. Only truly defaults if no successful
-                    // read has happened yet (pre-startup-load).
-                    None => self
-                        .manager
-                        .last_good_persona
-                        .read()
-                        .ok()
-                        .and_then(|cache| cache.clone())
-                        .unwrap_or_default(),
-                };
-                (persona.system_prompt_block(), persona.display_name())
-            };
+        let ResolvedPersona {
+            block: persona_block,
+            display_name,
+            ..
+        } = self.manager.resolve_persona();
 
         // Pulled out of `system_prompt_extras` into its own template slot
         // (see `SystemPromptContext::repo_map_block`) instead of riding in
@@ -516,6 +494,69 @@ impl PromptManager {
         self.persona = Some(persona);
     }
 
+    /// The persona the system prompt would be built from right now.
+    ///
+    /// Factored out of `SystemPromptBuilder::build_parts`, where it was
+    /// inlined, so the accessors below and the prompt itself resolve identity
+    /// through exactly ONE path — two copies is how a banner drifts from what
+    /// the model was actually told.
+    fn resolve_persona(&self) -> ResolvedPersona {
+        // Worker override takes precedence.
+        if let Some((ref block, ref name)) = self.persona_block_override {
+            return ResolvedPersona {
+                block: block.clone(),
+                display_name: name.clone(),
+                // A worker persona has no greeting of its own, and inheriting
+                // the primary's would put the wrong voice in the wrong mouth.
+                opening_greeting: String::new(),
+            };
+        }
+        let persona = match self.persona.as_ref().and_then(|p| p.try_read().ok()) {
+            // Live read succeeded: this is the source of truth. Refresh
+            // the last-known-good cache so a later contended turn has a
+            // current value to fall back to (renames included).
+            Some(guard) => {
+                let persona = guard.clone();
+                if let Ok(mut cache) = self.last_good_persona.write() {
+                    *cache = Some(persona.clone());
+                }
+                persona
+            }
+            // Live read failed (lock contention, e.g. a concurrent
+            // identity hot-reload). Fall back to the last-known-good
+            // value rather than silently reverting to the default
+            // ("Aria") persona. Only truly defaults if no successful
+            // read has happened yet (pre-startup-load).
+            None => self
+                .last_good_persona
+                .read()
+                .ok()
+                .and_then(|cache| cache.clone())
+                .unwrap_or_default(),
+        };
+        ResolvedPersona {
+            block: persona.system_prompt_block(),
+            display_name: persona.display_name(),
+            opening_greeting: persona.opening_greeting.clone(),
+        }
+    }
+
+    /// The display name that would be interpolated into the system prompt
+    /// right now. Exists so callers outside `permagent::agents` can assert
+    /// persona identity behaviourally — and so the CLI banner can name whoever
+    /// the model is actually being told it is.
+    pub fn display_name(&self) -> String {
+        self.resolve_persona().display_name
+    }
+
+    /// The persona's own opening line, for surfaces that greet the user
+    /// client-side (Chat already does; the CLI now does too). Empty when the
+    /// persona sets none, or when a worker override is installed — a worker
+    /// does not greet anyone.
+    pub fn opening_greeting(&self) -> String {
+        self.resolve_persona().opening_greeting
+    }
+
     pub fn set_persona_block_override(&mut self, block: String, display_name: String) {
         self.persona_block_override = Some((block, display_name));
     }
@@ -588,6 +629,56 @@ mod tests {
     use insta::assert_snapshot;
 
     use super::*;
+    use crate::config::agent_identity::PrimaryPersona;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    fn persona_named(name: &str, greeting: &str) -> crate::config::agent_identity::SharedPersona {
+        Arc::new(RwLock::new(PrimaryPersona {
+            first_name: name.to_string(),
+            opening_greeting: greeting.to_string(),
+            ..Default::default()
+        }))
+    }
+
+    /// `Agent::prompt_manager` is private to this module, so the CLI's only
+    /// coverage for "the persona actually reached the prompt" was a grep of
+    /// its own source for the constructor call. This accessor is what makes
+    /// that assertable for real, and it must report the installed persona
+    /// rather than the first-run fallback.
+    #[test]
+    fn display_name_reports_the_installed_persona_not_the_fallback() {
+        let mut manager = PromptManager::new();
+        let fallback = manager.display_name();
+        manager.set_persona(persona_named("Henry", "What are we building?"));
+        assert_eq!(manager.display_name(), "Henry");
+        assert_eq!(manager.opening_greeting(), "What are we building?");
+        assert_ne!(fallback, "Henry", "the fallback must be a different name");
+    }
+
+    /// A worker override is what the prompt really carries, so it has to be
+    /// what the accessor reports — a banner naming the primary persona while
+    /// the model was told it is someone else is worse than no banner.
+    #[test]
+    fn a_worker_override_outranks_the_shared_persona() {
+        let mut manager = PromptManager::new();
+        manager.set_persona(persona_named("Henry", "What are we building?"));
+        manager.set_persona_block_override("Your name is Steward.".into(), "Steward".into());
+        assert_eq!(manager.display_name(), "Steward");
+        assert_eq!(manager.opening_greeting(), "", "a worker greets no one");
+    }
+
+    /// The accessor and the prompt must read the SAME resolution — two copies
+    /// of this logic is how the banner would drift from the system prompt.
+    #[test]
+    fn the_accessor_and_the_built_prompt_agree_on_the_name() {
+        let mut manager = PromptManager::new();
+        manager.set_persona(persona_named("Henry", "hi"));
+        let name = manager.display_name();
+        assert_eq!(name, "Henry");
+        let prompt = manager.builder().build();
+        assert!(prompt.contains(&name), "{name} missing from the prompt");
+    }
 
     fn briefing(summary: &str) -> crate::agents::self_knowledge::BriefingLine {
         crate::agents::self_knowledge::BriefingLine {

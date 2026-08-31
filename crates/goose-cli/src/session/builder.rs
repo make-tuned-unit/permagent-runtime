@@ -983,6 +983,12 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 
     let debug_mode = session_config.debug || config.get_param("GOOSE_DEBUG").unwrap_or(false);
 
+    // Read the identity out before the agent is moved into the session: the
+    // banner and the greeting have to name whoever the model is being told it
+    // is, and `new_primary_agent` installed that several hundred lines ago.
+    let persona_name = agent_ptr.persona_display_name().await;
+    let opening_greeting = agent_ptr.persona_opening_greeting().await;
+
     let session = CliSession::new(
         Arc::try_unwrap(agent_ptr).unwrap_or_else(|_| panic!("There should be no more references")),
         session_id.clone(),
@@ -1003,7 +1009,15 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             &resolved.provider_name,
             &resolved.model_name,
             &Some(session_id),
+            &persona_name,
         );
+        // A new interactive session gets the persona's own opening line, the
+        // same way Chat does: read from `agent.yaml`, printed by the client,
+        // no model turn. Not on resume (the conversation is already underway)
+        // and not headless (nobody is there to be greeted).
+        if session_config.interactive && !session_config.resume {
+            output::display_opening_greeting(&opening_greeting);
+        }
     }
     session
 }
@@ -1016,38 +1030,50 @@ mod tests {
         Some(v.to_string())
     }
 
-    /// Every agent this module builds must come from `new_primary_agent`.
+    /// REPLACES a source-text grep.
     ///
-    /// A bare `Agent::new()` leaves `PromptManager`'s first-run fallback
-    /// persona installed, which is how the harness ended up introducing itself
-    /// as someone other than the persona Chat saved in `agent.yaml` — and the
-    /// helper/debug agents reverted the same way. `Agent`'s prompt manager is
-    /// `pub(super)` inside `permagent::agents`, so the CLI cannot read the
-    /// installed persona back to assert on it; guarding the construction site
-    /// is the coverage that is actually reachable from here.
-    #[test]
-    fn every_cli_agent_is_built_through_the_shared_persona_constructor() {
-        // Only the product half of this file; the test module below quotes the
-        // same call it is forbidding.
-        let product = include_str!("builder.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .expect("builder.rs has a product half");
-        let bare: Vec<&str> = product
-            .lines()
-            .map(str::trim)
-            .filter(|line| line.ends_with("Agent::new();"))
-            .collect();
+    /// The old guard read this file's own product half looking for one
+    /// `Agent::new();` and a literal `set_persona(...)` call. That could tell
+    /// you the constructor was written, never that the persona it installs is
+    /// the one the model is actually told about — the thing that was broken.
+    /// `Agent::persona_display_name` now reads the identity back out of the
+    /// prompt manager, so this asserts the contract instead of its spelling.
+    #[tokio::test]
+    async fn the_cli_agent_carries_the_persona_that_reaches_the_prompt() {
+        let saved = permagent::config::agent_identity::load_shared_persona();
+        let expected = saved.read().await.display_name();
+
+        let agent = new_primary_agent().await;
         assert_eq!(
-            bare.len(),
-            1,
-            "only new_primary_agent may construct an Agent; found {bare:?}"
+            agent.persona_display_name().await,
+            expected,
+            "the harness must run as the identity saved in agent.yaml, not \
+             PromptManager's first-run fallback"
         );
-        assert!(
-            product
-                .contains("set_persona(permagent::config::agent_identity::load_shared_persona())"),
-            "new_primary_agent must install the persona Chat saved, not the fallback"
+    }
+
+    /// …and the accessor is reading real state, not returning a constant: an
+    /// agent with nothing installed reports the fallback, and installing a
+    /// persona changes what the prompt would say.
+    #[tokio::test]
+    async fn the_installed_persona_is_what_the_accessor_reports() {
+        let agent = Agent::new();
+        let fallback = agent.persona_display_name().await;
+        agent
+            .set_persona(std::sync::Arc::new(tokio::sync::RwLock::new(
+                permagent::config::agent_identity::PrimaryPersona {
+                    first_name: "Henry".into(),
+                    opening_greeting: "What are we building?".into(),
+                    ..Default::default()
+                },
+            )))
+            .await;
+        assert_eq!(agent.persona_display_name().await, "Henry");
+        assert_eq!(
+            agent.persona_opening_greeting().await,
+            "What are we building?"
         );
+        assert_ne!(fallback, "Henry");
     }
 
     /// The five sources in `resolve_provider_and_model`'s order:

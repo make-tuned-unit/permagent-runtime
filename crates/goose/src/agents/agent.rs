@@ -2870,6 +2870,22 @@ impl Agent {
         prompt_manager.set_persona(persona);
     }
 
+    /// The name this agent would be told it has, right now — worker override,
+    /// else the live shared persona, else the last-known-good value.
+    ///
+    /// `prompt_manager` is `pub(super)`, so without this a caller outside
+    /// `permagent::agents` (the CLI banner, and any test of it) could not read
+    /// the installed identity back at all.
+    pub async fn persona_display_name(&self) -> String {
+        self.prompt_manager.lock().await.display_name()
+    }
+
+    /// The persona's own opening line, for a client-side greeting. Empty when
+    /// the persona sets none or a worker override is installed.
+    pub async fn persona_opening_greeting(&self) -> String {
+        self.prompt_manager.lock().await.opening_greeting()
+    }
+
     pub async fn set_persona_block_override(&self, block: String, display_name: String) {
         let mut prompt_manager = self.prompt_manager.lock().await;
         prompt_manager.set_persona_block_override(block, display_name);
