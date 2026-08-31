@@ -1,11 +1,12 @@
-import { useState, useEffect, useRef, useId } from 'react';
+import { useState, useEffect, useRef, useId, type CSSProperties } from 'react';
 import { FiX, FiEye, FiEyeOff } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import type { SecretSourcesResponse } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { ProviderInfo } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import {
   REFERENCE_HINTS,
   SOURCE_KINDS,
@@ -199,7 +200,7 @@ export function ConfigureProviderModal({
     // nor accepted here.
     if (!usesManager && !keyChanged && secretKey && !provider.isConfigured) {
       setError('API key is required');
-      return;
+      return false;
     }
 
     setSaving(true);
@@ -211,11 +212,14 @@ export function ConfigureProviderModal({
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to save');
       setSaving(false);
-      return;
+      // `false` is the Button contract's "it failed": every failure here is
+      // swallowed into `error`, so without it a rejected save would still tick.
+      return false;
     }
 
     setSaving(false);
     onClose();
+    return true;
   };
 
   // Validate without saving a typed key. Keychain wins over env, so a typed
@@ -235,8 +239,10 @@ export function ConfigureProviderModal({
         await api.checkProvider(provider.name, typedKey || undefined);
       }
       setTestResult({ ok: true, message: 'Provider is configured and ready.' });
+      return true;
     } catch (e) {
       setTestResult({ ok: false, message: e instanceof Error ? e.message : 'Connection test failed.' });
+      return false;
     } finally {
       setTesting(false);
     }
@@ -246,13 +252,13 @@ export function ConfigureProviderModal({
   // proves a string reached config.yaml; a typo'd vault path looks identical to
   // a working one until the next time chat needs the key.
   const handleTestSource = async () => {
-    if (!secretKey) return;
+    if (!secretKey) return false;
     const built = buildSpec(sourceKind, reference);
     if ('error' in built) {
       setSourceTest({ ok: false, message: built.error });
-      return;
+      return false;
     }
-    if (built.spec === null) return;
+    if (built.spec === null) return false;
     setTestingSource(true);
     setSourceTest(null);
     try {
@@ -262,20 +268,26 @@ export function ConfigureProviderModal({
           ? { ok: true, message: `Resolved${result.maskedValue ? ` — ${result.maskedValue}` : ''}` }
           : { ok: false, message: result.error || 'Could not read that reference.' },
       );
+      // A reference that was read and came back unreadable is a failed test,
+      // not a completed one — the button must not tick over it.
+      return result.ok;
     } catch (e) {
       setSourceTest({ ok: false, message: e instanceof Error ? e.message : 'Test failed.' });
+      return false;
     } finally {
       setTestingSource(false);
     }
   };
 
   const handleRemoveKey = async () => {
-    if (!secretKey) return;
+    if (!secretKey) return false;
     try {
       await api.removeConfig(secretKey.name, true);
       onClose();
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to remove key');
+      return false;
     }
   };
 
@@ -297,18 +309,25 @@ export function ConfigureProviderModal({
         <style>{`.provider-modal-input::placeholder { color: ${colors.textMuted}; opacity: 0.6; }`}</style>
         <div className="flex items-center justify-between mb-4">
           <h2 id={titleId} style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>Configure {provider.displayName}</h2>
-          <button
+          {/* The four style-assigning mouse/focus handlers this used to carry
+              were the half of hover and focus an inline `style` can reach; they
+              are `--pa-btn-fg-hover` now. Leaving them would have been worse
+              than useless — each one writes an inline `color`, which then beats
+              `.pa-btn:hover` in the cascade for the life of the modal. */}
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={onClose}
             aria-label="Close"
-            className="transition"
-            style={{ color: colors.textMuted }}
-            onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
-            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
-            onFocus={e => { e.currentTarget.style.color = colors.text; }}
-            onBlur={e => { e.currentTarget.style.color = colors.textMuted; }}
+            style={{
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0',
+            } as CSSProperties}
           >
             <FiX size={16} />
-          </button>
+          </Button>
         </div>
 
         <div className="space-y-4">
@@ -371,15 +390,22 @@ export function ConfigureProviderModal({
                     onBlur={e => { e.currentTarget.style.borderColor = colors.border; }}
                   />
                   <div className="flex items-center gap-2">
-                    <button
+                    <Button
+                      colors={colors}
+                      variant="ghostOn"
                       type="button"
                       onClick={handleTestSource}
                       disabled={testingSource}
-                      className="text-[11px] px-2 py-1 rounded transition disabled:opacity-50"
-                      style={{ border: `1px solid ${colors.cyan}4D`, color: colors.cyan }}
+                      style={{
+                        '--pa-btn-border': `${colors.cyan}4D`,
+                        '--pa-btn-border-hover': `${colors.cyan}4D`,
+                        '--pa-btn-bg-hover': colors.cyanSoft,
+                        '--pa-btn-pad': '4px 8px',
+                        '--pa-btn-radius': `${radius.xs}px`,
+                      } as CSSProperties}
                     >
                       {testingSource ? 'Reading…' : 'Test reference'}
-                    </button>
+                    </Button>
                     <span className="text-[11px]" style={{ fontFamily: font.body, color: colors.textMuted }}>
                       {REFERENCE_HINTS[sourceKind].help}
                     </span>
@@ -419,19 +445,22 @@ export function ConfigureProviderModal({
                   onFocus={e => { e.currentTarget.style.borderColor = `${colors.cyan}80`; }}
                   onBlur={e => { e.currentTarget.style.borderColor = colors.border; }}
                 />
-                <button
+                <Button
+                  colors={colors}
+                  variant="bare"
                   type="button"
                   onClick={() => setShowKey(!showKey)}
                   aria-label={showKey ? 'Hide API key' : 'Show API key'}
                   className="absolute right-2 top-1/2 -translate-y-1/2"
-                  style={{ color: colors.textMuted }}
-                  onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
-                  onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
-                  onFocus={e => { e.currentTarget.style.color = colors.text; }}
-                  onBlur={e => { e.currentTarget.style.color = colors.textMuted; }}
+                  style={{
+                    '--pa-btn-fg': colors.textMuted,
+                    '--pa-btn-fg-hover': colors.text,
+                    '--pa-btn-bg-hover': 'transparent',
+                    '--pa-btn-pad': '0',
+                  } as CSSProperties}
                 >
                   {showKey ? <FiEyeOff size={14} /> : <FiEye size={14} />}
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -465,16 +494,21 @@ export function ConfigureProviderModal({
             {!modelsLoading && modelsError && (
               <div className="text-[11px] mt-1.5 flex items-center gap-1.5" style={{ fontFamily: font.body, color: colors.textMuted }}>
                 <span>Couldn't refresh the model list{models.length > 0 ? ' — showing known models' : ''}.</span>
-                <button
+                <Button
+                  colors={colors}
+                  variant="bare"
                   type="button"
+                  className="hover:underline"
                   onClick={() => setReloadModels(n => n + 1)}
-                  className="transition"
-                  style={{ color: colors.cyan }}
-                  onMouseEnter={e => { e.currentTarget.style.opacity = '0.8'; }}
-                  onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
+                  style={{
+                    '--pa-btn-fg': colors.cyan,
+                    '--pa-btn-bg-hover': 'transparent',
+                    '--pa-btn-pad': '0',
+                    fontSize: 'inherit',
+                  } as CSSProperties}
                 >
                   Retry
-                </button>
+                </Button>
               </div>
             )}
             {!modelsLoading && !modelsError && models.length === 0 && (
@@ -524,51 +558,72 @@ export function ConfigureProviderModal({
 
         <div className="flex items-center justify-between mt-5 pt-4" style={{ borderTop: `1px solid ${colors.border}` }}>
           <div className="flex items-center gap-3">
-            <button
+            <Button
+              colors={colors}
+              variant="ghostOn"
               onClick={handleTest}
               disabled={testing || saving}
-              className="text-[11px] px-3 py-1.5 rounded transition disabled:opacity-50"
-              style={{ border: `1px solid ${colors.cyan}4D`, color: colors.cyan }}
-              onMouseEnter={e => { e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
-              onMouseLeave={e => { e.currentTarget.style.backgroundColor = ''; }}
+              style={{
+                '--pa-btn-border': `${colors.cyan}4D`,
+                '--pa-btn-border-hover': `${colors.cyan}4D`,
+                '--pa-btn-bg-hover': colors.cyanSoft,
+                '--pa-btn-pad': '6px 12px',
+                '--pa-btn-radius': `${radius.xs}px`,
+              } as CSSProperties}
             >
               {testing ? 'Testing…' : mustPersistToTest ? 'Save & test' : 'Test connection'}
-            </button>
+            </Button>
             {/* Hidden while a manager owns the key: there is no stored value to
                 remove, and offering the button would imply the reference lives
                 in the keychain. */}
             {provider.isConfigured && secretKey && !usesManager && (
-              <button
+              <Button
+                colors={colors}
+                variant="bare"
+                className="hover:underline"
                 onClick={handleRemoveKey}
-                className="text-[11px] transition"
-                style={{ color: colors.danger }}
-                onMouseEnter={e => { e.currentTarget.style.opacity = '0.8'; }}
-                onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
-                onFocus={e => { e.currentTarget.style.opacity = '0.8'; }}
-                onBlur={e => { e.currentTarget.style.opacity = '1'; }}
+                style={{
+                  '--pa-btn-fg': colors.danger,
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-pad': '0',
+                } as CSSProperties}
               >
                 Remove key
-              </button>
+              </Button>
             )}
           </div>
           <div className="flex gap-2">
-            <button
+            <Button
+              colors={colors}
               onClick={onClose}
-              className="px-4 py-1.5 text-sm rounded hover:bg-white/5 transition"
-              style={{ border: `1px solid ${colors.border}`, color: colors.textMuted }}
+              style={{
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-border': colors.border,
+                '--pa-btn-border-hover': colors.border,
+                '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+                '--pa-btn-pad': '6px 16px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                fontSize: 14,
+              } as CSSProperties}
             >
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
+              colors={colors}
+              variant="primary"
               onClick={handleSave}
               disabled={saving || testing}
-              className="px-4 py-1.5 text-sm rounded transition disabled:opacity-50"
-              style={{ fontFamily: font.display, fontWeight: 600, backgroundColor: colors.cyan, color: colors.textOnCyan }}
-              onMouseEnter={e => { e.currentTarget.style.backgroundColor = `${colors.cyan}CC`; }}
-              onMouseLeave={e => { e.currentTarget.style.backgroundColor = colors.cyan; }}
+              style={{
+                '--pa-btn-bg-hover': `${colors.cyan}CC`,
+                '--pa-btn-pad': '6px 16px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                fontFamily: font.display,
+                fontSize: 14,
+              } as CSSProperties}
             >
               {saving ? 'Saving...' : 'Save'}
-            </button>
+            </Button>
           </div>
         </div>
       </div>

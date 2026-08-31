@@ -1,5 +1,7 @@
-import { font, ease, radius } from '../../styles/tokens';
+import type { CSSProperties } from 'react';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 export function H1({ children, sub }: { children: React.ReactNode; sub?: string }) {
   const { colors } = useTheme();
@@ -57,16 +59,34 @@ export function TextInput({ value, onChange, placeholder, mono, multi, disabled 
   );
 }
 
+/* The resting look is unchanged — padding, pill radius, type and the on/off
+   palette all ride across as `--pa-btn-*` declarations. What is new is that
+   pressing a chip now looks different from not pressing one: an inline `style`
+   object could express neither :hover nor :active, so a filter chip gave no
+   acknowledgement at all until the list underneath it changed. */
 export function Chip({ on, onClick, children }: { on: boolean; onClick?: () => void; children: React.ReactNode }) {
   const { colors } = useTheme();
   return (
-    <button onClick={onClick} style={{
-      padding: '6px 12px', borderRadius: radius.pill, cursor: 'pointer',
-      fontFamily: font.body, fontSize: 12, fontWeight: 500,
-      background: on ? colors.cyanSoft : 'transparent',
-      border: `1px solid ${on ? colors.borderHi : colors.border}`,
-      color: on ? colors.cyan : colors.textMuted,
-    }}>{children}</button>
+    <Button
+      colors={colors}
+      variant={on ? 'ghostOn' : 'ghost'}
+      onClick={onClick}
+      style={{
+        '--pa-btn-bg': on ? colors.cyanSoft : 'transparent',
+        '--pa-btn-fg': on ? colors.cyan : colors.textMuted,
+        '--pa-btn-border': on ? colors.borderHi : colors.border,
+        '--pa-btn-bg-hover': on ? colors.cyanSoft : colors.surfaceHi,
+        '--pa-btn-fg-hover': on ? colors.cyan : colors.text,
+        '--pa-btn-border-hover': on ? colors.cyan : colors.borderHi,
+        '--pa-btn-pad': '6px 12px',
+        '--pa-btn-radius': `${radius.pill}px`,
+        '--pa-btn-weight': 500,
+        fontFamily: font.body,
+        fontSize: 12,
+      } as CSSProperties}
+    >
+      {children}
+    </Button>
   );
 }
 
@@ -162,16 +182,28 @@ export function SaveButton({ onClick, disabled, saving }: {
 }) {
   const { colors } = useTheme();
   return (
-    <button onClick={onClick} disabled={disabled} style={{
-      fontFamily: font.body, fontSize: 13, fontWeight: 600,
-      padding: '8px 20px', borderRadius: radius.md,
-      background: disabled ? colors.cyanSoft : colors.cyan,
-      color: disabled ? colors.textDim : colors.textOnAccent,
-      border: 'none', cursor: disabled ? 'default' : 'pointer',
-      transition: `all 200ms ${ease.out}`,
-      opacity: disabled ? 0.5 : 1,
-    }}>
+    // `saving` is the caller's own in-flight flag and the work runs off in the
+    // caller's handler, so it arrives as `pending` (the form-submit shape): the
+    // button reads as busy rather than merely unavailable while it writes, and
+    // the pending floor keeps a 30ms save from flashing past unreadably.
+    <Button
+      colors={colors}
+      variant="primary"
+      onClick={onClick}
+      disabled={disabled}
+      pending={saving}
+      style={{
+        '--pa-btn-bg': disabled ? colors.cyanSoft : colors.cyan,
+        '--pa-btn-fg': disabled ? colors.textDim : colors.textOnAccent,
+        '--pa-btn-bg-hover': disabled ? colors.cyanSoft : colors.cyan,
+        '--pa-btn-bg-active': disabled ? colors.cyanSoft : colors.cyan,
+        '--pa-btn-pad': '8px 20px',
+        '--pa-btn-radius': `${radius.md}px`,
+        fontFamily: font.body,
+        fontSize: 13,
+      } as CSSProperties}
+    >
       {saving ? 'Saving...' : 'Save'}
-    </button>
+    </Button>
   );
 }

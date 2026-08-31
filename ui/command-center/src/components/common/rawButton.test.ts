@@ -54,6 +54,7 @@ const GATED = [
   'components/grow',
   'components/projects',
   'components/sessions',
+  'components/settings',
 ];
 
 /**
@@ -64,6 +65,16 @@ const GATED = [
  * true fails, and so does a new raw button hiding behind an existing one.
  */
 const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {
+  'components/settings/SettingsView.tsx': {
+    count: 1,
+    why: 'the trust-level options are two-line cards: a title row with a badge '
+      + 'above a description',
+  },
+  'components/settings/agents/AgentsPanel.tsx': {
+    count: 2,
+    why: 'the worker and persona rows are whole cards — a portrait, a status row '
+      + 'and a description — that open a detail page',
+  },
   'components/chat/ChatLauncher.tsx': {
     count: 1,
     why: 'the launcher pill lifts 2px on hover and settles on press — a transform '

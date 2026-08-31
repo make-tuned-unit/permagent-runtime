@@ -8,10 +8,11 @@
  * fully supersedes the old Autonomy "Spend cap" sliders.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { api, type SpendSnapshot } from '../../lib/api';
 import { font, radius, tabularNums } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Card, SectionLabel, StatRow } from './atoms';
 import { bandColor, bandLabel, formatTokens, formatUsd, timeAgo } from './format';
 
@@ -84,8 +85,12 @@ export function SpendPanel() {
       setTaskGate(String(budget.task.gate));
       setTaskHard(String(budget.task.hard));
       setSaved(true);
+      return true;
     } catch {
       setError('Could not save the budget.');
+      // `false` is the Button contract's "it failed": this catch swallows the
+      // error into a message, so without it a rejected save would still tick.
+      return false;
     } finally {
       setSaving(false);
     }
@@ -147,17 +152,21 @@ export function SpendPanel() {
           {numInput(taskHard, setTaskHard, 'Stop (hard)', 'Task')}
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 14 }}>
-          <button
+          <Button
+            colors={colors}
+            variant="primary"
             onClick={saveBudget}
             disabled={saving}
             style={{
-              height: 30, padding: '0 16px', borderRadius: radius.md,
-              background: colors.cyan, border: 'none', color: colors.textOnCyan,
-              cursor: saving ? 'default' : 'pointer', fontFamily: font.body, fontSize: 12, fontWeight: 600,
-            }}
+              '--pa-btn-pad': '0 16px',
+              '--pa-btn-radius': `${radius.md}px`,
+              height: 30,
+              fontFamily: font.body,
+              fontSize: 12,
+            } as CSSProperties}
           >
             {saving ? 'Saving…' : 'Save caps'}
-          </button>
+          </Button>
           {saved && <span style={{ fontSize: 12, color: colors.success }}>Saved</span>}
         </div>
         {error && <div style={{ color: colors.textMuted, fontSize: 12, marginTop: 8 }}>{error}</div>}

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { api } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
 import { font, radius } from '../../styles/tokens';
+import { Button } from '../common/Button';
 
 /**
  * The permanent home of the "where do you keep your code?" answer.
@@ -44,6 +45,10 @@ export function DevRootsSection() {
   // Persist first, then reflect. Showing the new list before the write lands
   // would let a failed save look like a successful one, which is the exact
   // failure mode this whole feature exists to remove.
+  // Both of these resolve `false` on every path that did not change anything —
+  // the Button contract's "it failed" signal. The catches here swallow their
+  // throw into a `note`, so without it a save that was rejected, or a folder
+  // that does not exist, would still finish with the button's success tick.
   const persist = async (next: string[], after?: () => void) => {
     setBusy(true);
     setNote(null);
@@ -52,8 +57,10 @@ export function DevRootsSection() {
       setRoots(next);
       setDiscovered(d => d.filter(x => !next.includes(x)));
       after?.();
+      return true;
     } catch (e) {
       setNote({ kind: 'error', text: `Couldn't save (${e instanceof Error ? e.message : String(e)}). Nothing changed.` });
+      return false;
     } finally {
       setBusy(false);
     }
@@ -61,7 +68,7 @@ export function DevRootsSection() {
 
   const add = async (raw: string) => {
     const candidate = raw.trim();
-    if (!candidate) return;
+    if (!candidate) return false;
     setBusy(true);
     setNote(null);
     let checked: { resolved: string; exists: boolean; has_repositories: boolean };
@@ -70,19 +77,19 @@ export function DevRootsSection() {
     } catch (e) {
       setBusy(false);
       setNote({ kind: 'error', text: `Couldn't check that folder (${e instanceof Error ? e.message : String(e)}).` });
-      return;
+      return false;
     }
     if (!checked.exists) {
       setBusy(false);
       setNote({ kind: 'error', text: `There's no folder at ${checked.resolved}. It wasn't added — a path that doesn't exist would be dropped silently later.` });
-      return;
+      return false;
     }
     if (roots.includes(checked.resolved)) {
       setBusy(false);
       setNote({ kind: 'warn', text: `${checked.resolved} is already in the list.` });
-      return;
+      return false;
     }
-    await persist([...roots, checked.resolved], () => {
+    return await persist([...roots, checked.resolved], () => {
       setInput('');
       setNote(checked.has_repositories
         ? { kind: 'ok', text: `Added ${checked.resolved}.` }
@@ -99,10 +106,16 @@ export function DevRootsSection() {
   const pathStyle: React.CSSProperties = {
     fontFamily: font.mono, fontSize: 12, color: colors.text, wordBreak: 'break-all',
   };
-  const linkStyle: React.CSSProperties = {
-    background: 'none', border: 'none', cursor: busy ? 'default' : 'pointer',
-    fontFamily: font.body, fontSize: 12, color: colors.cyan, flexShrink: 0,
-  };
+  // The look these two row links had, expressed the one way the primitive can
+  // also give them a press: an inline `color` would win over `.pa-btn:hover` in
+  // the cascade and quietly cancel the state being migrated in for. Padding
+  // stays at zero — these sit hard against the right edge of their row.
+  const linkStyle = {
+    '--pa-btn-fg': colors.cyan,
+    '--pa-btn-bg-hover': 'transparent',
+    '--pa-btn-pad': '0',
+    fontFamily: font.body, fontSize: 12, flexShrink: 0,
+  } as CSSProperties;
 
   return (
     <div>
@@ -125,7 +138,7 @@ export function DevRootsSection() {
       {roots.map(p => (
         <div key={p} style={rowStyle}>
           <span style={pathStyle}>{p}</span>
-          <button style={linkStyle} disabled={busy} onClick={() => void remove(p)}>Remove</button>
+          <Button colors={colors} variant="bare" className="hover:underline" style={linkStyle} disabled={busy} onClick={() => remove(p)}>Remove</Button>
         </div>
       ))}
 
@@ -137,7 +150,7 @@ export function DevRootsSection() {
           {discovered.map(p => (
             <div key={p} style={rowStyle}>
               <span style={{ ...pathStyle, color: colors.textMuted }}>{p}</span>
-              <button style={linkStyle} disabled={busy} onClick={() => void persist([...roots, p])}>Add</button>
+              <Button colors={colors} variant="bare" className="hover:underline" style={linkStyle} disabled={busy} onClick={() => persist([...roots, p])}>Add</Button>
             </div>
           ))}
         </div>
@@ -155,8 +168,10 @@ export function DevRootsSection() {
             color: colors.text, fontFamily: font.mono, fontSize: 12, outline: 'none',
           }}
         />
-        <button
-          onClick={() => void add(input)}
+        <Button
+          colors={colors}
+          variant="ghostOn"
+          onClick={() => add(input)}
           disabled={busy || !input.trim()}
           // A disabled control in Settings has to say WHY, so the guard in
           // SettingsView.preview-controls.test.tsx can still catch the thing it
@@ -164,13 +179,16 @@ export function DevRootsSection() {
           // reason. This one is transient — type a path, or wait for the check.
           data-disabled-reason={busy ? 'checking-folder' : !input.trim() ? 'no-path-entered' : undefined}
           style={{
-            height: 34, padding: '0 14px', borderRadius: radius.md, flexShrink: 0,
-            background: 'transparent', border: `1px solid ${colors.cyan}66`,
-            color: busy || !input.trim() ? colors.textDim : colors.cyan,
-            fontFamily: font.body, fontSize: 12, fontWeight: 600,
-            cursor: busy || !input.trim() ? 'not-allowed' : 'pointer',
-          }}
-        >{busy ? 'Checking…' : 'Add folder'}</button>
+            '--pa-btn-fg': busy || !input.trim() ? colors.textDim : colors.cyan,
+            '--pa-btn-border': `${colors.cyan}66`,
+            '--pa-btn-border-hover': colors.cyan,
+            '--pa-btn-pad': '0 14px',
+            '--pa-btn-radius': `${radius.md}px`,
+            '--pa-btn-weight': 600,
+            height: 34, flexShrink: 0,
+            fontFamily: font.body, fontSize: 12,
+          } as CSSProperties}
+        >{busy ? 'Checking…' : 'Add folder'}</Button>
       </div>
 
       {note && (

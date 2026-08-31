@@ -15,8 +15,9 @@
  * row states the precondition plainly.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { H1, Row, Section } from '../atoms';
+import { Button } from '../../common/Button';
 import { Toggle } from '../../common/Toggle';
 import { api, type CouncilMembers, type CouncilSeat } from '../../../lib/api';
 import { font } from '../../../styles/tokens';
@@ -145,15 +146,21 @@ export function FeaturesPanel({ goto }: PanelProps) {
 
       <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
         Each worker is listed under{' '}
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           onClick={() => goto('agents')}
           style={{
-            background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
-            color: colors.cyan, fontFamily: font.body, fontSize: 12, textDecoration: 'underline',
-          }}
+            '--pa-btn-fg': colors.cyan,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            fontFamily: font.body,
+            fontSize: 12,
+            textDecoration: 'underline',
+          } as CSSProperties}
         >
           Settings → Agents
-        </button>
+        </Button>
         {' '}whether or not it is switched on — with the same switch on its own page, and
         its live state once it is on.
       </div>

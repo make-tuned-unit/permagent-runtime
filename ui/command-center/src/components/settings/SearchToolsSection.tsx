@@ -1,10 +1,11 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, type CSSProperties } from 'react';
 import { FiCheck, FiExternalLink } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { SEARCH_PROVIDERS, buildSearchExtensionQuery, saveAndEnableSearchProvider, type SearchProvider } from '../../lib/searchProviders';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Toggle } from '../common/Toggle';
 
 interface ProviderRowState {
@@ -66,9 +67,12 @@ export function SearchToolsSection() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  // Resolves `false` on failure — the Button contract's "it failed" signal.
+  // This catch turns the throw into a row-level message, so without it a key
+  // that never reached the keychain would still finish with a success tick.
   const saveKey = async (p: SearchProvider) => {
     const value = rows[p.id].input.trim();
-    if (!value) return;
+    if (!value) return false;
     patch(p.id, { busy: true, error: '' });
     try {
       // Store the key as a keychain secret, then register (and enable) the MCP
@@ -78,9 +82,11 @@ export function SearchToolsSection() {
       // Re-read so the badge shows the key the DAEMON actually stored, not what
       // we optimistically assumed — the save is only real once it reads back.
       await refresh();
+      return true;
     } catch (e) {
       console.error('Failed to save search key:', e);
       patch(p.id, { error: `Couldn't save the key: ${e instanceof Error ? e.message : String(e)}` });
+      return false;
     } finally {
       patch(p.id, { busy: false });
     }
@@ -97,10 +103,14 @@ export function SearchToolsSection() {
           ? { ok: true, message: `Working — ${r.toolCount} tool${r.toolCount === 1 ? '' : 's'} available` }
           : { ok: false, message: r.error || 'The provider did not answer.' },
       });
+      // A probe that ran and came back "not working" is a failed test, not a
+      // completed one: hand `false` back so the button does not tick over it.
+      return r.ok;
     } catch (e) {
       patch(p.id, {
         probe: { ok: false, message: `Couldn't run the test: ${e instanceof Error ? e.message : String(e)}` },
       });
+      return false;
     } finally {
       patch(p.id, { probing: false });
     }
@@ -171,31 +181,54 @@ export function SearchToolsSection() {
                 className="flex-1 text-[11px] px-3 py-1.5 rounded outline-none"
                 style={{ fontFamily: font.mono, background: colors.inputBg, border: `1px solid ${colors.border}`, color: colors.text }}
               />
-              <button
+              <Button
+                colors={colors}
+                variant="ghostOn"
                 onClick={() => saveKey(p)}
                 disabled={r.busy || !r.input.trim()}
-                className="text-[11px] px-3 py-1.5 rounded transition disabled:opacity-40"
-                style={{ border: `1px solid ${colors.cyan}4D`, color: colors.cyan }}
+                style={{
+                  '--pa-btn-border': `${colors.cyan}4D`,
+                  '--pa-btn-border-hover': colors.cyan,
+                  '--pa-btn-pad': '6px 12px',
+                  '--pa-btn-radius': `${radius.xs}px`,
+                } as CSSProperties}
               >
                 {r.busy ? 'Saving…' : 'Save'}
-              </button>
-              <button
+              </Button>
+              <Button
+                colors={colors}
                 onClick={() => testProvider(p)}
                 disabled={r.probing || !r.configured}
                 title={r.configured ? 'Start the provider and list its tools' : 'Add a key first'}
-                className="text-[11px] px-3 py-1.5 rounded transition disabled:opacity-40"
-                style={{ border: `1px solid ${colors.border}`, color: colors.textMuted }}
+                style={{
+                  '--pa-btn-fg': colors.textMuted,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-pad': '6px 12px',
+                  '--pa-btn-radius': `${radius.xs}px`,
+                } as CSSProperties}
               >
                 {r.probing ? 'Testing…' : 'Test'}
-              </button>
-              <button
+              </Button>
+              <Button
+                colors={colors}
                 onClick={() => openInBrowser(p.keyPageUrl)}
                 title={`Open ${p.keyPageLabel} in the browser`}
-                className="flex items-center gap-1 text-[11px] px-3 py-1.5 rounded hover:bg-white/5 transition"
-                style={{ border: `1px solid ${colors.border}`, color: colors.textMuted }}
+                style={{
+                  '--pa-btn-fg': colors.textMuted,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+                  '--pa-btn-pad': '6px 12px',
+                  '--pa-btn-radius': `${radius.xs}px`,
+                } as CSSProperties}
               >
-                <FiExternalLink size={11} /> Get key
-              </button>
+                {/* `.pa-btn__label` is a plain span and Tailwind's preflight
+                    makes every svg `display: block`, so an icon handed straight
+                    to Button stacks on top of its own label. The row keeps its
+                    own inline-flex until the primitive lays its label out. */}
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <FiExternalLink size={11} /> Get key
+                </span>
+              </Button>
             </div>
             {r.probe && (
               <div

@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
 import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse, type IncidentView } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
-import { ease, font, radius, setDensity as setDensityFn, setIdleAnim, setMobiusGlow, setReduceMotion as setReduceMotionFn, setShowHeroMobius, setTheme as setThemeFn, type IdleAnim, type ThemePref, type UIDensity } from '../../styles/tokens';
+import { font, radius, setDensity as setDensityFn, setIdleAnim, setMobiusGlow, setReduceMotion as setReduceMotionFn, setShowHeroMobius, setTheme as setThemeFn, type IdleAnim, type ThemePref, type UIDensity } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import {
@@ -22,6 +22,7 @@ import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
 import { PronunciationSection } from '../voice/PronunciationSection';
 import { H1, Section, Row, TextInput, Chip, Slider, Kbd, SaveButton } from './atoms';
+import { Button } from '../common/Button';
 import { Toggle } from '../common/Toggle';
 import { makeQrMatrix } from '../../lib/qrMatrix';
 import { SessionsList } from '../sessions/SessionsList';
@@ -44,13 +45,30 @@ import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 // ── Shared button styles (theme-aware via colors param) ─────────────
 type C = ReturnType<typeof useThemeHook>['colors'];
 
+/**
+ * The house ghost button, now expressed as the primitive's custom properties
+ * rather than as a finished inline `style` object.
+ *
+ * Same resting look — 32px tall, hairline border, 12px body type. What it could
+ * not have before is the half of a button that only CSS can say: an inline
+ * declaration cannot express `:hover` or `:active`, so every one of these ~15
+ * controls looked identical pressed and unpressed. Setting the colours through
+ * `--pa-btn-*` is not a style preference: an inline `color`/`background` beats
+ * the `.pa-btn:hover` rule in the cascade and would silently kill it again.
+ */
 const ghost = (colors: C): React.CSSProperties => ({
-  height: 32, padding: '0 14px', borderRadius: radius.md,
-  background: 'transparent', border: `1px solid ${colors.border}`,
-  color: colors.text, cursor: 'pointer',
-  fontFamily: font.body, fontSize: 12, fontWeight: 500,
-  display: 'inline-flex', alignItems: 'center', gap: 6,
-});
+  '--pa-btn-bg': 'transparent',
+  '--pa-btn-fg': colors.text,
+  '--pa-btn-border': colors.border,
+  '--pa-btn-bg-hover': colors.surfaceHi,
+  '--pa-btn-border-hover': colors.borderHi,
+  '--pa-btn-bg-active': colors.surface,
+  '--pa-btn-pad': '0 14px',
+  '--pa-btn-radius': `${radius.md}px`,
+  '--pa-btn-weight': 500,
+  height: 32,
+  fontFamily: font.body, fontSize: 12, gap: 6,
+} as React.CSSProperties);
 const selectStyle = (colors: C): React.CSSProperties => ({
   height: 34, padding: '0 12px', borderRadius: radius.md,
   background: colors.inputBg, border: `1px solid ${colors.border}`,
@@ -206,16 +224,25 @@ function PersonaPanel() {
         {/* Failed initial load: offer a retry instead of leaving a form that
             reads as broken (#167). Saving still works from the form's values. */}
         {error === 'Failed to load persona' && !data && (
-          <button
+          <Button
+            colors={colors}
+            // `reload` swallows its own failure into the form's `error` line and
+            // resolves either way, so the promise is deliberately not handed
+            // back: the pane's own loading state says it is retrying, and a tick
+            // here would claim a load that may have failed again.
             onClick={() => { void reload(); }}
             style={{
-              padding: '6px 14px', borderRadius: radius.md, cursor: 'pointer',
-              background: 'transparent', border: `1px solid ${colors.border}`,
-              color: colors.textMuted, fontSize: 12, fontFamily: font.body,
-            }}
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-border': colors.border,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-pad': '6px 14px',
+              '--pa-btn-radius': `${radius.md}px`,
+              fontSize: 12, fontFamily: font.body,
+            } as CSSProperties}
           >
             Retry
-          </button>
+          </Button>
         )}
         <SaveButton onClick={handleSave} disabled={!dirty || saving} saving={saving} />
       </div>
@@ -309,8 +336,8 @@ export function MemoryPanel({ goto }: { goto?: (key: string) => void }) {
       <H1 sub="What your agent remembers about you, your projects, and the people in your world.">Memory</H1>
       <Section title="Manage">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button style={ghost(colors)} onClick={() => navigateToTool('memory')}>Open Brain view</button>
-          <button style={ghost(colors)} onClick={() => goto?.('models')}>Nightly pruning (Librarian schedule) →</button>
+          <Button colors={colors} style={ghost(colors)} onClick={() => navigateToTool('memory')}>Open Brain view</Button>
+          <Button colors={colors} style={ghost(colors)} onClick={() => goto?.('models')}>Nightly pruning (Librarian schedule) →</Button>
           {/* Export/Forget removed (2026-07-10 audit): a destructive-styled
               button with no handler is worse than no button. They return
               with real endpoints behind them. */}
@@ -360,7 +387,7 @@ export function ApprovalsStrip() {
           )}
         </span>
         <div style={{ flex: 1 }} />
-        <button style={ghost(colors)} onClick={() => setOpen(true)}>Open Decision Inbox →</button>
+        <Button colors={colors} style={ghost(colors)} onClick={() => setOpen(true)}>Open Decision Inbox →</Button>
       </div>
       {open && <DecisionInbox inbox={inbox} onClose={() => setOpen(false)} />}
     </>
@@ -477,7 +504,7 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
           sliders here with the full soft/gate/hard ceilings for both scopes),
           so there is exactly one writer of the budget. */}
       <Section title="Spend caps" sub="The session and per-task ceilings the cost router enforces now live on the Spend page, alongside everything you have spent.">
-        <button style={ghost(colors)} onClick={() => goto?.('spend')}>Set spend caps in Spend →</button>
+        <Button colors={colors} style={ghost(colors)} onClick={() => goto?.('spend')}>Set spend caps in Spend →</Button>
       </Section>
     </div>
   );
@@ -538,9 +565,9 @@ function ToolsPanel({ goto }: PanelProps) {
           <span style={{ fontSize: 12, color: colors.textMuted }}>
             {needKeys.map(extensionLabel).join(' and ')} need API keys.
           </span>
-          <button style={ghost(colors)} onClick={() => goto('search')}>
+          <Button colors={colors} style={ghost(colors)} onClick={() => goto('search')}>
             Manage keys in Search &amp; tools
-          </button>
+          </Button>
         </div>
       )}
       {loading ? (
@@ -990,14 +1017,19 @@ export function ModelsPanel({ goto }: PanelProps) {
   const handleRunNow = async () => {
     setRunningNow(true);
     setLibError(null);
+    let started = true;
     try {
       await api.runLibrarianNow();
     } catch (err) {
+      // Swallowed into `libError`, so the Button contract needs the explicit
+      // `false` — a run that never started must not finish with a tick.
+      started = false;
       setLibError(`Couldn't start the Librarian: ${err instanceof Error ? err.message : String(err)}`);
     }
     setRunningNow(false);
     // Refresh status to show model as loaded
     api.getOllamaStatus().then(setOllama).catch(() => {});
+    return started;
   };
 
   return (
@@ -1012,7 +1044,7 @@ export function ModelsPanel({ goto }: PanelProps) {
             ? 'Loading primary model…'
             : `${primary.model ?? '—'} · provider: ${primary.provider ?? 'default'}${primary.mode ? ` · mode: ${primary.mode}` : ''}`}
         </div>
-        <button style={ghost(colors)} onClick={() => goto('keys')}>Manage API keys</button>
+        <Button colors={colors} style={ghost(colors)} onClick={() => goto('keys')}>Manage API keys</Button>
       </Section>
       {/* The old Routing/Behavior selects were decorative — hardcoded options
           wired to nothing (2026-07-10 settings audit). The real model/default
@@ -1068,7 +1100,7 @@ export function ModelsPanel({ goto }: PanelProps) {
                 />
               </div>
               <SaveButton onClick={saveVoiceModel} disabled={voiceSaving} saving={voiceSaving} />
-              <button style={ghost(colors)} onClick={useSessionVoiceModel}>Use the session model</button>
+              <Button colors={colors} style={ghost(colors)} onClick={useSessionVoiceModel}>Use the session model</Button>
             </div>
           </div>
         </Row>
@@ -1092,7 +1124,7 @@ export function ModelsPanel({ goto }: PanelProps) {
           grants or secrets). One surface now: Settings → Agents over
           /api/agents/roster. */}
       <Section title="Worker roster" sub="Which model each role dispatches to, with live availability, grants and required secrets.">
-        <button data-testid="models-open-agents" style={ghost(colors)} onClick={() => goto('agents')}>Open Agents</button>
+        <Button colors={colors} data-testid="models-open-agents" style={ghost(colors)} onClick={() => goto('agents')}>Open Agents</Button>
       </Section>
 
       {/* ── Ollama Status ────────────────────────────────────────── */}
@@ -1189,21 +1221,25 @@ export function ModelsPanel({ goto }: PanelProps) {
             </>
           )}
           <Row label="Run now" hint="Manually warm-load the model and trigger a Librarian run.">
-            <button
+            <Button
+              colors={colors}
               onClick={handleRunNow}
               disabled={runningNow || modelState(schedule.model) === 'missing'}
               style={{
-                height: 30, padding: '0 14px', borderRadius: radius.sm,
-                background: colors.cyanSoft,
-                border: `1px solid ${colors.borderHi}`,
-                color: runningNow ? colors.textDim : colors.cyan,
-                fontSize: 12, fontWeight: 600, fontFamily: font.body,
-                cursor: runningNow || modelState(schedule.model) === 'missing' ? 'not-allowed' : 'pointer',
-                transition: `all 150ms ${ease.out}`,
-              }}
+                '--pa-btn-bg': colors.cyanSoft,
+                '--pa-btn-fg': runningNow ? colors.textDim : colors.cyan,
+                '--pa-btn-border': colors.borderHi,
+                '--pa-btn-border-hover': colors.cyan,
+                '--pa-btn-bg-hover': colors.cyanSoft,
+                '--pa-btn-bg-active': colors.cyanGlow,
+                '--pa-btn-pad': '0 14px',
+                '--pa-btn-radius': `${radius.sm}px`,
+                '--pa-btn-weight': 600,
+                height: 30, fontSize: 12, fontFamily: font.body,
+              } as CSSProperties}
             >
               {runningNow ? 'Warming...' : 'Run Librarian now'}
-            </button>
+            </Button>
           </Row>
           {saving && <div style={{ fontSize: 10, color: colors.textDim, textAlign: 'right', padding: '4px 0' }}>Saving...</div>}
         </Section>
@@ -1233,28 +1269,36 @@ export function ModelsPanel({ goto }: PanelProps) {
           Settings → Agents — one config key (<code style={{ fontFamily: font.mono }}>strix_enabled</code>),
           so flipping it anywhere is the same flag.
           <span style={{ display: 'inline-flex', gap: 12, marginLeft: 10 }}>
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
               type="button"
               data-testid="guard-open-features"
               onClick={() => goto('features')}
               style={{
-                background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
-                color: colors.cyan, fontFamily: font.body, fontSize: 11, textDecoration: 'underline',
-              }}
+                '--pa-btn-fg': colors.cyan,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '0',
+                fontFamily: font.body, fontSize: 11, textDecoration: 'underline',
+              } as CSSProperties}
             >
               All worker switches
-            </button>
-            <button
+            </Button>
+            <Button
+              colors={colors}
+              variant="bare"
               type="button"
               data-testid="guard-open-agents"
               onClick={() => goto('agents')}
               style={{
-                background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
-                color: colors.cyan, fontFamily: font.body, fontSize: 11, textDecoration: 'underline',
-              }}
+                '--pa-btn-fg': colors.cyan,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '0',
+                fontFamily: font.body, fontSize: 11, textDecoration: 'underline',
+              } as CSSProperties}
             >
               The Guard's agent page
-            </button>
+            </Button>
           </span>
         </div>
         <Row label="Sweep every" hint="How often the Guard scans the next project in the rotation. Daily is the cost-effective default.">
@@ -1527,9 +1571,12 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
     setExporting(true);
     setExportError(null);
     setExportResult(null);
-    api.exportCrashReport()
-      .then(setExportResult)
-      .catch(err => setExportError(`Export failed: ${err instanceof Error ? err.message : String(err)}`))
+    // Handing the promise back gives the export a visible in-flight phase; the
+    // `false` in the catch is what keeps a failed export — already swallowed
+    // into `exportError` — from finishing with a success tick.
+    return api.exportCrashReport()
+      .then(r => { setExportResult(r); return true; })
+      .catch(err => { setExportError(`Export failed: ${err instanceof Error ? err.message : String(err)}`); return false; })
       .finally(() => setExporting(false));
   }, []);
 
@@ -1542,7 +1589,7 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
             Memory and traces live on this machine. To make the boundary
             enforced — blocking every cloud inference call — use Sovereignty.
           </span>
-          <button style={ghost(colors)} onClick={() => goto?.('sovereignty')}>Open Sovereignty →</button>
+          <Button colors={colors} style={ghost(colors)} onClick={() => goto?.('sovereignty')}>Open Sovereignty →</Button>
         </div>
       </Section>
       <Section title="Diagnostics" sub="Live — an off-by-default opt-in written to the daemon's consent gate.">
@@ -1553,15 +1600,22 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
       </Section>
       <Section title="Crash report" sub="Export a redacted crash report to attach to a support message. Written locally — home paths, keys, tokens, emails, and UUIDs are redacted first. Nothing is uploaded.">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <button
+          <Button
+            colors={colors}
             onClick={runExport}
             disabled={exporting}
             style={{
-              fontSize: 12, padding: '6px 12px', borderRadius: radius.sm,
-              cursor: exporting ? 'default' : 'pointer', opacity: exporting ? 0.6 : 1,
-              background: colors.surfaceHi, color: colors.text, border: `1px solid ${colors.border}`,
-            }}
-          >{exporting ? 'Exporting…' : 'Export redacted crash report'}</button>
+              '--pa-btn-bg': colors.surfaceHi,
+              '--pa-btn-fg': colors.text,
+              '--pa-btn-border': colors.border,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-bg-active': colors.surface,
+              '--pa-btn-pad': '6px 12px',
+              '--pa-btn-radius': `${radius.sm}px`,
+              fontSize: 12,
+            } as CSSProperties}
+          >{exporting ? 'Exporting…' : 'Export redacted crash report'}</Button>
         </div>
         {exportError && (
           <div style={{ fontSize: 12, color: colors.danger, padding: '6px 0' }}>{exportError}</div>
@@ -1606,7 +1660,11 @@ function SovereigntyPanel() {
   const [log, setLog] = useState<EgressLogEntry[] | null>(null);
 
   const refreshLog = useCallback(() => {
-    api.getEgressLog(100).then(setLog).catch(() => setLog([]));
+    // Returns the round trip so the Refresh button can show it, and resolves
+    // `false` on the failure this already swallows so it cannot tick over one.
+    return api.getEgressLog(100)
+      .then(l => { setLog(l); return true; })
+      .catch(() => { setLog([]); return false; });
   }, []);
 
   useEffect(() => {
@@ -1642,20 +1700,31 @@ function SovereigntyPanel() {
             ? 'All cloud inference is blocked before any data leaves this machine. Only local models run.'
             : 'Cloud inference is allowed. Every cloud call is still recorded in the audit log below.'}
         >
-          <button
+          <Button
+            colors={colors}
+            variant={status?.enabled ? 'ghostOn' : 'primary'}
             onClick={() => save({ enabled: !status?.enabled })}
             disabled={status === null}
+            // `save` resolves the same way whether the daemon took the write or
+            // refused it (it reports through the `error` line above), so there
+            // is nothing here that could honestly earn a tick. The label
+            // flipping to the opposite verb is the confirmation.
+            flashSuccess={false}
             style={{
-              height: 32, padding: '0 18px', borderRadius: radius.md,
-              background: status?.enabled ? 'transparent' : colors.cyan,
-              border: status?.enabled ? `1px solid ${colors.borderHi}` : 'none',
-              color: status?.enabled ? colors.cyan : colors.textOnCyan,
-              cursor: status === null ? 'default' : 'pointer',
-              fontFamily: font.body, fontSize: 12, fontWeight: 600,
-            }}
+              '--pa-btn-bg': status?.enabled ? 'transparent' : colors.cyan,
+              '--pa-btn-fg': status?.enabled ? colors.cyan : colors.textOnCyan,
+              '--pa-btn-border': status?.enabled ? colors.borderHi : 'transparent',
+              '--pa-btn-border-hover': status?.enabled ? colors.cyan : 'transparent',
+              '--pa-btn-bg-hover': status?.enabled ? colors.cyanSoft : colors.cyan,
+              '--pa-btn-bg-active': status?.enabled ? colors.cyanGlow : colors.cyan,
+              '--pa-btn-pad': '0 18px',
+              '--pa-btn-radius': `${radius.md}px`,
+              '--pa-btn-weight': 600,
+              height: 32, fontFamily: font.body, fontSize: 12,
+            } as CSSProperties}
           >
             {status === null ? '…' : status.enabled ? 'Allow cloud again' : 'Pull the cable'}
-          </button>
+          </Button>
         </Row>
         {status?.enabled && !status.localProviderAvailable && (
           <div style={{ fontSize: 12, color: colors.warning, padding: '2px 0 8px' }}>
@@ -1669,13 +1738,21 @@ function SovereigntyPanel() {
 
       <Section title="Egress audit" sub="Every cloud call, allowed or blocked — newest first. BLOCKED means sovereign mode refused it before anything left this machine.">
         <Row label="Cloud inference calls" hint={`${log?.length ?? 0} recorded`}>
-          <button
+          <Button
+            colors={colors}
             onClick={refreshLog}
             style={{
-              fontSize: 12, padding: '4px 10px', borderRadius: radius.sm, cursor: 'pointer',
-              background: colors.surfaceHi, color: colors.text, border: `1px solid ${colors.border}`,
-            }}
-          >Refresh</button>
+              '--pa-btn-bg': colors.surfaceHi,
+              '--pa-btn-fg': colors.text,
+              '--pa-btn-border': colors.border,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-bg-active': colors.surface,
+              '--pa-btn-pad': '4px 10px',
+              '--pa-btn-radius': `${radius.sm}px`,
+              fontSize: 12,
+            } as CSSProperties}
+          >Refresh</Button>
         </Row>
         {log === null ? (
           <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>Loading audit log…</div>
@@ -1765,11 +1842,17 @@ function IncidentsStrip() {
 
   const resolve = async (id: string) => {
     setBusy(id);
+    let resolved = true;
     try {
       await api.resolveIncident(id);
       setIncidents(prev => (prev ?? []).filter(i => i.id !== id));
-    } catch { /* leave the row; the next load retells the truth */ }
+    } catch {
+      // Leave the row; the next load retells the truth. `false` is what keeps
+      // the button from ticking over an incident that is still open.
+      resolved = false;
+    }
     setBusy(null);
+    return resolved;
   };
 
   if (!incidents || incidents.length === 0) return null;
@@ -1784,13 +1867,20 @@ function IncidentsStrip() {
             [{i.surface}] {i.observation}
           </span>
           <span style={{ fontSize: 10, color: colors.textDim, fontFamily: 'monospace' }}>{i.mechanism}</span>
-          <button
+          <Button
+            colors={colors}
+            variant="ghostOn"
             onClick={() => resolve(i.id)}
             disabled={busy === i.id}
-            style={{ fontSize: 11, color: colors.cyan, background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: radius.sm, padding: '2px 10px', cursor: 'pointer' }}
+            style={{
+              '--pa-btn-border': colors.borderHi,
+              '--pa-btn-border-hover': colors.cyan,
+              '--pa-btn-pad': '2px 10px',
+              '--pa-btn-radius': `${radius.sm}px`,
+            } as CSSProperties}
           >
             {busy === i.id ? '…' : 'Resolve'}
-          </button>
+          </Button>
         </div>
       ))}
     </div>
@@ -1954,9 +2044,11 @@ function DevicesPanel() {
           </span>
         </div>
         {detail < 2 && (
-          <button style={ghost(colors)} onClick={() => setDetail(d => d + 1)}>
+          // Its whole job is to reveal the paragraph below it, and the reveal
+          // is the confirmation — a tick on top would be noise.
+          <Button colors={colors} flashSuccess={false} style={ghost(colors)} onClick={() => setDetail(d => d + 1)}>
             {detail === 0 ? 'Tell me more' : 'How does it work exactly?'}
-          </button>
+          </Button>
         )}
         {detail >= 1 && (
           <p style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.6, margin: '10px 0 0' }}>
@@ -2004,17 +2096,21 @@ function DevicesPanel() {
             {editingId === d.id ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <TextInput value={editName} onChange={setEditName} placeholder="Device name" />
-                <button
+                <Button
+                  colors={colors}
                   style={ghost(colors)}
+                  // Handing the promise back is what buys the round trip a
+                  // visible pending phase; the `false` in the catch is what
+                  // stops a rename the daemon refused from ticking anyway.
                   onClick={() => {
                     const name = editName.trim();
-                    if (!name) return;
-                    api.renameDevice(d.id, name)
-                      .then(() => { setEditingId(null); loadDevices(); })
-                      .catch(() => setEditingId(null));
+                    if (!name) return false;
+                    return api.renameDevice(d.id, name)
+                      .then(() => { setEditingId(null); loadDevices(); return true; })
+                      .catch(() => { setEditingId(null); return false; });
                   }}
-                >Save</button>
-                <button style={ghost(colors)} onClick={() => setEditingId(null)}>Cancel</button>
+                >Save</Button>
+                <Button colors={colors} style={ghost(colors)} onClick={() => setEditingId(null)}>Cancel</Button>
               </div>
             ) : (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -2022,20 +2118,34 @@ function DevicesPanel() {
                   <span style={{ fontSize: 11, fontWeight: 600, color: colors.danger }}>REVOKED</span>
                 ) : (
                   <>
-                    <button
+                    <Button
+                      colors={colors}
                       style={ghost(colors)}
                       onClick={() => { setEditingId(d.id); setEditName(d.name); setConfirmRevokeId(null); }}
-                    >Rename</button>
-                    <button
-                      style={{ ...ghost(colors), color: colors.danger, borderColor: `${colors.danger}66` }}
+                    >Rename</Button>
+                    <Button
+                      colors={colors}
+                      // The danger palette rides in as custom properties, not as
+                      // an inline `color`/`borderColor`: those would beat the
+                      // hover rule and leave this reading as unpressable.
+                      style={{
+                        ...ghost(colors),
+                        '--pa-btn-fg': colors.danger,
+                        '--pa-btn-border': `${colors.danger}66`,
+                        '--pa-btn-border-hover': colors.danger,
+                        '--pa-btn-bg-hover': `${colors.danger}1A`,
+                        '--pa-btn-bg-active': `${colors.danger}26`,
+                      } as CSSProperties}
                       title="This device stops authenticating immediately. Pair it again to restore access."
+                      // The first press only arms the confirmation — nothing is
+                      // in flight, so it returns nothing and nothing ticks.
                       onClick={() => {
                         if (confirmRevokeId !== d.id) { setConfirmRevokeId(d.id); return; }
-                        api.revokeDevice(d.id)
-                          .then(() => { setConfirmRevokeId(null); loadDevices(); })
-                          .catch(() => setConfirmRevokeId(null));
+                        return api.revokeDevice(d.id)
+                          .then(() => { setConfirmRevokeId(null); loadDevices(); return true; })
+                          .catch(() => { setConfirmRevokeId(null); return false; });
                       }}
-                    >{confirmRevokeId === d.id ? 'Confirm revoke' : 'Revoke'}</button>
+                    >{confirmRevokeId === d.id ? 'Confirm revoke' : 'Revoke'}</Button>
                   </>
                 )}
               </div>
@@ -2085,7 +2195,8 @@ function DevicesPanel() {
           {tailnet?.running ? (
             <span style={{ fontSize: 12, color: colors.cyan }}>● Connected{tailnet.magic_dns_name ? ` — ${tailnet.magic_dns_name}` : ''}</span>
           ) : (
-            <button
+            <Button
+              colors={colors}
               style={ghost(colors)}
               title={`Copies a setup request and opens chat — ${agentName} runs the terminal steps for you.`}
               onClick={() => {
@@ -2097,7 +2208,7 @@ function DevicesPanel() {
                 ).catch(() => {});
                 navigateToTool('chat');
               }}
-            >Have {agentName} set it up</button>
+            >Have {agentName} set it up</Button>
           )}
         </Row>
         <Row
@@ -2119,16 +2230,17 @@ function DevicesPanel() {
         <Row label="Device name" hint="Name the device you are pairing — this is how it appears in the registry above.">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <TextInput value={pairName} onChange={setPairName} placeholder="e.g. iPhone" />
-            <button
+            <Button
+              colors={colors}
               style={ghost(colors)}
               onClick={() => {
                 const name = pairName.trim();
-                if (!name) { setPairError('Give the device a name first.'); return; }
-                api.pairDevice(name)
-                  .then(r => { setClaim({ code: r.claim_code, expiresAt: r.expires_at }); setPairError(null); })
-                  .catch(e => { setClaim(null); setPairError(e instanceof Error ? e.message : 'Pairing failed'); });
+                if (!name) { setPairError('Give the device a name first.'); return false; }
+                return api.pairDevice(name)
+                  .then(r => { setClaim({ code: r.claim_code, expiresAt: r.expires_at }); setPairError(null); return true; })
+                  .catch(e => { setClaim(null); setPairError(e instanceof Error ? e.message : 'Pairing failed'); return false; });
               }}
-            >Create pairing link</button>
+            >Create pairing link</Button>
           </div>
         </Row>
         {pairError && (
@@ -2159,7 +2271,11 @@ function DevicesPanel() {
                   background: colors.bgDeeper, padding: '6px 8px', borderRadius: radius.sm,
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320,
                 }}>{pairingUrl}</code>
-                <button
+                <Button
+                  colors={colors}
+                  // The label already flips to "Copied ✓" for 1.6s and owns the
+                  // confirmation; the primitive's tick on top would say it twice.
+                  flashSuccess={false}
                   style={{ ...ghost(colors), alignSelf: 'flex-start' }}
                   onClick={() => {
                     navigator.clipboard.writeText(pairingUrl).then(() => {
@@ -2175,7 +2291,7 @@ function DevicesPanel() {
                       emitActivity('pairing_link_copied', 'settings');
                     });
                   }}
-                >{copied ? 'Copied ✓' : 'Copy link instead'}</button>
+                >{copied ? 'Copied ✓' : 'Copy link instead'}</Button>
               </div>
             </div>
           ) : (
@@ -2230,17 +2346,35 @@ export function SettingsView() {
             {cat.items.map(it => {
               const on = section === it.key;
               return (
-                <button key={it.key} onClick={() => setSection(it.key)} style={{
-                  display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 10px', borderRadius: radius.md,
-                  background: on ? colors.cyanSoft : 'transparent',
-                  border: on ? `1px solid ${colors.borderHi}` : '1px solid transparent',
-                  color: on ? colors.cyan : colors.textMuted, cursor: 'pointer', textAlign: 'left',
-                  fontFamily: font.body, fontSize: 13, fontWeight: on ? 600 : 500,
-                  transition: `all 140ms ${ease.out}`,
-                }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><path d={it.icon} /></svg>
-                  {it.label}
-                </button>
+                // A nav rail with no hover and no press was the last surface in
+                // Settings where pointing at a row and pressing it looked the
+                // same. `justifyContent` and the icon's own wrapper hold the
+                // left-aligned row shape the primitive would otherwise centre.
+                <Button
+                  key={it.key}
+                  colors={colors}
+                  flashSuccess={false}
+                  onClick={() => setSection(it.key)}
+                  style={{
+                    '--pa-btn-bg': on ? colors.cyanSoft : 'transparent',
+                    '--pa-btn-fg': on ? colors.cyan : colors.textMuted,
+                    '--pa-btn-border': on ? colors.borderHi : 'transparent',
+                    '--pa-btn-border-hover': on ? colors.borderHi : 'transparent',
+                    '--pa-btn-bg-hover': on ? colors.cyanSoft : colors.surfaceHi,
+                    '--pa-btn-fg-hover': on ? colors.cyan : colors.text,
+                    '--pa-btn-bg-active': on ? colors.cyanGlow : colors.surface,
+                    '--pa-btn-pad': '8px 10px',
+                    '--pa-btn-radius': `${radius.md}px`,
+                    '--pa-btn-weight': on ? 600 : 500,
+                    width: '100%', justifyContent: 'flex-start', textAlign: 'left',
+                    fontFamily: font.body, fontSize: 13,
+                  } as CSSProperties}
+                >
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><path d={it.icon} /></svg>
+                    {it.label}
+                  </span>
+                </Button>
               );
             })}
           </div>

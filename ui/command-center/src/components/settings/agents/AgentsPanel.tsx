@@ -5,8 +5,9 @@
  * an in-world character (see lib/worldAgentIds — the two id namespaces differ).
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { Chip, H1, Row, Section } from '../atoms';
+import { Button } from '../../common/Button';
 import { Toggle } from '../../common/Toggle';
 import {
   availabilityLabel,
@@ -92,16 +93,22 @@ function WorldLink({ agentId }: { agentId: string }) {
   }
   return (
     <div>
-      <button
+      <Button
+        colors={colors}
+        variant="bare"
         type="button"
+        className="hover:underline"
         onClick={() => setUnreachable(!useCommandCenter.getState().focusWorldAgent(worldId))}
         style={{
-          fontSize: 12, fontWeight: 600, color: colors.cyan, background: 'none',
-          border: 'none', cursor: 'pointer', padding: 0, fontFamily: font.body,
-        }}
+          '--pa-btn-fg': colors.cyan,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '0',
+          '--pa-btn-weight': 600,
+          fontSize: 12, fontFamily: font.body,
+        } as CSSProperties}
       >
         Open in World
-      </button>
+      </Button>
       {unreachable && (
         <div style={{ fontSize: 11, color: colors.warning, marginTop: 6, lineHeight: 1.45 }}>
           No workspace has the World view open, so there is nowhere to fly to. Add it to a
@@ -141,8 +148,12 @@ function SecretsEditor({
     try {
       await saveSecret(agentId, secretName, null);
       await onRefresh();
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not remove secret');
+      // The catch swallows the throw into `error`, so `false` — the Button
+      // contract's failure signal — is what keeps it from ticking anyway.
+      return false;
     } finally {
       setBusy(false);
     }
@@ -189,18 +200,23 @@ function SecretsEditor({
               <span style={{ color: colors.text, fontFamily: font.mono }}>{item.name}</span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <StatusText text={label.text} tone={label.tone} />
-                <button
+                <Button
+                  colors={colors}
                   type="button"
                   disabled={busy}
-                  onClick={() => { void remove(item.name); }}
+                  onClick={() => remove(item.name)}
                   style={{
-                    fontSize: 11, color: colors.danger, background: 'none',
-                    border: `1px solid ${colors.border}`, borderRadius: radius.sm,
-                    padding: '2px 8px', cursor: busy ? 'not-allowed' : 'pointer',
-                  }}
+                    '--pa-btn-fg': colors.danger,
+                    '--pa-btn-border': colors.border,
+                    '--pa-btn-border-hover': `${colors.danger}4D`,
+                    '--pa-btn-bg-hover': `${colors.danger}1A`,
+                    '--pa-btn-bg-active': `${colors.danger}26`,
+                    '--pa-btn-pad': '2px 8px',
+                    '--pa-btn-radius': `${radius.sm}px`,
+                  } as CSSProperties}
                 >
                   Remove
-                </button>
+                </Button>
               </span>
             </div>
           );
@@ -251,11 +267,14 @@ function GrantsEditor({
   const save = async () => {
     if (listTruncated) {
       setError('This grant list came back truncated, so saving would drop the grants not shown. Reduce the grant count on disk first.');
-      return;
+      // Nothing was written. `false` is the Button contract's failure signal:
+      // every path here reports through `error`, so without it a refused save
+      // would still finish with a success tick.
+      return false;
     }
     if (mode === 'narrowed' && staleKeys.length > 0) {
       setError('Stale grants cannot be re-saved until those capabilities are enabled globally.');
-      return;
+      return false;
     }
     setBusy(true);
     setError(null);
@@ -266,8 +285,10 @@ function GrantsEditor({
       onUpdated(updated);
       setMode(grantsToMode(updated.grants));
       setSelected(updated.grants.mode === 'explicit' ? [...updated.grants.extensions] : []);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save grants');
+      return false;
     } finally {
       setBusy(false);
     }
@@ -327,19 +348,26 @@ function GrantsEditor({
           )}
         </div>
       )}
-      <button
+      <Button
+        colors={colors}
         type="button"
         disabled={busy || listTruncated}
-        onClick={() => { void save(); }}
+        onClick={() => save()}
         style={{
-          padding: '7px 14px', borderRadius: radius.sm, border: `1px solid ${colors.border}`,
-          background: colors.surface, color: listTruncated ? colors.textDim : colors.cyan,
-          cursor: busy || listTruncated ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600,
-          fontFamily: font.body,
-        }}
+          '--pa-btn-bg': colors.surface,
+          '--pa-btn-fg': listTruncated ? colors.textDim : colors.cyan,
+          '--pa-btn-border': colors.border,
+          '--pa-btn-border-hover': colors.borderHi,
+          '--pa-btn-bg-hover': colors.surfaceHi,
+          '--pa-btn-bg-active': colors.surface,
+          '--pa-btn-pad': '7px 14px',
+          '--pa-btn-radius': `${radius.sm}px`,
+          '--pa-btn-weight': 600,
+          fontSize: 12, fontFamily: font.body,
+        } as CSSProperties}
       >
         {busy ? 'Saving…' : 'Save grants'}
-      </button>
+      </Button>
       {error && <div style={{ marginTop: 8, fontSize: 12, color: colors.danger }}>{error}</div>}
     </div>
   );
@@ -594,16 +622,22 @@ function AgentDetailPane({
 
   return (
     <div>
-      <button
+      <Button
+        colors={colors}
+        variant="bare"
         type="button"
+        className="hover:underline"
         onClick={onBack}
         style={{
-          fontSize: 12, color: colors.cyan, background: 'none', border: 'none',
-          cursor: 'pointer', padding: 0, marginBottom: 16, fontFamily: font.body, fontWeight: 600,
-        }}
+          '--pa-btn-fg': colors.cyan,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '0',
+          '--pa-btn-weight': 600,
+          fontSize: 12, marginBottom: 16, fontFamily: font.body,
+        } as CSSProperties}
       >
         ← Back to agents
-      </button>
+      </Button>
 
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
         <AgentPortrait agentId={id} size={56} />
@@ -780,16 +814,22 @@ export function AgentsPanel({ goto }: PanelProps) {
   if (selectedId && detailError) {
     return (
       <div>
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           type="button"
+          className="hover:underline"
           onClick={() => { setSelectedId(null); setDetailError(null); }}
           style={{
-            fontSize: 12, color: colors.cyan, background: 'none', border: 'none',
-            cursor: 'pointer', padding: 0, marginBottom: 16, fontFamily: font.body, fontWeight: 600,
-          }}
+            '--pa-btn-fg': colors.cyan,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-weight': 600,
+            fontSize: 12, marginBottom: 16, fontFamily: font.body,
+          } as CSSProperties}
         >
           ← Back to agents
-        </button>
+        </Button>
         <div style={{ fontSize: 13, color: colors.danger }}>
           No agent named {selectedId}. {detailError}
         </div>
@@ -996,16 +1036,22 @@ function CapabilityRow({
           <div key={hint} data-testid="required-secret-hint" style={{ marginTop: 2 }}>{hint}</div>
         ))}
       </div>
-      <button
+      <Button
+        colors={colors}
+        variant="bare"
         type="button"
+        className="hover:underline"
         onClick={onManage}
         style={{
-          fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
-          cursor: 'pointer', padding: 0, fontFamily: font.body, fontWeight: 600,
-        }}
+          '--pa-btn-fg': colors.cyan,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '0',
+          '--pa-btn-weight': 600,
+          fontFamily: font.body,
+        } as CSSProperties}
       >
         Manage in Tools
-      </button>
+      </Button>
     </div>
   );
 }
