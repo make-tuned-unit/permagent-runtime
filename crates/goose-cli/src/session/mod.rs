@@ -1,3 +1,4 @@
+mod brain_sync;
 mod builder;
 mod completion;
 mod composer;
@@ -278,6 +279,12 @@ pub struct CliSession {
     retry_config: Option<RetryConfig>,
     output_format: String,
     composer: Option<composer::Composer>,
+    /// Whether last turn left a Brain-recall block installed under
+    /// [`brain_sync::RECALL_PROMPT_KEY`]. The system-prompt extras map is keyed
+    /// and survives the turn, so this is what lets a turn that recalls nothing
+    /// CLEAR the previous turn's memories instead of leaving them standing as
+    /// background for an unrelated question.
+    recall_installed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -408,6 +415,7 @@ impl CliSession {
             retry_config,
             output_format,
             composer: None,
+            recall_installed: false,
         }
     }
 
@@ -1432,6 +1440,33 @@ impl CliSession {
             max_turns: self.max_turns,
             retry_config: self.retry_config.clone(),
         };
+        let user_text = self
+            .messages
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("No user message"))?
+            .as_concat_text();
+
+        // Ask the daemon what it already knows about this.
+        //
+        // Chat has had this since Phase 3b of `session_reply`; the harness has
+        // not, because `GLOBAL_BRAIN` is a per-process singleton the CLI never
+        // populates, so even the `search_memory` tool is structurally absent
+        // here. This is the harness's half of the shared Brain, and it is
+        // deliberately the SAME seam Chat uses — a system-prompt extra under
+        // `memory_recall`, not an edit to the user's message. The transcript on
+        // disk, the terminal echo, and anything `/export` writes therefore stay
+        // exactly what the user typed; only the outgoing prompt carries the
+        // background, clearly labelled as historical.
+        //
+        // Bounded and silent: a wedged daemon costs this turn 750ms once, and a
+        // missing one costs nothing at all (no token file ⇒ no network attempt).
+        let turn_idx = self.messages.len();
+        if let Some(block) = brain_sync::recall_block(&user_text, self.recall_installed).await {
+            self.recall_installed = !block.is_empty();
+            self.agent
+                .extend_system_prompt(brain_sync::RECALL_PROMPT_KEY.to_string(), block)
+                .await;
+        }
         let user_message = self
             .messages
             .last()
@@ -1783,6 +1818,42 @@ impl CliSession {
             output::flush_markdown_buffer_current_theme(&mut markdown_buffer);
         }
         self.restore_composer(composer);
+
+        // Give the turn back to the shared Brain.
+        //
+        // The daemon has written a memory per CHAT turn for a long time; the
+        // harness wrote one summary at exit and nothing else, so a coding
+        // session was invisible to Chat until the terminal tab closed. This is
+        // the same `spawn_persist_chat_turn` path, reached over the same
+        // authenticated loopback the spend meter already uses, keyed
+        // `(session_id, turn_idx)` so a retry cannot duplicate a memory.
+        //
+        // Detached by construction: a memory write must never be something a
+        // turn waits on, and a daemon that is not running must cost nothing.
+        // Placed here rather than beside `spend_announce::announce` because
+        // that call sits at the TOP of the interactive loop — before the turn —
+        // where the assistant's answer does not exist yet. This is the first
+        // point where both halves of the turn are known, and it is on the path
+        // every mode takes (interactive, `-t`, json, stream-json).
+        let assistant_text = self
+            .messages
+            .messages()
+            .iter()
+            .skip(turn_idx)
+            .filter(|m| m.role == rmcp::model::Role::Assistant)
+            .map(|m| m.as_concat_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        brain_sync::persist_turn(
+            self.session_id.clone(),
+            turn_idx,
+            user_text,
+            assistant_text,
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.display().to_string()),
+        );
+
         if let Some(e) = fatal {
             return Err(e);
         }
