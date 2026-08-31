@@ -624,7 +624,13 @@ final class VoiceEngine: ObservableObject {
             preRoll.removeAll(keepingCapacity: true)
             return
         }
-        if handsFree { vadStep(rms: rms, voiceLike: voiceLike) }
+        if VoiceEnroll.shouldDriveVAD(
+            handsFree: handsFree,
+            enrolling: enrolling,
+            isListening: state == .listening
+        ) {
+            vadStep(rms: rms, voiceLike: voiceLike)
+        }
     }
 
     // ── VAD (hands-free): the state machine itself is VoiceVAD, unit-tested ──
@@ -887,12 +893,18 @@ final class VoiceEngine: ObservableObject {
                     enrolling = false
                     enrollPrompt = nil
                     sendText(#"{"type":"enroll_done"}"#)
-                } else if state == .ready {
+                } else if state == .ready || state == .thinking {
                     // The hub has confirmed the learned model is loaded and
                     // enrollment mode is active. Only now open the mic; doing
                     // it optimistically could send the setup sentence through
                     // STT as a normal agent turn while the model downloads.
-                    enterListening()
+                    //
+                    // A successful take's enroll_status arrives while this
+                    // client is still `.thinking` — waiting for the trailing
+                    // Idle to open the next take costs a round trip, so this
+                    // frame is the primary trigger and `idle` is the fallback.
+                    state = .ready
+                    beginEnrollmentTake()
                 }
             case "enrolled":
                 enrolling = false
@@ -928,11 +940,22 @@ final class VoiceEngine: ObservableObject {
                 // Empty / too-short capture — back to ready, no toast.
                 // Rejected speaker-print is the same path. Enrollment idle
                 // opens the next sentence; pronunciation teach still wins.
-                notice = nil
-                if teachWord != nil || (enrolling && enrollPrompt != nil) {
+                if enrolling, enrollPrompt != nil {
+                    // A successful take sends enroll_status followed by the
+                    // prior take's Idle. enroll_status may already have opened
+                    // the next take, so never reset a live recording or send a
+                    // duplicate Start here. A retry has no status frame; in
+                    // that case Thinking -> Ready is the signal to re-open.
+                    if state == .thinking {
+                        state = .ready
+                        beginEnrollmentTake()
+                    }
+                } else if teachWord != nil {
+                    notice = nil
                     state = .ready
                     enterListening()
                 } else if state == .thinking || state == .listening || state == .speaking {
+                    notice = nil
                     state = .ready
                 }
             case "error":
@@ -1021,8 +1044,19 @@ final class VoiceEngine: ObservableObject {
         if teachWord != nil {
             enterListening()
         } else if enrolling, enrollPrompt != nil {
-            enterListening()
+            beginEnrollmentTake()
         }
+    }
+
+    /// Open the next enrollment take. The hub's status frames — not the VAD's
+    /// onset detector — decide when a take begins here, so the turn clocks
+    /// must be stamped on the way in exactly as push-to-talk stamps them.
+    /// Without that, the max-turn cap measures from a stale (on the setup
+    /// screen, never-set) epoch and endpoints the take on its first frame.
+    private func beginEnrollmentTake() {
+        guard enrolling, enrollPrompt != nil, state == .ready else { return }
+        VoiceEnroll.openTake(&vad, now: Date().timeIntervalSince1970)
+        enterListening()
     }
 
     func beginEnroll() {
