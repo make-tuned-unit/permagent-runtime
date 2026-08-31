@@ -14,6 +14,7 @@ pub async fn file_briefing(
     session_id: &str,
     headline: &str,
     n_actions: usize,
+    verdict_missing: bool,
 ) -> Option<String> {
     briefings::file_briefing(
         pool,
@@ -22,9 +23,14 @@ pub async fn file_briefing(
             kind: "weekly_report".to_string(),
             severity: Severity::Attention,
             summary: format!(
-                "Council report: {headline} ({} action{})",
+                "Council report: {headline} ({} action{}){}",
                 n_actions,
-                if n_actions == 1 { "" } else { "s" }
+                if n_actions == 1 { "" } else { "s" },
+                if verdict_missing {
+                    " — no verdict line; the chair did not rule"
+                } else {
+                    ""
+                }
             ),
             detail: Some(format!("session {session_id}")),
             ref_kind: Some("council_session".to_string()),
@@ -104,7 +110,9 @@ async fn file_one(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::spectral_schema::{apply_council_schema, init_spectral_db};
+    use crate::session::spectral_schema::{
+        apply_briefings_schema, apply_council_schema, init_spectral_db,
+    };
 
     async fn pool() -> Pool<Sqlite> {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -113,14 +121,13 @@ mod tests {
             .unwrap();
         init_spectral_db(&pool).await.unwrap();
         apply_council_schema(&pool).await.unwrap();
+        apply_briefings_schema(&pool).await.unwrap();
         pool
     }
 
-    #[tokio::test]
-    async fn files_at_most_five_council_actions() {
-        let pool = pool().await;
-        let project = crate::projects::create_project(
-            &pool,
+    async fn project(pool: &Pool<Sqlite>) -> String {
+        crate::projects::create_project(
+            pool,
             crate::projects::CreateProject {
                 name: "Permagent".into(),
                 slug: None,
@@ -133,26 +140,65 @@ mod tests {
             },
         )
         .await
-        .unwrap();
-        let actions: Vec<ChairAction> = (0..8)
-            .map(|i| ChairAction {
-                project_id: project.id.clone(),
-                project_name: "Permagent".into(),
-                title: format!("Do thing {i}"),
-                description: format!("Because {i}"),
-            })
-            .collect();
-        let report = ChairReport {
+        .unwrap()
+        .id
+    }
+
+    fn report_with(actions: Vec<ChairAction>) -> ChairReport {
+        ChairReport {
             headline: "H".into(),
             markdown: "# hi".into(),
             consensus: vec![],
             dissent: vec![],
             actions,
-        };
-        let ids = file_actions(&pool, "sess-1", &report).await.unwrap();
+            verdict_missing: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn files_at_most_five_council_actions() {
+        let pool = pool().await;
+        let project_id = project(&pool).await;
+        let actions: Vec<ChairAction> = (0..8)
+            .map(|i| ChairAction {
+                project_id: project_id.clone(),
+                project_name: "Permagent".into(),
+                title: format!("Do thing {i}"),
+                description: format!("Because {i}"),
+            })
+            .collect();
+        let ids = file_actions(&pool, "sess-1", &report_with(actions))
+            .await
+            .unwrap();
         assert_eq!(ids.len(), MAX_ACTIONS);
         let open = crate::decisions::list_open_decisions(&pool).await.unwrap();
         assert_eq!(open.len(), MAX_ACTIONS);
         assert!(open.iter().all(|i| i.decision.kind == KIND));
+    }
+
+    #[tokio::test]
+    async fn the_briefing_says_when_the_chair_never_ruled() {
+        let pool = pool().await;
+        file_briefing(&pool, "sess-3", "Ship the card", 2, true).await;
+        let items = crate::briefings::try_unacknowledged(&pool, 10)
+            .await
+            .unwrap();
+        assert!(
+            items.iter().any(|b| b.summary.contains("no verdict line")),
+            "{items:#?}"
+        );
+
+        file_briefing(&pool, "sess-4", "Ship the card", 2, false).await;
+        let items = crate::briefings::try_unacknowledged(&pool, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            items
+                .iter()
+                .filter(|b| b.summary.contains("no verdict line"))
+                .count(),
+            1,
+            "a ruled report must not be flagged"
+        );
     }
 }

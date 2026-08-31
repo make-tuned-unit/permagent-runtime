@@ -20,6 +20,7 @@ pub mod deliver;
 pub mod due;
 pub mod membership;
 pub mod store;
+pub mod verdict;
 
 pub const ENABLED_KEY: &str = "council_enabled";
 pub const AGENT_ID: &str = "council";
@@ -275,7 +276,14 @@ pub async fn convene(
     let action_ids = deliver::file_actions(pool, &session_id, &report)
         .await
         .unwrap_or_default();
-    deliver::file_briefing(pool, &session_id, &report.headline, action_ids.len()).await;
+    deliver::file_briefing(
+        pool,
+        &session_id,
+        &report.headline,
+        action_ids.len(),
+        report.verdict_missing,
+    )
+    .await;
     deliver::emit_nudge(&report.headline, action_ids.len());
 
     Ok(Convened {
@@ -318,6 +326,10 @@ pub async fn format_report(
         session.chair_model.as_deref().unwrap_or("—"),
     );
     if let Some(r) = report {
+        // The ruling is re-read from the stored markdown, so an old report
+        // written before the marker convention reads back honestly as
+        // "NOT STATED" rather than as an implied approval.
+        out.push_str(&format!("{}\n", verdict::render_line(&r.markdown)));
         out.push_str(&format!("## {}\n\n{}\n\n", r.headline, r.markdown));
         if !r.consensus.is_empty() {
             out.push_str("### Consensus\n");
@@ -472,6 +484,74 @@ fn render_status(view: &StatusView) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn report_pool() -> Pool<Sqlite> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+        crate::session::spectral_schema::apply_council_schema(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    async fn stored_report(pool: &Pool<Sqlite>, markdown: &str) {
+        let id = store::insert_session(pool, store::Trigger::Weekly, None, &serde_json::json!({}))
+            .await
+            .unwrap();
+        store::insert_report(
+            pool,
+            store::NewReport {
+                session_id: &id,
+                headline: "Focus on Permagent",
+                markdown,
+                consensus: &[],
+                dissent: &[],
+                actions: &[],
+                chair_provider: Some("anthropic"),
+                chair_model: Some("m"),
+            },
+        )
+        .await
+        .unwrap();
+        store::finish_session(
+            pool,
+            &id,
+            store::SessionStatus::Complete,
+            Some("anthropic"),
+            Some("m"),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// The rendered report states the ruling, and states its absence just as
+    /// plainly — a report written before the marker convention must never read
+    /// back as an implied approval.
+    #[tokio::test]
+    async fn the_rendered_report_states_the_verdict_or_its_absence() {
+        let pool = report_pool().await;
+        stored_report(
+            &pool,
+            "# Report\n\nBody.\n\nVERDICT: ACT — file the homepage cards",
+        )
+        .await;
+        let out = format_report(&pool, None).await.unwrap();
+        assert!(
+            out.contains("Verdict: ACT — file the homepage cards"),
+            "{out}"
+        );
+
+        let pool = report_pool().await;
+        stored_report(&pool, "# Report\n\nBody with no ruling.").await;
+        let out = format_report(&pool, None).await.unwrap();
+        assert!(out.contains("Verdict: NOT STATED"), "{out}");
+    }
 
     #[test]
     fn disabled_by_default() {
