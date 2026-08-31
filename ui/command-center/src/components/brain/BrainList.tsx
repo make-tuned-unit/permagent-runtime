@@ -8,6 +8,7 @@ import { useTheme } from '../../styles/useTheme';
 // (brainMemoryFocus) so a memory reads the same in the list and when deep-linked.
 import { deriveMemoryTitle, MEMORY_STALE_AFTER_DAYS } from './brainMemoryFocus';
 import { AsOf } from '../common/AsOf';
+import { MEMORY_STRENGTH } from '../../lib/vocabulary';
 
 // ── Date formatting ──────────────────────────────────────────────────
 
@@ -370,7 +371,11 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
         display: 'flex', gap: 16, marginTop: 6,
         fontFamily: font.mono, fontSize: 10, color: colors.textDim,
       }}>
-        <span>signal {Math.round(memory.weight * 100)}%</span>
+        {/* The same field the graph panel shows. It used to say "signal" here
+            and "reinforcement" there — one number, one tab, two words. */}
+        <span title={MEMORY_STRENGTH.gloss} style={{ cursor: 'help' }}>
+          {MEMORY_STRENGTH.one} {Math.round(memory.weight * 100)}%
+        </span>
         {/* Read from the memory's own timestamp, never from `age`: that is a
             0..1 scene coordinate, clamped at 90 days, so every memory past the
             window shared one bucket and a three-year-old note read as merely

@@ -9,6 +9,7 @@ import { useBrainData, type GraphMemory, type GraphEntity } from './useBrainData
 import { BrainList } from './BrainList';
 import { resolveFocusedMemory, deriveMemoryTitle, formatMemoryAge } from './brainMemoryFocus';
 import { Chip } from '../common/Chip';
+import { MEMORY_STRENGTH } from '../../lib/vocabulary';
 import {
   resolveSearchGraphNode,
   searchResultToGraphMemory,
@@ -689,7 +690,16 @@ export function BrainView() {
                       ("3 days ago") from the same age bucket recency already
                       shows — the backend tracks no recall timestamp. */}
                   <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, borderTop: `1px solid ${colors.borderHi}`, paddingTop: 12 }}>
-                    <Stat label="reinforcement" value={`${Math.round(mem.weight * 100)}%`} />
+                    {/* One number, one word. This said "reinforcement" while
+                        the List view called the same field "signal" — same
+                        memory, same tab, two vocabularies and neither defined.
+                        The word and the gloss both come from the shared
+                        vocabulary now, so the two surfaces cannot drift. */}
+                    <Stat
+                      label={MEMORY_STRENGTH.one}
+                      value={`${Math.round(mem.weight * 100)}%`}
+                      title={MEMORY_STRENGTH.gloss}
+                    />
                     {(() => {
                       const age = formatMemoryAge(mem.timestamp);
                       return (
