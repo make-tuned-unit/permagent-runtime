@@ -5982,6 +5982,9 @@ pub async fn escalate_verify_fix_loop(
             crate::cost_router::extract_tool_signals(&[crate::cost_router::ToolTurn {
                 name: "verify",
                 result: verify_failure.unwrap_or(evidence),
+                // This path only fires after verify has failed identically
+                // `consecutive` times, so the outcome is known, not sniffed.
+                is_error: Some(true),
             }])
         } else {
             live
