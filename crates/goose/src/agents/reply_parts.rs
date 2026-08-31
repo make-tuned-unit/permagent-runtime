@@ -251,10 +251,20 @@ impl Agent {
         }
 
         // Prepare system prompt
-        let extensions_info = self
+        let worker_key = {
+            let pm = self.prompt_manager.lock().await;
+            pm.worker_key().map(str::to_owned)
+        };
+        let mut extensions_info = self
             .extension_manager
             .get_extensions_info(working_dir)
             .await;
+        for ext in &mut extensions_info {
+            if crate::public_apis::is_public_apis_extension(&ext.name) {
+                ext.instructions =
+                    crate::public_apis::instructions_for_agent(worker_key.as_deref());
+            }
+        }
 
         // The self-knowledge capability inventory is scoped to this list only
         // for a session that DECLARED an explicit extension set — recipe/CLI

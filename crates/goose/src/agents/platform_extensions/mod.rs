@@ -36,6 +36,7 @@ pub mod orchestrator;
 pub mod people;
 pub mod project_manager;
 pub mod pronunciation;
+pub mod public_apis;
 pub mod publish_sequence;
 pub mod recipe_author;
 pub mod retrospect;
@@ -848,6 +849,24 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(steward::StewardClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            public_apis::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: public_apis::EXTENSION_NAME,
+                display_name: "Data sources",
+                description:
+                    "Public APIs the user enabled under Settings → Data sources. public_api_list shows enabled sources (or, with catalog=true, one category at a time, with suggested agents). public_api_call GETs an enabled source. Enabling a source makes it callable immediately — suggested agents pick it up, and the Orchestrator can call every enabled source. Nothing is fetched until the user turns a source on",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "Turn on a public API and it starts flowing to the agents that can use it — the Orchestrator can call any enabled source without a restart.",
+                required_secrets: &[],
+                teaching: &[],
+                client_factory: |ctx| Box::new(public_apis::PublicApisClient::new(ctx).unwrap()),
             },
         );
 

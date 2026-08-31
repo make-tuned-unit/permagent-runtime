@@ -13,7 +13,9 @@ import {
 import { ProvidersSection } from './ProvidersSection';
 import { DevRootsSection } from './DevRootsSection';
 import { SearchToolsSection } from './SearchToolsSection';
+import { DataSourcesSection } from './DataSourcesSection';
 import { PolybotKeys } from '../finance/PolybotKeys';
+import { FundamentalsKey } from '../finance/FundamentalsKey';
 import { usePersona } from './useSettings';
 import { resolveSettingsSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
@@ -104,6 +106,7 @@ const CATEGORIES = [
     { key: 'keys',        label: 'API keys',         icon: 'M14 8a4 4 0 100 8 4 4 0 000-8zm0 4l-9 9m4-4l3 3' },
     { key: 'devices',    label: 'Devices',          icon: 'M17 2H7a2 2 0 00-2 2v16a2 2 0 002 2h10a2 2 0 002-2V4a2 2 0 00-2-2zM12 18h.01' },
     { key: 'search',      label: 'Search & tools',   icon: 'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z' },
+    { key: 'sources',     label: 'Data sources',     icon: 'M4 6h16M4 12h16M4 18h10' },
   ]},
   { group: 'System', items: [
     { key: 'appearance',  label: 'Appearance',       icon: 'M12 3a9 9 0 100 18 9 9 0 000-18zM12 3v18M3 12h18' },
@@ -1331,6 +1334,9 @@ function SearchPanel() {
       <Section title="Polybot" sub="Polymarket credentials. Off until you turn Polybot on from the Finance tab (risk disclaimer). Start reads these from the keychain.">
         <PolybotKeys />
       </Section>
+      <Section title="Fundamentals" sub="Optional financialdatasets.ai key. Quotes still work without it. Same field as the Finance tab.">
+        <FundamentalsKey />
+      </Section>
     </div>
   );
 }
@@ -1799,10 +1805,20 @@ function SpendPane() {
   );
 }
 
+function DataSourcesPanel() {
+  return (
+    <div>
+      <H1 sub="Public APIs you can turn on for agents. Browse a category at a time. Enabling a source makes it callable immediately — suggested agents get it, and the Orchestrator can call every enabled source.">Data sources</H1>
+      <DataSourcesSection />
+    </div>
+  );
+}
+
 const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
   agent: PersonaPanel, preferences: PreferencesPanel,
   memory: MemoryPanel, autonomy: AutonomyPanel, tools: ToolsPanel,
   models: ModelsPanel, keys: KeysPanel, devices: DevicesPanel, search: SearchPanel,
+  sources: DataSourcesPanel,
   appearance: AppearancePanel, shortcuts: ShortcutsPanel, data: DataPanel,
   sovereignty: SovereigntyPanel,
   sessions: SessionsPane, inbox: InboxPane, activity: ActivityPane, spend: SpendPane,

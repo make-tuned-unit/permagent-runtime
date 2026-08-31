@@ -9,7 +9,7 @@
 
 export const SETTINGS_SECTION_KEYS = [
   'agent', 'preferences', 'memory', 'autonomy', 'tools',
-  'models', 'keys', 'devices', 'search', 'appearance', 'shortcuts', 'data',
+  'models', 'keys', 'devices', 'search', 'sources', 'appearance', 'shortcuts', 'data',
   'sovereignty',
   // Console pages folded into Settings (2026-08 ruling): Sessions history,
   // Downloads inbox, the Execution trace ('activity'), and Spend.

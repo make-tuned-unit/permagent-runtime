@@ -16,6 +16,8 @@ import { ViewHeader } from '../common/ViewHeader';
 import { navigateToTool } from '../../lib/store';
 import { AGENT_TRIM } from '../world/shared/palette';
 import { PolybotKeys } from './PolybotKeys';
+import { FundamentalsKey } from './FundamentalsKey';
+import { sparklinePolyline, sparklineZeroY } from '../grow/growthTrend';
 import {
   PICKER_DISCLAIMER,
   PICKER_ENABLED_KEY,
@@ -23,8 +25,8 @@ import {
   PICKS_PREVIEW,
   POLYBOT_DISCLAIMER,
   POLYBOT_ENABLED_KEY,
-  formatUniverse,
   parseUniverse,
+  appendUniverse,
   pickIsApproved,
   sortPicks,
 } from './financeLabs';
@@ -133,6 +135,7 @@ interface HoldingsView {
   netUnrealized: number;
   netRealized: number;
   netPnl: number;
+  trend?: number[];
   rows: HoldingRow[];
 }
 
@@ -293,6 +296,8 @@ interface FinanceBoard {
   picker: PickerStatus;
   pickerEnabled?: boolean;
   pickerUniverse?: string[];
+  pickerUniverseCount?: number | null;
+  fundamentalsConfigured?: boolean;
   picks: ValidatedPick[];
   sellSignals: SellSignal[];
   rsiThreshold: number;
@@ -417,6 +422,8 @@ export function FinanceView() {
     polybotEnabled: board.polybotEnabled ?? optIn.polybot,
     pickerEnabled: board.pickerEnabled ?? optIn.picker,
     pickerUniverse: board.pickerUniverse ?? [],
+    pickerUniverseCount: board.pickerUniverseCount ?? null,
+    fundamentalsConfigured: board.fundamentalsConfigured ?? false,
   };
 
   const setLab = (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) =>
@@ -465,7 +472,7 @@ export function FinanceView() {
               mutate={mutate}
               setLab={setLab}
             />
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16, alignItems: 'start' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <HoldingsSection
                 holdings={view.holdings}
                 rsiThreshold={view.rsiThreshold}
@@ -477,24 +484,18 @@ export function FinanceView() {
                 setDraft={setDraft}
                 onRecorded={(hint) => { if (hint) setError(hint); }}
               />
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                {view.pickerEnabled && (
-                  <TomorrowSection pick={view.dailyPick ?? null} colors={colors} />
-                )}
-                <SellSignalsSection signals={view.sellSignals} threshold={view.rsiThreshold} colors={colors} />
-                {view.pickerEnabled && (
-                  <PicksSection
-                    board={view}
-                    colors={colors}
-                    onPrefill={(next) => {
-                      setDraft(next);
-                      requestAnimationFrame(() => {
-                        document.getElementById('finance-holdings-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                      });
-                    }}
-                  />
-                )}
-              </div>
+              {view.pickerEnabled && (
+                <PicksSection
+                  board={view}
+                  colors={colors}
+                  onPrefill={(next) => {
+                    setDraft(next);
+                    requestAnimationFrame(() => {
+                      document.getElementById('finance-holdings-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    });
+                  }}
+                />
+              )}
             </div>
             <HouseholdSection
               household={view.household}
@@ -553,11 +554,6 @@ function SummaryStrip({
               {p.paused ? ' · paused' : ''}
               {p.credentialsReady ? ' · keys in keychain' : ' · keys missing'}
             </div>
-            {p.detail && (
-              <p style={{ ...type.caption, color: p.stale ? colors.warning : colors.textMuted, margin: '8px 0 0' }}>
-                {p.detail}
-              </p>
-            )}
             <div style={{ marginTop: 10 }}>
               <PolybotControls polybot={p} colors={colors} busy={busy} mutate={mutate} setLab={setLab} />
             </div>
@@ -576,6 +572,7 @@ function SummaryStrip({
             <Mini colors={colors} label="Unrealized" value={fmtSigned(board.holdings.netUnrealized)} tone={toneFor(board.holdings.netUnrealized, colors)} />
             <Mini colors={colors} label="Realized" value={fmtSigned(board.holdings.netRealized)} tone={toneFor(board.holdings.netRealized, colors)} />
           </div>
+          <HoldingsSparkline values={board.holdings.trend ?? []} colors={colors} />
         </Card>
 
         {board.pickerEnabled && (
@@ -587,11 +584,14 @@ function SummaryStrip({
               tone={board.picker.reachable ? colors.success : colors.text}
             />
             <div style={{ ...type.caption, color: colors.textMuted, marginTop: 4 }}>
-              {(board.pickerUniverse?.length ?? 0)
-                ? `${board.pickerUniverse?.length} tickers you listed`
+              {(board.pickerUniverseCount ?? 0) > 0
+                ? `Picker universe · ${board.pickerUniverseCount?.toLocaleString()} names`
                 : board.picker.reachable
                   ? `${board.picker.results != null ? `${board.picker.results} ranked` : 'ready'}${board.picker.scanDate ? ` · ${board.picker.scanDate}` : ''}`
-                  : 'Add a ticker universe to rank your own names'}
+                  : 'Connected when the scanner is up'}
+              {(board.pickerUniverse?.length ?? 0) > 0
+                ? ` · ${board.pickerUniverse?.length} extra${board.pickerUniverse?.length === 1 ? '' : 's'} you added`
+                : ''}
             </div>
             <div style={{ marginTop: 10 }}>
               <PickerControls
@@ -615,6 +615,7 @@ function SummaryStrip({
           setLab={setLab}
         />
       )}
+      <FundamentalsKey compact onChanged={() => void mutate(async () => undefined)} />
     </div>
   );
 }
@@ -828,10 +829,11 @@ function PickerControls({
   mutate: (fn: () => Promise<unknown>) => Promise<void>;
   setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<void>;
 }) {
-  const [showUniverse, setShowUniverse] = useState(universe.length === 0);
-  const [draft, setDraft] = useState(formatUniverse(universe));
-  useEffect(() => { setDraft(formatUniverse(universe)); }, [universe]);
-  const parsed = parseUniverse(draft);
+  const [showAdd, setShowAdd] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const saveExtras = (next: string[]) =>
+    mutate(() => api.upsertConfig(PICKER_UNIVERSE_KEY, next.join('\n')));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -842,7 +844,7 @@ function PickerControls({
           onClick={() => void mutate(() =>
             apiFetch('/api/finance/picker/start', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
           )}
-          style={picker.reachable ? ghostBtn(colors) : ghostBtn(colors)}
+          style={ghostBtn(colors)}
         >
           {picker.reachable ? 'Scanner up' : 'Start scanner'}
         </button>
@@ -858,10 +860,10 @@ function PickerControls({
         </button>
         <button
           type="button"
-          onClick={() => setShowUniverse((v) => !v)}
+          onClick={() => setShowAdd((v) => !v)}
           style={ghostBtn(colors)}
         >
-          {showUniverse ? 'Hide universe' : 'Universe'}
+          {showAdd ? 'Hide add' : 'Add ticker'}
         </button>
         <button
           type="button"
@@ -872,28 +874,55 @@ function PickerControls({
           Turn off
         </button>
       </div>
-      {showUniverse && (
+      {universe.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} data-testid="picker-extras">
+          {universe.map((t) => (
+            <span
+              key={t}
+              style={{
+                ...type.micro,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                border: `1px solid ${colors.border}`,
+                borderRadius: radius.sm,
+                padding: '2px 6px',
+                fontFamily: font.mono,
+              }}
+            >
+              {t}
+              <button
+                type="button"
+                disabled={busy}
+                aria-label={`Remove ${t}`}
+                onClick={() => void saveExtras(universe.filter((x) => x !== t))}
+                style={{ ...ghostBtn(colors), padding: '0 4px', border: 'none' }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {showAdd && (
         <form
           data-testid="picker-universe"
           onSubmit={(e) => {
             e.preventDefault();
-            void mutate(() => api.upsertConfig(PICKER_UNIVERSE_KEY, draft));
+            const next = appendUniverse(universe, draft);
+            void saveExtras(next).then(() => setDraft(''));
           }}
-          style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
+          style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}
         >
-          <textarea
+          <input
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder="AAPL, SHOP.TO, names you want ranked — one idea per line"
-            rows={4}
-            style={{ ...inputStyle(colors), minWidth: 0, resize: 'vertical', fontFamily: font.mono, fontSize: 12 }}
+            placeholder="AAPL, SHOP.TO — added to your universe"
+            style={{ ...inputStyle(colors), flex: 1, minWidth: 140 }}
           />
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button type="submit" disabled={busy} style={primaryBtn(colors)}>Save universe</button>
-            <span style={{ ...type.caption, color: colors.textMuted }}>
-              {parsed.length} ticker{parsed.length === 1 ? '' : 's'}
-            </span>
-          </div>
+          <button type="submit" disabled={busy || parseUniverse(draft).length === 0} style={primaryBtn(colors)}>
+            Add
+          </button>
         </form>
       )}
     </div>
@@ -1039,7 +1068,8 @@ function HoldingsSection({
               All ({holdings.rows.length})
             </button>
           </div>
-          <table style={tableStyle()}>
+          <div style={{ overflowX: 'auto', minWidth: 0 }}>
+          <table style={{ ...tableStyle(), tableLayout: 'fixed' }}>
             <thead>
               <tr>
                 <th style={th(colors)}>Symbol</th>
@@ -1096,6 +1126,7 @@ function HoldingsSection({
               })}
             </tbody>
           </table>
+          </div>
         </>
       )}
     </Card>
@@ -1123,8 +1154,8 @@ function LotActions({
     : `/api/finance/positions/${encodeURIComponent(row.id)}`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
-      <div style={{ display: 'flex', gap: 6 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end', minWidth: 0 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
         <button type="button" disabled={busy} onClick={onEdit} style={ghostBtn(colors)}>Edit</button>
         {!row.exitDate && (
           <button type="button" disabled={busy} onClick={() => setClosing((c) => !c)} style={ghostBtn(colors)}>
@@ -1163,82 +1194,6 @@ function LotActions({
   );
 }
 
-function TomorrowSection({
-  pick, colors,
-}: {
-  pick: DailyPick | null;
-  colors: ThemeColors;
-}) {
-  const ticker = pick?.ticker?.trim() || null;
-  return (
-    <Card colors={colors} testId="finance-financier-card">
-      <SectionTitle colors={colors}>Financier</SectionTitle>
-      <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 8px' }}>
-        Close scan · one name flagged for you to review, or none. A hypothesis,
-        not an order.
-      </p>
-      {!pick && (
-        <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>
-          No close judgment yet. Runs on trading days after the scan.
-        </p>
-      )}
-      {pick && !ticker && (
-        <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>{pick.why}</p>
-      )}
-      {pick && ticker && (
-        <article>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
-            <strong style={{ ...type.heading }}>{ticker}</strong>
-            <span
-              data-testid="financier-approved"
-              style={{ ...type.micro, color: AGENT_TRIM.financier, fontWeight: 600 }}
-            >
-              Approved for review
-            </span>
-            {pick.companyName && (
-              <span style={{ ...type.caption, color: colors.textMuted }}>{pick.companyName}</span>
-            )}
-            <span style={{ ...type.micro, color: colors.textMuted }}>{pick.day}</span>
-          </div>
-          <p style={{ ...type.small, color: colors.text, margin: '8px 0 0' }}>{pick.why}</p>
-        </article>
-      )}
-    </Card>
-  );
-}
-
-function SellSignalsSection({
-  signals, threshold, colors,
-}: {
-  signals: SellSignal[];
-  threshold: number;
-  colors: ThemeColors;
-}) {
-  return (
-    <Card colors={colors} warn={signals.length > 0}>
-      <SectionTitle colors={colors}>Overbought</SectionTitle>
-      <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 8px' }}>
-        Open lots · RSI-14 ≥ {threshold} or two heat signs. The Watcher notifies
-        when a lot you hold looks hot. A signal, not an order.
-      </p>
-      {signals.length === 0 ? (
-        <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>None right now.</p>
-      ) : (
-        <ul style={{ margin: 0, paddingLeft: 16 }}>
-          {signals.map((a) => (
-            <li key={a.symbol} style={{ ...type.small, color: colors.danger, marginBottom: 8 }}>
-              <div>{a.summary}</div>
-              {a.signs.length > 0 && (
-                <div style={{ ...type.caption, color: colors.textMuted }}>{a.signs.join(' · ')}</div>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </Card>
-  );
-}
-
 function PicksSection({
   board, colors, onPrefill,
 }: {
@@ -1261,13 +1216,12 @@ function PicksSection({
         </button>
       </div>
       <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 10px' }}>
-        Your universe, Yahoo + loop gate. Gold means the Financier flagged it
-        for review.
+        Your universe, Yahoo + loop gate. Gold means the Financier approved it.
       </p>
       {ranked.length === 0 ? (
         <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>
-          {(board.pickerUniverse?.length ?? 0) === 0
-            ? 'Add tickers to your universe, then run a scan.'
+          {(board.pickerUniverse?.length ?? 0) === 0 && !(board.pickerUniverseCount)
+            ? 'Add tickers, or run a scan on the Picker universe.'
             : 'No picks this cycle.'}
         </p>
       ) : (
@@ -1344,8 +1298,20 @@ function PickRow({
           )}
         </button>
         {approved && (
-          <span data-testid="pick-financier-badge" style={{ ...type.micro, color: AGENT_TRIM.financier, fontWeight: 600 }}>
-            Financier · review
+          <span
+            data-testid="pick-financier-badge"
+            style={{
+              ...type.micro,
+              color: '#3d2e0a',
+              background: AGENT_TRIM.financier,
+              fontWeight: 700,
+              letterSpacing: '0.04em',
+              textTransform: 'uppercase',
+              padding: '2px 7px',
+              borderRadius: 999,
+            }}
+          >
+            Agent approved
           </span>
         )}
         {loop && (
@@ -1683,6 +1649,60 @@ function NotesSection({
   );
 }
 
+function HoldingsSparkline({ values, colors }: { values: number[]; colors: ThemeColors }) {
+  if (values.length < 2) return null;
+  const W = 240;
+  const H = 40;
+  const poly = sparklinePolyline(values, W, H);
+  const zeroY = sparklineZeroY(values, H);
+  const n = values.length;
+  let sumX = 0;
+  let sumY = 0;
+  let sumXY = 0;
+  let sumXX = 0;
+  values.forEach((y, i) => {
+    sumX += i;
+    sumY += y;
+    sumXY += i * y;
+    sumXX += i * i;
+  });
+  const denom = n * sumXX - sumX * sumX || 1;
+  const slope = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+  const fitted = values.map((_, i) => intercept + slope * i);
+  const min = Math.min(0, ...values);
+  const max = Math.max(0, ...values);
+  const span = max - min || 1;
+  const pad = 2;
+  const innerW = Math.max(1, W - pad * 2);
+  const innerH = Math.max(1, H - pad * 2);
+  const yOf = (v: number) => pad + innerH - ((v - min) / span) * innerH;
+  const x0 = pad;
+  const x1 = pad + innerW;
+  const trend = `${x0.toFixed(1)},${yOf(fitted[0]).toFixed(1)} ${x1.toFixed(1)},${yOf(fitted[n - 1]).toFixed(1)}`;
+
+  return (
+    <svg
+      data-testid="holdings-sparkline"
+      viewBox={`0 0 ${W} ${H}`}
+      preserveAspectRatio="none"
+      width="100%"
+      height={40}
+      role="img"
+      aria-label="Holdings net P&L trend"
+      style={{ marginTop: 10, display: 'block' }}
+    >
+      {zeroY != null && (
+        <line x1={0} x2={W} y1={zeroY} y2={zeroY} stroke={colors.border} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+      )}
+      {poly && (
+        <polyline points={poly} fill="none" stroke={colors.success} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      )}
+      <polyline points={trend} fill="none" stroke={AGENT_TRIM.financier} strokeWidth={1.25} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
 function Card({
   children, colors, warn, testId,
 }: {
@@ -1701,6 +1721,8 @@ function Card({
         border: `1px solid ${warn ? warnFill(colors.warning, 0.45) : colors.border}`,
         borderRadius: 10,
         padding: '14px 16px',
+        overflow: 'hidden',
+        minWidth: 0,
       }}
     >
       {children}

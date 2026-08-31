@@ -2875,6 +2875,11 @@ impl Agent {
         prompt_manager.set_persona_block_override(block, display_name);
     }
 
+    pub async fn set_worker_key(&self, key: Option<String>) {
+        let mut prompt_manager = self.prompt_manager.lock().await;
+        prompt_manager.set_worker_key(key);
+    }
+
     pub async fn update_provider(
         &self,
         provider: Arc<dyn Provider>,

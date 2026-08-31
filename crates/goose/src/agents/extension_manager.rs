@@ -132,6 +132,13 @@ impl Extension {
     }
 
     fn get_instructions(&self) -> Option<String> {
+        // Enabled data sources change when the user toggles Settings → Data
+        // sources. Read them live so a session started before the toggle still
+        // sees the current list. reply_parts then scopes this to the answering
+        // agent (Orchestrator = all; specialists = their suggested sources).
+        if self.config.key() == crate::agents::platform_extensions::public_apis::EXTENSION_NAME {
+            return Some(crate::public_apis::instructions_for_agent(None));
+        }
         self.server_info
             .as_ref()
             .and_then(|info| info.instructions.clone())

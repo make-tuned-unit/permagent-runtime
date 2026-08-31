@@ -4,6 +4,7 @@ import {
   PICKER_DISCLAIMER,
   POLYBOT_DISCLAIMER,
   parseUniverse,
+  appendUniverse,
   pickIsApproved,
   requiredKeysSet,
   sortPicks,
@@ -25,6 +26,10 @@ describe('parseUniverse', () => {
   it('caps the dump', () => {
     const raw = Array.from({ length: MAX_UNIVERSE + 10 }, (_, i) => `T${i}`).join(',');
     expect(parseUniverse(raw)).toHaveLength(MAX_UNIVERSE);
+  });
+
+  it('appends without replacing or duplicating', () => {
+    expect(appendUniverse(['AAPL'], 'shop.to aapl MSFT')).toEqual(['AAPL', 'SHOP.TO', 'MSFT']);
   });
 });
 

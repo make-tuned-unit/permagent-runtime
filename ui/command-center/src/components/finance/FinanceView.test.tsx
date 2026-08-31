@@ -53,7 +53,7 @@ function board(over: Record<string, unknown> = {}) {
     },
     polybotEnabled: false,
     holdings: {
-      source: 'ledger', openCount: 0, netUnrealized: 0, netRealized: 0, netPnl: 0, rows: [],
+      source: 'ledger', openCount: 0, netUnrealized: 0, netRealized: 0, netPnl: 0, trend: [], rows: [],
     },
     watchlist: [],
     notes: [],
@@ -138,9 +138,24 @@ it('shows a Financier review badge on the approved pick and previews six rows', 
   await flush();
   const rows = container.querySelectorAll('[data-testid="pick-row"]');
   expect(rows.length).toBe(6);
-  expect(container.querySelector('[data-testid="pick-financier-badge"]')?.textContent).toMatch(/Financier/);
-  expect(container.querySelector('[data-testid="financier-approved"]')?.textContent).toMatch(/Approved for review/);
+  expect(container.querySelector('[data-testid="pick-financier-badge"]')?.textContent).toMatch(/Agent approved/);
+  expect(container.querySelector('[data-testid="financier-approved"]')).toBeNull();
+  expect(container.querySelector('[data-testid="finance-financier-card"]')).toBeNull();
   expect((rows[0] as HTMLElement).getAttribute('data-approved')).toBe('true');
   expect(rows[0].textContent).toMatch(/NAK/);
   expect(container.textContent).toMatch(/Show 2 more/);
+});
+
+it('draws a holdings sparkline when a trend series is present', async () => {
+  apiFetch.mockResolvedValue(board({
+    holdings: {
+      source: 'ledger', openCount: 1, netUnrealized: 10, netRealized: 0, netPnl: 10,
+      trend: [1, 2, 4, 3],
+      rows: [],
+    },
+  }));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+  expect(container.querySelector('[data-testid="holdings-sparkline"]')).toBeTruthy();
+  expect(container.querySelector('[data-testid="fundamentals-key"]')).toBeTruthy();
 });
