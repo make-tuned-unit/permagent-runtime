@@ -738,13 +738,21 @@ pub(crate) async fn select_worker_fn(
 /// project was never indexed. The slicing itself lives in [`super::code_map`],
 /// shared with the analyze extension's `map_query` tool so the two views of a
 /// stored map cannot drift.
-async fn code_map_instructions_block(project_id: &str, goal_text: &str) -> Option<String> {
+/// Returns the block AND the map's provenance (`created_at` on the Brain row),
+/// because the caller owes the worker both: an index is only true as of when it
+/// was written, and a map with no date attached reads as current. The date
+/// feeds the assumptions ledger (`dispatch_brief::Assumption`).
+async fn code_map_instructions_block(
+    project_id: &str,
+    goal_text: &str,
+) -> Option<(String, Option<String>)> {
     let brain = super::get_global_brain()?;
     let mem = brain
         .get_memory_by_key(&format!("code:{project_id}:map"))
         .await
         .ok()??;
-    super::code_map::format_code_map_block(&mem.content, goal_text)
+    let block = super::code_map::format_code_map_block(&mem.content, goal_text)?;
+    Some((block, mem.created_at.clone()))
 }
 
 /// Pin dispatch to a NAMED roster worker, bypassing cost ranking.
@@ -1151,11 +1159,20 @@ pub(crate) async fn dispatch_goal_fn(
     // larger than the exploration it replaces, so oversized maps are cut at
     // a line boundary and say so. Best-effort — an absent Brain or unindexed
     // project changes nothing.
-    if let Some(block) =
+    let mut assumptions: Vec<super::dispatch_brief::Assumption> = Vec::new();
+    if let Some((block, generated_at)) =
         code_map_instructions_block(&project.id, &format!("{} {}", card.title, card.description))
             .await
     {
         instructions = format!("{instructions}\n\n{block}");
+        // The map is the one memory-derived claim in a normal brief: it was
+        // written by an `index-code` run at some past moment and nothing
+        // revalidates it at dispatch. It goes in the ledger with its date.
+        assumptions.push(super::dispatch_brief::Assumption {
+            claim: "the codebase map above still describes the tree".to_string(),
+            source: format!("Brain memory 'code:{}:map'", project.id),
+            dated: generated_at,
+        });
     }
 
     // Project context digest (a3's B2): sibling-goal status + the project's
@@ -1179,6 +1196,14 @@ pub(crate) async fn dispatch_goal_fn(
     instructions =
         super::dispatch_brief::with_retry_context_hydrated(&pool, instructions, &card, &project)
             .await;
+
+    // Assumptions ledger, LAST so it can honestly speak about the whole brief:
+    // "everything else here is confirmed". Without it, a Brain-recalled claim
+    // arrives in the same voice as a verified instruction — the shape
+    // `retrospect`'s module doc records as costing −9.2pp, because the worker
+    // obeys a stale fact instead of noticing it is stale. Absent entirely when
+    // nothing in the brief was recalled.
+    instructions = super::dispatch_brief::with_assumptions(instructions, &assumptions);
 
     // Working dir + baseline commit at dispatch time (recorded beside
     // dispatched_at so a commit-producing worker's changes can be diffed
