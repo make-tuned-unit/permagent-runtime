@@ -28,6 +28,16 @@
  * over the `:hover` rule and would silently kill the hover state again:
  * `--pa-btn-bg`, `-fg`, `-border`, their `-hover` counterparts (`-fg-hover`
  * included), `-bg-active`, `-pad`, `-radius`, `-weight`, `-success`.
+ *
+ * There is deliberately no `--pa-btn-shadow`. Fourteen call sites put a
+ * `boxShadow` in their style object and thirteen of them are correct as they
+ * are: the shadow is driven by React state the CSS cannot see (`open`,
+ * `active`, `focusLens === l`, a `working` status), so an inline declaration is
+ * the right tool and nothing is being lost. Only one — `wizard/atoms.tsx`'s
+ * `PrimaryButton` — wants a shadow that changes on :hover, and it keeps a
+ * hover flag for exactly that, documented in place. One call site is not a
+ * custom property; if a second one appears, add `--pa-btn-shadow` next to
+ * `--pa-btn-bg-hover` in `.pa-btn` and retire both hover flags together.
  */
 
 import { forwardRef, useCallback, useEffect, useRef, useState } from 'react';

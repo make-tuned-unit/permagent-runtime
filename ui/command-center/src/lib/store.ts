@@ -230,7 +230,8 @@ interface CommandCenterStore {
   providersError: boolean;
   currentModel: string | null;
   loadProviders: () => Promise<void>;
-  setDefaultProvider: (name: string, model: string) => Promise<void>;
+  /** Resolves `false` when the provider was not switched — see `deleteSkill`. */
+  setDefaultProvider: (name: string, model: string) => Promise<boolean>;
 
   // --- Operational state ---
   events: EventRecord[];
@@ -409,7 +410,8 @@ interface CommandCenterStore {
   saveSkillProposal: () => Promise<boolean>;
   dismissSkillProposal: () => void;
   loadProposals: () => Promise<void>;
-  saveProposal: (proposal: SkillProposal) => Promise<void>;
+  /** Resolves `false` when the skill was not created — see `deleteSkill`. */
+  saveProposal: (proposal: SkillProposal) => Promise<boolean>;
   dismissProposal: (argumentShapeHash: string) => void;
 
   // --- Sessions state ---
@@ -957,8 +959,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       await api.setProvider(name, model);
       set({ currentModel: model });
       await get().loadProviders();
+      return true;
     } catch (e) {
+      // A swallowed error here used to resolve like a success, so "Set as
+      // default" ticked and the picker closed on a model the daemon never
+      // took. The caller renders the failure.
       console.error('Failed to set default provider:', e);
+      return false;
     }
   },
 
@@ -1480,8 +1487,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       }
       get().loadSkills();
       get().loadProposals();
+      return true;
     } catch (e) {
+      // A swallowed error here used to resolve like a success, leaving the
+      // proposal card on screen with no explanation. The caller renders the
+      // failure; resolving `false` also keeps the tick off it.
       console.error('Failed to save proposal:', e);
+      return false;
     }
   },
   dismissProposal: (argumentShapeHash: string) => {

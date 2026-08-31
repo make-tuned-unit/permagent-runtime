@@ -38,6 +38,10 @@ export function ModelPicker() {
   const setDefaultProvider = useCommandCenter(s => s.setDefaultProvider);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  /** The model the daemon refused. `setDefaultProvider` used to swallow the
+   *  error, so the menu closed and the label stayed on the old model with
+   *  nothing on screen saying the switch had not happened. */
+  const [switchError, setSwitchError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   // Keep retrying while empty: opening chat during daemon boot left the
@@ -69,7 +73,9 @@ export function ModelPicker() {
 
   const handleSelect = async (providerName: string, model: string) => {
     setOpen(false);
-    await setDefaultProvider(providerName, model);
+    setSwitchError(null);
+    const ok = await setDefaultProvider(providerName, model);
+    if (!ok) setSwitchError(model);
   };
 
   return (
@@ -93,6 +99,16 @@ export function ModelPicker() {
         <span className="truncate max-w-[160px] inline-block align-middle">{displayModel}</span>
         <FiChevronDown size={10} className={`ml-1 inline-block align-middle transition ${open ? 'rotate-180' : ''}`} />
       </Button>
+
+      {switchError && !open && (
+        <div
+          role="alert"
+          className="absolute right-0 top-full mt-1 z-40 w-56 px-2 py-1 text-right"
+          style={{ fontFamily: font.body, fontSize: 10, color: colors.danger }}
+        >
+          Still on {displayModel} — couldn't switch to {switchError}.
+        </div>
+      )}
 
       {open && (
         <div

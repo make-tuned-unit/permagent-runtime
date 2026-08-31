@@ -349,6 +349,9 @@ export function AutomateView() {
   const [runsLoading, setRunsLoading] = useState(true);
   const [runsError, setRunsError] = useState<string | null>(null);
   const [actionStates, setActionStates] = useState<Record<string, 'loading' | 'success'>>({});
+  /** Hash of the proposal whose save failed. `saveProposal` used to swallow its
+   *  error and resolve like a success, so the card just sat there. */
+  const [proposalError, setProposalError] = useState<string | null>(null);
   const [detail, setDetail] = useState<DetailTarget | null>(null);
   const [search, setSearch] = useState('');
   const [showSearch, setShowSearch] = useState(false);
@@ -935,17 +938,20 @@ export function AutomateView() {
                   <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>
                     Seen {proposal.occurrence_count} time{proposal.occurrence_count !== 1 ? 's' : ''} using {proposal.tool_used}
                   </div>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    {/* No tick: `saveProposal` (lib/store.ts) swallows its own
-                        failure and resolves either way, so a tick here would
-                        claim a save that may not have happened. The spinner is
-                        still honest — it tracks the round trip — and a save
-                        that lands takes the card with it. */}
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    {/* `saveProposal` now resolves `false` on failure, so the
+                        tick is honest: it appears only for a skill the daemon
+                        actually created, and a rejected save says so below
+                        instead of leaving the card sitting there unexplained. */}
                     <Button
                       colors={colors}
                       variant="primary"
-                      onClick={() => saveProposal(proposal)}
-                      flashSuccess={false}
+                      onClick={async () => {
+                        setProposalError(null);
+                        const ok = await saveProposal(proposal);
+                        if (!ok) setProposalError(proposal.argument_shape_hash);
+                        return ok;
+                      }}
                       style={PRIMARY_ACTION_VARS}
                     >Save</Button>
                     <Button
@@ -953,6 +959,11 @@ export function AutomateView() {
                       onClick={() => dismissProposal(proposal.argument_shape_hash)}
                       style={actionVars(colors)}
                     >Dismiss</Button>
+                    {proposalError === proposal.argument_shape_hash && (
+                      <span style={{ fontSize: 11, color: colors.danger }}>
+                        Couldn't save this skill. The daemon may be down.
+                      </span>
+                    )}
                   </div>
                 </div>
               ))}

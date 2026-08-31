@@ -208,7 +208,14 @@ export function ConfigureProviderModal({
     try {
       await persistSource();
       if (!usesManager) await persistKey();
-      if (setAsDefault) await setDefaultProvider(provider.name, selectedModel);
+      // `setDefaultProvider` reports failure by resolving `false` rather than
+      // throwing, so it needs its own check — the key saved, but the model the
+      // user picked is not the one the daemon will use.
+      if (setAsDefault && !await setDefaultProvider(provider.name, selectedModel)) {
+        setError('Saved the key, but couldn\'t make this the default model.');
+        setSaving(false);
+        return false;
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to save');
       setSaving(false);

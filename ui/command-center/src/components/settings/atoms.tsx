@@ -194,7 +194,11 @@ export function SaveButton({ onClick, disabled, saving }: {
       pending={saving}
       style={{
         '--pa-btn-bg': disabled ? colors.cyanSoft : colors.cyan,
-        '--pa-btn-fg': disabled ? colors.textDim : colors.textOnAccent,
+        // `textOnCyan`, not `textOnAccent`: the fill here is flat `colors.cyan`,
+        // and the token's own rule is that white on flat cyan fails contrast
+        // (and inverts to near-white on the silver theme). This is the same
+        // colour `variant="primary"` already sets — the override was undoing it.
+        '--pa-btn-fg': disabled ? colors.textDim : colors.textOnCyan,
         '--pa-btn-bg-hover': disabled ? colors.cyanSoft : colors.cyan,
         '--pa-btn-bg-active': disabled ? colors.cyanSoft : colors.cyan,
         '--pa-btn-pad': '8px 20px',

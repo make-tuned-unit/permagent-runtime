@@ -28,6 +28,9 @@ export function ProvidersSection() {
   /** Which card is asking "Remove …?" in place, and what it says if that fails. */
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [removeError, setRemoveError] = useState<{ name: string; message: string } | null>(null);
+  /** Which card's "Set as default" failed. The store used to swallow that
+   *  error, so the button ticked and the Default badge simply never moved. */
+  const [defaultError, setDefaultError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<ProviderTab | null>(null);
   const [secretSources, setSecretSources] = useState<SecretSourcesResponse | undefined>();
@@ -304,7 +307,12 @@ export function ProvidersSection() {
                 colors={colors}
                 variant="ghostOn"
                 type="button"
-                onClick={() => setDefaultProvider(p.name, p.defaultModel)}
+                onClick={async () => {
+                  setDefaultError(null);
+                  const ok = await setDefaultProvider(p.name, p.defaultModel);
+                  if (!ok) setDefaultError(p.name);
+                  return ok;
+                }}
                 style={{
                   '--pa-btn-border': `${colors.cyan}4D`,
                   '--pa-btn-border-hover': `${colors.cyan}4D`,
@@ -393,6 +401,12 @@ export function ProvidersSection() {
           {removeError?.name === p.name && (
             <div role="alert" className="text-[11px] mt-2" style={{ fontFamily: font.body, color: colors.danger }}>
               Couldn't remove {p.displayName} — {removeError.message}
+            </div>
+          )}
+          {defaultError === p.name && (
+            <div role="alert" className="text-[11px] mt-2" style={{ fontFamily: font.body, color: colors.danger }}>
+              Couldn't make {p.displayName} the default — the daemon didn't take
+              the change. The provider below the badge is still the one in use.
             </div>
           )}
 
