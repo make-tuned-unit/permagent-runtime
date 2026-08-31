@@ -223,6 +223,7 @@ export function PersonDetailModal({
   const [relatedStatus, setRelatedStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [activityStatus, setActivityStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [meetingsStatus, setMeetingsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [projectsStatus, setProjectsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [addingRelationship, setAddingRelationship] = useState(false);
   const [addingMeeting, setAddingMeeting] = useState(false);
   const [meetingTitle, setMeetingTitle] = useState('');
@@ -239,6 +240,7 @@ export function PersonDetailModal({
   const relationshipsGeneration = useRef(0);
   const activityGeneration = useRef(0);
   const meetingsGeneration = useRef(0);
+  const projectsGeneration = useRef(0);
 
   const loadRelationships = useCallback(async () => {
     const generation = ++relationshipsGeneration.current;
@@ -286,11 +288,29 @@ export function PersonDetailModal({
     }
   }, [view.entity_uuid]);
 
+  /**
+   * The fourth loader in this modal, and until now the only untracked one: a
+   * failure emptied the list and said nothing, which mattered more here than
+   * it looks. `personProjects.length` is one of the two counts the delete
+   * confirmation quotes back — "this deletes N project links" — and that
+   * sentence exists specifically so the numbers in it are real. A silently
+   * emptied list turned it into "0 project links", which is a claim, not a
+   * blank. Same shape as its three siblings, for the same reason.
+   */
   const loadProjects = useCallback(async () => {
+    const generation = ++projectsGeneration.current;
+    setProjectsStatus('loading');
     try {
       const rows = await apiFetch<PersonProject[]>(`/api/people/${encodeURIComponent(view.entity_uuid)}/projects`);
-      if (Array.isArray(rows)) setPersonProjects(rows);
-    } catch { setPersonProjects([]); }
+      if (generation !== projectsGeneration.current) return;
+      if (!Array.isArray(rows)) throw new Error('Invalid projects response');
+      setPersonProjects(rows);
+      setProjectsStatus('ready');
+    } catch {
+      // The last good list stays on screen; what changes is that the surface
+      // stops claiming it is current.
+      if (generation === projectsGeneration.current) setProjectsStatus('error');
+    }
   }, [view.entity_uuid]);
 
   useEffect(() => { loadRelationships(); loadActivity(); loadMeetings(); loadProjects(); }, [loadRelationships, loadActivity, loadMeetings, loadProjects]);
@@ -611,7 +631,7 @@ export function PersonDetailModal({
                 colors={colors}
                 name={view.display_name}
                 meetingsCount={meetings.length}
-                projectsCount={personProjects.length}
+                projectsCount={projectsStatus === 'error' ? null : personProjects.length}
                 deleting={deleting}
                 error={deleteError}
                 onCancel={() => { setDeleteStep(0); setDeleteError(null); }}
@@ -732,7 +752,9 @@ function DeleteWarningCard({ colors, name, meetingsCount, projectsCount, deletin
   colors: ReturnType<typeof useTheme>['colors'];
   name: string;
   meetingsCount: number;
-  projectsCount: number;
+  /** `null` when the project list failed to load — the count is unknown, and
+   *  a confirmation that quotes numbers back may not round unknown down to 0. */
+  projectsCount: number | null;
   deleting: boolean;
   error: string | null;
   onCancel: () => void;
@@ -747,8 +769,12 @@ function DeleteWarningCard({ colors, name, meetingsCount, projectsCount, deletin
       <div style={{ fontSize: 12, color: colors.text, fontWeight: 600 }}>
         Delete {name}? This can't be undone.
       </div>
-      <div style={{ fontSize: 11, color: colors.textMuted }}>
-        This deletes {meetingsCount} logged meeting{meetingsCount === 1 ? '' : 's'} and {projectsCount} project link{projectsCount === 1 ? '' : 's'} for {name}.
+      <div style={{ fontSize: 11, color: colors.textMuted }} data-testid="delete-warning-counts">
+        This deletes {meetingsCount} logged meeting{meetingsCount === 1 ? '' : 's'} and{' '}
+        {projectsCount == null
+          ? "an unknown number of project links — that list didn't load"
+          : `${projectsCount} project link${projectsCount === 1 ? '' : 's'}`}
+        {' '}for {name}.
       </div>
       {error && <div style={{ fontSize: 11, color: colors.danger }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8 }}>
