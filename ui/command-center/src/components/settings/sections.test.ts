@@ -38,4 +38,8 @@ describe('resolveSettingsSection', () => {
       expect(resolveSettingsSection(key)).toBe(key);
     }
   });
+
+  it('lands Settings → Data sources on the sources pane', () => {
+    expect(resolveSettingsSection('sources')).toBe('sources');
+  });
 });

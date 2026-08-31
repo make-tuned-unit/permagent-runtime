@@ -9,6 +9,7 @@
 export const POLYBOT_ENABLED_KEY = 'polybot_enabled';
 export const PICKER_ENABLED_KEY = 'picker_enabled';
 export const PICKER_UNIVERSE_KEY = 'picker_universe';
+export const FUNDAMENTALS_KEY = 'FINANCIAL_DATASETS_API_KEY';
 
 /** How many pick rows show before "Show the rest". Tall cards were the problem. */
 export const PICKS_PREVIEW = 6;
@@ -46,6 +47,17 @@ function isTicker(s: string): boolean {
 
 export function formatUniverse(tickers: string[]): string {
   return tickers.join('\n');
+}
+
+/** Append pasted tokens onto an existing extras list. Caps at MAX_UNIVERSE. */
+export function appendUniverse(existing: string[], raw: string): string[] {
+  const next = [...existing];
+  for (const t of parseUniverse(raw)) {
+    if (next.includes(t)) continue;
+    next.push(t);
+    if (next.length >= MAX_UNIVERSE) break;
+  }
+  return next;
 }
 
 export function pickIsApproved(ticker: string, approved: string | null | undefined): boolean {

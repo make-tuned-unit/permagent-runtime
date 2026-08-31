@@ -130,6 +130,35 @@ fn fundamentals_key() -> Option<String> {
     })
 }
 
+/// Presence only — the value never leaves this module.
+pub fn fundamentals_configured() -> bool {
+    fundamentals_key().is_some()
+}
+
+/// Right-align per-lot close series and sum `(close − entry) × shares`.
+/// Empty or a single point is not a trend; callers omit the chart.
+pub fn net_unrealized_trend(lots: &[(Vec<f64>, f64, f64)]) -> Vec<f64> {
+    let n = lots.iter().map(|(c, _, _)| c.len()).min().unwrap_or(0);
+    if n < 2 {
+        return Vec::new();
+    }
+    let mut out = vec![0.0; n];
+    for (closes, entry, shares) in lots {
+        let skip = closes.len() - n;
+        for (i, px) in closes.iter().skip(skip).enumerate() {
+            out[i] += (px - entry) * shares;
+        }
+    }
+    const MAX_POINTS: usize = 60;
+    if out.len() <= MAX_POINTS {
+        return out;
+    }
+    let step = out.len() as f64 / MAX_POINTS as f64;
+    (0..MAX_POINTS)
+        .map(|i| out[(i as f64 * step).floor() as usize])
+        .collect()
+}
+
 pub async fn fundamentals(
     symbol: &str,
     period: &str,
@@ -760,5 +789,21 @@ mod tests {
             "chart": { "result": [{ "indicators": { "quote": [{ "close": closes }]}}]}
         });
         assert_eq!(parse_closes(&fat).unwrap().len(), 20);
+    }
+
+    #[test]
+    fn net_unrealized_trend_right_aligns_and_sums_lots() {
+        let a = vec![10.0, 11.0, 12.0, 13.0];
+        let b = vec![20.0, 22.0]; // shorter — right-aligned onto last two of a
+        let trend = net_unrealized_trend(&[(a, 10.0, 1.0), (b, 20.0, 2.0)]);
+        // last two of A: (12-10)*1=2, (13-10)*1=3
+        // B: (20-20)*2=0, (22-20)*2=4
+        assert_eq!(trend, vec![2.0, 7.0]);
+    }
+
+    #[test]
+    fn net_unrealized_trend_needs_two_points() {
+        assert!(net_unrealized_trend(&[(vec![10.0], 10.0, 1.0)]).is_empty());
+        assert!(net_unrealized_trend(&[]).is_empty());
     }
 }

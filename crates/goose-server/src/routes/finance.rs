@@ -23,7 +23,7 @@ use permagent::pick_loop::{self, LoopGate};
 use permagent::picker::{self, TradeEntry, TradeRow};
 use permagent::polybot;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Plain-text `(StatusCode, String)` became "Unknown error" in the tab —
@@ -193,6 +193,9 @@ struct HoldingsView {
     net_unrealized: f64,
     net_realized: f64,
     net_pnl: f64,
+    /// Daily net unrealized of open lots, oldest → newest. Empty when we
+    /// do not have two closes to draw.
+    trend: Vec<f64>,
     rows: Vec<HoldingRow>,
 }
 
@@ -254,6 +257,8 @@ struct FinanceBoard {
     picker: PickerView,
     picker_enabled: bool,
     picker_universe: Vec<String>,
+    picker_universe_count: Option<u64>,
+    fundamentals_configured: bool,
     picks: Vec<ValidatedPick>,
     sell_signals: Vec<SellSignal>,
     rsi_threshold: f64,
@@ -325,7 +330,8 @@ async fn get_board(State(state): State<Arc<AppState>>) -> Result<Json<FinanceBoa
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let picker_enabled = picker::is_enabled();
-    let picker_universe = picker::universe();
+    let picker_universe = picker::extras();
+    let picker_universe_count = picker::checkout_ticker_count().map(|(n, _)| n);
     let picker = PickerView::from(picker::status().await);
     let polybot_enabled = permagent::polybot::is_enabled();
     let polybot = permagent::polybot::status();
@@ -368,6 +374,8 @@ async fn get_board(State(state): State<Arc<AppState>>) -> Result<Json<FinanceBoa
         picker,
         picker_enabled,
         picker_universe,
+        picker_universe_count,
+        fundamentals_configured: market_data::fundamentals_configured(),
         picks,
         sell_signals,
         rsi_threshold: rsi_threshold(),
@@ -405,6 +413,7 @@ async fn assemble_holdings(
     let quotes = quote_map(&unique).await;
 
     let mut readings: HashMap<String, OverboughtReading> = HashMap::new();
+    let mut closes_by_symbol: HashMap<String, Vec<f64>> = HashMap::new();
     for (i, sym) in unique.iter().enumerate() {
         if i >= 10 {
             break;
@@ -415,6 +424,7 @@ async fn assemble_holdings(
             .and_then(|q| q.fifty_two_week_high);
         if let Ok(closes) = market_data::daily_closes(sym, "6mo").await {
             readings.insert(sym.clone(), overbought::assess(&closes, high, threshold));
+            closes_by_symbol.insert(sym.clone(), closes);
         }
     }
 
@@ -494,6 +504,17 @@ async fn assemble_holdings(
         });
     }
 
+    let mut trend_lots: Vec<(Vec<f64>, f64, f64)> = Vec::new();
+    for row in &rows {
+        if row.exit_date.is_some() {
+            continue;
+        }
+        if let Some(closes) = closes_by_symbol.get(&row.symbol) {
+            trend_lots.push((closes.clone(), row.entry_price, row.shares as f64));
+        }
+    }
+    let trend = market_data::net_unrealized_trend(&trend_lots);
+
     let net_pnl = net_unrealized + net_realized;
     (
         HoldingsView {
@@ -502,6 +523,7 @@ async fn assemble_holdings(
             net_unrealized,
             net_realized,
             net_pnl,
+            trend,
             rows,
         },
         sell_signals,
@@ -574,13 +596,26 @@ async fn assemble_picks(picker: &PickerView, universe: &[String]) -> Vec<Validat
         }
     }
 
-    let tickers: Vec<String> = if !universe.is_empty() {
-        universe.iter().take(MAX_PICKS).cloned().collect()
-    } else if !scanner_order.is_empty() {
-        scanner_order.into_iter().take(MAX_PICKS).collect()
-    } else {
-        return Vec::new();
+    // Extras the user added on the tab sit in front of scanner results.
+    // They never replace the checkout universe.
+    let tickers: Vec<String> = {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for t in universe.iter().chain(scanner_order.iter()) {
+            let t = t.trim().to_uppercase();
+            if t.is_empty() || !seen.insert(t.clone()) {
+                continue;
+            }
+            out.push(t);
+            if out.len() >= MAX_PICKS {
+                break;
+            }
+        }
+        out
     };
+    if tickers.is_empty() {
+        return Vec::new();
+    }
 
     let batch = tickers.len();
     let mut out = Vec::new();
@@ -879,7 +914,7 @@ async fn scan_picker() -> Result<Json<PickerAction>, ApiError> {
         )
             .into());
     }
-    let universe = picker::universe();
+    let extras = picker::extras();
     let s = picker::status().await;
     if s.scan_in_progress {
         return Ok(Json(PickerAction {
@@ -892,17 +927,18 @@ async fn scan_picker() -> Result<Json<PickerAction>, ApiError> {
             .map(|detail| Json(PickerAction { detail }))
             .map_err(|e| (StatusCode::BAD_GATEWAY, e).into());
     }
-    if universe.is_empty() {
+    if extras.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
-            "add tickers to your universe, or start the local scanner".into(),
+            "start the local scanner, or add tickers to rank without it".into(),
         )
             .into());
     }
     Ok(Json(PickerAction {
         detail: format!(
-            "no local scanner — ranking {} tickers you listed via Yahoo + the loop gate",
-            universe.len()
+            "no local scanner — ranking {} extra ticker{} via Yahoo + the loop gate",
+            extras.len(),
+            if extras.len() == 1 { "" } else { "s" }
         ),
     }))
 }

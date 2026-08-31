@@ -35,6 +35,9 @@ pub struct PromptManager {
     last_good_persona: std::sync::RwLock<Option<crate::config::agent_identity::PrimaryPersona>>,
     /// Override persona block and display name (used for worker personas).
     persona_block_override: Option<(String, String)>,
+    /// Worker key from agent.yaml (`financier`, `reviewer`, …) when this
+    /// session is a specialist. `None` is the primary / Orchestrator session.
+    worker_key: Option<String>,
 }
 
 impl Default for PromptManager {
@@ -491,6 +494,7 @@ impl PromptManager {
             persona: None,
             last_good_persona: std::sync::RwLock::new(None),
             persona_block_override: None,
+            worker_key: None,
         }
     }
 
@@ -504,6 +508,7 @@ impl PromptManager {
             persona: None,
             last_good_persona: std::sync::RwLock::new(None),
             persona_block_override: None,
+            worker_key: None,
         }
     }
 
@@ -513,6 +518,14 @@ impl PromptManager {
 
     pub fn set_persona_block_override(&mut self, block: String, display_name: String) {
         self.persona_block_override = Some((block, display_name));
+    }
+
+    pub fn set_worker_key(&mut self, key: Option<String>) {
+        self.worker_key = key;
+    }
+
+    pub fn worker_key(&self) -> Option<&str> {
+        self.worker_key.as_deref()
     }
 
     /// Add an additional instruction to the system prompt with a key

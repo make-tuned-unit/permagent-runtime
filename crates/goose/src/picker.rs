@@ -274,16 +274,41 @@ pub async fn top_picks() -> Result<Vec<serde_json::Value>, String> {
     Ok(Vec::new())
 }
 
+/// Tickers the user added on the Finance tab. Overlay on the scanner's own
+/// universe — never a replacement. Empty is the usual case.
+pub fn extras() -> Vec<String> {
+    universe()
+}
+
+/// How many names the Picker checkout is ranking, when we can count them.
+/// Reads `data/ticker_universe_cache.json` next to the scanner; a miss is
+/// `None`, not zero (zero would look like an empty universe).
+pub fn checkout_ticker_count() -> Option<(u64, String)> {
+    let root = picker_root()?;
+    let candidates = [
+        root.join("data/ticker_universe_cache.json"),
+        root.join("../data/ticker_universe_cache.json"),
+    ];
+    for path in candidates {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let count = text.matches("\"is_active\": true").count() as u64;
+        if count > 0 {
+            return Some((count, path.display().to_string()));
+        }
+    }
+    None
+}
+
 /// Ask the scanner to run. Returns as soon as the scan is ACCEPTED — a full
 /// scan takes many minutes, so waiting for it here would block a tool call
 /// past any sensible bound. Poll [`status`] for progress.
 ///
-/// When the user has listed a ticker universe, that list is sent on the body
-/// so a checkout-specific default is not silently scanned instead. A scanner
-/// that ignores unknown fields still starts its own universe — the Finance
-/// tab then ranks the user's list via Yahoo + the loop gate.
+/// The scanner keeps its own checkout universe. Finance-tab extras are an
+/// overlay ranked on the tab, not a replacement list sent here.
 pub async fn start_scan() -> Result<String, String> {
-    start_scan_with(&universe()).await
+    start_scan_with(&[]).await
 }
 
 pub async fn start_scan_with(tickers: &[String]) -> Result<String, String> {
