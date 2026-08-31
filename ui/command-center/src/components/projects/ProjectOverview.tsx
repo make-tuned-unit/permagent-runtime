@@ -6,6 +6,7 @@ import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { Panel } from './Panel';
+import { StateBlock } from './StateBlock';
 import { ActivityPanel } from './ActivityPanel';
 import { readBrief, readLinks, normalizeUrl, saveProjectSummary, type WorkspaceLink } from './workspaceMeta';
 import { PublishSequencePanel } from './PublishSequencePanel';
@@ -31,9 +32,15 @@ export function ProjectOverview({ project, onProjectUpdated }: {
   const { colors, gradient } = useTheme();
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [cards, setCards] = useState<Card[]>([]);
+  const [boardLoading, setBoardLoading] = useState(true);
+  const [boardError, setBoardError] = useState(false);
   const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
   const growProject = useCommandCenter(s => s.growProject);
 
+  // Swallowing this used to render "No tasks yet." for a board that simply
+  // never arrived — the same words as a project that genuinely has none.
+  // `ProjectKanban.loadBoard` fetches these two endpoints one lens away and
+  // already tracks loading/error/ready; this is that, for the same data.
   const loadBoard = useCallback(async () => {
     try {
       const [cols, cds] = await Promise.all([
@@ -42,10 +49,15 @@ export function ProjectOverview({ project, onProjectUpdated }: {
       ]);
       setColumns(cols);
       setCards(cds);
+      setBoardError(false);
     } catch {
-      // silently fail
+      setBoardError(true);
+    } finally {
+      setBoardLoading(false);
     }
   }, [project.id]);
+
+  const retryBoard = useCallback(() => { setBoardLoading(true); void loadBoard(); }, [loadBoard]);
 
   useEffect(() => { loadBoard(); }, [loadBoard]);
   // Live task status — refetch on any goal create/transition (#473).
@@ -93,6 +105,9 @@ export function ProjectOverview({ project, onProjectUpdated }: {
           <TasksPanel
             columns={columns}
             cards={cards}
+            loading={boardLoading}
+            error={boardError}
+            onRetry={retryBoard}
             onOpenGoal={(cardId) => openGoalDetail(project.id, cardId)}
           />
           {/* Publish sequence (#457) — post-push steps before "live"; the
@@ -660,9 +675,12 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
  *  binding) sort last, in board position order. */
 const STATE_ORDER = ['triage', 'ready', 'in_progress', 'review', 'complete', 'cancelled', 'failed'];
 
-function TasksPanel({ columns, cards, onOpenGoal }: {
+export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal }: {
   columns: BoardColumn[];
   cards: Card[];
+  loading: boolean;
+  error: boolean;
+  onRetry: () => void;
   onOpenGoal: (cardId: string) => void;
 }) {
   const { colors, theme } = useTheme();
@@ -680,9 +698,23 @@ function TasksPanel({ columns, cards, onOpenGoal }: {
   return (
     <Panel
       title="Tasks"
-      action={<span style={{ fontSize: 10, color: colors.textDim }}>{total} card{total !== 1 ? 's' : ''}</span>}
+      action={
+        error || loading
+          ? undefined
+          : <span style={{ fontSize: 10, color: colors.textDim }}>{total} card{total !== 1 ? 's' : ''}</span>
+      }
     >
-      {total === 0 ? (
+      {error ? (
+        <StateBlock
+          compact
+          tone="error"
+          title="Couldn't load this project's tasks"
+          detail="The board's columns and cards didn't load. Check the daemon connection and try again."
+          onRetry={onRetry}
+        />
+      ) : loading ? (
+        <div style={{ fontSize: 11, color: colors.textDim }}>Loading tasks…</div>
+      ) : total === 0 ? (
         <div style={{ fontSize: 11, color: colors.textDim }}>No tasks yet.</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

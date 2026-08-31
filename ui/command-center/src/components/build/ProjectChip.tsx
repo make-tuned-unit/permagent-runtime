@@ -2,7 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import { font } from '../../styles/tokens';
 import { useProjects, Project } from './useProjects';
 import { useTheme } from '../../styles/useTheme';
-import { useCommandCenter } from '../../lib/store';
+import { useCommandCenter, navigateToTool } from '../../lib/store';
+import { Button } from '../common/Button';
 import { launchTooltip, SUBSCRIPTION_FIRST_HINT } from '../grow/codingAgents';
 
 const PERSONAL_ID = '00000000-0000-0000-0000-000000000001';
@@ -14,7 +15,7 @@ interface Props {
 
 export function ProjectChip({ onLaunch, onVisitSite }: Props) {
   const { colors } = useTheme();
-  const { projects, loading, touch } = useProjects();
+  const { projects, loading, error, retry, touch } = useProjects();
   const [open, setOpen] = useState(false);
   const [sortMode, setSortMode] = useState<'recent' | 'az'>('recent');
   const ref = useRef<HTMLDivElement>(null);
@@ -57,16 +58,20 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
     setOpen(false);
   };
 
-  if (loading || projects.length === 0) return null;
-
+  // This chip is the only way to launch a coding agent against a project, so
+  // it is never removed: a daemon failure, an empty list and a load in flight
+  // are three different sentences inside it, not one missing control.
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       {/* Chip button */}
       <button
+        data-testid="project-chip"
         onClick={() => setOpen(!open)}
+        title={error ? "Couldn't load your projects" : undefined}
         style={{
           height: 28, padding: '0 10px', borderRadius: 6,
-          background: colors.cyanSoft, border: `1px solid ${colors.border}`,
+          background: colors.cyanSoft,
+          border: `1px solid ${error ? colors.danger : colors.border}`,
           fontFamily: font.body, fontSize: 11, fontWeight: 500,
           color: colors.textMuted, cursor: 'pointer',
           display: 'inline-flex', alignItems: 'center', gap: 5,
@@ -92,7 +97,41 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
           borderRadius: 8, boxShadow: colors.cardShadow,
           zIndex: 50, padding: '4px 0',
         }}>
+          {loading && (
+            <div style={{ padding: '10px 12px', fontSize: 11, color: colors.textDim, fontFamily: font.body }}>
+              Loading your projects…
+            </div>
+          )}
+
+          {!loading && error && (
+            <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: colors.danger, fontFamily: font.body }}>
+                Couldn't load your projects
+              </div>
+              <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.body, lineHeight: 1.45 }}>
+                The projects service didn't respond. Check that the daemon is running.
+              </div>
+              <Button colors={colors} type="button" onClick={() => retry()}>Retry</Button>
+            </div>
+          )}
+
+          {!loading && !error && projects.length === 0 && (
+            <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+              <div style={{ fontSize: 12, color: colors.textMuted, fontFamily: font.body, lineHeight: 1.45 }}>
+                No active projects yet — add one in Projects.
+              </div>
+              <Button
+                colors={colors}
+                type="button"
+                onClick={() => { setOpen(false); navigateToTool('projects'); }}
+              >
+                Open Projects
+              </Button>
+            </div>
+          )}
+
           {/* Sort toggle */}
+          {!loading && !error && projects.length > 0 && (
           <div style={{
             padding: '6px 10px', display: 'flex', gap: 8,
             borderBottom: `1px solid ${colors.border}`, marginBottom: 2,
@@ -113,6 +152,7 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
               </button>
             ))}
           </div>
+          )}
 
           {sorted.map(project => (
             <ProjectRow

@@ -10,6 +10,7 @@ import { ProjectWorkspace } from './ProjectWorkspace';
 import { CardDetailModal } from './CardDetailModal';
 import { PERSONAL_ID, CANCELLABLE_STATES, type Project, type BoardColumn, type Card } from './types';
 import { ViewHeader } from '../common/ViewHeader';
+import { StateBlock } from './StateBlock';
 
 const LS_KEY = 'permagent-projects-last-opened';
 
@@ -228,44 +229,6 @@ export function ProjectsView() {
 // One shape for every "nothing to show" moment on the Projects surface, so an
 // empty board and a failed fetch never read the same (blank) way. `error` tone
 // gets a danger accent + a Retry affordance; `empty` tone is calm/dim.
-
-function StateBlock({ tone, title, detail, onRetry, compact }: {
-  tone: 'empty' | 'error';
-  title: string;
-  detail?: string;
-  onRetry?: () => void;
-  compact?: boolean;
-}) {
-  const { colors } = useTheme();
-  const isError = tone === 'error';
-  const accent = isError ? colors.danger : colors.textMuted;
-  return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
-      textAlign: 'center', padding: compact ? '20px 16px' : '40px 24px',
-      color: colors.textMuted, fontFamily: font.body,
-    }}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: accent }}>{title}</div>
-      {detail && (
-        <div style={{ fontSize: 11, color: colors.textDim, maxWidth: 320, lineHeight: 1.5 }}>
-          {detail}
-        </div>
-      )}
-      {onRetry && (
-        <button
-          onClick={onRetry}
-          style={{
-            marginTop: 6, padding: '5px 14px', borderRadius: 6, cursor: 'pointer',
-            background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-            color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
-          }}
-        >
-          Try again
-        </button>
-      )}
-    </div>
-  );
-}
 
 // ── All Projects View — Active-dominant landing (ruling 2026-07-10) ──
 //
