@@ -6,7 +6,8 @@ import type { TypeFilters } from './BrainScene';
 import { useTheme } from '../../styles/useTheme';
 // Title derivation is shared with the cross-surface "View in Brain" focus seam
 // (brainMemoryFocus) so a memory reads the same in the list and when deep-linked.
-import { deriveMemoryTitle } from './brainMemoryFocus';
+import { deriveMemoryTitle, MEMORY_STALE_AFTER_DAYS } from './brainMemoryFocus';
+import { AsOf } from '../common/AsOf';
 
 // ── Date formatting ──────────────────────────────────────────────────
 
@@ -370,7 +371,11 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
         fontFamily: font.mono, fontSize: 10, color: colors.textDim,
       }}>
         <span>signal {Math.round(memory.weight * 100)}%</span>
-        <span>{memory.age < 0.02 ? 'today' : memory.age < 0.11 ? 'this week' : memory.age < 0.33 ? 'this month' : memory.age < 0.67 ? '~3 months' : 'older'}</span>
+        {/* Read from the memory's own timestamp, never from `age`: that is a
+            0..1 scene coordinate, clamped at 90 days, so every memory past the
+            window shared one bucket and a three-year-old note read as merely
+            "older" — on the list whose subject is what was learned when. */}
+        <AsOf asOf={memory.timestamp} granularity="calendar" staleAfterMs={MEMORY_STALE_AFTER_DAYS * 86_400_000} />
       </div>
     </div>
   );

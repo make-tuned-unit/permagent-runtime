@@ -3,7 +3,7 @@ import { FiEdit2, FiCheck, FiX, FiPlus, FiRotateCcw } from 'react-icons/fi';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
-import { dashboardFreshness, useDashboard } from './useDashboard';
+import { useDashboard } from './useDashboard';
 import { useLiveGoals } from '../../lib/useLiveGoals';
 import { useDueTodos } from '../../lib/useDueTodos';
 import { useLayout, reflow, DEFAULT_LAYOUT, type DashboardLayoutData, type DashboardCardLayout } from './useLayout';
@@ -15,6 +15,7 @@ import { Echo } from './Echo';
 import { LearnNext } from './LearnNext';
 import { ViewHeader } from '../common/ViewHeader';
 import { Button } from '../common/Button';
+import { AsOf } from '../common/AsOf';
 import { useState, useCallback, useRef, useMemo } from 'react';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -37,11 +38,6 @@ const GAP = 16;
 export function Dashboard() {
   const { gradient, colors } = useTheme();
   const { data, loading, error, lastOkAt, failing, retry, refresh } = useDashboard();
-  // A failed poll keeps the last good payload, which is right — and silent,
-  // which is not. Once the figures below stop being refreshed the header says
-  // how old they are and offers the way back, the same three states Build's
-  // project chip renders for the same class of failure.
-  const freshness = dashboardFreshness(lastOkAt, failing);
   // One shared live-goal subscription for every "in flight" surface (count,
   // list, header, status) so they always agree. Sessions are a separate stat.
   const { goals: activeGoals, activeCount } = useLiveGoals();
@@ -229,18 +225,24 @@ export function Dashboard() {
           match every other view. */}
       <ViewHeader
         title="Home"
-        subtitle={freshness && (
-          <span
+        // A failed poll keeps the last good payload, which is right — and
+        // silent, which is not. Once the figures below stop being refreshed the
+        // header says how old they are and offers the way back. Said in the
+        // app's one staleness rendering, so it reads the same here as it does
+        // on a three-month-old memory in the Brain.
+        subtitle={failing ? (
+          <AsOf
             data-testid="dashboard-freshness"
-            style={{ color: colors.warning, display: 'inline-flex', alignItems: 'center', gap: 6 }}
-          >
-            <span aria-hidden="true" style={{
-              width: 6, height: 6, borderRadius: 999,
-              background: colors.warning, display: 'inline-block',
-            }} />
-            {freshness.label}
-          </span>
-        )}
+            asOf={lastOkAt}
+            prefix="Updated"
+            suffix="reconnecting"
+            unknownLabel="Can't reach the daemon"
+            // Failing is stale at any age: the figures stopped being confirmed
+            // the moment the poll did.
+            staleAfterMs={0}
+            dot
+          />
+        ) : undefined}
         actions={<>
         {failing && (
           // No success tick: the caption above is the confirmation — it goes

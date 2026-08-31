@@ -17,6 +17,7 @@
  * yet resolve the id/key — the real graph memory always wins when present.
  */
 
+import { freshnessOf, parseTimestamp } from '../../hooks/useFreshness';
 import type { GraphMemory } from './useBrainData';
 import type { ProjectMemory } from '../projects/types';
 
@@ -60,10 +61,7 @@ function clamp01(n: number): number {
  * relativeTime: a bare "date time" string is treated as UTC.
  */
 export function parseBrainTimestamp(ts: string): number | null {
-  const hasZone = ts.endsWith('Z') || /[+-]\d\d:?\d\d$/.test(ts);
-  const norm = hasZone ? ts : `${ts.replace(' ', 'T')}Z`;
-  const ms = new Date(norm).getTime();
-  return Number.isNaN(ms) ? null : ms;
+  return parseTimestamp(ts);
 }
 
 /**
@@ -103,32 +101,21 @@ export interface MemoryAge { label: string; stale: boolean }
  * (nobody needs "17 days ago"), but they never stop counting.
  */
 export function formatMemoryAge(ts: string | null | undefined, now = Date.now()): MemoryAge {
-  const then = ts ? parseBrainTimestamp(ts) : null;
-  // No date is not "old" and is certainly not "today" — say which it is.
-  if (then == null) return { label: 'date unknown', stale: true };
-
-  // A future timestamp is a clock skew or an import dated forward; read it as
-  // now rather than inventing a countdown.
-  const days = Math.max(0, Math.floor((now - then) / 86_400_000));
-  const stale = days > MEMORY_STALE_AFTER_DAYS;
-
-  return { label: ageLabel(days), stale };
-}
-
-function ageLabel(days: number): string {
-  if (days === 0) return 'today';
-  if (days === 1) return 'yesterday';
-  if (days < 7) return `${days} days ago`;
-  if (days < 30) {
-    const weeks = Math.round(days / 7);
-    return weeks <= 1 ? 'last week' : `${weeks} weeks ago`;
-  }
-  if (days < 365) {
-    const months = Math.round(days / 30.44);
-    if (months < 12) return months <= 1 ? 'last month' : `${months} months ago`;
-  }
-  const years = Math.max(1, Math.round(days / 365.25));
-  return years === 1 ? 'last year' : `${years} years ago`;
+  const { label, stale } = freshnessOf(
+    ts,
+    {
+      // A memory is a dated thing, not a polled one: it reads in days and
+      // coarser, so a note written this morning is "today" and not "4h ago".
+      granularity: 'calendar',
+      // Just past the window the scene's colour ramp tops out at, so the label
+      // and the scene agree about when a memory has gone quiet. `>` not `>=`,
+      // as before: day 90 is still inside the window.
+      staleAfterMs: (MEMORY_STALE_AFTER_DAYS + 1) * 86_400_000,
+      unknownLabel: 'date unknown',
+    },
+    now,
+  );
+  return { label, stale };
 }
 
 /** ProjectMemory (the `/api/projects/:id/memories` wire shape) → focus preview. */

@@ -736,7 +736,7 @@ function Stat({ label, value, tone, title }: {
       <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginBottom: 2, textTransform: 'uppercase' }}>{label}</div>
       <div style={{
         fontFamily: font.body, fontSize: 13, fontWeight: 600,
-        color: tone === 'stale' ? colors.warning : colors.text,
+        color: tone === 'stale' ? colors.stale : colors.text,
       }}>{value}</div>
     </div>
   );

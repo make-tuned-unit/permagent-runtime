@@ -6,6 +6,10 @@
  * nothing on screen saying the connection is gone. Frozen numbers that look
  * current are the failure this covers: the hook has to remember WHEN the
  * figures were true, and the header has to say so.
+ *
+ * This file covers the hook's half — remembering. The sentence the header
+ * says is now the app's one staleness rendering, so it is covered where that
+ * lives: `components/common/AsOf.test.tsx`.
  */
 import { act } from 'react-dom/test-utils';
 import { createRoot, type Root } from 'react-dom/client';
@@ -14,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../lib/api', () => ({ apiFetch: vi.fn() }));
 
 import { apiFetch } from '../../lib/api';
-import { dashboardFreshness, type DashboardData, useDashboard } from './useDashboard';
+import { type DashboardData, useDashboard } from './useDashboard';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 const apiFetchMock = vi.mocked(apiFetch);
@@ -83,39 +87,5 @@ describe('useDashboard freshness', () => {
     expect(state!.failing).toBe(true);
     // ...but the timestamp does NOT move forward on a failure.
     expect(state!.lastOkAt).toBe(Date.parse('2026-08-31T12:00:00Z'));
-  });
-});
-
-describe('dashboardFreshness', () => {
-  const now = Date.parse('2026-08-31T12:00:00Z');
-  const minutesAgo = (m: number) => now - m * 60_000;
-
-  it('says nothing while the poll is healthy', () => {
-    expect(dashboardFreshness(minutesAgo(0), false, now)).toBeNull();
-  });
-
-  it('names the age of the figures and that it is still trying', () => {
-    expect(dashboardFreshness(minutesAgo(2), true, now)).toEqual({
-      label: 'Updated 2m ago · reconnecting',
-      stale: true,
-    });
-    expect(dashboardFreshness(minutesAgo(30), true, now)?.label)
-      .toBe('Updated 30m ago · reconnecting');
-    expect(dashboardFreshness(minutesAgo(150), true, now)?.label)
-      .toBe('Updated 2h ago · reconnecting');
-    expect(dashboardFreshness(minutesAgo(60 * 30), true, now)?.label)
-      .toBe('Updated 1d ago · reconnecting');
-  });
-
-  it('reads a very recent failure as moments, never as "0m"', () => {
-    expect(dashboardFreshness(now - 4_000, true, now)?.label)
-      .toBe('Updated moments ago · reconnecting');
-  });
-
-  it('does not invent a timestamp when nothing ever loaded', () => {
-    expect(dashboardFreshness(null, true, now)).toEqual({
-      label: "Can't reach the daemon · reconnecting",
-      stale: true,
-    });
   });
 });

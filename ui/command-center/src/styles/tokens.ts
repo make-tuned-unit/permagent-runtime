@@ -124,6 +124,14 @@ export interface ThemeColors {
   success: string;
   /** Warning semantic */
   warning: string;
+  /** Staleness semantic — a figure whose AGE is the thing worth noticing.
+   *  Deliberately not `warning`: nothing is wrong with a three-month-old
+   *  memory or a dashboard that lost its poll, they are just no longer current,
+   *  and a console that shouts about age has nothing left for a real fault.
+   *  Aged amber: clearly out of the quiet range, clearly not an alarm. */
+  stale: string;
+  /** Tint of `stale` for the surface behind it (a chip fill, a caption's dot). */
+  staleSoft: string;
   /** Inline code background */
   codeBg: string;
   /** Inline code text */
@@ -151,6 +159,9 @@ const DARK_COLORS: ThemeColors = {
   textOnCyan: '#04141B',
   success: '#34D399',
   warning: '#FBBF24',
+  // 8.6:1 on the dark ground, and a hue nobody mistakes for the amber alarm.
+  stale: '#D0A45C',
+  staleSoft: 'rgba(208,164,92,0.16)',
   codeBg: 'rgba(0,0,0,0.30)',
   codeText: '#00D5FF',
 };
@@ -197,6 +208,10 @@ const SILVER_COLORS: ThemeColors = {
   textOnCyan: '#04141B',    // Deep ink — ~12:1 on #00BFEF (white would be ~1.9:1)
   success: '#059669',
   warning: '#D97706',
+  // Amber-700 — 4.9:1 on white (AA), a step deeper than the warning amber so
+  // age still reads as age on the light theme.
+  stale: '#A16207',
+  staleSoft: 'rgba(161,98,7,0.10)',
   codeBg: '#EEF2F7',          // Chrome Mist — 1.1:1 vs white (subtle tint)
   codeText: '#0369A1',        // Sky-700 — 5.5:1 on Chrome Mist (AA)
 };
