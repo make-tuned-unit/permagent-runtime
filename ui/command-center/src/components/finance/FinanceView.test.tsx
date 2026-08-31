@@ -146,6 +146,85 @@ it('shows a Financier review badge on the approved pick and previews six rows', 
   expect(container.textContent).toMatch(/Show 2 more/);
 });
 
+it('separates the scanner pool from the tickers the user added', async () => {
+  // Regression: the card said "Picker universe · 14,630 names" for a number
+  // that is the scanner's own exchange listing cache, while the user's own
+  // list was empty. Two lists, two labels.
+  apiFetch.mockResolvedValue(board({
+    pickerEnabled: true,
+    pickerUniverse: [],
+    pickerUniverseCount: 14630,
+    picker: { reachable: true, baseUrl: 'x', scanInProgress: false },
+  }));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+  const pool = container.querySelector('[data-testid="picker-scanner-pool"]');
+  const mine = container.querySelector('[data-testid="picker-your-tickers"]');
+  expect(pool?.textContent).toContain('Scanner pool');
+  expect(pool?.textContent).toContain('14,630');
+  expect(pool?.textContent).not.toMatch(/universe/i);
+  expect(mine?.textContent).toContain('none yet');
+  expect(container.textContent).not.toMatch(/Picker universe/);
+  // …and the affordance that says what to do about it opens the add form.
+  const hint = container.querySelector('[data-testid="picker-add-hint"]') as HTMLButtonElement;
+  expect(hint).toBeTruthy();
+  await act(async () => { hint.click(); });
+  expect(container.querySelector('[data-testid="picker-universe"]')).toBeTruthy();
+});
+
+it('counts the user\'s own tickers separately when they have some', async () => {
+  apiFetch.mockResolvedValue(board({
+    pickerEnabled: true,
+    pickerUniverse: ['AAPL', 'NAK'],
+    pickerUniverseCount: 14630,
+    picker: { reachable: true, baseUrl: 'x', scanInProgress: false },
+  }));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+  expect(container.querySelector('[data-testid="picker-your-tickers"]')?.textContent)
+    .toContain('2 you added');
+  expect(container.querySelector('[data-testid="picker-add-hint"]')).toBeNull();
+});
+
+it('explains a filtered pick on the tag, and the tag opens the reason', async () => {
+  apiFetch.mockResolvedValue(board({
+    pickerEnabled: true,
+    pickerUniverse: [],
+    picks: [{
+      ticker: 'LEE',
+      companyName: 'Lee Inc',
+      rank: 1,
+      score: 1,
+      priceMismatch: false,
+      fundamentals: { available: false },
+      loop: {
+        passed: false,
+        kills: ['in-sample ICIR 0.12 is below 0.3 — likely noise'],
+        batchSize: 8,
+      },
+    }],
+  }));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+
+  // The caption no longer claims a personal universe the user never set up.
+  expect(container.querySelector('[data-testid="picks-caption"]')?.textContent)
+    .toMatch(/scanner’s own ranking/);
+  expect(container.querySelector('[data-testid="picks-legend"]')).toBeTruthy();
+
+  const tag = container.querySelector('[data-testid="pick-loop-tag"]') as HTMLButtonElement;
+  expect(tag.textContent).toContain('filtered: looks like noise');
+  expect(tag.textContent).not.toMatch(/loop kill/);
+  // Hovering is enough to get the full reason.
+  expect(tag.getAttribute('title')).toContain('likely noise');
+  // The row starts closed, and the tag is what opens it.
+  expect(container.querySelector('[data-testid="pick-loop-detail"]')).toBeNull();
+  await act(async () => { tag.click(); });
+  expect(container.querySelector('[data-testid="pick-loop-detail"]')?.textContent)
+    .toContain('Why it was filtered');
+  expect(tag.getAttribute('aria-expanded')).toBe('true');
+});
+
 it('draws a holdings sparkline when a trend series is present', async () => {
   apiFetch.mockResolvedValue(board({
     holdings: {

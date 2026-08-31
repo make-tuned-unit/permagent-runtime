@@ -5,6 +5,8 @@ import {
   POLYBOT_DISCLAIMER,
   parseUniverse,
   appendUniverse,
+  killSummary,
+  loopTagLabel,
   pickIsApproved,
   requiredKeysSet,
   sortPicks,
@@ -68,5 +70,36 @@ describe('requiredKeysSet', () => {
       { key: 'C', required: false },
     ];
     expect(requiredKeysSet(fields, { A: 'xx**', B: '', C: 'yy**' })).toEqual({ have: 1, need: 2 });
+  });
+});
+
+describe('killSummary', () => {
+  // The exact sentences the daemon emits (crates/goose/src/pick_loop.rs).
+  it('turns each server kill reason into a readable phrase', () => {
+    expect(killSummary(['not enough daily history to run the loop (need ~40 paired days)']))
+      .toBe('too little history');
+    expect(killSummary(['in-sample ICIR 0.12 is below 0.3 — likely noise']))
+      .toBe('looks like noise');
+    expect(killSummary(['signal half-life 2.4d is under 5d'])).toBe('fades too fast');
+    expect(killSummary(['out-of-sample ICIR 0.05 dropped more than 50% from in-sample 0.40 — overfit']))
+      .toBe('did not hold up');
+    expect(killSummary(['failed Bonferroni gate for 8 picks tested in this batch']))
+      .toBe('too many names tested');
+    expect(killSummary(['in-sample ICIR could not be computed'])).toBe('not measurable');
+  });
+
+  it('falls back rather than showing an empty tag', () => {
+    expect(killSummary([])).toBe('filtered out');
+    expect(killSummary(['   '])).toBe('filtered out');
+    expect(killSummary(['something new from the daemon'])).toBe('filtered out');
+  });
+});
+
+describe('loopTagLabel', () => {
+  it('says what happened instead of "loop kill"', () => {
+    expect(loopTagLabel({ passed: false, kills: ['in-sample ICIR 0.12 is below 0.3 — likely noise'] }))
+      .toBe('filtered: looks like noise');
+    expect(loopTagLabel({ passed: true, kills: [] })).toBe('signal checked');
+    expect(loopTagLabel(null)).toBe('');
   });
 });

@@ -60,6 +60,33 @@ export function appendUniverse(existing: string[], raw: string): string[] {
   return next;
 }
 
+/**
+ * Plain-language summary of why the significance check dropped a name.
+ *
+ * The daemon sends whole sentences ("in-sample ICIR 0.12 is below 0.3 — likely
+ * noise"). A tag has room for three words, and "loop kill" — what the tag used
+ * to say — explains nothing to anyone who has not read `pick_loop.rs`. The full
+ * sentences stay in the tooltip and the expanded row; this is the headline.
+ */
+export function killSummary(kills: string[]): string {
+  const first = kills.find((k) => k.trim().length > 0);
+  if (!first) return 'filtered out';
+  const k = first.toLowerCase();
+  if (k.includes('not enough')) return 'too little history';
+  if (k.includes('could not')) return 'not measurable';
+  if (k.includes('noise')) return 'looks like noise';
+  if (k.includes('half-life')) return 'fades too fast';
+  if (k.includes('overfit') || k.includes('out-of-sample')) return 'did not hold up';
+  if (k.includes('bonferroni')) return 'too many names tested';
+  return 'filtered out';
+}
+
+/** What the red/green tag on a pick row actually says. */
+export function loopTagLabel(loop: { passed: boolean; kills: string[] } | null | undefined): string {
+  if (!loop) return '';
+  return loop.passed ? 'signal checked' : `filtered: ${killSummary(loop.kills)}`;
+}
+
 export function pickIsApproved(ticker: string, approved: string | null | undefined): boolean {
   if (!approved) return false;
   return ticker.trim().toUpperCase() === approved.trim().toUpperCase();
