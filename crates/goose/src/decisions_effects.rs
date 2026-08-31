@@ -1229,8 +1229,88 @@ async fn apply_file_to_project(
     Ok((Some(effect), warning))
 }
 
+/// How many dead effects are sitting in the outbox, and how old the oldest is.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct DeadEffect {
+    pub id: String,
+    pub kind: String,
+    pub headline: String,
+    pub last_error: String,
+    pub updated_at: String,
+}
+
+/// Every effect that has exhausted its retries: an approved, audited,
+/// user-authorised action that never happened. Joined to the decision so the
+/// surface can say WHICH decision, not just a count — Azure's dead-letter
+/// guidance is explicit that a bare number is not a decision.
+pub async fn dead_effects(pool: &Pool<Sqlite>) -> Result<Vec<DeadEffect>, String> {
+    let rows = sqlx::query(
+        "SELECT o.id AS id, o.kind AS kind,
+                COALESCE(d.headline, '(the decision has been deleted)') AS headline,
+                COALESCE(o.last_error, '') AS last_error, o.updated_at AS updated_at
+         FROM effect_outbox o
+         LEFT JOIN decisions d ON d.id = o.decision_id
+         WHERE o.status = 'dead'
+         ORDER BY o.updated_at ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .map(|r| DeadEffect {
+            id: r.get("id"),
+            kind: r.get("kind"),
+            headline: r.get("headline"),
+            last_error: r.get("last_error"),
+            updated_at: r.get("updated_at"),
+        })
+        .collect())
+}
+
+async fn dead_effect_count(pool: &Pool<Sqlite>) -> Result<i64, String> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM effect_outbox WHERE status = 'dead'")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Retire outbox rows whose decision no longer exists.
+///
+/// `effect_outbox.decision_id` has no foreign key while
+/// `decisions.project_id REFERENCES projects(id) ON DELETE CASCADE`, so
+/// deleting a project cascades the decision away and leaves the outbox row
+/// pointing at nothing (two such rows were found live on 2026-08-31). A
+/// non-terminal dangling row is not retryable — it would burn all five
+/// attempts on `decision '…' no longer exists` and land as `dead` with an
+/// error that reads like a bug. Retire it once, with an honest reason.
+async fn retire_dangling_effects(pool: &Pool<Sqlite>) -> Result<u64, String> {
+    let result = sqlx::query(
+        "UPDATE effect_outbox
+         SET status = 'dead', attempts = max_attempts,
+             last_error = 'the decision was deleted (its project was removed) — \
+                           this effect can never be applied',
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE status IN ('pending', 'running')
+           AND (decision_id IS NULL
+                OR NOT EXISTS (SELECT 1 FROM decisions d WHERE d.id = decision_id))",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(result.rows_affected())
+}
+
 /// Claim and apply a bounded batch of due effects.
 pub async fn drain_effect_outbox(pool: &Pool<Sqlite>) -> Result<(), String> {
+    // Depth BEFORE this pass. A dead effect used to produce a `tracing::warn`
+    // and nothing else — no inbox card, no HUD, no doctor check — so an
+    // approved action could simply never happen and no surface said so. The
+    // rule is the CloudWatch dead-letter-queue one: alert on the transition
+    // INTO a non-empty queue, not per entry and not per tick.
+    let dead_before = dead_effect_count(pool).await?;
+    retire_dangling_effects(pool).await?;
+
     sqlx::query(
         "UPDATE effect_outbox
          SET status = CASE WHEN attempts + 1 >= max_attempts THEN 'dead' ELSE 'pending' END,
@@ -1322,7 +1402,51 @@ pub async fn drain_effect_outbox(pool: &Pool<Sqlite>) -> Result<(), String> {
             }
         }
     }
+
+    if dead_before == 0 {
+        let dead_now = dead_effects(pool).await?;
+        if !dead_now.is_empty() {
+            brief_dead_effects(pool, &dead_now).await;
+        }
+    }
     Ok(())
+}
+
+/// One briefing on the 0→nonzero transition, never one per entry. The standing
+/// state is re-asserted by the daily job digest (`job_health`), which is what
+/// stops a badge from being the only surface for something that has been
+/// broken for a week.
+async fn brief_dead_effects(pool: &Pool<Sqlite>, dead: &[DeadEffect]) {
+    let mut detail = String::from(
+        "These were approved and audited, and then failed every retry. Nothing will \
+         re-attempt them.\n\n",
+    );
+    for d in dead.iter().take(10) {
+        detail.push_str(&format!(
+            "- {} — {}: {}\n",
+            d.kind, d.headline, d.last_error
+        ));
+    }
+    if dead.len() > 10 {
+        detail.push_str(&format!("- …and {} more\n", dead.len() - 10));
+    }
+    crate::briefings::file_briefing(
+        pool,
+        crate::briefings::NewBriefing {
+            from_agent: "decisions".to_string(),
+            kind: "effect_dead_letter".to_string(),
+            severity: crate::briefings::Severity::ActionRequired,
+            summary: format!(
+                "{} approved decision{} did not take effect",
+                dead.len(),
+                if dead.len() == 1 { "" } else { "s" }
+            ),
+            detail: Some(detail),
+            ref_kind: Some("decision".to_string()),
+            ref_id: None,
+        },
+    )
+    .await;
 }
 
 #[cfg(test)]
@@ -1555,6 +1679,107 @@ mod tests {
         .await
         .unwrap()
         .0
+    }
+
+    async fn briefing_count(pool: &Pool<Sqlite>, kind: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_briefings WHERE kind = ?")
+            .bind(kind)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// D32: a dead effect is an approved, audited, user-authorised action that
+    /// never happened, and it had zero surface — no briefing, no card, no
+    /// doctor check, only a `tracing::warn`. It must reach a surface, ONCE, on
+    /// the 0→nonzero transition.
+    #[tokio::test]
+    async fn a_dead_effect_briefs_once_on_the_transition_not_every_drain() {
+        let pool = test_pool().await;
+        crate::session::spectral_schema::apply_briefings_schema(&pool)
+            .await
+            .unwrap();
+        let decision = answered_file_decision(&pool).await;
+        // Bury the effect: one more failure than it has attempts left.
+        sqlx::query(
+            "UPDATE effect_outbox SET status = 'pending', attempts = max_attempts,
+                 last_error = 'filesystem is read-only',
+                 next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour')
+             WHERE decision_id = ?",
+        )
+        .bind(&decision.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM decisions WHERE id = ?")
+            .bind(&decision.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(briefing_count(&pool, "effect_dead_letter").await, 0);
+        drain_effect_outbox(&pool).await.unwrap();
+
+        let dead = dead_effects(&pool).await.unwrap();
+        assert_eq!(dead.len(), 1, "the effect must be retired, not retried");
+        assert_eq!(dead[0].kind, "file_to_project");
+        assert!(
+            dead[0].last_error.contains("deleted"),
+            "a dangling row must say the decision is gone, not a generic retry error: {}",
+            dead[0].last_error
+        );
+        assert_eq!(
+            briefing_count(&pool, "effect_dead_letter").await,
+            1,
+            "the transition into a non-empty dead-letter queue must be briefed"
+        );
+
+        // Depth is already non-zero: further drains must go quiet. A push per
+        // tick is what teaches the reader to ignore the channel.
+        for _ in 0..3 {
+            drain_effect_outbox(&pool).await.unwrap();
+        }
+        assert_eq!(
+            briefing_count(&pool, "effect_dead_letter").await,
+            1,
+            "a standing dead-letter depth belongs in the digest, not in a push per minute"
+        );
+    }
+
+    /// D31: `effect_outbox.decision_id` has no foreign key, so removing a
+    /// project cascades the decision away and strands the row. A PENDING
+    /// stranded row must not burn five retries on "no longer exists".
+    #[tokio::test]
+    async fn a_dangling_effect_is_retired_once_not_retried_five_times() {
+        let pool = test_pool().await;
+        let decision = answered_file_decision(&pool).await;
+        sqlx::query(
+            "UPDATE effect_outbox SET status = 'pending', attempts = 0,
+                 next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour')
+             WHERE decision_id = ?",
+        )
+        .bind(&decision.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM decisions WHERE id = ?")
+            .bind(&decision.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        drain_effect_outbox(&pool).await.unwrap();
+        let (status, attempts): (String, i64) =
+            sqlx::query_as("SELECT status, attempts FROM effect_outbox WHERE decision_id = ?")
+                .bind(&decision.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "dead");
+        assert_eq!(
+            attempts, 5,
+            "retirement should consume the budget at once, not one tick at a time"
+        );
     }
 
     #[tokio::test]
