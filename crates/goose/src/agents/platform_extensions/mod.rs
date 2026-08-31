@@ -13,6 +13,7 @@ pub mod dashboard;
 pub mod desktop;
 pub mod developer;
 pub mod dispatch_brief;
+pub mod dispatch_digest;
 pub mod dispatch_scope;
 pub mod execution_receipt;
 pub mod ext_manager;

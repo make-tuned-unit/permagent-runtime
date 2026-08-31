@@ -1158,6 +1158,22 @@ pub(crate) async fn dispatch_goal_fn(
         instructions = format!("{instructions}\n\n{block}");
     }
 
+    // Project context digest (a3's B2): sibling-goal status + the project's
+    // notes field, ~400 tokens, staleness-labeled. Two blind spots close here.
+    // A worker that cannot see the board duplicates or contradicts work already
+    // in flight — the board was reachable as a TOOL in-process and by nothing at
+    // all out here. And `project.notes` was a column no code path read, so the
+    // one place a user writes durable project-level standing instructions never
+    // reached the agent doing the work. Small and linked-not-inlined by design:
+    // ten siblings, a notes excerpt, and the name of the bridge tool that
+    // answers live (see `dispatch_digest`). Best-effort — a DB hiccup costs the
+    // digest, never the dispatch.
+    if let Some(block) =
+        super::dispatch_digest::load_dispatch_digest(&pool, &project, &card.id).await
+    {
+        instructions = format!("{instructions}\n\n{block}");
+    }
+
     // Loads the goal's RLM namespace from permagent.db (migrating any legacy
     // `metadata_json.rlm_state` blob) before the sync brief assembly reads it.
     instructions =
