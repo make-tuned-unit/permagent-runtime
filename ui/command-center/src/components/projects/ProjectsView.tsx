@@ -923,22 +923,44 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
         <div style={{ fontSize: 12, fontWeight: 500, flex: 1, minWidth: 0 }}>{card.title}</div>
         {/* Visible, keyboard-reachable menu trigger — right-click still works too.
-            stopPropagation on pointer-down so opening the menu never starts a drag. */}
+            stopPropagation on pointer-down so opening the menu never starts a drag.
+
+            It was already labelled and already focusable; what it lacked was
+            looking like a control. At 18×18 with no chrome at any state it read
+            as a stray character that happened to sit in the corner, and it was
+            below any reasonable pointer target — on a card you are also
+            expected to drag, so a near-miss starts a drag instead of opening a
+            menu. It is now a 28px target with resting chrome and a `title`, so
+            it is both hittable and identifiable before it is hovered. */}
         <button
+          data-testid={`card-menu-${card.id}`}
           aria-label={`Card actions for ${card.title}`}
           aria-haspopup="menu"
           aria-expanded={showMenu}
+          title="Card actions"
           onPointerDown={e => e.stopPropagation()}
           onClick={e => { e.stopPropagation(); setShowMenu(m => !m); }}
           style={{
             flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 18, height: 18, marginTop: -1, marginRight: -2, padding: 0, borderRadius: radius.xs,
-            background: 'transparent', border: 'none', cursor: 'pointer',
+            width: 28, height: 28, marginTop: -4, marginRight: -6, padding: 0, borderRadius: radius.sm,
+            background: showMenu ? colors.surfaceHi : 'transparent',
+            border: `1px solid ${showMenu ? colors.borderHi : colors.border}`,
+            cursor: 'pointer',
             color: showMenu ? colors.text : colors.textDim, lineHeight: 1, fontSize: 14,
-            transition: reduceMotion ? 'none' : 'color 150ms',
+            transition: reduceMotion ? 'none' : 'color 150ms, background 150ms, border-color 150ms',
           }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.text; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = showMenu ? colors.text : colors.textDim; }}
+          onMouseEnter={e => {
+            const el = e.currentTarget as HTMLElement;
+            el.style.color = colors.text;
+            el.style.background = colors.surfaceHi;
+            el.style.borderColor = colors.borderHi;
+          }}
+          onMouseLeave={e => {
+            const el = e.currentTarget as HTMLElement;
+            el.style.color = showMenu ? colors.text : colors.textDim;
+            el.style.background = showMenu ? colors.surfaceHi : 'transparent';
+            el.style.borderColor = showMenu ? colors.borderHi : colors.border;
+          }}
         >
           ⋯
         </button>
