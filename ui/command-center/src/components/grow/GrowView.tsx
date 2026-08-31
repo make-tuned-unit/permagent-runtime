@@ -2996,6 +2996,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
         state={inboxState}
         inbox={inbox}
         onRetry={() => loadInbox(project.id)}
+        projectName={project.name}
       />
 
       <section style={{ marginTop: 8 }}>
@@ -4267,12 +4268,14 @@ function priorityMeta(priority: MovePriority, colors: ThemeColors): { label: str
 }
 
 function GrowthInboxSection({
-  colors, state, inbox, onRetry,
+  colors, state, inbox, onRetry, projectName,
 }: {
   colors: ThemeColors;
   state: LoadState;
   inbox: GrowthInboxData | null;
   onRetry: () => void;
+  /** Grounds the hand-off prompt each move card offers. */
+  projectName: string;
 }) {
   // Defensive against a partial payload. This section previously only rendered
   // inside the Analytics lens; it is now the top of Actions, the default tab,
@@ -4311,7 +4314,7 @@ function GrowthInboxSection({
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {moves.length > 0 ? (
-            moves.map((m) => <MoveCard key={m.title} move={m} colors={colors} />)
+            moves.map((m) => <MoveCard key={m.title} move={m} colors={colors} projectName={projectName} />)
           ) : (
             <div style={{
               border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '12px 14px',
@@ -4327,8 +4330,42 @@ function GrowthInboxSection({
   );
 }
 
-function MoveCard({ move, colors }: { move: GrowthMove; colors: ThemeColors }) {
+/**
+ * A growth move: the first thing on the Actions tab, and — until now — the one
+ * card type in the whole lens with nothing to click.
+ *
+ * Every other card offers a way to act on it. This one presented "your 2–3
+ * highest-leverage growth moves this week", explained why each mattered, and
+ * then stopped. A recommendation you cannot do anything with reads as a
+ * newsletter, which is exactly what the tab is not for.
+ *
+ * It gets the hand-off the rest of the surface already uses: open the chat
+ * dock and send a prompt grounded in this move and this project. Same
+ * mechanism, same wording, no new concept.
+ */
+function MoveCard({ move, colors, projectName }: {
+  move: GrowthMove;
+  colors: ThemeColors;
+  projectName: string;
+}) {
   const meta = priorityMeta(move.priority, colors);
+  const agentName = useCommandCenter((st) => st.agentName);
+  const sendMessage = useCommandCenter((st) => st.sendMessage);
+  const openChatDock = useCommandCenter((st) => st.openChatDock);
+  const setActivePanel = useCommandCenter((st) => st.setActivePanel);
+
+  const discuss = () => {
+    // setActivePanel('chat') only dismisses an overlay; since chat went
+    // dock-first the dock has to be opened explicitly or the prompt goes to a
+    // conversation nobody can see. Same two lines as every other hand-off here.
+    setActivePanel('chat');
+    openChatDock();
+    void sendMessage(
+      `Let's work on this growth move for ${projectName}: "${move.title}". `
+      + `The reason it came up: ${move.why}`,
+    );
+  };
+
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', gap: 6,
@@ -4347,6 +4384,20 @@ function MoveCard({ move, colors }: { move: GrowthMove; colors: ThemeColors }) {
       </div>
       <div style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>{move.title}</div>
       <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{move.why}</div>
+      <div style={{ display: 'flex', marginTop: 2 }}>
+        <button
+          type="button"
+          data-testid="move-discuss"
+          onClick={discuss}
+          style={{
+            fontSize: 11, fontFamily: font.body, color: colors.text,
+            background: 'transparent', border: `1px solid ${colors.border}`,
+            borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer',
+          }}
+        >
+          Discuss with {agentName}
+        </button>
+      </div>
     </div>
   );
 }
