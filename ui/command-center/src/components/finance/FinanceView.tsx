@@ -549,7 +549,21 @@ function SummaryStrip({
               value={fmtMoney(p.currentBalance)}
               tone={p.stale ? colors.warning : colors.text}
             />
-            <div style={{ ...type.caption, color: colors.textMuted, marginTop: 4 }}>
+            {/* The mechanism around this sentence already escalates correctly —
+                warning border on the card, warning tone on the hero figure —
+                but the sentence that actually SAYS the balance is 110 days old
+                rendered at the same muted caption weight as the routine "Live
+                file" line it replaces. The one line carrying the bad news was
+                the quietest thing in the card. It now takes small weight and
+                the warning tone whenever it is the stale variant, so the words
+                and the chrome say the same thing. */}
+            <div
+              data-testid="finance-polybot-freshness"
+              data-stale={p.stale ? 'true' : 'false'}
+              style={p.stale
+                ? { ...type.small, color: colors.warning, fontWeight: 600, marginTop: 4 }
+                : { ...type.caption, color: colors.textMuted, marginTop: 4 }}
+            >
               {p.stale
                 ? `As of ${fmtWhen(asOf)}${p.staleDays != null ? ` · ${p.staleDays}d stale` : ''}`
                 : p.paused

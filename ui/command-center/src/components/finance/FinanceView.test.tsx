@@ -259,3 +259,47 @@ it('draws a holdings sparkline when a trend series is present', async () => {
   expect(container.querySelector('[data-testid="holdings-sparkline"]')).toBeTruthy();
   expect(container.querySelector('[data-testid="fundamentals-key"]')).toBeTruthy();
 });
+
+it('gives the staleness sentence the weight the rest of the card already has', async () => {
+  // The card escalates correctly around this line — warning border, warning
+  // tone on the hero figure — while the sentence that actually says the balance
+  // is months old sat at the same muted caption weight as the routine "Live
+  // file" line. The one line carrying the bad news was the quietest thing on
+  // the card.
+  apiFetch.mockResolvedValue(board({
+    polybotEnabled: true,
+    polybot: {
+      found: true, paused: false, stale: true, staleDays: 110,
+      credentialsReady: true, currentBalance: 1234.5,
+      asOf: '2026-05-13T12:00:00Z',
+    },
+  }));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+  const line = container.querySelector('[data-testid="finance-polybot-freshness"]') as HTMLElement;
+  expect(line.textContent).toContain('110d stale');
+  expect(line.getAttribute('data-stale')).toBe('true');
+  // Not the quiet caption colour it used to share with "Live file".
+  expect(line.style.color).toBeTruthy();
+  expect(line.style.fontWeight).toBe('600');
+  // A step up the ramp from the routine caption beside it.
+  expect(line.style.fontSize).toBe('13px');
+});
+
+it('leaves a fresh reading quiet', async () => {
+  apiFetch.mockResolvedValue(board({
+    polybotEnabled: true,
+    polybot: {
+      found: true, paused: false, stale: false,
+      credentialsReady: true, currentBalance: 1234.5,
+      asOf: '2026-08-31T12:00:00Z',
+    },
+  }));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+  const line = container.querySelector('[data-testid="finance-polybot-freshness"]') as HTMLElement;
+  expect(line.getAttribute('data-stale')).toBe('false');
+  // The caption ramp's own weight, not the emphasis the stale variant takes.
+  expect(line.style.fontWeight).toBe('400');
+  expect(line.style.fontSize).toBe('12px');
+});
