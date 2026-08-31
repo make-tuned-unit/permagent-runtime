@@ -1,4 +1,4 @@
-import { FiEdit2, FiCheck, FiX, FiPlus, FiRotateCcw } from 'react-icons/fi';
+import { FiEdit2, FiX, FiPlus, FiRotateCcw } from 'react-icons/fi';
 
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
@@ -10,6 +10,7 @@ import { useLayout, reflow, DEFAULT_LAYOUT, type DashboardLayoutData, type Dashb
 import { useCardRegistry } from './cards/useCardRegistry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
+import { CustomizeButton } from './CustomizeButton';
 import { ResetConfirmModal } from './ResetConfirmModal';
 import { Echo } from './Echo';
 import { LearnNext } from './LearnNext';
@@ -262,22 +263,11 @@ export function Dashboard() {
             { label: 'Reset to default', icon: <FiRotateCcw size={14} />, onClick: () => setShowResetConfirm(true) },
           ]} />
         )}
-        <button
-          onClick={() => setIsEditMode(!isEditMode)}
-          title={isEditMode ? 'Done editing' : 'Customize dashboard'}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            padding: isEditMode ? '5px 14px' : '5px 8px',
-            borderRadius: radius.md,
-            border: `1px solid ${isEditMode ? colors.cyan : colors.border}`,
-            background: isEditMode ? colors.cyanSoft : colors.surface,
-            color: isEditMode ? colors.cyan : colors.textMuted,
-            fontFamily: font.body, fontSize: 12, fontWeight: 500,
-            cursor: 'pointer', transition: 'all 150ms ease',
-          }}
-        >
-          {isEditMode ? <><FiCheck size={14} /> Done</> : <FiEdit2 size={14} />}
-        </button>
+        <CustomizeButton
+          editing={isEditMode}
+          onToggle={() => setIsEditMode(!isEditMode)}
+          colors={colors}
+        />
         </>}
       />
 
