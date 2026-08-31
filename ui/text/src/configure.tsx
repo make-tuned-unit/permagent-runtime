@@ -51,6 +51,22 @@ interface ModelSelectorProps {
   onBack: () => void;
 }
 
+// Two model-picker RPCs the daemon does not implement today. The generated
+// SDK client has neither, so calling them unconditionally does not typecheck.
+// Declare them as optional and probe at the call site: when they are absent
+// the picker falls back to the ACP method the TUI's own switcher already uses,
+// which is why this screen and that one now agree.
+type OptionalGooseExt = GooseClient["goose"] & {
+  GooseProvidersModels?: (params: {
+    providerName: string;
+  }) => Promise<{ models: string[] }>;
+  GooseSessionProviderUpdate?: (params: {
+    sessionId: string;
+    provider: string;
+    model: string;
+  }) => Promise<void>;
+};
+
 const ModelSelector = React.memo(function ModelSelector({
   client,
   provider,
@@ -85,10 +101,13 @@ const ModelSelector = React.memo(function ModelSelector({
         );
         let listed: string[] = [];
         try {
-          const resp = await client.goose.GooseProvidersModels({
-            providerName: provider.name,
-          });
-          listed = resp.models;
+          const ext = client.goose as OptionalGooseExt;
+          if (typeof ext.GooseProvidersModels === "function") {
+            const resp = await ext.GooseProvidersModels({
+              providerName: provider.name,
+            });
+            listed = resp.models;
+          }
         } catch {
           listed = [];
         }
@@ -549,11 +568,16 @@ export default function ConfigureScreen({
         }
         await client.goose.GooseConfigUpsert({ key: "GOOSE_PROVIDER", value: provider.name });
         await client.goose.GooseConfigUpsert({ key: "GOOSE_MODEL", value: model });
-        await client.goose.GooseSessionProviderUpdate({
-          sessionId,
-          provider: provider.name,
-          model,
-        });
+        const ext = client.goose as OptionalGooseExt;
+        if (typeof ext.GooseSessionProviderUpdate === "function") {
+          await ext.GooseSessionProviderUpdate({
+            sessionId,
+            provider: provider.name,
+            model,
+          });
+        } else {
+          await client.unstable_setSessionModel({ sessionId, modelId: model });
+        }
         onComplete();
       } catch (e: unknown) {
         setErrorMsg(e instanceof Error ? e.message : String(e));
