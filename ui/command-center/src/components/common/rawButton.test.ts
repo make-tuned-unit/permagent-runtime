@@ -23,6 +23,12 @@
  *   2. ROLE-BEARING CONTROLS (`role="tab"`, `role="switch"`, `role="menuitem"`,
  *      `role="option"`). Same argument: the role is the description, and
  *      `Button` renders a plain button.
+ *   3. COMPOSITE CONTROLS (`.pa-btn--composite`), whose children have to be the
+ *      button's own flex children — a `flex: 1` name that truncates, meta
+ *      pushed to the right edge. `Button` folds children into a single
+ *      `pa-btn__label` span, and inside an inline box `overflow: hidden` does
+ *      nothing, so the distribution collapses. The modifier is a declaration
+ *      that the layout is the reason; `index.css` defines it.
  *
  * `components/common/` is exempt wholesale — it is where primitives are
  * written, and a primitive has to render an element eventually.
@@ -110,7 +116,9 @@ export function buttonOpeningTags(source: string): { line: number; tag: string }
 function isPermittedRawButton(tag: string): boolean {
   const wearsClass = /className=(?:"[^"]*\bpa-btn\b|'[^']*\bpa-btn\b|\{[^}]*pa-btn)/.test(tag);
   if (!wearsClass) return false;
-  return /\baria-expanded[=\s]/.test(tag) || /\brole=/.test(tag);
+  return /\baria-expanded[=\s]/.test(tag)
+    || /\brole=/.test(tag)
+    || /\bpa-btn--composite\b/.test(tag);
 }
 
 function offendersIn(dirs: string[]): string[] {
@@ -133,8 +141,9 @@ describe('button primitive adoption', () => {
   it('leaves no hand-rolled button in a migrated directory', () => {
     expect(
       offendersIn(GATED),
-      'use <Button> from components/common/Button. A disclosure toggle or a '
-        + 'role-bearing control may stay a <button>, but must carry className="pa-btn".',
+      'use <Button> from components/common/Button. A disclosure toggle, a '
+        + 'role-bearing control or a .pa-btn--composite may stay a <button>, '
+        + 'but must carry className="pa-btn".',
     ).toEqual([]);
   });
 

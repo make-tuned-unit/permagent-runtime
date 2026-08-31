@@ -216,3 +216,22 @@ it('lets a caller name the hover color, not just the hover fill', () => {
   // Defaulted to the resting color, so every existing button is untouched.
   expect(hover).toContain('var(--pa-btn-fg-hover, var(--pa-btn-fg');
 });
+
+/**
+ * The label span is a seam for the spinner and the tick, not a layout. Tailwind's
+ * reset makes every `svg` a block, and a block inside an inline span breaks the
+ * line — so an icon-and-word button rendered its icon ABOVE its word. Four
+ * separate migrations hit this and each worked around it differently, which is
+ * the signal that it belongs at the base.
+ */
+it('does not let its label span become a layout of its own', () => {
+  const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8');
+  const label = /\.pa-btn__label \{([^}]*)\}/.exec(css)?.[1] ?? '';
+  expect(label).toContain('display: contents');
+});
+
+it('forwards a ref, so a caller can measure it', () => {
+  const seen: (HTMLButtonElement | null)[] = [];
+  act(() => { root.render(<Button colors={colors} ref={el => seen.push(el)}>Go</Button>); });
+  expect(seen[0]).toBeInstanceOf(HTMLButtonElement);
+});

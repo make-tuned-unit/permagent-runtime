@@ -476,6 +476,23 @@ select:focus-visible {
 .pa-btn--primary[data-state='success'] {
   box-shadow: 0 0 0 2px var(--pa-btn-success, #34d399);
 }
+/* The label span exists so the spinner and the tick can sit beside the label
+   rather than inside it. It must not become a layout of its own: Tailwind's
+   reset makes every `svg` a block, and a block inside an inline span breaks the
+   line — so `<FiPlus /> New` renders the icon ABOVE the word. `display:
+   contents` removes the span from layout entirely, which puts the children back
+   where they were before the migration: flex children of the button, centred,
+   separated by its gap, able to `flex: 1` and to truncate. */
+.pa-btn__label {
+  display: contents;
+}
+/* Kept as a name a call site can state when its children being the button's own
+   flex children is load-bearing — a `flex: 1` label that truncates with meta
+   pushed right. The adoption gate reads it on a `<button>` that stayed
+   hand-rolled for that reason: a declaration of the reason, not a way out. */
+.pa-btn--composite > .pa-btn__label {
+  display: contents;
+}
 .pa-btn__spinner {
   width: 10px;
   height: 10px;

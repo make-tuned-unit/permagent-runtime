@@ -30,7 +30,7 @@
  * included), `-bg-active`, `-pad`, `-radius`, `-weight`, `-success`.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useRef, useState } from 'react';
 import type { ButtonHTMLAttributes, CSSProperties, MouseEvent, ReactNode } from 'react';
 import { radius } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
@@ -132,7 +132,7 @@ function isThenable(v: unknown): v is Promise<unknown> {
   return typeof (v as { then?: unknown } | null | undefined)?.then === 'function';
 }
 
-export function Button({
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button({
   colors,
   variant = 'ghost',
   pending,
@@ -145,7 +145,7 @@ export function Button({
   className,
   disabled,
   ...rest
-}: ButtonProps) {
+}, ref) {
   const [selfPending, setSelfPending] = useState(false);
   const [selfSuccess, setSelfSuccess] = useState(false);
   /** The tail of the floor after a caller-driven `pending` has already gone. */
@@ -218,6 +218,7 @@ export function Button({
   return (
     <button
       {...rest}
+      ref={ref}
       className={['pa-btn', `pa-btn--${variant}`, className].filter(Boolean).join(' ')}
       style={{ ...variantVars(variant, colors), ...style }}
       disabled={disabled || isPending}
@@ -231,4 +232,4 @@ export function Button({
       <span className="pa-btn__label">{children}</span>
     </button>
   );
-}
+});
