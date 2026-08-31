@@ -18,6 +18,7 @@ import {
 import { usePersona } from '../settings/useSettings';
 import { RunRoster } from './RunRoster';
 import { ViewHeader } from '../common/ViewHeader';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 import { getApiBaseUrl, loadDaemonToken } from '../../lib/api';
 import {
   bulkEligible,
@@ -277,6 +278,7 @@ export function AutomateView() {
   const [runsError, setRunsError] = useState<string | null>(null);
   const [actionStates, setActionStates] = useState<Record<string, 'loading' | 'success'>>({});
   const [detail, setDetail] = useState<DetailTarget | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
   const [search, setSearch] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [showInstalledExpanded, setShowInstalledExpanded] = useState(() => {
@@ -480,12 +482,25 @@ export function AutomateView() {
     try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/unpause`, { method: 'POST' }); }
     catch (err) { failAction(id, 'resume', err); }
   };
-  const handleDelete = async (id: string) => {
-    const name = jobNameMap.get(id) || id;
-    if (!confirm(`Delete "${name}"? This can't be undone.`)) return;
-    setActionState(`${id}:delete`, 'loading');
-    try { await apiFetch<unknown>(`/schedule/delete/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
-    catch (err) { failAction(id, 'delete', err); }
+  // Deleting an automation is confirmed in the app's own dialog rather than an
+  // OS one: same interruption, but it names what is being deleted, states the
+  // consequence in the interface's voice, and a failed delete stays on screen
+  // saying so instead of a browser dialog that has already closed.
+  const handleDelete = (id: string) => {
+    setPendingDelete({ id, name: jobNameMap.get(id) || id });
+  };
+  const confirmDelete = async (id: string) => {
+    // No local `Btn` animation on the row for this one: the row's button only
+    // opens the dialog, and the dialog's own affirmative carries the pending
+    // phase. The row used to tick "✓ Deleted" the moment the OS dialog closed —
+    // including when the answer had been Cancel.
+    try {
+      await apiFetch<unknown>(`/schedule/delete/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch (err) {
+      failAction(id, 'delete', err);
+    }
+    setPendingDelete(null);
+    await fetchJobs();
   };
   const handleKill = async (id: string) => {
     try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/kill`, { method: 'POST' }); fetchJobs(); }
@@ -844,6 +859,21 @@ export function AutomateView() {
           actionStates={actionStates} onActionDone={handleActionDone} />
       )}
 
+      {pendingDelete && (
+        <ConfirmDialog
+          title={`Delete "${pendingDelete.name}"?`}
+          consequence={
+            'The automation and its schedule are removed. Runs it has already made stay in '
+            + "Recent Activity, but the automation itself can't be restored — it has to be "
+            + 'created again.'
+          }
+          confirmLabel="Delete automation"
+          failureLabel="Couldn't delete it"
+          onConfirm={() => confirmDelete(pendingDelete.id)}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
+
       {showModal && <NewAutomationModal onClose={() => setShowModal(false)} onCreated={() => { setShowModal(false); fetchJobs(); }} />}
     </div>
   );
@@ -995,7 +1025,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
         {((job.user_customized && job.starter_id) || actionStates[`${job.id}:reset`]) && (
           <Btn label="Reset to default" onClick={() => onResetToDefault(job.id)} actionState={actionStates[`${job.id}:reset`]} successLabel="Reset complete" loadingLabel="Resetting..." onDone={() => onActionDone(`${job.id}:reset`)} />
         )}
-        <Btn label="Delete" onClick={() => onDelete(job.id)} danger muted actionState={actionStates[`${job.id}:delete`]} successLabel="Deleted" loadingLabel="Deleting..." onDone={() => onActionDone(`${job.id}:delete`, () => {})} />
+        <Btn label="Delete" onClick={() => onDelete(job.id)} danger muted />
       </div>
     </div>
   );
@@ -1101,7 +1131,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
         {((job.user_customized && job.starter_id) || actionStates[`${job.id}:reset`]) && (
           <Btn label="Reset to default" onClick={() => onResetToDefault(job.id)} actionState={actionStates[`${job.id}:reset`]} successLabel="Reset complete" loadingLabel="Resetting..." onDone={() => onActionDone(`${job.id}:reset`)} />
         )}
-        <Btn label="Delete" onClick={() => onDelete(job.id)} danger muted actionState={actionStates[`${job.id}:delete`]} successLabel="Deleted" loadingLabel="Deleting..." onDone={() => onActionDone(`${job.id}:delete`, () => {})} />
+        <Btn label="Delete" onClick={() => onDelete(job.id)} danger muted />
       </div>
     </>
   );

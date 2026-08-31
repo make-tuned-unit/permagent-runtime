@@ -14,6 +14,7 @@ import type { ThemeColors } from '../../styles/tokens';
 import { api, apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { ViewHeader } from '../common/ViewHeader';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 import type { Project } from '../projects/types';
 import { FiLoader } from 'react-icons/fi';
 import { FunnelPanel } from './FunnelPanel';
@@ -3637,19 +3638,26 @@ function FirstPartyAnalyticsPanel({
   // rebuilding the install. Rotating 401s the deployed site until the new value
   // is set on the app service and it redeploys.
   const [rotating, setRotating] = useState(false);
-  const rotateSecret = useCallback(() => {
-    if (!window.confirm(
-      'Mint a new drain key?\n\nIngestion will fail with 401 until you set the new value on '
-      + 'your app service and redeploy. Copy the fresh brief afterwards.',
-    )) return;
+  const [confirmingRotate, setConfirmingRotate] = useState(false);
+  // The one Tier-3 action on this panel, so the one that earns a modal: it is
+  // unrecoverable (the old key stops working the instant the new one is minted)
+  // and it breaks a deployed site until someone redeploys. It used to be an OS
+  // dialog — right tier, wrong widget. A failed rotation now says so on the
+  // dialog and leaves the panel intact, rather than replacing the whole panel
+  // with a load-error state that says nothing about what was attempted.
+  const rotateSecret = useCallback(async () => {
     setRotating(true);
-    apiFetch<FirstPartySetup>(
-      `/api/projects/${encodeURIComponent(projectId)}/analytics/first_party/rotate`,
-      { method: 'POST' },
-    )
-      .then((s) => { setSetup(s); onRefresh(); })
-      .catch(() => setSetupState('error'))
-      .finally(() => setRotating(false));
+    try {
+      const s = await apiFetch<FirstPartySetup>(
+        `/api/projects/${encodeURIComponent(projectId)}/analytics/first_party/rotate`,
+        { method: 'POST' },
+      );
+      setSetup(s);
+      onRefresh();
+      setConfirmingRotate(false);
+    } finally {
+      setRotating(false);
+    }
   }, [projectId, onRefresh]);
 
   const copy = useCallback((kind: 'snippet' | 'prompt', text: string | null | undefined) => {
@@ -3736,7 +3744,7 @@ function FirstPartyAnalyticsPanel({
               style={{ ...buttonStyle, opacity: rotating ? 0.6 : 1 }}
               disabled={rotating}
               title="Mint a new drain key — the old one stops working immediately"
-              onClick={rotateSecret}
+              onClick={() => setConfirmingRotate(true)}
             >{rotating ? 'Rotating…' : 'Rotate key'}</button>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -3919,6 +3927,21 @@ function FirstPartyAnalyticsPanel({
             ))}
           </div>
         </>
+      )}
+
+      {confirmingRotate && (
+        <ConfirmDialog
+          title="Mint a new drain key?"
+          consequence={
+            'The current key stops working the moment the new one is minted. '
+            + 'Ingestion fails with 401 until you set the new value on your app service '
+            + 'and it redeploys — copy the fresh install brief afterwards.'
+          }
+          confirmLabel="Mint a new key"
+          failureLabel="Couldn't mint a new key"
+          onConfirm={rotateSecret}
+          onCancel={() => setConfirmingRotate(false)}
+        />
       )}
     </div>
   );

@@ -24,6 +24,9 @@ export function ProvidersSection() {
   const [configuring, setConfiguring] = useState<ProviderInfo | null>(null);
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
+  /** Which card is asking "Remove …?" in place, and what it says if that fails. */
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<{ name: string; message: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<ProviderTab | null>(null);
   const [secretSources, setSecretSources] = useState<SecretSourcesResponse | undefined>();
@@ -58,14 +61,24 @@ export function ProvidersSection() {
 
   // Only user-defined ("Custom") providers can be removed — built-in ones have
   // no on-disk definition to delete.
+  //
+  // Destructive, but recoverable with effort (re-add the definition, re-enter
+  // the key), so it confirms INLINE on the card rather than in a modal — the
+  // card stays on screen so what is about to go is still readable. It used to
+  // be an OS dialog, which also meant a failed removal was a `console.error`
+  // and a card that simply stayed put, indistinguishable from a cancel.
   const handleRemove = useCallback(async (p: ProviderInfo) => {
-    if (!confirm(`Remove custom provider "${p.displayName}"? This deletes its saved configuration.`)) return;
     setRemoving(p.name);
+    setRemoveError(null);
     try {
       await api.removeCustomProvider(p.name);
+      setConfirmRemove(null);
       await loadProviders();
     } catch (e) {
-      console.error('Failed to remove custom provider:', e);
+      setRemoveError({
+        name: p.name,
+        message: e instanceof Error ? e.message : String(e),
+      });
     } finally {
       setRemoving(null);
     }
@@ -256,20 +269,57 @@ export function ProvidersSection() {
                 Set as default
               </button>
             )}
-            {p.providerType === 'Custom' && (
+            {p.providerType === 'Custom' && confirmRemove !== p.name && (
               <button
                 type="button"
-                onClick={() => handleRemove(p)}
-                disabled={removing === p.name}
-                className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded transition disabled:opacity-50 ml-auto"
+                onClick={() => { setConfirmRemove(p.name); setRemoveError(null); }}
+                className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded transition ml-auto"
                 style={{ border: `1px solid ${colors.danger}4D`, color: colors.danger }}
                 onMouseEnter={e => { e.currentTarget.style.backgroundColor = `${colors.danger}1A`; }}
                 onMouseLeave={e => { e.currentTarget.style.backgroundColor = ''; }}
               >
-                <FiTrash2 size={11} /> {removing === p.name ? 'Removing…' : 'Remove'}
+                <FiTrash2 size={11} /> Remove
               </button>
             )}
+            {p.providerType === 'Custom' && confirmRemove === p.name && (
+              <div className="flex items-center gap-2 ml-auto">
+                <button
+                  type="button"
+                  onClick={() => { setConfirmRemove(null); setRemoveError(null); }}
+                  disabled={removing === p.name}
+                  className="text-[11px] px-3 py-1.5 rounded transition disabled:opacity-50"
+                  style={{ border: `1px solid ${colors.border}`, color: colors.textMuted }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRemove(p)}
+                  disabled={removing === p.name}
+                  className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded transition disabled:opacity-50"
+                  style={{ border: `1px solid ${colors.danger}4D`, color: colors.danger }}
+                  onMouseEnter={e => { e.currentTarget.style.backgroundColor = `${colors.danger}1A`; }}
+                  onMouseLeave={e => { e.currentTarget.style.backgroundColor = ''; }}
+                >
+                  <FiTrash2 size={11} /> {removing === p.name ? 'Removing…' : 'Remove provider'}
+                </button>
+              </div>
+            )}
           </div>
+
+          {/* The two-step's own sentence: what removing this actually costs,
+              said on the card rather than in a dialog that covers it. */}
+          {confirmRemove === p.name && (
+            <div className="text-[11px] mt-2" style={{ fontFamily: font.body, color: colors.textMuted }}>
+              Remove {p.displayName}? This deletes its saved configuration — the endpoint,
+              the model list and the API key entry. You can add it again later, from scratch.
+            </div>
+          )}
+          {removeError?.name === p.name && (
+            <div role="alert" className="text-[11px] mt-2" style={{ fontFamily: font.body, color: colors.danger }}>
+              Couldn't remove {p.displayName} — {removeError.message}
+            </div>
+          )}
 
           {/* A configured reference the daemon cannot read. Stated on the card,
               not just inside the modal, because the whole point is that the
