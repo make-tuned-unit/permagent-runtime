@@ -4,6 +4,7 @@ import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
 import { cronToEnglish } from '../../lib/schedule-format';
 import { useCommandCenter } from '../../lib/store';
+import { AUTOMATION } from '../../lib/vocabulary';
 import { apiFetch } from '../../lib/api';
 import { useScheduleEvents } from '../../lib/useScheduleEvents';
 import { usePollWhenVisible } from '../../lib/usePollWhenVisible';
@@ -563,7 +564,7 @@ export function AutomateView() {
             <button onClick={() => setShowModal(true)} style={{
               padding: '6px 14px', borderRadius: radius.md, background: colors.cyan, color: colors.textOnCyan,
               fontWeight: 600, fontSize: 12, border: 'none', cursor: 'pointer', fontFamily: font.body,
-            }}>+ Create</button>
+            }}>+ Create {AUTOMATION.one}</button>
           </>}
         />
 
@@ -657,7 +658,7 @@ export function AutomateView() {
               <SectionState kind="error" message={runsError} onRetry={() => { setRunsLoading(true); fetchAllSessions(); }} />
             ) : allRuns.length === 0 ? (
               <div style={{ fontSize: 12, color: colors.textDim, padding: '8px 0' }}>
-                No runs yet. History appears here once an automation runs — use "Run Now" on a recipe to try one.
+                No runs yet. History appears here once an {AUTOMATION.one} runs — use "Run Now" on one to try it.
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -685,9 +686,13 @@ export function AutomateView() {
           </Section>
         )}
 
-        {/* ── RECIPES ── */}
+        {/* ── AUTOMATIONS ── (the word is the tab's own: this header said
+            "Recipes" while the button beside it said Create Automation, the
+            modal said New Automation and the delete said "Delete automation".
+            "Recipe" is the internal type's name — `RecipeCard`, the
+            `kind: 'recipe'` detail tag — and it stays there.) */}
         {!trulyEmpty && (
-          <Section title="Recipes" count={filteredJobs.length}>
+          <Section title={AUTOMATION.title} count={filteredJobs.length}>
             {jobsLoading && jobs.length === 0 ? (
               <SectionState kind="loading" message="Loading automations…" />
             ) : jobsError && jobs.length === 0 ? (
@@ -695,8 +700,8 @@ export function AutomateView() {
             ) : filteredJobs.length === 0 ? (
               <div style={{ fontSize: 12, color: colors.textDim, padding: '8px 0' }}>
                 {q
-                  ? `No recipes match "${search.trim()}".`
-                  : 'No recipes yet. Click "+ Create" to schedule your first automation.'}
+                  ? `No ${AUTOMATION.many} match "${search.trim()}".`
+                  : `No ${AUTOMATION.many} yet. Click "+ Create ${AUTOMATION.one}" to schedule your first one.`}
               </div>
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
