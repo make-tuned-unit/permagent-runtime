@@ -65,6 +65,20 @@ pub enum ComposerAction {
     Redraw,
 }
 
+/// Where the composer's Tab key gets its candidates.
+///
+/// The pinned composer owns the TTY for the whole session, so rustyline's
+/// editor — and with it every completion rule in
+/// [`super::completion::GooseCompleter`] — never runs on the daily path. This
+/// is the seam that lets the field reuse those already-tested rules without
+/// dragging rustyline's `Context` (and its history) into a module whose whole
+/// point is being pure and TTY-free.
+pub trait CompletionSource: Send + Sync {
+    /// `(replace_from_byte, replacements)` for a line whose cursor sits at its
+    /// end. `replace_from_byte` is a byte offset into `line`.
+    fn candidates(&self, line: &str) -> (usize, Vec<String>);
+}
+
 /// What the turn is doing right now.
 ///
 /// Added 2026-08-25. A GLM-5.3 session spent four minutes and fourteen
@@ -111,6 +125,24 @@ pub struct ComposerState {
     pub cwd: String,
     pub cost: String,
     pub tokens: String,
+    /// How full the model's context window is, pre-rendered (`"38% ctx"`), or
+    /// empty when it is not known. A session total of tokens says how much work
+    /// happened; only this says how close the next turn is to being truncated,
+    /// and it used to be visible ONLY on the legacy non-composer path — i.e.
+    /// never, in daily use.
+    pub context: String,
+    /// Open completion candidates, selection at [`Self::suggestion_idx`].
+    /// Empty when no menu is open.
+    pub suggestions: Vec<String>,
+    pub suggestion_idx: usize,
+    /// Byte offset in `buffer` where the completed span starts, so cycling
+    /// replaces the previous candidate instead of appending to it.
+    suggestion_anchor: usize,
+    /// Display column a run of Up/Down is aiming for. Sticky across the run so
+    /// crossing a short line and coming back lands where the eye left off,
+    /// instead of dragging the cursor left one line at a time. Cleared by any
+    /// other key.
+    goal_column: Option<usize>,
     pub maybe_exit: bool,
     pub light: bool,
     /// Inside `ESC[200~ … ESC[201~`: the terminal is replaying pasted bytes,
@@ -197,9 +229,37 @@ impl ComposerState {
             .unwrap_or(0)
     }
 
+    /// [`Self::apply_with`] with no completion source — the shape every key
+    /// except Tab has. Test-only: the live composer always has a source, and a
+    /// product caller that reached for this would silently lose Tab.
+    #[cfg(test)]
     pub fn apply(&mut self, key: KeyEvent) -> ComposerAction {
+        self.apply_with(key, None)
+    }
+
+    pub fn apply_with(
+        &mut self,
+        key: KeyEvent,
+        completions: Option<&dyn CompletionSource>,
+    ) -> ComposerAction {
         if self.pasting {
             return self.apply_pasted(key);
+        }
+        if !matches!(key, KeyEvent::Up | KeyEvent::Down) {
+            self.goal_column = None;
+        }
+        if matches!(key, KeyEvent::Tab) {
+            return self.on_tab(completions);
+        }
+        // Any other key retires an open menu: those candidates were computed
+        // for the line as it stood, and a stale list is worse than none.
+        // Escape's only job is that dismissal — it must NOT also clear the
+        // draft the way a bare Escape does, or one keystroke does two things.
+        if !self.suggestions.is_empty() {
+            self.clear_suggestions();
+            if matches!(key, KeyEvent::Escape) {
+                return ComposerAction::Redraw;
+            }
         }
         self.maybe_exit = matches!(key, KeyEvent::CtrlC) && self.maybe_exit_after(key);
         match key {
@@ -250,12 +310,24 @@ impl ComposerState {
                 self.cursor = self.buffer.len();
                 ComposerAction::Redraw
             }
+            // Within a multi-line draft the arrows move the cursor; history
+            // recall only takes over once there is no line left to move to.
+            // Recalling unconditionally is what swapped a three-line draft out
+            // from under anyone who reached for the line above it.
             KeyEvent::Up => {
-                self.history_prev();
+                if self.cursor_line().0 > 0 {
+                    self.move_cursor_line(-1);
+                } else {
+                    self.history_prev();
+                }
                 ComposerAction::Redraw
             }
             KeyEvent::Down => {
-                self.history_next();
+                if self.cursor_line().0 + 1 < self.line_count() {
+                    self.move_cursor_line(1);
+                } else {
+                    self.history_next();
+                }
                 ComposerAction::Redraw
             }
             KeyEvent::Enter => self.submit(false),
@@ -422,6 +494,124 @@ impl ComposerState {
         self.cursor += next;
     }
 
+    // ── completion ─────────────────────────────────────────────────────────
+
+    /// Tab: open a candidate list, or cycle the one already open.
+    ///
+    /// One candidate is filled in and no menu opens — a menu that lists a
+    /// single entry is a row of noise. Zero candidates leave the buffer
+    /// untouched: Tab must never silently mangle a draft.
+    fn on_tab(&mut self, completions: Option<&dyn CompletionSource>) -> ComposerAction {
+        self.maybe_exit = false;
+        if !self.suggestions.is_empty() {
+            self.suggestion_idx = (self.suggestion_idx + 1) % self.suggestions.len();
+            self.fill_suggestion();
+            return ComposerAction::Redraw;
+        }
+        let Some(source) = completions else {
+            return ComposerAction::Redraw;
+        };
+        // The completer reasons about a line whose cursor is at its end, so
+        // hand it exactly the current logical line up to the cursor.
+        let line_start = before_cursor(&self.buffer, self.cursor)
+            .rfind('\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let line = before_cursor(&self.buffer, self.cursor)
+            .get(line_start..)
+            .unwrap_or_default()
+            .to_string();
+        let (from, candidates) = source.candidates(&line);
+        if candidates.is_empty() {
+            return ComposerAction::Redraw;
+        }
+        self.history_idx = None;
+        self.stash = None;
+        self.suggestion_anchor = line_start + from.min(line.len());
+        self.suggestions = candidates;
+        self.suggestion_idx = 0;
+        self.fill_suggestion();
+        if self.suggestions.len() == 1 {
+            self.clear_suggestions();
+        }
+        ComposerAction::Redraw
+    }
+
+    /// Swap the completed span for the selected candidate, so cycling replaces
+    /// the previous fill rather than stacking onto it.
+    fn fill_suggestion(&mut self) {
+        let Some(candidate) = self.suggestions.get(self.suggestion_idx).cloned() else {
+            return;
+        };
+        let anchor = self.suggestion_anchor.min(self.buffer.len());
+        let end = self.cursor.max(anchor).min(self.buffer.len());
+        self.buffer.replace_range(anchor..end, &candidate);
+        self.cursor = anchor + candidate.len();
+    }
+
+    fn clear_suggestions(&mut self) {
+        self.suggestions.clear();
+        self.suggestion_idx = 0;
+        self.suggestion_anchor = 0;
+    }
+
+    // ── vertical movement ──────────────────────────────────────────────────
+
+    /// `(index of the cursor's logical line, byte offset of that line's start)`.
+    fn cursor_line(&self) -> (usize, usize) {
+        let prefix = before_cursor(&self.buffer, self.cursor);
+        (
+            prefix.bytes().filter(|&b| b == b'\n').count(),
+            prefix.rfind('\n').map(|i| i + 1).unwrap_or(0),
+        )
+    }
+
+    fn line_count(&self) -> usize {
+        self.buffer.bytes().filter(|&b| b == b'\n').count() + 1
+    }
+
+    /// Byte `(start, end)` of every logical line, newline excluded.
+    fn logical_line_bounds(&self) -> Vec<(usize, usize)> {
+        let mut bounds = Vec::new();
+        let mut start = 0;
+        for (i, byte) in self.buffer.bytes().enumerate() {
+            if byte == b'\n' {
+                bounds.push((start, i));
+                start = i + 1;
+            }
+        }
+        bounds.push((start, self.buffer.len()));
+        bounds
+    }
+
+    /// Move one logical line, keeping the display column where the target line
+    /// is long enough and clamping to its end where it is not — so walking a
+    /// ragged draft lands where the eye expects instead of at column zero.
+    fn move_cursor_line(&mut self, delta: isize) {
+        let bounds = self.logical_line_bounds();
+        let (idx, start) = self.cursor_line();
+        let here = measure_text_width(self.buffer.get(start..self.cursor).unwrap_or(""));
+        let column = *self.goal_column.get_or_insert(here);
+        let target = (idx as isize + delta).clamp(0, bounds.len() as isize - 1) as usize;
+        let (target_start, target_end) = bounds[target];
+        let mut cursor = target_start;
+        let mut used = 0usize;
+        for (offset, ch) in self
+            .buffer
+            .get(target_start..target_end)
+            .unwrap_or_default()
+            .char_indices()
+        {
+            let char_width = measure_text_width(&ch.to_string());
+            if used + char_width > column {
+                break;
+            }
+            used += char_width;
+            cursor = target_start + offset + ch.len_utf8();
+        }
+        self.cursor = cursor.min(target_end);
+    }
+
     fn push_history(&mut self, text: String) {
         if self.history.last() != Some(&text) {
             self.history.push(text);
@@ -429,6 +619,7 @@ impl ComposerState {
     }
 
     fn history_prev(&mut self) {
+        self.goal_column = None;
         if self.history.is_empty() {
             return;
         }
@@ -451,6 +642,7 @@ impl ComposerState {
     }
 
     fn history_next(&mut self) {
+        self.goal_column = None;
         let Some(i) = self.history_idx else {
             return;
         };
@@ -492,38 +684,62 @@ struct InputLayout {
     cursor_col: usize,
 }
 
-/// Return a display-width-limited slice which keeps `cursor` visible.
-fn line_viewport(line: &str, cursor: usize, width: usize) -> (String, usize) {
-    if width == 0 {
-        return (String::new(), 0);
-    }
-    let cursor = cursor.min(line.len());
-    let chars: Vec<char> = line.chars().collect();
-    // `cursor` is a byte offset from the edit buffer; `get` degrades a stray
-    // mid-codepoint offset to "count the whole line" instead of panicking.
-    let cursor_idx = line.get(..cursor).unwrap_or(line).chars().count();
-    let mut start = cursor_idx;
-    let mut before_width = 0;
-    while start > 0 {
-        let char_width = measure_text_width(&chars[start - 1].to_string());
-        if before_width + char_width > width {
-            break;
-        }
-        before_width += char_width;
-        start -= 1;
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VisualInputRow {
+    text: String,
+    /// Absolute byte offsets in the sanitized input buffer. Sanitization keeps
+    /// byte lengths unchanged, so these also locate the editor cursor.
+    start: usize,
+    end: usize,
+    logical_line: usize,
+}
+
+/// Soft-wrap one logical line into display-width-bounded visual rows. The old
+/// horizontal viewport hid the beginning of long prompts, so users could not
+/// review a full message before sending it. Rows retain byte ranges for exact
+/// Unicode cursor placement.
+fn wrap_logical_line(
+    line: &str,
+    line_start: usize,
+    logical_line: usize,
+    width: usize,
+) -> Vec<VisualInputRow> {
+    if line.is_empty() {
+        return vec![VisualInputRow {
+            text: String::new(),
+            start: line_start,
+            end: line_start,
+            logical_line,
+        }];
     }
 
-    let mut body = String::new();
-    let mut body_width = 0;
-    for ch in chars.into_iter().skip(start) {
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    let mut row_start = line_start;
+    let mut row_width = 0usize;
+    for (offset, ch) in line.char_indices() {
         let char_width = measure_text_width(&ch.to_string());
-        if body_width + char_width > width {
-            break;
+        if !row.is_empty() && row_width + char_width > width {
+            let absolute = line_start + offset;
+            rows.push(VisualInputRow {
+                text: std::mem::take(&mut row),
+                start: row_start,
+                end: absolute,
+                logical_line,
+            });
+            row_start = absolute;
+            row_width = 0;
         }
-        body.push(ch);
-        body_width += char_width;
+        row.push(ch);
+        row_width += char_width;
     }
-    (body, before_width.min(width))
+    rows.push(VisualInputRow {
+        text: row,
+        start: row_start,
+        end: line_start + line.len(),
+        logical_line,
+    });
+    rows
 }
 
 /// A single width-aware layout plan drives height, rendered rows, and cursor.
@@ -535,49 +751,113 @@ fn input_layout(state: &ComposerState, width: usize) -> InputLayout {
         .saturating_sub(2) // box padding
         .saturating_sub(prompt_w);
     let display = sanitize_keep_newlines(&state.buffer);
-    let logical: Vec<&str> = if display.is_empty() {
-        vec![""]
-    } else {
-        display.split('\n').collect()
-    };
+    let logical: Vec<&str> = display.split('\n').collect();
     let prefix = before_cursor(&state.buffer, state.cursor);
     let cursor_line = prefix.bytes().filter(|&byte| byte == b'\n').count();
-    let cursor_line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let cursor_in_line = state.cursor.saturating_sub(cursor_line_start);
-    let visible_count = logical.len().clamp(1, MAX_INPUT_ROWS);
-    let first = if logical.len() <= MAX_INPUT_ROWS {
+    let cursor = state.cursor.min(display.len());
+
+    let mut visual = Vec::new();
+    let mut line_start = 0usize;
+    for (logical_line, line) in logical.iter().enumerate() {
+        visual.extend(wrap_logical_line(line, line_start, logical_line, text_w));
+        line_start += line.len();
+        if logical_line + 1 < logical.len() {
+            line_start += 1; // the explicit newline byte
+        }
+    }
+
+    // At a soft-wrap boundary the cursor belongs at column zero of the next
+    // visual row. At a real logical-line end it remains after the last glyph.
+    let cursor_visual = visual
+        .iter()
+        .enumerate()
+        .find_map(|(idx, row)| {
+            if row.logical_line != cursor_line {
+                return None;
+            }
+            let next_is_same_line = visual
+                .get(idx + 1)
+                .is_some_and(|next| next.logical_line == cursor_line);
+            if cursor < row.end || (cursor == row.end && !next_is_same_line) {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            visual
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, row)| row.logical_line == cursor_line)
+                .map(|(idx, _)| idx)
+        })
+        .unwrap_or(0);
+
+    let visible_count = visual.len().clamp(1, MAX_INPUT_ROWS);
+    let first = if visual.len() <= MAX_INPUT_ROWS {
         0
     } else {
-        cursor_line
+        cursor_visual
             .saturating_sub(MAX_INPUT_ROWS - 1)
-            .min(logical.len() - MAX_INPUT_ROWS)
+            .min(visual.len() - MAX_INPUT_ROWS)
     };
 
     let mut rows = Vec::with_capacity(visible_count);
     let mut cursor_col = 0;
-    for (logical_idx, line) in logical.iter().enumerate().skip(first).take(visible_count) {
-        let line = *line;
+    for (visual_idx, row) in visual.iter().enumerate().skip(first).take(visible_count) {
         if display.is_empty() {
             rows.push(truncate(PLACEHOLDER, text_w));
-        } else if logical_idx == cursor_line {
-            let (visible, col) = line_viewport(line, cursor_in_line, text_w);
-            rows.push(visible);
-            cursor_col = col;
         } else {
-            rows.push(truncate(line, text_w));
+            rows.push(row.text.clone());
+        }
+        if visual_idx == cursor_visual {
+            let local_end = cursor.clamp(row.start, row.end);
+            cursor_col = display
+                .get(row.start..local_end)
+                .map(measure_text_width)
+                .unwrap_or(0)
+                .min(text_w);
         }
     }
 
     InputLayout {
         rows,
-        cursor_row: cursor_line.saturating_sub(first).min(visible_count - 1),
+        cursor_row: cursor_visual.saturating_sub(first).min(visible_count - 1),
         cursor_col,
     }
 }
 
 /// Rows the composer occupies, including status + box + footer.
 pub fn composer_rows(state: &ComposerState, width: usize) -> usize {
-    4 + input_layout(state, width).rows.len()
+    4 + input_layout(state, width).rows.len() + usize::from(state.suggestions.len() > 1)
+}
+
+/// The open completion menu, as one row, or `None` when nothing is open.
+///
+/// Deliberately one row for the same reason the busy status is: the pinned
+/// strip's height is arithmetic, and a menu that wrapped would push the box
+/// off its reserved rows and smear a copy into the scrollback. A single
+/// candidate never opens a menu — it is simply filled in.
+fn suggestion_row(state: &ComposerState, width: usize) -> Option<String> {
+    if state.suggestions.len() < 2 {
+        return None;
+    }
+    let listed = state
+        .suggestions
+        .iter()
+        .enumerate()
+        .map(|(i, candidate)| {
+            let candidate = sanitize_row(candidate.trim());
+            if i == state.suggestion_idx {
+                format!("[{candidate}]")
+            } else {
+                candidate
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("  ");
+    Some(truncate(&format!("  tab · {listed}"), width))
 }
 
 pub fn status_line(state: &ComposerState) -> String {
@@ -802,6 +1082,39 @@ fn pad_to(s: &str, width: usize) -> String {
     }
 }
 
+/// The persistent footer, built once for both renderers.
+///
+/// Left is what the session IS (model, and how much of its window is spent);
+/// right is what it has COST and where it is running. Empty fields drop out
+/// rather than rendering as blanks, because an unknown figure and a real one
+/// must not look the same.
+fn footer_line(state: &ComposerState, width: usize) -> String {
+    let left = [
+        state.model.as_str(),
+        state.tokens.as_str(),
+        state.context.as_str(),
+    ]
+    .into_iter()
+    .filter(|s| !s.is_empty())
+    .collect::<Vec<_>>()
+    .join("  ·  ");
+    let right = [state.cost.as_str(), state.cwd.as_str()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("  ·  ");
+    if right.is_empty() {
+        left
+    } else if left.is_empty() {
+        right
+    } else {
+        let gap = width
+            .saturating_sub(measure_text_width(&left) + measure_text_width(&right))
+            .max(2);
+        format!("{left}{}{right}", " ".repeat(gap))
+    }
+}
+
 /// Plain (no ANSI) lines — used by tests to pin the layout contract:
 /// a boxed field is always present, busy or idle.
 #[cfg(test)]
@@ -827,27 +1140,11 @@ pub fn render_plain(state: &ComposerState, width: usize) -> Vec<String> {
         lines.push(truncate(&row, width));
     }
     lines.push(bot);
+    if let Some(row) = suggestion_row(state, width) {
+        lines.push(row);
+    }
 
-    let left = [state.model.as_str(), state.tokens.as_str()]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("  ·  ");
-    let right = [state.cost.as_str(), state.cwd.as_str()]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("  ·  ");
-    let footer = if right.is_empty() {
-        left
-    } else if left.is_empty() {
-        right
-    } else {
-        let gap = width
-            .saturating_sub(measure_text_width(&left) + measure_text_width(&right))
-            .max(2);
-        format!("{left}{}{right}", " ".repeat(gap))
-    };
+    let footer = footer_line(state, width);
     lines.push(truncate(&footer, width));
     lines
 }
@@ -965,27 +1262,11 @@ pub fn render_ansi(state: &ComposerState, width: usize) -> Vec<String> {
         ));
     }
     lines.push(format!("{border}╰{}╯{reset}", "─".repeat(inner)));
+    if let Some(row) = suggestion_row(state, width) {
+        lines.push(format!("{}{}{reset}", sgr_fg(accent), pad_to(&row, width)));
+    }
 
-    let left = [state.model.as_str(), state.tokens.as_str()]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("  ·  ");
-    let right = [state.cost.as_str(), state.cwd.as_str()]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("  ·  ");
-    let footer = if right.is_empty() {
-        left
-    } else if left.is_empty() {
-        right
-    } else {
-        let gap = width
-            .saturating_sub(measure_text_width(&left) + measure_text_width(&right))
-            .max(2);
-        format!("{left}{}{right}", " ".repeat(gap))
-    };
+    let footer = footer_line(state, width);
     lines.push(format!("{}{}{reset}", sgr_fg(dim), pad_to(&footer, width)));
     lines
 }
@@ -1172,6 +1453,17 @@ pub fn format_tokens(n: usize) -> String {
     }
 }
 
+/// `"42% ctx"` — how full the model's context window is, or `""` when that is
+/// not a knowable number (no limit reported, or nothing counted yet).
+pub fn format_context_fill(total_tokens: usize, context_limit: usize) -> String {
+    if context_limit == 0 || total_tokens == 0 {
+        return String::new();
+    }
+    let percentage =
+        (((total_tokens as f64 / context_limit as f64) * 100.0).round() as usize).min(100);
+    format!("{percentage}% ctx")
+}
+
 pub fn format_cost(session_total_usd: Option<f64>, total_tokens: i32) -> String {
     match session_total_usd {
         Some(v) if v == 0.0 && total_tokens > 0 => "$0.00".to_string(),
@@ -1271,6 +1563,7 @@ mod tty {
         output_prepared: bool,
         has_output_cursor: bool,
         installed: bool,
+        completions: Option<Arc<dyn CompletionSource>>,
     }
 
     impl Composer {
@@ -1335,10 +1628,18 @@ mod tty {
                 output_prepared: false,
                 has_output_cursor: false,
                 installed: false,
+                completions: None,
             };
             c.install_region();
             c.paint();
             Some(c)
+        }
+
+        /// Give Tab something to complete. Separate from `try_install` because
+        /// the completion cache is only populated once the session's extensions
+        /// have reported their prompts.
+        pub fn set_completions(&mut self, source: Arc<dyn CompletionSource>) {
+            self.completions = Some(source);
         }
 
         fn refresh_size(&mut self) {
@@ -1514,7 +1815,7 @@ mod tty {
                 let events = decode_keys(&bytes, &mut self.parse_buf);
                 for ev in events {
                     changed = true;
-                    let action = self.state.apply(ev);
+                    let action = self.state.apply_with(ev, self.completions.as_deref());
                     if !matches!(action, ComposerAction::Redraw) && first.is_none() {
                         first = Some(action);
                     }
@@ -1544,7 +1845,7 @@ mod tty {
                         let events = decode_keys(&bytes, &mut self.parse_buf);
                         let mut out = None;
                         for ev in events {
-                            let action = self.state.apply(ev);
+                            let action = self.state.apply_with(ev, self.completions.as_deref());
                             if !matches!(action, ComposerAction::Redraw) {
                                 out = Some(action);
                             }
@@ -1593,6 +1894,7 @@ impl Composer {
     pub fn try_install() -> Option<Self> {
         None
     }
+    pub fn set_completions(&mut self, _source: std::sync::Arc<dyn CompletionSource>) {}
     pub fn paint(&mut self) {}
     pub fn prepare_output(&mut self) {}
     pub fn set_busy(&mut self, busy: bool) {
@@ -1787,6 +2089,15 @@ mod tests {
         assert_eq!(composer_rows(&state, 24), 4 + MAX_INPUT_ROWS);
     }
 
+    /// REWRITTEN. This test used to assert `layout.rows[0].ends_with("END")` —
+    /// that the FIRST and only rendered row ended with the tail of the buffer,
+    /// i.e. that everything before the tail had been ellipsis-truncated away.
+    /// That assertion was pinning the bug, not the contract: it made "you
+    /// cannot read the beginning of your own prompt before sending it" a
+    /// tested guarantee, and any fix would have had to break it. The behaviour
+    /// worth guaranteeing is that the tail *and* the cursor stay visible while
+    /// the prefix survives on earlier rows, so the assertion now reads
+    /// `rows.last()`, and the frame-width sweep it always did is kept.
     #[test]
     fn narrow_layout_keeps_long_unicode_tail_and_cursor_visible() {
         for width in [24, 40, 80, 120] {
@@ -1794,7 +2105,14 @@ mod tests {
             state.buffer = "beginning-🙂-東京-abcdefghijklmnopqrstuvwxyz-END".into();
             state.cursor = state.buffer.len();
             let layout = input_layout(&state, width);
-            assert!(layout.rows[0].ends_with("END"), "width {width}: {layout:?}");
+            assert!(
+                layout.rows.last().is_some_and(|row| row.ends_with("END")),
+                "width {width}: {layout:?}"
+            );
+            assert!(
+                layout.rows.concat().starts_with("beginning-"),
+                "the prefix must survive, not be truncated away: width {width}: {layout:?}"
+            );
             assert!(layout.cursor_col <= width, "width {width}: {layout:?}");
             let frame = render_plain(&state, width);
             assert_eq!(frame.len(), composer_rows(&state, width));
@@ -1803,6 +2121,279 @@ mod tests {
                 "width {width}: {frame:?}"
             );
         }
+    }
+
+    #[test]
+    fn long_single_line_soft_wraps_instead_of_hiding_its_prefix() {
+        let mut state = idle();
+        state.buffer =
+            "Is there a new SQL migration for me to run before deploying this change?".into();
+        state.cursor = state.buffer.len();
+        let layout = input_layout(&state, 32);
+        assert!(layout.rows.len() >= 3, "{layout:?}");
+        assert!(layout.rows[0].starts_with("Is there a new"), "{layout:?}");
+        assert!(
+            layout.rows.last().unwrap().ends_with("change?"),
+            "{layout:?}"
+        );
+        assert!(layout.rows.iter().all(|row| measure_text_width(row) <= 26));
+        assert_eq!(composer_rows(&state, 32), 4 + layout.rows.len());
+    }
+
+    #[test]
+    fn cursor_moves_to_column_zero_at_a_soft_wrap_boundary() {
+        let mut state = idle();
+        // At width 24, the input text width is 18 columns.
+        state.buffer = "123456789012345678next".into();
+        state.cursor = 18;
+        let layout = input_layout(&state, 24);
+        assert_eq!(layout.rows, vec!["123456789012345678", "next"]);
+        assert_eq!(layout.cursor_row, 1);
+        assert_eq!(layout.cursor_col, 0);
+    }
+
+    // ── Tab completion (W1b item 1) ────────────────────────────────────────
+
+    /// Stands in for `GooseCompleter` so the key contract can be asserted
+    /// without a completion cache or a filesystem.
+    struct FakeCompletions(Vec<String>);
+
+    impl CompletionSource for FakeCompletions {
+        fn candidates(&self, line: &str) -> (usize, Vec<String>) {
+            (
+                0,
+                self.0
+                    .iter()
+                    .filter(|c| c.starts_with(line))
+                    .cloned()
+                    .collect(),
+            )
+        }
+    }
+
+    fn slash_commands() -> FakeCompletions {
+        FakeCompletions(vec![
+            "/mode ".to_string(),
+            "/model ".to_string(),
+            "/mcp ".to_string(),
+        ])
+    }
+
+    fn tab(state: &mut ComposerState, source: &dyn CompletionSource) -> ComposerAction {
+        state.apply_with(KeyEvent::Tab, Some(source))
+    }
+
+    /// Tab was a total no-op on the daily path: `GooseCompleter` was only ever
+    /// reachable through the rustyline fallback the composer bypasses, so
+    /// `/model` and friends had no discoverability at all.
+    #[test]
+    fn tab_offers_slash_commands_and_cycles_them() {
+        let source = slash_commands();
+        let mut state = idle();
+        for c in "/mo".chars() {
+            state.apply(KeyEvent::Char(c));
+        }
+        assert_eq!(tab(&mut state, &source), ComposerAction::Redraw);
+        assert_eq!(state.suggestions, vec!["/mode ", "/model "]);
+        assert_eq!(state.buffer, "/mode ");
+        assert_eq!(state.cursor, state.buffer.len());
+
+        tab(&mut state, &source);
+        assert_eq!(state.suggestion_idx, 1);
+        assert_eq!(state.buffer, "/model ", "tab cycles in place, not appends");
+
+        // …and wraps back around rather than dead-ending.
+        tab(&mut state, &source);
+        assert_eq!(state.buffer, "/mode ");
+    }
+
+    #[test]
+    fn tab_fills_a_lone_candidate_without_opening_a_menu() {
+        let source = slash_commands();
+        let mut state = idle();
+        for c in "/mc".chars() {
+            state.apply(KeyEvent::Char(c));
+        }
+        tab(&mut state, &source);
+        assert_eq!(state.buffer, "/mcp ");
+        assert!(
+            state.suggestions.is_empty(),
+            "one candidate needs no menu: {:?}",
+            state.suggestions
+        );
+    }
+
+    #[test]
+    fn tab_with_nothing_to_offer_leaves_the_buffer_alone() {
+        let source = slash_commands();
+        let mut state = idle();
+        for c in "/zz".chars() {
+            state.apply(KeyEvent::Char(c));
+        }
+        tab(&mut state, &source);
+        assert_eq!(state.buffer, "/zz");
+        assert!(state.suggestions.is_empty());
+    }
+
+    #[test]
+    fn an_open_menu_costs_one_row_and_closes_on_the_next_key() {
+        let source = slash_commands();
+        let mut state = idle();
+        for c in "/mo".chars() {
+            state.apply(KeyEvent::Char(c));
+        }
+        let closed_rows = composer_rows(&state, 80);
+        tab(&mut state, &source);
+        assert_eq!(
+            composer_rows(&state, 80),
+            closed_rows + 1,
+            "the menu is exactly one row: the pinned strip must not jump"
+        );
+        let frame = render_plain(&state, 80);
+        assert_eq!(frame.len(), composer_rows(&state, 80));
+        assert!(
+            frame.iter().any(|l| l.contains("/model")),
+            "the menu must name the candidates: {frame:?}"
+        );
+
+        // Escape dismisses the menu and keeps the draft — it does not also
+        // clear the buffer the way a bare Escape does.
+        assert_eq!(state.apply(KeyEvent::Escape), ComposerAction::Redraw);
+        assert!(state.suggestions.is_empty());
+        assert_eq!(state.buffer, "/mode ");
+        assert_eq!(composer_rows(&state, 80), closed_rows);
+    }
+
+    #[test]
+    fn typing_after_a_tab_retires_the_stale_candidate_list() {
+        let source = slash_commands();
+        let mut state = idle();
+        for c in "/mo".chars() {
+            state.apply(KeyEvent::Char(c));
+        }
+        tab(&mut state, &source);
+        assert!(!state.suggestions.is_empty());
+        state.apply(KeyEvent::Char('x'));
+        assert!(
+            state.suggestions.is_empty(),
+            "candidates were computed for a line that no longer exists"
+        );
+    }
+
+    // ── Up/Down (W1b item 3) ───────────────────────────────────────────────
+
+    /// Up/Down used to recall history unconditionally, so editing a three-line
+    /// draft and reaching for the line above swapped the whole draft out.
+    /// Claude Code's convention: move within the buffer, and only fall through
+    /// to history at the buffer's first/last line.
+    #[test]
+    fn up_moves_within_a_multiline_draft_and_only_then_recalls() {
+        let mut state = idle();
+        for c in "history".chars() {
+            state.apply(KeyEvent::Char(c));
+        }
+        state.apply(KeyEvent::Enter);
+        state.buffer = "alpha\nbeta\ngamma".into();
+        state.cursor = state.buffer.len();
+
+        state.apply(KeyEvent::Up);
+        assert_eq!(state.buffer, "alpha\nbeta\ngamma", "the draft must survive");
+        assert_eq!(before_cursor(&state.buffer, state.cursor), "alpha\nbeta");
+
+        state.apply(KeyEvent::Up);
+        assert_eq!(before_cursor(&state.buffer, state.cursor), "alpha");
+
+        // Already on the first line: NOW history takes over.
+        state.apply(KeyEvent::Up);
+        assert_eq!(state.buffer, "history");
+    }
+
+    #[test]
+    fn down_moves_within_a_multiline_draft_and_only_then_recalls() {
+        let mut state = idle();
+        for c in "history".chars() {
+            state.apply(KeyEvent::Char(c));
+        }
+        state.apply(KeyEvent::Enter);
+        state.buffer = "alpha\nbeta\ngamma".into();
+        state.cursor = 0;
+
+        state.apply(KeyEvent::Down);
+        assert_eq!(before_cursor(&state.buffer, state.cursor), "alpha\n");
+        state.apply(KeyEvent::Down);
+        assert_eq!(before_cursor(&state.buffer, state.cursor), "alpha\nbeta\n");
+
+        // Last line, and no history walk is in progress: nothing to recall
+        // forward to, so the draft stays put.
+        state.apply(KeyEvent::Down);
+        assert_eq!(state.buffer, "alpha\nbeta\ngamma");
+    }
+
+    /// A single-line draft has no line to move to, so Up/Down keep meaning
+    /// history — the behaviour every existing session muscle-memory relies on.
+    #[test]
+    fn a_single_line_draft_still_recalls_history_immediately() {
+        let mut state = idle();
+        for c in "one".chars() {
+            state.apply(KeyEvent::Char(c));
+        }
+        state.apply(KeyEvent::Enter);
+        for c in "draft".chars() {
+            state.apply(KeyEvent::Char(c));
+        }
+        state.apply(KeyEvent::Up);
+        assert_eq!(state.buffer, "one");
+        state.apply(KeyEvent::Down);
+        assert_eq!(state.buffer, "draft");
+    }
+
+    /// Vertical movement keeps the display column, so walking up a ragged
+    /// draft lands where the eye expects rather than at column zero.
+    #[test]
+    fn vertical_movement_keeps_the_column_it_can() {
+        let mut state = idle();
+        state.buffer = "abcdefgh\nij\nklmnopqr".into();
+        state.cursor = state.buffer.len() - 2; // column 6 of the last line
+        state.apply(KeyEvent::Up);
+        assert_eq!(
+            before_cursor(&state.buffer, state.cursor),
+            "abcdefgh\nij",
+            "short line clamps to its end"
+        );
+        state.apply(KeyEvent::Up);
+        assert_eq!(
+            before_cursor(&state.buffer, state.cursor),
+            "abcdef",
+            "column restored"
+        );
+    }
+
+    // ── context fill (W1b item 4) ──────────────────────────────────────────
+
+    #[test]
+    fn the_footer_says_how_full_the_context_window_is() {
+        let mut state = idle();
+        state.model = "claude-opus-4-6".into();
+        state.tokens = "84k tok".into();
+        state.context = format_context_fill(84_000, 200_000);
+        let footer = render_plain(&state, 80).last().unwrap().clone();
+        assert!(footer.contains("42% ctx"), "{footer}");
+        assert!(footer.contains("84k tok"), "{footer}");
+    }
+
+    /// An unknown limit and an empty session are not "0% full" — they are not
+    /// a number at all, and a chip that claims otherwise is the same lie the
+    /// cost meter used to tell.
+    #[test]
+    fn an_unknown_context_limit_renders_no_chip() {
+        assert_eq!(format_context_fill(1_000, 0), "");
+        assert_eq!(format_context_fill(0, 200_000), "");
+        assert_eq!(format_context_fill(84_000, 200_000), "42% ctx");
+        assert_eq!(
+            format_context_fill(400_000, 200_000),
+            "100% ctx",
+            "an overflowing window still reads as full, never above it"
+        );
     }
 
     #[test]

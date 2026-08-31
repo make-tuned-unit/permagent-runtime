@@ -540,6 +540,13 @@ impl CliSession {
 
         self.update_completion_cache().await?;
 
+        // Tab in the composer: the same `GooseCompleter` the fallback editor
+        // below gets. Attached after the cache is populated so the first Tab
+        // already knows the session's prompts.
+        if let Some(c) = self.composer.as_mut() {
+            c.set_completions(Arc::new(GooseCompleter::new(self.completion_cache.clone())));
+        }
+
         let mut editor = self.create_editor()?;
         let history_manager = HistoryManager::new();
         history_manager.load(&mut editor);
@@ -666,26 +673,37 @@ impl CliSession {
             return Ok(());
         }
         let theme = output::get_theme();
-        let model = self
+        // One provider read serves both the model name and the window it is
+        // measured against; `display_context_usage` reads the same pair, so
+        // the footer chip and the legacy line can never disagree.
+        let model_config = self
             .agent
             .provider()
             .await
             .ok()
-            .map(|p| p.get_model_config().model_name.clone())
+            .map(|p| p.get_model_config());
+        let model = model_config
+            .as_ref()
+            .map(|c| c.model_name.clone())
             .unwrap_or_default();
+        let context_limit = model_config.map(|c| c.context_limit()).unwrap_or(0);
         let cwd = std::env::current_dir()
             .ok()
             .map(|p| composer::abbreviate_home(&p.display().to_string()))
             .unwrap_or_default();
-        let (tokens, cost) = match self.get_session().await {
-            Ok(metadata) => (
-                composer::format_tokens(metadata.total_tokens.unwrap_or(0) as usize),
-                composer::format_cost(
-                    metadata.accumulated_cost_usd,
-                    metadata.accumulated_total_tokens.unwrap_or(0),
-                ),
-            ),
-            Err(_) => (String::new(), String::new()),
+        let (tokens, cost, context) = match self.get_session().await {
+            Ok(metadata) => {
+                let total_tokens = metadata.total_tokens.unwrap_or(0) as usize;
+                (
+                    composer::format_tokens(total_tokens),
+                    composer::format_cost(
+                        metadata.accumulated_cost_usd,
+                        metadata.accumulated_total_tokens.unwrap_or(0),
+                    ),
+                    composer::format_context_fill(total_tokens, context_limit),
+                )
+            }
+            Err(_) => (String::new(), String::new(), String::new()),
         };
         if let Some(c) = self.composer.as_mut() {
             c.state.set_theme(theme);
@@ -693,6 +711,7 @@ impl CliSession {
             c.state.cwd = cwd;
             c.state.tokens = tokens;
             c.state.cost = cost;
+            c.state.context = context;
             c.paint();
         }
         Ok(())
