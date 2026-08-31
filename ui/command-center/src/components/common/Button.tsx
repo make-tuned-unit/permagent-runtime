@@ -22,6 +22,12 @@
  *
  * Motion reuses the app's `pa-spin` keyframe and rides the global
  * `prefers-reduced-motion` guard at the bottom of index.css.
+ *
+ * Per-instance look is set through the `--pa-btn-*` custom properties rather
+ * than through inline `color`/`background`, because an inline declaration wins
+ * over the `:hover` rule and would silently kill the hover state again:
+ * `--pa-btn-bg`, `-fg`, `-border`, their `-hover` counterparts (`-fg-hover`
+ * included), `-bg-active`, `-pad`, `-radius`, `-weight`, `-success`.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';

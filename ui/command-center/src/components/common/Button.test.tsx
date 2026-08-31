@@ -8,6 +8,8 @@
  */
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 
@@ -195,4 +197,22 @@ it('stays disabled and unclicked when disabled', () => {
   expect(btn().disabled).toBe(true);
   act(() => { btn().click(); });
   expect(onClick).not.toHaveBeenCalled();
+});
+
+/**
+ * The hover half of the contract lives in CSS, so what is asserted here is the
+ * shape of the rule rather than a computed color: jsdom does not apply the
+ * stylesheet. It matters because the buttons being migrated onto this
+ * primitive overwhelmingly brighten their *text* on hover, not their fill —
+ * an icon button that goes muted → full is the single most common resting
+ * pattern in the app. Without a hover-color variable those migrations would
+ * each have to keep a pair of JS mouse handlers, which is the thing the
+ * primitive exists to delete.
+ */
+it('lets a caller name the hover color, not just the hover fill', () => {
+  const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8');
+  const hover = /\.pa-btn:hover:not\(:disabled\) \{([^}]*)\}/.exec(css)?.[1] ?? '';
+  expect(hover).toContain('--pa-btn-fg-hover');
+  // Defaulted to the resting color, so every existing button is untouched.
+  expect(hover).toContain('var(--pa-btn-fg-hover, var(--pa-btn-fg');
 });

@@ -438,9 +438,14 @@ select:focus-visible {
     opacity 160ms cubic-bezier(0.22, 1, 0.36, 1),
     transform 80ms cubic-bezier(0.22, 1, 0.36, 1);
 }
+/* Text color is part of hover, not just fill: the commonest resting pattern in
+   this app is a muted icon that comes up to full on hover, and expressing that
+   with a pair of JS mouse handlers is exactly what this primitive replaces.
+   Defaulted to the resting color, so nothing that does not name it changes. */
 .pa-btn:hover:not(:disabled) {
   background: var(--pa-btn-bg-hover, var(--pa-btn-bg, transparent));
   border-color: var(--pa-btn-border-hover, var(--pa-btn-border, transparent));
+  color: var(--pa-btn-fg-hover, var(--pa-btn-fg, inherit));
 }
 .pa-btn--primary:hover:not(:disabled) {
   filter: brightness(1.08);
