@@ -58,6 +58,7 @@ pub mod inbox;
 pub mod incidents;
 pub mod initiative;
 pub mod instance_id;
+pub mod job_health;
 pub mod lessons;
 pub mod logging;
 pub mod market_data;

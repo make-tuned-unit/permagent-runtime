@@ -180,6 +180,12 @@ pub struct ScheduledJob {
     #[serde(default)]
     pub cron: String,
     pub last_run: Option<DateTime<Utc>>,
+    /// When this job last ran and SUCCEEDED. Distinct from `last_run` because
+    /// the number that matters is the age of the last success: a job can be
+    /// firing every day and not have worked in three weeks, and `last_run`
+    /// alone reads as healthy the whole time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success: Option<DateTime<Utc>>,
     #[serde(default)]
     pub currently_running: bool,
     #[serde(default)]
@@ -855,6 +861,7 @@ impl Scheduler {
                         match &final_result {
                             Ok(_) => {
                                 job.last_status = Some(ScheduleRunStatus::Ok);
+                                job.last_success = job.last_run.or_else(|| Some(Utc::now()));
                                 job.last_error = None;
                                 job.retry_count = 0;
                                 job.consecutive_failures = 0;
@@ -1624,6 +1631,7 @@ impl Scheduler {
                 match &result {
                     Ok(_) => {
                         job.last_status = Some(ScheduleRunStatus::Ok);
+                        job.last_success = job.last_run;
                         job.last_error = None;
                         job.consecutive_failures = 0;
                     }

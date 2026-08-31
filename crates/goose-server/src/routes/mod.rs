@@ -43,6 +43,7 @@ pub mod identity;
 pub mod inbox;
 pub mod incidents;
 pub mod integrations;
+pub mod job_health;
 pub mod librarian;
 #[cfg(feature = "local-inference")]
 pub mod local_inference;
@@ -159,6 +160,10 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(reply::routes(state.clone()))
         .merge(activity::routes(state.clone()))
         .merge(action_required::routes(state.clone()))
+        // Job health names every schedule, its last error, and the dead-letter
+        // reasons — operational detail about the user's own machine, so it
+        // rides the bearer token like the other introspection surfaces.
+        .merge(job_health::routes(state.clone()))
         .merge(incidents::routes(state.clone()))
         .merge(agent::routes(state.clone()))
         .merge(config_management::routes(state.clone()))
