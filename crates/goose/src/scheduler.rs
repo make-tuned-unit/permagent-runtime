@@ -2680,8 +2680,10 @@ mod tests {
     /// with a recorded skip instead of parking the drain loop forever or
     /// filing undeliverable `tool_approval` decisions (the bare job agent is
     /// never registered in `AgentManager`, so nothing could answer them).
-    #[test]
-    fn scheduled_job_agents_are_headless() {
+    /// `#[tokio::test]`, not `#[test]`: `Agent::new()` reaches sqlx's pool
+    /// constructor, which panics ("requires a Tokio context") off a runtime.
+    #[tokio::test]
+    async fn scheduled_job_agents_are_headless() {
         let agent = new_scheduled_job_agent();
         assert!(agent.is_headless(), "scheduled-job agents must be headless");
     }
