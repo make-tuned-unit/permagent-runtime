@@ -18,7 +18,6 @@ import {
 import { usePersona } from '../settings/useSettings';
 import { RunRoster } from './RunRoster';
 import { ViewHeader } from '../common/ViewHeader';
-import { ConfirmDialog } from '../common/ConfirmDialog';
 import { getApiBaseUrl, loadDaemonToken } from '../../lib/api';
 import {
   bulkEligible,
@@ -278,7 +277,6 @@ export function AutomateView() {
   const [runsError, setRunsError] = useState<string | null>(null);
   const [actionStates, setActionStates] = useState<Record<string, 'loading' | 'success'>>({});
   const [detail, setDetail] = useState<DetailTarget | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
   const [search, setSearch] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [showInstalledExpanded, setShowInstalledExpanded] = useState(() => {
@@ -482,24 +480,14 @@ export function AutomateView() {
     try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/unpause`, { method: 'POST' }); }
     catch (err) { failAction(id, 'resume', err); }
   };
-  // Deleting an automation is confirmed in the app's own dialog rather than an
-  // OS one: same interruption, but it names what is being deleted, states the
-  // consequence in the interface's voice, and a failed delete stays on screen
-  // saying so instead of a browser dialog that has already closed.
-  const handleDelete = (id: string) => {
-    setPendingDelete({ id, name: jobNameMap.get(id) || id });
-  };
-  const confirmDelete = async (id: string) => {
-    // No local `Btn` animation on the row for this one: the row's button only
-    // opens the dialog, and the dialog's own affirmative carries the pending
-    // phase. The row used to tick "✓ Deleted" the moment the OS dialog closed —
-    // including when the answer had been Cancel.
-    try {
-      await apiFetch<unknown>(`/schedule/delete/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    } catch (err) {
-      failAction(id, 'delete', err);
-    }
-    setPendingDelete(null);
+  // Deleting an automation is confirmed on the row itself (see
+  // `DeleteAutomationControl`), so this only ever runs after the user has said
+  // yes in place. It deliberately does NOT go through `failAction`: the
+  // control that asked the question is where the answer belongs, and it holds
+  // the failure until the user retries or backs out rather than for eight
+  // seconds on a banner at the top of the page. Rejecting is the signal.
+  const handleDelete = async (id: string) => {
+    await apiFetch<unknown>(`/schedule/delete/${encodeURIComponent(id)}`, { method: 'DELETE' });
     await fetchJobs();
   };
   const handleKill = async (id: string) => {
@@ -859,21 +847,6 @@ export function AutomateView() {
           actionStates={actionStates} onActionDone={handleActionDone} />
       )}
 
-      {pendingDelete && (
-        <ConfirmDialog
-          title={`Delete "${pendingDelete.name}"?`}
-          consequence={
-            'The automation and its schedule are removed. Runs it has already made stay in '
-            + "Recent Activity, but the automation itself can't be restored — it has to be "
-            + 'created again.'
-          }
-          confirmLabel="Delete automation"
-          failureLabel="Couldn't delete it"
-          onConfirm={() => confirmDelete(pendingDelete.id)}
-          onCancel={() => setPendingDelete(null)}
-        />
-      )}
-
       {showModal && <NewAutomationModal onClose={() => setShowModal(false)} onCreated={() => { setShowModal(false); fetchJobs(); }} />}
     </div>
   );
@@ -948,7 +921,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
   onRunNow: (id: string) => void;
   onPause: (id: string) => void;
   onUnpause: (id: string) => void;
-  onDelete: (id: string) => void;
+  onDelete: (id: string) => Promise<void>;
   onKill: (id: string) => void;
   onResetToDefault: (id: string) => void;
   actionStates: Record<string, 'loading' | 'success'>;
@@ -1011,7 +984,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
         {!!job.run_count && <> &middot; {job.run_count} run{job.run_count === 1 ? '' : 's'}</>}
         {hasUpdate && <> &middot; <span style={{ color: colors.warning }}>Update available</span></>}
       </div>
-      <div style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
         {job.currently_running ? (
           <Btn label="Stop" onClick={() => onKill(job.id)} danger />
         ) : (
@@ -1025,7 +998,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
         {((job.user_customized && job.starter_id) || actionStates[`${job.id}:reset`]) && (
           <Btn label="Reset to default" onClick={() => onResetToDefault(job.id)} actionState={actionStates[`${job.id}:reset`]} successLabel="Reset complete" loadingLabel="Resetting..." onDone={() => onActionDone(`${job.id}:reset`)} />
         )}
-        <Btn label="Delete" onClick={() => onDelete(job.id)} danger muted />
+        <DeleteAutomationControl name={name} onDelete={() => onDelete(job.id)} />
       </div>
     </div>
   );
@@ -1042,7 +1015,7 @@ detail, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefaul
   onRunNow: (id: string) => void;
   onPause: (id: string) => void;
   onUnpause: (id: string) => void;
-  onDelete: (id: string) => void;
+  onDelete: (id: string) => Promise<void>;
   onKill: (id: string) => void;
   onResetToDefault: (id: string) => void;
   actionStates: Record<string, 'loading' | 'success'>;
@@ -1081,7 +1054,7 @@ function RecipeDetail({
 job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone }: {
   job: ScheduledJob;
   onRunNow: (id: string) => void; onPause: (id: string) => void;
-  onUnpause: (id: string) => void; onDelete: (id: string) => void;
+  onUnpause: (id: string) => void; onDelete: (id: string) => Promise<void>;
   onKill: (id: string) => void; onResetToDefault: (id: string) => void;
   actionStates: Record<string, 'loading' | 'success'>;
   onActionDone: (key: string, afterRefresh?: () => void) => void;
@@ -1117,7 +1090,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
           Last error: {job.last_error}
         </div>
       )}
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {job.currently_running ? (
           <Btn label="Stop" onClick={() => onKill(job.id)} danger />
         ) : (
@@ -1131,7 +1104,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
         {((job.user_customized && job.starter_id) || actionStates[`${job.id}:reset`]) && (
           <Btn label="Reset to default" onClick={() => onResetToDefault(job.id)} actionState={actionStates[`${job.id}:reset`]} successLabel="Reset complete" loadingLabel="Resetting..." onDone={() => onActionDone(`${job.id}:reset`)} />
         )}
-        <Btn label="Delete" onClick={() => onDelete(job.id)} danger muted />
+        <DeleteAutomationControl name={name} onDelete={() => onDelete(job.id)} />
       </div>
     </>
   );
@@ -1317,6 +1290,86 @@ function MetaField({ label, value, mono }: { label: string; value: string; mono?
       <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', color: colors.textDim, marginBottom: 2, letterSpacing: '0.05em' }}>{label}</div>
       <div style={{ fontSize: 12, color: colors.textMuted, fontFamily: mono ? font.mono : font.body }}>{value}</div>
     </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Delete an automation — the two-step, in place
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Tier 2 of the destructive-action ruling: destructive, but recoverable with
+ * effort — the recipe can be written again, and the runs it already made stay
+ * in Recent Activity either way. That tier confirms on the row rather than in
+ * a modal, so what is about to go stays readable and the list stays in view;
+ * the full-attention interruption is reserved for the unrecoverable (rotating
+ * a live drain key), which is the only `ConfirmDialog` in the app.
+ *
+ * Both places that offer Delete — the recipe card and the detail panel — share
+ * this one control, so the question, the sentence and the failure state can't
+ * drift apart between them.
+ *
+ * The failure is stated HERE, on the control that asked, and stays until the
+ * user retries or backs out. A delete that failed must never be quiet: for a
+ * while it was an OS dialog, which closes the moment you click, so a failed
+ * delete looked exactly like a done one.
+ */
+export function DeleteAutomationControl({ name, onDelete }: {
+  name: string;
+  /** Performs the delete. Rejecting is how it says it failed. */
+  onDelete: () => Promise<void>;
+}) {
+  const { colors } = useTheme();
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!confirming) {
+    return (
+      <Btn
+        label="Delete"
+        onClick={() => { setError(null); setConfirming(true); }}
+        danger
+        muted
+      />
+    );
+  }
+
+  const run = async () => {
+    if (deleting) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await onDelete();
+      // The row normally goes with the refreshed list; reset anyway so a still
+      // mounted control (the detail panel keeps its target) isn't stuck mid-verb.
+      setConfirming(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    setDeleting(false);
+  };
+
+  // The sentence and any failure take a whole line of their own (the action
+  // rows wrap), so the question is readable rather than squeezed between buttons.
+  const line: React.CSSProperties = {
+    flexBasis: '100%', fontSize: 11, fontFamily: font.body, lineHeight: 1.5, marginTop: 2,
+  };
+
+  return (
+    <>
+      <Btn label="Cancel" onClick={() => { setConfirming(false); setError(null); }} />
+      <Btn label={deleting ? 'Deleting…' : 'Delete automation'} onClick={run} danger />
+      <div style={{ ...line, color: colors.textMuted }}>
+        Delete &ldquo;{name}&rdquo;? Its schedule stops and the automation itself can&apos;t be
+        restored &mdash; it has to be created again. Runs it has already made stay in Recent Activity.
+      </div>
+      {error && (
+        <div role="alert" style={{ ...line, color: colors.danger }}>
+          Couldn&apos;t delete &ldquo;{name}&rdquo; &mdash; {error}
+        </div>
+      )}
+    </>
   );
 }
 
