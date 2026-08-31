@@ -5,6 +5,15 @@ import { Stat, SectionTitle, EmptyNote } from '../atoms';
 import { apiFetch } from '../../../lib/api';
 import type { CardManifest } from './registry';
 import { CardIcon } from './cardIcons';
+import { AsOf } from '../../common/AsOf';
+
+/**
+ * How long a fetch-once card's reading stays plain before its age becomes part
+ * of what it says. Five minutes: long enough that opening the dashboard and
+ * reading it is not nagged at, short enough that a tab left open all afternoon
+ * cannot present breakfast's numbers as this moment's.
+ */
+const STATIC_CARD_STALE_AFTER_MS = 5 * 60_000;
 
 /**
  * The normalized payload every manifest-card data endpoint returns. Layout is
@@ -61,6 +70,7 @@ export function ManifestCard({ manifest }: Props) {
   const [configOpen, setConfigOpen] = useState(false);
   const [configValue, setConfigValue] = useState('');
   const [configBusy, setConfigBusy] = useState(false);
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
   const requestGeneration = useRef(0);
 
@@ -70,6 +80,7 @@ export function ManifestCard({ manifest }: Props) {
       const result = await apiFetch<CardData>(manifest.dataEndpoint);
       if (generation !== requestGeneration.current) return;
       setData(result);
+      setFetchedAt(Date.now());
       setPhase('ready');
     } catch {
       if (generation !== requestGeneration.current) return;
@@ -111,6 +122,18 @@ export function ManifestCard({ manifest }: Props) {
 
   const isCompact = manifest.layout === 'compact';
 
+  /**
+   * A card whose manifest declares `refreshSeconds: 0` fetches once when the
+   * dashboard mounts and never again. Its figures then sit next to cards that
+   * refresh every thirty seconds, in the same type, with nothing saying which
+   * is which — so a number that has been frozen since you opened the tab reads
+   * exactly like one confirmed a moment ago.
+   *
+   * Polling cards are left alone: they are current by construction, and a
+   * timestamp on every card would be noise that teaches nobody anything.
+   */
+  const polls = (manifest.refreshSeconds ?? 0) > 0;
+
   const shell = (children: React.ReactNode) => (
     <div style={{
       padding: isCompact ? 14 : 24, borderRadius: radius.lg,
@@ -122,6 +145,24 @@ export function ManifestCard({ manifest }: Props) {
       display: 'flex', flexDirection: 'column',
     }}>
       {children}
+      {!polls && fetchedAt != null && (
+        <div
+          data-testid="manifest-card-as-of"
+          style={{
+            marginTop: 'auto', paddingTop: 8,
+            fontFamily: font.body, fontSize: 10,
+          }}
+        >
+          <AsOf
+            asOf={fetchedAt}
+            prefix="As of"
+            suffix="not refreshing"
+            // Fetched once on mount: it starts being a reading about the past
+            // the moment the fetch lands, and how far past is the whole point.
+            staleAfterMs={STATIC_CARD_STALE_AFTER_MS}
+          />
+        </div>
+      )}
     </div>
   );
 
