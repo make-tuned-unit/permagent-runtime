@@ -48,16 +48,21 @@ const SRC = fileURLToPath(new URL('../..', import.meta.url));
 /** Directories whose controls are on the primitive. Grows one commit at a time. */
 const GATED = [
   'components/automate',
+  'components/brain',
   'components/browser',
   'components/chat',
   'components/dashboard',
   'components/finance',
+  'components/goals',
   'components/grow',
   'components/people',
   'components/projects',
   'components/sessions',
   'components/settings',
+  'components/skills',
   'components/voice',
+  'components/wizard',
+  'components/world',
 ];
 
 /**
@@ -68,6 +73,19 @@ const GATED = [
  * true fails, and so does a new raw button hiding behind an existing one.
  */
 const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {
+  'components/brain/BrainView.tsx': {
+    count: 1,
+    why: "the selection panel's stat blocks are two-line and half of them are "
+      + 'permanently disabled by design, which the primitive would grey out',
+  },
+  'components/skills/SkillCard.tsx': {
+    count: 1,
+    why: 'the whole skill card is the control, four nested rows of its own layout',
+  },
+  'components/wizard/MomentCalibration.tsx': {
+    count: 1,
+    why: 'the persona preset is a two-line card in a two-column grid',
+  },
   'components/people/PersonFace.tsx': {
     count: 1,
     why: 'the graph-node avatar draws a 2px ring and computes opacity, shadow and '

@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, type CSSProperties } from 'react';
 import { ease, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
+import { Button } from '../common/Button';
 import { Mobius } from '../mobius/Mobius';
 import { BrainScene, type TypeFilters } from './BrainScene';
 import { useBrainData, type GraphMemory, type GraphEntity } from './useBrainData';
@@ -148,6 +149,29 @@ export function BrainView() {
     && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   const chipTransition = reduceMotion ? 'none' : `all 140ms ${ease.out}`;
 
+  /**
+   * The filter bar's chips. Every one of them was `border: 'none'` plus an
+   * inline background, which cannot express `:hover` or `:active` — so the
+   * whole bar was pressable with no acknowledgement whatsoever. The resting
+   * fills and type are exactly the ones that were here; only the states are
+   * new. `lit` is the on/off that drives the text colour, `fill` is passed
+   * separately because the topics chip has a third, half-on fill.
+   */
+  const chipVars = (fill: string, lit: boolean, pad: string, r: number, size: number): CSSProperties => ({
+    '--pa-btn-bg': fill,
+    '--pa-btn-fg': lit ? colors.text : colors.textDim,
+    '--pa-btn-fg-hover': colors.text,
+    '--pa-btn-bg-hover': lit ? `${colors.cyan}33` : `${colors.cyan}12`,
+    '--pa-btn-bg-active': fill,
+    '--pa-btn-border': 'transparent',
+    '--pa-btn-border-hover': 'transparent',
+    '--pa-btn-pad': pad,
+    '--pa-btn-radius': `${r}px`,
+    '--pa-btn-weight': 500,
+    fontFamily: font.body,
+    fontSize: size,
+  } as CSSProperties);
+
   // Initialize scene
   useEffect(() => {
     if (!containerRef.current) return;
@@ -266,11 +290,24 @@ export function BrainView() {
           <p style={{ fontFamily: font.body, fontSize: 13, color: colors.textMuted, maxWidth: 340, textAlign: 'center', lineHeight: 1.5 }}>
             The memory graph didn't load. It may be a brief hiccup — try again.
           </p>
-          <button onClick={() => refresh()} style={{
-            marginTop: 4, padding: '8px 18px', borderRadius: radius.md,
-            border: `1px solid ${colors.borderHi}`, background: colors.cyanSoft,
-            color: colors.cyan, fontSize: 13, fontWeight: 600, cursor: 'pointer',
-          }}>Try again</button>
+          <Button
+            colors={colors}
+            variant="ghostOn"
+            type="button"
+            onClick={() => refresh()}
+            style={{
+              '--pa-btn-bg': colors.cyanSoft,
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-border': colors.borderHi,
+              '--pa-btn-bg-hover': `${colors.cyan}26`,
+              '--pa-btn-border-hover': colors.cyan,
+              '--pa-btn-bg-active': colors.cyanSoft,
+              '--pa-btn-pad': '8px 18px',
+              '--pa-btn-radius': `${radius.md}px`,
+              '--pa-btn-weight': 600,
+              marginTop: 4, fontSize: 13, lineHeight: 1.5,
+            } as CSSProperties}
+          >Try again</Button>
         </div>
       )}
 
@@ -350,15 +387,19 @@ export function BrainView() {
         }}>
           <span style={{ fontFamily: font.body, fontSize: 10, color: colors.textDim, marginRight: 4 }}>show</span>
           {TOP_FILTERS.map(f => (
-            <button key={f.key} onClick={() => toggleFilter(f.key)} style={{
-              fontFamily: font.body, fontSize: 11, fontWeight: 500,
-              color: filters[f.key] ? colors.text : colors.textDim,
-              background: filters[f.key] ? colors.cyanSoft : 'transparent',
-              border: 'none', borderRadius: radius.sm, padding: '4px 8px', cursor: 'pointer',
-              transition: `all 160ms ${ease.out}`,
-            }}>
+            <Button
+              key={f.key}
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => toggleFilter(f.key)}
+              style={chipVars(
+                filters[f.key] ? colors.cyanSoft : 'transparent',
+                filters[f.key], '4px 8px', radius.sm, 11,
+              )}
+            >
               <span style={{ marginRight: 4 }}>{f.shape}</span>{f.label}
-            </button>
+            </Button>
           ))}
 
           {/* Topics group with drilldown */}
@@ -366,51 +407,82 @@ export function BrainView() {
             display: 'inline-flex', alignItems: 'center', gap: 2,
             borderLeft: `1px solid ${glass.border}`, paddingLeft: 6,
           }}>
-            <button onClick={() => {
-              const allOn = TOPIC_KEYS.every(k => filters[k]);
-              setFilters(f => {
-                const next = { ...f };
-                for (const k of TOPIC_KEYS) next[k] = !allOn;
-                return next;
-              });
-            }} style={{
-              fontFamily: font.body, fontSize: 11, fontWeight: 500,
-              color: TOPIC_KEYS.some(k => filters[k]) ? colors.text : colors.textDim,
-              background: TOPIC_KEYS.every(k => filters[k]) ? colors.cyanSoft : TOPIC_KEYS.some(k => filters[k]) ? `${colors.cyanSoft}88` : 'transparent',
-              border: 'none', borderRadius: radius.sm, padding: '4px 8px', cursor: 'pointer',
-              transition: `all 160ms ${ease.out}`,
-            }}>
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => {
+                const allOn = TOPIC_KEYS.every(k => filters[k]);
+                setFilters(f => {
+                  const next = { ...f };
+                  for (const k of TOPIC_KEYS) next[k] = !allOn;
+                  return next;
+                });
+              }}
+              style={chipVars(
+                TOPIC_KEYS.every(k => filters[k])
+                  ? colors.cyanSoft
+                  : TOPIC_KEYS.some(k => filters[k]) ? `${colors.cyanSoft}88` : 'transparent',
+                TOPIC_KEYS.some(k => filters[k]), '4px 8px', radius.sm, 11,
+              )}
+            >
               <span style={{ marginRight: 4 }}>◆</span>topics
-            </button>
-            <button onClick={() => setTopicsExpanded(e => !e)} style={{
-              fontFamily: font.mono, fontSize: 10, color: colors.textDim,
-              background: 'transparent', border: 'none', cursor: 'pointer', padding: '2px 4px',
-              transition: `transform 160ms ${ease.out}`,
-              transform: topicsExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-            }}>▸</button>
+            </Button>
+            {/* A disclosure toggle for the sub-filters beside it: nothing to
+                await, so the pending floor and the success tick are both wrong
+                for it, and it keeps being a plain element so `aria-expanded`
+                describes what it does. It takes the shared `.pa-btn` rules —
+                which it had none of — but not the primitive. */}
+            <button
+              type="button"
+              className="pa-btn"
+              aria-expanded={topicsExpanded}
+              aria-label="Topic types"
+              onClick={() => setTopicsExpanded(e => !e)}
+              style={{
+                '--pa-btn-fg': colors.textDim,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': `${colors.cyan}12`,
+                '--pa-btn-pad': '2px 4px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                fontFamily: font.mono, fontSize: 10,
+                // The rotation is this control's whole read-out, so it stays an
+                // inline transform — which does mean `.pa-btn`'s press scale
+                // cannot apply to this one button.
+                transition: `transform 160ms ${ease.out}`,
+                transform: topicsExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+              } as CSSProperties}
+            >▸</button>
             {topicsExpanded && TOPIC_SUB_FILTERS.map(f => (
-              <button key={f.key} onClick={() => toggleFilter(f.key)} style={{
-                fontFamily: font.body, fontSize: 10, fontWeight: 500,
-                color: filters[f.key] ? colors.text : colors.textDim,
-                background: filters[f.key] ? colors.cyanSoft : 'transparent',
-                border: 'none', borderRadius: 5, padding: '3px 6px', cursor: 'pointer',
-                transition: `all 160ms ${ease.out}`,
-              }}>
+              <Button
+                key={f.key}
+                colors={colors}
+                variant="bare"
+                type="button"
+                onClick={() => toggleFilter(f.key)}
+                style={chipVars(
+                  filters[f.key] ? colors.cyanSoft : 'transparent',
+                  filters[f.key], '3px 6px', 5, 10,
+                )}
+              >
                 <span style={{ marginRight: 3 }}>{f.shape}</span>{f.label}
-              </button>
+              </Button>
             ))}
           </span>
 
           <span style={{ borderLeft: `1px solid ${glass.border}`, paddingLeft: 6 }}>
-            <button onClick={() => toggleFilter('memory')} style={{
-              fontFamily: font.body, fontSize: 11, fontWeight: 500,
-              color: filters.memory ? colors.text : colors.textDim,
-              background: filters.memory ? colors.cyanSoft : 'transparent',
-              border: 'none', borderRadius: radius.sm, padding: '4px 8px', cursor: 'pointer',
-              transition: `all 160ms ${ease.out}`,
-            }}>
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => toggleFilter('memory')}
+              style={chipVars(
+                filters.memory ? colors.cyanSoft : 'transparent',
+                filters.memory, '4px 8px', radius.sm, 11,
+              )}
+            >
               <span style={{ marginRight: 4 }}>·</span>memories
-            </button>
+            </Button>
           </span>
         </div>
 
@@ -421,16 +493,25 @@ export function BrainView() {
           border: `1px solid ${glass.border}`, borderRadius: radius.md,
         }}>
           {(['graph', 'list'] as const).map(mode => (
-            <button key={mode} onClick={() => setViewMode(mode)} style={{
-              fontFamily: font.mono, fontSize: 10, fontWeight: 600,
-              color: viewMode === mode ? colors.text : colors.textDim,
-              background: viewMode === mode ? colors.cyanSoft : 'transparent',
-              border: 'none', borderRadius: radius.sm, padding: '4px 10px', cursor: 'pointer',
-              textTransform: 'uppercase', letterSpacing: '0.05em',
-              transition: `all 160ms ${ease.out}`,
-            }}>
+            <Button
+              key={mode}
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => setViewMode(mode)}
+              style={{
+                ...chipVars(
+                  viewMode === mode ? colors.cyanSoft : 'transparent',
+                  viewMode === mode, '4px 10px', radius.sm, 10,
+                ),
+                '--pa-btn-weight': 600,
+                fontFamily: font.mono,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+              } as CSSProperties}
+            >
               {mode}
-            </button>
+            </Button>
           ))}
         </div>
       </div>
@@ -474,11 +555,23 @@ export function BrainView() {
         }}>
           {selected && (<>
             {/* Close */}
-            <button onClick={() => setSelected(null)} style={{
-              position: 'absolute', top: 28, right: 28,
-              background: 'transparent', border: 'none', color: colors.textMuted,
-              fontSize: 18, cursor: 'pointer',
-            }}>×</button>
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => setSelected(null)}
+              aria-label="Close details"
+              style={{
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-bg-active': 'transparent',
+                '--pa-btn-pad': '0',
+                '--pa-btn-radius': '0',
+                position: 'absolute', top: 28, right: 28, zIndex: 1,
+                fontSize: 18, lineHeight: 1,
+              } as CSSProperties}
+            >×</Button>
 
             {/* Type label (+ P4 honesty badge: a preview-resolved memory is the
                 caller's snapshot — possibly a truncated content_summary — not
@@ -551,24 +644,28 @@ export function BrainView() {
                 )}
 
                 {selected.kind === 'project' && projectMatch && (
-                  <button
+                  <Button
+                    colors={colors}
+                    variant="ghostOn"
                     type="button"
                     onClick={openProjectWorkspace}
                     title={`Open ${projectMatch.name} in Projects`}
                     style={{
+                      '--pa-btn-bg': colors.cyanSoft,
+                      '--pa-btn-fg': colors.cyan,
+                      '--pa-btn-border': colors.borderHi,
+                      '--pa-btn-bg-hover': colors.cyanGlow,
+                      '--pa-btn-border-hover': colors.borderHi,
+                      '--pa-btn-bg-active': colors.cyanSoft,
+                      '--pa-btn-pad': '6px 12px',
+                      '--pa-btn-radius': `${radius.md}px`,
+                      '--pa-btn-weight': 600,
                       alignSelf: 'flex-start', marginBottom: 16,
-                      fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan,
-                      background: colors.cyanSoft, cursor: 'pointer',
-                      border: `1px solid ${colors.borderHi}`, borderRadius: radius.md, padding: '6px 12px',
-                      transition: chipTransition,
-                    }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = colors.cyanGlow; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = colors.cyanSoft; }}
-                    onFocus={e => { (e.currentTarget as HTMLButtonElement).style.outline = `2px solid ${colors.cyan}`; }}
-                    onBlur={e => { (e.currentTarget as HTMLButtonElement).style.outline = 'none'; }}
+                      fontFamily: font.body, fontSize: 12, lineHeight: 1.5,
+                    } as CSSProperties}
                   >
                     Open project →
-                  </button>
+                  </Button>
                 )}
 
                 <div style={{ display: 'flex', gap: 18, marginTop: 'auto', paddingTop: 12, borderTop: `1px solid ${colors.border}` }}>
@@ -664,22 +761,26 @@ export function BrainView() {
                             );
                           }
                           return (
-                            <button
+                            <Button
                               key={id}
+                              colors={colors}
+                              variant="ghostOn"
                               type="button"
                               onClick={() => selectEntity(ent)}
                               title={`View ${ent.name}`}
                               style={{
-                                fontFamily: font.body, fontSize: 11, fontWeight: 500, color: colors.cyan,
-                                background: colors.cyanSoft, cursor: 'pointer',
-                                border: `1px solid ${colors.borderHi}`, borderRadius: radius.pill, padding: '4px 10px',
-                                transition: chipTransition,
-                              }}
-                              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = colors.cyanGlow; }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = colors.cyanSoft; }}
-                              onFocus={e => { (e.currentTarget as HTMLButtonElement).style.outline = `2px solid ${colors.cyan}`; }}
-                              onBlur={e => { (e.currentTarget as HTMLButtonElement).style.outline = 'none'; }}
-                            >{ent.name}</button>
+                                '--pa-btn-bg': colors.cyanSoft,
+                                '--pa-btn-fg': colors.cyan,
+                                '--pa-btn-border': colors.borderHi,
+                                '--pa-btn-bg-hover': colors.cyanGlow,
+                                '--pa-btn-border-hover': colors.borderHi,
+                                '--pa-btn-bg-active': colors.cyanSoft,
+                                '--pa-btn-pad': '4px 10px',
+                                '--pa-btn-radius': `${radius.pill}px`,
+                                '--pa-btn-weight': 500,
+                                fontFamily: font.body, fontSize: 11,
+                              } as CSSProperties}
+                            >{ent.name}</Button>
                           );
                         })}
                       </div>

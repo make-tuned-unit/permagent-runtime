@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, GhostLink, Input, Glass, Particles, WizardHeading, WizardSubhead } from './atoms';
 import { api } from '../../lib/api';
@@ -87,9 +88,11 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
       return next;
     });
 
+  // Returns the outcome so the Button primitive cannot tick success over the
+  // "there's no folder at …" notice this same call puts on screen.
   const addManual = async () => {
     const raw = manual.trim();
-    if (!raw) return;
+    if (!raw) return false;
     setChecking(true);
     setCheck(null);
     try {
@@ -102,9 +105,11 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
         setChosen(prev => new Set(prev).add(r.resolved));
         setManual('');
       }
+      return r.exists;
     } catch (e) {
       setCheck({ resolved: raw, exists: false, has_repositories: false });
       console.error('dev-root check failed:', e);
+      return false;
     } finally {
       setChecking(false);
     }
@@ -186,17 +191,25 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
                 placeholder="Somewhere else? e.g. ~/Documents/dev"
                 style={{ flex: 1 }}
               />
-              <button
+              <Button
+                colors={colors}
+                variant="ghostOn"
+                type="button"
                 onClick={addManual}
                 disabled={checking || !manual.trim()}
                 style={{
-                  height: 44, padding: '0 16px', borderRadius: radius.md, whiteSpace: 'nowrap',
-                  background: 'transparent', border: `1px solid ${colors.cyan}66`,
-                  color: checking || !manual.trim() ? colors.textDim : colors.cyan,
-                  fontFamily: font.body, fontSize: 13, fontWeight: 600,
-                  cursor: checking || !manual.trim() ? 'not-allowed' : 'pointer',
-                }}
-              >{checking ? 'Checking…' : 'Add'}</button>
+                  '--pa-btn-bg': 'transparent',
+                  '--pa-btn-fg': checking || !manual.trim() ? colors.textDim : colors.cyan,
+                  '--pa-btn-border': `${colors.cyan}66`,
+                  '--pa-btn-bg-hover': colors.cyanSoft,
+                  '--pa-btn-border-hover': colors.cyan,
+                  '--pa-btn-pad': '0 16px',
+                  '--pa-btn-radius': `${radius.md}px`,
+                  '--pa-btn-weight': 600,
+                  height: 44, whiteSpace: 'nowrap',
+                  fontFamily: font.body, fontSize: 13,
+                } as CSSProperties}
+              >{checking ? 'Checking…' : 'Add'}</Button>
             </div>
 
             {check && !check.exists && (

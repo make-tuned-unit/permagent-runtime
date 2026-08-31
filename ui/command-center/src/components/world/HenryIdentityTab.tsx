@@ -1,10 +1,12 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, type CSSProperties } from 'react';
 import { COLORS } from './constants';
 import { Section, StatRow } from './HudShell';
 import { useIdentityStore } from '../../stores/identityStore';
 import { computePortalEligibility } from '../../utils/portalEligibility';
 import { SBT_CONTRACT } from '../../config/chain';
 import { radius } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 // ── External link helper ─────────────────────────────────────────
 
@@ -298,28 +300,32 @@ function ActionButton({ label, disabled, onClick }: {
   disabled?: boolean;
   onClick?: () => void;
 }) {
-  const [hovered, setHovered] = useState(false);
+  // The muted-to-cyan hover this kept a `hovered` state for is exactly what
+  // `--pa-btn-fg-hover` expresses, so the state and its handlers go and the
+  // press give and focus ring arrive.
+  const { colors } = useTheme();
   return (
-    <button
+    <Button
+      colors={colors}
+      variant="bare"
+      type="button"
       disabled={disabled}
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
+        '--pa-btn-fg': disabled ? '#4B5563' : '#9CA3AF',
+        '--pa-btn-fg-hover': COLORS.neonCyan,
+        '--pa-btn-bg-hover': 'transparent',
+        '--pa-btn-bg-active': 'transparent',
+        '--pa-btn-pad': '5px 0',
+        '--pa-btn-radius': '0',
+        '--pa-btn-weight': 600,
         flex: 1,
-        padding: '5px 0',
-        background: 'none',
-        border: 'none',
-        color: disabled ? '#4B5563' : hovered ? COLORS.neonCyan : '#9CA3AF',
         fontSize: 10,
-        fontWeight: 600,
         fontFamily: 'monospace',
         letterSpacing: '0.04em',
-        cursor: disabled ? 'default' : 'pointer',
-        transition: 'color 0.15s',
-      }}
+      } as CSSProperties}
     >
       {label}
-    </button>
+    </Button>
   );
 }

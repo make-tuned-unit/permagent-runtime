@@ -20,12 +20,13 @@
  * modal (epic slice 2) can reuse the same chrome.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { removeRoadmapGoal, setGoalAutoApprove, setGoalDependencies } from '../../lib/roadmapClient';
 import { useCommandCenter } from '../../lib/store';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { DetailModal } from '../common/DetailModal';
 import { EvidenceDigest } from '../dashboard/decisions/EvidenceDigest';
 
@@ -165,8 +166,12 @@ export function GoalDetailModal({
       const updated = await setGoalDependencies(projectId, cardId, draftDeps);
       setCard(prev => (prev ? { ...prev, metadataJson: updated.metadataJson, columnId: updated.columnId } : prev));
       setEditingDeps(false);
+      return true;
     } catch (e) {
       setDepsError(e instanceof Error ? e.message : 'Saving dependencies failed.');
+      // `false` is the Button primitive's "it failed" — the error is on screen,
+      // so the button must not also tick success over it.
+      return false;
     } finally {
       setSavingDeps(false);
     }
@@ -196,8 +201,10 @@ export function GoalDetailModal({
       setRemoved(true);
       if (res.cancelled) setCancelledState('cancelled');
       setConfirmingRemove(false);
+      return true;
     } catch (e) {
       setDepsError(e instanceof Error ? e.message : 'Removing from roadmap failed.');
+      return false;
     } finally {
       setRemoving(false);
     }
@@ -219,8 +226,10 @@ export function GoalDetailModal({
       );
       setCancelledState(res.state || 'cancelled');
       setConfirming(false);
+      return true;
     } catch (e) {
       setCancelError(cancelErrorMessage(e));
+      return false;
     } finally {
       setCancelling(false);
     }
@@ -232,12 +241,24 @@ export function GoalDetailModal({
         <span style={{ flex: 1, fontSize: 12, color: colors.textMuted }}>
           Cancel this goal? Its worker is killed immediately.
         </span>
-        <button onClick={() => setConfirming(false)} disabled={cancelling} style={ghostBtn(colors)}>
+        <Button
+          colors={colors}
+          type="button"
+          onClick={() => setConfirming(false)}
+          disabled={cancelling}
+          style={ghostVars(colors)}
+        >
           Keep running
-        </button>
-        <button onClick={doCancel} disabled={cancelling} style={dangerBtn(colors)}>
+        </Button>
+        <Button
+          colors={colors}
+          type="button"
+          onClick={doCancel}
+          disabled={cancelling}
+          style={dangerVars(colors)}
+        >
           {cancelling ? 'Cancelling…' : 'Confirm cancel'}
-        </button>
+        </Button>
       </>
     ) : confirmingRemove ? (
       <>
@@ -245,24 +266,46 @@ export function GoalDetailModal({
           Remove from roadmap? Dependents are rewired onto this goal's own dependencies
           {cancellable ? ' and the goal is cancelled' : ''}.
         </span>
-        <button onClick={() => setConfirmingRemove(false)} disabled={removing} style={ghostBtn(colors)}>
+        <Button
+          colors={colors}
+          type="button"
+          onClick={() => setConfirmingRemove(false)}
+          disabled={removing}
+          style={ghostVars(colors)}
+        >
           Keep it
-        </button>
-        <button onClick={doRemove} disabled={removing} style={dangerBtn(colors)}>
+        </Button>
+        <Button
+          colors={colors}
+          type="button"
+          onClick={doRemove}
+          disabled={removing}
+          style={dangerVars(colors)}
+        >
           {removing ? 'Removing…' : 'Confirm remove'}
-        </button>
+        </Button>
       </>
     ) : (
       <>
         {isGoal && !removed && !cancelledState && (
-          <button onClick={() => setConfirmingRemove(true)} style={ghostBtn(colors)}>
+          <Button
+            colors={colors}
+            type="button"
+            onClick={() => setConfirmingRemove(true)}
+            style={ghostVars(colors)}
+          >
             Remove from roadmap
-          </button>
+          </Button>
         )}
         {cancellable && (
-          <button onClick={() => setConfirming(true)} style={dangerBtn(colors)}>
+          <Button
+            colors={colors}
+            type="button"
+            onClick={() => setConfirming(true)}
+            style={dangerVars(colors)}
+          >
             Cancel goal
-          </button>
+          </Button>
         )}
       </>
     )
@@ -351,15 +394,28 @@ export function GoalDetailModal({
               }}>
                 <span>Dependencies</span>
                 {depsEditable && !editingDeps && (
-                  <button
+                  // A bare text affordance: the horizontal padding it gains is
+                  // pulled back out with a matching negative margin, so the
+                  // word sits exactly where it did and the hover fill has a box.
+                  <Button
+                    colors={colors}
+                    variant="bare"
+                    type="button"
                     onClick={startEditDeps}
                     style={{
-                      border: 'none', background: 'none', cursor: 'pointer',
-                      fontSize: 11, color: colors.cyan, fontFamily: font.mono, padding: 0,
-                    }}
+                      '--pa-btn-fg': colors.cyan,
+                      '--pa-btn-fg-hover': colors.cyan,
+                      '--pa-btn-bg-hover': colors.cyanSoft,
+                      '--pa-btn-bg-active': colors.cyanGlow,
+                      '--pa-btn-pad': '0 4px',
+                      '--pa-btn-radius': `${radius.xs}px`,
+                      fontFamily: font.mono,
+                      fontSize: 11,
+                      marginLeft: -4,
+                    } as CSSProperties}
                   >
                     Edit
-                  </button>
+                  </Button>
                 )}
               </div>
               {editingDeps ? (
@@ -385,19 +441,32 @@ export function GoalDetailModal({
                     ))
                   )}
                   <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                    <button onClick={() => setEditingDeps(false)} disabled={savingDeps} style={ghostBtn(colors)}>
+                    <Button
+                      colors={colors}
+                      type="button"
+                      onClick={() => setEditingDeps(false)}
+                      disabled={savingDeps}
+                      style={ghostVars(colors)}
+                    >
                       Discard
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      colors={colors}
+                      variant="ghostOn"
+                      type="button"
                       onClick={saveDeps}
                       disabled={savingDeps}
                       style={{
-                        ...ghostBtn(colors),
-                        color: colors.cyan, borderColor: colors.cyan, fontWeight: 500,
-                      }}
+                        ...ghostVars(colors),
+                        '--pa-btn-fg': colors.cyan,
+                        '--pa-btn-fg-hover': colors.cyan,
+                        '--pa-btn-border': colors.cyan,
+                        '--pa-btn-border-hover': colors.cyan,
+                        '--pa-btn-weight': 500,
+                      } as CSSProperties}
                     >
                       {savingDeps ? 'Saving…' : 'Save dependencies'}
-                    </button>
+                    </Button>
                   </div>
                 </div>
               ) : (
@@ -494,20 +563,40 @@ function MetaGrid({ colors, rows }: {
   );
 }
 
-function ghostBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+/**
+ * The footer's two button shapes, moved from inline `CSSProperties` onto the
+ * primitive's custom properties. The resting boxes are the ones that were here
+ * — same padding, radius, border, fill and type — what is new is that pressing
+ * one now shows it: an inline style cannot express `:hover` or `:active`, so
+ * "Confirm cancel" looked identical pressed, unpressed and disabled.
+ */
+function ghostVars(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
   return {
-    padding: '6px 14px', borderRadius: radius.md,
-    border: `1px solid ${colors.border}`, background: 'none',
-    fontFamily: font.body, fontSize: 12, color: colors.textMuted, cursor: 'pointer',
-  };
+    '--pa-btn-fg': colors.textMuted,
+    '--pa-btn-fg-hover': colors.text,
+    '--pa-btn-pad': '6px 14px',
+    '--pa-btn-radius': `${radius.md}px`,
+    fontFamily: font.body,
+    fontSize: 12,
+    lineHeight: '18px',
+  } as CSSProperties;
 }
 
-function dangerBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+function dangerVars(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
   return {
-    padding: '6px 14px', borderRadius: radius.md,
-    border: `1px solid ${colors.danger}`, background: colors.danger + '14',
-    fontFamily: font.body, fontSize: 12, fontWeight: 500, color: colors.danger, cursor: 'pointer',
-  };
+    '--pa-btn-bg': colors.danger + '14',
+    '--pa-btn-fg': colors.danger,
+    '--pa-btn-border': colors.danger,
+    '--pa-btn-bg-hover': colors.danger + '26',
+    '--pa-btn-border-hover': colors.danger,
+    '--pa-btn-bg-active': colors.danger + '14',
+    '--pa-btn-pad': '6px 14px',
+    '--pa-btn-radius': `${radius.md}px`,
+    '--pa-btn-weight': 500,
+    fontFamily: font.body,
+    fontSize: 12,
+    lineHeight: '18px',
+  } as CSSProperties;
 }
 
 /** Mounted once at the app root — renders the modal for the active target. */

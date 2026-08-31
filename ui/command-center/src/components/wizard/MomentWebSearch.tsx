@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, GhostLink, Input, Glass, Particles, WizardHeading, WizardSubhead } from './atoms';
 import { api } from '../../lib/api';
@@ -74,7 +75,7 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
   // so we never report success on save alone.
   const saveAndTest = async (p: SearchProvider) => {
     const key = rows[p.id].input.trim();
-    if (!key) return;
+    if (!key) return false;
     patch(p.id, { busy: true, error: '', verify: null });
     try {
       await saveAndEnableSearchProvider(p, key);
@@ -82,11 +83,13 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
     } catch (e) {
       console.error('Failed to set up search provider:', e);
       patch(p.id, { busy: false, error: e instanceof Error ? e.message : "Couldn't save the key. Please try again." });
-      return;
+      return false;
     }
-    await runProbe(p);
+    return runProbe(p);
   };
 
+  // Returns the verdict so the Button primitive never ticks over a probe whose
+  // warning is sitting right underneath it.
   const runProbe = async (p: SearchProvider) => {
     patch(p.id, { busy: true, verify: null });
     try {
@@ -100,6 +103,7 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
                 'Check you copied the whole key with no spaces — a brand-new key can also take a minute to activate.',
             },
           });
+      return r.ok;
     } catch (e) {
       patch(p.id, {
         verify: {
@@ -107,6 +111,7 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
           message: `The key is saved but the test couldn't run (${e instanceof Error ? e.message : String(e)}). You can re-test any time in Settings → Search & tools.`,
         },
       });
+      return false;
     } finally {
       patch(p.id, { busy: false });
     }
@@ -170,17 +175,25 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
                     <Input value={r.input} onChange={(v) => patch(p.id, { input: v, error: '' })} type="password" placeholder={r.saved ? '(connected — paste a new key to replace)' : 'Paste your API key here'} style={{ flex: 1 }} />
-                    <button
+                    <Button
+                      colors={colors}
+                      variant="ghostOn"
+                      type="button"
                       onClick={() => saveAndTest(p)}
                       disabled={r.busy || !r.input.trim()}
                       style={{
-                        height: 44, padding: '0 16px', borderRadius: radius.md, whiteSpace: 'nowrap',
-                        background: 'transparent', border: `1px solid ${colors.cyan}66`,
-                        color: r.busy || !r.input.trim() ? colors.textDim : colors.cyan,
-                        fontFamily: font.body, fontSize: 13, fontWeight: 600,
-                        cursor: r.busy || !r.input.trim() ? 'not-allowed' : 'pointer',
-                      }}
-                    >{r.busy ? 'Testing…' : 'Save & test'}</button>
+                        '--pa-btn-bg': 'transparent',
+                        '--pa-btn-fg': r.busy || !r.input.trim() ? colors.textDim : colors.cyan,
+                        '--pa-btn-border': `${colors.cyan}66`,
+                        '--pa-btn-bg-hover': colors.cyanSoft,
+                        '--pa-btn-border-hover': colors.cyan,
+                        '--pa-btn-pad': '0 16px',
+                        '--pa-btn-radius': `${radius.md}px`,
+                        '--pa-btn-weight': 600,
+                        height: 44, whiteSpace: 'nowrap',
+                        fontFamily: font.body, fontSize: 13,
+                      } as CSSProperties}
+                    >{r.busy ? 'Testing…' : 'Save & test'}</Button>
                   </div>
                 </>
               )}

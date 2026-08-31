@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { COLORS } from './constants';
 import { radius } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 // ── Tab definition ────────────────────────────────────────────────
 
@@ -37,6 +39,11 @@ export function HudShell({
   onTabChange,
   children,
 }: HudShellProps) {
+  // The HUD chrome paints from the world palette, not the app theme, so every
+  // colour below is still a `COLORS`/hex value — `colors` is here only because
+  // the button primitive takes a theme for its variant defaults.
+  const { colors } = useTheme();
+
   // ESC to close — capture phase
   useEffect(() => {
     if (!visible) return;
@@ -62,7 +69,15 @@ export function HudShell({
           </span>
           {statusPill}
         </div>
-        <button onClick={onClose} style={closeBtnStyle} title="Close (ESC)">✕</button>
+        <Button
+          colors={colors}
+          variant="bare"
+          type="button"
+          onClick={onClose}
+          title="Close (ESC)"
+          aria-label="Close"
+          style={closeBtnVars}
+        >✕</Button>
       </div>
 
       {/* Tab bar — only when tabs prop provided */}
@@ -72,26 +87,31 @@ export function HudShell({
             const isActive = tab.id === activeTab;
             const isDisabled = !!tab.disabled;
             return (
-              <button
+              <Button
                 key={tab.id}
+                colors={colors}
+                variant="bare"
+                type="button"
                 onClick={() => {
                   if (!isDisabled && onTabChange) onTabChange(tab.id);
                 }}
                 disabled={isDisabled}
+                flashSuccess={false}
                 style={{
-                  ...tabBtnBase,
-                  ...(idx === 0 ? { paddingLeft: 0 } : {}),
-                  color: isActive
+                  ...tabBtnVars,
+                  '--pa-btn-pad': idx === 0 ? '6px 10px 5px 0' : '6px 10px 5px',
+                  '--pa-btn-fg': isActive
                     ? tab.accentColor
                     : isDisabled
                       ? '#4B5563'
                       : '#6B7280',
+                  '--pa-btn-fg-hover': isActive ? tab.accentColor : COLORS.primaryMarble,
+                  // Only the underline is drawn — `.pa-btn`'s `border` shorthand
+                  // paints all four edges, so this longhand has to stay inline.
                   borderBottom: isActive
                     ? `2px solid ${tab.accentColor}`
                     : '2px solid transparent',
-                  cursor: isDisabled ? 'default' : 'pointer',
-                  opacity: isDisabled ? 0.45 : 1,
-                }}
+                } as CSSProperties}
               >
                 {tab.label}
                 {isDisabled && tab.disabledLabel && (
@@ -105,7 +125,7 @@ export function HudShell({
                     {tab.disabledLabel}
                   </span>
                 )}
-              </button>
+              </Button>
             );
           })}
         </div>
@@ -190,15 +210,15 @@ const headerStyle: React.CSSProperties = {
   marginBottom: 0,
 };
 
-const closeBtnStyle: React.CSSProperties = {
-  background: 'none',
-  border: 'none',
-  color: '#6B7280',
-  cursor: 'pointer',
+const closeBtnVars = {
+  '--pa-btn-fg': '#6B7280',
+  '--pa-btn-fg-hover': COLORS.primaryMarble,
+  '--pa-btn-bg-hover': 'rgba(255,255,255,0.06)',
+  '--pa-btn-pad': '2px 4px',
+  '--pa-btn-radius': `${radius.xs}px`,
   fontSize: 14,
-  padding: '2px 4px',
   lineHeight: 1,
-};
+} as CSSProperties;
 
 const tabBarStyle: React.CSSProperties = {
   display: 'flex',
@@ -208,13 +228,16 @@ const tabBarStyle: React.CSSProperties = {
   marginBottom: 4,
 };
 
-const tabBtnBase: React.CSSProperties = {
-  background: 'none',
-  border: 'none',
+const tabBtnVars = {
+  '--pa-btn-bg': 'transparent',
+  '--pa-btn-bg-hover': 'transparent',
+  '--pa-btn-bg-active': 'transparent',
+  '--pa-btn-border': 'transparent',
+  '--pa-btn-border-hover': 'transparent',
+  '--pa-btn-radius': '0',
+  '--pa-btn-weight': 700,
   fontFamily: 'monospace',
   fontSize: 10,
-  fontWeight: 700,
   letterSpacing: '0.08em',
-  padding: '6px 10px 5px',
   lineHeight: 1,
-};
+} as CSSProperties;

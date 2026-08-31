@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
 import { ease, font, radius } from '../../styles/tokens';
 import { api } from '../../lib/api';
+import { Button } from '../common/Button';
 import type { GraphMemory, GraphEntity } from './useBrainData';
 import type { TypeFilters } from './BrainScene';
 import { useTheme } from '../../styles/useTheme';
@@ -87,9 +88,11 @@ export function BrainList({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchQuery, timeValue, isSearch]);
 
+  // Resolves `true` only when a page actually landed, so the Retry button that
+  // awaits it cannot tick success over the error it is standing next to.
   const loadPage = useCallback(async (reset = false) => {
-    if (isSearch) return;
-    if (loadingMore.current && !reset) return;
+    if (isSearch) return false;
+    if (loadingMore.current && !reset) return false;
     loadingMore.current = true;
     const generation = reset ? ++requestGeneration.current : requestGeneration.current;
 
@@ -113,7 +116,7 @@ export function BrainList({
       }
 
       const res = await api.getBrainMemories(params);
-      if (generation !== requestGeneration.current) return;
+      if (generation !== requestGeneration.current) return false;
       if (!res || !Array.isArray(res.memories)) throw new Error('Invalid memories response');
 
       setState(prev => {
@@ -130,9 +133,11 @@ export function BrainList({
           searchOffset: (reset ? 0 : prev.searchOffset) + res.memories.length,
         };
       });
+      return true;
     } catch {
-      if (generation !== requestGeneration.current) return;
+      if (generation !== requestGeneration.current) return false;
       setState(prev => ({ ...prev, loading: false, error: true }));
+      return false;
     } finally {
       if (generation === requestGeneration.current) loadingMore.current = false;
     }
@@ -244,16 +249,25 @@ export function BrainList({
               {isSearch ? `Could not search your Brain: ${displayError}` : "Couldn't load memories."}
             </div>
             {!isSearch && (
-              <button
+              <Button
+                colors={colors}
+                variant="ghostOn"
+                type="button"
                 onClick={() => loadPage(true)}
                 style={{
-                  fontSize: 12, fontFamily: font.body, fontWeight: 600, color: colors.cyan,
-                  background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
-                  padding: '5px 14px', cursor: 'pointer',
-                }}
+                  '--pa-btn-bg': 'transparent',
+                  '--pa-btn-fg': colors.cyan,
+                  '--pa-btn-border': colors.borderHi,
+                  '--pa-btn-bg-hover': colors.cyanSoft,
+                  '--pa-btn-border-hover': colors.cyan,
+                  '--pa-btn-pad': '5px 14px',
+                  '--pa-btn-radius': `${radius.md}px`,
+                  '--pa-btn-weight': 600,
+                  fontSize: 12, lineHeight: 1.5, fontFamily: font.body,
+                } as CSSProperties}
               >
                 Retry
-              </button>
+              </Button>
             )}
           </div>
         )}

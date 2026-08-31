@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { COLORS } from './constants';
 import { AGENT_TRIM } from './shared/palette';
 import { useAgentRuntimeStates } from './shared/agentStatus';
 import { HudShell, Section } from './HudShell';
+import { Button } from '../common/Button';
 import { Chip } from '../common/Chip';
 import { navigateToTool } from '../../lib/store';
+import { useTheme } from '../../styles/useTheme';
 
 // The Financier — market research and the Finance tab ledger. Reports numbers;
 // never sizes a position and cannot place an order. Live state comes from the
@@ -20,6 +22,9 @@ interface FinancierHUDProps {
 export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
   const runtime = useAgentRuntimeStates();
   const [tabHint, setTabHint] = useState(false);
+  // World chrome keeps the world palette; the theme only feeds the button
+  // primitive's variant defaults.
+  const { colors: themeColors } = useTheme();
 
   useEffect(() => {
     if (!visible) setTabHint(false);
@@ -73,7 +78,9 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
       </Section>
 
       <div style={{ padding: '8px 14px 12px' }}>
-        <button
+        <Button
+          colors={themeColors}
+          variant="ghostOn"
           type="button"
           onClick={() => {
             const ok = navigateToTool('finance');
@@ -81,19 +88,21 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
             if (ok) onClose();
           }}
           style={{
+            '--pa-btn-bg': 'transparent',
+            '--pa-btn-fg': FINANCIER_TRIM,
+            '--pa-btn-border': `${FINANCIER_TRIM}66`,
+            '--pa-btn-bg-hover': `${FINANCIER_TRIM}1F`,
+            '--pa-btn-border-hover': FINANCIER_TRIM,
+            '--pa-btn-bg-active': 'transparent',
+            '--pa-btn-pad': '6px 10px',
+            '--pa-btn-radius': '3px',
+            '--pa-btn-weight': 600,
             fontSize: 11,
-            fontWeight: 600,
             letterSpacing: '0.04em',
-            background: 'transparent',
-            color: FINANCIER_TRIM,
-            border: `1px solid ${FINANCIER_TRIM}66`,
-            borderRadius: 3,
-            padding: '6px 10px',
-            cursor: 'pointer',
-          }}
+          } as CSSProperties}
         >
           OPEN THE FINANCE TAB
-        </button>
+        </Button>
         {tabHint && (
           <div style={{ fontSize: 11, color: '#9CA3AF', marginTop: 8 }}>
             The Finance tab is not in this workspace yet — it is added on the next daemon start.

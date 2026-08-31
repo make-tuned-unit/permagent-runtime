@@ -1,4 +1,4 @@
-import { Suspense, useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { Suspense, useState, useCallback, useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { AdaptiveEvents, PerformanceMonitor, usePerformanceMonitor } from '@react-three/drei';
 import * as THREE from 'three';
@@ -25,6 +25,8 @@ import { PerfProbe, perfProbeEnabled, devDprOverride } from './shared/PerfProbe'
 import { useWorldVisibility } from './atmosphere/useWorldVisibility';
 import { installDevHarness } from './atmosphere/devHarness';
 import { getReduceMotion, radius } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { TourMode } from './camera/TourMode';
 
 // DEV-ONLY: window.__worldDev harness for ambience evidence (no-op in prod).
@@ -294,6 +296,9 @@ function SceneContent({
 }
 
 export function WorldView({ visible = true }: { visible?: boolean }) {
+  // The world's chrome paints from its own palette; the theme is here only to
+  // feed the button primitive's variant defaults.
+  const { colors: themeColors } = useTheme();
   const [cameraMode, setCameraMode] = useState<CameraMode>('orbit');
   const [hoveredAgent, setHoveredAgent] = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
@@ -554,29 +559,36 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       {/* Agora return affordance (#306 arc beat 5) — visible once you cross into
           the mesh; returns you home through the portal (also bound to ESC). */}
       {agoraPhase !== 'home' && (
-        <button
+        <Button
+          colors={themeColors}
+          variant="ghostOn"
           type="button"
           onClick={handleExitAgora}
+          flashSuccess={false}
           style={{
+            '--pa-btn-bg': 'rgba(10, 14, 26, 0.82)',
+            '--pa-btn-fg': COLORS.neonCyan,
+            '--pa-btn-border': `${COLORS.neonCyan}66`,
+            '--pa-btn-bg-hover': 'rgba(16, 24, 44, 0.9)',
+            '--pa-btn-border-hover': COLORS.neonCyan,
+            '--pa-btn-bg-active': 'rgba(10, 14, 26, 0.82)',
+            '--pa-btn-pad': '9px 20px',
+            '--pa-btn-radius': `${radius.sm}px`,
             position: 'absolute',
             bottom: 28,
             left: '50%',
+            // The centring transform has to stay inline, which does mean
+            // `.pa-btn`'s press scale cannot apply to this one button.
             transform: 'translateX(-50%)',
-            padding: '9px 20px',
-            background: 'rgba(10, 14, 26, 0.82)',
-            border: `1px solid ${COLORS.neonCyan}66`,
-            borderRadius: radius.sm,
-            color: COLORS.neonCyan,
             fontFamily: 'JetBrains Mono, monospace',
             fontSize: 11,
             letterSpacing: '0.18em',
-            cursor: 'pointer',
             boxShadow: `0 0 18px ${COLORS.neonCyan}33`,
             backdropFilter: 'blur(4px)',
-          }}
+          } as CSSProperties}
         >
           ↩ RETURN TO THE ROTUNDA · ESC
-        </button>
+        </Button>
       )}
       <HenryHUD
         visible={activeHud === 'henry'}

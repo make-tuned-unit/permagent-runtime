@@ -1,7 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type CSSProperties } from 'react';
 import { COLORS } from './constants';
 import { AGENT_TRIM } from './shared/palette';
 import { api } from '../../lib/api';
+import { radius } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { HudShell, Section, StatRow, useTabReset } from './HudShell';
 import type { HudTab } from './HudShell';
 import { HenryIdentityTab } from './HenryIdentityTab';
@@ -154,6 +157,9 @@ export function HenryHUD({ visible, onClose }: HenryHUDProps) {
 function HenryStatusBody({ status }: { status: HenryStatus | null }) {
   // Locally hide acked briefings until the next status poll confirms.
   const [ackedIds, setAckedIds] = useState<string[]>([]);
+  // The HUD paints from the world palette; the theme is here only to feed the
+  // button primitive's variant defaults.
+  const { colors: themeColors } = useTheme();
   if (!status) return null;
 
   const { today_totals: today, lifetime_stats: lt } = status;
@@ -227,21 +233,28 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
                 {/* Ack = "seen", never approval (briefings.rs contract).
                     Wave-1 item 5: the unacked list previously grew forever —
                     no route, no button. */}
-                <button
+                <Button
+                  colors={themeColors}
+                  variant="bare"
+                  type="button"
                   title="Mark as seen"
-                  onClick={() => {
-                    void api.ackBriefings([b.id])
-                      .then(() => setAckedIds((ids) => [...ids, b.id]))
-                      .catch(() => { /* row stays; next status load retells the truth */ });
-                  }}
+                  aria-label="Mark as seen"
+                  onClick={() => api.ackBriefings([b.id])
+                    .then(() => { setAckedIds((ids) => [...ids, b.id]); return true; })
+                    // The row stays and the next status load retells the truth,
+                    // so `false` keeps the button from ticking over a failure.
+                    .catch(() => false)}
                   style={{
-                    marginLeft: 'auto', background: 'none', border: 'none',
-                    color: COLORS.marbleVeining, cursor: 'pointer',
-                    fontSize: 11, lineHeight: 1, padding: '2px 4px',
-                  }}
+                    '--pa-btn-fg': COLORS.marbleVeining,
+                    '--pa-btn-fg-hover': COLORS.primaryMarble,
+                    '--pa-btn-bg-hover': 'rgba(255,255,255,0.06)',
+                    '--pa-btn-pad': '2px 4px',
+                    '--pa-btn-radius': `${radius.xs}px`,
+                    marginLeft: 'auto', fontSize: 11, lineHeight: 1,
+                  } as CSSProperties}
                 >
                   ✓
-                </button>
+                </Button>
               </div>
               <div style={briefingSummaryStyle}>{b.summary}</div>
             </div>

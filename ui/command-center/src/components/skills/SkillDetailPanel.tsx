@@ -1,7 +1,7 @@
 import { useState, type CSSProperties } from 'react';
 import { FiTrash2, FiEdit2, FiX, FiChevronDown, FiChevronRight } from 'react-icons/fi';
 import { useCommandCenter, type SkillState } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { SkillEditor } from './SkillEditor';
@@ -9,6 +9,20 @@ import { SkillExecutionHistory } from './SkillExecutionHistory';
 
 interface SkillDetailPanelProps {
   skill: SkillState;
+}
+
+/** The header's three icon affordances all rest muted and come up to a colour
+ *  on hover — the pattern the primitive's `-fg-hover`/`-bg-hover` exists for,
+ *  and what the pair of mouse handlers here used to hand-roll. `rounded p-1.5`
+ *  becomes the radius/pad custom properties so the resting box is unchanged. */
+function iconVars(fg: string, fgHover: string, bgHover: string): CSSProperties {
+  return {
+    '--pa-btn-fg': fg,
+    '--pa-btn-fg-hover': fgHover,
+    '--pa-btn-bg-hover': bgHover,
+    '--pa-btn-pad': '6px',
+    '--pa-btn-radius': `${radius.xs}px`,
+  } as CSSProperties;
 }
 
 export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
@@ -19,6 +33,7 @@ export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showDefinition, setShowDefinition] = useState(false);
   const [deleteFailed, setDeleteFailed] = useState(false);
+  const definitionId = `skill-definition-${skill.id}`;
 
   // The skill staying put used to be the only sign a delete had failed, and
   // it looks exactly like a delete that was never attempted.
@@ -62,36 +77,39 @@ export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
           </span>
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
             onClick={() => setEditing(!editing)}
-            className="rounded p-1.5 transition"
-            style={{ color: colors.textMuted }}
-            onMouseEnter={e => { e.currentTarget.style.color = colors.cyan; e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
-            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.backgroundColor = ''; }}
             title="Edit skill"
+            aria-label="Edit skill"
+            style={iconVars(colors.textMuted, colors.cyan, colors.cyanSoft)}
           >
             <FiEdit2 size={13} />
-          </button>
-          <button
+          </Button>
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
             onClick={() => setConfirmDelete(true)}
-            className="rounded p-1.5 transition"
-            style={{ color: colors.textMuted }}
-            onMouseEnter={e => { e.currentTarget.style.color = colors.danger; e.currentTarget.style.backgroundColor = `${colors.danger}1A`; }}
-            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.backgroundColor = ''; }}
             title="Delete skill"
+            aria-label="Delete skill"
+            style={iconVars(colors.textMuted, colors.danger, `${colors.danger}1A`)}
           >
             <FiTrash2 size={13} />
-          </button>
-          <button
+          </Button>
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
             onClick={() => setSelectedSkillId(null)}
-            className="rounded p-1.5 hover:bg-white/5 transition"
-            style={{ color: colors.textMuted }}
-            onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
-            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
             title="Close"
+            aria-label="Close skill detail"
+            style={iconVars(colors.textMuted, colors.text, 'rgba(255,255,255,0.05)')}
           >
             <FiX size={14} />
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -180,18 +198,34 @@ export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
 
             {/* Definition JSON (collapsible) */}
             <div>
+              {/* A disclosure toggle, not an action: there is nothing to await,
+                  so the pending floor and the success tick would both be wrong
+                  for it. It takes the shared `.pa-btn` interaction rules — which
+                  is what it was missing — and keeps being a plain element so the
+                  aria-expanded / aria-controls pairing describes it. */}
               <button
+                type="button"
+                className="pa-btn uppercase"
+                aria-expanded={showDefinition}
+                aria-controls={definitionId}
                 onClick={() => setShowDefinition(!showDefinition)}
-                className="flex items-center gap-1 text-[10px] uppercase transition"
-                style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
-                onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
-                onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
+                style={{
+                  '--pa-btn-fg': colors.textMuted,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-pad': '0',
+                  '--pa-btn-weight': 600,
+                  fontFamily: font.display,
+                  fontSize: 10,
+                  lineHeight: '15px',
+                  gap: 4,
+                } as CSSProperties}
               >
                 {showDefinition ? <FiChevronDown size={11} /> : <FiChevronRight size={11} />}
                 Definition JSON
               </button>
               {showDefinition && (
                 <pre
+                  id={definitionId}
                   className="mt-2 rounded p-3 text-[10px] overflow-x-auto max-h-64 overflow-y-auto"
                   style={{ fontFamily: font.mono, backgroundColor: `${colors.surface}80`, color: colors.textMuted }}
                 >
