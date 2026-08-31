@@ -46,6 +46,23 @@ import type { DeleteReport, MergeReport, Person, PersonActivity, PersonAssociati
 import { PersonFace } from '../people/PersonFace';
 import { MergePersonPanel } from '../people/MergePersonPanel';
 
+/**
+ * The relationships people actually record, offered by name. The graph stores
+ * a free-form predicate and will take anything, so this is a set of
+ * suggestions rather than a closed list — a `<select>` here would quietly stop
+ * being true the first time someone needed a word that is not on it.
+ */
+const RELATIONSHIP_PREDICATES: Array<{ value: string; label: string }> = [
+  { value: 'works_with', label: 'Works with' },
+  { value: 'reports_to', label: 'Reports to' },
+  { value: 'manages', label: 'Manages' },
+  { value: 'introduced_by', label: 'Introduced by' },
+  { value: 'friend_of', label: 'Friend of' },
+  { value: 'family_of', label: 'Family of' },
+  { value: 'invested_in', label: 'Invested in' },
+  { value: 'related_to', label: 'Related to (unspecified)' },
+];
+
 function pad2(n: number): string { return String(n).padStart(2, '0'); }
 
 function localDateTimeValue(d = new Date()): string {
@@ -920,7 +937,22 @@ function RelatedPeople({ colors, rows, people, status, adding, targetId, predica
     </div>)}
     {adding && <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6, marginTop: 8 }}>
       <select aria-label="Related person" value={targetId} onChange={e => onTarget(e.target.value)} style={control(colors)}><option value="">Choose person…</option>{people.map(p => <option key={p.entity_uuid} value={p.entity_uuid}>{p.display_name}</option>)}</select>
-      <input aria-label="Relationship type" value={predicate} onChange={e => onPredicate(e.target.value)} placeholder="related_to" style={control(colors)} />
+      {/* The field used to be an empty box whose only hint was the raw graph
+          predicate, `related_to` — a schema token asked of the user as though
+          it were English. The common relationships are offered by name; the
+          box stays for anything else, because the graph accepts any predicate
+          and a fixed list would quietly stop being true. */}
+      <input
+        aria-label="Relationship type"
+        list="person-relationship-predicates"
+        value={predicate}
+        onChange={e => onPredicate(e.target.value)}
+        placeholder="How are they connected?"
+        style={control(colors)}
+      />
+      <datalist id="person-relationship-predicates">
+        {RELATIONSHIP_PREDICATES.map(p => <option key={p.value} value={p.value} label={p.label} />)}
+      </datalist>
       <div style={{ display: 'flex', gap: 4 }}><button onClick={onCancel} style={miniBtn(colors)}>Cancel</button><button onClick={onAdd} disabled={!targetId || !predicate.trim()} style={miniBtn(colors)}>Add</button></div>
     </div>}
   </section>;

@@ -84,6 +84,20 @@ export const GLOSSARY = {
   financierApproved:
     'The Financier reviewed this pick and approved it: the numbers behind it held up to a '
     + 'second look.',
+  /** Grow — the two estimates on an action card. */
+  impactConfidence:
+    'Impact is how much this could move the metric if it works; confidence is how sure the '
+    + 'model is that it will. Both are the model\'s own estimate at the time it wrote the card, '
+    + 'not a measurement.',
+  /** Projects — the earned-privilege ladder on the verification panel. */
+  cleanRuns:
+    'A clean run is one where verification finished with nothing to fix. Enough of them in a '
+    + 'row and this project earns wider access for the agent, one level at a time.',
+  /** Build — the cost statusline's three compressed segments. */
+  costMeter:
+    'Tokens sent and received this session, what prompt caching saved you, and how much of the '
+    + 'model\'s context window is in use. "incl. N subagents" means the total already counts '
+    + 'work done by agents this one dispatched.',
 } as const;
 
 export type GlossaryKey = keyof typeof GLOSSARY;

@@ -13,6 +13,7 @@ import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { api, apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
+import { GLOSSARY } from '../../lib/vocabulary';
 import { ViewHeader } from '../common/ViewHeader';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import type { Project } from '../projects/types';
@@ -2642,7 +2643,15 @@ function ActionCard({
             same fabrication the backend refuses when it declines to default a
             target. */}
         {action.impact && action.confidence && (
-          <span style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, flexShrink: 0 }}>
+          // Two words the card invents and never defines. The gloss says what
+          // each measures AND that both are the model's own estimate rather
+          // than something measured — which is the part a reader would
+          // otherwise have to assume either way.
+          <span
+            data-testid="action-impact-confidence"
+            title={GLOSSARY.impactConfidence}
+            style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, flexShrink: 0, cursor: 'help' }}
+          >
             {action.impact} impact · {action.confidence} confidence
           </span>
         )}

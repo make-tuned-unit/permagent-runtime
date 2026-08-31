@@ -1500,8 +1500,19 @@ function PickRow({
               {loop.kills.length > 0
                 ? `Why it was filtered: ${loop.kills.join('; ')}. `
                 : 'Passed the significance check. '}
-              <span style={{ opacity: 0.75 }}>
-                ICIR {fmtNum(loop.icir)} · half-life {loop.halfLifeDays != null ? `${loop.halfLifeDays.toFixed(1)}d` : '—'}
+              {/* Two borrowed terms, defined where they appear. They were bare
+                  chrome: a reader who does not already know what an ICIR is
+                  learns nothing from a number beside it, and the number is
+                  precisely what the filter above it acted on. */}
+              <span style={{ opacity: 0.75 }} data-testid="pick-loop-metrics">
+                <span title={GLOSSARY.icir} style={{ cursor: 'help', borderBottom: `1px dotted ${colors.border}` }}>
+                  ICIR
+                </span>
+                {' '}{fmtNum(loop.icir)} ·{' '}
+                <span title={GLOSSARY.halfLife} style={{ cursor: 'help', borderBottom: `1px dotted ${colors.border}` }}>
+                  half-life
+                </span>
+                {' '}{loop.halfLifeDays != null ? `${loop.halfLifeDays.toFixed(1)}d` : '—'}
               </span>
             </p>
           )}

@@ -5,6 +5,7 @@ import type { ThemeColors } from '../../styles/useTheme';
 import { cronToEnglish } from '../../lib/schedule-format';
 import { useCommandCenter } from '../../lib/store';
 import { AUTOMATION } from '../../lib/vocabulary';
+import { useCopyToClipboard } from '../../lib/clipboard';
 import { apiFetch } from '../../lib/api';
 import { useScheduleEvents } from '../../lib/useScheduleEvents';
 import { usePollWhenVisible } from '../../lib/usePollWhenVisible';
@@ -1088,7 +1089,11 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
         <MetaField label="Last Result" value={statusInfo(job.last_status)?.label ?? '—'} />
         {!!job.run_count && <MetaField label="Runs" value={String(job.run_count)} />}
         {!!job.max_retries && <MetaField label="Max Retries" value={String(job.max_retries)} />}
-        <MetaField label="ID" value={job.id} mono />
+        {/* A bare UUID under a bare "ID" is chrome: it tells a reader nothing
+            about what it is for. It is a reference to quote when something goes
+            wrong, so it says that and can be copied without being selected by
+            hand. */}
+        <ReferenceIdField id={job.id} />
       </div>
       {job.last_status === 'error' && job.last_error && (
         <div style={{ marginBottom: 20, padding: '8px 12px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, fontSize: 11, color: colors.danger, fontFamily: font.mono, wordBreak: 'break-word' }}>
@@ -1285,6 +1290,46 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * The automation's UUID, labelled for the one job it does.
+ *
+ * It used to render under "ID" as a bare 36-character string with nothing
+ * saying what a reader would ever do with it. It is the handle to quote when
+ * asking about a run that went wrong, so the label says "Reference ID", the
+ * hover says what it is for, and it copies in one click — because the
+ * alternative is selecting a UUID by hand out of a two-column grid.
+ */
+function ReferenceIdField({ id }: { id: string }) {
+  const { colors } = useTheme();
+  const { state, copy } = useCopyToClipboard();
+  return (
+    <div>
+      <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', color: colors.textDim, marginBottom: 2, letterSpacing: '0.05em' }}>
+        Reference ID
+      </div>
+      <button
+        type="button"
+        data-testid="automation-reference-id"
+        onClick={() => copy(id)}
+        title="Quote this when asking about a run — click to copy"
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6, padding: 0,
+          background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left',
+          fontSize: 12, color: colors.textMuted, fontFamily: font.mono, maxWidth: '100%',
+        }}
+      >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{id}</span>
+        <span style={{
+          flexShrink: 0, fontSize: 10, fontFamily: font.body,
+          color: state === 'failed' ? colors.danger : state === 'copied' ? colors.success : colors.textDim,
+        }}>
+          {state === 'copied' ? 'copied' : state === 'failed' ? "couldn't copy" : 'copy'}
+        </span>
+      </button>
+    </div>
   );
 }
 

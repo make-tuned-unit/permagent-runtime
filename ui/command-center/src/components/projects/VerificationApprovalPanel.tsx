@@ -30,6 +30,7 @@ import {
   type VerificationApproval,
 } from './verificationApproval';
 import type { Project } from './types';
+import { GLOSSARY } from '../../lib/vocabulary';
 
 export function VerificationApprovalPanel({ project }: { project: Project }) {
   const { colors, theme } = useTheme();
@@ -222,7 +223,11 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
         }}>
           {level === 'full' ? 'Full' : level === 'read_only' ? 'Read-only' : 'None'}
         </span>
-        <span style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono }}>
+        <span
+          data-testid="clean-runs"
+          title={GLOSSARY.cleanRuns}
+          style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, cursor: 'help' }}
+        >
           {data.cleanRuns} clean run{data.cleanRuns === 1 ? '' : 's'}
         </span>
       </div>

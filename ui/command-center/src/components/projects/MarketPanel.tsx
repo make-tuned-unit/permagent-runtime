@@ -79,9 +79,12 @@ function refusalText(row: MarketRow): string {
     case 'insufficient_history':
       return `${r.points ?? row.points} of ${r.needed ?? row.needed ?? '?'} points — too short to forecast`;
     case 'collector_stale':
+      // "Collector stale" was the daemon's word for it, rendered straight
+      // through. A collector is the job that gathers this series; the sentence
+      // now says that, and says what it means for the forecast.
       return r.lastCollectedAt
-        ? `Collector stale — last ran ${new Date(r.lastCollectedAt).toLocaleDateString()}`
-        : 'Never collected';
+        ? `No recent data — the job that gathers this series last ran ${new Date(r.lastCollectedAt).toLocaleDateString()}`
+        : 'No data yet — nothing has gathered this series';
     case 'not_bound':
       return 'Awaiting approval — nothing is collected yet';
     case 'no_method_beats_baseline':

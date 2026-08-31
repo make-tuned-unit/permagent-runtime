@@ -119,7 +119,11 @@ it('says a stale collector is stale rather than showing its last numbers as curr
   });
   await act(async () => root.render(<MarketPanel project={project} />));
   const text = container.textContent ?? '';
-  expect(text).toContain('Collector stale');
+  // Said in the user's terms rather than the daemon's: "collector_stale" is a
+  // refusal reason, and "Collector stale" was that word rendered straight
+  // through. What the reader needs is that the data is old and why.
+  expect(text).toContain('No recent data');
+  expect(text).toContain('last ran');
   expect(text).toContain('collector error');
   expect(text).not.toContain('method:');
 });
