@@ -58,6 +58,93 @@ use tokio;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
+/// How long a reachability probe may take before we call the endpoint dead.
+///
+/// Short on purpose: this runs in front of `/model`, a command the user is
+/// waiting on. A local server that cannot answer a `GET` in this long is not
+/// going to serve a coding turn either.
+const REACHABILITY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// The `/v1/models` URL to probe for a provider's chat-completions endpoint,
+/// or `None` when it is not ours to probe.
+///
+/// Only endpoints the user hosts themselves — loopback, or their own LAN.
+/// Cloud providers are deliberately excluded: a round trip per row would put
+/// real latency in front of a command that is mostly used to read a list, and
+/// their `is_provider_configured` answer already means "a key is stored",
+/// which is the honest claim. A self-hosted provider is different in kind:
+/// `qwen38_split` declares `requires_auth: false`, so it reads as configured
+/// unconditionally — including the ~18 hours a day the split is not running.
+fn local_probe_url(base_url: &str) -> Option<String> {
+    let mut url = url::Url::parse(base_url).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    if !is_self_hosted_host(url.host_str()?) {
+        return None;
+    }
+    let path = url.path().trim_end_matches('/').to_string();
+    let probe = match path.strip_suffix("/chat/completions") {
+        Some(stem) if !stem.is_empty() => format!("{stem}/models"),
+        _ => "/v1/models".to_string(),
+    };
+    url.set_path(&probe);
+    url.set_query(None);
+    Some(url.to_string())
+}
+
+fn is_self_hosted_host(host: &str) -> bool {
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            v4.is_loopback() || v4.is_private() || v4.is_unspecified() || v4.is_link_local()
+        }
+        Ok(std::net::IpAddr::V6(v6)) => v6.is_loopback() || v6.is_unspecified(),
+        Err(_) => false,
+    }
+}
+
+/// The probe URL for a named provider, resolving `${VAR}` in its `base_url`
+/// the same way provider instantiation does. `None` for anything not
+/// declarative or not self-hosted.
+fn provider_probe_url(provider_name: &str) -> Option<String> {
+    let loaded = permagent::config::declarative_providers::load_provider(provider_name).ok()?;
+    let base_url = match loaded.config.env_vars.as_ref() {
+        Some(env_vars) => permagent::config::declarative_providers::expand_env_vars(
+            &loaded.config.base_url,
+            env_vars,
+        )
+        .ok()?,
+        None => loaded.config.base_url.clone(),
+    };
+    local_probe_url(&base_url)
+}
+
+/// Is anything listening? ANY HTTP answer counts — a 404 or a 401 still means
+/// a server is up, and this is a reachability check, not a contract check.
+/// Only a transport failure (connection refused, timeout) reads as dead.
+async fn endpoint_is_reachable(url: &str) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(REACHABILITY_TIMEOUT)
+        .build()
+    else {
+        return true;
+    };
+    client.get(url).send().await.is_ok()
+}
+
+/// Says the endpoint is dead AND what to do about it. The old behaviour was to
+/// switch anyway and let the next turn fail with a raw connection error.
+fn unreachable_notice(url: &str) -> String {
+    format!("configured but not reachable at {url} — is the server running?")
+}
+
 /// Split a `/model` argument into `(provider, model)`.
 ///
 /// `None` means the request is unactionable — no separator, or a blank half —
@@ -876,6 +963,13 @@ impl CliSession {
                 .collect::<Vec<_>>();
             let inventories =
                 futures::future::join_all(configured.into_iter().map(|(metadata, _)| async move {
+                    // A self-hosted provider that reads as "configured" may
+                    // still be a dead port. Probe before listing it as usable;
+                    // cloud rows skip this entirely (see `local_probe_url`).
+                    let unreachable = match provider_probe_url(&metadata.name) {
+                        Some(url) if !endpoint_is_reachable(&url).await => Some(url),
+                        _ => None,
+                    };
                     let fallback = metadata
                         .known_models
                         .iter()
@@ -899,10 +993,14 @@ impl CliSession {
                         }
                         Err(_) => fallback,
                     };
-                    (metadata.name, metadata.display_name, models)
+                    (metadata.name, metadata.display_name, models, unreachable)
                 }))
                 .await;
-            for (provider, display, mut models) in inventories {
+            for (provider, display, mut models, unreachable) in inventories {
+                if let Some(url) = unreachable {
+                    println!("  {display} ({provider}): {}", unreachable_notice(&url));
+                    continue;
+                }
                 models.sort();
                 models.dedup();
                 if models.is_empty() {
@@ -935,6 +1033,20 @@ impl CliSession {
                 "Provider `{provider_name}` is not connected. Configure it in Settings, then run /model again."
             ));
             return Ok(());
+        }
+        // "Connected" and "answering" are different claims. A self-hosted
+        // endpoint that requires no auth reads as connected around the clock,
+        // so switching onto it blind buys a raw connection error on the next
+        // turn instead of a sentence anyone can act on.
+        if let Some(url) = provider_probe_url(provider_name) {
+            if !endpoint_is_reachable(&url).await {
+                output::render_error(&format!(
+                    "`{provider_name}` is {} Staying on the current model — \
+                     switching now would only fail on the next turn.",
+                    unreachable_notice(&url)
+                ));
+                return Ok(());
+            }
         }
 
         let model_config = match permagent::model::ModelConfig::new(model_name) {
@@ -2518,6 +2630,60 @@ mod tests {
         assert_eq!(parse_model_selection("/claude-sonnet-5"), None);
         assert_eq!(parse_model_selection("anthropic/"), None);
         assert_eq!(parse_model_selection("   /   "), None);
+    }
+
+    // ── /model reachability (a4-local-qwen.md §4) ──────────────────────────
+
+    /// `qwen38_split` requires no auth, so `is_provider_configured` returns
+    /// true for it around the clock — including the ~18 hours the split is
+    /// down. Only endpoints the user hosts get probed; cloud rows must not pay
+    /// a network round trip to be listed.
+    #[test]
+    fn only_self_hosted_endpoints_are_probed() {
+        assert_eq!(
+            local_probe_url("http://127.0.0.1:8081/v1/chat/completions").as_deref(),
+            Some("http://127.0.0.1:8081/v1/models")
+        );
+        assert_eq!(
+            local_probe_url("http://localhost:1234/v1/chat/completions").as_deref(),
+            Some("http://localhost:1234/v1/models")
+        );
+        assert_eq!(
+            local_probe_url("http://192.168.1.40:8081/v1/chat/completions").as_deref(),
+            Some("http://192.168.1.40:8081/v1/models"),
+            "the user's own LAN counts as self-hosted"
+        );
+
+        assert!(local_probe_url("https://api.deepseek.com").is_none());
+        assert!(local_probe_url("https://api.groq.com/openai/v1/chat/completions").is_none());
+        assert!(local_probe_url("https://ollama.com/v1/chat/completions").is_none());
+        assert!(
+            local_probe_url("${QWEN38_SPLIT_HOST}/v1/chat/completions").is_none(),
+            "an unexpanded template is not an address; probing it would be a guess"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_live_endpoint_reads_as_reachable_and_a_closed_port_does_not() {
+        let server = wiremock::MockServer::start().await;
+        assert!(
+            endpoint_is_reachable(&format!("{}/v1/models", server.uri())).await,
+            "a server that answers at all is up — even with a 404"
+        );
+
+        // Bind, read the port, drop: a port nothing is listening on.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        drop(listener);
+        assert!(!endpoint_is_reachable(&format!("http://127.0.0.1:{port}/v1/models")).await);
+    }
+
+    #[test]
+    fn the_dead_endpoint_message_names_the_endpoint_and_the_way_out() {
+        let notice = unreachable_notice("http://127.0.0.1:8081/v1/models");
+        assert!(notice.contains("configured but not reachable"), "{notice}");
+        assert!(notice.contains("is the server running?"), "{notice}");
+        assert!(notice.contains("127.0.0.1:8081"), "{notice}");
     }
 
     // ── F4.4: the cost line defaults on for recipe runs; env is an off-switch ──
