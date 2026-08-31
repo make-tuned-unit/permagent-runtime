@@ -48,13 +48,16 @@ const SRC = fileURLToPath(new URL('../..', import.meta.url));
 /** Directories whose controls are on the primitive. Grows one commit at a time. */
 const GATED = [
   'components/automate',
+  'components/browser',
   'components/chat',
   'components/dashboard',
   'components/finance',
   'components/grow',
+  'components/people',
   'components/projects',
   'components/sessions',
   'components/settings',
+  'components/voice',
 ];
 
 /**
@@ -65,6 +68,12 @@ const GATED = [
  * true fails, and so does a new raw button hiding behind an existing one.
  */
 const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {
+  'components/people/PersonFace.tsx': {
+    count: 1,
+    why: 'the graph-node avatar draws a 2px ring and computes opacity, shadow and '
+      + 'transform inline, so an inline transform would beat the press give — and '
+      + 'the same style object is reused by its non-interactive twin',
+  },
   'components/settings/SettingsView.tsx': {
     count: 1,
     why: 'the trust-level options are two-line cards: a title row with a badge '

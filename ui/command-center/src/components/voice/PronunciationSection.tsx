@@ -1,17 +1,28 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { api, type PronunciationEntry, type UnresolvedPronunciation } from '../../lib/api';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Row, TextInput } from '../settings/atoms';
+import { Button } from '../common/Button';
 
 type C = ReturnType<typeof useTheme>['colors'];
 
-const btn = (colors: C): React.CSSProperties => ({
-  height: 30, padding: '0 12px', borderRadius: radius.md,
-  background: colors.inputBg, border: `1px solid ${colors.border}`,
-  color: colors.text, fontFamily: font.body, fontSize: 12,
-  cursor: 'pointer', whiteSpace: 'nowrap',
-});
+/** The section's one button look, expressed for `.pa-btn`: identical at rest,
+ *  with hover/press/pending/disabled arriving from the primitive. */
+const btnVars = (colors: C): CSSProperties => ({
+  '--pa-btn-bg': colors.inputBg,
+  '--pa-btn-fg': colors.text,
+  '--pa-btn-border': colors.border,
+  '--pa-btn-bg-hover': colors.surfaceHi,
+  '--pa-btn-border-hover': colors.borderHi,
+  '--pa-btn-bg-active': colors.surface,
+  '--pa-btn-pad': '0 12px',
+  '--pa-btn-radius': `${radius.md}px`,
+  height: 30,
+  fontFamily: font.body,
+  fontSize: 12,
+  whiteSpace: 'nowrap',
+} as CSSProperties);
 
 /**
  * Teach the speech engine a word once, and review anything it had to guess at.
@@ -42,10 +53,13 @@ export function PronunciationSection() {
 
   useEffect(() => { void reload(); }, [reload]);
 
-  const teach = async (w: string, like: string) => {
+  /** Resolves `false` when nothing was saved — this swallows its own error into
+   *  `error`, and a button that ticked on that would be claiming a save that
+   *  did not happen. */
+  const teach = async (w: string, like: string): Promise<boolean> => {
     const trimmedWord = w.trim();
     const trimmedLike = like.trim();
-    if (!trimmedWord || !trimmedLike) return;
+    if (!trimmedWord || !trimmedLike) return false;
     setBusy(true);
     setError(null);
     try {
@@ -53,8 +67,10 @@ export function PronunciationSection() {
       setWord('');
       setSoundsLike('');
       await reload();
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save pronunciation');
+      return false;
     } finally {
       setBusy(false);
     }
@@ -76,14 +92,15 @@ export function PronunciationSection() {
             <div style={{ flex: 2, minWidth: 160 }}>
               <TextInput value={soundsLike} onChange={setSoundsLike} placeholder="sounds like" />
             </div>
-            <button
+            <Button
+              colors={colors}
               type="button"
               disabled={busy || !word.trim() || !soundsLike.trim()}
-              onClick={() => void teach(word, soundsLike)}
-              style={btn(colors)}
+              onClick={() => teach(word, soundsLike)}
+              style={btnVars(colors)}
             >
               Save
-            </button>
+            </Button>
           </div>
           {error && <span style={{ fontSize: 12, color: colors.danger }}>{error}</span>}
         </div>
@@ -100,7 +117,7 @@ export function PronunciationSection() {
                 item={item}
                 colors={colors}
                 busy={busy}
-                onTeach={(like) => void teach(item.word, like)}
+                onTeach={(like) => teach(item.word, like)}
               />
             ))}
           </div>
@@ -113,13 +130,14 @@ export function PronunciationSection() {
               <div key={w} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontFamily: font.body }}>
                 <span style={{ color: colors.text, fontWeight: 500 }}>{w}</span>
                 <span style={{ color: colors.textMuted }}>{saved[w].sounds_like}</span>
-                <button
+                <Button
+                  colors={colors}
                   type="button"
-                  onClick={() => { void api.deletePronunciation(w).then(reload); }}
-                  style={{ ...btn(colors), height: 26, padding: '0 8px', marginLeft: 'auto' }}
+                  onClick={() => api.deletePronunciation(w).then(reload)}
+                  style={{ ...btnVars(colors), height: 26, '--pa-btn-pad': '0 8px', marginLeft: 'auto' } as CSSProperties}
                 >
                   Remove
-                </button>
+                </Button>
               </div>
             ))}
           </div>
@@ -138,7 +156,9 @@ function UnresolvedRow({
   item: UnresolvedPronunciation;
   colors: C;
   busy: boolean;
-  onTeach: (soundsLike: string) => void;
+  /** Returns the save's promise so the button can spin for it and tick only on
+   *  a real save. */
+  onTeach: (soundsLike: string) => unknown;
 }) {
   const [like, setLike] = useState('');
   return (
@@ -150,14 +170,15 @@ function UnresolvedRow({
       <div style={{ flex: 1, minWidth: 140 }}>
         <TextInput value={like} onChange={setLike} placeholder="sounds like" />
       </div>
-      <button
+      <Button
+        colors={colors}
         type="button"
         disabled={busy || !like.trim()}
         onClick={() => onTeach(like)}
-        style={btn(colors)}
+        style={btnVars(colors)}
       >
         Teach
-      </button>
+      </Button>
     </div>
   );
 }

@@ -26,7 +26,7 @@
  * portals so the collapsed sidebar never clips them.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
@@ -34,6 +34,7 @@ import { toast } from '../../lib/notifications';
 import { ease, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useMeetingDictation, formatElapsed } from '../../hooks/useMeetingDictation';
+import { Button } from '../common/Button';
 import type { Project } from '../projects/types';
 
 /** Mic glyph (same stroke style as the sidebar's other icons). */
@@ -167,35 +168,50 @@ export function MeetingRecorder({ open }: { open: boolean }) {
       useCommandCenter.getState().focusProjectNote(saved.projectId, saved.noteId));
   };
 
+  // Both of these resolve to whether a note actually landed: `stop`/`retrySave`
+  // report failure by returning null and setting `error`, so a button that
+  // ticked on a null would be claiming a save that did not happen.
   const handleStop = async () => {
     const name = target?.projectName;
     const saved = await stop();
     if (saved && name) {
       savedToast(`Writing up the notes for "${name}" now — click to open the note.`, saved);
     }
+    return saved !== null;
   };
 
   const handleRetry = async () => {
     const name = target?.projectName;
     const saved = await retrySave();
     if (saved && name) savedToast(`The transcript was saved as a note on "${name}" — click to open it.`, saved);
+    return saved !== null;
   };
 
   const active = busy || state === 'error';
   const panelWidth = expanded ? 520 : 360;
 
-  /** Shared button styling — the panel had five near-identical inline copies. */
-  const btn = (kind: 'primary' | 'quiet' | 'danger') => ({
-    fontSize: 11,
-    fontWeight: kind === 'primary' ? 600 : 400,
-    padding: '5px 12px',
-    borderRadius: 7,
-    cursor: 'pointer',
-    fontFamily: font.body,
-    background: kind === 'primary' ? colors.cyanSoft : kind === 'danger' ? colors.danger + '24' : 'transparent',
-    border: `1px solid ${kind === 'primary' ? colors.borderHi : kind === 'danger' ? colors.danger : colors.border}`,
-    color: kind === 'primary' ? colors.cyan : kind === 'danger' ? colors.danger : colors.textMuted,
-  } as const);
+  /** Shared button look — the panel had five near-identical inline copies, and
+   *  an inline style cannot express hover or press. Same three faces, now fed
+   *  to `.pa-btn` as custom properties so the states come with them. */
+  const btnVars = (kind: 'primary' | 'quiet' | 'danger'): CSSProperties => {
+    const fill = kind === 'primary' ? colors.cyanSoft : kind === 'danger' ? colors.danger + '24' : 'transparent';
+    const line = kind === 'primary' ? colors.borderHi : kind === 'danger' ? colors.danger : colors.border;
+    const ink = kind === 'primary' ? colors.cyan : kind === 'danger' ? colors.danger : colors.textMuted;
+    return {
+      '--pa-btn-bg': fill,
+      '--pa-btn-fg': ink,
+      '--pa-btn-border': line,
+      '--pa-btn-bg-hover': kind === 'quiet' ? colors.surfaceHi : kind === 'danger' ? colors.danger + '38' : fill,
+      '--pa-btn-border-hover': kind === 'quiet' ? colors.borderHi : kind === 'primary' ? colors.cyan : line,
+      '--pa-btn-fg-hover': kind === 'quiet' ? colors.text : ink,
+      '--pa-btn-bg-active': fill,
+      '--pa-btn-pad': '5px 12px',
+      '--pa-btn-radius': '7px',
+      '--pa-btn-weight': kind === 'primary' ? 600 : 400,
+      fontFamily: font.body,
+      fontSize: 11,
+    } as CSSProperties;
+  };
 
   /** The floating card both the recovery prompt and the live panel sit in. */
   const cardStyle = (accent: string) => ({
@@ -219,8 +235,17 @@ export function MeetingRecorder({ open }: { open: boolean }) {
 
   return (
     <>
-      {/* Sidebar row (mirrors SidebarRow styling; red while recording). */}
-      <button
+      {/* Sidebar row (mirrors SidebarRow styling; red while recording). The
+          hover it never had now comes from `.pa-btn`, matching SidebarRow's
+          (lift toward the selected look) rather than inventing a third one.
+          `` dissolves the primitive's label wrapper
+          so the icon, the text and the REC beacon stay direct flex children of
+          the row, exactly as before. `transition` stays inline and stays
+          `all`: the rail's collapse animates width, padding and margin, which
+          `.pa-btn`'s own transition list does not cover. */}
+      <Button
+        colors={colors}
+        variant="bare"
         onClick={onButton}
         title={
           state === 'recording' ? 'Stop recording and save the note'
@@ -228,21 +253,27 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             : 'Record a meeting to a project note'
         }
         aria-label="Record meeting"
-        style={{
+                style={{
+          '--pa-btn-bg': state === 'recording' ? colors.danger + '24' : active ? colors.cyanSoft : 'transparent',
+          '--pa-btn-fg': state === 'recording' ? colors.danger : active ? colors.cyan : colors.textMuted,
+          '--pa-btn-border': state === 'recording' ? colors.danger : active ? colors.borderHi : 'transparent',
+          '--pa-btn-bg-hover': state === 'recording' ? colors.danger + '24' : active ? colors.cyanSoft : colors.borderHi,
+          '--pa-btn-border-hover': state === 'recording' ? colors.danger : active ? colors.borderHi : 'transparent',
+          '--pa-btn-fg-hover': state === 'recording' ? colors.danger : colors.cyan,
+          '--pa-btn-bg-active': state === 'recording' ? colors.danger + '24' : active ? colors.cyanSoft : colors.borderHi,
+          '--pa-btn-pad': open ? '0 12px' : '0',
+          '--pa-btn-radius': '10px',
+          '--pa-btn-weight': active ? 600 : 500,
           width: open ? 'calc(100% - 16px)' : 40,
-          height: 40, borderRadius: 10,
-          display: 'flex', alignItems: 'center', gap: 12,
-          padding: open ? '0 12px' : 0,
+          height: 40,
+          gap: 12,
           justifyContent: open ? 'flex-start' : 'center',
           margin: open ? '0 8px' : '0 auto',
-          background: state === 'recording' ? colors.danger + '24' : active ? colors.cyanSoft : 'transparent',
-          border: state === 'recording' ? `1px solid ${colors.danger}` : active ? `1px solid ${colors.borderHi}` : '1px solid transparent',
-          color: state === 'recording' ? colors.danger : active ? colors.cyan : colors.textMuted,
           cursor: state === 'finishing' ? 'default' : 'pointer',
           transition: `all 200ms ${ease.out}`,
-          fontFamily: font.body, fontSize: 13, fontWeight: active ? 600 : 500,
+          fontFamily: font.body, fontSize: 13,
           textAlign: 'left',
-        }}
+        } as CSSProperties}
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}
           stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
@@ -264,7 +295,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             animation: 'pa-rec-pulse 1.4s ease-in-out infinite',
           }} />
         )}
-      </button>
+      </Button>
 
       {/* Confirm-first project picker. */}
       {pickerOpen && createPortal(
@@ -352,10 +383,18 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             {loadError && (
               <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
                 Couldn't load projects.
-                <button onClick={loadProjects} style={{
-                  fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
-                  cursor: 'pointer', fontFamily: font.body, padding: 0, fontWeight: 600,
-                }}>Retry</button>
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  onClick={loadProjects}
+                  style={{
+                    '--pa-btn-fg': colors.cyan,
+                    '--pa-btn-bg-hover': 'transparent',
+                    '--pa-btn-pad': '0',
+                    '--pa-btn-weight': 600,
+                    fontFamily: font.body, fontSize: 11,
+                  } as CSSProperties}
+                >Retry</Button>
               </div>
             )}
             {!loadError && projects === null && (
@@ -386,23 +425,31 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                   </div>
                 )}
                 {visibleProjects.map(p => (
-                  <button
+                  <Button
                     key={p.id}
+                    colors={colors}
                     onClick={() => setSelectedId(p.id)}
                     onDoubleClick={() => { setSelectedId(p.id); void handleStart(); }}
                     aria-pressed={selectedId === p.id}
                     style={{
-                      textAlign: 'left', padding: '8px 10px', borderRadius: radius.md,
-                      background: selectedId === p.id ? colors.cyanSoft : 'transparent',
-                      border: `1px solid ${selectedId === p.id ? colors.borderHi : colors.border}`,
-                      color: selectedId === p.id ? colors.cyan : colors.text,
-                      fontSize: 12, fontFamily: font.body, cursor: 'pointer',
-                      fontWeight: selectedId === p.id ? 600 : 400,
-                      transition: `background 140ms ${ease.out}`,
-                    }}
+                      '--pa-btn-bg': selectedId === p.id ? colors.cyanSoft : 'transparent',
+                      '--pa-btn-fg': selectedId === p.id ? colors.cyan : colors.text,
+                      '--pa-btn-border': selectedId === p.id ? colors.borderHi : colors.border,
+                      '--pa-btn-bg-hover': selectedId === p.id ? colors.cyanSoft : colors.surfaceHi,
+                      '--pa-btn-border-hover': selectedId === p.id ? colors.borderHi : colors.borderHi,
+                      '--pa-btn-fg-hover': selectedId === p.id ? colors.cyan : colors.text,
+                      '--pa-btn-bg-active': selectedId === p.id ? colors.cyanSoft : colors.surface,
+                      '--pa-btn-pad': '8px 10px',
+                      '--pa-btn-radius': `${radius.md}px`,
+                      '--pa-btn-weight': selectedId === p.id ? 600 : 400,
+                      // The list is a column of full-width rows: the name reads
+                      // from the left edge, not from the middle of the row.
+                      justifyContent: 'flex-start',
+                      textAlign: 'left', fontSize: 12, fontFamily: font.body,
+                    } as CSSProperties}
                   >
                     {p.name}
-                  </button>
+                  </Button>
                 ))}
               </div>
             )}
@@ -411,25 +458,42 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               <span style={{ fontSize: 10, color: colors.textDim, marginRight: 'auto' }}>
                 Esc to cancel · Enter to start
               </span>
-              <button onClick={() => { setPickerOpen(false); setFilter(''); }} style={{
-                fontSize: 12, padding: '7px 14px', borderRadius: 7, cursor: 'pointer',
-                background: 'transparent', border: `1px solid ${colors.border}`,
-                color: colors.textMuted, fontFamily: font.body,
-              }}>
+              <Button
+                colors={colors}
+                onClick={() => { setPickerOpen(false); setFilter(''); }}
+                style={{
+                  '--pa-btn-bg': 'transparent',
+                  '--pa-btn-fg': colors.textMuted,
+                  '--pa-btn-border': colors.border,
+                  '--pa-btn-bg-hover': colors.surfaceHi,
+                  '--pa-btn-border-hover': colors.borderHi,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-pad': '7px 14px',
+                  '--pa-btn-radius': '7px',
+                  fontFamily: font.body, fontSize: 12,
+                } as CSSProperties}
+              >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
+                colors={colors}
                 onClick={handleStart}
                 disabled={!selectedId}
                 style={{
-                  fontSize: 12, fontWeight: 600, padding: '7px 14px', borderRadius: 7,
-                  cursor: selectedId ? 'pointer' : 'default', opacity: selectedId ? 1 : 0.5,
-                  background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-                  color: colors.cyan, fontFamily: font.body,
-                }}
+                  '--pa-btn-bg': colors.cyanSoft,
+                  '--pa-btn-fg': colors.cyan,
+                  '--pa-btn-border': colors.borderHi,
+                  '--pa-btn-bg-hover': colors.cyanSoft,
+                  '--pa-btn-border-hover': colors.cyan,
+                  '--pa-btn-bg-active': colors.cyanSoft,
+                  '--pa-btn-pad': '7px 14px',
+                  '--pa-btn-radius': '7px',
+                  '--pa-btn-weight': 600,
+                  fontFamily: font.body, fontSize: 12,
+                } as CSSProperties}
               >
                 Start recording
-              </button>
+              </Button>
             </div>
           </div>
         </div>,
@@ -464,21 +528,25 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             <div style={{ fontSize: 11, color: colors.danger, lineHeight: 1.4 }}>{error}</div>
           )}
           <div style={{ display: 'flex', gap: 8 }}>
-            <button
+            <Button
+              colors={colors}
               onClick={async () => {
                 setRecovering(newestDraft.startedAt);
                 const saved = await recoverDraft(newestDraft);
                 setRecovering(null);
                 if (saved) savedToast(`The recovered transcript was saved as a note on "${newestDraft.projectName}" — click to open it.`, saved);
+                // `recoverDraft` reports failure by returning null (and setting
+                // `error`, rendered above) — never tick on that.
+                return saved !== null;
               }}
               disabled={recovering === newestDraft.startedAt}
-              style={{ ...btn('primary'), cursor: recovering ? 'default' : 'pointer' }}
+              style={{ ...btnVars('primary'), cursor: recovering ? 'default' : 'pointer' } as CSSProperties}
             >
               {recovering === newestDraft.startedAt ? 'Saving…' : 'Save the transcript'}
-            </button>
-            <button onClick={() => dismissDraft(newestDraft)} style={btn('quiet')}>
+            </Button>
+            <Button colors={colors} onClick={() => dismissDraft(newestDraft)} style={btnVars('quiet')}>
               Discard
-            </button>
+            </Button>
           </div>
         </div>,
         document.body,
@@ -519,21 +587,26 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               </span>
             )}
             {state === 'recording' && !docked && (
-              <button
+              <Button
+                colors={colors}
+                variant="bare"
                 onClick={() => setExpanded(v => !v)}
                 aria-label={expanded ? 'Collapse the notepad' : 'Expand the notepad'}
                 title={expanded ? 'Collapse the notepad' : 'Give the notepad more room'}
                 style={{
-                  marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer',
-                  color: colors.textMuted, padding: 2, display: 'flex',
-                }}
+                  '--pa-btn-fg': colors.textMuted,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-pad': '2px',
+                  '--pa-btn-radius': `${radius.xs}px`,
+                  marginLeft: 'auto',
+                } as CSSProperties}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                   strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
                   style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: `transform 200ms ${ease.out}` }}>
                   <path d={CHEVRON} />
                 </svg>
-              </button>
+              </Button>
             )}
           </div>
 
@@ -590,21 +663,27 @@ export function MeetingRecorder({ open }: { open: boolean }) {
           <div style={{ display: 'flex', gap: 8 }}>
             {state === 'recording' && (
               <>
-                <button onClick={handleStop} style={btn('primary')}>Stop &amp; save</button>
-                <button
+                {/* Stopping is confirmed by the panel changing to "Transcribing
+                    & writing your notes…" and then going away — a tick on top
+                    of that would be a second, later claim about the same act. */}
+                <Button colors={colors} onClick={handleStop} flashSuccess={false} style={btnVars('primary')}>
+                  Stop &amp; save
+                </Button>
+                <Button
+                  colors={colors}
                   onClick={() => (confirmDiscard ? discard() : setConfirmDiscard(true))}
-                  style={confirmDiscard ? btn('danger') : btn('quiet')}
+                  style={confirmDiscard ? btnVars('danger') : btnVars('quiet')}
                 >
                   {confirmDiscard ? 'Discard — sure?' : 'Discard'}
-                </button>
+                </Button>
               </>
             )}
             {state === 'error' && (
               <>
                 {hasUnsavedTranscript && (
-                  <button onClick={handleRetry} style={btn('primary')}>Retry save</button>
+                  <Button colors={colors} onClick={handleRetry} style={btnVars('primary')}>Retry save</Button>
                 )}
-                <button onClick={discard} style={btn('quiet')}>Dismiss</button>
+                <Button colors={colors} onClick={discard} style={btnVars('quiet')}>Dismiss</Button>
               </>
             )}
           </div>

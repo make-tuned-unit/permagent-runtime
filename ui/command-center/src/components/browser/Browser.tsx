@@ -1,7 +1,8 @@
-import { useState, useCallback, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
+import { useState, useCallback, useRef, useEffect, useImperativeHandle, forwardRef, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { useBrowserContentBridge } from '../../hooks/useBrowserContentBridge';
 import { useBrowserActBridge } from '../../hooks/useBrowserActBridge';
 import {
@@ -785,13 +786,16 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     };
   }, [pendingBrowserUrl, api, handleOpenUrl, clearPendingBrowserUrl]);
 
+  // Resolves whether the navigation actually happened. Both failure paths below
+  // swallow into `console.error`, so a caller that awaits this (the quick-link
+  // buttons) would otherwise report a dead click as a success.
   const handleNavigate = useCallback(
-    async (url: string) => {
+    async (url: string): Promise<boolean> => {
       const normalized = normalizeUrl(url);
-      if (!normalized || !apiRef.current) return;
+      if (!normalized || !apiRef.current) return false;
 
       const tab = tabs.find((t) => t.id === activeTabId);
-      if (!tab) return;
+      if (!tab) return false;
 
       // The edit is committed — hand the address bar back to the active tab,
       // and show the normalized form now rather than after the round trip.
@@ -812,8 +816,10 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
                 : t,
             ),
           );
+          return true;
         } catch (err) {
           console.error('Navigate failed:', err);
+          return false;
         }
       } else {
         // Create new child webview for this tab
@@ -842,8 +848,10 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
                 : t,
             ),
           );
+          return true;
         } catch (err) {
           console.error('Create webview failed:', err);
+          return false;
         }
       }
     },
@@ -942,6 +950,9 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     const tab = tabsRef.current.find(t => t.id === activeTabIdRef.current);
     if (!inv || !tab?.webviewId) return;
     setSavingToInbox('busy');
+    // Resolves false on failure: this swallows its own error into the 'failed'
+    // glyph, so the button must not also tick as though the save landed.
+    let ok = true;
     try {
       const capture = await inv.invoke('save_tab_to_inbox', {
         webviewId: tab.webviewId,
@@ -953,8 +964,10 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     } catch (err) {
       console.error('[permagent] browser: save to inbox failed:', err);
       setSavingToInbox('failed');
+      ok = false;
     }
     setTimeout(() => setSavingToInbox(null), 2500);
+    return ok;
   }, []);
 
   const handleReload = useCallback(() => {
@@ -1037,6 +1050,29 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
 
   const protocol = activeTab?.url ? getUrlProtocol(activeTab.url) : 'other';
 
+  /** The four toolbar glyphs, previously `p-1.5 rounded hover:bg-white/5`. The
+   *  hover fill is the same `rgba(255,255,255,0.05)` the utility class painted;
+   *  it just no longer needs a pair of mouse handlers to also move the ink. */
+  const navIconVars: CSSProperties = {
+    '--pa-btn-fg': colors.textMuted,
+    '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+    '--pa-btn-bg-active': 'rgba(255,255,255,0.09)',
+    '--pa-btn-pad': '6px',
+    '--pa-btn-radius': `${radius.xs}px`,
+  } as CSSProperties;
+
+  /** The zoom steppers sit inside the status bar's own 10px mono run and took
+   *  their resting ink from it — `inherit` keeps that, rather than pinning a
+   *  colour the surrounding text does not have. */
+  const zoomStepVars: CSSProperties = {
+    '--pa-btn-fg': 'inherit',
+    '--pa-btn-fg-hover': colors.cyan,
+    '--pa-btn-bg-hover': 'transparent',
+    '--pa-btn-bg-active': 'transparent',
+    '--pa-btn-pad': '0 2px',
+    fontSize: 10,
+  } as CSSProperties;
+
   const popOutActive = useCallback(async () => {
     const tab = tabsRef.current.find(t => t.id === activeTabIdRef.current);
     if (!tab || detached) return;
@@ -1077,48 +1113,52 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
             URL list we keep ourselves — that is the "real history" the 2026-07
             audit was waiting for before restoring these. */}
         <div className="flex items-center gap-1">
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={() => goHistory(false)}
-            className="p-1.5 rounded hover:bg-white/5 transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
-            style={{ color: colors.textMuted }}
+            style={navIconVars}
             title="Back"
             aria-label="Back"
             disabled={!navState.canGoBack}
           >
             <FiChevronLeft size={16} />
-          </button>
-          <button
+          </Button>
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={() => goHistory(true)}
-            className="p-1.5 rounded hover:bg-white/5 transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
-            style={{ color: colors.textMuted }}
+            style={navIconVars}
             title="Forward"
             aria-label="Forward"
             disabled={!navState.canGoForward}
           >
             <FiChevronRight size={16} />
-          </button>
-          <button
+          </Button>
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={handleReload}
-            className="p-1.5 rounded hover:bg-white/5 transition-colors"
-            style={{ color: colors.textMuted }}
-            onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
-            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
+            style={{ ...navIconVars, '--pa-btn-fg-hover': colors.text } as CSSProperties}
             title="Reload (Cmd+R)"
+            aria-label="Reload"
             disabled={!activeTab?.webviewId}
           >
             <FiRefreshCw size={14} className={activeTab?.loading ? 'animate-spin' : ''} />
-          </button>
-          <button
+          </Button>
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={saveToInbox}
-            className="p-1.5 rounded hover:bg-white/5 transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
             style={{
-              color:
+              ...navIconVars,
+              '--pa-btn-fg':
                 savingToInbox === 'done'
                   ? colors.cyan
                   : savingToInbox === 'failed'
                     ? colors.danger
                     : colors.textMuted,
-            }}
+            } as CSSProperties}
             title={
               savingToInbox === 'done'
                 ? 'Saved to your inbox'
@@ -1130,7 +1170,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
             disabled={!activeTab?.webviewId || savingToInbox === 'busy'}
           >
             <FiInbox size={14} />
-          </button>
+          </Button>
         </div>
 
         {/* Address bar */}
@@ -1201,16 +1241,24 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
               </p>
               <div className="mt-6 flex flex-wrap gap-2 justify-center">
                 {['google.com', 'github.com', 'accounts.google.com'].map((site) => (
-                  <button
+                  <Button
                     key={site}
+                    colors={colors}
+                    variant="bare"
                     onClick={() => handleNavigate(`https://${site}`)}
-                    className="px-3 py-1.5 rounded-md bg-white/5 text-xs transition-colors"
-                    style={{ fontFamily: font.body, color: colors.textMuted }}
-                    onMouseEnter={e => { e.currentTarget.style.color = colors.cyan; e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
-                    onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.backgroundColor = ''; }}
+                    style={{
+                      '--pa-btn-bg': 'rgba(255,255,255,0.05)',
+                      '--pa-btn-fg': colors.textMuted,
+                      '--pa-btn-bg-hover': colors.cyanSoft,
+                      '--pa-btn-fg-hover': colors.cyan,
+                      '--pa-btn-bg-active': colors.cyanGlow,
+                      '--pa-btn-pad': '6px 12px',
+                      '--pa-btn-radius': `${radius.sm}px`,
+                      fontFamily: font.body, fontSize: 12,
+                    } as CSSProperties}
                   >
                     {site}
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
@@ -1229,19 +1277,21 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
         </span>
         {activeTab?.webviewId && (
           <span className="flex items-center gap-1 text-[10px]" style={{ fontFamily: font.mono, color: colors.textMuted }}>
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
               onClick={() => handleZoom(-0.1)}
-              className="transition-colors px-0.5"
-              onMouseEnter={e => { e.currentTarget.style.color = colors.cyan; }}
-              onMouseLeave={e => { e.currentTarget.style.color = ''; }}
-            >−</button>
+              aria-label="Zoom out"
+              style={zoomStepVars}
+            >−</Button>
             <span className="w-8 text-center">{Math.round(zoomLevel * 100)}%</span>
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
               onClick={() => handleZoom(0.1)}
-              className="transition-colors px-0.5"
-              onMouseEnter={e => { e.currentTarget.style.color = colors.cyan; }}
-              onMouseLeave={e => { e.currentTarget.style.color = ''; }}
-            >+</button>
+              aria-label="Zoom in"
+              style={zoomStepVars}
+            >+</Button>
           </span>
         )}
         <span className="text-[10px]" style={{ fontFamily: font.mono, color: colors.textMuted }}>

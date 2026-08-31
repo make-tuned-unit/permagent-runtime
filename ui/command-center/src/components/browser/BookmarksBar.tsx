@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiStar, FiX, FiLayers, FiTrash2, FiCornerUpLeft } from 'react-icons/fi';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { api, type BrowserBookmark, type BrowserTabSet } from '../../lib/api';
 import {
   isBookmarked,
@@ -156,11 +157,20 @@ export function BookmarksBar({
       style={{ backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}` }}
     >
       {/* Star: bookmark the current page */}
-      <button
+      <Button
+        colors={colors}
+        variant="bare"
         onClick={handleStar}
         disabled={!canStar}
-        className="p-1 rounded transition-colors hover:bg-white/5 disabled:opacity-40"
-        style={{ color: starred ? colors.cyan : colors.textMuted }}
+        aria-label="Bookmark this page"
+        style={{
+          '--pa-btn-fg': starred ? colors.cyan : colors.textMuted,
+          '--pa-btn-fg-hover': starred ? colors.cyan : colors.text,
+          '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+          '--pa-btn-bg-active': 'rgba(255,255,255,0.09)',
+          '--pa-btn-pad': '4px',
+          '--pa-btn-radius': `${radius.xs}px`,
+        } as CSSProperties}
         title={
           !canStar
             ? 'Open a page to bookmark it'
@@ -170,7 +180,7 @@ export function BookmarksBar({
         }
       >
         <FiStar size={13} style={starred ? { fill: colors.cyan } : undefined} />
-      </button>
+      </Button>
 
       {/* Bookmark chips */}
       <div className="flex flex-1 items-center gap-1 overflow-x-auto min-w-0">
@@ -183,17 +193,30 @@ export function BookmarksBar({
           </span>
         ) : (
           bookmarks.map((b) => (
-            <button
+            // `` dissolves the primitive's label
+            // wrapper: the chip's title and its remove affordance must stay the
+            // button's own flex children or the truncation and the
+            // group-hover reveal both come apart.
+            <Button
               key={b.url}
+              colors={colors}
+              variant="bare"
               onClick={() => onNavigate(b.url)}
-              className="group flex items-center gap-1 px-2 py-0.5 rounded text-[10px] transition-colors hover:bg-white/5 shrink-0"
-              style={{ fontFamily: font.body, color: colors.textMuted }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = colors.text;
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = colors.textMuted;
-              }}
+              // The chip spins for the navigation, but does not tick: the tab
+              // title and the address bar are what confirm a page arrived, and
+              // a second green confirmation on the chip you left behind is one
+              // claim too many.
+              flashSuccess={false}
+              className="group shrink-0"
+              style={{
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+                '--pa-btn-bg-active': 'rgba(255,255,255,0.09)',
+                '--pa-btn-pad': '2px 8px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                fontFamily: font.body, fontSize: 10, gap: 4,
+              } as CSSProperties}
               title={b.url}
             >
               <span className="truncate max-w-[140px]">{b.title || b.url}</span>
@@ -205,28 +228,34 @@ export function BookmarksBar({
               >
                 <FiX size={9} />
               </span>
-            </button>
+            </Button>
           ))
         )}
       </div>
 
       {/* Saved tab sets */}
       <div className="relative shrink-0" ref={menuRef}>
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           onClick={() => {
             setSetsOpen((o) => !o);
             setArmedDelete(null);
           }}
-          className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] transition-colors hover:bg-white/5"
-          style={{
-            fontFamily: font.body,
-            color: setsOpen ? colors.cyan : colors.textMuted,
-          }}
+                    style={{
+            '--pa-btn-fg': setsOpen ? colors.cyan : colors.textMuted,
+            '--pa-btn-fg-hover': setsOpen ? colors.cyan : colors.text,
+            '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+            '--pa-btn-bg-active': 'rgba(255,255,255,0.09)',
+            '--pa-btn-pad': '2px 8px',
+            '--pa-btn-radius': `${radius.xs}px`,
+            fontFamily: font.body, fontSize: 10, gap: 4,
+          } as CSSProperties}
           title="Saved tab sets"
         >
           <FiLayers size={11} />
           <span>Tabs{tabSets.length > 0 ? ` (${tabSets.length})` : ''}</span>
-        </button>
+        </Button>
 
         {setsOpen && (
           <div
@@ -252,14 +281,22 @@ export function BookmarksBar({
                 style={{ fontFamily: font.mono, color: colors.text }}
               />
               <style>{`.bookmarks-set-name::placeholder { color: ${colors.textMuted}; opacity: 0.6; }`}</style>
-              <button
+              <Button
+                colors={colors}
+                variant="bare"
                 onClick={handleSaveTabs}
                 disabled={currentTabs.length === 0 || !saveName.trim()}
-                className="px-1.5 py-0.5 rounded text-[10px] transition-colors hover:bg-white/5 disabled:opacity-40"
-                style={{ fontFamily: font.body, color: colors.cyan }}
+                style={{
+                  '--pa-btn-fg': colors.cyan,
+                  '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+                  '--pa-btn-bg-active': 'rgba(255,255,255,0.09)',
+                  '--pa-btn-pad': '2px 6px',
+                  '--pa-btn-radius': `${radius.xs}px`,
+                  fontFamily: font.body, fontSize: 10,
+                } as CSSProperties}
               >
                 Save
-              </button>
+              </Button>
             </div>
 
             {tabSets.length === 0 ? (
@@ -271,17 +308,24 @@ export function BookmarksBar({
               </div>
             ) : (
               tabSets.map((set) => (
-                <button
+                // Same as the chips above: the row distributes a `flex-1` name
+                // against right-aligned meta, so the label wrapper has to be
+                // `display: contents` or that distribution collapses.
+                <Button
                   key={set.name}
+                  colors={colors}
+                  variant="bare"
                   onClick={() => handleRestore(set)}
-                  className="group flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[10px] transition-colors hover:bg-white/5"
-                  style={{ fontFamily: font.body, color: colors.textMuted }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.color = colors.text;
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.color = colors.textMuted;
-                  }}
+                  className="group w-full"
+                  style={{
+                    '--pa-btn-fg': colors.textMuted,
+                    '--pa-btn-fg-hover': colors.text,
+                    '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+                    '--pa-btn-bg-active': 'rgba(255,255,255,0.09)',
+                    '--pa-btn-pad': '6px 12px',
+                    '--pa-btn-radius': '0',
+                    fontFamily: font.body, fontSize: 10, gap: 6, textAlign: 'left',
+                  } as CSSProperties}
                   title={`Restore ${set.tabs.length} tab${set.tabs.length !== 1 ? 's' : ''}`}
                 >
                   <FiCornerUpLeft size={10} style={{ color: colors.cyan }} />
@@ -301,7 +345,7 @@ export function BookmarksBar({
                   >
                     <FiTrash2 size={10} />
                   </span>
-                </button>
+                </Button>
               ))
             )}
           </div>

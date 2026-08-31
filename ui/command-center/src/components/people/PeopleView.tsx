@@ -10,7 +10,7 @@
  * directory, kept as the other mode of this one tab.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { font, radius, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
@@ -193,19 +193,28 @@ function ModeToggle({ mode, onChange }: { mode: PeopleMode; onChange: (m: People
       {tabs.map(t => {
         const active = mode === t.key;
         return (
-          <button
+          <Button
             key={t.key}
+            colors={colors}
+            variant="bare"
             onClick={() => onChange(t.key)}
             style={{
-              padding: '4px 12px', borderRadius: radius.sm, cursor: 'pointer', border: 'none',
-              background: active ? colors.cyanSoft : 'transparent',
-              color: active ? colors.cyan : colors.textMuted,
-              fontFamily: font.body, fontSize: 12, fontWeight: active ? 600 : 500,
-              transition: 'all 150ms',
-            }}
+              '--pa-btn-bg': active ? colors.cyanSoft : 'transparent',
+              '--pa-btn-fg': active ? colors.cyan : colors.textMuted,
+              '--pa-btn-border': 'transparent',
+              '--pa-btn-bg-hover': active ? colors.cyanSoft : colors.surfaceHi,
+              '--pa-btn-fg-hover': active ? colors.cyan : colors.text,
+              '--pa-btn-bg-active': active ? colors.cyanSoft : colors.surface,
+              // One pixel off each edge pays for `.pa-btn`'s hairline border,
+              // so the segmented control keeps the height it has today.
+              '--pa-btn-pad': '3px 11px',
+              '--pa-btn-radius': `${radius.sm}px`,
+              '--pa-btn-weight': active ? 600 : 500,
+              fontFamily: font.body, fontSize: 12,
+            } as CSSProperties}
           >
             {t.label}
-          </button>
+          </Button>
         );
       })}
     </div>

@@ -1,6 +1,8 @@
+import { type CSSProperties } from 'react';
 import { useTheme } from '../../styles/useTheme';
 import { font, radius } from '../../styles/tokens';
 import { useVoices, useVoicePreview } from '../../lib/useVoices';
+import { Button } from '../common/Button';
 
 type C = ReturnType<typeof useTheme>['colors'];
 
@@ -10,12 +12,23 @@ const selectStyle = (colors: C): React.CSSProperties => ({
   color: colors.text, fontFamily: font.body, fontSize: 13,
   flex: 1, cursor: 'pointer',
 });
-const btnStyle = (colors: C): React.CSSProperties => ({
-  height: 34, padding: '0 14px', borderRadius: radius.md,
-  background: colors.inputBg, border: `1px solid ${colors.border}`,
-  color: colors.text, fontFamily: font.body, fontSize: 13,
-  cursor: 'pointer', whiteSpace: 'nowrap',
-});
+/** The picker's two controls, expressed for the shared button primitive: the
+ *  same resting look as the inline style it replaces, with hover/press/disabled
+ *  coming from `.pa-btn`. */
+const btnVars = (colors: C): CSSProperties => ({
+  '--pa-btn-bg': colors.inputBg,
+  '--pa-btn-fg': colors.text,
+  '--pa-btn-border': colors.border,
+  '--pa-btn-bg-hover': colors.surfaceHi,
+  '--pa-btn-border-hover': colors.borderHi,
+  '--pa-btn-bg-active': colors.surface,
+  '--pa-btn-pad': '0 14px',
+  '--pa-btn-radius': `${radius.md}px`,
+  height: 34,
+  fontFamily: font.body,
+  fontSize: 13,
+  whiteSpace: 'nowrap',
+} as CSSProperties);
 
 /**
  * Data-driven voice picker over the loaded Kokoro pack with a per-voice audio
@@ -45,7 +58,18 @@ export function VoicePicker({
         </span>
         {downloading
           ? <div style={{ fontSize: 12, color: colors.textDim }}>Downloading… {downloadPercent}%</div>
-          : <button onClick={startDownload} style={btnStyle(colors)}>Download voice models</button>}
+          : (
+            // `startDownload` reports its own failure into `downloadError` and
+            // resolves either way, so the tick could not tell the two apart.
+            <Button
+              colors={colors}
+              onClick={startDownload}
+              flashSuccess={false}
+              style={btnVars(colors)}
+            >
+              Download voice models
+            </Button>
+          )}
         {downloadError && <span style={{ fontSize: 12, color: colors.danger }}>{downloadError}</span>}
       </div>
     );
@@ -73,12 +97,16 @@ export function VoicePicker({
           </optgroup>
         ))}
       </select>
-      <button
+      {/* The preview resolves when playback STARTS, and reports failure into
+          `previewError` rather than by rejecting — a tick would be a guess. */}
+      <Button
+        colors={colors}
         onClick={() => preview(effective)}
         disabled={!!playingId}
+        flashSuccess={false}
         title="Preview this voice"
-        style={btnStyle(colors)}
-      >{playingId ? '…' : '▶ Preview'}</button>
+        style={btnVars(colors)}
+      >{playingId ? '…' : '▶ Preview'}</Button>
       {previewError && <span style={{ fontSize: 12, color: colors.danger }}>{previewError}</span>}
     </div>
   );

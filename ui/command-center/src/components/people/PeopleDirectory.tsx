@@ -22,13 +22,14 @@
  * so a person created on another client (or the phone) lands here.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { contactLabel, isFollowUpDue, isQuiet } from './contactAge';
 import type { DirectoryPerson } from '../projects/types';
+import { Button } from '../common/Button';
 import { Chip } from '../common/Chip';
 
 type Status = 'loading' | 'error' | 'ready';
@@ -75,6 +76,19 @@ function duplicateIds(people: DirectoryPerson[]): Set<string> {
 export function PeopleDirectory() {
   const { colors, theme } = useTheme();
   const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  /** The surface's three text affordances (+ Add person / Add / Retry). They
+   *  are ink on nothing, so hover brightens the ink rather than painting a box
+   *  the label never had. */
+  const linkVars = (): CSSProperties => ({
+    '--pa-btn-fg': colors.cyan,
+    '--pa-btn-fg-hover': colors.cyan,
+    '--pa-btn-bg-hover': 'transparent',
+    '--pa-btn-bg-active': 'transparent',
+    '--pa-btn-pad': '0',
+    '--pa-btn-weight': 400,
+    fontFamily: font.body,
+    fontSize: 11,
+  } as CSSProperties);
   const openPersonDetail = useCommandCenter(s => s.openPersonDetail);
   const bumpPeople = useCommandCenter(s => s.bumpPeople);
   const peopleRev = useCommandCenter(s => s.peopleRev);
@@ -102,14 +116,16 @@ export function PeopleDirectory() {
     return () => clearTimeout(t);
   }, [query]);
 
-  const load = useCallback(async () => {
+  /** Resolves whether this load landed. The Retry button awaits it, and this
+   *  swallows its failure into `status`, so it has to say so. */
+  const load = useCallback(async (): Promise<boolean> => {
     const generation = ++loadGeneration.current;
     try {
       const suffix = debouncedQuery.trim()
         ? `?q=${encodeURIComponent(debouncedQuery.trim())}`
         : '';
       const rows = await apiFetch<DirectoryPerson[]>(`/api/people/directory${suffix}`);
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       if (!Array.isArray(rows)) throw new Error('Invalid directory response');
       setPeople(rows);
       setAttributesBlank(
@@ -117,9 +133,11 @@ export function PeopleDirectory() {
           rows.every(p => !p.role && !p.company && !p.email && !p.phone),
       );
       setStatus('ready');
+      return true;
     } catch {
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       setStatus('error');
+      return false;
     }
   }, [debouncedQuery]);
 
@@ -154,9 +172,11 @@ export function PeopleDirectory() {
     });
   }, [people, cohort]);
 
-  const addPerson = async () => {
+  /** Resolves false when nothing was added — the failure is swallowed into
+   *  `addError` below, so the button must not tick over the top of it. */
+  const addPerson = async (): Promise<boolean> => {
     const name = newName.trim();
-    if (!name) return;
+    if (!name) return false;
     setAddBusy(true);
     setAddError(null);
     try {
@@ -177,10 +197,12 @@ export function PeopleDirectory() {
         setAddError(`"${res.person.display_name}" already exists — opening them.`);
       }
       openPersonDetail(null, { ...res.person });
+      return true;
     } catch (e) {
       const err = e as Error & { status?: number };
       const code = err.status ? `${err.status} ` : '';
       setAddError(`Couldn't add ${name}: ${code}${err.message || 'request failed'}`);
+      return false;
     } finally {
       setAddBusy(false);
     }
@@ -207,23 +229,18 @@ export function PeopleDirectory() {
           }}
         />
         <span style={{ flex: 1 }} />
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           onClick={() => {
             setAddError(null);
             setAdding(v => !v);
           }}
-          style={{
-            fontSize: 11,
-            color: colors.cyan,
-            background: 'none',
-            border: 'none',
-            cursor: 'pointer',
-            fontFamily: font.body,
-            padding: 0,
-          }}
+          className="hover:underline"
+          style={linkVars()}
         >
           {adding ? 'Cancel' : '+ Add person'}
-        </button>
+        </Button>
       </div>
 
       {adding && (
@@ -247,23 +264,16 @@ export function PeopleDirectory() {
               outline: 'none',
             }}
           />
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={addPerson}
             disabled={addBusy || !newName.trim()}
-            style={{
-              fontSize: 11,
-              color: colors.cyan,
-              background: 'none',
-              border: 'none',
-              cursor: addBusy || !newName.trim() ? 'default' : 'pointer',
-              opacity: addBusy || !newName.trim() ? 0.5 : 1,
-              fontFamily: font.body,
-              padding: 0,
-              fontWeight: 600,
-            }}
+            className="hover:underline"
+            style={{ ...linkVars(), '--pa-btn-weight': 600 } as CSSProperties}
           >
             {addBusy ? 'Adding…' : 'Add'}
-          </button>
+          </Button>
         </div>
       )}
 
@@ -281,21 +291,15 @@ export function PeopleDirectory() {
       ) : status === 'error' ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load people.</span>
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={load}
-            style={{
-              fontSize: 11,
-              color: colors.cyan,
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              fontFamily: font.body,
-              padding: 0,
-              fontWeight: 600,
-            }}
+            className="hover:underline"
+            style={{ ...linkVars(), '--pa-btn-weight': 600 } as CSSProperties}
           >
             Retry
-          </button>
+          </Button>
         </div>
       ) : people.length === 0 ? (
         <div style={{ fontSize: 11, color: colors.textDim }}>
@@ -331,22 +335,30 @@ export function PeopleDirectory() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {visible.map(p => (
-              <button
+              // The row IS the button, and it distributes its own children
+              // against a `flex: 1` spacer — so the primitive's label wrapper
+              // is dissolved with `display: contents` and the children stay
+              // direct flex children, laid out exactly as before. What is new
+              // is that a clickable row finally acknowledges the pointer.
+              <Button
                 key={p.entity_uuid}
+                colors={colors}
                 onClick={() => openPersonDetail(null, p)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
+                                style={{
+                  '--pa-btn-bg': rowVeil,
+                  '--pa-btn-fg': colors.text,
+                  '--pa-btn-border': colors.border,
+                  '--pa-btn-bg-hover': colors.surfaceHi,
+                  '--pa-btn-border-hover': colors.borderHi,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-bg-active': colors.surface,
+                  '--pa-btn-pad': '8px 10px',
+                  '--pa-btn-radius': `${radius.sm}px`,
+                  '--pa-btn-weight': 400,
                   gap: 10,
                   textAlign: 'left',
-                  background: rowVeil,
-                  border: `1px solid ${colors.border}`,
-                  borderRadius: radius.sm,
-                  padding: '8px 10px',
-                  cursor: 'pointer',
                   fontFamily: font.body,
-                  color: colors.text,
-                }}
+                } as CSSProperties}
               >
                 <span style={{ fontSize: 12, fontWeight: 600 }}>{p.display_name}</span>
                 {(p.role || p.company) && (
@@ -390,7 +402,7 @@ export function PeopleDirectory() {
                     ))}
                   </span>
                 )}
-              </button>
+              </Button>
             ))}
           </div>
         </>
