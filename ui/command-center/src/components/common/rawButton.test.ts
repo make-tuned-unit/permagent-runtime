@@ -47,18 +47,20 @@ const SRC = fileURLToPath(new URL('../..', import.meta.url));
 
 /** Directories whose controls are on the primitive. Grows one commit at a time. */
 const GATED = [
+  'components/automate',
   'components/finance',
   'components/grow',
   'components/sessions',
 ];
 
 /**
- * Files carrying a raw `<button>` that is neither a disclosure toggle nor
- * role-bearing, and that has a specific reason to stay. Each entry is a
- * standing exception with a name on it; the second test deletes entries that
- * have stopped being true, so this cannot quietly become a parking lot.
+ * Controls that stay hand-rolled for a reason the three classes above do not
+ * cover — almost always a whole card that happens to be a button, where
+ * `.pa-btn`'s own box would relayout it. Each entry names a COUNT as well as a
+ * reason, and the count is checked exactly: an entry that has stopped being
+ * true fails, and so does a new raw button hiding behind an existing one.
  */
-const STANDING_EXCEPTIONS: Record<string, string> = {};
+const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {};
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -126,12 +128,11 @@ function offendersIn(dirs: string[]): string[] {
   for (const dir of dirs) {
     for (const file of sourceFiles(join(SRC, dir))) {
       const rel = file.slice(SRC.length);
-      if (rel in STANDING_EXCEPTIONS) continue;
+      const allowed = STANDING_EXCEPTIONS[rel]?.count ?? 0;
       const src = readFileSync(file, 'utf8');
-      for (const { line, tag } of buttonOpeningTags(src)) {
-        if (isPermittedRawButton(tag)) continue;
-        out.push(`${rel}:${line}`);
-      }
+      const raw = buttonOpeningTags(src).filter(({ tag }) => !isPermittedRawButton(tag));
+      if (raw.length === allowed) continue;
+      for (const { line } of raw) out.push(`${rel}:${line}`);
     }
   }
   return out;
@@ -147,12 +148,15 @@ describe('button primitive adoption', () => {
     ).toEqual([]);
   });
 
-  it('keeps no standing exception that has stopped being true', () => {
-    const stale = Object.keys(STANDING_EXCEPTIONS).filter(rel => {
-      const src = readFileSync(join(SRC, rel), 'utf8');
-      return buttonOpeningTags(src).every(({ tag }) => isPermittedRawButton(tag));
-    });
-    expect(stale, 'this file no longer needs its exception — delete the entry').toEqual([]);
+  it('holds every standing exception to the count it declares', () => {
+    const wrong = Object.entries(STANDING_EXCEPTIONS)
+      .map(([rel, { count }]) => {
+        const src = readFileSync(join(SRC, rel), 'utf8');
+        const raw = buttonOpeningTags(src).filter(({ tag }) => !isPermittedRawButton(tag)).length;
+        return raw === count ? null : `${rel}: declares ${count}, found ${raw}`;
+      })
+      .filter(Boolean);
+    expect(wrong, 'a spent exception is deleted; a new raw button is migrated').toEqual([]);
   });
 
   it('names only directories that exist', () => {

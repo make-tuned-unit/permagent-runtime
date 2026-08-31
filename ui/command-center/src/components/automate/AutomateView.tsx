@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import type { CSSProperties } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
@@ -19,6 +20,7 @@ import {
 } from '../../lib/cleanupRecovery';
 import { usePersona } from '../settings/useSettings';
 import { RunRoster } from './RunRoster';
+import { Button, SUCCESS_FLASH_MS } from '../common/Button';
 import { ViewHeader } from '../common/ViewHeader';
 import { AsOf } from '../common/AsOf';
 import { getApiBaseUrl, loadDaemonToken } from '../../lib/api';
@@ -185,6 +187,73 @@ function withAlpha(hex: string, alpha: number): string {
   const g = parseInt(h.slice(2, 4), 16);
   const b = parseInt(h.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+// ── The action-row look, as the button primitive's custom properties ──
+//
+// This page used to carry its own `Btn` component, which hard-coded three
+// looks, its own 700ms minimum-pending floor and its own success phase. The
+// floor is now `MIN_PENDING_MS` inside `components/common/Button`, so `Btn` is
+// gone and only its LOOK survives — expressed the way the primitive wants it,
+// through `--pa-btn-*`, so hover/press/pending/disabled all come from `.pa-btn`
+// instead of a pair of `filter: brightness()` mouse handlers.
+//
+// `Btn`'s hover was a flat `brightness(1.12)` on whatever fill it had. That has
+// no CSS-custom-property equivalent, so each tone names a real hover fill: the
+// same tint one step stronger, matching the danger house style already used in
+// FinanceView.
+function actionVars(colors: ThemeColors, tone: 'plain' | 'danger' = 'plain'): CSSProperties {
+  const base = {
+    '--pa-btn-pad': '4px 10px',
+    '--pa-btn-radius': `${radius.sm}px`,
+    fontFamily: font.body,
+  };
+  if (tone === 'danger') {
+    return {
+      ...base,
+      '--pa-btn-bg': withAlpha(colors.danger, 0.1),
+      '--pa-btn-fg': colors.danger,
+      '--pa-btn-border': withAlpha(colors.danger, 0.2),
+      '--pa-btn-bg-hover': withAlpha(colors.danger, 0.2),
+      '--pa-btn-border-hover': withAlpha(colors.danger, 0.4),
+    } as CSSProperties;
+  }
+  return {
+    ...base,
+    '--pa-btn-bg': colors.border,
+    '--pa-btn-fg': colors.textMuted,
+    '--pa-btn-border': colors.border,
+    '--pa-btn-bg-hover': colors.surfaceHi,
+    '--pa-btn-fg-hover': colors.text,
+    '--pa-btn-border-hover': colors.borderHi,
+  } as CSSProperties;
+}
+
+/** `Btn ... primary` was the `primary` variant with a wider pad. */
+const PRIMARY_ACTION_VARS = {
+  '--pa-btn-pad': '6px 16px',
+  fontFamily: font.body,
+} as CSSProperties;
+
+/**
+ * The mount guard `Btn` used to release through its `onDone` callback.
+ *
+ * The guard exists because `onActionDone` refetches, and a refetch can drop the
+ * button's own mount condition — "Reset to default" is only rendered while the
+ * job is still customized OR its action is in flight. `Btn` released it when
+ * its success phase ended; `Button` owns that phase now, so hold the guard for
+ * the tick's length and release after, or the button vanishes mid-tick.
+ * A failure releases immediately — there is no tick to protect.
+ */
+function guardedAction(
+  key: string,
+  work: () => Promise<void>,
+  onActionDone: (key: string, afterRefresh?: () => void) => void,
+): Promise<boolean> {
+  return work().then(
+    () => { setTimeout(() => onActionDone(key), SUCCESS_FLASH_MS); return true; },
+    () => { onActionDone(key); return false; },
+  );
 }
 
 // Category badge color per findingCategories.CategoryKey. `colors.warning`
@@ -379,8 +448,12 @@ export function AutomateView() {
       const data = await apiFetch<{ extensions: ExtensionInfo[]; warnings: string[] }>('/config/extensions');
       setExtensions((data.extensions || []).filter(e => e.enabled));
       setExtensionsError(null);
+      return true;
     } catch (e) {
       setExtensionsError(e instanceof Error ? e.message : 'the daemon did not answer');
+      // `false` is the Button contract's "it failed" — a retry that could not
+      // reach the daemon must not tick as though it had.
+      return false;
     }
   }, []);
 
@@ -451,8 +524,9 @@ export function AutomateView() {
 
   // ── Actions ──
   // Handlers set actionStates as a mount guard (prevents polling from unmounting
-  // the button mid-animation), then call the API. Visual feedback (loading/success
-  // labels) is handled locally inside Btn via its own useState.
+  // the button mid-animation), then call the API. The visual feedback — spinner
+  // for the round trip, tick on success — belongs to the `Button` primitive:
+  // every one of these REJECTS on failure, which is how it knows not to tick.
 
   const handleRunNow = async (id: string) => {
     setRunError(null);
@@ -468,16 +542,16 @@ export function AutomateView() {
       const msg = err instanceof Error ? err.message : String(err);
       setRunError(`Couldn't run "${name}": ${msg}`);
       setTimeout(() => setRunError(null), 8000);
-      throw err; // surface to the Btn so it reverts the optimistic "Starting..." state
+      throw err; // reject so the button drops its spinner without ticking
     } finally {
       fetchJobs();
     }
   };
   // Shared failure surface for the schedule mutations (2026-07 wiring audit):
-  // the old bare `catch {}` made every failed POST look like success — Btn's
-  // resolve path flashed "✓ Paused/Deleted/…" even on a 4xx/5xx. Show the
-  // failure on the same banner Run Now uses, and RE-THROW so Btn reverts to
-  // idle instead of faking success.
+  // the old bare `catch {}` made every failed POST look like success — a
+  // resolved promise flashed "✓ Paused/Deleted/…" even on a 4xx/5xx. Show the
+  // failure on the same banner Run Now uses, and RE-THROW so the button reverts
+  // to idle instead of faking success.
   const failAction = (id: string, verb: string, err: unknown): never => {
     const name = jobNameMap.get(id) || id;
     const msg = err instanceof Error ? err.message : String(err);
@@ -515,7 +589,8 @@ export function AutomateView() {
     catch (err) { failAction(id, 'reset', err); }
   };
 
-  // Callback for Btn to signal animation complete — clears mount guard + refreshes data
+  // Releases the mount guard and refreshes — see `guardedAction`, which holds it
+  // for the length of the primitive's success tick before calling this.
   // "Review result" on the completion banner: jump straight to the finished
   // run's detail (findings / report) without scrolling to Recent Activity.
   const reviewCompleted = useCallback(async (jobId: string, name: string) => {
@@ -525,9 +600,13 @@ export function AutomateView() {
       if (run) {
         setDetail({ kind: 'run', run: { ...run, jobId }, displayName: name });
         setCompletionToast(null);
+        return true;
       }
+      return false;
     } catch {
       // Keep the banner — the Recent Activity row remains the fallback path.
+      // `false` also keeps the button from ticking on a lookup that failed.
+      return false;
     }
   }, []);
 
@@ -557,6 +636,7 @@ export function AutomateView() {
             {showSearch && (
               <input
                 autoFocus
+                id="automate-filter"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 placeholder="Filter..."
@@ -568,17 +648,40 @@ export function AutomateView() {
                 onKeyDown={e => { if (e.key === 'Escape') { setSearch(''); setShowSearch(false); } }}
               />
             )}
-            <button onClick={() => setShowSearch(!showSearch)} style={{
-              background: 'none', border: 'none', cursor: 'pointer', color: colors.textMuted, padding: 4,
-            }}>
+            {/* Disclosure, not action: its whole job is to show/hide the filter
+                box beside it, so it keeps the element (and the aria-expanded /
+                aria-controls pairing that describes it) and takes only the
+                shared `.pa-btn` interaction rules. */}
+            <button
+              type="button"
+              className="pa-btn"
+              aria-expanded={showSearch}
+              aria-controls="automate-filter"
+              aria-label={`Filter ${AUTOMATION.many}`}
+              onClick={() => setShowSearch(!showSearch)}
+              style={{
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': colors.border,
+                '--pa-btn-pad': '4px',
+                '--pa-btn-radius': `${radius.xs}px`,
+              } as CSSProperties}
+            >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
                 <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
               </svg>
             </button>
-            <button onClick={() => setShowModal(true)} style={{
-              padding: '6px 14px', borderRadius: radius.md, background: colors.cyan, color: colors.textOnCyan,
-              fontWeight: 600, fontSize: 12, border: 'none', cursor: 'pointer', fontFamily: font.body,
-            }}>+ Create {AUTOMATION.one}</button>
+            <Button
+              colors={colors}
+              variant="primary"
+              onClick={() => setShowModal(true)}
+              style={{
+                '--pa-btn-pad': '6px 14px',
+                '--pa-btn-radius': `${radius.md}px`,
+                fontFamily: font.body,
+                fontSize: 12,
+              } as CSSProperties}
+            >+ Create {AUTOMATION.one}</Button>
           </>}
         />
 
@@ -598,15 +701,35 @@ export function AutomateView() {
             <span style={{ fontSize: 13, color: colors.success, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               &#10003; "{completionToast.name}" completed.
             </span>
-            <button
+            <Button
+              colors={colors}
+              variant="primary"
               onClick={() => reviewCompleted(completionToast.jobId, completionToast.name)}
               style={{
-                padding: '5px 12px', borderRadius: radius.md, background: colors.success,
-                color: colors.textOnCyan, fontWeight: 600, fontSize: 12, border: 'none',
-                cursor: 'pointer', fontFamily: font.body, flexShrink: 0,
-              }}
-            >Review result</button>
-            <button onClick={() => setCompletionToast(null)} style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', fontSize: 16 }}>&times;</button>
+                '--pa-btn-bg': colors.success,
+                '--pa-btn-bg-hover': colors.success,
+                '--pa-btn-bg-active': colors.success,
+                '--pa-btn-pad': '5px 12px',
+                '--pa-btn-radius': `${radius.md}px`,
+                fontFamily: font.body,
+                fontSize: 12,
+                flexShrink: 0,
+              } as CSSProperties}
+            >Review result</Button>
+            <Button
+              colors={colors}
+              variant="bare"
+              onClick={() => setCompletionToast(null)}
+              aria-label="Dismiss this notice"
+              style={{
+                '--pa-btn-fg': colors.textDim,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '0',
+                fontSize: 16,
+                lineHeight: 1.5,
+              } as CSSProperties}
+            >&times;</Button>
           </div>
         )}
 
@@ -618,7 +741,20 @@ export function AutomateView() {
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           }}>
             <span style={{ fontSize: 13, color: colors.danger }}>{runError}</span>
-            <button onClick={() => setRunError(null)} style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', fontSize: 16 }}>&times;</button>
+            <Button
+              colors={colors}
+              variant="bare"
+              onClick={() => setRunError(null)}
+              aria-label="Dismiss this error"
+              style={{
+                '--pa-btn-fg': colors.textDim,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '0',
+                fontSize: 16,
+                lineHeight: 1.5,
+              } as CSSProperties}
+            >&times;</Button>
           </div>
         )}
 
@@ -636,15 +772,32 @@ export function AutomateView() {
               ask to remember how. Skills appear here when you save them.
             </div>
             <div style={{ marginTop: 16, display: 'flex', gap: 12, justifyContent: 'center' }}>
-              <button onClick={() => setShowModal(true)} style={{
-                padding: '8px 20px', borderRadius: radius.md, background: colors.cyan, color: colors.textOnCyan,
-                fontWeight: 600, fontSize: 13, border: 'none', cursor: 'pointer', fontFamily: font.body,
-              }}>Schedule a task</button>
+              <Button
+                colors={colors}
+                variant="primary"
+                onClick={() => setShowModal(true)}
+                style={{
+                  '--pa-btn-pad': '8px 20px',
+                  '--pa-btn-radius': `${radius.md}px`,
+                  fontFamily: font.body,
+                  fontSize: 13,
+                } as CSSProperties}
+              >Schedule a task</Button>
             </div>
-            <button onClick={() => toggleInstalledExpanded(true)} style={{
-              marginTop: 12, background: 'none', border: 'none', color: colors.textDim,
-              fontSize: 11, cursor: 'pointer', fontFamily: font.body,
-            }}>or browse what your agent can do &rarr;</button>
+            <Button
+              colors={colors}
+              variant="bare"
+              onClick={() => toggleInstalledExpanded(true)}
+              style={{
+                '--pa-btn-fg': colors.textDim,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '0',
+                fontFamily: font.body,
+                fontSize: 11,
+                marginTop: 12,
+              } as CSSProperties}
+            >or browse what your agent can do &rarr;</Button>
           </div>
         )}
 
@@ -679,15 +832,31 @@ export function AutomateView() {
                 {allRuns.map(run => {
                   const displayName = jobNameMap.get(run.jobId) || run.jobId;
                   return (
-                    <button key={run.id} onClick={() => setDetail({ kind: 'run', run, displayName })} style={{
-                      display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
-                      borderRadius: radius.sm, background: 'transparent', border: '1px solid transparent',
-                      cursor: 'pointer', textAlign: 'left', color: colors.text, fontFamily: font.body,
-                      width: '100%', transition: 'background 100ms, border-color 100ms', outline: 'none',
-                    }} onMouseEnter={e => (e.currentTarget.style.background = colors.border)}
-                       onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                       onFocus={e => { e.currentTarget.style.background = colors.border; e.currentTarget.style.borderColor = colors.borderHi; }}
-                       onBlur={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'transparent'; }}>
+                    /* Keeps the element, takes the rules: this row IS the button
+                       and its four pieces are flex children OF it (a `flex: 1`
+                       name that truncates, meta pushed right). `Button` folds
+                       its children into one `pa-btn__label` span, which would
+                       collapse that distribution — so this gets `.pa-btn` the
+                       way FinanceView's PickRow does. The hand-rolled hover goes
+                       to `--pa-btn-bg-hover`, and the hand-rolled focus paint
+                       goes to the global `:focus-visible` ring in index.css. */
+                    <button
+                      key={run.id}
+                      type="button"
+                      className="pa-btn pa-btn--composite"
+                      onClick={() => setDetail({ kind: 'run', run, displayName })}
+                      style={{
+                        '--pa-btn-fg': colors.text,
+                        '--pa-btn-bg-hover': colors.border,
+                        '--pa-btn-pad': '8px 12px',
+                        '--pa-btn-radius': `${radius.sm}px`,
+                        fontFamily: font.body,
+                        gap: 10,
+                        width: '100%',
+                        justifyContent: 'flex-start',
+                        textAlign: 'left',
+                      } as CSSProperties}
+                    >
                       <span style={{ fontSize: 11, color: colors.success }}>&#10003;</span>
                       <span style={{ fontSize: 12, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
                       <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{run.messageCount} msgs</span>
@@ -767,8 +936,23 @@ export function AutomateView() {
                     Seen {proposal.occurrence_count} time{proposal.occurrence_count !== 1 ? 's' : ''} using {proposal.tool_used}
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
-                    <Btn label="Save" onClick={() => saveProposal(proposal)} primary />
-                    <Btn label="Dismiss" onClick={() => dismissProposal(proposal.argument_shape_hash)} muted />
+                    {/* No tick: `saveProposal` (lib/store.ts) swallows its own
+                        failure and resolves either way, so a tick here would
+                        claim a save that may not have happened. The spinner is
+                        still honest — it tracks the round trip — and a save
+                        that lands takes the card with it. */}
+                    <Button
+                      colors={colors}
+                      variant="primary"
+                      onClick={() => saveProposal(proposal)}
+                      flashSuccess={false}
+                      style={PRIMARY_ACTION_VARS}
+                    >Save</Button>
+                    <Button
+                      colors={colors}
+                      onClick={() => dismissProposal(proposal.argument_shape_hash)}
+                      style={actionVars(colors)}
+                    >Dismiss</Button>
                   </div>
                 </div>
               ))}
@@ -831,31 +1015,78 @@ export function AutomateView() {
               onRetry={fetchExtensions}
             />
           ) : !showInstalledExpanded ? (
-            <button onClick={() => toggleInstalledExpanded(true)} style={{
-              background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer',
-              fontSize: 12, fontFamily: font.body, padding: '4px 0', textAlign: 'left',
-            }}>
+            /* Disclosure pair (this and "Hide ↑" below): both do nothing but
+               open/close the capability list, so they keep the element plus the
+               aria-expanded that names the state, and take the shared `.pa-btn`
+               interaction rules rather than the pending/success machinery. */
+            <button
+              type="button"
+              className="pa-btn"
+              aria-expanded={false}
+              onClick={() => toggleInstalledExpanded(true)}
+              style={{
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '4px 0',
+                fontSize: 12,
+                fontFamily: font.body,
+                textAlign: 'left',
+              } as CSSProperties}
+            >
               {agentName} has {extensions.length} capabilities &middot; <span style={{ color: colors.cyan }}>Show what your agent can do &rarr;</span>
             </button>
           ) : (
             <>
-              <button onClick={() => toggleInstalledExpanded(false)} style={{
-                background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer',
-                fontSize: 11, fontFamily: font.body, padding: '0 0 8px', textAlign: 'left',
-              }}>Hide &uarr;</button>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {filteredExtensions.map(ext => (
-                  <button key={ext.name} onClick={() => setDetail({ kind: 'extension', ext })} style={{
-                    padding: '8px 14px', borderRadius: radius.md, cursor: 'pointer',
-                    background: detail?.kind === 'extension' && detail.ext.name === ext.name ? colors.cyanSoft : colors.surface,
-                    border: `1px solid ${detail?.kind === 'extension' && detail.ext.name === ext.name ? colors.borderHi : colors.border}`,
-                    color: colors.text, fontSize: 12, fontFamily: font.body, textAlign: 'left',
-                    transition: 'border-color 150ms, background 150ms',
-                  }}>
-                    <div style={{ fontWeight: 600, marginBottom: 2 }}>{ext.display_name}</div>
-                    <div style={{ fontSize: 10, color: colors.textDim, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ext.description}</div>
-                  </button>
-                ))}
+              <button
+                type="button"
+                className="pa-btn"
+                aria-expanded
+                aria-controls="automate-installed-list"
+                onClick={() => toggleInstalledExpanded(false)}
+                style={{
+                  '--pa-btn-fg': colors.textDim,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-pad': '0 0 8px',
+                  fontSize: 11,
+                  fontFamily: font.body,
+                  textAlign: 'left',
+                } as CSSProperties}
+              >Hide &uarr;</button>
+              <div id="automate-installed-list" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {filteredExtensions.map(ext => {
+                  const isSelected = detail?.kind === 'extension' && detail.ext.name === ext.name;
+                  return (
+                    <Button
+                      key={ext.name}
+                      colors={colors}
+                      variant={isSelected ? 'ghostOn' : 'ghost'}
+                      aria-pressed={isSelected}
+                      onClick={() => setDetail({ kind: 'extension', ext })}
+                      style={{
+                        '--pa-btn-bg': isSelected ? colors.cyanSoft : colors.surface,
+                        '--pa-btn-fg': colors.text,
+                        '--pa-btn-border': isSelected ? colors.borderHi : colors.border,
+                        '--pa-btn-bg-hover': isSelected ? colors.cyanSoft : colors.surfaceHi,
+                        '--pa-btn-border-hover': colors.borderHi,
+                        '--pa-btn-pad': '8px 14px',
+                        '--pa-btn-radius': `${radius.md}px`,
+                        '--pa-btn-weight': 400,
+                        fontFamily: font.body,
+                        fontSize: 12,
+                        // Two stacked lines, so the chip's height is real: keep
+                        // the leading the raw button inherited rather than
+                        // `.pa-btn`'s 14px, which would close the gap.
+                        lineHeight: 1.5,
+                        textAlign: 'left',
+                      } as CSSProperties}
+                    >
+                      <div style={{ fontWeight: 600, marginBottom: 2 }}>{ext.display_name}</div>
+                      <div style={{ fontSize: 10, color: colors.textDim, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ext.description}</div>
+                    </Button>
+                  );
+                })}
               </div>
             </>
           )}
@@ -910,7 +1141,9 @@ function Section({ title, count, accentColor, collapsed, children }: {
 // ═══════════════════════════════════════════════════════════════════════
 
 function SectionState({ kind, message, onRetry }: {
-  kind: 'loading' | 'error'; message: string; onRetry?: () => void;
+  // `unknown`, not `void`: a retry that returns a promise gets the button
+  // primitive's pending spinner + success tick for the round trip.
+  kind: 'loading' | 'error'; message: string; onRetry?: () => unknown;
 }) {
   const { colors } = useTheme();
   if (kind === 'loading') {
@@ -926,11 +1159,22 @@ function SectionState({ kind, message, onRetry }: {
     }}>
       <span style={{ fontSize: 12, color: colors.danger, flex: 1, minWidth: 0 }}>{message}</span>
       {onRetry && (
-        <button onClick={onRetry} style={{
-          padding: '4px 12px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.12),
-          border: `1px solid ${withAlpha(colors.danger, 0.25)}`, color: colors.danger,
-          fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: font.body, flexShrink: 0,
-        }}>Retry</button>
+        <Button
+          colors={colors}
+          onClick={onRetry}
+          style={{
+            '--pa-btn-bg': withAlpha(colors.danger, 0.12),
+            '--pa-btn-fg': colors.danger,
+            '--pa-btn-border': withAlpha(colors.danger, 0.25),
+            '--pa-btn-bg-hover': withAlpha(colors.danger, 0.22),
+            '--pa-btn-border-hover': withAlpha(colors.danger, 0.45),
+            '--pa-btn-pad': '4px 12px',
+            '--pa-btn-radius': `${radius.sm}px`,
+            '--pa-btn-weight': 600,
+            fontFamily: font.body,
+            flexShrink: 0,
+          } as CSSProperties}
+        >Retry</Button>
       )}
     </div>
   );
@@ -942,13 +1186,17 @@ function SectionState({ kind, message, onRetry }: {
 
 function RecipeCard({
 job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone, onSelect, selected }: {
+  // Every one of these is an async handler that REJECTS on failure (see
+  // `failAction`), and the button primitive reads that rejection: it is what
+  // holds the spinner for the round trip and withholds the success tick when
+  // the daemon says no. Typing them `void` hid the contract.
   job: ScheduledJob;
-  onRunNow: (id: string) => void;
-  onPause: (id: string) => void;
-  onUnpause: (id: string) => void;
+  onRunNow: (id: string) => Promise<void>;
+  onPause: (id: string) => Promise<void>;
+  onUnpause: (id: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
-  onKill: (id: string) => void;
-  onResetToDefault: (id: string) => void;
+  onKill: (id: string) => Promise<void>;
+  onResetToDefault: (id: string) => Promise<void>;
   actionStates: Record<string, 'loading' | 'success'>;
   onActionDone: (key: string, afterRefresh?: () => void) => void;
   onSelect: () => void;
@@ -1011,17 +1259,18 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
         {job.currently_running ? (
-          <Btn label="Stop" onClick={() => onKill(job.id)} danger />
+          // No tick on Stop: the run leaving "RUNNING" is the confirmation.
+          <Button colors={colors} onClick={() => onKill(job.id)} flashSuccess={false} style={actionVars(colors, 'danger')}>Stop</Button>
         ) : (
           <>
-            <Btn label="Run Now" onClick={() => onRunNow(job.id)} primary loadingLabel="Starting..." successLabel="Started" />
+            <Button colors={colors} variant="primary" onClick={() => onRunNow(job.id)} style={PRIMARY_ACTION_VARS}>Run Now</Button>
             {job.paused
-              ? <Btn label="Resume" onClick={() => onUnpause(job.id)} actionState={actionStates[`${job.id}:unpause`]} successLabel="Resumed" loadingLabel="Resuming..." onDone={() => onActionDone(`${job.id}:unpause`)} />
-              : <Btn label="Pause" onClick={() => onPause(job.id)} actionState={actionStates[`${job.id}:pause`]} successLabel="Paused" loadingLabel="Pausing..." onDone={() => onActionDone(`${job.id}:pause`)} />}
+              ? <Button colors={colors} onClick={() => guardedAction(`${job.id}:unpause`, () => onUnpause(job.id), onActionDone)} style={actionVars(colors)}>Resume</Button>
+              : <Button colors={colors} onClick={() => guardedAction(`${job.id}:pause`, () => onPause(job.id), onActionDone)} style={actionVars(colors)}>Pause</Button>}
           </>
         )}
         {((job.user_customized && job.starter_id) || actionStates[`${job.id}:reset`]) && (
-          <Btn label="Reset to default" onClick={() => onResetToDefault(job.id)} actionState={actionStates[`${job.id}:reset`]} successLabel="Reset complete" loadingLabel="Resetting..." onDone={() => onActionDone(`${job.id}:reset`)} />
+          <Button colors={colors} onClick={() => guardedAction(`${job.id}:reset`, () => onResetToDefault(job.id), onActionDone)} style={actionVars(colors)}>Reset to default</Button>
         )}
         <DeleteAutomationControl name={name} onDelete={() => onDelete(job.id)} />
       </div>
@@ -1037,12 +1286,12 @@ function DetailPanel({
 detail, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone }: {
   detail: DetailTarget;
   onClose: () => void;
-  onRunNow: (id: string) => void;
-  onPause: (id: string) => void;
-  onUnpause: (id: string) => void;
+  onRunNow: (id: string) => Promise<void>;
+  onPause: (id: string) => Promise<void>;
+  onUnpause: (id: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
-  onKill: (id: string) => void;
-  onResetToDefault: (id: string) => void;
+  onKill: (id: string) => Promise<void>;
+  onResetToDefault: (id: string) => Promise<void>;
   actionStates: Record<string, 'loading' | 'success'>;
   onActionDone: (key: string, afterRefresh?: () => void) => void;
 }) {
@@ -1061,7 +1310,24 @@ detail, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefaul
       overflowY: 'auto', padding: '20px 24px', flexShrink: 0,
     }}>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', fontSize: 18 }}>&times;</button>
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={onClose}
+          title="Close (Esc)"
+          aria-label="Close"
+          style={{
+            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            fontSize: 18,
+            // This × is the only thing in its row, so its box height sets the
+            // gap above the panel. `.pa-btn`'s 14px line-height would close
+            // that gap by half; keep the 1.5 the raw button inherited.
+            lineHeight: 1.5,
+          } as CSSProperties}
+        >&times;</Button>
       </div>
 
       {detail.kind === 'recipe' && (
@@ -1078,9 +1344,9 @@ detail, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefaul
 function RecipeDetail({
 job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone }: {
   job: ScheduledJob;
-  onRunNow: (id: string) => void; onPause: (id: string) => void;
-  onUnpause: (id: string) => void; onDelete: (id: string) => Promise<void>;
-  onKill: (id: string) => void; onResetToDefault: (id: string) => void;
+  onRunNow: (id: string) => Promise<void>; onPause: (id: string) => Promise<void>;
+  onUnpause: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>;
+  onKill: (id: string) => Promise<void>; onResetToDefault: (id: string) => Promise<void>;
   actionStates: Record<string, 'loading' | 'success'>;
   onActionDone: (key: string, afterRefresh?: () => void) => void;
 }) {
@@ -1121,17 +1387,17 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
       )}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {job.currently_running ? (
-          <Btn label="Stop" onClick={() => onKill(job.id)} danger />
+          <Button colors={colors} onClick={() => onKill(job.id)} flashSuccess={false} style={actionVars(colors, 'danger')}>Stop</Button>
         ) : (
           <>
-            <Btn label="Run Now" onClick={() => onRunNow(job.id)} primary loadingLabel="Starting..." successLabel="Started" />
+            <Button colors={colors} variant="primary" onClick={() => onRunNow(job.id)} style={PRIMARY_ACTION_VARS}>Run Now</Button>
             {job.paused
-              ? <Btn label="Resume" onClick={() => onUnpause(job.id)} actionState={actionStates[`${job.id}:unpause`]} successLabel="Resumed" loadingLabel="Resuming..." onDone={() => onActionDone(`${job.id}:unpause`)} />
-              : <Btn label="Pause" onClick={() => onPause(job.id)} actionState={actionStates[`${job.id}:pause`]} successLabel="Paused" loadingLabel="Pausing..." onDone={() => onActionDone(`${job.id}:pause`)} />}
+              ? <Button colors={colors} onClick={() => guardedAction(`${job.id}:unpause`, () => onUnpause(job.id), onActionDone)} style={actionVars(colors)}>Resume</Button>
+              : <Button colors={colors} onClick={() => guardedAction(`${job.id}:pause`, () => onPause(job.id), onActionDone)} style={actionVars(colors)}>Pause</Button>}
           </>
         )}
         {((job.user_customized && job.starter_id) || actionStates[`${job.id}:reset`]) && (
-          <Btn label="Reset to default" onClick={() => onResetToDefault(job.id)} actionState={actionStates[`${job.id}:reset`]} successLabel="Reset complete" loadingLabel="Resetting..." onDone={() => onActionDone(`${job.id}:reset`)} />
+          <Button colors={colors} onClick={() => guardedAction(`${job.id}:reset`, () => onResetToDefault(job.id), onActionDone)} style={actionVars(colors)}>Reset to default</Button>
         )}
         <DeleteAutomationControl name={name} onDelete={() => onDelete(job.id)} />
       </div>
@@ -1282,23 +1548,29 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
       >
         <AsOf asOf={run.createdAt} /> &middot; {run.messageCount} msgs &middot; {run.totalTokens ?? 0} tokens
       </div>
-      <button
+      <Button
+        colors={colors}
+        variant="ghostOn"
         onClick={openConversation}
         title="Open this run's full conversation in chat"
         style={{
-          display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 20,
-          padding: '5px 12px', borderRadius: radius.sm,
-          background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-          color: colors.cyan, fontSize: 12, fontWeight: 600, fontFamily: font.body, cursor: 'pointer',
-        }}
-        onMouseEnter={e => { e.currentTarget.style.filter = 'brightness(1.12)'; }}
-        onMouseLeave={e => { e.currentTarget.style.filter = 'none'; }}
+          '--pa-btn-bg': colors.cyanSoft,
+          '--pa-btn-border': colors.borderHi,
+          '--pa-btn-bg-hover': colors.cyanGlow,
+          '--pa-btn-pad': '5px 12px',
+          '--pa-btn-radius': `${radius.sm}px`,
+          '--pa-btn-weight': 600,
+          fontFamily: font.body,
+          fontSize: 12,
+          gap: 6,
+          marginBottom: 20,
+        } as CSSProperties}
       >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: -2 }}>
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
-        Open conversation
-      </button>
+        {' '}Open conversation
+      </Button>
       {loading ? (
         <div style={{ fontSize: 12, color: colors.textDim }}>Loading results...</div>
       ) : findings.length > 0 ? (
@@ -1338,16 +1610,29 @@ function ReferenceIdField({ id }: { id: string }) {
       <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', color: colors.textDim, marginBottom: 2, letterSpacing: '0.05em' }}>
         Reference ID
       </div>
+      {/* Same reason as the Recent Activity row: the UUID truncates because it
+          is a flex CHILD of this button, and `Button`'s single `pa-btn__label`
+          wrapper would make it an inline box, where `overflow: hidden` does
+          nothing and a 36-character id overflows its grid column. Keeps the
+          element, takes the `.pa-btn` interaction rules. */}
       <button
         type="button"
+        className="pa-btn pa-btn--composite"
         data-testid="automation-reference-id"
         onClick={() => copy(id)}
         title="Quote this when asking about a run — click to copy"
         style={{
-          display: 'flex', alignItems: 'center', gap: 6, padding: 0,
-          background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left',
-          fontSize: 12, color: colors.textMuted, fontFamily: font.mono, maxWidth: '100%',
-        }}
+          '--pa-btn-fg': colors.textMuted,
+          '--pa-btn-fg-hover': colors.text,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '0',
+          fontSize: 12,
+          fontFamily: font.mono,
+          gap: 6,
+          justifyContent: 'flex-start',
+          textAlign: 'left',
+          maxWidth: '100%',
+        } as CSSProperties}
       >
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{id}</span>
         <span style={{
@@ -1404,28 +1689,34 @@ export function DeleteAutomationControl({ name, onDelete }: {
 
   if (!confirming) {
     return (
-      <Btn
-        label="Delete"
+      <Button
+        colors={colors}
         onClick={() => { setError(null); setConfirming(true); }}
-        danger
-        muted
-      />
+        style={actionVars(colors, 'danger')}
+      >
+        Delete
+      </Button>
     );
   }
 
   const run = async () => {
-    if (deleting) return;
+    if (deleting) return false;
     setDeleting(true);
     setError(null);
+    let ok = false;
     try {
       await onDelete();
       // The row normally goes with the refreshed list; reset anyway so a still
       // mounted control (the detail panel keeps its target) isn't stuck mid-verb.
       setConfirming(false);
+      ok = true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
     setDeleting(false);
+    // The button primitive reads `false` as "it failed" — a delete the daemon
+    // refused must never tick. The error is still stated on the control itself.
+    return ok;
   };
 
   // The sentence and any failure take a whole line of their own (the action
@@ -1436,8 +1727,16 @@ export function DeleteAutomationControl({ name, onDelete }: {
 
   return (
     <>
-      <Btn label="Cancel" onClick={() => { setConfirming(false); setError(null); }} />
-      <Btn label={deleting ? 'Deleting…' : 'Delete automation'} onClick={run} danger />
+      <Button
+        colors={colors}
+        onClick={() => { setConfirming(false); setError(null); }}
+        style={actionVars(colors)}
+      >
+        Cancel
+      </Button>
+      <Button colors={colors} onClick={run} style={actionVars(colors, 'danger')}>
+        {deleting ? 'Deleting…' : 'Delete automation'}
+      </Button>
       <div style={{ ...line, color: colors.textMuted }}>
         Delete &ldquo;{name}&rdquo;? Its schedule stops and the automation itself can&apos;t be
         restored &mdash; it has to be created again. Runs it has already made stay in Recent Activity.
@@ -1451,59 +1750,15 @@ export function DeleteAutomationControl({ name, onDelete }: {
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Shared button
-// ═══════════════════════════════════════════════════════════════════════
-
-function Btn({
-label, onClick, primary, danger, muted, actionState, successLabel, loadingLabel, onDone }: {
-  label: string; onClick: () => void; primary?: boolean; danger?: boolean; muted?: boolean;
-  actionState?: 'loading' | 'success'; successLabel?: string; loadingLabel?: string;
-  onDone?: () => void;
-}) {
-  const { colors } = useTheme();
-  // Local phase state — visual feedback managed HERE, not via parent props.
-  // This guarantees synchronous re-render on click (same component, no prop delay).
-  const [phase, setPhase] = useState<'idle' | 'loading' | 'success'>('idle');
-
-  const handleClick = () => {
-    if (phase !== 'idle') return;
-    if (loadingLabel) {
-      setPhase('loading');
-      const minDuration = new Promise(r => setTimeout(r, 700));
-      Promise.all([Promise.resolve((onClick as () => unknown)()), minDuration]).then(
-        () => {
-          setPhase('success');
-          setTimeout(() => { setPhase('idle'); onDone?.(); }, 1500);
-        },
-        () => { setPhase('idle'); onDone?.(); },
-      );
-    } else {
-      onClick();
-    }
-  };
-
-  const isLoading = phase === 'loading';
-  const isSuccess = phase === 'success';
-  const isBusy = isLoading || isSuccess;
-  const bg = isSuccess ? withAlpha(colors.success, 0.15) : isLoading ? colors.border : primary ? colors.cyan : danger ? withAlpha(colors.danger, 0.1) : colors.border;
-  const fg = isSuccess ? colors.success : isLoading ? colors.textDim : primary ? colors.textOnCyan : danger ? colors.danger : colors.textMuted;
-  const bdr = isSuccess ? withAlpha(colors.success, 0.3) : isLoading ? colors.border : primary ? 'transparent' : danger ? withAlpha(colors.danger, 0.2) : colors.border;
-  const displayLabel = isSuccess ? `\u2713 ${successLabel || label}` : isLoading ? (loadingLabel || label) : label;
-  return (
-    <button onClick={handleClick} disabled={isBusy}
-      onMouseEnter={e => { if (!isBusy) e.currentTarget.style.filter = 'brightness(1.12)'; }}
-      onMouseLeave={e => { e.currentTarget.style.filter = 'none'; }}
-      style={{
-      padding: primary ? '6px 16px' : '4px 10px', borderRadius: radius.sm,
-      background: bg, border: `1px solid ${bdr}`, color: fg,
-      fontSize: 11, fontWeight: primary ? 600 : 500, fontFamily: font.body,
-      cursor: isBusy ? 'default' : 'pointer',
-      opacity: muted && !phase && !actionState ? 0.6 : 1,
-      transition: 'background 200ms, color 200ms, border-color 200ms, filter 150ms',
-    }}>{displayLabel}</button>
-  );
-}
+// The local `Btn` that used to live here is gone.
+//
+// It was this page's private button primitive, with its own 700ms
+// minimum-pending floor and its own success phase. That floor is now
+// `MIN_PENDING_MS` in `components/common/Button` — ported from exactly this
+// component, which is where it was first written and proved — so a second copy
+// here only meant this page's buttons and the rest of the app's could drift.
+// Its three resting looks survive as `actionVars()` / `PRIMARY_ACTION_VARS`
+// near the top of this file, expressed as `--pa-btn-*` custom properties.
 
 // ═══════════════════════════════════════════════════════════════════════
 // Sub-components preserved from original (Findings, Reports, Modal)
@@ -1514,11 +1769,26 @@ function ReportToggle({ text, createdAt, tokens }: { text: string; createdAt: st
   const [open, setOpen] = useState(false);
   return (
     <div style={{ marginTop: 16 }}>
-      <button onClick={() => setOpen(!open)} style={{
-        display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0',
-        background: 'none', border: 'none', cursor: 'pointer', color: colors.textDim,
-        fontSize: 11, fontFamily: font.body,
-      }}>
+      {/* Disclosure: its whole job is to open the report below it, so it keeps
+          the element and the aria-expanded that names its state, and takes the
+          shared `.pa-btn` interaction rules instead of a primitive whose
+          pending floor and success tick have nothing to describe here. */}
+      <button
+        type="button"
+        className="pa-btn"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        style={{
+          '--pa-btn-fg': colors.textDim,
+          '--pa-btn-fg-hover': colors.text,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '8px 0',
+          gap: 8,
+          justifyContent: 'flex-start',
+          fontSize: 11,
+          fontFamily: font.body,
+        } as CSSProperties}
+      >
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
           style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 150ms' }}>
           <path d="M9 18l6-6-6-6" />
@@ -1652,9 +1922,21 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
           </div>
         )}
         {totalPending > 0 && (
-          <button onClick={() => setPreviewGroup('__all__')} style={{ marginTop: 14, padding: '12px 32px', borderRadius: radius.md, background: colors.cyan, color: colors.textOnCyan, fontWeight: 700, fontSize: 14, border: 'none', cursor: 'pointer', fontFamily: font.body }}>
+          <Button
+            colors={colors}
+            variant="primary"
+            onClick={() => setPreviewGroup('__all__')}
+            style={{
+              '--pa-btn-pad': '12px 32px',
+              '--pa-btn-radius': `${radius.md}px`,
+              '--pa-btn-weight': 700,
+              fontFamily: font.body,
+              fontSize: 14,
+              marginTop: 14,
+            } as CSSProperties}
+          >
             Clean Up All — {formatBytes(totalPendingBytes)}
-          </button>
+          </Button>
         )}
       </div>
       {previewGroup && (() => {
@@ -1681,7 +1963,23 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
           return (
             <div key={groupName} style={{ borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${allDone ? withAlpha(colors.success, 0.2) : colors.border}`, background: allDone ? withAlpha(colors.success, 0.03) : colors.surface }}>
               <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
-                <button onClick={() => setExpandedGroup(isExpanded ? null : groupName)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, opacity: allDone ? 0.5 : 1 }}>
+                {/* Disclosure: the folder tile opens and closes the item list
+                    below it and does nothing else, so it keeps the element and
+                    the aria pairing, and takes the `.pa-btn` rules. It had no
+                    accessible name at all — an icon in an icon. */}
+                <button
+                  type="button"
+                  className="pa-btn"
+                  aria-expanded={isExpanded}
+                  aria-label={`${isExpanded ? 'Hide' : 'Show'} the items in ${groupName}`}
+                  onClick={() => setExpandedGroup(isExpanded ? null : groupName)}
+                  style={{
+                    '--pa-btn-pad': '0',
+                    '--pa-btn-radius': `${radius.md}px`,
+                    '--pa-btn-bg-hover': 'transparent',
+                    opacity: allDone ? 0.5 : 1,
+                  } as CSSProperties}
+                >
                   <div style={{ width: 36, height: 36, borderRadius: radius.md, background: colors.border, display: 'grid', placeItems: 'center' }}>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={colors.textMuted} strokeWidth={1.8}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
                   </div>
@@ -1691,7 +1989,18 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
                   <div style={{ fontSize: 12, color: colors.textDim, marginTop: 2 }}>{allDone ? `Cleaned — ${formatBytes(groupRecovered)}` : `${pending.length} items · ${formatBytes(pendingBytes)}`}</div>
                 </div>
                 {allDone ? <div style={{ padding: '8px 16px', borderRadius: radius.md, background: withAlpha(colors.success, 0.1), color: colors.success, fontSize: 12, fontWeight: 600 }}>Done</div> : (
-                  <button onClick={() => setPreviewGroup(groupName)} style={{ padding: '10px 22px', borderRadius: radius.md, background: colors.cyan, color: colors.textOnCyan, fontWeight: 700, fontSize: 13, border: 'none', cursor: 'pointer', fontFamily: font.body }}>Clean — {formatBytes(pendingBytes)}</button>
+                  <Button
+                    colors={colors}
+                    variant="primary"
+                    onClick={() => setPreviewGroup(groupName)}
+                    style={{
+                      '--pa-btn-pad': '10px 22px',
+                      '--pa-btn-radius': `${radius.md}px`,
+                      '--pa-btn-weight': 700,
+                      fontFamily: font.body,
+                      fontSize: 13,
+                    } as CSSProperties}
+                  >Clean — {formatBytes(pendingBytes)}</Button>
                 )}
               </div>
               {isExpanded && (
@@ -1803,12 +2112,18 @@ pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, busy, err
         <div style={{ padding: '10px 20px', fontSize: 12, color: colors.danger, background: withAlpha(colors.danger, 0.08) }}>{error}</div>
       )}
       <div style={{ padding: '12px 20px', display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: `1px solid ${colors.border}` }}>
-        <Btn label="Cancel" onClick={onCancel} />
-        <Btn
-          label={busy ? 'Cleaning...' : `Move ${eligible.length} to Trash`}
+        <Button colors={colors} onClick={onCancel} style={actionVars(colors)}>Cancel</Button>
+        {/* The work runs in the caller's `confirmBulk`, not in this click, so
+            the in-flight state arrives as a prop — same shape as a form submit. */}
+        <Button
+          colors={colors}
+          variant="primary"
+          pending={busy}
           onClick={() => onConfirm(eligible)}
-          primary
-        />
+          style={PRIMARY_ACTION_VARS}
+        >
+          {busy ? 'Cleaning...' : `Move ${eligible.length} to Trash`}
+        </Button>
       </div>
     </div>
   );
@@ -1823,7 +2138,7 @@ finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a
   const [confirming, setConfirming] = useState(false);
 
   if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.success, 0.05), border: `1px solid ${withAlpha(colors.success, 0.12)}` }}><span style={{ fontSize: 12, color: colors.success }}>Trashed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: 11, color: colors.success, fontFamily: font.mono, fontVariantNumeric: 'tabular-nums' }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
-  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: 12, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={finding.error_message || undefined}>{finding.error_message || fileName}</span><button onClick={() => onAction('trash', needsSecondConfirm || undefined)} style={{ padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.1), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, color: colors.danger, fontSize: 10, cursor: 'pointer', fontFamily: font.body, flexShrink: 0 }}>Retry</button></div>;
+  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: 12, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={finding.error_message || undefined}>{finding.error_message || fileName}</span><Button colors={colors} onClick={() => onAction('trash', needsSecondConfirm || undefined)} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '2px 6px', fontSize: 10, flexShrink: 0 } as CSSProperties}>Retry</Button></div>;
   if (finding.action_taken) return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: 12, color: colors.textMuted }}>Kept</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
 
   const handleTrashClick = () => {
@@ -1845,8 +2160,8 @@ finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a
           )}
         </div>
         <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-          <button onClick={handleTrashClick} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.1), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, color: colors.danger, fontSize: 10, fontWeight: 600, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>{loading ? '...' : 'Trash'}</button>
-          <button onClick={() => onAction('keep')} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: colors.border, border: `1px solid ${colors.border}`, color: colors.textMuted, fontSize: 10, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>Keep</button>
+          <Button colors={colors} onClick={handleTrashClick} disabled={loading} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '3px 8px', '--pa-btn-weight': 600, fontSize: 10 } as CSSProperties}>{loading ? '...' : 'Trash'}</Button>
+          <Button colors={colors} onClick={() => onAction('keep')} disabled={loading} style={{ ...actionVars(colors), '--pa-btn-pad': '3px 8px', fontSize: 10 } as CSSProperties}>Keep</Button>
         </div>
       </div>
       {confirming && (
@@ -1854,8 +2169,21 @@ finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a
           <div style={{ fontSize: 12, color: colors.text, fontWeight: 600, marginBottom: 4 }}>Are you sure?</div>
           {finding.consequence && <div style={{ fontSize: 12, color: colors.danger, marginBottom: 8 }}>{finding.consequence}</div>}
           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-            <button onClick={() => setConfirming(false)} style={{ padding: '3px 10px', borderRadius: radius.sm, background: colors.border, border: `1px solid ${colors.border}`, color: colors.textMuted, fontSize: 11, cursor: 'pointer', fontFamily: font.body }}>Cancel</button>
-            <button onClick={() => { setConfirming(false); onAction('trash', true); }} style={{ padding: '3px 10px', borderRadius: radius.sm, background: colors.danger, border: 'none', color: colors.bg, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: font.body }}>Trash anyway</button>
+            <Button colors={colors} onClick={() => setConfirming(false)} style={{ ...actionVars(colors), '--pa-btn-pad': '3px 10px' } as CSSProperties}>Cancel</Button>
+            <Button
+              colors={colors}
+              variant="primary"
+              onClick={() => { setConfirming(false); onAction('trash', true); }}
+              style={{
+                '--pa-btn-bg': colors.danger,
+                '--pa-btn-fg': colors.bg,
+                '--pa-btn-bg-hover': colors.danger,
+                '--pa-btn-bg-active': colors.danger,
+                '--pa-btn-pad': '3px 10px',
+                '--pa-btn-radius': `${radius.sm}px`,
+                fontFamily: font.body,
+              } as CSSProperties}
+            >Trash anyway</Button>
           </div>
         </div>
       )}
@@ -1893,8 +2221,11 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const unitSecs: Record<typeof intervalUnit, number> = { minutes: 60, hours: 3600, days: 86400 };
   const everySeconds = Math.max(0, Math.round(Number(intervalValue) || 0)) * unitSecs[intervalUnit];
 
+  // Returns `false` on every path that did NOT create an automation — the
+  // button primitive reads that as "it failed" and withholds the success tick,
+  // so a rejected form or a refused POST can never look like a create.
   const handleSave = async () => {
-    if (!name.trim() || !prompt.trim()) { setError('Name and task are required.'); return; }
+    if (!name.trim() || !prompt.trim()) { setError('Name and task are required.'); return false; }
     const recipe = { version: '1.0.0', title: name.trim(), description: prompt.trim().slice(0, 120), prompt: prompt.trim() };
     const body: Record<string, unknown> = {
       id: name.trim().replace(/\s+/g, '-').toLowerCase(),
@@ -1902,24 +2233,25 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
       max_retries: Math.max(0, Math.round(Number(maxRetries) || 0)),
     };
     if (kind === 'cron') {
-      if (!cron.trim()) { setError('Choose or enter a schedule.'); return; }
+      if (!cron.trim()) { setError('Choose or enter a schedule.'); return false; }
       body.cron = cron;
       if (tz.trim()) body.tz = tz.trim();
     } else if (kind === 'once') {
-      if (!atLocal) { setError('Pick a date and time.'); return; }
+      if (!atLocal) { setError('Pick a date and time.'); return false; }
       const d = new Date(atLocal);
-      if (Number.isNaN(d.getTime())) { setError('Invalid date/time.'); return; }
+      if (Number.isNaN(d.getTime())) { setError('Invalid date/time.'); return false; }
       body.at = d.toISOString();
       if (tz.trim()) body.tz = tz.trim();
     } else {
-      if (everySeconds < 1) { setError('Enter a valid interval.'); return; }
+      if (everySeconds < 1) { setError('Enter a valid interval.'); return false; }
       body.every_seconds = everySeconds;
     }
     setSaving(true); setError('');
     try {
       await apiFetch<unknown>('/schedule/create', { method: 'POST', body: JSON.stringify(body) });
       onCreated();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setSaving(false); }
+      return true;
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setSaving(false); return false; }
   };
 
   const kindTabs: { id: typeof kind; label: string }[] = [
@@ -1956,10 +2288,22 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
         <label style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>When should it run?</label>
         <div style={{ display: 'flex', gap: 4, marginBottom: 12, background: colors.surface, borderRadius: radius.sm, padding: 3, border: `1px solid ${colors.border}` }}>
           {kindTabs.map(t => (
-            <button key={t.id} onClick={() => setKind(t.id)} style={{
-              flex: 1, padding: '6px 0', borderRadius: radius.sm, border: 'none', cursor: 'pointer', fontSize: 12, fontFamily: font.body,
-              background: kind === t.id ? colors.cyan : 'transparent', color: kind === t.id ? colors.textOnCyan : colors.textMuted, fontWeight: kind === t.id ? 600 : 400,
-            }}>{t.label}</button>
+            <Button
+              key={t.id}
+              colors={colors}
+              variant={kind === t.id ? 'primary' : 'bare'}
+              onClick={() => setKind(t.id)}
+              style={{
+                '--pa-btn-fg': kind === t.id ? colors.textOnCyan : colors.textMuted,
+                '--pa-btn-fg-hover': kind === t.id ? colors.textOnCyan : colors.text,
+                '--pa-btn-pad': '6px 0',
+                '--pa-btn-radius': `${radius.sm}px`,
+                '--pa-btn-weight': kind === t.id ? 600 : 400,
+                fontFamily: font.body,
+                fontSize: 12,
+                flex: 1,
+              } as CSSProperties}
+            >{t.label}</Button>
           ))}
         </div>
 
@@ -2013,8 +2357,30 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
         {error && <div style={{ fontSize: 12, color: colors.danger, marginBottom: 12 }}>{error}</div>}
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button onClick={onClose} style={{ padding: '8px 16px', borderRadius: radius.sm, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.textMuted, fontSize: 12, cursor: 'pointer', fontFamily: font.body }}>Cancel</button>
-          <button onClick={handleSave} disabled={saving} style={{ padding: '8px 20px', borderRadius: radius.sm, background: colors.cyan, color: colors.textOnCyan, fontWeight: 600, fontSize: 12, border: 'none', cursor: saving ? 'wait' : 'pointer', fontFamily: font.body, opacity: saving ? 0.6 : 1 }}>{saving ? 'Creating...' : 'Create Automation'}</button>
+          <Button
+            colors={colors}
+            onClick={onClose}
+            style={{
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-pad': '8px 16px',
+              '--pa-btn-radius': `${radius.sm}px`,
+              fontFamily: font.body,
+              fontSize: 12,
+            } as CSSProperties}
+          >Cancel</Button>
+          <Button
+            colors={colors}
+            variant="primary"
+            onClick={handleSave}
+            disabled={saving}
+            style={{
+              '--pa-btn-pad': '8px 20px',
+              '--pa-btn-radius': `${radius.sm}px`,
+              fontFamily: font.body,
+              fontSize: 12,
+            } as CSSProperties}
+          >{saving ? 'Creating...' : 'Create Automation'}</Button>
         </div>
       </div>
     </div>
