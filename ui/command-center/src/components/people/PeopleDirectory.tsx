@@ -42,10 +42,16 @@ type Status = 'loading' | 'error' | 'ready';
  * people-table columns and refills only from `entity_fields`, so `email` is null
  * on the wire for every person nobody has manually edited.
  *
- * There is no merge primitive anywhere in the codebase, so this is a *label*,
- * never an action. Its job is to make a false split visible; a directory is the
- * first surface where duplicates become obvious and it must not look broken
- * when they appear.
+ * This is a *label*, never an action — but not for the reason this comment used
+ * to give. It claimed no merge primitive existed anywhere in the codebase, and
+ * that stopped being true: `MergePersonPanel` implements a full three-step
+ * merge with an undo, reachable from the person detail modal. The real reason
+ * is placement. Merging is a decision made while looking at both people, which
+ * is what the detail modal shows and a directory row does not.
+ *
+ * Its job here is to make a false split visible; a directory is the first
+ * surface where duplicates become obvious and it must not look broken when
+ * they appear.
  */
 function duplicateIds(people: DirectoryPerson[]): Set<string> {
   const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
