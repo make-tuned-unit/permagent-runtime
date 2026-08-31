@@ -314,7 +314,16 @@ interface CommandCenterStore {
    * the seed turn is sent so buildAppContext can carry the id to the daemon.
    */
   discussSeedDecisionId: string | null;
-  discussDecision: (decisionId: string, headline: string) => Promise<void>;
+  /** Resolves `false` when no conversation was started, so nothing ticks. */
+  discussDecision: (decisionId: string, headline: string) => Promise<boolean>;
+
+  /**
+   * What "Discuss with {agent}" just did, said out loud on the surface it
+   * lands you on. The action replaces the whole chat — a real, invisible side
+   * effect on a button whose label promises only a discussion.
+   */
+  discussNotice: { tone: 'info' | 'error'; text: string } | null;
+  clearDiscussNotice: () => void;
 
   /**
    * Goal-detail modal (#503): the single detail view every goal surface — Kanban
@@ -1253,13 +1262,34 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
    * already knowing the goal, proposal, and reasoning — not a cold "what's up?".
    */
   discussDecision: async (decisionId: string, headline: string) => {
+    // "Discuss with Aria" reads as "open a discussion", and it is: what it does
+    // NOT say is that it swaps the whole chat out from under you. Whatever
+    // conversation was on screen — mid-stream, possibly mid-answer — is
+    // replaced by a fresh session. Nothing was destroyed (the old session is in
+    // Sessions), but nothing said that either, so the visible effect was a chat
+    // that vanished when you pressed a button about something else.
+    const previousSessionId = get().chatSessionId;
     let sessionId: string;
     try {
       const session = await api.createSession();
       sessionId = session.id;
     } catch (err) {
-      console.error('discussDecision: createSession failed', err);
-      return;
+      // A dead button on a labelled control is not an outcome. Say it failed.
+      set({
+        discussNotice: {
+          tone: 'error',
+          text: `Couldn't start that conversation — ${err instanceof Error ? err.message : 'the daemon did not answer'}.`,
+        },
+      });
+      return false;
+    }
+    if (previousSessionId && previousSessionId !== sessionId) {
+      set({
+        discussNotice: {
+          tone: 'info',
+          text: 'Started a new conversation about this decision. The chat you were in is saved under Sessions.',
+        },
+      });
     }
     get().disconnectSession();
     set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
@@ -1275,7 +1305,11 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     } finally {
       set({ discussSeedDecisionId: null });
     }
+    return true;
   },
+
+  discussNotice: null,
+  clearDiscussNotice: () => set({ discussNotice: null }),
 
   switchToSession: async (sessionId: string) => {
     get().disconnectSession();
