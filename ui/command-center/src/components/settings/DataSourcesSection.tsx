@@ -9,7 +9,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
 import { font, radius, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import { Toggle } from './atoms';
+import { Toggle } from '../common/Toggle';
 
 interface CategoryView {
   name: string;
@@ -187,7 +187,8 @@ export function DataSourcesSection() {
               <Toggle
                 on={e.enabled}
                 disabled={busy === e.slug}
-                onChange={(v) => void toggle(e.slug, v)}
+                onChange={(v) => toggle(e.slug, v)}
+                label={`Enable ${e.name}`}
               />
             </div>
             {e.enabled && e.auth.toLowerCase() === 'apikey' && (

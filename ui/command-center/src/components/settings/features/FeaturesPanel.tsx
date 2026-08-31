@@ -16,7 +16,8 @@
  */
 
 import { useEffect, useState } from 'react';
-import { H1, Row, Section, Toggle } from '../atoms';
+import { H1, Row, Section } from '../atoms';
+import { Toggle } from '../../common/Toggle';
 import { api, type CouncilMembers, type CouncilSeat } from '../../../lib/api';
 import { font } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
@@ -43,7 +44,6 @@ const UNLOADED = Object.fromEntries(FEATURE_ROWS.map(r => [r.key, null])) as Fla
 export function FeaturesPanel({ goto }: PanelProps) {
   const { colors } = useTheme();
   const [flags, setFlags] = useState<FlagState>(UNLOADED);
-  const [errors, setErrors] = useState<Partial<Record<FeatureKey, string>>>({});
   const [integrations, setIntegrations] = useState<IntegrationStatus[] | null>(null);
   const [members, setMembers] = useState<CouncilMembers | null>(null);
   const [membersError, setMembersError] = useState<string | null>(null);
@@ -78,17 +78,12 @@ export function FeaturesPanel({ goto }: PanelProps) {
     return () => { active = false; };
   }, [flags.council_enabled]);
 
-  const save = (key: FeatureKey, v: boolean) => {
-    const prev = flags[key];
+  // The optimistic flip, the revert and the message are the switch's job now
+  // (components/common/Toggle) — this only has to do the write and let a throw
+  // be the failure.
+  const save = async (key: FeatureKey, v: boolean) => {
+    await api.upsertConfig(key, v);
     setFlags(f => ({ ...f, [key]: v }));
-    setErrors(e => ({ ...e, [key]: undefined }));
-    api.upsertConfig(key, v).catch(err => {
-      setFlags(f => ({ ...f, [key]: prev }));
-      setErrors(e => ({
-        ...e,
-        [key]: `Couldn't save: ${err instanceof Error ? err.message : String(err)}`,
-      }));
-    });
   };
 
   const gmailToken = gmailTokenPresent(integrations);
@@ -105,7 +100,6 @@ export function FeaturesPanel({ goto }: PanelProps) {
       >
         {FEATURE_ROWS.map(row => {
           const value = flags[row.key];
-          const error = errors[row.key];
           const isConcierge = row.key === 'concierge_enabled';
           return (
             <Row key={row.key} label={row.label} hint={row.what}>
@@ -124,9 +118,6 @@ export function FeaturesPanel({ goto }: PanelProps) {
                     >
                       {conciergePreconditionCopy(gmailToken)}
                     </div>
-                  )}
-                  {error && (
-                    <div style={{ marginTop: 4, color: colors.danger }}>{error}</div>
                   )}
                 </div>
               </div>

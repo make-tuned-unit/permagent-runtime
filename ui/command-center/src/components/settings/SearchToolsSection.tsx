@@ -5,7 +5,7 @@ import { SEARCH_PROVIDERS, buildSearchExtensionQuery, saveAndEnableSearchProvide
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import { Toggle } from './atoms';
+import { Toggle } from '../common/Toggle';
 
 interface ProviderRowState {
   configured: boolean;
@@ -158,7 +158,7 @@ export function SearchToolsSection() {
                     style={{ backgroundColor: `${colors.textDim}26`, color: colors.textMuted }}
                   >No key</span>
                 )}
-                <Toggle on={r.enabled} onChange={(v) => toggleEnabled(p, v)} />
+                <Toggle on={r.enabled} onChange={(v) => toggleEnabled(p, v)} label={`Enable ${p.displayName}`} />
               </div>
             </div>
 

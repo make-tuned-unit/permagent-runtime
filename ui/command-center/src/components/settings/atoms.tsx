@@ -70,25 +70,10 @@ export function Chip({ on, onClick, children }: { on: boolean; onClick?: () => v
   );
 }
 
-export function Toggle({ on, onChange, disabled = false }: { on: boolean; onChange?: (v: boolean) => void; disabled?: boolean }) {
-  const { colors } = useTheme();
-  return (
-    <button disabled={disabled} onClick={() => onChange?.(!on)} style={{
-      width: 36, height: 22, borderRadius: radius.pill, padding: 2,
-      background: on ? colors.cyan : colors.surfaceHi,
-      border: 'none', cursor: disabled ? 'not-allowed' : 'pointer', position: 'relative',
-      opacity: disabled ? 0.55 : 1,
-      transition: `background 160ms ${ease.out}`,
-      boxShadow: on ? `0 0 8px ${colors.cyanGlow}` : 'none',
-    }}>
-      <div style={{
-        width: 18, height: 18, borderRadius: '50%', background: '#fff',
-        transform: on ? 'translateX(14px)' : 'translateX(0)',
-        transition: `transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1)`,
-      }} />
-    </button>
-  );
-}
+/* Toggle moved to `components/common/Toggle.tsx`. It was the only atom here
+   with a server round trip behind it, and having no busy phase and no failure
+   path it made six call sites hand-roll their own optimistic flip and revert.
+   The primitive owns that contract now; import it from common. */
 
 export function Slider({ value, onChange, min = 0, max = 100, suffix, disabled = false }: {
   value: number; onChange?: (v: number) => void; min?: number; max?: number; suffix?: string; disabled?: boolean;

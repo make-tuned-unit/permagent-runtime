@@ -21,7 +21,8 @@ import { resolveSettingsSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
 import { PronunciationSection } from '../voice/PronunciationSection';
-import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton } from './atoms';
+import { H1, Section, Row, TextInput, Chip, Slider, Kbd, SaveButton } from './atoms';
+import { Toggle } from '../common/Toggle';
 import { makeQrMatrix } from '../../lib/qrMatrix';
 import { SessionsList } from '../sessions/SessionsList';
 import { InboxPanel } from '../inbox/InboxPanel';
@@ -267,6 +268,7 @@ export function PreferencesPanel() {
 function NotificationSettings() {
   const [prefs, setPrefs] = useState(getNotificationPrefs());
   const [osOn, setOsOn] = useState(getOsNotificationsEnabled());
+  const [osDenied, setOsDenied] = useState(false);
   const kinds = Object.keys(KIND_LABELS) as NotificationKind[];
   return (
     <Section title="Notifications" sub="Live — the agent reaches out when something needs you. Each toggle silences its kind everywhere (tray, toasts, system).">
@@ -279,7 +281,18 @@ function NotificationSettings() {
         </Row>
       ))}
       <Row label="System notifications" hint="Also notify at the OS level (asks for permission).">
-        <Toggle on={osOn} onChange={async v => setOsOn(await setOsNotificationsEnabled(v))} />
+        {/* The OS can refuse, and a refusal used to be indistinguishable from a
+            grant: the switch showed whatever `setOsNotificationsEnabled`
+            returned with nothing said about the difference. */}
+        <Toggle
+          on={osOn}
+          error={osDenied ? 'The system refused notification permission — allow Permagent under System Settings → Notifications.' : null}
+          onChange={async v => {
+            const actual = await setOsNotificationsEnabled(v);
+            setOsOn(actual);
+            setOsDenied(v && !actual);
+          }}
+        />
       </Row>
     </Section>
   );
@@ -866,6 +879,7 @@ export function ModelsPanel({ goto }: PanelProps) {
   // `strix_enabled` every tick, so a flip here takes effect at the next tick
   // without a restart.
   const [strix, setStrix] = useState<boolean | null>(null);
+  /** Now only the cadence dial's — the switch carries its own failures. */
   const [strixError, setStrixError] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
@@ -874,14 +888,12 @@ export function ModelsPanel({ goto }: PanelProps) {
       .catch(() => { if (active) setStrix(false); });
     return () => { active = false; };
   }, []);
-  const saveStrix = (v: boolean) => {
-    const prev = strix;
+  // The optimistic flip, the revert and the message all moved into `Toggle`,
+  // which was written from this function: it only has to do the write, and let
+  // a throw be the failure.
+  const saveStrix = async (v: boolean) => {
+    await api.upsertConfig('strix_enabled', v);
     setStrix(v);
-    setStrixError(null);
-    api.upsertConfig('strix_enabled', v).catch(err => {
-      setStrix(prev);
-      setStrixError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
-    });
   };
   // Sweep cadence (strix_sweep_hours) — each sweep is a real agentic scan of
   // every active project on the user's API credits, so the cadence is theirs
@@ -1128,7 +1140,7 @@ export function ModelsPanel({ goto }: PanelProps) {
             <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{libError}</div>
           )}
           <Row label="Enabled" hint="Run the Librarian on a daily schedule to describe memories.">
-            <Toggle on={schedule.enabled} onChange={v => handleScheduleChange({ enabled: v })} />
+            <Toggle on={schedule.enabled} onChange={v => handleScheduleChange({ enabled: v })} label="Nightly librarian pass" />
           </Row>
           {schedule.enabled && (
             <>
@@ -1488,12 +1500,14 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
     };
   }, []);
 
+  // Returns the round trip so the switch is busy while it is in flight; the
+  // rollback and the message stay here, where the generation guard lives.
   const saveAnalytics = useCallback((v: boolean) => {
     const generation = ++analyticsGeneration.current;
     setConsentError(null);
     const prev = analytics;
     setAnalytics(v); // optimistic
-    api.setAnalyticsConsent(v)
+    return api.setAnalyticsConsent(v)
       .then(s => { if (generation === analyticsGeneration.current) setAnalytics(s.analyticsConsented); })
       .catch(err => {
         if (generation !== analyticsGeneration.current) return;
@@ -1608,7 +1622,7 @@ function SovereigntyPanel() {
       capturePrompts: patch.capturePrompts ?? s.capturePrompts,
       localProviderAvailable: s.localProviderAvailable,
     } : s));
-    api.setSovereignty(patch)
+    return api.setSovereignty(patch)
       .then(status => { setStatus(status); refreshLog(); })
       .catch(err => setError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`));
   };

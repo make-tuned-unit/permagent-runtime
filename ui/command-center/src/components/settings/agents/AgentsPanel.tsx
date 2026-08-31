@@ -6,7 +6,8 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { Chip, H1, Row, Section, Toggle } from '../atoms';
+import { Chip, H1, Row, Section } from '../atoms';
+import { Toggle } from '../../common/Toggle';
 import {
   availabilityLabel,
   defaultEnabledLabel,
@@ -495,29 +496,20 @@ function AgentEnableRow({
   /** Resolves once the daemon has been re-read, so the guess can be dropped. */
   onFlipped: () => Promise<void>;
 }) {
-  const { colors } = useTheme();
-  // The optimistic value is an OVERLAY with a lifetime, not a copy of the gate.
-  // An earlier version mirrored `gate.enabled` into state and re-seeded it from
+  // The optimistic value is an OVERLAY with a lifetime, not a copy of the gate:
+  // an earlier version mirrored `gate.enabled` into state and re-seeded it from
   // a `[gate.enabled]` effect; React skips an effect whose dep did not change,
   // so the one case the re-read exists for — the write returns 200 and the flag
   // is STILL off, which `Config::get_param` produces whenever an env var shadows
-  // the config file — left the toggle stuck ON with no error. Clearing the
-  // overlay instead means the daemon's answer is what renders, equal or not.
-  const [pending, setPending] = useState<boolean | null>(null);
+  // the config file — left the toggle stuck ON with no error. That overlay is
+  // now `Toggle`'s, which was written from this component: it clears when the
+  // write settles, so the daemon's answer is what renders, equal or not.
   const [error, setError] = useState<string | null>(null);
-  const on = pending ?? gate.enabled;
 
   const save = async (v: boolean) => {
-    setPending(v);
     setError(null);
-    try {
-      await api.upsertConfig(gate.config_key, v);
-    } catch (err) {
-      // A failed write is never shown as a success.
-      setPending(null);
-      setError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
+    // A throw is the failure signal — the switch reverts and says so.
+    await api.upsertConfig(gate.config_key, v);
     try {
       await onFlipped();
     } catch (err) {
@@ -525,8 +517,6 @@ function AgentEnableRow({
       // here would be the same lie in the other direction, so the switch drops
       // back to the last value the daemon actually confirmed and says why.
       setError(`Saved, but could not re-read it: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setPending(null);
     }
   };
 
@@ -537,10 +527,7 @@ function AgentEnableRow({
         sub="One key, written here and under Settings → Features — flipping it in either place is the same flag, and the daemon picks it up at its next tick."
       >
         <Row label={`Enable ${agentName}`} hint={gateRowHint(gate)}>
-          <Toggle on={on} onChange={v => { void save(v); }} />
-          {error && (
-            <div style={{ marginTop: 8, fontSize: 12, color: colors.danger }}>{error}</div>
-          )}
+          <Toggle on={gate.enabled} error={error} onChange={save} label={`Enable ${agentName}`} />
         </Row>
       </Section>
     </div>
