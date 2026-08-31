@@ -1391,25 +1391,36 @@ function PickRow({
       }}
     >
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+        {/* Both controls on this row were introduced in the same commit series
+            as the Button primitive and neither used it, so pressing either one
+            looked identical to not pressing it — an inline `style` cannot
+            express :hover or :active at all. They are disclosure toggles, not
+            actions: there is nothing to await, so what they need from the
+            primitive is its feedback, not its pending/success machinery. They
+            take the shared `.pa-btn` interaction rules and keep the
+            aria-expanded / aria-controls pairing that describes what they
+            actually do. */}
         <button
           type="button"
+          className="pa-btn"
           aria-expanded={open}
           aria-controls={rowId}
           onClick={() => setOpen((v) => !v)}
           style={{
-            background: 'none',
-            border: 'none',
-            padding: 0,
-            cursor: 'pointer',
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-pad': '2px 4px',
+            '--pa-btn-radius': `${radius.sm}px`,
             fontFamily: font.body,
+            fontSize: 'inherit',
             color: colors.text,
-            display: 'flex',
             gap: 8,
             alignItems: 'baseline',
+            justifyContent: 'flex-start',
             flex: 1,
             minWidth: 0,
             textAlign: 'left',
-          }}
+            marginLeft: -4,
+          } as CSSProperties}
         >
           {/* Nothing said this row opened. A chevron is the cheapest way to
               say it, and it rotates so open/closed reads at a glance. */}
@@ -1455,6 +1466,7 @@ function PickRow({
           // and hovering shows the full sentence without a click at all.
           <button
             type="button"
+            className="pa-btn"
             data-testid="pick-loop-tag"
             data-passed={loop.passed ? 'true' : 'false'}
             aria-expanded={open}
@@ -1463,16 +1475,19 @@ function PickRow({
             onClick={() => setOpen((v) => !v)}
             style={{
               ...type.micro,
-              color: loop.passed ? colors.success : colors.danger,
-              fontWeight: 600,
+              '--pa-btn-bg': warnFill(loop.passed ? colors.success : colors.danger, 0.10),
+              '--pa-btn-bg-hover': warnFill(loop.passed ? colors.success : colors.danger, 0.20),
+              '--pa-btn-border': warnFill(loop.passed ? colors.success : colors.danger, 0.35),
+              '--pa-btn-border-hover': warnFill(loop.passed ? colors.success : colors.danger, 0.55),
+              '--pa-btn-fg': loop.passed ? colors.success : colors.danger,
+              '--pa-btn-pad': '1px 8px',
+              '--pa-btn-weight': 600,
+              // The one shape the radius ruling reserves the full pill for is a
+              // chip, and this reads as one — a tag on a row, not an action bar.
+              '--pa-btn-radius': `${radius.pill}px`,
               fontFamily: font.body,
-              background: warnFill(loop.passed ? colors.success : colors.danger, 0.10),
-              border: `1px solid ${warnFill(loop.passed ? colors.success : colors.danger, 0.35)}`,
-              borderRadius: radius.pill,
-              padding: '1px 8px',
-              cursor: 'pointer',
               whiteSpace: 'nowrap',
-            }}
+            } as CSSProperties}
           >
             {loopTagLabel(loop)}
             {!loop.passed && <span aria-hidden="true" style={{ opacity: 0.7 }}> ⓘ</span>}

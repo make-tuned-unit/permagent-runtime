@@ -303,3 +303,28 @@ it('leaves a fresh reading quiet', async () => {
   expect(line.style.fontWeight).toBe('400');
   expect(line.style.fontSize).toBe('12px');
 });
+
+it('gives the pick row controls the primitive\'s press feedback', async () => {
+  // Both controls on a pick row shipped in the same commit series as the Button
+  // primitive and used none of it, so pressing either looked exactly like not
+  // pressing it — an inline style cannot express :hover or :active at all.
+  // They are disclosure toggles: what they need is the feedback, not the
+  // pending/success machinery, and the aria pairing that says what they do.
+  apiFetch.mockResolvedValue(board({
+    pickerEnabled: true,
+    picks: [{
+      ticker: 'LEE', companyName: 'LEE Inc', rank: 1, score: 1,
+      priceMismatch: false, fundamentals: { available: false },
+      loop: { passed: true, kills: [], batchSize: 8 },
+    }],
+  }));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+  const tag = container.querySelector('[data-testid="pick-loop-tag"]') as HTMLButtonElement;
+  expect(tag.className).toContain('pa-btn');
+  expect(tag.getAttribute('aria-expanded')).toBe('false');
+  const row = container.querySelector('[data-testid="pick-row"]') as HTMLElement;
+  const toggle = row.querySelector('button.pa-btn[aria-expanded]') as HTMLButtonElement;
+  expect(toggle).toBeTruthy();
+  expect(toggle.getAttribute('aria-controls')).toBeTruthy();
+});
