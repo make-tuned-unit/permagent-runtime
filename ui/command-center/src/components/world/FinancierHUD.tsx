@@ -3,6 +3,7 @@ import { COLORS } from './constants';
 import { AGENT_TRIM } from './shared/palette';
 import { useAgentRuntimeStates } from './shared/agentStatus';
 import { HudShell, Section } from './HudShell';
+import { Chip } from '../common/Chip';
 import { navigateToTool } from '../../lib/store';
 
 // The Financier — market research and the Finance tab ledger. Reports numbers;
@@ -37,21 +38,13 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
         : 'ON THE LEDGER';
   const pillColor = isDaemon && live?.hudState === 'error' ? '#FF5D5D' : FINANCIER_TRIM;
 
-  const statusPill = (
-    <div style={{
-      display: 'inline-block',
-      padding: '2px 8px',
-      borderRadius: 3,
-      fontSize: 10,
-      fontWeight: 700,
-      letterSpacing: '0.08em',
-      background: 'rgba(196, 163, 90, 0.12)',
-      color: pillColor,
-      border: `1px solid ${pillColor}44`,
-    }}>
-      {label}
-    </div>
-  );
+  // A daemon-backed reading is a live one and is drawn as such — filled, with
+  // a liveness dot, pulsing only while work is genuinely in flight. Without a
+  // daemon behind it the label is a standing fact, not a status, so it takes
+  // the outline form that says so.
+  const statusPill = isDaemon
+    ? <Chip kind="state" color={pillColor} pulse={live?.hudState === 'working'}>{label}</Chip>
+    : <Chip kind="static" color={pillColor}>{label}</Chip>;
 
   return (
     <HudShell visible={visible} onClose={onClose} title="THE FINANCIER" statusPill={statusPill}>

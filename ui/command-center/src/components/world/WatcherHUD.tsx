@@ -2,6 +2,7 @@ import { COLORS } from './constants';
 import { AGENT_TRIM } from './shared/palette';
 import { HudShell, Section } from './HudShell';
 import { useNudge } from './agents/watcherNudge';
+import { Chip } from '../common/Chip';
 
 // The Watcher (Echo, #672) — the daemon's proactive worker. It watches the
 // Brain and project news and surfaces at most one nudge a day.
@@ -29,21 +30,15 @@ export function WatcherHUD({ visible, onClose }: WatcherHUDProps) {
   // are deliberately ignored upstream — the world only reflects what it saw).
   const hasNudge = nudge.seq > 0;
 
-  const statusPill = (
-    <div style={{
-      display: 'inline-block',
-      padding: '2px 8px',
-      borderRadius: 3,
-      fontSize: 10,
-      fontWeight: 700,
-      letterSpacing: '0.08em',
-      background: hasNudge ? 'rgba(159, 184, 216, 0.20)' : 'rgba(159, 184, 216, 0.10)',
-      color: WATCHER_TRIM,
-      border: `1px solid ${WATCHER_TRIM}${hasNudge ? '88' : '44'}`,
-    }}>
-      {hasNudge ? 'NUDGED' : 'KEEPING WATCH'}
-    </div>
-  );
+  // The split this HUD's own header already describes, now visible in the
+  // pill. A nudge is a real event off /events and carries the moment it
+  // arrived, so it reads as live and can say when. "KEEPING WATCH" is not
+  // backed by any status endpoint — it is what the Watcher is for, not a
+  // reading of what it is doing — so it takes the static form and stops
+  // borrowing a live pill's clothes.
+  const statusPill = hasNudge
+    ? <Chip kind="state" color={WATCHER_TRIM} asOf={nudge.at}>NUDGED</Chip>
+    : <Chip kind="static" color={WATCHER_TRIM}>KEEPING WATCH</Chip>;
 
   return (
     <HudShell visible={visible} onClose={onClose} title="THE WATCHER" statusPill={statusPill}>

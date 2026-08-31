@@ -3,6 +3,7 @@ import { COLORS } from './constants';
 import { AGENT_TRIM } from './shared/palette';
 import { useAgentRuntimeStates } from './shared/agentStatus';
 import { HudShell, Section } from './HudShell';
+import { Chip } from '../common/Chip';
 import { api } from '../../lib/api';
 
 // The Guard — the security agent, born of the Strix pentest engine
@@ -53,21 +54,15 @@ export function StrixHUD({ visible, onClose }: StrixHUDProps) {
           : 'ON WATCH';
   const pillColor = enabled !== false && isDaemon && live?.hudState === 'error' ? '#FF5D5D' : STRIX_TRIM;
 
-  const statusPill = (
-    <div style={{
-      display: 'inline-block',
-      padding: '2px 8px',
-      borderRadius: 3,
-      fontSize: 10,
-      fontWeight: 700,
-      letterSpacing: '0.08em',
-      background: 'rgba(140, 74, 92, 0.12)',
-      color: pillColor,
-      border: `1px solid ${pillColor}44`,
-    }}>
-      {label}
-    </div>
-  );
+  // A daemon-backed reading is a live one and is drawn as such — filled, with
+  // a liveness dot, pulsing only while work is genuinely in flight. Without a
+  // daemon behind it the label is a standing fact, not a status, so it takes
+  // the outline form that says so.
+  // "OFF" is a setting, not a status, so a disabled Guard reads as static even
+  // when the daemon is otherwise there.
+  const statusPill = enabled !== false && isDaemon
+    ? <Chip kind="state" color={pillColor} pulse={live?.hudState === 'working'}>{label}</Chip>
+    : <Chip kind="static" color={pillColor}>{label}</Chip>;
 
   return (
     <HudShell visible={visible} onClose={onClose} title="THE GUARD" statusPill={statusPill}>

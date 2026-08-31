@@ -8,6 +8,7 @@ import { BrainScene, type TypeFilters } from './BrainScene';
 import { useBrainData, type GraphMemory, type GraphEntity } from './useBrainData';
 import { BrainList } from './BrainList';
 import { resolveFocusedMemory, deriveMemoryTitle, formatMemoryAge } from './brainMemoryFocus';
+import { Chip } from '../common/Chip';
 import {
   resolveSearchGraphNode,
   searchResultToGraphMemory,
@@ -645,11 +646,20 @@ export function BrainView() {
                           // dead link. Resolved entities become clickable and
                           // select the entity via the shared mechanism.
                           if (!ent) {
+                            // Static, and shaped like it: this id is a
+                            // reference the graph can no longer resolve, so
+                            // there is nothing to open. Sitting among live,
+                            // clickable siblings in the same pill shape, it
+                            // used to read as a link that simply ignored you.
                             return (
-                              <span key={id} title="Unknown entity" style={{
-                                fontFamily: font.mono, fontSize: 10, color: colors.textDim,
-                                border: `1px solid ${colors.border}`, borderRadius: 999, padding: '4px 10px',
-                              }}>{id}</span>
+                              <Chip
+                                key={id}
+                                kind="static"
+                                title="This memory references an entity that is not in the graph — nothing to open"
+                                style={{ fontFamily: font.mono, fontSize: 10, letterSpacing: 0, padding: '4px 10px' }}
+                              >
+                                {id}
+                              </Chip>
                             );
                           }
                           return (
