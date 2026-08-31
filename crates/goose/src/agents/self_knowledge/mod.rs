@@ -467,10 +467,14 @@ pub struct SelfKnowledgeBuilder {
     pub agent_briefings: Option<Vec<BriefingLine>>,
     /// The extensions THIS session actually declared, when it declared an
     /// explicit list at all. `Some(names)` scopes the `## Tools you can call`
-    /// section to those names — a recipe/CLI session (e.g. the coding harness
-    /// with 2 extensions) gets an inventory sized to what it can reach,
-    /// instead of all ~33 registered platform extensions. `None` renders the
-    /// full inventory, unfiltered — this is the default and it is what every
+    /// section to those names AND omits `## Background workers` and
+    /// `## Surfaces the user can see` outright — a recipe/CLI session (e.g.
+    /// the coding harness with 3 extensions) gets an inventory sized to what
+    /// it can reach, instead of all ~33 registered platform extensions plus
+    /// every worker and app surface it has no way to touch. Guardrails stay:
+    /// a constraint the agent cannot describe is a bug whatever the session
+    /// shape. `None` renders the full inventory, unfiltered — this is the
+    /// default and it is what every
     /// daemon (`GoosePlatform::GooseDesktop`) session gets: Aria's resident
     /// chat is a product contract to describe everything Permagent can do,
     /// not just what happens to be loaded this turn. See #1090 — a captured
@@ -592,16 +596,18 @@ impl SelfKnowledgeBuilder {
         )
         .ok();
 
+        // A `Some` list means this session declared an explicit extension set
+        // (recipe/CLI — see `declared_extensions`'s doc comment), and the whole
+        // inventory narrows to what it can actually reach. `None` — the
+        // daemon's default — renders everything, exactly as before this field
+        // existed.
+        let scoped = self.declared_extensions.is_some();
+
         // ── Tools ──
         writeln!(out, "\n## Tools you can call").ok();
         let mut tools: Vec<&PlatformExtensionDef> = PLATFORM_EXTENSIONS
             .values()
             .filter(|d| !d.hidden && !TOOL_IDS_RENDERED_ELSEWHERE.contains(&d.name))
-            // A `Some` list means this session declared an explicit
-            // extension set (recipe/CLI — see `declared_extensions`'s doc
-            // comment); scope the inventory to it. `None` — the daemon's
-            // default — keeps every registered tool, exactly as before this
-            // field existed.
             .filter(|d| {
                 self.declared_extensions
                     .as_ref()
@@ -628,15 +634,17 @@ impl SelfKnowledgeBuilder {
             .ok();
         }
         // The pointer, not an enumeration: a scoped session (e.g. the coding
-        // harness's 2 extensions) must not read this list as the whole of
+        // harness's 3 extensions) must not read this list as the whole of
         // Permagent — #1090 was exactly that, a session that had 2 tools and
         // a 69KB brief describing 33. Say where the rest lives; do not name it.
-        if self.declared_extensions.is_some() {
+        // The same sentence covers the workers and surfaces omitted below.
+        if scoped {
             writeln!(
                 out,
                 "\nThis session only loaded the extensions listed above. The rest of the \
-                 Permagent runtime's capabilities exist in the main agent conversation — point \
-                 the user there rather than assuming this session can reach them."
+                 Permagent runtime — its other extensions, the background workers, and the \
+                 app surfaces the user can see — exists in the main agent conversation. Point \
+                 the user there rather than assuming this session can reach or describe them."
             )
             .ok();
         }
@@ -648,35 +656,50 @@ impl SelfKnowledgeBuilder {
         // rewrites them — so they render in the volatile block below instead of
         // inline here, where they would have invalidated the whole cached prompt
         // on a background job the user never touched.
-        writeln!(
-            out,
-            "\n## Background workers (run on their own, even when you are idle)"
-        )
-        .ok();
-        for d in WORKER_DESCRIPTORS {
-            // Flag-gated workers are omitted from the brief while disabled — off
-            // is a byte-for-byte no-op (see `worker_descriptor_visible`).
-            if !worker_descriptor_visible(d, self.flags) {
-                continue;
-            }
+        //
+        // Scoped out for the same reason the tool inventory is: a session that
+        // declared three extensions cannot dispatch to the Librarian or the
+        // Steward, and describing them costs ~2.5k tokens on every turn to
+        // teach it about machinery it has no way to reach.
+        if !scoped {
             writeln!(
                 out,
-                "- **{}** — {}. {}",
-                d.display_name, d.what_it_does, d.why_it_matters
+                "\n## Background workers (run on their own, even when you are idle)"
             )
             .ok();
+            for d in WORKER_DESCRIPTORS {
+                // Flag-gated workers are omitted from the brief while disabled —
+                // off is a byte-for-byte no-op (see `worker_descriptor_visible`).
+                if !worker_descriptor_visible(d, self.flags) {
+                    continue;
+                }
+                writeln!(
+                    out,
+                    "- **{}** — {}. {}",
+                    d.display_name, d.what_it_does, d.why_it_matters
+                )
+                .ok();
+            }
         }
 
         // ── Surfaces ──
-        writeln!(out, "\n## Surfaces the user can see").ok();
-        for d in SURFACE_DESCRIPTORS {
-            // Static surfaces render editorial-only — no live status claim.
-            writeln!(
-                out,
-                "- **{}** — {}. {}",
-                d.display_name, d.what_it_does, d.why_it_matters
-            )
-            .ok();
+        //
+        // The largest block in the brief (~8.2k tokens, 43% of the baseline
+        // prefix) and the least relevant to a scoped session: a coding harness
+        // in a terminal has no Finance tab, no iOS companion and no Telegram
+        // bridge to describe. Unscoped sessions — Aria's resident chat — keep
+        // the full list; that is the product contract.
+        if !scoped {
+            writeln!(out, "\n## Surfaces the user can see").ok();
+            for d in SURFACE_DESCRIPTORS {
+                // Static surfaces render editorial-only — no live status claim.
+                writeln!(
+                    out,
+                    "- **{}** — {}. {}",
+                    d.display_name, d.what_it_does, d.why_it_matters
+                )
+                .ok();
+            }
         }
 
         // ── Guardrails ──
@@ -2889,10 +2912,11 @@ mod tests {
     // permagent-coding`) had loaded 2 extensions (analyze, developer) but its
     // `## Tools you can call` section listed all 33 registered platform
     // extensions — 69KB, 76% of the whole prompt — burying the repo map the
-    // recipe tells the model to read first at 91% depth. These three tests
-    // pin the fix: a session that DECLARES its extensions gets an inventory
-    // scoped to them, plus a pointer to where the rest lives; a session that
-    // declares nothing (the daemon's product contract) is untouched.
+    // recipe tells the model to read first at 91% depth. These tests pin the
+    // fix: a session that DECLARES its extensions gets an inventory scoped to
+    // them — tools, and now the workers and surfaces it equally cannot reach —
+    // plus a pointer to where the rest lives; a session that declares nothing
+    // (the daemon's product contract) is untouched.
 
     #[test]
     fn declared_extensions_scope_the_tool_inventory_and_exclude_the_rest() {
@@ -2947,10 +2971,65 @@ mod tests {
                  missing {name:?}"
             );
         }
+        for section in [
+            "## Background workers",
+            "## Surfaces the user can see",
+            "## Guardrails you operate under",
+        ] {
+            assert!(
+                brief.contains(section),
+                "the unscoped product contract keeps every section — missing {section:?}"
+            );
+        }
         assert!(
             !brief.contains("main agent conversation"),
             "the pointer line is specific to a scoped session and must not \
              appear when the inventory was not filtered"
+        );
+    }
+
+    /// The prefix diet (D1): Workers and Surfaces are ~10.7k tokens of a
+    /// ~19.1k-token baseline prefix, and a session with three declared
+    /// extensions can reach none of it — no Finance tab, no iOS companion, no
+    /// Librarian to dispatch to. Same filter as the tool inventory, same
+    /// justification. Guardrails deliberately survive: a deterministic
+    /// constraint the agent cannot describe is a bug at any session size.
+    #[test]
+    fn declared_extensions_also_scope_out_workers_and_surfaces() {
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            flags: FeatureFlags::default(),
+            dispatchable_workers: Vec::new(),
+            agent_briefings: None,
+            declared_extensions: Some(vec![
+                "developer".to_string(),
+                "analyze".to_string(),
+                "summon".to_string(),
+            ]),
+        }
+        .build();
+
+        assert!(
+            !brief.contains("## Background workers"),
+            "a scoped session must not pay for the worker inventory"
+        );
+        assert!(
+            !brief.contains("## Surfaces the user can see"),
+            "a scoped session must not pay for the surface inventory"
+        );
+        assert!(
+            brief.contains("## Guardrails you operate under"),
+            "guardrails are never scoped out — the agent must be able to \
+             describe the constraints it operates under"
+        );
+        assert!(
+            brief.contains("## Tools you can call") && brief.contains("**Analyze**"),
+            "the declared tools themselves must still be described"
+        );
+        assert!(
+            brief.contains("the background workers") && brief.contains("app surfaces"),
+            "the pointer must own up to what was omitted, not go silent"
         );
     }
 

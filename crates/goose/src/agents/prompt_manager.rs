@@ -945,9 +945,37 @@ mod tests {
         assert!(overlay_at < extra_at);
     }
 
+    /// Hard ceiling on the UNSCOPED prefix — `GoosePlatform::GooseDesktop`,
+    /// Aria's resident chat, which by product contract describes everything
+    /// Permagent can do. Measured at 19,257 tokens (`qwen-local`, the largest
+    /// overlay) when this gate was added; the headroom is ~4%, enough for a
+    /// descriptor edit and nowhere near enough to hide a new always-on section.
+    const UNSCOPED_PREFIX_TOKEN_CEILING: usize = 20_000;
+
+    /// Hard ceiling on the SCOPED prefix — the `GooseCli` family: the
+    /// interactive CLI, the coding harness, in-process goal workers and Summon
+    /// subagents, all of which declare an explicit extension set. Measured at
+    /// 3,533 tokens for the three extensions `permagent-coding` declares
+    /// (developer, analyze, summon), down from 14,289 before the Workers and
+    /// Surfaces inventories were scoped out with the tool list — 10,756 tokens
+    /// off every turn of every such session. ~5% headroom.
+    ///
+    /// These two constants are the point of the test. The snapshot below shows
+    /// a reviewer WHAT grew; the ceilings stop it growing back unnoticed —
+    /// #1090 was a prefix that quietly reached 69KB with nobody watching. The
+    /// gap between them is also the guard on the scoping itself: put a section
+    /// back on the unscoped path and only the snapshot moves; put one back on
+    /// BOTH paths and this ceiling fails.
+    const SCOPED_PREFIX_TOKEN_CEILING: usize = 3_700;
+
+    /// The extension set `crates/goose-cli/src/recipes/builtin/permagent-coding.yaml`
+    /// declares. Representative of every scoped session shape.
+    const CODING_HARNESS_EXTENSIONS: &[&str] = &["developer", "analyze", "summon"];
+
     /// The whole point of the change, measured: the per-family prompt cost sits
     /// in one snapshot, so a family growing an expensive habit is visible in a
-    /// review diff rather than only on a bill.
+    /// review diff rather than only on a bill — and past a stated ceiling it
+    /// fails the build instead of merely showing up in a diff.
     #[test]
     fn family_prompt_size_table() {
         // Pin config resolution to an empty temp root so the build is a
@@ -961,22 +989,65 @@ mod tests {
         ]);
         let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
 
-        let baseline = manager.builder().build().len();
-        let mut table = format!(
-            "shared body (no family selected): {} bytes / ~{} tokens\n\n\
-             family        overlay_bytes  total_bytes  approx_total_tokens\n",
-            baseline,
-            baseline.div_ceil(4)
+        let declared: Option<Vec<String>> = Some(
+            CODING_HARNESS_EXTENSIONS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         );
-        for family in ModelFamily::ALL {
-            let total = manager.builder().with_model_family(*family).build().len();
+        let shapes: [(&str, Option<Vec<String>>, usize); 2] = [
+            (
+                "unscoped (GooseDesktop — full product-contract inventory)",
+                None,
+                UNSCOPED_PREFIX_TOKEN_CEILING,
+            ),
+            (
+                "scoped (GooseCli — declares developer, analyze, summon)",
+                declared,
+                SCOPED_PREFIX_TOKEN_CEILING,
+            ),
+        ];
+
+        let mut table = String::new();
+        for (label, declared_extensions, ceiling) in shapes {
+            let build = |family: Option<ModelFamily>| {
+                let mut b = manager
+                    .builder()
+                    .with_declared_extensions(declared_extensions.clone());
+                if let Some(f) = family {
+                    b = b.with_model_family(f);
+                }
+                b.build().len()
+            };
+
+            let baseline = build(None);
             table.push_str(&format!(
-                "{:<13} {:>13}  {:>11}  {:>19}\n",
-                family.as_str(),
-                family.overlay().len(),
-                total,
-                total.div_ceil(4)
+                "## {label}\nshared body (no family selected): {} bytes / ~{} tokens\n\n\
+                 family        overlay_bytes  total_bytes  approx_total_tokens\n",
+                baseline,
+                baseline.div_ceil(4)
             ));
+            let mut worst = baseline;
+            for family in ModelFamily::ALL {
+                let total = build(Some(*family));
+                worst = worst.max(total);
+                table.push_str(&format!(
+                    "{:<13} {:>13}  {:>11}  {:>19}\n",
+                    family.as_str(),
+                    family.overlay().len(),
+                    total,
+                    total.div_ceil(4)
+                ));
+            }
+            table.push('\n');
+
+            let worst_tokens = worst.div_ceil(4);
+            assert!(
+                worst_tokens <= ceiling,
+                "{label}: the system prefix reached ~{worst_tokens} tokens, over its \
+                 stated ceiling of {ceiling}. Every turn of every such session pays this. \
+                 Cut something, or raise the ceiling DELIBERATELY and say why here."
+            );
         }
         assert_snapshot!(table);
     }

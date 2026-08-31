@@ -2,6 +2,7 @@
 source: crates/goose/src/agents/prompt_manager.rs
 expression: table
 ---
+## unscoped (GooseDesktop — full product-contract inventory)
 shared body (no family selected): 76559 bytes / ~19140 tokens
 
 family        overlay_bytes  total_bytes  approx_total_tokens
@@ -12,3 +13,15 @@ glm                     287        76847                19212
 xai                     215        76775                19194
 qwen-local              465        77025                19257
 other                     0        76559                19140
+
+## scoped (GooseCli — declares developer, analyze, summon)
+shared body (no family selected): 13665 bytes / ~3417 tokens
+
+family        overlay_bytes  total_bytes  approx_total_tokens
+anthropic               233        13899                 3475
+openai                  300        13966                 3492
+deepseek                253        13919                 3480
+glm                     287        13953                 3489
+xai                     215        13881                 3471
+qwen-local              465        14131                 3533
+other                     0        13665                 3417
