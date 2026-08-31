@@ -377,6 +377,14 @@ interface CommandCenterStore {
   // --- Skills state ---
   skills: SkillState[];
   skillsLoading: boolean;
+  /**
+   * Why the last load failed, or null. Separate from `skills: []` on purpose:
+   * the Library's empty copy ("No skills saved yet — skills are created when
+   * your agent detects repeated patterns") is a good sentence and a false one
+   * when the fetch never landed. Empty is a fact about the library; error is a
+   * fact about the connection, and they are not the same screen.
+   */
+  skillsError: string | null;
   selectedSkillId: string | null;
   setSelectedSkillId: (id: string | null) => void;
   loadSkills: () => Promise<void>;
@@ -1320,15 +1328,22 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Skills
   skills: [],
   skillsLoading: false,
+  skillsError: null,
   selectedSkillId: null,
   setSelectedSkillId: (id) => set({ selectedSkillId: id }),
   loadSkills: async () => {
-    set({ skillsLoading: true });
+    set({ skillsLoading: true, skillsError: null });
     try {
       const skills = await api.getSkills();
-      set({ skills: skills as SkillState[], skillsLoading: false });
-    } catch {
-      set({ skills: [], skillsLoading: false });
+      set({ skills: skills as SkillState[], skillsLoading: false, skillsError: null });
+    } catch (e) {
+      // The old line was `set({ skills: [] })` — a failed fetch rendered as the
+      // well-written "no skills yet" invitation, telling a user whose daemon
+      // was down that their agent had never learned anything.
+      set({
+        skillsLoading: false,
+        skillsError: e instanceof Error ? e.message : 'the daemon did not answer',
+      });
     }
   },
 

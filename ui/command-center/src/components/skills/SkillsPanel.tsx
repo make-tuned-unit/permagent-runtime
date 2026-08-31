@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { FiLoader, FiZap, FiSearch, FiGrid, FiList, FiX } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { SkillCard } from './SkillCard';
 import { SkillDetailPanel } from './SkillDetailPanel';
@@ -17,6 +17,7 @@ export function SkillsPanel({ onClose }: { onClose?: () => void } = {}) {
   const { colors } = useTheme();
   const skills = useCommandCenter(s => s.skills);
   const skillsLoading = useCommandCenter(s => s.skillsLoading);
+  const skillsError = useCommandCenter(s => s.skillsError);
   const loadSkills = useCommandCenter(s => s.loadSkills);
   const selectedSkillId = useCommandCenter(s => s.selectedSkillId);
   const setSelectedSkillId = useCommandCenter(s => s.setSelectedSkillId);
@@ -126,8 +127,31 @@ export function SkillsPanel({ onClose }: { onClose?: () => void } = {}) {
               <FiLoader size={16} className="animate-spin mr-2" />
               <span className="text-xs" style={{ fontFamily: font.mono }}>Loading skills...</span>
             </div>
+          ) : skillsError ? (
+            // A failed load is not an empty library. The copy below is a good
+            // invitation and a false statement when the fetch never landed.
+            <div
+              data-testid="skills-load-error"
+              className="flex flex-col items-center justify-center h-full text-xs text-center gap-2"
+              style={{ fontFamily: font.mono, color: colors.textMuted }}
+            >
+              <div style={{ color: colors.danger, fontWeight: 600 }}>Couldn't load your skills</div>
+              <div className="text-[10px]">{skillsError}</div>
+              <button
+                onClick={() => loadSkills()}
+                className="text-[10px]"
+                style={{
+                  marginTop: 4, padding: '4px 12px', borderRadius: radius.sm, cursor: 'pointer',
+                  background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
+                  color: colors.cyan, fontFamily: font.body, fontWeight: 600,
+                }}
+              >
+                Try again
+              </button>
+            </div>
           ) : filtered.length === 0 ? (
             <div
+              data-testid="skills-empty"
               className="flex flex-col items-center justify-center h-full text-xs text-center gap-2"
               style={{ fontFamily: font.mono, color: colors.textMuted }}
             >

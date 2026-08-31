@@ -28,6 +28,7 @@ export function SkillsSection() {
   // is worse than no front door.
   const skills = useCommandCenter(s => s.skills) as SkillState[] | undefined;
   const skillsLoading = useCommandCenter(s => s.skillsLoading) as boolean | undefined;
+  const skillsError = useCommandCenter(s => s.skillsError) as string | null | undefined;
   const loadSkills = useCommandCenter(s => s.loadSkills) as (() => void) | undefined;
   const setActivePanel = useCommandCenter(s => s.setActivePanel) as
     | ((p: 'skills') => void)
@@ -53,12 +54,22 @@ export function SkillsSection() {
         >
           Open Skills Library
         </Button>
-        <span style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }} data-testid="skills-count">
-          {skillsLoading && count === 0
-            ? 'Counting what has been learned…'
-            : count === 0
-              ? 'Nothing learned yet — skills are proposed after a task the agent could repeat, and saved from the chat banner.'
-              : `${count} learned skill${count === 1 ? '' : 's'}.`}
+        <span
+          style={{
+            fontSize: 12,
+            color: skillsError ? colors.warning : colors.textMuted,
+            lineHeight: 1.5,
+          }}
+          data-testid="skills-count"
+        >
+          {skillsError
+            // Not "0 skills": a count that could not be read is not a count.
+            ? `Couldn't count them — ${skillsError}`
+            : skillsLoading && count === 0
+              ? 'Counting what has been learned…'
+              : count === 0
+                ? 'Nothing learned yet — skills are proposed after a task the agent could repeat, and saved from the chat banner.'
+                : `${count} learned skill${count === 1 ? '' : 's'}.`}
         </span>
       </div>
     </Section>
