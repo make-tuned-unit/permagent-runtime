@@ -8,8 +8,10 @@
  * renders as an empty list is the defect this exists to make unwriteable.
  */
 
+import { type CSSProperties } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 export function StateBlock({ tone, title, detail, onRetry, compact }: {
   tone: 'empty' | 'error';
@@ -34,16 +36,25 @@ export function StateBlock({ tone, title, detail, onRetry, compact }: {
         </div>
       )}
       {onRetry && (
-        <button
+        <Button
+          colors={colors}
+          variant="ghostOn"
           onClick={onRetry}
           style={{
-            marginTop: 6, padding: '5px 14px', borderRadius: radius.sm, cursor: 'pointer',
-            background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-            color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
-          }}
+            '--pa-btn-bg': colors.cyanSoft,
+            '--pa-btn-bg-hover': colors.cyanSoft,
+            '--pa-btn-border': colors.borderHi,
+            '--pa-btn-border-hover': colors.cyan,
+            '--pa-btn-pad': '5px 14px',
+            '--pa-btn-radius': `${radius.sm}px`,
+            '--pa-btn-weight': 600,
+            marginTop: 6,
+            fontSize: 11,
+            fontFamily: font.body,
+          } as CSSProperties}
         >
           Try again
-        </button>
+        </Button>
       )}
     </div>
   );

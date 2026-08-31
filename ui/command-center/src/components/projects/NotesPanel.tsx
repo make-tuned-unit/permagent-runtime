@@ -20,13 +20,14 @@
  * install the endpoint answers 503 and the panel shows a gentle setup hint.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiTrash2, FiMic, FiSquare, FiLoader, FiExternalLink, FiCopy, FiCheck, FiChevronRight } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { useDictation } from '../../hooks/useDictation';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { Project, ProjectNote } from './types';
 
@@ -87,8 +88,10 @@ export function NotesPanel({ project }: { project: Project }) {
       setCopiedId(note.id);
       if (copiedTimer.current) clearTimeout(copiedTimer.current);
       copiedTimer.current = setTimeout(() => setCopiedId(null), 1500);
+      return true;
     } catch {
       setError("Couldn't copy note to clipboard");
+      return false;
     }
   };
 
@@ -102,25 +105,31 @@ export function NotesPanel({ project }: { project: Project }) {
   // device refetches this list.
   const projectsRev = useCommandCenter(s => s.projectsRev);
 
+  // Resolves `false` when the load failed (or was superseded) so the retry
+  // button can only tick over a load that actually landed.
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
     try {
       const nextNotes = await api.listProjectNotes(project.id);
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       if (!Array.isArray(nextNotes)) throw new Error('Invalid notes response');
       setNotes(nextNotes);
       setStatus('ready');
+      return true;
     } catch {
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       setStatus('error');
+      return false;
     }
   }, [project.id]);
 
   useEffect(() => { load(); }, [load, projectsRev]);
 
+  // Resolves `false` on failure: the error is surfaced inline, so the Save
+  // button must not tick over a note that never persisted.
   const save = useCallback(async () => {
     const trimmed = body.trim();
-    if (!trimmed || saving) return;
+    if (!trimmed || saving) return false;
     setError(null);
     setSaving(true);
     try {
@@ -132,8 +141,10 @@ export function NotesPanel({ project }: { project: Project }) {
       setNotes(prev => [created, ...prev]);
       setTitle('');
       setBody('');
+      return true;
     } catch (e) {
       setError(`Couldn't save note: ${(e as Error).message || 'request failed'}`);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -145,8 +156,10 @@ export function NotesPanel({ project }: { project: Project }) {
       const res = await api.deleteProjectNote(project.id, note.id);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setNotes(prev => prev.filter(n => n.id !== note.id));
+      return true;
     } catch (e) {
       setError(`Couldn't delete note: ${(e as Error).message || 'request failed'}`);
+      return false;
     }
   };
 
@@ -193,20 +206,26 @@ export function NotesPanel({ project }: { project: Project }) {
           }}
         />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button
+          <Button
+            colors={colors}
+            variant="ghostOn"
             onClick={save}
             disabled={!body.trim() || saving}
             style={{
-              fontSize: 12, fontWeight: 600, padding: '6px 14px', borderRadius: 7,
-              cursor: (!body.trim() || saving) ? 'default' : 'pointer',
-              opacity: (!body.trim() || saving) ? 0.5 : 1,
-              background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-              color: colors.cyan, fontFamily: font.body,
-            }}
+              '--pa-btn-bg': colors.cyanSoft,
+              '--pa-btn-border': colors.borderHi,
+              '--pa-btn-pad': '6px 14px',
+              '--pa-btn-radius': '7px',
+              '--pa-btn-weight': 600,
+              fontFamily: font.body,
+              fontSize: 12,
+            } as CSSProperties}
           >
             {saving ? 'Saving…' : 'Save note'}
-          </button>
-          <button
+          </Button>
+          <Button
+            colors={colors}
+            variant="ghost"
             onClick={toggleDictation}
             disabled={dictation === 'transcribing'}
             title={
@@ -216,20 +235,24 @@ export function NotesPanel({ project }: { project: Project }) {
             }
             aria-label="Dictate a note"
             style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              width: 30, height: 30, borderRadius: 7,
-              cursor: dictation === 'transcribing' ? 'default' : 'pointer',
-              background: dictation === 'recording' ? colors.danger : rowVeil,
-              border: `1px solid ${dictation === 'recording' ? colors.danger : colors.border}`,
-              color: dictation === 'recording' ? colors.textOnAccent : colors.textDim,
-            }}
+              '--pa-btn-bg': dictation === 'recording' ? colors.danger : rowVeil,
+              '--pa-btn-fg': dictation === 'recording' ? colors.textOnAccent : colors.textDim,
+              '--pa-btn-border': dictation === 'recording' ? colors.danger : colors.border,
+              '--pa-btn-bg-hover': dictation === 'recording' ? colors.danger : colors.surfaceHi,
+              '--pa-btn-fg-hover': dictation === 'recording' ? colors.textOnAccent : colors.text,
+              '--pa-btn-border-hover': dictation === 'recording' ? colors.danger : colors.borderHi,
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': '7px',
+              width: 30,
+              height: 30,
+            } as CSSProperties}
           >
             {dictation === 'transcribing'
               ? <FiLoader size={13} className="pa-spin" />
               : dictation === 'recording'
                 ? <FiSquare size={12} />
                 : <FiMic size={13} />}
-          </button>
+          </Button>
           <span style={{ fontSize: 10, color: colors.textDim }}>
             {dictation === 'recording' ? 'Recording — tap to stop'
               : dictation === 'transcribing' ? 'Transcribing…'
@@ -249,15 +272,22 @@ export function NotesPanel({ project }: { project: Project }) {
       {status === 'error' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load notes.</span>
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
+            className="hover:underline"
             onClick={load}
             style={{
-              fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
-              cursor: 'pointer', fontFamily: font.body, padding: 0, fontWeight: 600,
-            }}
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-weight': 600,
+              fontFamily: font.body,
+              fontSize: 11,
+            } as CSSProperties}
           >
             Retry
-          </button>
+          </Button>
         </div>
       )}
 
@@ -306,30 +336,41 @@ export function NotesPanel({ project }: { project: Project }) {
                     {note.title || firstLine(note.body)}
                   </div>
                   <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0 }}>{relativeTime(note.created_at)}</span>
-                  <button
+                  <Button
+                    colors={colors}
+                    variant="bare"
+                    // Deliberately does not hand the promise back: this button
+                    // already answers with its own ✓/copy icon swap, so a
+                    // spinner and a tick over the top would say it twice.
                     onClick={e => { e.stopPropagation(); copyNote(note); }}
                     title="Copy note"
                     aria-label="Copy note"
                     style={{
-                      background: 'none', border: 'none', cursor: 'pointer', padding: 2,
-                      display: 'flex', flexShrink: 0,
-                      color: copiedId === note.id ? colors.cyan : colors.textDim,
-                    }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.cyan; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = copiedId === note.id ? colors.cyan : colors.textDim; }}
+                      '--pa-btn-fg': copiedId === note.id ? colors.cyan : colors.textDim,
+                      '--pa-btn-fg-hover': colors.cyan,
+                      '--pa-btn-bg-hover': 'transparent',
+                      '--pa-btn-pad': '2px',
+                      flexShrink: 0,
+                    } as CSSProperties}
                   >
                     {copiedId === note.id ? <FiCheck size={13} /> : <FiCopy size={13} />}
-                  </button>
-                  <button
-                    onClick={e => { e.stopPropagation(); remove(note); }}
+                  </Button>
+                  <Button
+                    colors={colors}
+                    variant="bare"
+                    onClick={e => { e.stopPropagation(); return remove(note); }}
                     title="Delete note"
                     aria-label="Delete note"
-                    style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', padding: 2, display: 'flex', flexShrink: 0 }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.danger; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = colors.textDim; }}
+                    style={{
+                      '--pa-btn-fg': colors.textDim,
+                      '--pa-btn-fg-hover': colors.danger,
+                      '--pa-btn-bg-hover': 'transparent',
+                      '--pa-btn-pad': '2px',
+                      flexShrink: 0,
+                    } as CSSProperties}
                   >
                     <FiTrash2 size={13} />
-                  </button>
+                  </Button>
                 </div>
                 {isOpen && (
                   <div style={{ padding: '0 10px 8px 29px' }}>
@@ -341,17 +382,27 @@ export function NotesPanel({ project }: { project: Project }) {
                     </div>
                     {note.memory_key && (
                       <div style={{ marginTop: 4 }}>
-                        <button
+                        <Button
+                          colors={colors}
+                          variant="bare"
+                          // `contents` dissolves Button's `.pa-btn__label`
+                          // wrapper so the label and its icon stay the
+                          // button's own centred flex row, gap and all.
+                          className="hover:underline"
                           onClick={() => viewInBrain(note)}
                           title="View this note in your Brain"
                           style={{
-                            display: 'inline-flex', alignItems: 'center', gap: 4,
-                            background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-                            color: colors.cyan, fontFamily: font.body, fontSize: 10, fontWeight: 600,
-                          }}
+                            '--pa-btn-fg': colors.cyan,
+                            '--pa-btn-bg-hover': 'transparent',
+                            '--pa-btn-pad': '0',
+                            '--pa-btn-weight': 600,
+                            gap: 4,
+                            fontFamily: font.body,
+                            fontSize: 10,
+                          } as CSSProperties}
                         >
                           View in Brain <FiExternalLink size={9} />
-                        </button>
+                        </Button>
                       </div>
                     )}
                   </div>

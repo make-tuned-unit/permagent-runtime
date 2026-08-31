@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, type ReactNode } from 'react';
+import { useState, useEffect, useCallback, type CSSProperties, type ReactNode } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { apiFetch, api } from '../../lib/api';
 import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
@@ -87,21 +88,27 @@ export function ProjectOverview({ project, onProjectUpdated }: {
         {/* RIGHT — where it stands, and what's next */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
           {/* Build → Grow bridge: take the finished work to market. */}
-          <button
+          <Button
+            colors={colors}
             onClick={() => growProject(project.id)}
             style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              padding: '11px 14px', borderRadius: radius.lg, cursor: 'pointer',
-              background: `linear-gradient(90deg, ${colors.cyan}22, ${colors.purple}22)`,
-              border: `1px solid ${colors.borderHi}`, color: colors.text,
-              fontFamily: font.body, fontSize: 13, fontWeight: 600,
-            }}
+              '--pa-btn-bg': `linear-gradient(90deg, ${colors.cyan}22, ${colors.purple}22)`,
+              '--pa-btn-bg-hover': `linear-gradient(90deg, ${colors.cyan}33, ${colors.purple}33)`,
+              '--pa-btn-bg-active': `linear-gradient(90deg, ${colors.cyan}3D, ${colors.purple}3D)`,
+              '--pa-btn-border': colors.borderHi,
+              '--pa-btn-border-hover': colors.cyan,
+              '--pa-btn-pad': '11px 14px',
+              '--pa-btn-radius': `${radius.lg}px`,
+              '--pa-btn-weight': 600,
+              fontFamily: font.body, fontSize: 13,
+              gap: 8,
+            } as CSSProperties}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={colors.cyan} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 17l6-6 4 4 8-8M17 7h4v4" />
             </svg>
             Grow this project
-          </button>
+          </Button>
           <TasksPanel
             columns={columns}
             cards={cards}
@@ -166,7 +173,7 @@ function SummaryPanel({ project, onProjectUpdated }: {
     <Panel
       title="Summary"
       action={!editing ? (
-        <button onClick={startEditing} style={panelActionBtn(colors)}>Edit</button>
+        <Button colors={colors} variant="bare" className="hover:underline" onClick={startEditing} style={panelActionVars(colors)}>Edit</Button>
       ) : undefined}
     >
       <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 600, letterSpacing: '-0.01em' }}>
@@ -268,19 +275,26 @@ export function WatcherInsightsPanel({ project }: { project: Project }) {
               {(i.cards ?? []).length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 5 }}>
                   {(i.cards ?? []).map(c => (
-                    <button
+                    <Button
                       key={c.id}
+                      colors={colors}
+                      variant="bare"
                       onClick={() => openCardOnBoard(project.id, c.id)}
                       title={`Open "${c.title}" on the board`}
                       style={{
-                        fontSize: 10, color: colors.cyan, background: colors.cyanSoft,
-                        border: 'none', borderRadius: radius.xs, padding: '2px 7px',
-                        cursor: 'pointer', fontFamily: font.body, maxWidth: 260,
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      }}
+                        '--pa-btn-bg': colors.cyanSoft,
+                        '--pa-btn-fg': colors.cyan,
+                        '--pa-btn-bg-hover': colors.cyanSoft,
+                        '--pa-btn-bg-active': colors.cyanSoft,
+                        '--pa-btn-border-hover': colors.cyan,
+                        '--pa-btn-pad': '2px 7px',
+                        '--pa-btn-radius': `${radius.xs}px`,
+                        fontSize: 10, fontFamily: font.body, maxWidth: 260,
+                        overflow: 'hidden', whiteSpace: 'nowrap',
+                      } as CSSProperties}
                     >
                       {c.title}
-                    </button>
+                    </Button>
                   ))}
                 </div>
               )}
@@ -492,38 +506,48 @@ function RootPathRow({ project }: { project: Project }) {
           </span>
         </Mono>
         <div style={{ display: 'flex', gap: 6 }}>
-          <button
+          <Button
+            colors={colors}
+            variant="ghostOn"
             onClick={openInBuild}
             style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5,
-              padding: '3px 9px', borderRadius: radius.sm, cursor: 'pointer',
-              background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-              color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
-              transition: reduceMotion ? 'none' : 'all 150ms',
-            }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.cyan; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
+              '--pa-btn-bg': colors.cyanSoft,
+              '--pa-btn-bg-hover': colors.cyanSoft,
+              '--pa-btn-border': colors.borderHi,
+              '--pa-btn-border-hover': colors.cyan,
+              '--pa-btn-pad': '3px 9px',
+              '--pa-btn-radius': `${radius.sm}px`,
+              '--pa-btn-weight': 600,
+              fontSize: 11, fontFamily: font.body,
+              transition: reduceMotion ? 'none' : undefined,
+            } as CSSProperties}
           >
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
               <path d="M4 17l6-6-6-6M12 19h8" />
             </svg>
             Open in Build
-          </button>
-          <button
+          </Button>
+          {/* This one confirms itself — the label flips to "Copied" for 1.5s —
+              so the primitive's tick would say the same thing twice. */}
+          <Button
+            colors={colors}
             onClick={copy}
             aria-label="Copy root path"
+            flashSuccess={false}
             style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5,
-              padding: '3px 9px', borderRadius: radius.sm, cursor: 'pointer',
-              background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
-              color: copied ? colors.success : colors.textMuted, fontSize: 11, fontFamily: font.body,
-              transition: reduceMotion ? 'none' : 'all 150ms',
-            }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
+              '--pa-btn-bg': 'rgba(255,255,255,0.03)',
+              '--pa-btn-bg-hover': 'rgba(255,255,255,0.03)',
+              '--pa-btn-fg': copied ? colors.success : colors.textMuted,
+              '--pa-btn-border': colors.border,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-pad': '3px 9px',
+              '--pa-btn-radius': `${radius.sm}px`,
+              fontSize: 11, fontFamily: font.body,
+              transition: reduceMotion ? 'none' : undefined,
+            } as CSSProperties}
           >
             {copied ? 'Copied' : 'Copy'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -609,20 +633,28 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
                 <input value={l.url} placeholder="URL" disabled={saving} aria-label={`Link ${i + 1} URL`}
                   onChange={e => setDraftLinks(ls => ls.map((x, xi) => xi === i ? { ...x, url: e.target.value } : x))}
                   style={{ ...fieldInput(colors), flex: 1, minWidth: 0 }} />
-                <button onClick={() => setDraftLinks(ls => ls.filter((_, xi) => xi !== i))}
+                <Button colors={colors} variant="bare"
+                  onClick={() => setDraftLinks(ls => ls.filter((_, xi) => xi !== i))}
                   disabled={saving} aria-label={`Remove link ${i + 1}`}
-                  style={{ ...panelActionBtn(colors), color: colors.textMuted }}>
+                  style={{
+                    ...panelActionVars(colors),
+                    '--pa-btn-fg': colors.textMuted,
+                    '--pa-btn-fg-hover': colors.text,
+                  } as CSSProperties}>
                   ✕
-                </button>
+                </Button>
               </div>
             ))}
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
+              className="hover:underline"
               onClick={() => setDraftLinks(ls => [...ls, { label: '', url: '' }])}
               disabled={saving}
-              style={{ ...panelActionBtn(colors), alignSelf: 'flex-start' }}
+              style={{ ...panelActionVars(colors), alignSelf: 'flex-start' }}
             >
               + Add link
-            </button>
+            </Button>
           </div>
           <EditControls saving={saving} error={saveError} onSave={save} onCancel={() => setEditing(false)} />
         </div>
@@ -633,7 +665,7 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
   return (
     <Panel
       title={title}
-      action={<button onClick={startEditing} style={panelActionBtn(colors)}>Edit</button>}
+      action={<Button colors={colors} variant="bare" className="hover:underline" onClick={startEditing} style={panelActionVars(colors)}>Edit</Button>}
     >
       {links.length === 0 ? (
         <div style={{ fontSize: 11, color: colors.textDim }}>
@@ -642,18 +674,21 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {links.map((link, li) => (
-            <button
+            <Button
               key={`${link.label}-${li}`}
+              colors={colors}
               onClick={() => navigate(link.url)}
               style={{
-                display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left',
-                padding: '7px 9px', borderRadius: 7,
-                background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
-                color: colors.text, fontFamily: font.body, fontSize: 12, cursor: 'pointer',
-                transition: 'all 150ms', width: '100%',
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
+                '--pa-btn-bg': 'rgba(255,255,255,0.03)',
+                '--pa-btn-bg-hover': 'rgba(255,255,255,0.03)',
+                '--pa-btn-border': colors.border,
+                '--pa-btn-border-hover': colors.borderHi,
+                '--pa-btn-fg': colors.text,
+                '--pa-btn-pad': '7px 9px',
+                '--pa-btn-radius': `${radius.sm}px`,
+                gap: 8, textAlign: 'left', justifyContent: 'flex-start',
+                fontFamily: font.body, fontSize: 12, width: '100%',
+              } as CSSProperties}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={colors.cyan} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
                 <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
@@ -663,7 +698,7 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
               <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: colors.textDim, fontSize: 11 }}>
                 {link.url}
               </span>
-            </button>
+            </Button>
           ))}
         </div>
       )}
@@ -777,12 +812,18 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
 
 type ThemeColors = ReturnType<typeof useTheme>['colors'];
 
-/** Small cyan text-button, matching PeoplePanel's "+ Associate" affordance. */
-function panelActionBtn(colors: ThemeColors): React.CSSProperties {
+/** Small cyan text-button, matching PeoplePanel's "+ Associate" affordance.
+ *  Feeds `Button`'s custom properties instead of styling the element directly:
+ *  an inline `color` would beat `.pa-btn:hover` and kill the state it is being
+ *  migrated in for. */
+function panelActionVars(colors: ThemeColors): CSSProperties {
   return {
-    fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
-    cursor: 'pointer', fontFamily: font.body, padding: 0,
-  };
+    '--pa-btn-fg': colors.cyan,
+    '--pa-btn-bg-hover': 'transparent',
+    '--pa-btn-bg-active': 'transparent',
+    '--pa-btn-pad': '0',
+    fontSize: 11, fontFamily: font.body,
+  } as CSSProperties;
 }
 
 function fieldLabel(colors: ThemeColors): React.CSSProperties {
@@ -819,29 +860,44 @@ function EditControls({ saving, error, onSave, onCancel }: {
         </div>
       )}
       <div style={{ display: 'flex', gap: 6 }}>
-        <button
+        {/* The work runs in the caller's `onSave`, so the in-flight state is
+            handed in rather than awaited off the click. */}
+        <Button
+          colors={colors}
+          variant="ghostOn"
           onClick={onSave}
+          pending={saving}
           disabled={saving}
           style={{
-            padding: '4px 12px', borderRadius: radius.sm, cursor: saving ? 'default' : 'pointer',
-            background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-            color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
-            opacity: saving ? 0.6 : 1,
-          }}
+            '--pa-btn-bg': colors.cyanSoft,
+            '--pa-btn-bg-hover': colors.cyanSoft,
+            '--pa-btn-border': colors.borderHi,
+            '--pa-btn-border-hover': colors.cyan,
+            '--pa-btn-pad': '4px 12px',
+            '--pa-btn-radius': `${radius.sm}px`,
+            '--pa-btn-weight': 600,
+            fontSize: 11, fontFamily: font.body,
+          } as CSSProperties}
         >
           {saving ? 'Saving…' : 'Save'}
-        </button>
-        <button
+        </Button>
+        <Button
+          colors={colors}
           onClick={onCancel}
           disabled={saving}
           style={{
-            padding: '4px 12px', borderRadius: radius.sm, cursor: saving ? 'default' : 'pointer',
-            background: 'none', border: `1px solid ${colors.border}`,
-            color: colors.textMuted, fontSize: 11, fontFamily: font.body,
-          }}
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-border': colors.border,
+            '--pa-btn-border-hover': colors.borderHi,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '4px 12px',
+            '--pa-btn-radius': `${radius.sm}px`,
+            fontSize: 11, fontFamily: font.body,
+          } as CSSProperties}
         >
           Cancel
-        </button>
+        </Button>
       </div>
     </div>
   );

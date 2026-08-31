@@ -13,11 +13,12 @@
  * after a disassociate (there is no people event stream yet).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { NamedPersonMeeting, Person, Project, ProjectPerson } from './types';
 
@@ -41,6 +42,8 @@ export function PeoplePanel({ project }: { project: Project }) {
   const [associateError, setAssociateError] = useState<string | null>(null);
   const loadGeneration = useRef(0);
 
+  // Resolves `false` when the load failed (or was superseded) so the retry
+  // button can only tick over a load that actually landed.
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
     try {
@@ -48,16 +51,18 @@ export function PeoplePanel({ project }: { project: Project }) {
         apiFetch<ProjectPerson[]>(`/api/projects/${encodeURIComponent(project.id)}/people`),
         apiFetch<NamedPersonMeeting[]>(`/api/projects/${encodeURIComponent(project.id)}/meetings`).catch(() => []),
       ]);
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       if (!Array.isArray(rows)) throw new Error('Invalid people response');
       setPeople(rows);
       setMeetings(Array.isArray(meetingRows) ? meetingRows : []);
       setStatus('ready');
+      return true;
     } catch {
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       // Routes are first-dogfooded here (#530 had no route-level tests); surface
       // the failure as a recoverable error rather than a blank/empty panel.
       setStatus('error');
+      return false;
     }
   }, [project.id]);
 
@@ -75,12 +80,14 @@ export function PeoplePanel({ project }: { project: Project }) {
       // Success: close the picker and re-fetch — the person moves into the list.
       setPicking(false);
       bumpPeople();
+      return true;
     } catch (e) {
       // Keep the picker open and show why, so a non-2xx (e.g. a 400 FK reject) is
       // visible instead of looking like a dead click (#561).
       const err = e as Error & { status?: number };
       const status = err.status ? `${err.status} ` : '';
       setAssociateError(`Couldn't associate ${person.display_name}: ${status}${err.message || 'request failed'}`);
+      return false;
     }
   };
 
@@ -88,15 +95,22 @@ export function PeoplePanel({ project }: { project: Project }) {
     <Panel
       title="People"
       action={
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
+          className="hover:underline"
           onClick={() => { setAssociateError(null); setPicking(v => !v); }}
           style={{
-            fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
-            cursor: 'pointer', fontFamily: font.body, padding: 0,
-          }}
+            '--pa-btn-fg': colors.cyan,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-weight': 'inherit',
+            fontFamily: font.body,
+            fontSize: 11,
+          } as CSSProperties}
         >
           {picking ? 'Close' : '+ Associate'}
-        </button>
+        </Button>
       }
     >
       {picking && (
@@ -118,37 +132,56 @@ export function PeoplePanel({ project }: { project: Project }) {
       ) : status === 'error' ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load people.</span>
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
+            className="hover:underline"
             onClick={load}
             style={{
-              fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
-              cursor: 'pointer', fontFamily: font.body, padding: 0, fontWeight: 600,
-            }}
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-weight': 600,
+              fontFamily: font.body,
+              fontSize: 11,
+            } as CSSProperties}
           >
             Retry
-          </button>
+          </Button>
         </div>
       ) : people.length === 0 ? (
         <div style={{ fontSize: 11, color: colors.textDim }}>No people associated yet.</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {people.map(p => (
-            <button
+            <Button
               key={p.entity_uuid}
+              colors={colors}
+              variant="ghost"
               onClick={() =>
                 openPersonDetail(project.id, p, {
                   project_role: p.project_role,
                   associated_at: p.associated_at,
                 })
               }
-              style={{
-                display: 'flex', alignItems: 'baseline', gap: 8, textAlign: 'left',
-                padding: '6px 9px', borderRadius: 7, width: '100%',
-                background: rowVeil, border: `1px solid ${colors.border}`,
-                color: colors.text, fontFamily: font.body, cursor: 'pointer', transition: 'border-color 150ms',
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
+              // `contents` dissolves Button's `.pa-btn__label` wrapper so the
+              // name and the truncating role stay the row's own flex children.
+                            style={{
+                '--pa-btn-bg': rowVeil,
+                '--pa-btn-fg': colors.text,
+                '--pa-btn-border': colors.border,
+                '--pa-btn-bg-hover': rowVeil,
+                '--pa-btn-border-hover': colors.borderHi,
+                '--pa-btn-pad': '6px 9px',
+                '--pa-btn-radius': '7px',
+                '--pa-btn-weight': 'inherit',
+                alignItems: 'baseline',
+                justifyContent: 'flex-start',
+                gap: 8,
+                textAlign: 'left',
+                width: '100%',
+                fontFamily: font.body,
+              } as CSSProperties}
             >
               <span style={{ fontSize: 12, color: colors.text, flexShrink: 0 }}>{p.display_name}</span>
               <span style={{
@@ -157,7 +190,7 @@ export function PeoplePanel({ project }: { project: Project }) {
               }}>
                 {p.project_role || p.role || ''}
               </span>
-            </button>
+            </Button>
           ))}
         </div>
       )}
@@ -183,7 +216,9 @@ export function PeoplePanel({ project }: { project: Project }) {
 function AssociatePicker({ colors, excludeIds, onPick }: {
   colors: ReturnType<typeof useTheme>['colors'];
   excludeIds: Set<string>;
-  onPick: (person: Person) => void;
+  // `unknown`, not `void`: the caller's promise has to reach the row Button so
+  // the round trip drives its pending/success states.
+  onPick: (person: Person) => unknown;
 }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Person[]>([]);
@@ -228,17 +263,26 @@ function AssociatePicker({ colors, excludeIds, onPick }: {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 240, overflowY: 'auto' }}>
           {candidates.map(p => (
-            <button
+            <Button
               key={p.entity_uuid}
+              colors={colors}
+              variant="bare"
               onClick={() => onPick(p)}
-              style={{
-                display: 'flex', alignItems: 'baseline', gap: 8, textAlign: 'left',
-                padding: '5px 8px', borderRadius: radius.sm, width: '100%',
-                background: 'none', border: 'none', color: colors.text,
-                fontFamily: font.body, cursor: 'pointer',
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.cyanSoft; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'none'; }}
+              // `contents` dissolves Button's `.pa-btn__label` wrapper so the
+              // name and the truncating subtitle stay the row's flex children.
+                            style={{
+                '--pa-btn-fg': colors.text,
+                '--pa-btn-bg-hover': colors.cyanSoft,
+                '--pa-btn-pad': '5px 8px',
+                '--pa-btn-radius': `${radius.sm}px`,
+                '--pa-btn-weight': 'inherit',
+                alignItems: 'baseline',
+                justifyContent: 'flex-start',
+                gap: 8,
+                textAlign: 'left',
+                width: '100%',
+                fontFamily: font.body,
+              } as CSSProperties}
             >
               <span style={{ fontSize: 12, flexShrink: 0 }}>{p.display_name}</span>
               <span style={{
@@ -247,7 +291,7 @@ function AssociatePicker({ colors, excludeIds, onPick }: {
               }}>
                 {[p.role, p.company].filter(Boolean).join(' · ')}
               </span>
-            </button>
+            </Button>
           ))}
         </div>
       )}

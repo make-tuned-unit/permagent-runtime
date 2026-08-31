@@ -15,12 +15,13 @@
  * documents (a deck needs room a 560px modal can't give).
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { FiDownload, FiX } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import type { ProjectDocument } from './types';
 
 // ── The single dispatch point ────────────────────────────────────────────────
@@ -95,8 +96,12 @@ export function DocumentViewer({ projectId, doc, onClose }: {
       a.download = doc.filename;
       a.click();
       URL.revokeObjectURL(url);
+      return true;
     } catch (e) {
+      // Resolves false rather than throwing: the failure is already on screen
+      // as a notice, and a button that ticked here would contradict it.
       setError((e as Error).message || 'Download failed');
+      return false;
     }
   };
 
@@ -158,7 +163,9 @@ function renderContent(
     text: string | null;
     doc: ProjectDocument;
     colors: ReturnType<typeof useTheme>['colors'];
-    onDownload: () => void;
+    /** Resolves true/false — the fallback's Download button reads it to decide
+     *  whether it may confirm. */
+    onDownload: () => Promise<boolean>;
   },
 ) {
   const { objectUrl, text, doc, colors, onDownload } = ctx;
@@ -204,16 +211,23 @@ function renderContent(
           <div style={{ fontSize: 13, color: colors.textMuted }}>
             No inline preview for <span style={{ fontFamily: font.mono }}>{doc.mime_type || 'this type'}</span>.
           </div>
-          <button
+          <Button
+            colors={colors}
             onClick={onDownload}
             style={{
-              display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer',
-              padding: '8px 14px', borderRadius: radius.md, color: colors.text,
-              background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
-            }}
+              '--pa-btn-bg': 'rgba(255,255,255,0.04)',
+              '--pa-btn-bg-hover': 'rgba(255,255,255,0.08)',
+              '--pa-btn-border': colors.border,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-pad': '8px 14px',
+              '--pa-btn-radius': `${radius.md}px`,
+              fontSize: 12,
+              gap: 8,
+            } as CSSProperties}
           >
-            <FiDownload size={14} /> Download {doc.filename}
-          </button>
+            <FiDownload size={14} />
+            Download {doc.filename}
+          </Button>
         </div>
       );
   }
@@ -282,16 +296,32 @@ function parseCsv(text: string): string[][] {
 // ── Small shared bits ────────────────────────────────────────────────────────
 
 function IconButton({ title, onClick, colors, children }: {
-  title: string; onClick: () => void; colors: ReturnType<typeof useTheme>['colors']; children: React.ReactNode;
+  title: string;
+  /** Returning a promise opts the control into the primitive's pending/success
+   *  states — the download does, the close does not. */
+  onClick: () => unknown;
+  colors: ReturnType<typeof useTheme>['colors'];
+  children: React.ReactNode;
 }) {
   return (
-    <button
+    <Button
+      colors={colors}
+      variant="bare"
       title={title}
+      // The only child is a glyph, so the title has to be said out loud too.
+      aria-label={title}
       onClick={onClick}
-      style={{ background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer', padding: 4, display: 'flex', flexShrink: 0 }}
+      style={{
+        '--pa-btn-fg': colors.textMuted,
+        '--pa-btn-fg-hover': colors.text,
+        '--pa-btn-bg-hover': 'transparent',
+        '--pa-btn-bg-active': 'transparent',
+        '--pa-btn-pad': '4px',
+        flexShrink: 0,
+      } as CSSProperties}
     >
       {children}
-    </button>
+    </Button>
   );
 }
 

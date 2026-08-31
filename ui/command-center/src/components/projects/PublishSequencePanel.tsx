@@ -1,6 +1,7 @@
 import { useState, type CSSProperties } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import { readPublishSequence, savePublishSequence, type PublishStep } from './publishSequence';
 import type { Project } from './types';
@@ -86,6 +87,8 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
     });
   };
 
+  // Resolves `false` on failure: the reason is surfaced inline below the rows,
+  // so the Save button must not tick over a sequence that never persisted.
   const save = async () => {
     setSaving(true);
     setSaveError(null);
@@ -97,35 +100,54 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
       });
       setEditing(false);
       onProjectUpdated?.();
+      return true;
     } catch (e) {
       // Keep the draft on screen — a failed save must not eat the user's steps.
       setSaveError(e instanceof Error ? e.message : 'Save failed');
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
+  // The look these controls had at rest, re-expressed as the primitive's custom
+  // properties so `:hover` / `:active` / `:disabled` can finally reach them.
   const btn = (primary: boolean): CSSProperties => ({
-    padding: '4px 12px', borderRadius: radius.sm, cursor: saving ? 'default' : 'pointer',
-    background: primary ? colors.cyanSoft : 'rgba(255,255,255,0.03)',
-    border: `1px solid ${primary ? colors.borderHi : colors.border}`,
-    color: primary ? colors.cyan : colors.textMuted,
-    fontFamily: font.body, fontSize: 11, fontWeight: 600,
-    opacity: saving ? 0.6 : 1,
-  });
+    '--pa-btn-bg': primary ? colors.cyanSoft : 'rgba(255,255,255,0.03)',
+    '--pa-btn-fg': primary ? colors.cyan : colors.textMuted,
+    '--pa-btn-border': primary ? colors.borderHi : colors.border,
+    '--pa-btn-bg-hover': primary ? colors.cyanSoft : colors.surfaceHi,
+    '--pa-btn-fg-hover': primary ? colors.cyan : colors.text,
+    '--pa-btn-border-hover': primary ? colors.cyan : colors.borderHi,
+    '--pa-btn-pad': '4px 12px',
+    '--pa-btn-radius': `${radius.sm}px`,
+    '--pa-btn-weight': 600,
+    fontFamily: font.body,
+    fontSize: 11,
+  } as CSSProperties);
   const tinyBtn: CSSProperties = {
-    padding: '2px 6px', borderRadius: 5, cursor: 'pointer', lineHeight: 1,
-    background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
-    color: colors.textMuted, fontFamily: font.body, fontSize: 11,
-  };
+    '--pa-btn-bg': 'rgba(255,255,255,0.03)',
+    '--pa-btn-fg': colors.textMuted,
+    '--pa-btn-border': colors.border,
+    '--pa-btn-bg-hover': colors.surfaceHi,
+    '--pa-btn-fg-hover': colors.text,
+    '--pa-btn-border-hover': colors.borderHi,
+    '--pa-btn-pad': '2px 6px',
+    // 5px, not a radius token: these three sit inside a 24px row and the
+    // resting shape must not change under the migration.
+    '--pa-btn-radius': '5px',
+    fontFamily: font.body,
+    fontSize: 11,
+    lineHeight: 1,
+  } as CSSProperties;
 
   return (
     <Panel
       title="Publish sequence"
       action={!editing ? (
-        <button onClick={startEditing} style={btn(false)}>
+        <Button colors={colors} onClick={startEditing} style={btn(false)}>
           {steps.length > 0 ? 'Edit' : 'Add'}
-        </button>
+        </Button>
       ) : undefined}
     >
       {editing ? (
@@ -164,24 +186,25 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
                   color: colors.text, fontFamily: font.mono, fontSize: 11, outline: 'none',
                 }}
               />
-              <button onClick={() => moveRow(i, -1)} disabled={saving || i === 0} aria-label={`Move step ${i + 1} up`} style={tinyBtn}>↑</button>
-              <button onClick={() => moveRow(i, 1)} disabled={saving || i === draft.length - 1} aria-label={`Move step ${i + 1} down`} style={tinyBtn}>↓</button>
-              <button onClick={() => removeRow(i)} disabled={saving} aria-label={`Remove step ${i + 1}`} style={{ ...tinyBtn, color: colors.warning }}>✕</button>
+              <Button colors={colors} onClick={() => moveRow(i, -1)} disabled={saving || i === 0} aria-label={`Move step ${i + 1} up`} style={tinyBtn}>↑</Button>
+              <Button colors={colors} onClick={() => moveRow(i, 1)} disabled={saving || i === draft.length - 1} aria-label={`Move step ${i + 1} down`} style={tinyBtn}>↓</Button>
+              <Button colors={colors} onClick={() => removeRow(i)} disabled={saving} aria-label={`Remove step ${i + 1}`} style={{ ...tinyBtn, '--pa-btn-fg': colors.warning, '--pa-btn-fg-hover': colors.warning } as CSSProperties}>✕</Button>
             </div>
           ))}
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <button
+            <Button
+              colors={colors}
               onClick={() => setDraft(d => [...d, { command: '', timeout: '' }])}
               disabled={saving}
               style={btn(false)}
             >
               + Add step
-            </button>
+            </Button>
             <div style={{ flex: 1 }} />
-            <button onClick={() => setEditing(false)} disabled={saving} style={btn(false)}>Cancel</button>
-            <button onClick={save} disabled={saving} style={btn(true)}>
+            <Button colors={colors} onClick={() => setEditing(false)} disabled={saving} style={btn(false)}>Cancel</Button>
+            <Button colors={colors} onClick={save} disabled={saving} style={btn(true)}>
               {saving ? 'Saving…' : 'Save'}
-            </button>
+            </Button>
           </div>
           {saveError && (
             <div style={{ fontSize: 11, color: colors.warning }}>{saveError}</div>

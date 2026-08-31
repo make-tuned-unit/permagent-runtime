@@ -11,13 +11,14 @@
  * looking like a dead click. Reuses the Panel shell + associate-button chrome.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiFile, FiTrash2, FiUploadCloud } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { projectMemoryPreview } from '../brain/brainMemoryFocus';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import { DocumentViewer, formatSize } from './DocumentViewer';
 import type { Project, ProjectDocument } from './types';
@@ -42,18 +43,22 @@ export function DocumentsPanel({ project }: { project: Project }) {
   const projectsRev = useCommandCenter(s => s.projectsRev);
   const focusBrainMemory = useCommandCenter(s => s.focusBrainMemory);
 
+  // Resolves `false` when the load failed (or was superseded) so the retry
+  // button can only tick over a load that actually landed.
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
     try {
       const nextDocs = await api.listProjectDocuments(project.id);
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       if (!Array.isArray(nextDocs)) throw new Error('Invalid documents response');
       setDocs(nextDocs);
       setStatus('ready');
+      return true;
     } catch {
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       // Surface as a recoverable error rather than masquerading as empty.
       setStatus('error');
+      return false;
     }
   }, [project.id]);
 
@@ -94,8 +99,10 @@ export function DocumentsPanel({ project }: { project: Project }) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setViewing(v => (v?.id === doc.id ? null : v));
       await load();
+      return true;
     } catch (e) {
       setError(`Couldn’t delete ${doc.filename}: ${(e as Error).message || 'request failed'}`);
+      return false;
     }
   };
 
@@ -104,16 +111,23 @@ export function DocumentsPanel({ project }: { project: Project }) {
       <Panel
         title="Documents"
         action={
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
+            className="hover:underline"
             onClick={() => fileInput.current?.click()}
             disabled={busy}
             style={{
-              fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
-              cursor: busy ? 'default' : 'pointer', fontFamily: font.body, padding: 0, opacity: busy ? 0.5 : 1,
-            }}
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-weight': 'inherit',
+              fontFamily: font.body,
+              fontSize: 11,
+            } as CSSProperties}
           >
             {busy ? 'Uploading…' : '+ Upload'}
-          </button>
+          </Button>
         }
       >
         <input
@@ -166,15 +180,22 @@ export function DocumentsPanel({ project }: { project: Project }) {
         {status === 'error' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load documents.</span>
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
+              className="hover:underline"
               onClick={load}
               style={{
-                fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
-                cursor: 'pointer', fontFamily: font.body, padding: 0, fontWeight: 600,
-              }}
+                '--pa-btn-fg': colors.cyan,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '0',
+                '--pa-btn-weight': 600,
+                fontFamily: font.body,
+                fontSize: 11,
+              } as CSSProperties}
             >
               Retry
-            </button>
+            </Button>
           </div>
         )}
 
@@ -191,29 +212,49 @@ export function DocumentsPanel({ project }: { project: Project }) {
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
               >
-                <button
+                <Button
+                  colors={colors}
+                  variant="bare"
                   onClick={() => setViewing(doc)}
                   title="Open"
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left', flex: 1, minWidth: 0,
-                    background: 'none', border: 'none', color: colors.text, fontFamily: font.body, cursor: 'pointer', padding: 0,
-                  }}
+                  // `contents` dissolves Button's `.pa-btn__label` wrapper so
+                  // the icon, the truncating filename and the size stay the
+                  // button's own flex row — otherwise the ellipsis is lost.
+                                    style={{
+                    '--pa-btn-fg': colors.text,
+                    '--pa-btn-bg-hover': 'transparent',
+                    '--pa-btn-fg-hover': colors.cyan,
+                    '--pa-btn-pad': '0',
+                    justifyContent: 'flex-start',
+                    textAlign: 'left',
+                    flex: 1,
+                    minWidth: 0,
+                    gap: 8,
+                    fontFamily: font.body,
+                  } as CSSProperties}
                 >
                   <FiFile size={13} color={colors.textMuted} style={{ flexShrink: 0 }} />
                   <span style={{ fontSize: 12, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {doc.filename}
                   </span>
                   <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0 }}>{formatSize(doc.size_bytes)}</span>
-                </button>
-                <button
+                </Button>
+                <Button
+                  colors={colors}
+                  variant="bare"
                   onClick={() => remove(doc)}
                   title="Delete"
-                  style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', padding: 2, display: 'flex', flexShrink: 0 }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.danger; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = colors.textDim; }}
+                  aria-label="Delete"
+                  style={{
+                    '--pa-btn-fg': colors.textDim,
+                    '--pa-btn-fg-hover': colors.danger,
+                    '--pa-btn-bg-hover': 'transparent',
+                    '--pa-btn-pad': '2px',
+                    flexShrink: 0,
+                  } as CSSProperties}
                 >
                   <FiTrash2 size={13} />
-                </button>
+                </Button>
               </div>
             ))}
           </div>

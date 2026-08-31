@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { sparklinePolyline } from '../grow/growthTrend';
 import { Panel } from './Panel';
 import type { Project } from './types';
@@ -100,6 +101,8 @@ export function MarketPanel({ project }: { project: Project }) {
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const loadGeneration = useRef(0);
 
+  // Resolves `false` when the load failed (or was superseded) so the retry
+  // button's success tick can only fire over a load that actually landed.
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
     setStatus('loading');
@@ -107,13 +110,15 @@ export function MarketPanel({ project }: { project: Project }) {
       const response = await apiFetch<MarketResponse>(
         `/api/projects/${encodeURIComponent(project.id)}/market`,
       );
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       if (!response || !Array.isArray(response.rows)) throw new Error('Invalid market response');
       setData(response);
       setStatus('ready');
+      return true;
     } catch {
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       setStatus('error');
+      return false;
     }
   }, [project.id]);
 
@@ -123,9 +128,23 @@ export function MarketPanel({ project }: { project: Project }) {
     <Panel title="Market">
       {status === 'loading' && <div style={{ color: colors.textDim, fontSize: 11 }}>Loading market series…</div>}
       {status === 'error' && (
-        <button type="button" onClick={load} style={{ border: 'none', background: 'none', color: colors.danger, cursor: 'pointer', padding: 0 }}>
+        <Button
+          colors={colors}
+          variant="bare"
+          type="button"
+          className="hover:underline"
+          onClick={load}
+          style={{
+            '--pa-btn-fg': colors.danger,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-weight': 'inherit',
+            fontSize: 'inherit',
+            lineHeight: 'inherit',
+          } as CSSProperties}
+        >
           Couldn't load market series. Retry
-        </button>
+        </Button>
       )}
       {/* Nothing bound is not a flat market. Say which. */}
       {status === 'ready' && data?.noSeriesBound && (

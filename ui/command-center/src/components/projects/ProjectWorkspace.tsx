@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, type CSSProperties } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { ProjectKanban } from './ProjectsView';
 import { ProjectOverview } from './ProjectOverview';
 import { ProjectDetails } from './ProjectDetails';
@@ -54,15 +55,27 @@ export function ProjectWorkspace({ project, projects, onSwitchProject, onBack, o
         padding: '10px 24px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0,
         display: 'flex', alignItems: 'center', gap: 12,
       }}>
-        <button onClick={onBack} style={backBtn(colors)}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.text; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = colors.textMuted; }}
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={onBack}
+          style={{
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-bg-active': 'transparent',
+            '--pa-btn-pad': '4px 8px',
+            '--pa-btn-radius': `${radius.sm}px`,
+            fontSize: 12,
+            fontFamily: font.body,
+            gap: 4,
+          } as CSSProperties}
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
             <path d="M19 12H5M12 19l-7-7 7-7" />
           </svg>
           All Projects
-        </button>
+        </Button>
         <div style={{ width: 1, height: 16, background: colors.border }} />
 
         {/* PROJECT axis — switcher */}
@@ -106,20 +119,25 @@ function ProjectSwitcher({ project, projects, onSwitch }: {
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      <button
+      <Button
+        colors={colors}
+        variant="bare"
         onClick={() => setOpen(o => !o)}
         style={{
-          display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
-          background: 'none', border: 'none', padding: '2px 4px', color: colors.text,
-          fontFamily: font.display, fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em',
-        }}
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-bg-active': 'transparent',
+          '--pa-btn-pad': '2px 4px',
+          '--pa-btn-radius': `${radius.xs}px`,
+          '--pa-btn-weight': 600,
+          fontFamily: font.display, fontSize: 14, letterSpacing: '-0.01em',
+        } as CSSProperties}
       >
         {project.name}
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={colors.textMuted} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
-          style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 150ms' }}>
+          style={{ marginLeft: 8, verticalAlign: 'middle', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 150ms' }}>
           <path d="M6 9l6 6 6-6" />
         </svg>
-      </button>
+      </Button>
       <div style={{ fontSize: 10, color: colors.textMuted, marginTop: -2 }}>{project.slug}</div>
 
       {open && (
@@ -129,23 +147,35 @@ function ProjectSwitcher({ project, projects, onSwitch }: {
           background: gradient.dropdown, border: `1px solid ${colors.border}`, borderRadius: radius.md,
           boxShadow: colors.elevationOverlay, padding: 4,
         }}>
-          {sorted.map(p => (
-            <button
-              key={p.id}
-              onClick={() => { setOpen(false); if (p.id !== project.id) onSwitch(p.id); }}
-              style={{
-                display: 'block', width: '100%', textAlign: 'left',
-                padding: '6px 10px', borderRadius: 5, cursor: 'pointer',
-                background: p.id === project.id ? colors.cyanSoft : 'transparent',
-                border: 'none', color: p.id === project.id ? colors.cyan : colors.text,
-                fontFamily: font.body, fontSize: 12, fontWeight: p.id === project.id ? 600 : 400,
-              }}
-              onMouseEnter={e => { if (p.id !== project.id) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
-              onMouseLeave={e => { if (p.id !== project.id) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
-            >
-              {p.name}
-            </button>
-          ))}
+          {sorted.map(p => {
+            const isCurrent = p.id === project.id;
+            return (
+              <Button
+                key={p.id}
+                colors={colors}
+                variant="bare"
+                onClick={() => { setOpen(false); if (!isCurrent) onSwitch(p.id); }}
+                style={{
+                  '--pa-btn-bg': isCurrent ? colors.cyanSoft : 'transparent',
+                  '--pa-btn-fg': isCurrent ? colors.cyan : colors.text,
+                  // The row the user is already on stayed inert under the mouse
+                  // before, and still does — hover is a "you can go here" signal.
+                  '--pa-btn-bg-hover': isCurrent ? colors.cyanSoft : 'rgba(255,255,255,0.05)',
+                  '--pa-btn-bg-active': isCurrent ? colors.cyanSoft : 'rgba(255,255,255,0.09)',
+                  '--pa-btn-pad': '6px 10px',
+                  '--pa-btn-radius': '5px',
+                  '--pa-btn-weight': isCurrent ? 600 : 400,
+                  width: '100%',
+                  justifyContent: 'flex-start',
+                  textAlign: 'left',
+                  fontFamily: font.body,
+                  fontSize: 12,
+                } as CSSProperties}
+              >
+                {p.name}
+              </Button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -169,29 +199,29 @@ function ViewToggle({ lens, onChange }: { lens: ProjectLens; onChange: (l: Proje
       {tabs.map(t => {
         const active = lens === t.key;
         return (
-          <button
+          <Button
             key={t.key}
+            colors={colors}
+            variant="bare"
             onClick={() => onChange(t.key)}
             style={{
-              padding: '4px 12px', borderRadius: radius.sm, cursor: 'pointer', border: 'none',
-              background: active ? colors.cyanSoft : 'transparent',
-              color: active ? colors.cyan : colors.textMuted,
-              fontFamily: font.body, fontSize: 12, fontWeight: active ? 600 : 500,
-              transition: 'all 150ms',
-            }}
+              '--pa-btn-bg': active ? colors.cyanSoft : 'transparent',
+              '--pa-btn-fg': active ? colors.cyan : colors.textMuted,
+              // The selected tab is already where you are: hover only offers the
+              // other two.
+              '--pa-btn-bg-hover': active ? colors.cyanSoft : 'rgba(255,255,255,0.05)',
+              '--pa-btn-fg-hover': active ? colors.cyan : colors.text,
+              '--pa-btn-bg-active': active ? colors.cyanSoft : 'rgba(255,255,255,0.09)',
+              '--pa-btn-pad': '4px 12px',
+              '--pa-btn-radius': `${radius.sm}px`,
+              '--pa-btn-weight': active ? 600 : 500,
+              fontFamily: font.body, fontSize: 12,
+            } as CSSProperties}
           >
             {t.label}
-          </button>
+          </Button>
         );
       })}
     </div>
   );
-}
-
-function backBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
-  return {
-    background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer',
-    padding: '4px 8px', borderRadius: radius.sm, fontSize: 12, fontFamily: font.body,
-    display: 'flex', alignItems: 'center', gap: 4,
-  };
 }

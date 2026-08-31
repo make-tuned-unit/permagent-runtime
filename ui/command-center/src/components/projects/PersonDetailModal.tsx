@@ -33,7 +33,7 @@
  * case so the graph stays visible beside it).
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { FiBookOpen, FiCalendar, FiCheck, FiCheckSquare, FiExternalLink, FiFileText, FiPlus, FiTrash2, FiX } from 'react-icons/fi';
 import { apiFetch } from '../../lib/api';
 import { hapticSuccess } from '../../lib/haptic';
@@ -41,6 +41,7 @@ import { navigateToTool, useCommandCenter } from '../../lib/store';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { ease, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Chip } from '../common/Chip';
 import type { DeleteReport, MergeReport, Person, PersonActivity, PersonAssociation, PersonMeeting, PersonProject, PersonRelationship, UndoReport } from './types';
 import { PersonFace } from '../people/PersonFace';
@@ -601,12 +602,12 @@ export function PersonDetailModal({
       <span style={{ flex: 1, fontSize: 12, color: colors.textMuted }}>
         Remove {view.display_name} from this project?
       </span>
-      <button onClick={() => setConfirming(false)} disabled={removing} style={ghostBtn(colors)}>
+      <Button colors={colors} onClick={() => setConfirming(false)} disabled={removing} style={ghostVars(colors)}>
         Keep
-      </button>
-      <button onClick={doDisassociate} disabled={removing} style={dangerBtn(colors)}>
+      </Button>
+      <Button colors={colors} onClick={doDisassociate} pending={removing} disabled={removing} style={dangerVars(colors)}>
         {removing ? 'Removing…' : 'Confirm remove'}
-      </button>
+      </Button>
     </>
   ) : deleteStep === 1 ? (
     <span style={{ flex: 1, fontSize: 12, color: colors.textMuted }}>
@@ -614,27 +615,27 @@ export function PersonDetailModal({
     </span>
   ) : (
     <>
-      <button onClick={requestEnrichment} disabled={enriching} style={ghostBtn(colors)}>
+      <Button colors={colors} onClick={requestEnrichment} pending={enriching} disabled={enriching} style={ghostVars(colors)}>
         {enriching ? 'Running enrichment…' : 'Run enrichment'}
-      </button>
-      <button onClick={() => void saveEdit()} disabled={saving || !dirty} style={primaryBtn(colors)}>
+      </Button>
+      <Button colors={colors} onClick={() => void saveEdit()} pending={saving} disabled={saving || !dirty} style={primaryVars(colors)}>
         {saving ? 'Saving…' : 'Save'}
-      </button>
+      </Button>
       <span style={{ flex: 1 }} />
       {view.entity_uuid && (
-        <button onClick={() => setMerging(true)} style={ghostBtn(colors)}>
+        <Button colors={colors} onClick={() => setMerging(true)} style={ghostVars(colors)}>
           Merge into…
-        </button>
+        </Button>
       )}
       {projectId && (
-        <button onClick={() => setConfirming(true)} style={dangerBtn(colors)}>
+        <Button colors={colors} onClick={() => setConfirming(true)} style={dangerVars(colors)}>
           Remove from project
-        </button>
+        </Button>
       )}
       {view.entity_uuid && (
-        <button onClick={() => { setDeleteStep(1); setDeleteError(null); }} style={dangerBtn(colors)}>
+        <Button colors={colors} onClick={() => { setDeleteStep(1); setDeleteError(null); }} style={dangerVars(colors)}>
           Delete person
-        </button>
+        </Button>
       )}
     </>
   );
@@ -774,9 +775,9 @@ function MergeResultCard({ colors, report, undoing, undoReport, undoError, onUnd
         </div>
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button onClick={onUndo} disabled={undoing} style={miniBtn(colors)}>
+          <Button colors={colors} onClick={onUndo} pending={undoing} disabled={undoing} style={miniVars(colors)}>
             {undoing ? 'Undoing…' : 'Undo merge'}
-          </button>
+          </Button>
           {undoError && <span style={{ fontSize: 11, color: colors.danger }}>{undoError}</span>}
         </div>
       )}
@@ -817,10 +818,10 @@ function DeleteWarningCard({ colors, name, meetingsCount, projectsCount, deletin
       </div>
       {error && <div style={{ fontSize: 11, color: colors.danger }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={onCancel} disabled={deleting} style={ghostBtn(colors)}>Keep</button>
-        <button onClick={onConfirm} disabled={deleting} style={dangerBtn(colors)}>
+        <Button colors={colors} onClick={onCancel} disabled={deleting} style={ghostVars(colors)}>Keep</Button>
+        <Button colors={colors} onClick={onConfirm} pending={deleting} disabled={deleting} style={dangerVars(colors)}>
           {deleting ? 'Deleting…' : `Confirm delete ${name}`}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -854,7 +855,7 @@ function DeletedCard({ colors, report, onClose }: {
         </div>
       )}
       <div>
-        <button onClick={onClose} style={primaryBtn(colors)}>Close</button>
+        <Button colors={colors} onClick={onClose} style={primaryVars(colors)}>Close</Button>
       </div>
     </div>
   );
@@ -890,7 +891,7 @@ function PersonProjects({ colors, rows, status, onRetry, onOpen }: {
       {status === 'error' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Small colors={colors}>Couldn't load this person's projects.</Small>
-          <button onClick={onRetry} style={miniBtn(colors)}>Try again</button>
+          <Button colors={colors} onClick={onRetry} style={miniVars(colors)}>Try again</Button>
         </div>
       )}
       {status === 'ready' && rows.length === 0 && (
@@ -925,7 +926,7 @@ function RelatedPeople({ colors, rows, people, status, adding, targetId, predica
   return <section>
     <div style={{ display: 'flex', alignItems: 'center', marginBottom: 7 }}>
       <SectionLabel colors={colors}>Related people</SectionLabel><span style={{ flex: 1 }} />
-      {!adding && <button aria-label="Add related person" onClick={onStart} style={miniBtn(colors)}><FiPlus size={12} /> Add</button>}
+      {!adding && <Button colors={colors} aria-label="Add related person" onClick={onStart} style={miniVars(colors)}><FiPlus size={12} />Add</Button>}
     </div>
     {status === 'loading' && <Small colors={colors}>Loading relationships…</Small>}
     {status === 'error' && <Small colors={colors}>Couldn't load relationships.</Small>}
@@ -933,7 +934,7 @@ function RelatedPeople({ colors, rows, people, status, adding, targetId, predica
     {rows.map(row => <div key={`${row.from_entity_uuid}-${row.to_entity_uuid}-${row.predicate}`} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${colors.border}` }}>
       <span style={{ color: colors.text, fontSize: 12, fontWeight: 600 }}>{row.other_person.display_name}</span>
       <span style={{ color: colors.textDim, fontSize: 11 }}>{row.predicate.replace(/_/g, ' ')}</span><span style={{ flex: 1 }} />
-      <button aria-label={`Remove ${row.other_person.display_name} relationship`} onClick={() => onRemove(row)} style={iconBtn(colors)}><FiTrash2 size={12} /></button>
+      <Button colors={colors} variant="bare" aria-label={`Remove ${row.other_person.display_name} relationship`} onClick={() => onRemove(row)} style={iconVars(colors)}><FiTrash2 size={12} /></Button>
     </div>)}
     {adding && <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6, marginTop: 8 }}>
       <select aria-label="Related person" value={targetId} onChange={e => onTarget(e.target.value)} style={control(colors)}><option value="">Choose person…</option>{people.map(p => <option key={p.entity_uuid} value={p.entity_uuid}>{p.display_name}</option>)}</select>
@@ -953,7 +954,7 @@ function RelatedPeople({ colors, rows, people, status, adding, targetId, predica
       <datalist id="person-relationship-predicates">
         {RELATIONSHIP_PREDICATES.map(p => <option key={p.value} value={p.value} label={p.label} />)}
       </datalist>
-      <div style={{ display: 'flex', gap: 4 }}><button onClick={onCancel} style={miniBtn(colors)}>Cancel</button><button onClick={onAdd} disabled={!targetId || !predicate.trim()} style={miniBtn(colors)}>Add</button></div>
+      <div style={{ display: 'flex', gap: 4 }}><Button colors={colors} onClick={onCancel} style={miniVars(colors)}>Cancel</Button><Button colors={colors} onClick={onAdd} disabled={!targetId || !predicate.trim()} style={miniVars(colors)}>Add</Button></div>
     </div>}
   </section>;
 }
@@ -971,10 +972,10 @@ function MeetingsSection({ colors, personName, rows, projects, status, adding, t
   return <section>
     <div style={{ display: 'flex', alignItems: 'center', marginBottom: 7 }}>
       <SectionLabel colors={colors}>Meetings</SectionLabel><span style={{ flex: 1 }} />
-      {!adding && <button aria-label="Log a meeting" onClick={onStart} style={miniBtn(colors)}><FiPlus size={12} /> Add</button>}
+      {!adding && <Button colors={colors} aria-label="Log a meeting" onClick={onStart} style={miniVars(colors)}><FiPlus size={12} />Add</Button>}
     </div>
     {status === 'loading' && <Small colors={colors}>Loading meetings…</Small>}
-    {status === 'error' && <Small colors={colors}>Couldn't load meetings. <button onClick={onRetry} style={linkBtn(colors)}>Retry</button></Small>}
+    {status === 'error' && <Small colors={colors}>Couldn't load meetings. <Button colors={colors} variant="bare" className="hover:underline" onClick={onRetry} style={linkVars(colors)}>Retry</Button></Small>}
     {status === 'ready' && rows.length === 0 && !adding && <Small colors={colors}>No meetings logged yet. Add one to put it on their profile and Apple Calendar.</Small>}
     {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: 8, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}>
       <span style={{ color: colors.cyan, marginTop: 2 }}><FiCalendar size={12} /></span>
@@ -985,7 +986,7 @@ function MeetingsSection({ colors, personName, rows, projects, status, adding, t
         {row.follow_up_at && !row.follow_up_done && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
             <span style={{ fontSize: 11, color: colors.cyan }}>Follow up {fmtTime(row.follow_up_at)}{row.follow_up_note ? ` · ${row.follow_up_note}` : ''}</span>
-            <button aria-label="Mark follow-up done" onClick={() => onFollowUpDone(row)} style={miniBtn(colors)}><FiCheck size={12} /> Done</button>
+            <Button colors={colors} aria-label="Mark follow-up done" onClick={() => onFollowUpDone(row)} style={miniVars(colors)}><FiCheck size={12} />Done</Button>
           </div>
         )}
       </div>
@@ -1011,8 +1012,8 @@ function MeetingsSection({ colors, personName, rows, projects, status, adding, t
         </>
       )}
       <div style={{ display: 'flex', gap: 4 }}>
-        <button onClick={onCancel} style={miniBtn(colors)}>Cancel</button>
-        <button onClick={onAdd} disabled={saving || !starts} style={miniBtn(colors)}>{saving ? 'Saving…' : 'Log meeting'}</button>
+        <Button colors={colors} onClick={onCancel} style={miniVars(colors)}>Cancel</Button>
+        <Button colors={colors} onClick={onAdd} pending={saving} disabled={saving || !starts} style={miniVars(colors)}>{saving ? 'Saving…' : 'Log meeting'}</Button>
       </div>
     </div>}
   </section>;
@@ -1022,7 +1023,7 @@ function PersonActivityTimeline({ colors, rows, status, onRetry }: { colors: Ret
   const icon = (kind: PersonActivity['kind']) => kind === 'memory' ? <FiBookOpen size={12} /> : kind === 'note' ? <FiFileText size={12} /> : kind === 'meeting' ? <FiCalendar size={12} /> : <FiCheckSquare size={12} />;
   return <section><SectionLabel colors={colors}>Recent activity</SectionLabel>
     {status === 'loading' && <Small colors={colors}>Loading activity…</Small>}
-    {status === 'error' && <Small colors={colors}>Couldn't load activity. <button onClick={onRetry} style={linkBtn(colors)}>Retry</button></Small>}
+    {status === 'error' && <Small colors={colors}>Couldn't load activity. <Button colors={colors} variant="bare" className="hover:underline" onClick={onRetry} style={linkVars(colors)}>Retry</Button></Small>}
     {status === 'ready' && rows.length === 0 && <Small colors={colors}>No activity referencing this person yet.</Small>}
     {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: 8, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}><span style={{ color: colors.cyan, marginTop: 2 }}>{icon(row.kind)}</span><div style={{ minWidth: 0 }}><div style={{ fontSize: 12, color: colors.text, fontWeight: 600 }}>{row.title}</div><div style={{ fontSize: 11, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.detail}</div><div style={{ fontSize: 10, color: colors.textDim }}>{fmtTime(row.timestamp)}</div></div></div>)}
   </section>;
@@ -1041,18 +1042,25 @@ function LinkButton({ colors, label, title, onClick }: {
   onClick: () => void;
 }) {
   return (
-    <button
+    <Button
+      colors={colors}
+      variant="bare"
+      className="hover:underline"
       type="button"
       onClick={e => { e.preventDefault(); e.stopPropagation(); onClick(); }}
       title={title}
       style={{
-        display: 'inline-flex', alignItems: 'center', gap: 4, padding: 0,
-        background: 'none', border: 'none', cursor: 'pointer',
-        color: colors.cyan, fontSize: 'inherit', fontFamily: 'inherit',
-      }}
+        '--pa-btn-fg': colors.cyan,
+        '--pa-btn-bg-hover': 'transparent',
+        '--pa-btn-bg-active': 'transparent',
+        '--pa-btn-pad': '0',
+        fontSize: 'inherit', fontFamily: 'inherit',
+        gap: 4,
+      } as CSSProperties}
     >
-      <FiExternalLink size={11} /> {label}
-    </button>
+      <FiExternalLink size={11} />
+      {label}
+    </Button>
   );
 }
 
@@ -1173,16 +1181,21 @@ function PersonDetailShell({
             {badge.label}
           </span>
         )}
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           onClick={onClose}
           title="Close"
+          aria-label="Close"
           style={{
-            background: 'none', border: 'none', color: colors.textMuted,
-            cursor: 'pointer', padding: 4, display: 'flex',
-          }}
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '4px',
+          } as CSSProperties}
         >
           <FiX size={16} />
-        </button>
+        </Button>
       </div>
       <div style={{ overflow: 'auto', padding: '16px', flex: 1 }}>
         {children}
@@ -1232,42 +1245,92 @@ function control(colors: ReturnType<typeof useTheme>['colors']): React.CSSProper
   return { ...inputStyle(colors), padding: '5px 7px' };
 }
 
-function miniBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
-  return { display: 'inline-flex', alignItems: 'center', gap: 3, padding: '4px 7px', borderRadius: radius.md,
-    border: `1px solid ${colors.border}`, background: 'none', color: colors.textMuted,
-    fontFamily: font.body, fontSize: 11, cursor: 'pointer' };
-}
+/**
+ * The panel's five button shapes, as `Button` custom properties rather than as
+ * inline `color`/`background`/`border`. An inline declaration outranks
+ * `.pa-btn:hover` in the cascade, so writing the look directly on the element
+ * is exactly what leaves a button with no hover, no press and no focus ring —
+ * which is what these five used to do.
+ */
+type Vars = ReturnType<typeof useTheme>['colors'];
 
-function iconBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
-  return { border: 'none', background: 'none', color: colors.textDim, cursor: 'pointer', padding: 2, display: 'flex' };
-}
+/** `.pa-btn`'s own `gap` sits between the spinner and the label, not inside the
+ *  label, so a leading glyph carries the gap it used to get from flex. */
 
-function linkBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
-  return { border: 'none', background: 'none', color: colors.cyan, cursor: 'pointer', padding: 0, fontFamily: font.body, fontSize: 11 };
-}
-
-function ghostBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+function miniVars(colors: Vars): CSSProperties {
   return {
-    padding: '6px 14px', borderRadius: radius.md,
-    border: `1px solid ${colors.border}`, background: 'none',
-    fontFamily: font.body, fontSize: 12, color: colors.textMuted, cursor: 'pointer',
-  };
+    '--pa-btn-fg': colors.textMuted,
+    '--pa-btn-fg-hover': colors.text,
+    '--pa-btn-border': colors.border,
+    '--pa-btn-border-hover': colors.borderHi,
+    '--pa-btn-bg-hover': 'transparent',
+    '--pa-btn-pad': '4px 7px',
+    '--pa-btn-radius': `${radius.md}px`,
+    fontFamily: font.body, fontSize: 11,
+  } as CSSProperties;
 }
 
-function primaryBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+function iconVars(colors: Vars): CSSProperties {
   return {
-    padding: '6px 14px', borderRadius: radius.md,
-    border: `1px solid ${colors.cyan}`, background: colors.cyanSoft,
-    fontFamily: font.body, fontSize: 12, fontWeight: 500, color: colors.cyan, cursor: 'pointer',
-  };
+    '--pa-btn-fg': colors.textDim,
+    '--pa-btn-fg-hover': colors.text,
+    '--pa-btn-bg-hover': 'transparent',
+    '--pa-btn-bg-active': 'transparent',
+    '--pa-btn-pad': '2px',
+  } as CSSProperties;
 }
 
-function dangerBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+function linkVars(colors: Vars): CSSProperties {
   return {
-    padding: '6px 14px', borderRadius: radius.md,
-    border: `1px solid ${colors.danger}`, background: colors.danger + '14',
-    fontFamily: font.body, fontSize: 12, fontWeight: 500, color: colors.danger, cursor: 'pointer',
-  };
+    '--pa-btn-fg': colors.cyan,
+    '--pa-btn-bg-hover': 'transparent',
+    '--pa-btn-bg-active': 'transparent',
+    '--pa-btn-pad': '0',
+    fontFamily: font.body, fontSize: 11,
+  } as CSSProperties;
+}
+
+function ghostVars(colors: Vars): CSSProperties {
+  return {
+    '--pa-btn-fg': colors.textMuted,
+    '--pa-btn-fg-hover': colors.text,
+    '--pa-btn-border': colors.border,
+    '--pa-btn-border-hover': colors.borderHi,
+    '--pa-btn-bg-hover': 'transparent',
+    '--pa-btn-pad': '6px 14px',
+    '--pa-btn-radius': `${radius.md}px`,
+    fontFamily: font.body, fontSize: 12,
+  } as CSSProperties;
+}
+
+function primaryVars(colors: Vars): CSSProperties {
+  return {
+    '--pa-btn-fg': colors.cyan,
+    '--pa-btn-fg-hover': colors.cyan,
+    '--pa-btn-bg': colors.cyanSoft,
+    '--pa-btn-bg-hover': colors.cyanSoft,
+    '--pa-btn-bg-active': colors.cyanGlow,
+    '--pa-btn-border': colors.cyan,
+    '--pa-btn-border-hover': colors.cyan,
+    '--pa-btn-pad': '6px 14px',
+    '--pa-btn-radius': `${radius.md}px`,
+    fontFamily: font.body, fontSize: 12,
+  } as CSSProperties;
+}
+
+function dangerVars(colors: Vars): CSSProperties {
+  return {
+    '--pa-btn-fg': colors.danger,
+    '--pa-btn-fg-hover': colors.danger,
+    '--pa-btn-bg': colors.danger + '14',
+    '--pa-btn-bg-hover': colors.danger + '26',
+    '--pa-btn-bg-active': colors.danger + '33',
+    '--pa-btn-border': colors.danger,
+    '--pa-btn-border-hover': colors.danger,
+    '--pa-btn-pad': '6px 14px',
+    '--pa-btn-radius': `${radius.md}px`,
+    fontFamily: font.body, fontSize: 12,
+  } as CSSProperties;
 }
 
 /** Mounted once at the app root — overlay dock for a person opened from a

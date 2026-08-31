@@ -17,13 +17,14 @@
  * silent catch. Styled strictly with the shared Panel shell + theme tokens.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiExternalLink, FiRefreshCw } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { projectMemoryPreview } from '../brain/brainMemoryFocus';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { Project, ProjectMemory } from './types';
 
@@ -39,18 +40,22 @@ export function MemoriesPanel({ project }: { project: Project }) {
   // another device refetches this association list.
   const projectsRev = useCommandCenter(s => s.projectsRev);
 
+  // Resolves `false` when the load failed (or was superseded) so the refresh /
+  // retry buttons can only tick over a load that actually landed.
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
     setStatus('loading');
     try {
       const nextMemories = await api.listProjectMemories(project.id);
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       if (!Array.isArray(nextMemories)) throw new Error('Invalid memories response');
       setMemories(nextMemories);
       setStatus('ready');
+      return true;
     } catch {
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       setStatus('error');
+      return false;
     }
   }, [project.id]);
 
@@ -72,16 +77,21 @@ export function MemoriesPanel({ project }: { project: Project }) {
             <span style={{ fontSize: 10, color: colors.textDim }}>
               {memories.length} linked
             </span>
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
               onClick={load}
               title="Refresh"
               aria-label="Refresh memories"
-              style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', padding: 0, display: 'flex' }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.textMuted; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = colors.textDim; }}
+              style={{
+                '--pa-btn-fg': colors.textDim,
+                '--pa-btn-fg-hover': colors.textMuted,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '0',
+              } as CSSProperties}
             >
               <FiRefreshCw size={12} />
-            </button>
+            </Button>
           </span>
         ) : undefined
       }
@@ -93,12 +103,22 @@ export function MemoriesPanel({ project }: { project: Project }) {
       {status === 'error' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load memories.</span>
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
+            className="hover:underline"
             onClick={load}
-            style={{ fontSize: 11, color: colors.cyan, background: 'none', border: 'none', cursor: 'pointer', fontFamily: font.body, padding: 0, fontWeight: 600 }}
+            style={{
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-weight': 600,
+              fontFamily: font.body,
+              fontSize: 11,
+            } as CSSProperties}
           >
             Retry
-          </button>
+          </Button>
         </div>
       )}
 

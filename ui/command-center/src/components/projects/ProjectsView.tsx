@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import { font, radius } from '../../styles/tokens';
+import { Button } from '../common/Button';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
 import { insertRoadmapGoal } from '../../lib/roadmapClient';
@@ -339,6 +340,7 @@ projects, onOpenProject, onStatusChange }: {
           const colProjects = projects.filter(p => p.status === col.key).sort(byRecency);
           const isOver = dragOverCol === col.key;
           const isOpen = expanded[col.key] ?? false;
+          const shelfId = `projects-shelf-${col.key}`;
           return (
             <div
               key={col.key}
@@ -352,13 +354,23 @@ projects, onOpenProject, onStatusChange }: {
                 transition: 'all 150ms',
               }}
             >
+              {/* Disclosure toggle for the shelf below it, so it keeps its own
+                  element (a `Button` would wrap this row of chips in one inline
+                  label span and collapse the layout) and takes the shared
+                  `.pa-btn` interaction rules instead. */}
               <button
+                className="pa-btn"
+                aria-expanded={isOpen}
+                aria-controls={shelfId}
                 onClick={() => setExpanded(prev => ({ ...prev, [col.key]: !isOpen }))}
                 style={{
-                  width: '100%', display: 'flex', alignItems: 'center', gap: 8,
-                  padding: '9px 14px', background: 'transparent', border: 'none',
-                  color: colors.textMuted, cursor: 'pointer', fontFamily: font.body,
-                }}
+                  '--pa-btn-fg': colors.textMuted,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-pad': '9px 14px',
+                  width: '100%', gap: 8, justifyContent: 'flex-start',
+                  fontFamily: font.body,
+                } as CSSProperties}
               >
                 <span style={{
                   fontSize: 10, transform: isOpen ? 'rotate(90deg)' : 'none',
@@ -378,7 +390,7 @@ projects, onOpenProject, onStatusChange }: {
                 {isOver && <span style={{ fontSize: 10, color: colors.cyan, marginLeft: 'auto' }}>drop to {col.label.toLowerCase()}</span>}
               </button>
               {isOpen && colProjects.length > 0 && (
-                <div style={{
+                <div id={shelfId} style={{
                   display: 'grid',
                   gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
                   gap: 10, padding: '4px 12px 12px',
@@ -394,7 +406,7 @@ projects, onOpenProject, onStatusChange }: {
                 </div>
               )}
               {isOpen && colProjects.length === 0 && (
-                <div style={{ padding: '4px 14px 12px', fontSize: 11, color: colors.textDim }}>Empty.</div>
+                <div id={shelfId} style={{ padding: '4px 14px 12px', fontSize: 11, color: colors.textDim }}>Empty.</div>
               )}
             </div>
           );
@@ -635,8 +647,11 @@ export function ProjectKanban({ project }: { project: Project }) {
     setGhostLabel(title);
   };
 
-  const handleAddCard = async (columnId: string) => {
-    if (!newCardTitle.trim()) return;
+  // Resolves `true`/`false` rather than void: the Add button reads the result to
+  // decide whether it may tick, and this helper swallows its own failure into a
+  // toast, so a silent `undefined` would confirm an add that never happened.
+  const handleAddCard = async (columnId: string): Promise<boolean> => {
+    if (!newCardTitle.trim()) return false;
     try {
       const column = columns.find(c => c.id === columnId);
       if (column?.stateBinding === 'triage') {
@@ -652,8 +667,10 @@ export function ProjectKanban({ project }: { project: Project }) {
       setNewCardTitle('');
       setAddingCardCol(null);
       loadBoard();
+      return true;
     } catch (err) {
       toast('Couldn\'t add card', err instanceof Error ? err.message : String(err));
+      return false;
     }
   };
 
@@ -797,42 +814,61 @@ export function ProjectKanban({ project }: { project: Project }) {
                     }}
                   />
                   <div style={{ display: 'flex', gap: 4 }}>
-                    <button
+                    <Button
+                      colors={colors}
+                      variant="ghostOn"
                       onClick={() => handleAddCard(col.id)}
                       style={{
-                        flex: 1, padding: '4px 0', borderRadius: 5,
-                        background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-                        color: colors.cyan, fontSize: 11, fontFamily: font.body, fontWeight: 600, cursor: 'pointer',
-                      }}
+                        '--pa-btn-bg': colors.cyanSoft,
+                        '--pa-btn-bg-hover': colors.cyanSoft,
+                        '--pa-btn-border': colors.borderHi,
+                        '--pa-btn-border-hover': colors.cyan,
+                        '--pa-btn-pad': '4px 0',
+                        '--pa-btn-radius': '5px',
+                        '--pa-btn-weight': 600,
+                        flex: 1, fontSize: 11, fontFamily: font.body,
+                      } as CSSProperties}
                     >
                       Add
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      colors={colors}
                       onClick={() => { setAddingCardCol(null); setNewCardTitle(''); }}
                       style={{
-                        padding: '4px 8px', borderRadius: 5,
-                        background: 'transparent', border: `1px solid ${colors.border}`,
-                        color: colors.textMuted, fontSize: 11, fontFamily: font.body, cursor: 'pointer',
-                      }}
+                        '--pa-btn-fg': colors.textMuted,
+                        '--pa-btn-fg-hover': colors.text,
+                        '--pa-btn-border': colors.border,
+                        '--pa-btn-border-hover': colors.borderHi,
+                        '--pa-btn-pad': '4px 8px',
+                        '--pa-btn-radius': '5px',
+                        fontSize: 11, fontFamily: font.body,
+                      } as CSSProperties}
                     >
                       Cancel
-                    </button>
+                    </Button>
                   </div>
                 </div>
               ) : (
-                <button
+                <Button
+                  colors={colors}
                   onClick={() => setAddingCardCol(col.id)}
                   style={{
-                    marginTop: 8, padding: '6px 0', borderRadius: radius.sm,
-                    background: 'transparent', border: `1px dashed ${colors.border}`,
-                    color: colors.textDim, fontSize: 11, fontFamily: font.body,
-                    cursor: 'pointer', transition: 'all 150ms',
-                  }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; (e.currentTarget as HTMLElement).style.color = colors.textMuted; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; (e.currentTarget as HTMLElement).style.color = colors.textDim; }}
+                    '--pa-btn-fg': colors.textDim,
+                    '--pa-btn-fg-hover': colors.textMuted,
+                    '--pa-btn-border': colors.border,
+                    '--pa-btn-border-hover': colors.borderHi,
+                    '--pa-btn-bg-hover': 'transparent',
+                    '--pa-btn-pad': '6px 0',
+                    '--pa-btn-radius': `${radius.sm}px`,
+                    // The dashed rule is what says "not a card yet". `.pa-btn`
+                    // owns the 1px width and the (hoverable) color, so only the
+                    // style is overridden here.
+                    borderStyle: 'dashed',
+                    marginTop: 8, fontSize: 11, fontFamily: font.body,
+                  } as CSSProperties}
                 >
                   + Add card
-                </button>
+                </Button>
               )}
             </div>
           );
@@ -933,6 +969,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
             menu. It is now a 28px target with resting chrome and a `title`, so
             it is both hittable and identifiable before it is hovered. */}
         <button
+          className="pa-btn"
           data-testid={`card-menu-${card.id}`}
           aria-label={`Card actions for ${card.title}`}
           aria-haspopup="menu"
@@ -941,26 +978,19 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
           onPointerDown={e => e.stopPropagation()}
           onClick={e => { e.stopPropagation(); setShowMenu(m => !m); }}
           style={{
-            flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 28, height: 28, marginTop: -4, marginRight: -6, padding: 0, borderRadius: radius.sm,
-            background: showMenu ? colors.surfaceHi : 'transparent',
-            border: `1px solid ${showMenu ? colors.borderHi : colors.border}`,
-            cursor: 'pointer',
-            color: showMenu ? colors.text : colors.textDim, lineHeight: 1, fontSize: 14,
-            transition: reduceMotion ? 'none' : 'color 150ms, background 150ms, border-color 150ms',
-          }}
-          onMouseEnter={e => {
-            const el = e.currentTarget as HTMLElement;
-            el.style.color = colors.text;
-            el.style.background = colors.surfaceHi;
-            el.style.borderColor = colors.borderHi;
-          }}
-          onMouseLeave={e => {
-            const el = e.currentTarget as HTMLElement;
-            el.style.color = showMenu ? colors.text : colors.textDim;
-            el.style.background = showMenu ? colors.surfaceHi : 'transparent';
-            el.style.borderColor = showMenu ? colors.borderHi : colors.border;
-          }}
+            '--pa-btn-bg': showMenu ? colors.surfaceHi : 'transparent',
+            '--pa-btn-fg': showMenu ? colors.text : colors.textDim,
+            '--pa-btn-border': showMenu ? colors.borderHi : colors.border,
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-border-hover': colors.borderHi,
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': `${radius.sm}px`,
+            flexShrink: 0,
+            width: 28, height: 28, marginTop: -4, marginRight: -6,
+            lineHeight: 1, fontSize: 14,
+            transition: reduceMotion ? 'none' : undefined,
+          } as CSSProperties}
         >
           ⋯
         </button>
@@ -990,19 +1020,28 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
           }}
         />
       ) : dueDate ? (
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           onPointerDown={e => e.stopPropagation()}
           onClick={e => { e.stopPropagation(); if (onSetDueDate) setEditingDue(true); }}
           title={onSetDueDate ? 'Change the due date' : undefined}
           style={{
-            fontSize: 10, padding: '1px 5px', borderRadius: radius.xs, marginTop: 4,
-            display: 'inline-block', border: 'none',
+            '--pa-btn-bg': colors.cyanSoft,
+            '--pa-btn-fg': colors.cyan,
+            // Without a handler this chip is a label, not an affordance: it must
+            // not light up under the mouse as if it did something.
+            '--pa-btn-bg-hover': colors.cyanSoft,
+            '--pa-btn-bg-active': colors.cyanSoft,
+            '--pa-btn-border-hover': onSetDueDate ? colors.cyan : 'transparent',
+            '--pa-btn-pad': '1px 5px',
+            '--pa-btn-radius': `${radius.xs}px`,
+            fontSize: 10, marginTop: 4, fontFamily: font.body,
             cursor: onSetDueDate ? 'pointer' : 'default',
-            background: colors.cyanSoft, color: colors.cyan, fontFamily: font.body,
-          }}
+          } as CSSProperties}
         >
           Due {dueDate}
-        </button>
+        </Button>
       ) : null}
       {card.cardType !== 'standard' && (
         <span style={{
@@ -1022,65 +1061,78 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
             background: gradient.dropdown, border: `1px solid ${colors.border}`, borderRadius: radius.sm,
             boxShadow: colors.elevationRaised, padding: 2, minWidth: 100,
           }}>
+          {/* The menu rows keep their own elements: `role="menuitem"` is what
+              makes this a menu, and `Button` would flatten it. They take the
+              shared `.pa-btn` interaction rules instead. */}
           {onCancel && (
             <button
+              className="pa-btn"
               role="menuitem"
               onClick={(e) => { e.stopPropagation(); setShowMenu(false); onCancel(); }}
               style={{
-                width: '100%', padding: '5px 8px', borderRadius: radius.xs,
-                background: 'transparent', border: 'none',
-                color: colors.warning, fontSize: 11, fontFamily: font.body,
-                cursor: 'pointer', textAlign: 'left',
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.warning + '1A'; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                '--pa-btn-fg': colors.warning,
+                '--pa-btn-bg-hover': colors.warning + '1A',
+                '--pa-btn-bg-active': colors.warning + '2E',
+                '--pa-btn-pad': '5px 8px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                width: '100%', justifyContent: 'flex-start', textAlign: 'left',
+                fontSize: 11, fontFamily: font.body,
+              } as CSSProperties}
             >
               Cancel goal
             </button>
           )}
           {onSetDueDate && (
             <button
+              className="pa-btn"
               role="menuitem"
               onClick={(e) => { e.stopPropagation(); setShowMenu(false); setEditingDue(true); }}
               style={{
-                width: '100%', padding: '5px 8px', borderRadius: radius.xs,
-                background: 'transparent', border: 'none',
-                color: colors.textMuted, fontSize: 11, fontFamily: font.body,
-                cursor: 'pointer', textAlign: 'left',
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.borderHi; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': colors.borderHi,
+                '--pa-btn-bg-active': colors.cyanSoft,
+                '--pa-btn-pad': '5px 8px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                width: '100%', justifyContent: 'flex-start', textAlign: 'left',
+                fontSize: 11, fontFamily: font.body,
+              } as CSSProperties}
             >
               {dueDate ? 'Change due date' : 'Set due date'}
             </button>
           )}
           {onSetDueDate && dueDate && (
             <button
+              className="pa-btn"
               role="menuitem"
               onClick={(e) => { e.stopPropagation(); setShowMenu(false); onSetDueDate(null); }}
               style={{
-                width: '100%', padding: '5px 8px', borderRadius: radius.xs,
-                background: 'transparent', border: 'none',
-                color: colors.textMuted, fontSize: 11, fontFamily: font.body,
-                cursor: 'pointer', textAlign: 'left',
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.borderHi; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': colors.borderHi,
+                '--pa-btn-bg-active': colors.cyanSoft,
+                '--pa-btn-pad': '5px 8px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                width: '100%', justifyContent: 'flex-start', textAlign: 'left',
+                fontSize: 11, fontFamily: font.body,
+              } as CSSProperties}
             >
               Clear due date
             </button>
           )}
           <button
+            className="pa-btn"
             role="menuitem"
             onClick={(e) => { e.stopPropagation(); setShowMenu(false); onDelete(); }}
             style={{
-              width: '100%', padding: '5px 8px', borderRadius: radius.xs,
-              background: 'transparent', border: 'none',
-              color: colors.danger, fontSize: 11, fontFamily: font.body,
-              cursor: 'pointer', textAlign: 'left',
-            }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.danger + '1A'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+              '--pa-btn-fg': colors.danger,
+              '--pa-btn-bg-hover': colors.danger + '1A',
+              '--pa-btn-bg-active': colors.danger + '2E',
+              '--pa-btn-pad': '5px 8px',
+              '--pa-btn-radius': `${radius.xs}px`,
+              width: '100%', justifyContent: 'flex-start', textAlign: 'left',
+              fontSize: 11, fontFamily: font.body,
+            } as CSSProperties}
           >
             Delete card
           </button>

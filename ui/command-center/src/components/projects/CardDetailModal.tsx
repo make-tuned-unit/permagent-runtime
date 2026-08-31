@@ -23,10 +23,11 @@
  * the same way, and the Home tab's to-do list cannot disagree with either.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { DetailModal } from '../common/DetailModal';
 import type { BoardColumn, Card } from './types';
 
@@ -101,12 +102,15 @@ export function CardDetailModal({
     setEditing(true);
   }, [card, dueDate]);
 
-  const save = useCallback(async () => {
-    if (!card) return;
+  // Resolves true/false rather than void: the failure is caught here and shown
+  // inline, so a Save button that could not tell the two apart would confirm a
+  // save that never happened.
+  const save = useCallback(async (): Promise<boolean> => {
+    if (!card) return false;
     const title = draftTitle.trim();
     if (!title) {
       setSaveError('A card needs a title.');
-      return;
+      return false;
     }
     setSaving(true);
     setSaveError(null);
@@ -143,8 +147,10 @@ export function CardDetailModal({
       setCard(fresh);
       setEditing(false);
       onSaved?.();
+      return true;
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : 'Saving the card failed.');
+      return false;
     } finally {
       setSaving(false);
     }
@@ -160,19 +166,28 @@ export function CardDetailModal({
   const footer = card && !loading ? (
     editing ? (
       <>
-        <button onClick={() => setEditing(false)} disabled={saving} style={ghostBtn(colors)}>
+        <Button colors={colors} onClick={() => setEditing(false)} disabled={saving} style={ghostVars(colors)}>
           Discard
-        </button>
-        <button
+        </Button>
+        <Button
+          colors={colors}
           onClick={save}
           disabled={saving}
-          style={{ ...ghostBtn(colors), color: colors.cyan, borderColor: colors.cyan, fontWeight: 500 }}
+          style={{
+            ...ghostVars(colors),
+            '--pa-btn-fg': colors.cyan,
+            '--pa-btn-fg-hover': colors.cyan,
+            '--pa-btn-border': colors.cyan,
+            '--pa-btn-border-hover': colors.cyan,
+            '--pa-btn-bg-hover': colors.cyanSoft,
+            '--pa-btn-bg-active': colors.cyanGlow,
+          } as CSSProperties}
         >
           {saving ? 'Saving…' : 'Save changes'}
-        </button>
+        </Button>
       </>
     ) : (
-      <button onClick={startEdit} style={ghostBtn(colors)}>Edit card</button>
+      <Button colors={colors} onClick={startEdit} style={ghostVars(colors)}>Edit card</Button>
     )
   ) : null;
 
@@ -312,10 +327,18 @@ function inputStyle(colors: ReturnType<typeof useTheme>['colors']): React.CSSPro
   };
 }
 
-function ghostBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+/** The footer's hairline button, expressed as `Button`'s custom properties —
+ *  an inline `color`/`border` would beat `.pa-btn:hover` and silently kill the
+ *  states this migration exists to add. */
+function ghostVars(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
   return {
-    padding: '6px 14px', borderRadius: radius.md,
-    border: `1px solid ${colors.border}`, background: 'none',
-    fontFamily: font.body, fontSize: 12, color: colors.textMuted, cursor: 'pointer',
-  };
+    '--pa-btn-fg': colors.textMuted,
+    '--pa-btn-fg-hover': colors.text,
+    '--pa-btn-border': colors.border,
+    '--pa-btn-border-hover': colors.borderHi,
+    '--pa-btn-bg-hover': 'transparent',
+    '--pa-btn-pad': '6px 14px',
+    '--pa-btn-radius': `${radius.md}px`,
+    fontFamily: font.body, fontSize: 12,
+  } as CSSProperties;
 }
