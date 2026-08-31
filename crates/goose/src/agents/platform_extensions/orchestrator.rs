@@ -1185,8 +1185,20 @@ pub(crate) async fn dispatch_goal_fn(
     // ten siblings, a notes excerpt, and the name of the bridge tool that
     // answers live (see `dispatch_digest`). Best-effort — a DB hiccup costs the
     // digest, never the dispatch.
+    //
+    // The digest's wording depends on whether THIS worker will actually get the
+    // read-only bridge: telling a codex worker to "call `board_query`" names a
+    // tool it does not have, and an instruction a worker cannot follow teaches
+    // it to discount the rest of the brief.
+    let bridge_available = match config.workers.get(&worker_key).map(|w| &w.engine) {
+        Some(agent_identity::WorkerEngineKind::ExternalCli { bin, .. }) => {
+            super::goal_context_mcp::bridge_supported(bin)
+        }
+        _ => false,
+    };
     if let Some(block) =
-        super::dispatch_digest::load_dispatch_digest(&pool, &project, &card.id).await
+        super::dispatch_digest::load_dispatch_digest(&pool, &project, &card.id, bridge_available)
+            .await
     {
         instructions = format!("{instructions}\n\n{block}");
     }

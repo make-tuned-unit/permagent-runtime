@@ -65,6 +65,19 @@ pub(crate) const TOOL_NAMES: &[&str] = &[
     "session_history",
 ];
 
+/// Whether a worker CLI can be given the bridge.
+///
+/// Today: claude only, because `--mcp-config` is a per-invocation flag and the
+/// dispatcher can therefore hand each worker a config confined to its own
+/// worktree. Codex configures MCP servers through `~/.codex/config.toml`, which
+/// is machine-global — attaching the bridge there would scope one worker's
+/// project to every codex run on the box, which is exactly the isolation this
+/// module exists to keep. So codex workers get no bridge until a per-invocation
+/// path exists, and the dispatch digest must not promise them one.
+pub fn bridge_supported(bin: &str) -> bool {
+    bin.contains("claude")
+}
+
 /// Tool definitions as the MCP `tools/list` result.
 ///
 /// Every one is annotated `readOnlyHint: true`. The annotation is advisory to

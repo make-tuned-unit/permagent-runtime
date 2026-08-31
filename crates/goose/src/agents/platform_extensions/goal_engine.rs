@@ -629,7 +629,11 @@ impl GoalEngine for ExternalCliEngine {
             // (`current_exe`, so it cannot resolve to a different build on
             // PATH), scoped to the dispatching project. Best-effort: a worker
             // without the bridge runs exactly as it did before.
-            if let Some(project_id) = task.project_id.as_deref() {
+            if let Some(project_id) = task
+                .project_id
+                .as_deref()
+                .filter(|_| super::goal_context_mcp::bridge_supported(&self.bin))
+            {
                 match write_mcp_bridge_config(&worktree, project_id).await {
                     Ok(config_path) => {
                         args.push("--mcp-config".to_string());

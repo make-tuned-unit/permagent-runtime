@@ -74,6 +74,14 @@ pub struct DigestInput {
     pub sibling_total: usize,
     /// `project.notes`, verbatim; empty when unset.
     pub notes: String,
+    /// Whether this worker is actually getting the read-only bridge
+    /// ([`super::goal_context_mcp::bridge_supported`]). It gates the WORDING
+    /// only: a digest that tells a codex worker to "call `board_query` for
+    /// current state" names a tool that worker does not have, and an
+    /// instruction the worker cannot follow teaches it to discount the rest of
+    /// the brief. Without the bridge the same block still says it is a
+    /// snapshot — it just stops promising a way to refresh it.
+    pub bridge_available: bool,
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -95,10 +103,13 @@ pub fn format_dispatch_digest(input: &DigestInput) -> Option<String> {
         return None;
     }
 
-    let mut out = String::from(
+    let mut out = String::from(if input.bridge_available {
         "Project context digest (snapshot taken at dispatch — NOT live; \
-         call the `board_query` / `project_get` bridge tools for current state):\n",
-    );
+         call the `board_query` / `project_get` bridge tools for current state):\n"
+    } else {
+        "Project context digest (snapshot taken at dispatch — NOT live; you have no \
+         tool to refresh it, so treat anything below as possibly moved on):\n"
+    });
 
     if !input.siblings.is_empty() {
         let _ = writeln!(out, "## Other goals on this board");
@@ -115,11 +126,15 @@ pub fn format_dispatch_digest(input: &DigestInput) -> Option<String> {
         }
         let shown = input.siblings.len().min(MAX_SIBLINGS);
         if input.sibling_total > shown {
-            let _ = writeln!(
-                out,
-                "({} more not shown — `board_query` returns the full board.)",
-                input.sibling_total - shown
-            );
+            let hidden = input.sibling_total - shown;
+            let _ = if input.bridge_available {
+                writeln!(
+                    out,
+                    "({hidden} more not shown — `board_query` returns the full board.)"
+                )
+            } else {
+                writeln!(out, "({hidden} more not shown.)")
+            };
         }
         out.push_str(
             "Do not duplicate or contradict work already in flight above; if your goal \
@@ -156,6 +171,7 @@ pub(crate) async fn load_dispatch_digest(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     project: &crate::projects::Project,
     dispatching_card_id: &str,
+    bridge_available: bool,
 ) -> Option<String> {
     let columns = crate::cards::list_columns(pool, &project.id).await.ok()?;
     let cards = crate::cards::list_cards(pool, &project.id, Some("goal"), None)
@@ -208,6 +224,7 @@ pub(crate) async fn load_dispatch_digest(
         siblings,
         sibling_total,
         notes: project.notes.clone(),
+        bridge_available,
     })
 }
 
@@ -246,6 +263,7 @@ mod tests {
             ],
             sibling_total: 2,
             notes: String::new(),
+            bridge_available: true,
         })
         .unwrap();
         assert!(out.contains("Wire the voice relay"));
@@ -265,6 +283,7 @@ mod tests {
             siblings: vec![sib("A goal", "Ready", None)],
             sibling_total: 1,
             notes: "Deploys go through the publish sequence.".into(),
+            bridge_available: true,
         })
         .unwrap();
         assert!(out.contains("snapshot taken at dispatch"));
@@ -294,6 +313,7 @@ mod tests {
             siblings,
             sibling_total: 50,
             notes: "n".repeat(10_000),
+            bridge_available: true,
         })
         .unwrap();
         assert!(
@@ -316,6 +336,7 @@ mod tests {
             ],
             sibling_total: 2,
             notes: "Some note".into(),
+            bridge_available: true,
         };
         let first = format_dispatch_digest(&input).unwrap();
         // Non-vacuity: an empty render is trivially deterministic, so the
@@ -335,6 +356,7 @@ mod tests {
             siblings: vec![sib("Some goal", "Ready", None)],
             sibling_total: 1,
             notes: String::new(),
+            bridge_available: true,
         })
         .unwrap();
         // Non-vacuity: the block must actually carry the sibling, or "no
@@ -361,6 +383,39 @@ mod tests {
         .unwrap();
         assert!(out.contains("just build"));
         assert!(!out.contains("Other goals on this board"));
+    }
+
+    /// A worker with no bridge must not be told to call a bridge tool. Codex
+    /// gets no `--mcp-config`, and an instruction it cannot follow teaches it
+    /// to discount the rest of the brief — while the staleness warning it CAN
+    /// act on has to survive.
+    #[test]
+    fn without_the_bridge_the_digest_promises_no_tool() {
+        let input = DigestInput {
+            siblings: (0..12)
+                .map(|i| sib(&format!("Goal {i}"), "Ready", None))
+                .collect(),
+            sibling_total: 12,
+            notes: "A note".into(),
+            bridge_available: false,
+        };
+        let out = format_dispatch_digest(&input).unwrap();
+        assert!(
+            !out.contains("board_query") && !out.contains("project_get"),
+            "named a tool this worker does not have: {out}"
+        );
+        // Still honest about being a snapshot, and still says what it hid.
+        assert!(out.contains("NOT live"));
+        assert!(out.contains("2 more not shown"));
+
+        // And the bridged spelling of the same input DOES name the tool, or
+        // this test would pass on a digest that never mentions one.
+        let bridged = format_dispatch_digest(&DigestInput {
+            bridge_available: true,
+            ..input
+        })
+        .unwrap();
+        assert!(bridged.contains("board_query"));
     }
 
     // ── The DB read ─────────────────────────────────────────────────────
@@ -432,7 +487,9 @@ mod tests {
         make("Something already shipped", "complete").await;
         make("Something abandoned", "cancelled").await;
 
-        let out = load_dispatch_digest(&pool, &project, &me.id).await.unwrap();
+        let out = load_dispatch_digest(&pool, &project, &me.id, true)
+            .await
+            .unwrap();
         assert!(out.contains("A sibling in flight"));
         assert!(
             !out.contains("The goal being dispatched"),
