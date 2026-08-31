@@ -37,7 +37,19 @@ pub fn is_provider_configured(metadata: &ProviderMetadata, provider_type: Provid
             {
                 return true;
             }
-            if provider_type == ProviderType::Custom {
+            // A hand-made custom provider is connected by existence ONLY when it
+            // names no api_key_env — header/env_var auth leaves nothing for the
+            // check above to find, so the file itself is the only signal. Once a
+            // provider declares an api_key_env AND requires_auth, the check above
+            // is meaningful and an unconditional `true` here would override it,
+            // reporting a provider with no stored key as connected: a Council
+            // seat and a model-picker row that fail on first use.
+            //
+            // Mirrored EXACTLY in
+            // `crates/goose-server/src/routes/utils.rs::check_provider_configured`.
+            // The two must not diverge — a split here is what made a provider
+            // read "connected" in one picker and "not configured" in another.
+            if provider_type == ProviderType::Custom && loaded.config.api_key_env.is_empty() {
                 return true;
             }
         }
@@ -89,4 +101,73 @@ pub fn is_provider_configured(metadata: &ProviderMetadata, provider_type: Provid
                 .any(|key| key.secret && !key.required && key.primary && key_is_set(key));
     }
     no_default.iter().all(|key| key_is_set(key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::declarative_providers::custom_providers_dir;
+    use crate::providers::base::ProviderMetadata;
+
+    /// Write a custom-provider definition to the temp `custom_providers` dir the
+    /// test ctor pins `PERMAGENT_PATH_ROOT` at, and return matching metadata.
+    ///
+    /// Writing the file is the whole point: with nothing on disk `load_provider`
+    /// returns `Err` and the custom/declarative branch never runs, so a test that
+    /// skips this step passes no matter what the branch says.
+    fn custom_provider_on_disk(name: &str, api_key_env: &str) -> ProviderMetadata {
+        let dir = custom_providers_dir();
+        std::fs::create_dir_all(&dir).expect("custom_providers dir");
+        let json = serde_json::json!({
+            "name": name,
+            "engine": "openai",
+            "display_name": name,
+            "api_key_env": api_key_env,
+            "base_url": "https://example.invalid",
+            "models": [],
+            "requires_auth": true,
+        });
+        std::fs::write(
+            dir.join(format!("{name}.json")),
+            serde_json::to_string(&json).expect("serialize provider"),
+        )
+        .expect("write provider json");
+
+        // No config keys, and no `<name>_configured` marker is ever written, so
+        // every path after the custom/declarative branch returns false. Anything
+        // true here came from the branch under test.
+        ProviderMetadata::new(name, name, "", "", vec![], "", vec![])
+    }
+
+    #[test]
+    fn a_custom_provider_that_declares_an_api_key_needs_the_key_stored() {
+        let key = "PERMAGENT_TEST_CUSTOM_DECLARED_KEY";
+        let meta = custom_provider_on_disk("permagent-test-custom-declared", key);
+
+        assert!(
+            !is_provider_configured(&meta, ProviderType::Custom),
+            "a custom provider that requires auth and names an api_key_env is \
+             NOT connected until that key exists — reporting it as connected \
+             puts a seat in Council and a row in the model picker that fails on \
+             first use"
+        );
+
+        Config::global()
+            .set_secret(key, &"sk-test".to_string())
+            .expect("store secret");
+        assert!(
+            is_provider_configured(&meta, ProviderType::Custom),
+            "with the declared key stored, the same provider is connected"
+        );
+        Config::global().delete_secret(key).ok();
+    }
+
+    #[test]
+    fn a_custom_provider_with_no_api_key_env_stays_connected_by_existence() {
+        // Header/env-var auth: the credential lives in `headers`/`env_vars`, not
+        // in a named api_key_env, so its mere existence on disk is the only
+        // signal available and must keep counting as connected.
+        let meta = custom_provider_on_disk("permagent-test-custom-headers", "");
+        assert!(is_provider_configured(&meta, ProviderType::Custom));
+    }
 }
