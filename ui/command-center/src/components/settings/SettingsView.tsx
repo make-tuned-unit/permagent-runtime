@@ -344,19 +344,22 @@ function NotificationSettings() {
   );
 }
 
-export function MemoryPanel({ goto }: { goto?: (key: string) => void }) {
+export function MemoryPanel({ goto: _goto }: { goto?: (key: string) => void }) {
   const { colors } = useThemeHook();
+  // Lands ON the Librarian's page rather than near it (R6): the pruning
+  // setting is one scroll into one agent, not somewhere on the Agents list.
+  const openAgentSettings = useCommandCenter(s => s.openAgentSettings);
   // The preview "memory budget" sliders and "what to remember" toggles were
   // removed (2026-08 finish-the-settings ruling): no backing subsystem reads
   // them. What remains is real: the Brain view, and the Librarian's nightly
-  // pruning setting (in Models), which is the live retention control.
+  // pruning setting (on the Librarian's own page), the live retention control.
   return (
     <div>
       <H1 sub="What your agent remembers about you, your projects, and the people in your world.">Memory</H1>
       <Section title="Manage">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <Button colors={colors} style={ghost(colors)} onClick={() => navigateToTool('memory')}>Open Brain view</Button>
-          <Button colors={colors} style={ghost(colors)} onClick={() => goto?.('agents')}>Nightly pruning (the Librarian's schedule) →</Button>
+          <Button colors={colors} style={ghost(colors)} data-testid="memory-open-librarian" onClick={() => openAgentSettings('librarian')}>Nightly pruning (the Librarian's schedule) →</Button>
           {/* Export/Forget removed (2026-07-10 audit): a destructive-styled
               button with no handler is worse than no button. They return
               with real endpoints behind them. */}
