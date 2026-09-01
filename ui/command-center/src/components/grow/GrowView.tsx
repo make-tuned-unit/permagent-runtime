@@ -13,6 +13,8 @@ import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { api, apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
+import { usePollWhenVisible } from '../../lib/usePollWhenVisible';
+import { useToolOnScreen } from '../../lib/useToolOnScreen';
 import { GLOSSARY } from '../../lib/vocabulary';
 import { ViewHeader } from '../common/ViewHeader';
 import { Button } from '../common/Button';
@@ -53,6 +55,13 @@ const SWAP_SETTLE_MS = 600;
  *  Only ticks while `generating` is true (see `GrowActions`), so this is a
  *  progress check on a job the user started, not a background poll. */
 const GENERATION_POLL_MS = 4000;
+/** How often the Actions and Results lenses re-read while they are the surface
+ *  on screen. Deliberately slow: this is the backstop for the nightly sweep's
+ *  missing event (R1.4), not a live wire, and a judged 7-day window is not a
+ *  fact that needs to land inside a second. When `growth_sweep` learns to emit
+ *  `project_changed`, `projectsRev` becomes the fast path and this stays as the
+ *  belt — the same shape the review poll already has. */
+const VERDICT_POLL_MS = 120_000;
 
 /* Grow's two recurring button looks, as `--pa-btn-*` custom properties rather
    than inline `background`/`color`/`border`: an inline declaration outranks
@@ -3084,6 +3093,21 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
     seenRev.current = projectsRev;
     loadActions(project.id, { silent: true });
   }, [projectsRev, project.id, loadActions]);
+
+  // The verdicts (R1.4). The nightly sweep that judges the 7/14/28-day windows
+  // is the one writer on this board with no event of its own: it writes
+  // `growth_action_outcomes` rows and returns, so `projectsRev` never bumps and
+  // the fast path above never fires for the single fact this whole measurement
+  // loop exists to produce. Until that emitter exists, the honest substitute is
+  // a slow poll — and it is a poll with the two gates the law asks for: only
+  // while this panel is the surface on screen, and only while nothing faster is
+  // already covering it.
+  const onScreen = useToolOnScreen('grow');
+  usePollWhenVisible(
+    () => loadActions(project.id, { silent: true }),
+    VERDICT_POLL_MS,
+    onScreen && !serverGenerating,
+  );
 
   const hasActions = (actions?.actions?.length ?? 0) > 0;
   const tracking = actions?.tracking ?? [];

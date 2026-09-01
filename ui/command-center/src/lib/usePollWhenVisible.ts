@@ -16,11 +16,26 @@
 
 import { useEffect, useRef } from 'react';
 
-export function usePollWhenVisible(callback: () => void, intervalMs: number) {
+/**
+ * @param enabled Poll at all. `false` tears the interval down exactly as
+ *   hiding the tab does — for consumers that stay mounted while off screen
+ *   (the app hides inactive workspaces rather than unmounting them, so
+ *   `document.visibilityState` alone would keep every tab polling at once),
+ *   and for the window in which a live event stream is already covering it.
+ *   Flipping it back to `true` fires the callback once immediately, the same
+ *   catch-up a tab gets when it regains visibility.
+ */
+export function usePollWhenVisible(callback: () => void, intervalMs: number, enabled = true) {
   const cbRef = useRef(callback);
   cbRef.current = callback;
+  // Seeded from the first `enabled` so mounting enabled is not itself treated
+  // as a re-enable: callers already do their own initial load.
+  const wasEnabled = useRef(enabled);
 
   useEffect(() => {
+    if (!enabled) { wasEnabled.current = false; return; }
+    const reEnabled = !wasEnabled.current;
+    wasEnabled.current = true;
     let interval: ReturnType<typeof setInterval> | undefined;
 
     const start = () => {
@@ -44,6 +59,9 @@ export function usePollWhenVisible(callback: () => void, intervalMs: number) {
     };
 
     if (document.visibilityState === 'visible') {
+      // Coming back on screen is the same catch-up as a tab regaining
+      // visibility — whatever landed while we were away lands now.
+      if (reEnabled) cbRef.current();
       start();
     }
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -52,5 +70,5 @@ export function usePollWhenVisible(callback: () => void, intervalMs: number) {
       stop();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [intervalMs]);
+  }, [intervalMs, enabled]);
 }

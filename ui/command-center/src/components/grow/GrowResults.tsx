@@ -14,6 +14,9 @@ import type { ThemeColors } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
+import { usePollWhenVisible } from '../../lib/usePollWhenVisible';
+import { useToolOnScreen } from '../../lib/useToolOnScreen';
+import { AsOf } from '../common/AsOf';
 import type { Project } from '../projects/types';
 import { ACTION_CATEGORY_LABELS, normalizeActionCategory } from './growActionTabs';
 import { GrowthSparkline } from './GrowthSparkline';
@@ -47,21 +50,32 @@ function statusLabel(status: string): string {
   }
 }
 
+/** Matches GrowView's VERDICT_POLL_MS — one cadence for one fact. */
+const RESULTS_POLL_MS = 120_000;
+
 export function GrowResults({ project, colors }: { project: Project; colors: ThemeColors }) {
   const [data, setData] = useState<GrowthResultsData | null>(null);
   const [state, setState] = useState<LoadState>('loading');
+  /** When these verdicts were last confirmed true. */
+  const [asOf, setAsOf] = useState<number | null>(null);
   const projectsRev = useCommandCenter((s) => s.projectsRev);
 
-  const load = useCallback((id: string) => {
-    setState('loading');
+  /** `silent` keeps a background re-read from throwing the lens back to its
+   *  loading copy: a refresh must not look like a first load. A failed silent
+   *  read also keeps the last good verdicts rather than blanking them — but it
+   *  leaves `asOf` where it was, so nothing stale reads as fresh. */
+  const load = useCallback((id: string, opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setState('loading');
     apiFetch<GrowthResultsData>(
       `/api/growth-results?projectId=${encodeURIComponent(id)}`,
     )
       .then((d) => {
         setData(d);
         setState('ready');
+        setAsOf(Date.now());
       })
       .catch(() => {
+        if (opts?.silent) return;
         setData(null);
         setState('error');
       });
@@ -70,6 +84,12 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
   useEffect(() => {
     load(project.id);
   }, [project.id, load, projectsRev]);
+
+  // R1.4: the nightly sweep writes these verdicts and emits nothing, so
+  // `projectsRev` above never fires for them. Slow poll while this lens is the
+  // surface on screen — see VERDICT_POLL_MS in GrowView for why it is slow.
+  const onScreen = useToolOnScreen('grow');
+  usePollWhenVisible(() => load(project.id, { silent: true }), RESULTS_POLL_MS, onScreen);
 
   if (state === 'loading' && !data) {
     return <p style={{ fontSize: textSize.small, color: colors.textDim }}>Loading results…</p>;
@@ -110,6 +130,13 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
         <p style={{ fontSize: textSize.small, color: colors.textMuted, margin: 0, lineHeight: 1.5 }}>
           Actions you marked implemented, and what the 7 / 14 / 28-day windows
           have said so far{projectResults?.segmentLabel ? ` — ${projectResults.segmentLabel}` : ''}.
+        </p>
+        {/* The windows are judged by a nightly sweep, so "when did this last
+            change" is a real question here in a way it is not on a live board.
+            Quiet while fresh; it speaks up once the reading has aged past two
+            poll intervals. */}
+        <p style={{ fontSize: textSize.micro, color: colors.textDim, margin: '6px 0 0' }}>
+          <AsOf asOf={asOf} prefix="Verdicts read" staleAfterMs={RESULTS_POLL_MS * 2} dot />
         </p>
       </div>
 

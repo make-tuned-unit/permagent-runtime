@@ -738,7 +738,7 @@ function primaryToolType(node: LayoutNode): ToolType | null {
 }
 
 /** Deep-search a layout tree for a panel hosting the given tool. */
-function layoutHasTool(node: LayoutNode, tool: ToolType): boolean {
+export function layoutHasTool(node: LayoutNode, tool: ToolType): boolean {
   if (node.type === 'panel') return node.tool === tool;
   if (node.type === 'split') return node.children.some(c => layoutHasTool(c, tool));
   return false;
