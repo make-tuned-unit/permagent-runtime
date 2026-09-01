@@ -1284,10 +1284,47 @@ mod tests {
         );
     }
 
+    /// A credential is refused, and the refusal writes NOTHING — to the config
+    /// store or the secret store.
+    ///
+    /// **Why a sentinel key and not `OPENAI_API_KEY`.** It used to use the real
+    /// name and went red in CI (PR #1161) on the no-write assertion, while the
+    /// refusal itself was correct. `Config::get_param` (config/base.rs:910)
+    /// returns from `env::var(KEY)` BEFORE it ever reads config.yaml, and four
+    /// tests in this same binary put `OPENAI_API_KEY` in the process
+    /// environment via `env_lock`: `scheduler::tests::test_job_runs_on_schedule`,
+    /// `test_paused_job_does_not_run`, `test_job_with_no_prompt_does_not_panic`,
+    /// and `app_perception::tests::observe_settings_never_emits_secret_values`.
+    /// So on an unlucky interleaving this test was reading THEIR environment
+    /// variable and reporting it as this code's write. It was measuring the
+    /// process, not the product.
+    ///
+    /// The sentinel is not a weakening — it is what makes the assertion mean
+    /// what it claims. It classifies as `Secret` by exactly the same rule
+    /// (`is_secret_key` matches the `API_KEY` marker), no other test in the
+    /// tree touches the name, and no environment variable can shadow it. The
+    /// real-name half of the property — that `OPENAI_API_KEY` is classified as
+    /// a credential in the first place — is asserted here directly, and is a
+    /// pure function of the static table with no shared state to race on.
     #[tokio::test]
     async fn set_refuses_a_secret_without_ever_touching_its_value() {
+        // The production key names must classify as credentials; that half is
+        // pure, so it is safe to assert next to the hermetic half.
+        assert!(
+            matches!(classify("OPENAI_API_KEY"), KeyClass::Secret),
+            "the real provider key must classify as a credential, or the sentinel below is \
+             testing a rule the product does not apply"
+        );
+
+        // Unique to this test: nothing else writes it, and nothing exports it.
+        const SENTINEL: &str = "R2_CONFIGURE_PROBE_API_KEY";
+        assert!(
+            matches!(classify(SENTINEL), KeyClass::Secret),
+            "the sentinel must reach the same Secret arm as a real credential"
+        );
+
         let err = configure_set_impl(
-            "OPENAI_API_KEY",
+            SENTINEL,
             &serde_json::json!("sk-should-never-be-written"),
             "the user gave me a key",
         )
@@ -1301,10 +1338,16 @@ mod tests {
             "the refusal echoed the secret back into the transcript: {err}"
         );
         assert!(
-            Config::global()
-                .get_param::<Value>("OPENAI_API_KEY")
-                .is_err(),
+            Config::global().get_param::<Value>(SENTINEL).is_err(),
             "a refused secret write reached config.yaml"
+        );
+        // Stronger than the original: the value must not have reached the
+        // SECRET store either. A write that "correctly" refused config.yaml
+        // but quietly stashed the credential in secrets.yaml would have passed
+        // the old assertion.
+        assert!(
+            Config::global().get_secret::<String>(SENTINEL).is_err(),
+            "a refused secret write reached the secret store"
         );
     }
 
