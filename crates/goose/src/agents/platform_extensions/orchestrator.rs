@@ -3848,6 +3848,40 @@ async fn run_decomposition(
     }
 }
 
+/// The single definition of "which goals may be dispatched right now" for a
+/// project — the arbiter every dispatch trigger goes through.
+///
+/// Returns an empty list when the roadmap is paused or the project has no
+/// Ready column. Promotion of Triage goals whose dependencies are all
+/// Complete runs first (guarded tier-0 transitions; parked goals are
+/// skipped), so a caller that just completed a goal sees its dependents here.
+///
+/// New triggers add CALLERS of this function. They must never grow a second,
+/// divergent notion of eligibility: the pause tag, the column gate, and the
+/// promotion rules are defined here once.
+async fn eligible_ready_goals(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+) -> Result<Vec<cards::Card>, String> {
+    // Check if roadmap is paused
+    let tags = crate::projects::list_tags(pool, project_id).await?;
+    if tags.iter().any(|t| t == "roadmap_paused") {
+        return Ok(Vec::new());
+    }
+
+    // Find goals in Ready state for this project
+    let ready_col = match cards::get_goal_column(pool, project_id, "ready").await? {
+        Some(c) => c,
+        None => return Ok(Vec::new()),
+    };
+
+    // Promote Triage goals whose dependencies are all Complete to Ready
+    // (guarded tier-0 transitions; parked goals are skipped).
+    goal_transition::promote_eligible_dependents(pool, project_id).await?;
+
+    cards::list_cards(pool, project_id, Some("goal"), Some(&ready_col.id)).await
+}
+
 /// Find and dispatch goals whose dependencies are all complete.
 ///
 /// Called after a goal completes (from handle_goal_completion) or
@@ -3857,25 +3891,7 @@ pub async fn dispatch_eligible_goals(
     project_id: &str,
     orchestrator: &OrchestratorClient,
 ) -> Result<u32, String> {
-    // Check if roadmap is paused
-    let tags = crate::projects::list_tags(pool, project_id).await?;
-    if tags.iter().any(|t| t == "roadmap_paused") {
-        return Ok(0);
-    }
-
-    // Find goals in Ready state for this project
-    let ready_col = match cards::get_goal_column(pool, project_id, "ready").await? {
-        Some(c) => c,
-        None => return Ok(0),
-    };
-
-    // Promote Triage goals whose dependencies are all Complete to Ready
-    // (guarded tier-0 transitions; parked goals are skipped).
-    goal_transition::promote_eligible_dependents(pool, project_id).await?;
-
-    // Now dispatch all goals in Ready
-    let ready_goals =
-        cards::list_cards(pool, project_id, Some("goal"), Some(&ready_col.id)).await?;
+    let ready_goals = eligible_ready_goals(pool, project_id).await?;
 
     let mut dispatched = 0u32;
     for goal in &ready_goals {
@@ -3893,6 +3909,217 @@ pub async fn dispatch_eligible_goals(
     }
 
     Ok(dispatched)
+}
+
+// ── The dispatch nudge (D10) ────────────────────────────────────────────────
+//
+// Until this seam existed, `dispatch_eligible_goals` had exactly ONE caller in
+// the tree: the manual `resume_roadmap` tool. Everything that made a goal
+// dispatchable — a dependent promoted Triage→Ready when its parent completed, a
+// parked goal unparked by an answered decision — left the goal sitting in
+// Ready with no worker, forever, until a human explicitly resumed the roadmap.
+// The comment in `verification/mod.rs` promising "the tracker after another
+// goal completes" picks it up described a call site that did not exist.
+//
+// The nudge adds those callers. It changes no eligibility rule: it routes
+// through `eligible_ready_goals` (pause tag, column gate, promotion rules) and
+// then through `dispatch_goal_fn`, which re-checks the Ready column, the
+// budget, and takes the atomic Ready→InProgress claim. A goal another
+// dispatcher already claimed is no longer in the Ready list, and would be
+// refused by the state check even if it were — so re-entrant nudges cannot
+// double-dispatch.
+
+/// Future returned by an installed [`GoalDispatchHook`].
+pub type GoalDispatchFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>;
+
+/// Dispatches ONE Ready goal by card id, returning the worker session id.
+///
+/// The daemon installs the real one at startup ([`install_dispatch_hook`]);
+/// tests inject their own through the `_with` entry points. When nothing is
+/// installed the nudge degrades to the pre-D10 behavior (goals wait for
+/// `resume_roadmap`) with a debug log — it never panics.
+pub type GoalDispatchHook = Box<dyn Fn(String) -> GoalDispatchFuture + Send + Sync>;
+
+/// Process-global dispatcher, installed once at daemon startup. Same shape and
+/// same contract as [`GOAL_REVIEW_HOOK`].
+pub static GOAL_DISPATCH_HOOK: std::sync::OnceLock<GoalDispatchHook> = std::sync::OnceLock::new();
+
+/// Install the goal dispatcher used by the nudge. Idempotent (OnceLock) — a
+/// second call is a no-op. Call once at daemon startup.
+///
+/// The installed closure resolves its own pool from `session_manager`, so it
+/// must only be installed in a process whose session manager owns the real
+/// database — never from a unit test holding an in-memory pool.
+pub fn install_dispatch_hook(session_manager: std::sync::Arc<crate::session::SessionManager>) {
+    let _ = GOAL_DISPATCH_HOOK.set(Box::new(move |card_id: String| {
+        let session_manager = std::sync::Arc::clone(&session_manager);
+        Box::pin(async move {
+            // A fresh ProbeCache is an empty in-memory map; building a
+            // throwaway OrchestratorClient here would instead spawn a resume +
+            // worktree-sweep task on construction (see project_manager.rs).
+            let context = PlatformExtensionContext {
+                extension_manager: None,
+                session_manager,
+                session: None,
+            };
+            let probe_cache = crate::config::worker_probe::ProbeCache::new();
+            dispatch_goal_fn(&context, &probe_cache, &card_id, None).await
+        }) as GoalDispatchFuture
+    }));
+}
+
+/// Dispatch every currently-eligible Ready goal in `project_id` through
+/// `dispatch`. Never returns an error: a nudge is best-effort by
+/// construction — it runs after an approval or an unpark that has ALREADY
+/// committed, and must never fail that caller.
+async fn dispatch_ready_goals_with(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    dispatch: Option<&GoalDispatchHook>,
+    reason: &str,
+) -> u32 {
+    let Some(dispatch) = dispatch else {
+        tracing::debug!(
+            target: "permagentd::brain",
+            project_id = %project_id,
+            reason = %reason,
+            "Dispatch nudge skipped: no goal dispatcher installed — newly Ready goals \
+             wait for resume_roadmap (pre-D10 behavior)"
+        );
+        return 0;
+    };
+
+    let ready_goals = match eligible_ready_goals(pool, project_id).await {
+        Ok(goals) => goals,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                project_id = %project_id,
+                reason = %reason,
+                "Dispatch nudge could not list eligible goals: {}",
+                e
+            );
+            return 0;
+        }
+    };
+
+    let mut dispatched = 0u32;
+    for goal in &ready_goals {
+        match dispatch(goal.id.clone()).await {
+            Ok(session_id) => {
+                dispatched += 1;
+                tracing::info!(
+                    target: "permagentd::brain",
+                    goal_id = %goal.id,
+                    project_id = %project_id,
+                    reason = %reason,
+                    session_id = %session_id,
+                    "Dispatch nudge started goal '{}'",
+                    goal.title
+                );
+            }
+            Err(e) => {
+                // Expected and harmless for a goal another dispatcher already
+                // claimed, a budget-exhausted goal (which parks itself), or a
+                // goal with no eligible worker. None of those may fail the
+                // approval/unpark that triggered the nudge.
+                tracing::debug!(
+                    target: "permagentd::brain",
+                    goal_id = %goal.id,
+                    project_id = %project_id,
+                    reason = %reason,
+                    "Dispatch nudge did not start goal '{}': {}",
+                    goal.title,
+                    e
+                );
+            }
+        }
+    }
+
+    dispatched
+}
+
+/// Nudge the installed dispatcher to start every eligible Ready goal in
+/// `project_id`. Returns how many started (0 when no dispatcher is installed).
+pub async fn nudge_dispatch_ready_goals(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    reason: &str,
+) -> u32 {
+    dispatch_ready_goals_with(pool, project_id, GOAL_DISPATCH_HOOK.get(), reason).await
+}
+
+/// Promote a completed goal's dependents Triage→Ready, then dispatch whatever
+/// became eligible — the goal-completion half of D10.
+///
+/// Returns [`goal_transition::promote_eligible_dependents_or_warn`]'s warning
+/// unchanged, so callers' existing `effect_error` / audit-note contract is
+/// untouched. The dispatch half is best-effort and never turns into an error:
+/// the approval it follows has already committed.
+pub async fn promote_and_dispatch_dependents(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    approved_goal_id: &str,
+) -> Option<String> {
+    promote_and_dispatch_dependents_with(
+        pool,
+        project_id,
+        approved_goal_id,
+        GOAL_DISPATCH_HOOK.get(),
+    )
+    .await
+}
+
+/// [`promote_and_dispatch_dependents`] with an injected dispatcher (tests).
+pub(crate) async fn promote_and_dispatch_dependents_with(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    approved_goal_id: &str,
+    dispatch: Option<&GoalDispatchHook>,
+) -> Option<String> {
+    let warning =
+        goal_transition::promote_eligible_dependents_or_warn(pool, project_id, approved_goal_id)
+            .await;
+    // The nudge re-runs promotion inside `eligible_ready_goals`. That pass is
+    // idempotent and cheap, and going through the shared arbiter is worth more
+    // than saving it: there is exactly one definition of eligibility.
+    dispatch_ready_goals_with(pool, project_id, dispatch, "dependent promotion").await;
+    warning
+}
+
+/// A dispatcher that records card ids instead of starting workers, for tests
+/// that must exercise the PRODUCTION call path (which reads the process-global
+/// [`GOAL_DISPATCH_HOOK`]) rather than an injected `_with` parameter.
+///
+/// The seam is a `OnceLock`, so the whole lib-test binary shares one recorder;
+/// assertions are keyed by card id, which is unique per test.
+#[cfg(test)]
+pub(crate) mod test_dispatch_recorder {
+    use super::{GoalDispatchFuture, GOAL_DISPATCH_HOOK};
+    use std::sync::{Mutex, OnceLock};
+
+    static RECORDED: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+    fn recorded() -> &'static Mutex<Vec<String>> {
+        RECORDED.get_or_init(|| Mutex::new(Vec::new()))
+    }
+
+    /// Install the recording dispatcher (idempotent — the global seam is set
+    /// at most once per process).
+    pub(crate) fn install() {
+        let _ = GOAL_DISPATCH_HOOK.set(Box::new(|card_id: String| {
+            Box::pin(async move {
+                recorded().lock().unwrap().push(card_id.clone());
+                Ok(format!("recorded-session-for-{card_id}"))
+            }) as GoalDispatchFuture
+        }));
+    }
+
+    /// Whether the dispatcher was asked to start this card.
+    pub(crate) fn saw(card_id: &str) -> bool {
+        recorded().lock().unwrap().iter().any(|id| id == card_id)
+    }
 }
 
 /// Check if Kanban context should be injected this turn.
@@ -9272,6 +9499,220 @@ mod tests {
                 "{required} must be in the orchestrator tool list, got {names:?}"
             );
         }
+    }
+
+    // ── D10: the dispatch nudge ─────────────────────────────────────────
+    //
+    // Before this seam, `dispatch_eligible_goals` had one caller in the whole
+    // tree (the manual `resume_roadmap` tool). A dependent promoted
+    // Triage→Ready by an approval, and a goal unparked by an answered
+    // decision, both sat in Ready with no worker until a human resumed the
+    // roadmap by hand. These prove the promotion path now starts them, and
+    // that it starts nothing the existing rules refuse.
+
+    /// A dispatcher that records what it was asked to start and, optionally,
+    /// takes the real Ready→InProgress claim so idempotence can be observed.
+    fn recording_dispatcher(
+        seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        pool: Option<sqlx::Pool<sqlx::Sqlite>>,
+    ) -> GoalDispatchHook {
+        Box::new(move |card_id: String| {
+            let seen = std::sync::Arc::clone(&seen);
+            let pool = pool.clone();
+            Box::pin(async move {
+                seen.lock().unwrap().push(card_id.clone());
+                if let Some(pool) = pool {
+                    // Mirror the real dispatcher's atomic claim.
+                    crate::goal_transition::advance_goal_checked(
+                        &pool,
+                        &card_id,
+                        crate::goal_state::GoalAction::Dispatch,
+                        crate::decisions::ACTOR_SYSTEM,
+                        None,
+                        crate::goal_transition::TransitionEffects::default(),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                }
+                Ok(format!("session-for-{card_id}"))
+            }) as GoalDispatchFuture
+        })
+    }
+
+    /// Seed `parent` (Complete) and a Triage dependent on it. Returns the
+    /// dependent.
+    async fn dependent_of_completed_parent(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        title: &str,
+        parked: bool,
+    ) -> cards::Card {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        let parent = setup_goal_in_state(pool, "complete", 1).await;
+        let triage_col = cards::get_goal_column(pool, PERSONAL_PROJECT_ID, "triage")
+            .await
+            .unwrap()
+            .unwrap();
+        cards::create_card(
+            pool,
+            cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: title.to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(triage_col.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "depends_on": [parent.id],
+                    "attempt_count": 0,
+                    "needs_human_attention": parked,
+                })),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn state_of(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) -> String {
+        let card = cards::get_card(pool, card_id).await.unwrap().unwrap();
+        cards::get_column(pool, &card.column_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state_binding
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn nudge_dispatches_a_dependent_promoted_by_a_completed_goal() {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        let pool = test_pool().await;
+        let dependent = dependent_of_completed_parent(&pool, "Dependent to dispatch", false).await;
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let dispatcher = recording_dispatcher(std::sync::Arc::clone(&seen), Some(pool.clone()));
+
+        promote_and_dispatch_dependents_with(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            "parent",
+            Some(&dispatcher),
+        )
+        .await;
+
+        assert!(
+            seen.lock().unwrap().contains(&dependent.id),
+            "a dependent promoted Triage→Ready by a completed goal must be dispatched, \
+             not left waiting for a manual resume_roadmap"
+        );
+        assert_eq!(
+            state_of(&pool, &dependent.id).await,
+            "in_progress",
+            "the dispatched dependent must leave Ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn nudge_does_not_double_dispatch_an_already_claimed_goal() {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        let pool = test_pool().await;
+        let dependent =
+            dependent_of_completed_parent(&pool, "Dependent dispatched once", false).await;
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let dispatcher = recording_dispatcher(std::sync::Arc::clone(&seen), Some(pool.clone()));
+
+        // Two nudges — e.g. an approval followed by a second approval in the
+        // same project, or a retried effect-outbox replay.
+        promote_and_dispatch_dependents_with(&pool, PERSONAL_PROJECT_ID, "p", Some(&dispatcher))
+            .await;
+        promote_and_dispatch_dependents_with(&pool, PERSONAL_PROJECT_ID, "p", Some(&dispatcher))
+            .await;
+
+        let attempts = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| **id == dependent.id)
+            .count();
+        assert_eq!(
+            attempts, 1,
+            "the atomic Ready→InProgress claim takes the goal out of the eligible \
+             list; a second nudge must not dispatch it again"
+        );
+    }
+
+    #[tokio::test]
+    async fn nudge_respects_a_paused_roadmap() {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        let pool = test_pool().await;
+        let dependent = dependent_of_completed_parent(&pool, "Dependent under pause", false).await;
+        crate::projects::add_tag(&pool, PERSONAL_PROJECT_ID, "roadmap_paused")
+            .await
+            .unwrap();
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let dispatcher = recording_dispatcher(std::sync::Arc::clone(&seen), Some(pool.clone()));
+
+        let started = dispatch_ready_goals_with(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            Some(&dispatcher),
+            "paused-roadmap test",
+        )
+        .await;
+
+        assert_eq!(started, 0, "a paused roadmap dispatches nothing");
+        assert!(
+            !seen.lock().unwrap().contains(&dependent.id),
+            "the nudge must not bypass the roadmap_paused gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn nudge_leaves_a_parked_dependent_in_triage() {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        let pool = test_pool().await;
+        let parked = dependent_of_completed_parent(&pool, "Parked dependent", true).await;
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let dispatcher = recording_dispatcher(std::sync::Arc::clone(&seen), Some(pool.clone()));
+
+        promote_and_dispatch_dependents_with(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            "parent",
+            Some(&dispatcher),
+        )
+        .await;
+
+        assert_eq!(
+            state_of(&pool, &parked.id).await,
+            "triage",
+            "a parked goal stays parked until its unblock decision is answered"
+        );
+        assert!(
+            !seen.lock().unwrap().contains(&parked.id),
+            "the nudge must not dispatch a goal the promotion rules refused to promote"
+        );
+    }
+
+    #[tokio::test]
+    async fn nudge_without_a_dispatcher_degrades_instead_of_panicking() {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        let pool = test_pool().await;
+        let dependent =
+            dependent_of_completed_parent(&pool, "Dependent, no dispatcher", false).await;
+
+        let warning =
+            promote_and_dispatch_dependents_with(&pool, PERSONAL_PROJECT_ID, "parent", None).await;
+
+        assert!(warning.is_none(), "promotion itself still succeeds");
+        assert_eq!(
+            state_of(&pool, &dependent.id).await,
+            "ready",
+            "with no dispatcher installed the nudge degrades to the pre-D10 behavior: \
+             the goal is promoted and waits, exactly as before"
+        );
     }
 
     #[tokio::test]

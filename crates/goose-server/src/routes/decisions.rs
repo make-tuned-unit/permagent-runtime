@@ -491,6 +491,21 @@ async fn execute_effect(
                         .await;
                 });
             }
+            // D10: the dependents promoted above are Ready with no worker, and
+            // nothing in the tree dispatched them — `dispatch_eligible_goals`
+            // had exactly one caller, the manual `resume_roadmap` tool. Nudge
+            // the dispatcher. AFTER landing deliberately: a dependent starts
+            // against the trunk, so it must not begin before its parent's work
+            // is on it. Best-effort; the approval has already committed.
+            if let Some(project_id) = decision.project_id.as_deref() {
+                permagent::agents::platform_extensions::orchestrator::nudge_dispatch_ready_goals(
+                    pool,
+                    project_id,
+                    "goal approved and landed",
+                )
+                .await;
+            }
+
             let warning = match (promotion_warning, landing_warning) {
                 (Some(promotion), Some(landing)) => Some(format!("{}; {}", promotion, landing)),
                 (Some(warning), None) | (None, Some(warning)) => Some(warning),

@@ -445,10 +445,22 @@ pub async fn apply_decision_effect(
                 },
             )
             .await?;
+            // D10: promote the dependents this goal was blocking AND start
+            // them. Promotion alone left them in Ready with no worker until a
+            // human called resume_roadmap by hand.
+            //
+            // This arm does not land the approved work onto the trunk — the
+            // only `goal_landing::land` call site is the inline approve_review
+            // arm in routes/decisions.rs, which `execute_effect` never reaches
+            // because approve_review is outbox-eligible and delegates here
+            // first. If landing is ever restored on this path, the nudge
+            // belongs AFTER it: a dependent builds on the trunk.
             let warning = match decision.project_id.as_deref() {
                 Some(project_id) => {
-                    goal_transition::promote_eligible_dependents_or_warn(pool, project_id, goal_id)
-                        .await
+                    crate::agents::platform_extensions::orchestrator::promote_and_dispatch_dependents(
+                        pool, project_id, goal_id,
+                    )
+                    .await
                 }
                 None => None,
             };
@@ -1545,6 +1557,87 @@ mod tests {
         .await
         .unwrap();
         decisions::get_decision(pool, &d.id).await.unwrap().unwrap()
+    }
+
+    /// D10, completion/land path: approving a goal's review promotes its
+    /// dependents Triage→Ready — and, since the nudge, actually starts them.
+    /// Before the nudge the dependent sat in Ready with no worker until a
+    /// human called `resume_roadmap` by hand.
+    #[tokio::test]
+    async fn approving_a_review_dispatches_the_promoted_dependent() {
+        use crate::agents::platform_extensions::orchestrator::test_dispatch_recorder;
+        test_dispatch_recorder::install();
+
+        let pool = test_pool().await;
+        let parent = goal_in_review(&pool).await;
+        let triage = crate::cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "triage")
+            .await
+            .unwrap()
+            .unwrap();
+        let dependent = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Dependent of the approved goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(triage.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "depends_on": [parent.id],
+                    "attempt_count": 0,
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(parent.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+
+        apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        assert_eq!(goal_state_of(&pool, &parent.id).await, "complete");
+        assert_eq!(
+            goal_state_of(&pool, &dependent.id).await,
+            "ready",
+            "the dependent is promoted out of Triage"
+        );
+        assert!(
+            test_dispatch_recorder::saw(&dependent.id),
+            "approving a goal must ask the dispatcher to start the dependent it \
+             just unblocked — not leave it waiting for a manual resume_roadmap"
+        );
     }
 
     #[tokio::test]

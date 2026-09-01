@@ -12,9 +12,10 @@
 //!    route-level `execute_effect` does NOT cover: `choice` answers,
 //!    `unblock` answered with `input`, and approved worker capability gates
 //!    on a parked goal. The goal becomes re-dispatch-eligible (Triage → Ready
-//!    through the guard, attention flag cleared, attempt cap extended) —
-//!    dispatching remains the orchestrator's heartbeat job, same as L1's own
-//!    unblock-approve effect.
+//!    through the guard, attention flag cleared, attempt cap extended) and is
+//!    then handed to the dispatcher (D10) — until that nudge existed nothing
+//!    in the tree picked a Ready goal up except the manual `resume_roadmap`
+//!    tool, so "eligible" meant "waiting indefinitely".
 //!
 //! Everything here is deterministic Rust. Zero cloud tokens.
 
@@ -120,9 +121,13 @@ async fn henry_approve_effect(
         },
     )
     .await?;
+    // D10: promoting the dependents is not enough — nothing dispatched them.
     let warning = match decision.project_id.as_deref() {
         Some(project_id) => {
-            goal_transition::promote_eligible_dependents_or_warn(pool, project_id, goal_id).await
+            crate::agents::platform_extensions::orchestrator::promote_and_dispatch_dependents(
+                pool, project_id, goal_id,
+            )
+            .await
         }
         None => None,
     };
@@ -222,9 +227,27 @@ pub async fn resume_answered_decision(
     )
     .await?;
 
+    // D10: "re-dispatch eligible" used to mean nothing — no trigger in the
+    // tree picked a Ready goal up except the manual `resume_roadmap` tool, so
+    // an unparked goal waited indefinitely. Nudge the dispatcher now. The
+    // nudge is best-effort and cannot fail the resume, which has already
+    // committed, and it changes no eligibility rule: the pause tag, the Ready
+    // column gate, the budget check and the atomic claim all still decide.
+    let dispatched = crate::agents::platform_extensions::orchestrator::nudge_dispatch_ready_goals(
+        pool,
+        &card.project_id,
+        "decision unpark",
+    )
+    .await;
+
     Ok(Some(format!(
-        "goal resumed: unparked to Ready after answered {} decision (re-dispatch eligible)",
-        decision.kind
+        "goal resumed: unparked to Ready after answered {} decision ({})",
+        decision.kind,
+        if dispatched > 0 {
+            "dispatched"
+        } else {
+            "re-dispatch eligible"
+        }
     )))
 }
 
@@ -442,6 +465,67 @@ mod tests {
                 .and_then(|b| b.get("attempt_cap"))
                 .and_then(|v| v.as_u64()),
             Some(3 + goal_transition::DEFAULT_ATTEMPT_CAP)
+        );
+    }
+
+    /// D10, unpark path: "re-dispatch eligible" used to mean nothing — the
+    /// unparked goal sat in Ready with no worker until a human resumed the
+    /// roadmap by hand. The resume now asks the dispatcher to start it.
+    #[tokio::test]
+    async fn resuming_a_parked_goal_dispatches_it() {
+        use crate::agents::platform_extensions::orchestrator::test_dispatch_recorder;
+        test_dispatch_recorder::install();
+
+        let pool = test_pool().await;
+        let goal = goal_in_state(
+            &pool,
+            "triage",
+            serde_json::json!({
+                "needs_human_attention": true,
+                "attempt_count": 3,
+                "last_error": "blocked on a choice",
+            }),
+        )
+        .await;
+
+        let d = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "unblock".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("The goal is blocked and needs your direction".to_string()),
+                detail: Some("out of budget".to_string()),
+                payload: serde_json::json!({"reason": "attempt_cap", "spent": 3, "cap": 3}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "input".to_string(),
+                input_text: Some("use the cached index".to_string()),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+
+        resume_answered_decision(&pool, &answered, proof)
+            .await
+            .unwrap()
+            .expect("parked goal must resume");
+
+        assert_eq!(state_of(&pool, &goal.id).await, "ready");
+        assert!(
+            test_dispatch_recorder::saw(&goal.id),
+            "an unparked goal must be handed to the dispatcher, not left \
+             'eligible' with nothing that ever dispatches it"
         );
     }
 

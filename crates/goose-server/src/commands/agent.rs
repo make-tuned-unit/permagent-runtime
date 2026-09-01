@@ -44,6 +44,24 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
 
     let app_state = state::AppState::new(settings.tls).await?;
 
+    // D10: the goal dispatcher the promotion/unpark nudges call. Without it, a
+    // dependent promoted Triage→Ready when its parent was approved, and a goal
+    // unparked by an answered decision, both sit in Ready with no worker until
+    // a human calls `resume_roadmap` — that tool was the only caller of
+    // `dispatch_eligible_goals` in the tree. Idempotent (OnceLock).
+    //
+    // Installed HERE, in the serving daemon, and deliberately NOT in
+    // `AppState::new`: dozens of tests build an `AppState`, and installing a
+    // real dispatcher there would let a test approval spawn a real worker
+    // process. Without it those tests keep exactly today's behavior. Adds no
+    // eligibility rule either way — the roadmap_paused tag, the Ready column
+    // gate, the budget check and the atomic Ready→InProgress claim all still
+    // decide who runs.
+    permagent::agents::platform_extensions::orchestrator::install_dispatch_hook(
+        std::sync::Arc::new(permagent::session::SessionManager::instance()),
+    );
+    info!("Goal dispatch hook installed (auto-dispatch on promotion/unpark)");
+
     // Seed preset workspaces if user has none
     if let Ok(pool) = app_state.session_manager().pool_clone().await {
         match permagent::workspaces::seed_presets_if_empty(&pool).await {
