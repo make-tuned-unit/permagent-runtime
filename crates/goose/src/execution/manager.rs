@@ -90,6 +90,12 @@ impl AgentManager {
         &self.session_manager
     }
 
+    /// The same SessionManager as an owned handle, for boot tasks that outlive
+    /// the borrow (the goal reconciliation spawned at daemon startup).
+    pub fn session_manager_arc(&self) -> Arc<SessionManager> {
+        Arc::clone(&self.session_manager)
+    }
+
     pub async fn set_persona(&self, persona: crate::config::agent_identity::SharedPersona) {
         *self.persona.write().await = Some(persona);
     }

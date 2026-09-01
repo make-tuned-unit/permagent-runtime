@@ -501,58 +501,12 @@ impl OrchestratorClient {
             kanban_cache: Arc::new(tokio::sync::Mutex::new(KanbanContextCache::new())),
         };
 
-        // Resume in-progress goals from a PRIOR DAEMON LIFECYCLE — at most once
-        // per process.
-        //
-        // This is `Self::new`, and `client_factory` runs it for every agent
-        // session that loads the orchestrator extension: every scheduled job,
-        // every chat turn. The sweep was therefore anything but one-shot. With
-        // `monitor-3-active-goals-every-2-minutes` on its schedule it ran every
-        // couple of minutes, and each pass treated freshly-dispatched goals as
-        // orphans and requeued them — eight Wave 1 goals died that way on
-        // 2026-08-05, logging "Resuming 8 in-progress goal(s) from prior
-        // session" twice in nine minutes while the daemon never restarted once.
-        //
-        // The guard is process-wide, not per-client, because that is the scope
-        // the sweep's own precondition assumes: "a prior daemon lifecycle" can
-        // only be recovered from once, at this daemon's start.
-        static RESUME_DONE: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
-        if RESUME_DONE
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-            )
-            .is_err()
-        {
-            return Ok(client);
-        }
-
-        let resume_sm = client.context.session_manager.clone();
-        tokio::spawn(async move {
-            // Small delay to let the DB pool and AgentManager finish initializing
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            if let Err(e) = resume_in_progress_goals(&resume_sm).await {
-                tracing::warn!(
-                    target: "permagentd::brain",
-                    "Failed to resume in-progress goals on startup: {}",
-                    e
-                );
-            }
-            // #504: once resume has re-registered live goals, reclaim goal
-            // worktrees orphaned by crashed or prior daemon lifecycles. Runs
-            // only at boot (orphans accrue across restarts, not steadily) and
-            // skips any worktree still attached to a non-terminal goal.
-            if let Err(e) = sweep_orphaned_goal_worktrees(&resume_sm).await {
-                tracing::warn!(
-                    target: "permagentd::brain",
-                    "Orphaned goal-worktree sweep failed on startup: {}",
-                    e
-                );
-            }
-        });
+        // Late trigger for the boot reconciliation, kept for the runs that
+        // never go through the daemon's own startup (a CLI session, a test
+        // harness). Idempotent: the daemon's boot call and this one claim the
+        // same process-wide guard, so whichever arrives first is the only one
+        // that sweeps.
+        spawn_boot_reconcile(client.context.session_manager.clone());
 
         Ok(client)
     }
@@ -6555,6 +6509,77 @@ impl ReconcileReport {
     }
 }
 
+/// Process-wide guard for the boot reconciliation. It is one-shot per PROCESS,
+/// not per caller, because that is the scope the sweep's own precondition
+/// assumes: "a prior daemon lifecycle" can only be recovered from once, at this
+/// daemon's start.
+static RESUME_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Claim the once-per-process boot reconciliation against `done`. `true` means
+/// the caller owns the pass; every later caller gets `false`.
+///
+/// Takes the flag rather than reading the static so the claim can be exercised
+/// without burning the real one.
+fn claim_boot_reconcile(done: &std::sync::atomic::AtomicBool) -> bool {
+    done.compare_exchange(
+        false,
+        true,
+        std::sync::atomic::Ordering::SeqCst,
+        std::sync::atomic::Ordering::SeqCst,
+    )
+    .is_ok()
+}
+
+/// Spawn the boot reconciliation of goals interrupted by a PRIOR DAEMON
+/// LIFECYCLE, plus the orphaned-worktree sweep behind it. At most once per
+/// process, whichever entry point calls first.
+///
+/// Two entry points, deliberately:
+/// - **Daemon startup**, so a restart reconciles immediately. This is the one
+///   that matters: the pass used to live only in `OrchestratorRouter::new`, so
+///   a fresh boot reconciled nothing until some agent session happened to load
+///   the extension — a machine that restarted and then sat idle left its
+///   interrupted goals in `in_progress` indefinitely.
+/// - **`OrchestratorRouter::new`**, the original trigger, kept for runs that
+///   never pass through daemon startup.
+///
+/// The guard is what makes two triggers safe. `client_factory` builds a router
+/// for every agent session that loads the extension: every scheduled job, every
+/// chat turn. Unguarded, the sweep was anything but one-shot — with
+/// `monitor-3-active-goals-every-2-minutes` on its schedule it ran every couple
+/// of minutes, and each pass treated freshly-dispatched goals as orphans and
+/// requeued them. Eight Wave 1 goals died that way on 2026-08-05, logging
+/// "Resuming 8 in-progress goal(s) from prior session" twice in nine minutes
+/// while the daemon never restarted once.
+pub fn spawn_boot_reconcile(session_manager: Arc<crate::session::SessionManager>) {
+    if !claim_boot_reconcile(&RESUME_DONE) {
+        return;
+    }
+
+    tokio::spawn(async move {
+        // Small delay to let the DB pool and AgentManager finish initializing
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if let Err(e) = resume_in_progress_goals(&session_manager).await {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "Failed to resume in-progress goals on startup: {}",
+                e
+            );
+        }
+        // #504: once resume has re-registered live goals, reclaim goal
+        // worktrees orphaned by crashed or prior daemon lifecycles. Runs
+        // only at boot (orphans accrue across restarts, not steadily) and
+        // skips any worktree still attached to a non-terminal goal.
+        if let Err(e) = sweep_orphaned_goal_worktrees(&session_manager).await {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "Orphaned goal-worktree sweep failed on startup: {}",
+                e
+            );
+        }
+    });
+}
+
 /// Resume in-progress goals after daemon restart.
 ///
 /// Scans for goal cards in the `in_progress` state and either:
@@ -9341,6 +9366,81 @@ mod tests {
         );
     }
 
+    /// Capture everything a future logs at INFO, so "it reports itself" is
+    /// asserted rather than asserted-about. Same shape as `tool_inspection`'s
+    /// `captured_logs`, awaiting instead of calling: `set_default` installs a
+    /// thread-local subscriber and `#[tokio::test]` is current-thread, so the
+    /// guard still holds across the awaits.
+    async fn captured_info_logs<F: std::future::Future<Output = ()>>(f: F) -> String {
+        use std::sync::Mutex;
+        #[derive(Clone)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = Sink(buf.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || sink.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        f.await;
+        let bytes = buf.lock().unwrap().clone();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    /// R2b: "nothing to reconcile" and "never ran" must not look the same. The
+    /// pass used to return before `detail()` whenever no goal was in flight, so
+    /// a quiet boot left no line at all — exactly what `detail()`'s own comment
+    /// one level up forbids ("a report that omits its empty rows cannot be told
+    /// from a report that never looked").
+    #[tokio::test]
+    async fn a_quiet_boot_still_reports_that_it_looked() {
+        let pool = test_pool().await;
+        crate::session::spectral_schema::apply_briefings_schema(&pool)
+            .await
+            .unwrap();
+
+        let logs = captured_info_logs(async {
+            reconcile_in_progress_goals(&pool, &None).await;
+        })
+        .await;
+
+        assert!(
+            logs.contains("Boot reconciliation of in-flight goals"),
+            "a quiet boot must still emit its report line: {logs}"
+        );
+        assert!(
+            logs.contains("examined: 0 in-flight goal(s)"),
+            "the zero count is the whole point of the line: {logs}"
+        );
+    }
+
+    /// R2b: the boot reconciliation is one-shot per PROCESS, and both entry
+    /// points — daemon boot, and the first agent session to load this
+    /// extension — claim the same guard. A second sweep would treat
+    /// freshly-dispatched goals as orphans and requeue them (the eight Wave 1
+    /// goals lost on 2026-08-05).
+    #[test]
+    fn only_the_first_caller_claims_the_boot_reconciliation() {
+        let done = std::sync::atomic::AtomicBool::new(false);
+        assert!(
+            claim_boot_reconcile(&done),
+            "the first caller runs the pass"
+        );
+        assert!(
+            !claim_boot_reconcile(&done),
+            "every later caller is a no-op, whichever entry point it came from"
+        );
+    }
+
     /// A boot that finds nothing in flight files nothing — the reconciler is a
     /// report of work done, not a heartbeat.
     #[tokio::test]
@@ -9397,11 +9497,13 @@ mod tests {
                 .is_some_and(|e| e.contains("Worker session ended")),
             "abandonment reason must be recorded in last_error"
         );
-        // Parking does not fabricate a consumed attempt: the exhausted resume
-        // attempt was never dispatched, so attempt_count stays at 2.
+        // The attempt that tripped the cap is written back (9afc893b): the
+        // increment that makes `check_budget` park the goal used to live only
+        // in a local, so the card read 2 beside its own unblock decision
+        // saying "3/3 attempts". The card now agrees with that prose at 3.
         assert_eq!(
             updated.metadata_json.get("attempt_count").unwrap().as_u64(),
-            Some(2)
+            Some(3)
         );
 
         // S4 contract: an open kind='unblock' decision exists for the goal.

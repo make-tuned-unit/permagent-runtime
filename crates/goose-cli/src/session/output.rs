@@ -1386,10 +1386,11 @@ fn ready_line(persona_name: &str) -> String {
 }
 
 // The CLI deliberately has no opening-greeting renderer. `290468e5` added one
-// mirroring Chat's; it was removed the same day (Jesse: "I don't need it to say
-// Hello sir."). The banner's `ready_line` is the whole introduction a terminal
-// session gets. The persona's `opening_greeting` field is untouched and remains
-// Chat's — that client opens on an empty thread and has a blank space to fill.
+// mirroring Chat's; it was removed the same day (ruling 2026-08-31, the user:
+// "I don't need it to say Hello sir."). The banner's `ready_line` is the whole
+// introduction a terminal session gets. The persona's `opening_greeting` field
+// is untouched and remains Chat's — that client opens on an empty thread and
+// has a blank space to fill.
 
 pub fn display_session_info(
     resume: bool,
