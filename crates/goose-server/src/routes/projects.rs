@@ -1126,11 +1126,11 @@ async fn upload_project_documents_handler(
         results.push(doc);
     }
 
-    // #629: one event per request (not per file) — the other client refetches
-    // the whole documents list anyway. Only when something actually landed.
-    if !results.is_empty() {
-        events::emit(events::project_changed(&project.id, "documents"));
-    }
+    // #629 one-writer rule: `project_documents::insert_document` emits
+    // `project_changed(id, "documents")` itself (one frame per file — mirrors
+    // `cards::create_card`, which emits per card too), so every caller of
+    // `save_project_document` announces, including the inbox `project` route.
+    // No emit here.
     Ok(Json(UploadDocumentsResponse { documents: results }))
 }
 
@@ -1206,7 +1206,8 @@ async fn delete_project_document_handler(
         let _ = fs::remove_dir(parent).await;
     }
     tracing::info!(project = %project.id, doc = %doc_id, "project document deleted");
-    events::emit(events::project_changed(&project.id, "documents"));
+    // #629 one-writer rule: `project_documents::delete_document` emits the
+    // `project_changed(id, "documents")` frame itself. No emit here.
     Ok(StatusCode::NO_CONTENT)
 }
 
