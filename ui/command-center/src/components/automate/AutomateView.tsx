@@ -22,6 +22,7 @@ import {
 import { usePersona } from '../settings/useSettings';
 import { RunRoster } from './RunRoster';
 import { Button, SUCCESS_FLASH_MS } from '../common/Button';
+import { FormModal } from '../common/FormModal';
 import { ViewHeader } from '../common/ViewHeader';
 import { AsOf } from '../common/AsOf';
 import { getApiBaseUrl, loadDaemonToken } from '../../lib/api';
@@ -2219,19 +2220,18 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [intervalUnit, setIntervalUnit] = useState<'minutes' | 'hours' | 'days'>('hours');
   const [tz, setTz] = useState('');
   const [maxRetries, setMaxRetries] = useState('0');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const overlayRef = useRef<HTMLDivElement>(null);
 
   const cron = selectedPreset < CRON_PRESETS.length - 1 ? CRON_PRESETS[selectedPreset].cron : customCron;
   const unitSecs: Record<typeof intervalUnit, number> = { minutes: 60, hours: 3600, days: 86400 };
   const everySeconds = Math.max(0, Math.round(Number(intervalValue) || 0)) * unitSecs[intervalUnit];
 
-  // Returns `false` on every path that did NOT create an automation — the
-  // button primitive reads that as "it failed" and withholds the success tick,
-  // so a rejected form or a refused POST can never look like a create.
+  // Throws on every path that did NOT create an automation. `FormModal` turns
+  // that into the sentence above the action row and keeps the modal open — so a
+  // rejected form and a refused POST are said the same way, in the same place,
+  // and neither can look like a create. There is no local `error` or `saving`
+  // state any more: the shell owns both.
   const handleSave = async () => {
-    if (!name.trim() || !prompt.trim()) { setError('Name and task are required.'); return false; }
+    if (!name.trim() || !prompt.trim()) throw new Error('a name and a task are both required.');
     const recipe = { version: '1.0.0', title: name.trim(), description: prompt.trim().slice(0, 120), prompt: prompt.trim() };
     const body: Record<string, unknown> = {
       id: name.trim().replace(/\s+/g, '-').toLowerCase(),
@@ -2239,25 +2239,21 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
       max_retries: Math.max(0, Math.round(Number(maxRetries) || 0)),
     };
     if (kind === 'cron') {
-      if (!cron.trim()) { setError('Choose or enter a schedule.'); return false; }
+      if (!cron.trim()) throw new Error('choose or enter a schedule.');
       body.cron = cron;
       if (tz.trim()) body.tz = tz.trim();
     } else if (kind === 'once') {
-      if (!atLocal) { setError('Pick a date and time.'); return false; }
+      if (!atLocal) throw new Error('pick a date and a time.');
       const d = new Date(atLocal);
-      if (Number.isNaN(d.getTime())) { setError('Invalid date/time.'); return false; }
+      if (Number.isNaN(d.getTime())) throw new Error('that date and time did not parse.');
       body.at = d.toISOString();
       if (tz.trim()) body.tz = tz.trim();
     } else {
-      if (everySeconds < 1) { setError('Enter a valid interval.'); return false; }
+      if (everySeconds < 1) throw new Error('enter an interval of at least a minute.');
       body.every_seconds = everySeconds;
     }
-    setSaving(true); setError('');
-    try {
-      await apiFetch<unknown>('/schedule/create', { method: 'POST', body: JSON.stringify(body) });
-      onCreated();
-      return true;
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setSaving(false); return false; }
+    await apiFetch<unknown>('/schedule/create', { method: 'POST', body: JSON.stringify(body) });
+    onCreated();
   };
 
   const kindTabs: { id: typeof kind; label: string }[] = [
@@ -2272,9 +2268,19 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   };
 
   return (
-    <div ref={overlayRef} onClick={e => e.target === overlayRef.current && onClose()} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-      <div style={{ width: 480, maxHeight: '80vh', overflowY: 'auto', background: colors.bg, borderRadius: radius.lg, border: `1px solid ${colors.border}`, padding: 28 }}>
-        <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 600, marginBottom: 20 }}>New Automation</div>
+    // The form people type into had the worst floor in the app: no Escape, no
+    // close button, no `role="dialog"`, no focus trap, no focus return — and
+    // pressing Enter in the name field did nothing at all. `FormModal` is all
+    // of that, inherited rather than re-decided here.
+    <FormModal
+      title="New automation"
+      width={480}
+      submitLabel="Create automation"
+      failureLabel="Couldn't create this automation"
+      onSubmit={handleSave}
+      onCancel={onClose}
+    >
+      <>
 
         <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>What should we call this?</label>
         <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g., Weekly Cleanup" style={{
@@ -2297,6 +2303,9 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
             <Button
               key={t.id}
               colors={colors}
+              // Inside a `<form>` a button with no type IS a submit button, so
+              // picking a schedule kind would have submitted the form.
+              type="button"
               variant={kind === t.id ? 'primary' : 'bare'}
               onClick={() => setKind(t.id)}
               style={{
@@ -2360,35 +2369,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
         <input type="number" min={0} max={10} value={maxRetries} onChange={e => setMaxRetries(e.target.value)} style={{ ...fieldStyle, marginBottom: 4 }} />
         <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 16 }}>0 = no retry. If retries are exhausted, the job is escalated to your Decision Inbox.</div>
 
-        {error && <div style={{ fontSize: textSize.caption, color: colors.danger, marginBottom: 12 }}>{error}</div>}
-
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <Button
-            colors={colors}
-            onClick={onClose}
-            style={{
-              '--pa-btn-fg': colors.textMuted,
-              '--pa-btn-fg-hover': colors.text,
-              '--pa-btn-pad': '8px 16px',
-              '--pa-btn-radius': `${radius.sm}px`,
-              fontFamily: font.body,
-              fontSize: textSize.caption,
-            } as CSSProperties}
-          >Cancel</Button>
-          <Button
-            colors={colors}
-            variant="primary"
-            onClick={handleSave}
-            disabled={saving}
-            style={{
-              '--pa-btn-pad': '8px 20px',
-              '--pa-btn-radius': `${radius.sm}px`,
-              fontFamily: font.body,
-              fontSize: textSize.caption,
-            } as CSSProperties}
-          >{saving ? 'Creating...' : 'Create Automation'}</Button>
-        </div>
-      </div>
-    </div>
+      </>
+    </FormModal>
   );
 }

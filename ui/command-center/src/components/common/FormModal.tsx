@@ -40,6 +40,9 @@ export interface FormModalProps {
   title: string;
   /** Optional status pill beside the title, same contract as `DetailModal`. */
   badge?: { label: string; color: string; bg: string } | null;
+  /** Panel width, passed through to `DetailModal`. A form with a date picker
+   *  and a timezone field is a different size from a two-field one. */
+  width?: number | string;
   /** The fields. Rendered inside the `<form>`, so Enter submits from any of
    *  them and a `required` attribute is enforced by the browser. */
   children: ReactNode;
@@ -66,6 +69,7 @@ export interface FormModalProps {
 export function FormModal({
   title,
   badge,
+  width,
   children,
   submitLabel,
   cancelLabel = 'Cancel',
@@ -100,6 +104,7 @@ export function FormModal({
     <DetailModal
       title={title}
       badge={badge}
+      width={width}
       onClose={onCancel}
       footer={<>
         {secondaryAction}

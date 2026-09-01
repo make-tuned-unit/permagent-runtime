@@ -73,13 +73,6 @@ const EXEMPT: Record<string, { count: number; why: string }> = {
 };
 
 const FRONTIER: Record<string, { count: number; why: string }> = {
-  'components/automate/AutomateView.tsx': {
-    count: 1,
-    why: "NewAutomationModal — the worst floor left (no Escape, no close "
-      + 'button, no dialog semantics, on a form people type into) and the '
-      + 'least chrome to delete. It pushes and pops a browser-overlay counter '
-      + 'that has to move with it',
-  },
   'components/settings/ConfigureProviderModal.tsx': {
     count: 1,
     why: 'already has the whole floor, hand-rolled — trap, role, aria-modal, '
