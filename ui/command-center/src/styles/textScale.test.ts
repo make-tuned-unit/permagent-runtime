@@ -79,7 +79,10 @@ const OFF_RAMP_BUDGET: Record<string, number> = {
   'components/sidebar': 1,
   'components/skills': 2,
   'components/tool-results': 2,
-  'components/voice': 7,
+  // 6, down from 7: the Orb's 28px teach-word is now `type.display`. The six
+  // that remain are all 10px, and the ruling above says that cohort is a
+  // product call about density, not a screen lane's to make.
+  'components/voice': 6,
   'components/wizard': 6,
   'components/world': 32,
 };

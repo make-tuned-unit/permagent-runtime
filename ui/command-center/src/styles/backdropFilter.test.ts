@@ -59,7 +59,9 @@ const LANE_OWNED: Record<string, { max: number; lane: string }> = {
   'components/common/CanvasLegend.tsx': { max: 2, lane: 'R13/R16 canvas overlays' },
   'components/projects/PersonDetailModal.tsx': { max: 2, lane: 'R12 Projects' },
   'components/chat/SessionPicker.tsx': { max: 1, lane: "R4' chat dock/launcher" },
-  'components/voice/MeetingRecorder.tsx': { max: 2, lane: 'R10 Automate / voice surfaces' },
+  // MeetingRecorder's two are GONE (R4' voice surfaces): the floating panel
+  // takes `glassSurface()`, and the picker modal — a modal BODY, which is
+  // content by Apple's own list — is simply opaque, over the theme's `veil`.
 };
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
