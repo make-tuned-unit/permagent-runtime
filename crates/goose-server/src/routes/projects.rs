@@ -399,10 +399,9 @@ async fn create_project_handler(
     let project = projects::create_project(&pool, input)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-    // #629 multi-client liveness: real write → push, so a second client's
-    // projects list updates without waiting for its 5s poll. Same discipline
-    // for every emit in this file: only after the write succeeded.
-    events::emit(events::project_changed(&project.id, "created"));
+    // #629 multi-client liveness: the `project_changed` frame is emitted by
+    // `projects::create_project` — the writer `platform__project(create)` also
+    // goes through — so both paths announce identically and neither doubles.
     Ok((StatusCode::CREATED, Json(ProjectResponse::from(project))))
 }
 
@@ -441,8 +440,7 @@ async fn update_project_handler(
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?
         .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
-    // #629: status drags / renames from another device push instantly.
-    events::emit(events::project_changed(&updated.id, "updated"));
+    // #629: `projects::update_project` emits `project_changed(updated)`.
     Ok(Json(ProjectResponse::from(updated)))
 }
 
@@ -468,9 +466,7 @@ async fn delete_project_handler(
     let deleted = projects::delete_project(&pool, &project.id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    if deleted {
-        events::emit(events::project_changed(&project.id, "deleted"));
-    }
+    // `projects::delete_project` emits `project_changed(deleted)`.
     Ok(Json(DeleteResponse { deleted }))
 }
 
@@ -487,8 +483,7 @@ async fn touch_project_handler(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if touched {
-        // Real write (last_opened_at ordering changes other clients' lists).
-        events::emit(events::project_changed(&id, "touched"));
+        // `projects::touch_project` emits `project_changed(touched)`.
         Ok(Json(TouchResponse { touched }))
     } else {
         Err(StatusCode::NOT_FOUND)
@@ -528,7 +523,7 @@ async fn add_tag_handler(
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     if ok {
-        events::emit(events::project_changed(&id, "tags"));
+        // `projects::add_tag` emits `project_changed(tags)`.
         Ok(StatusCode::CREATED)
     } else {
         Err((StatusCode::NOT_FOUND, "Project not found".to_string()))
@@ -548,7 +543,7 @@ async fn remove_tag_handler(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if removed {
-        events::emit(events::project_changed(&id, "tags"));
+        // `projects::remove_tag` emits `project_changed(tags)`.
         Ok(StatusCode::OK)
     } else {
         Err(StatusCode::NOT_FOUND)
@@ -1631,7 +1626,8 @@ async fn extract_meeting_todos(
         "meeting todo extraction: {created} card(s) from {} action item(s)",
         todos.len()
     );
-    events::emit(events::project_changed(&project.id, "cards"));
+    // `cards::create_card` emits `project_changed(.., "cards")` per card; the
+    // client's 250ms liveness debounce coalesces the batch into one refetch.
 }
 
 /// DELETE /api/projects/{id}/notes/{note_id} — delete a note (+ best-effort
@@ -2242,7 +2238,7 @@ async fn set_project_strategy_handler(
     .await
     .map_err(|e| (StatusCode::BAD_REQUEST, e))?
     .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
-    events::emit(events::project_changed(&updated.id, "updated"));
+    // `projects::update_project` emits `project_changed(updated)`.
     Ok(Json(ProjectResponse::from(updated)))
 }
 
@@ -2319,7 +2315,7 @@ async fn set_project_brand_handler(
     .await
     .map_err(|e| (StatusCode::BAD_REQUEST, e))?
     .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
-    events::emit(events::project_changed(&updated.id, "updated"));
+    // `projects::update_project` emits `project_changed(updated)`.
     Ok(Json(ProjectResponse::from(updated)))
 }
 
@@ -2384,7 +2380,7 @@ async fn set_verification_approval_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
-    events::emit(events::project_changed(&updated.id, "updated"));
+    // `projects::update_project` emits `project_changed(updated)`.
     Ok(Json(ProjectResponse::from(updated)))
 }
 
