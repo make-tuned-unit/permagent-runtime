@@ -12,6 +12,8 @@
 //!   person_changed    — project people associate/disassociate
 //!   identity_changed  — PUT /api/agent/identity
 //!   session_changed   — session create/delete/rename/fork
+//!   config_changed    — any config key write (agent, CLI, or Settings)
+//!   finance_changed   — finance ledger writes
 //!
 //! Run with `--nocapture` to print every captured frame as evidence.
 
@@ -85,6 +87,8 @@ async fn liveness_lanes_emit_to_real_websocket() {
         ));
         emit(events::identity_changed("Henry Evidence"));
         emit(events::session_changed("sess-EVID-1", "created"));
+        emit(events::config_changed(&["EVID_SECRET_KEY"], "set", true));
+        emit(events::finance_changed("position", "created"));
     };
 
     let have_all_lanes = |frames: &[serde_json::Value]| {
@@ -108,9 +112,14 @@ async fn liveness_lanes_emit_to_real_websocket() {
                 p["session_id"] == "sess-EVID-1"
             })
             .is_some()
+            && find(frames, "config_changed", |p| {
+                p["keys"][0] == "EVID_SECRET_KEY"
+            })
+            .is_some()
+            && find(frames, "finance_changed", |p| p["kind"] == "position").is_some()
     };
 
-    eprintln!("\n── emitting 5 liveness events through production constructors ──");
+    eprintln!("\n── emitting 7 liveness events through production constructors ──");
     let mut frames: Vec<serde_json::Value> = Vec::new();
     let overall = tokio::time::Instant::now() + Duration::from_secs(10);
     while tokio::time::Instant::now() < overall && !have_all_lanes(&frames) && frames.len() < 500 {
@@ -182,4 +191,32 @@ async fn liveness_lanes_emit_to_real_websocket() {
     .expect("session_changed not delivered over WS");
     assert_envelope(f, "session_changed");
     assert_eq!(f["payload"]["change"], "created");
+
+    // config_changed (R1). The SECRET lane is the one asserted here on purpose:
+    // it is where payload discipline stops being a style rule and becomes a
+    // credential boundary. The frame names the key, flags it secret, and says
+    // nothing whatever about the value.
+    let f = find(&frames, "config_changed", |p| {
+        p["keys"][0] == "EVID_SECRET_KEY"
+    })
+    .expect("config_changed not delivered over WS");
+    assert_envelope(f, "config_changed");
+    assert_eq!(f["payload"]["change"], "set");
+    assert_eq!(f["payload"]["secret"], true);
+    assert!(
+        f["payload"]["value"].is_null() && f["payload"]["masked_value"].is_null(),
+        "discipline breach: a config VALUE on the bus — the frame carries names only"
+    );
+
+    // finance_changed (R1): kind + change, never ids or figures.
+    let f = find(&frames, "finance_changed", |p| p["kind"] == "position")
+        .expect("finance_changed not delivered over WS");
+    assert_envelope(f, "finance_changed");
+    assert_eq!(f["payload"]["change"], "created");
+    assert!(
+        f["payload"]["symbol"].is_null()
+            && f["payload"]["entry_price"].is_null()
+            && f["payload"]["shares"].is_null(),
+        "discipline breach: position figures on the bus"
+    );
 }

@@ -247,9 +247,15 @@ pub async fn create_project(pool: &Pool<Sqlite>, input: CreateProject) -> Result
     // Seed default board columns for the new project
     crate::cards::seed_default_columns(pool, &id).await?;
 
-    get_project(pool, &id)
+    let project = get_project(pool, &id)
         .await?
-        .ok_or_else(|| "Failed to read created project".to_string())
+        .ok_or_else(|| "Failed to read created project".to_string())?;
+    // #1090 pattern: the announcement lives on the writer. The HTTP route used
+    // to emit this and `platform__project(create)` did not, so a project the
+    // agent made appeared on other clients only when their 5s poll caught up
+    // — and nowhere at all on surfaces that have no poll.
+    crate::events::emit(crate::events::project_changed(&project.id, "created"));
+    Ok(project)
 }
 
 pub async fn get_project(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Project>, String> {
@@ -490,7 +496,11 @@ pub async fn update_project(
             .map_err(|e| e.to_string())?;
     }
 
-    get_project(pool, id).await
+    let updated = get_project(pool, id).await?;
+    if updated.is_some() {
+        crate::events::emit(crate::events::project_changed(id, "updated"));
+    }
+    Ok(updated)
 }
 
 pub async fn delete_project(pool: &Pool<Sqlite>, id: &str) -> Result<bool, String> {
@@ -511,7 +521,11 @@ pub async fn delete_project(pool: &Pool<Sqlite>, id: &str) -> Result<bool, Strin
         .map_err(|e| e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())?;
 
-    Ok(result.rows_affected() > 0)
+    let deleted = result.rows_affected() > 0;
+    if deleted {
+        crate::events::emit(crate::events::project_changed(id, "deleted"));
+    }
+    Ok(deleted)
 }
 
 pub async fn touch_project(pool: &Pool<Sqlite>, id: &str) -> Result<bool, String> {
@@ -523,7 +537,11 @@ pub async fn touch_project(pool: &Pool<Sqlite>, id: &str) -> Result<bool, String
     .await
     .map_err(|e| e.to_string())?;
 
-    Ok(result.rows_affected() > 0)
+    let touched = result.rows_affected() > 0;
+    if touched {
+        crate::events::emit(crate::events::project_changed(id, "touched"));
+    }
+    Ok(touched)
 }
 
 pub async fn add_tag(pool: &Pool<Sqlite>, project_id: &str, tag: &str) -> Result<bool, String> {
@@ -550,6 +568,7 @@ pub async fn add_tag(pool: &Pool<Sqlite>, project_id: &str, tag: &str) -> Result
         .await
         .map_err(|e| e.to_string())?;
 
+    crate::events::emit(crate::events::project_changed(project_id, "tags"));
     Ok(true)
 }
 
@@ -561,7 +580,11 @@ pub async fn remove_tag(pool: &Pool<Sqlite>, project_id: &str, tag: &str) -> Res
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(result.rows_affected() > 0)
+    let removed = result.rows_affected() > 0;
+    if removed {
+        crate::events::emit(crate::events::project_changed(project_id, "tags"));
+    }
+    Ok(removed)
 }
 
 pub async fn list_tags(pool: &Pool<Sqlite>, project_id: &str) -> Result<Vec<String>, String> {
