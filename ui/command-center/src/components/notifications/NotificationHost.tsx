@@ -11,14 +11,27 @@ import {
   type AppNotification,
 } from '../../lib/notifications';
 import { navigateToTool, useCommandCenter } from '../../lib/store';
-import { font, radius, ease, textSize } from '../../styles/tokens';
+import { font, radius, duration, ease, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { useGlass } from '../common/Glass';
 
 const TOAST_MS = 6000;
 
 export function NotificationHost() {
   const { colors } = useTheme();
+  // The reference conversion for the glass tokens.
+  //
+  // A toast and the tray are the clearest case Apple's layer rule has: both
+  // float above whatever screen happens to be underneath, belong to no view,
+  // and are gone in six seconds. Nothing about them is content. They were
+  // already reaching for the material — `blur(24px) saturate(140%)` over an
+  // opaque `colors.surface`, so the blur never showed — and this makes it real
+  // rather than adding it.
+  //
+  // `glass` and not `glassHi`: both are small surfaces (320/300px), and the
+  // more opaque step is for sidebar-scale glass.
+  const glass = useGlass('glass');
   const { items } = useNotifications();
   const open = useTrayOpen();
   const [toastIds, setToastIds] = useState<string[]>([]);
@@ -82,9 +95,13 @@ export function NotificationHost() {
         <div data-notifications-ui style={{
           position: 'fixed', bottom: 96, left: 60, zIndex: 90, width: 320,
           maxHeight: '60vh', overflowY: 'auto',
-          background: colors.surface, backdropFilter: 'blur(24px) saturate(140%)',
+          ...glass,
           border: `1px solid ${colors.borderHi}`, borderRadius: radius.lg,
-          boxShadow: colors.elevationFloating, padding: 8,
+          // The material's own shadow is a specular rim plus a close ambient;
+          // the tray's existing float height is kept by composing the theme's
+          // elevation on top of it rather than replacing it.
+          boxShadow: `${glass.boxShadow}, ${colors.elevationFloating}`,
+          padding: 8,
         }}>
           {items.length === 0 ? (
             <div style={{ padding: 18, textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
@@ -128,10 +145,13 @@ export function NotificationHost() {
               onClick={() => { dismissToast(n.id); activate(n); }}
               style={{
                 textAlign: 'left', cursor: 'pointer', width: '100%',
-                background: colors.surface, backdropFilter: 'blur(24px) saturate(140%)',
+                ...glass,
                 border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
-                boxShadow: colors.elevationFloating, padding: '10px 28px 10px 12px',
-                color: colors.text, animation: `pa-toast-in 220ms ${ease.out}`,
+                boxShadow: `${glass.boxShadow}, ${colors.elevationFloating}`,
+                padding: '10px 28px 10px 12px',
+                // A toast arriving is a spring, not a ramp: `snappy` settles in
+                // 240ms with a 0.6% overshoot, which reads as the thing landing.
+                color: colors.text, animation: `pa-toast-in ${duration.snappy}ms ${ease.snappy}`,
               }}
             >
               <div style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600, color: colors.cyan }}>{n.title}</div>

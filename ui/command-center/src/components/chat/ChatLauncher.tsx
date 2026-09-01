@@ -4,6 +4,7 @@ import { ease, font, radius, textSize } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
+import { useGlass } from '../common/Glass';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -13,6 +14,7 @@ export const CHAT_LAUNCHER_MARGIN = 20;
 
 export function ChatLauncher() {
   const { colors } = useTheme();
+  const glass = useGlass('glass');
   const [agentName, setAgentName] = useState('Agent');
   // Store-tracked (not local): createChatWindow sets it on EVERY open path
   // (dock-detach, drop handler, navigate) — local state only learned about
@@ -217,13 +219,17 @@ export function ChatLauncher() {
       position: 'fixed', bottom: CHAT_LAUNCHER_MARGIN, right: CHAT_LAUNCHER_MARGIN, zIndex: 9999,
       display: 'flex', alignItems: 'center', gap: 10,
       padding: '12px 20px', borderRadius: radius.pill,
-      background: colors.surface, backdropFilter: 'blur(16px)',
+      // Real glass. A fixed pill at z-index 9999 that hovers over every screen
+      // in the app is the floating control layer by definition, and it is
+      // small — so the default `glass`, not the sidebar-weight `glassHi`.
+      // It was already asking for blur(16px) over an opaque fill.
+      ...glass,
       // Theme-safe elevation — a cool soft shadow on silver, deep on dark
       // (the hardcoded black glow was invisible on the light themes).
       border: `1px solid ${hovered ? colors.cyan : colors.borderHi}`,
       color: colors.cyan, cursor: 'pointer',
       fontFamily: font.body, fontSize: textSize.small, fontWeight: 600,
-      boxShadow: colors.cardShadow,
+      boxShadow: `${glass.boxShadow}, ${colors.cardShadow}`,
       // Tactile feedback: lift on hover, settle on press.
       transform: pressed ? 'scale(0.97)' : hovered ? 'translateY(-2px)' : 'translateY(0)',
       transition: `all 200ms ${ease.out}`,

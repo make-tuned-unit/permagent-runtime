@@ -903,7 +903,12 @@ function PillarCard({
   };
 
   const shell: CSSProperties = {
-    background: colors.surface, backdropFilter: 'blur(24px) saturate(140%)',
+    // Opaque, blur deleted (D1). This is a card — a bordered box with a label,
+    // a body and a save state, sitting in the page's flow. Cards are content,
+    // and Apple keeps glass off the content layer: "Don't use Liquid Glass in
+    // the content layer." Its elevation already comes from the border and the
+    // fill, which is where it should come from.
+    background: colors.surface,
     border: `1px solid ${saved ? colors.borderHi : colors.border}`,
     borderRadius: radius.lg, padding: 16,
     display: 'flex', flexDirection: 'column', gap: 10, minHeight: 120,

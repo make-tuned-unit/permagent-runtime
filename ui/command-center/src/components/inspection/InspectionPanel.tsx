@@ -6,6 +6,7 @@ import { api } from '../../lib/api';
 import { wireEventType } from '../../lib/wireEvent';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
+import { useGlass } from '../common/Glass';
 
 interface ActivityMemory {
   id: string;
@@ -54,6 +55,12 @@ interface Props {
 
 export function InspectionPanel({ onClose }: Props) {
   const { colors } = useTheme();
+  // `glassHi`, not `glass`: this is a full-height 400px fixed rail — an
+  // inspector, Apple's largest glass shape after the sidebar — and large glass
+  // takes MORE opacity, not less, to hold legibility over whatever screen it
+  // is covering. It floats over everything at z-index 10000, so unlike the
+  // chat dock it genuinely has a backdrop to sample.
+  const glass = useGlass('glassHi');
   const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
   const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
   useEffect(() => { pushOverlay(); return () => { popOverlay(); }; }, [pushOverlay, popOverlay]);
@@ -163,11 +170,11 @@ export function InspectionPanel({ onClose }: Props) {
     <div style={{
       position: 'fixed', top: 0, right: 0, bottom: 0,
       width: 400, zIndex: 10000,
-      background: colors.surface, backdropFilter: 'blur(24px)',
+      ...glass,
       borderLeft: `1px solid ${colors.borderHi}`,
       display: 'flex', flexDirection: 'column',
       fontFamily: font.body, fontSize: textSize.caption,
-      boxShadow: colors.cardShadow,
+      boxShadow: `${glass.boxShadow}, ${colors.cardShadow}`,
     }}>
       {/* Header */}
       <div style={{

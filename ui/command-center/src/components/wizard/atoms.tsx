@@ -354,22 +354,15 @@ export function Particles({ density = 28 }: { density?: number }) {
 }
 
 // ── Glass ──────────────────────────────────────────────────────────────
-export function Glass({ children, r = 14, padding = 18, style = {} }: {
-  children: ReactNode; r?: number; padding?: number; style?: CSSProperties;
-}) {
-  const { colors } = useTheme();
-  return (
-    <div style={{
-      position: 'relative',
-      background: colors.surface,
-      backdropFilter: 'blur(24px) saturate(140%)',
-      WebkitBackdropFilter: 'blur(24px) saturate(140%)',
-      border: `1px solid ${colors.borderHi}`,
-      borderRadius: r, padding,
-      boxShadow: colors.cardShadow,
-      ...style,
-    }}>
-      {children}
-    </div>
-  );
-}
+/**
+ * Moved to `components/common/Glass.tsx`, where it is re-implemented on the
+ * glass tokens so its blur is real — the version that lived here blurred over
+ * an opaque `colors.surface`, which paints over the blur it just paid for.
+ *
+ * Re-exported so the six wizard Moments keep their existing import and this
+ * change stays a material fix rather than a wizard edit. The wizard redesign
+ * lane should switch those imports to `common/Glass` and drop this line; it
+ * should also decide whether a wizard card wants glass at all, since a card is
+ * content and Apple keeps glass off the content layer.
+ */
+export { Glass } from '../common/Glass';

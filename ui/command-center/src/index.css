@@ -6,6 +6,31 @@
   color-scheme: dark;
 }
 
+/* Spring easings — see SPRING_LINEAR in styles/tokens.ts for the physics that
+   produced these three strings and the durations they must be paired with.
+
+   Two rungs on purpose. The bare :root values are beziers, so a WKWebView
+   without linear() (Safari < 17.2; our minimumSystemVersion is macOS 11) falls
+   back to a curve we chose rather than to the browser's `ease` — which is what
+   an unparseable inline `transition-timing-function` would otherwise give it.
+   The @supports block then upgrades every one of them to the real sampled
+   spring on anything current. `ease.smooth` and friends reference these by
+   var(), which is why the tokens can be spring physics and still be safe to
+   drop into an inline style. */
+:root {
+  --pa-ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+  --pa-ease-snappy: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --pa-ease-bouncy: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@supports (transition-timing-function: linear(0, 1)) {
+  :root {
+    --pa-ease-smooth: linear(0, 0.0493, 0.1576, 0.2855, 0.4117, 0.526, 0.6243, 0.7061, 0.7724, 0.8253, 0.8668, 0.8991, 0.9239, 0.9429, 0.9574, 0.9683, 0.9764, 0.9826, 0.9871, 0.9905, 0.993, 0.9949, 0.9963, 0.9973, 1);
+    --pa-ease-snappy: linear(0, 0.0466, 0.1541, 0.2869, 0.4226, 0.5485, 0.658, 0.749, 0.8218, 0.8781, 0.9203, 0.9509, 0.9724, 0.9869, 0.9962, 1.0018, 1.0048, 1.0061, 1.0063, 1.0059, 1.0051, 1.0043, 1.0034, 1.0027, 1);
+    --pa-ease-bouncy: linear(0, 0.0607, 0.2009, 0.3722, 0.5425, 0.6933, 0.8159, 0.9083, 0.9726, 1.0134, 1.0358, 1.045, 1.0453, 1.0405, 1.0331, 1.0251, 1.0176, 1.0113, 1.0063, 1.0027, 1.0003, 0.9988, 0.9981, 0.9979, 1);
+  }
+}
+
 html,
 body,
 #root {
