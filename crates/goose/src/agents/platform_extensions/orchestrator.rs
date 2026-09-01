@@ -6627,17 +6627,21 @@ pub async fn reconcile_in_progress_goals(
         }
     };
 
-    if rows.is_empty() {
-        return report;
+    report.examined = rows.len();
+
+    // An empty enumeration falls through to the report line below rather than
+    // returning here. Returning was what made "nothing to reconcile" look
+    // exactly like "never ran" in the log; the loop over no rows costs
+    // nothing, and the pass owes an account of itself either way. Only the
+    // "Resuming N" line is worth suppressing when there is no N.
+    if !rows.is_empty() {
+        tracing::info!(
+            target: "permagentd::brain",
+            "Resuming {} in-progress goal(s) from prior session",
+            rows.len()
+        );
     }
 
-    tracing::info!(
-        target: "permagentd::brain",
-        "Resuming {} in-progress goal(s) from prior session",
-        rows.len()
-    );
-
-    report.examined = rows.len();
     for (card_id, project_id) in rows {
         match resume_single_goal(pool, manager, &card_id, &project_id).await {
             Ok(disposition) => report.record(disposition),
@@ -6655,15 +6659,18 @@ pub async fn reconcile_in_progress_goals(
 
     // R2b: leave an audit trail. A restart that rewrites goal state in silence
     // is the condition R0 had to reconstruct from the journal a month later —
-    // and the log lines this pass already wrote reach nobody. A boot that found
-    // nothing to reconcile files nothing: this is a report of work done, not a
-    // heartbeat (a per-boot "all quiet" briefing on a machine restarting four
-    // times a day is noise that teaches people to ignore the surface).
+    // and the log lines this pass already wrote reach nobody. Every boot logs
+    // this line, zero counts included, so the log can tell a quiet pass from a
+    // pass that never ran.
     tracing::info!(
         target: "permagentd::brain",
         "{}",
         report.detail()
     );
+    // The briefing is the narrower surface: a boot that found nothing to
+    // reconcile files nothing, because this is a report of work done, not a
+    // heartbeat (a per-boot "all quiet" briefing on a machine restarting four
+    // times a day is noise that teaches people to ignore the surface).
     if report.reconciled() > 0 {
         crate::briefings::file_briefing(
             pool,
