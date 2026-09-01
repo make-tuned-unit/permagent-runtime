@@ -29,7 +29,17 @@
 //! row's status records the lifecycle, and re-routing the same file to another
 //! destination is deliberately allowed (send a flyer to the Brain AND a
 //! project); each route is an explicit user action.
+//!
+//! # Error shape
+//!
+//! Every handler here returns [`ErrorResponse`] on failure — a JSON
+//! `{ "message": "…" }` body, not axum's bare `(StatusCode, String)`
+//! `text/plain` response. `apiFetch` on the client only ever reads JSON, so a
+//! `text/plain` error used to surface as the generic "Unknown error" no matter
+//! what the route actually said (the filename, the reason) — see
+//! `crate::routes::errors`.
 
+use crate::routes::errors::ErrorResponse;
 use crate::routes::projects::save_project_document;
 use crate::state::AppState;
 use axum::extract::Path;
@@ -40,6 +50,7 @@ use axum::{
     Json, Router,
 };
 use permagent::config::paths::Paths;
+use permagent::events;
 use permagent::inbox::{self, InboxFile, NewInboxFile};
 use permagent::{cards, grow_media, projects, reader};
 use std::sync::Arc;
@@ -49,37 +60,60 @@ const MAX_ROUTE_FILE_SIZE: usize = 50 * 1024 * 1024; // 50 MB
 
 async fn list_inbox_handler(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<InboxFile>>, StatusCode> {
+) -> Result<Json<Vec<InboxFile>>, ErrorResponse> {
     let pool = state
         .session_manager()
         .pool_clone()
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| ErrorResponse::internal(e.to_string()))?;
 
     let files = inbox::list_inbox_files(&pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(ErrorResponse::internal)?;
 
     Ok(Json(files))
+}
+
+/// Best-effort hostname from a download's origin URL, for the toast body and
+/// the `inbox_file_received` event payload. `None` on a missing/unparseable
+/// URL — never a guess.
+fn source_host(original_url: Option<&str>) -> Option<String> {
+    original_url
+        .and_then(|u| url::Url::parse(u).ok())?
+        .host_str()
+        .map(str::to_string)
 }
 
 async fn create_inbox_handler(
     State(state): State<Arc<AppState>>,
     Json(new): Json<NewInboxFile>,
-) -> Result<(StatusCode, Json<InboxFile>), StatusCode> {
+) -> Result<(StatusCode, Json<InboxFile>), ErrorResponse> {
     if new.filename.trim().is_empty() || new.disk_path.trim().is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(ErrorResponse::bad_request(
+            "filename and disk_path are required",
+        ));
     }
 
     let pool = state
         .session_manager()
         .pool_clone()
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| ErrorResponse::internal(e.to_string()))?;
 
     let saved = inbox::insert_inbox_file(&pool, &new)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(ErrorResponse::internal)?;
+
+    // #395 download feedback: announce arrival on the bus so the Downloads
+    // pane can toast even before anyone has chosen where the file goes — this
+    // fires on landing, distinct from `project_changed(id, "documents")`,
+    // which only fires once a file is *routed* to a project.
+    events::emit(events::inbox_file_received(
+        &saved.filename,
+        saved.size_bytes,
+        source_host(saved.original_url.as_deref()).as_deref(),
+        &saved.status,
+    ));
 
     Ok((StatusCode::CREATED, Json(saved)))
 }
@@ -115,35 +149,29 @@ struct RouteResponse {
 /// Load the routed file's bytes from the inbox directory. `disk_path` is
 /// written by our own download bridge, but reject traversal anyway — a DB row
 /// must never be able to read outside `~/.permagent/inbox/`.
-async fn read_inbox_bytes(file: &InboxFile) -> Result<Vec<u8>, (StatusCode, String)> {
+async fn read_inbox_bytes(file: &InboxFile) -> Result<Vec<u8>, ErrorResponse> {
     let rel = std::path::Path::new(&file.disk_path);
     if rel.is_absolute()
         || rel
             .components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
     {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "invalid inbox disk_path".to_string(),
-        ));
+        return Err(ErrorResponse::bad_request("invalid inbox disk_path"));
     }
 
     let abs = Paths::inbox_dir().join(rel);
     let data = tokio::fs::read(&abs).await.map_err(|e| {
         tracing::warn!(file = %file.id, path = %abs.display(), error = %e, "inbox route: file missing on disk");
-        (
-            StatusCode::CONFLICT,
-            format!("{} is no longer on disk in the inbox", file.filename),
-        )
+        ErrorResponse::conflict(format!(
+            "{} is no longer on disk in the inbox",
+            file.filename
+        ))
     })?;
     if data.len() > MAX_ROUTE_FILE_SIZE {
-        return Err((
-            StatusCode::PAYLOAD_TOO_LARGE,
-            format!(
-                "{} exceeds the {MAX_ROUTE_FILE_SIZE}-byte limit",
-                file.filename
-            ),
-        ));
+        return Err(ErrorResponse::bad_request(format!(
+            "{} exceeds the {MAX_ROUTE_FILE_SIZE}-byte limit",
+            file.filename
+        )));
     }
     Ok(data)
 }
@@ -153,15 +181,17 @@ async fn resolve_target_project(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     destination: &str,
     project_id: Option<&str>,
-) -> Result<projects::Project, (StatusCode, String)> {
-    let pid = project_id.map(str::trim).filter(|p| !p.is_empty()).ok_or((
-        StatusCode::BAD_REQUEST,
-        format!("destination '{destination}' requires a project_id"),
-    ))?;
+) -> Result<projects::Project, ErrorResponse> {
+    let pid = project_id
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| {
+            ErrorResponse::bad_request(format!("destination '{destination}' requires a project_id"))
+        })?;
     projects::get_project_by_id_or_slug(pool, pid)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
-        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))
+        .map_err(ErrorResponse::internal)?
+        .ok_or_else(|| ErrorResponse::not_found("Project not found"))
 }
 
 /// POST /api/inbox/{id}/route — explicitly send an inbox file to one
@@ -170,22 +200,19 @@ async fn route_inbox_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<RouteRequest>,
-) -> Result<Json<RouteResponse>, (StatusCode, String)> {
+) -> Result<Json<RouteResponse>, ErrorResponse> {
     let pool = state
         .session_manager()
         .pool_clone()
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| ErrorResponse::internal(e.to_string()))?;
 
     let file = inbox::get_inbox_file(&pool, &id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
-        .ok_or((StatusCode::NOT_FOUND, "Inbox file not found".to_string()))?;
+        .map_err(ErrorResponse::internal)?
+        .ok_or_else(|| ErrorResponse::not_found("Inbox file not found"))?;
     if file.status == "deleted" {
-        return Err((
-            StatusCode::CONFLICT,
-            "This inbox file was deleted".to_string(),
-        ));
+        return Err(ErrorResponse::conflict("This inbox file was deleted"));
     }
 
     let destination = req.destination.trim().to_lowercase();
@@ -204,10 +231,10 @@ async fn route_inbox_handler(
             };
             let digest = result.map_err(|e| {
                 tracing::warn!(file = %file.id, error = %e, "inbox route: reader ingest failed");
-                (
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    format!("The Reader could not read {}: {e}", file.filename),
-                )
+                ErrorResponse::unprocessable(format!(
+                    "The Reader could not read {}: {e}",
+                    file.filename
+                ))
             })?;
             let key = if digest.is_visual {
                 None
@@ -261,7 +288,7 @@ async fn route_inbox_handler(
                 None,
             )
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            .map_err(ErrorResponse::internal)?;
 
             let card = cards::create_card(
                 &pool,
@@ -276,25 +303,21 @@ async fn route_inbox_handler(
                 },
             )
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            .map_err(ErrorResponse::internal)?;
             grow_media::enqueue_after_create(pool.clone(), project.id.clone(), card.id.clone());
             ("routed", Some(project.id), None, None, Some(card.id), None)
         }
         other => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("Unknown destination '{other}'. Must be brain, project, or scheduler"),
-            ));
+            return Err(ErrorResponse::bad_request(format!(
+                "Unknown destination '{other}'. Must be brain, project, or scheduler"
+            )));
         }
     };
 
     let updated = inbox::mark_inbox_file(&pool, &file.id, new_status, project_stamp.as_deref())
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
-        .ok_or((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Inbox row vanished while routing".to_string(),
-        ))?;
+        .map_err(ErrorResponse::internal)?
+        .ok_or_else(|| ErrorResponse::internal("Inbox row vanished while routing"))?;
 
     tracing::info!(
         file = %updated.id,

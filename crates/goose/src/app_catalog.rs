@@ -46,6 +46,25 @@ pub struct CatalogEntry {
     pub reads: String,
     pub suggest_when: Vec<String>,
     pub customizable_layout: bool,
+    /// Sub-panels rendered INSIDE this tab (e.g. the Documents panel on a
+    /// project's detail view, inside the Projects tab) that read their own
+    /// distinct store — a tab's `reads` names only the tab's OWN top-level
+    /// store, so a panel nested inside it needs its own declared `reads` or
+    /// its store stays invisible to the coverage guard. This is the gap
+    /// `project_documents` fell through: the Projects tab's `reads: projects`
+    /// said nothing about the Documents panel living inside it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub panels: Vec<PanelEntry>,
+}
+
+/// One sub-panel inside a [`CatalogEntry`] tab. Deliberately minimal — a name
+/// and the store it reads — because the only thing the coverage guard needs
+/// is "this store must map to an observable aspect somewhere", not a second
+/// copy of the whole tab schema.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PanelEntry {
+    pub name: String,
+    pub reads: String,
 }
 
 impl AppCatalog {

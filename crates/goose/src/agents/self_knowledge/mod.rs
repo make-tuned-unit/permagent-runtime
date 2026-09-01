@@ -2740,6 +2740,9 @@ mod tests {
     // `council_action` is a Decision Inbox kind (approve files a board card),
     // named in the same descriptor so the agent does not invent a tool for filing
     // those proposals.
+    // `root_path` is a Project's own field (the workspace path a project may or
+    // may not have set), named in the Project Manager descriptor so the agent
+    // knows project_documents_list/project_document_read work without one.
     const NON_TOOL_PROSE_TOKENS: &[&str] = &[
         "sub_recipes",
         "worker_persona",
@@ -2750,6 +2753,7 @@ mod tests {
         "decision_inbox",
         "council_enabled",
         "council_action",
+        "root_path",
         // Configure (R2) names the CONFIG KEYS it can write and the proposal
         // classes it can file under. They are snake_case like a tool name and
         // are neither — naming them is the whole point of the entry, since a
