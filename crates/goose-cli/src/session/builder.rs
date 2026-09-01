@@ -1076,10 +1076,9 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     let debug_mode = session_config.debug || config.get_param("GOOSE_DEBUG").unwrap_or(false);
 
     // Read the identity out before the agent is moved into the session: the
-    // banner and the greeting have to name whoever the model is being told it
-    // is, and `new_primary_agent` installed that several hundred lines ago.
+    // banner has to name whoever the model is being told it is, and
+    // `new_primary_agent` installed that several hundred lines ago.
     let persona_name = agent_ptr.persona_display_name().await;
-    let opening_greeting = agent_ptr.persona_opening_greeting().await;
 
     let session = CliSession::new(
         Arc::try_unwrap(agent_ptr).unwrap_or_else(|_| panic!("There should be no more references")),
@@ -1103,13 +1102,12 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             &Some(session_id),
             &persona_name,
         );
-        // A new interactive session gets the persona's own opening line, the
-        // same way Chat does: read from `agent.yaml`, printed by the client,
-        // no model turn. Not on resume (the conversation is already underway)
-        // and not headless (nobody is there to be greeted).
-        if session_config.interactive && !session_config.resume {
-            output::display_opening_greeting(&opening_greeting);
-        }
+        // No opening greeting here. The banner already ends on "<name> is
+        // ready", and a second line saying hello is one more thing to read
+        // before you can start working (Jesse, 2026-08-31: "I don't need it to
+        // say Hello sir."). The persona's `opening_greeting` is unchanged and
+        // still Chat's — a graphical client opening on an empty thread has a
+        // blank space to fill; a terminal prompt does not.
     }
     session
 }

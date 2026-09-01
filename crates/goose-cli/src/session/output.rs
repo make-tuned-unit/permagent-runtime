@@ -1385,22 +1385,11 @@ fn ready_line(persona_name: &str) -> String {
     }
 }
 
-/// The persona's opening line, or `None` when there is nothing to say.
-///
-/// Mirrors Chat's greeting exactly in kind: read from the saved persona and
-/// printed by the client, with no model turn. An empty or whitespace-only
-/// greeting prints nothing — a blank line is not a greeting.
-fn opening_greeting_line(greeting: &str) -> Option<String> {
-    let greeting = greeting.trim();
-    (!greeting.is_empty()).then(|| greeting.to_string())
-}
-
-/// Print the persona's opening line, if it has one.
-pub fn display_opening_greeting(greeting: &str) {
-    if let Some(line) = opening_greeting_line(greeting) {
-        println!("\n  {}", style(line).white());
-    }
-}
+// The CLI deliberately has no opening-greeting renderer. `290468e5` added one
+// mirroring Chat's; it was removed the same day (Jesse: "I don't need it to say
+// Hello sir."). The banner's `ready_line` is the whole introduction a terminal
+// session gets. The persona's `opening_greeting` field is untouched and remains
+// Chat's — that client opens on an empty thread and has a blank space to fill.
 
 pub fn display_session_info(
     resume: bool,
@@ -1835,20 +1824,6 @@ mod tests {
             "Permagent is ready",
             "no name known: fall back to the product, never render \" is ready\""
         );
-    }
-
-    /// The CLI never greeted at all — no `opening_greeting` read existed
-    /// anywhere in `session/`. Chat's greeting is client-side and persona-fed;
-    /// this is the same thing in kind, and an empty greeting stays silent
-    /// rather than printing a blank line.
-    #[test]
-    fn a_new_session_opens_with_the_personas_own_line_and_never_a_blank_one() {
-        assert_eq!(
-            opening_greeting_line("  Hey — what are we building?  "),
-            Some("Hey — what are we building?".to_string())
-        );
-        assert_eq!(opening_greeting_line("   "), None);
-        assert_eq!(opening_greeting_line(""), None);
     }
 
     /// The seam `render_message`/`render_message_streaming` match on: a
