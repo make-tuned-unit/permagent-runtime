@@ -33,17 +33,24 @@ const STATE_SOURCES = readFileSync(
 
 /**
  * The agents that emit `agent_state_changed` from the daemon today. Steward
- * announces as `git_steward` and is mapped to the world id on arrival.
+ * announces as `git_steward` and is mapped to the world id on arrival. Council
+ * (`convene`) and Picker (`picker_close_scan`) joined this list once their
+ * emitters landed; Growth measurement (`growth_sweep.rs`, D18) is new here too.
  */
-const WIRED = ['henry', 'librarian', 'strix', 'steward', 'financier', 'forecaster'];
+const WIRED = [
+  'henry', 'librarian', 'strix', 'steward', 'financier', 'forecaster',
+  'council', 'picker', 'growth_measurement',
+];
 
 /**
- * Seats whose emitter does not exist yet (agent-QA D-N5-1 Council, D22
- * Polybot/Picker). They are on screen because a user turns each of them on and
- * reasons about it (J11) — and they render honestly static until the emitter
- * lane lands.
+ * Seats whose emitter does not exist yet (agent-QA D22 Polybot). Council and
+ * Picker (D-N5-1, D22) started here too, but J11's honest-static seats stop
+ * being honest-static the moment a real emitter lands, and both of theirs
+ * have. They are on screen because a user turns each of them on and reasons
+ * about it (J11) — and Polybot still renders honestly static until its
+ * emitter lane lands.
  */
-const AWAITING_EMITTER = ['council', 'polybot', 'picker'];
+const AWAITING_EMITTER = ['polybot'];
 
 describe('ambient simulation', () => {
   it.each(WIRED)('never simulates %s, which reports its own state', id => {

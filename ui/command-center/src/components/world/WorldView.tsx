@@ -23,6 +23,7 @@ import { FinancierHUD } from './FinancierHUD';
 import { CouncilHUD } from './CouncilHUD';
 import { PolybotHUD } from './PolybotHUD';
 import { PickerHUD } from './PickerHUD';
+import { GrowthMeasurementHUD } from './GrowthMeasurementHUD';
 import { AgentPicker } from './AgentPicker';
 import { PerfProbe, perfProbeEnabled, devDprOverride } from './shared/PerfProbe';
 import { useWorldVisibility } from './atmosphere/useWorldVisibility';
@@ -312,6 +313,8 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
     // J11's three: a seat with no emitter still gets a panel, because a
     // character you can walk up to and learn nothing from is worse than none.
     | 'council' | 'polybot' | 'picker'
+    // D18: Growth measurement's render target.
+    | 'growth_measurement'
     | null
   >(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -350,6 +353,8 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       setActiveHud('polybot');
     } else if (id === 'picker') {
       setActiveHud('picker');
+    } else if (id === 'growth_measurement') {
+      setActiveHud('growth_measurement');
     } else {
       setActiveHud(null);
     }
@@ -641,6 +646,10 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       />
       <PickerHUD
         visible={activeHud === 'picker'}
+        onClose={() => setActiveHud(null)}
+      />
+      <GrowthMeasurementHUD
+        visible={activeHud === 'growth_measurement'}
         onClose={() => setActiveHud(null)}
       />
       <AgentPicker

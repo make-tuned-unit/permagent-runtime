@@ -77,6 +77,12 @@ export const AGENT_TRIM = {
   // olive: the ~78° band no other character uses, and a long way from working
   // amber, which a scanner's own status must never be confused with.
   picker: '#8FA85F',
+  // Growth measurement — the nightly pass that judges verified actions
+  // against their own before-window. A genuine growth green (~115°), the one
+  // clear gap between the Steward's verdigris (~145°) and the Picker's moss
+  // (~80°) — thematically apt for a worker whose whole job is deciding
+  // whether something grew, and still far from every STATE color.
+  growthMeasurement: '#6BB464',
 } as const;
 
 export type AgentHudState = keyof typeof STATE;

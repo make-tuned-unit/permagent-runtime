@@ -92,6 +92,14 @@ export function AgentStateSources() {
     setAgentSource('librarian', 'The Librarian', 'idle', 'daemon');
     setAgentSource('steward', 'The Steward', 'idle', 'daemon');
     setAgentSource('financier', 'The Financier', 'idle', 'daemon');
+    // Council and Picker just flipped from `static` to `daemon` (their
+    // emitters landed) and Growth measurement is a brand-new daemon seat —
+    // all three get the same initial publish financier does, so each has a
+    // reading from mount instead of sitting with none until its first real
+    // event.
+    setAgentSource('council', 'The Council', 'idle', 'daemon');
+    setAgentSource('picker', 'The Picker', 'idle', 'daemon');
+    setAgentSource('growth_measurement', 'Growth measurement', 'idle', 'daemon');
 
     return subscribeWorldEvents((evt) => {
       const { type, payload, replayed } = evt;
@@ -155,14 +163,15 @@ export function AgentStateSources() {
   }, []);
 
   // ── Static seats — a real seat, an emitter that has not shipped ──────
-  // J11's three (Council, Polybot, Picker). They are published ONCE, at idle,
-  // from the `static` source: no toggler, no pulse, nothing that moves on its
-  // own. A seat that animates is claiming to know something, and for these
-  // three nothing does yet — their HUDs say so in words, and their live desk
-  // facts (the finance board, the Council's last session) are read there
-  // rather than invented here. When an emitter lands, its case goes on the
-  // `agent_state_changed` branch above and the roster's `wire` flips to
-  // 'daemon'; nothing else has to change.
+  // Of J11's three (Council, Polybot, Picker), only Polybot is left here —
+  // the Council's and the Picker's emitters have since landed and their wire
+  // flipped to 'daemon' above. What remains is published ONCE, at idle, from
+  // the `static` source: no toggler, no pulse, nothing that moves on its own.
+  // A seat that animates is claiming to know something, and for Polybot
+  // nothing does yet — its HUD says so in words, and its live desk facts (the
+  // finance board) are read there rather than invented here. When its emitter
+  // lands, its case goes on the `agent_state_changed` branch above and the
+  // roster's `wire` flips to 'daemon'; nothing else has to change.
   useEffect(() => {
     for (const a of ROSTER) {
       if (a.wire === 'static') setAgentSource(a.id, a.name, 'idle', 'static');
