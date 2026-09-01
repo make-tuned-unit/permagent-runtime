@@ -33,7 +33,7 @@
     "@inkjs/ui": "^2.0.0",
     "ink": "^7.1.1",
     "ink-multiline-input": "^0.1.0",
-    "marked": "^18.0.10",
+    "marked": "^18.0.11",
     "marked-terminal": "^7.3.0",
     "meow": "^13.2.0",
     "react": "^19.2.8"
@@ -43,7 +43,7 @@
   },
   "devDependencies": {
     "@types/marked-terminal": "^6.1.1",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "@types/react": "^19.2.18",
     "esbuild": "^0.28.2",
     "tsx": "^4.23.12",
