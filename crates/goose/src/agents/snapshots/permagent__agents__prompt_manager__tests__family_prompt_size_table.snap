@@ -5,10 +5,10 @@ expression: table
 shared body (no family selected): 77880 bytes / ~19470 tokens
 
 family        overlay_bytes  total_bytes  approx_total_tokens
-anthropic               233        78113                19529
-openai                  300        78180                19545
-deepseek                253        78133                19534
-glm                     287        78167                19542
-xai                     215        78095                19524
-qwen-local              465        78345                19587
+anthropic               233        78114                19529
+openai                  300        78181                19546
+deepseek                253        78134                19534
+glm                     287        78168                19542
+xai                     215        78096                19524
+qwen-local              465        78346                19587
 other                     0        77880                19470
