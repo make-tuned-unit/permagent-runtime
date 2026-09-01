@@ -497,7 +497,7 @@ impl GoalEngine for InternalSubagentEngine {
         let kill = GoalKill::Cancel(cancel_token.clone());
         let run_session_id = session_id.clone();
         let join = tokio::spawn(async move {
-            match run_subagent_task(SubagentRunParams {
+            let run = run_subagent_task(SubagentRunParams {
                 config: agent_config,
                 recipe,
                 task_config,
@@ -509,26 +509,9 @@ impl GoalEngine for InternalSubagentEngine {
                 persona_override,
             })
             .await
-            {
-                // Credential scan first (#508 — a secret must never survive to
-                // review), then deterministic evidence from the worktree so
-                // verification diffs THE WORKER'S commits.
-                Ok(_) => {
-                    if let Some(reason) = scan_committed_changes(&worktree, &baseline).await {
-                        GoalOutcome::Blocked { reason }
-                    } else {
-                        GoalOutcome::Success(Some(
-                            collect_evidence(
-                                &worktree,
-                                &baseline,
-                                "in-process subagent run".to_string(),
-                            )
-                            .await,
-                        ))
-                    }
-                }
-                Err(e) => GoalOutcome::Failed(e.to_string()),
-            }
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+            finalize_internal_run(&worktree, &baseline, run).await
         });
 
         Ok(DispatchedWork {
@@ -539,6 +522,55 @@ impl GoalEngine for InternalSubagentEngine {
             // different seam (session message), not built yet.
             steer: None,
         })
+    }
+}
+
+/// Terminal-outcome handling for an in-process subagent run — the internal
+/// engine's counterpart to [`await_external_child`]'s completion arms, and the
+/// single place its durability net lives.
+///
+/// Extracted from `InternalSubagentEngine::spawn` so the safe points are
+/// testable without a live provider, session manager or agent runner.
+///
+/// D13: until this existed, an internal-engine run's commits lived ONLY in the
+/// local worktree — no remote copy, no durability net — while every
+/// external-CLI and supervised-CLI run pushed unconditionally on success,
+/// failure and timeout alike. A worktree reaped (or a disk lost) before a human
+/// approved the goal took the work with it. The safe points here mirror the
+/// external engine's exactly: scan first, push what the scan cleared, and never
+/// push work the credential guard blocked.
+async fn finalize_internal_run(
+    worktree: &Path,
+    baseline: &str,
+    run: Result<(), String>,
+) -> GoalOutcome {
+    match run {
+        // Credential scan first (#508 — a secret must never survive to review),
+        // then deterministic evidence from the worktree so verification diffs
+        // THE WORKER'S commits.
+        Ok(()) => {
+            if let Some(reason) = scan_committed_changes(worktree, baseline).await {
+                GoalOutcome::Blocked { reason }
+            } else {
+                // #522: the scan passed — Permagent owns the push. Best-effort:
+                // a push failure leaves the work reviewable-but-unpushed rather
+                // than failing the goal.
+                push_clean_work(worktree, baseline).await;
+                GoalOutcome::Success(Some(
+                    collect_evidence(worktree, baseline, "in-process subagent run".to_string())
+                        .await,
+                ))
+            }
+        }
+        // W4: failure must not destroy the work either. Whatever the subagent
+        // committed before it failed is scanned and pushed, so the retry (or a
+        // human) can build on it instead of starting from nothing.
+        Err(e) => {
+            if scan_committed_changes(worktree, baseline).await.is_none() {
+                push_clean_work(worktree, baseline).await;
+            }
+            GoalOutcome::Failed(e)
+        }
     }
 }
 
@@ -3004,5 +3036,102 @@ mod tests {
         assert!(wt_active.exists(), "active goal worktree must be skipped");
         assert!(wt_unpushed.exists(), "unpushed worktree must be protected");
         assert!(!wt_done.exists(), "finished pushed worktree must be reaped");
+    }
+
+    // ── R1a/D13: the internal engine's durability net ────────────────────────
+
+    /// D13: an internal-engine run's commits used to exist ONLY in the local
+    /// worktree — no remote copy, no durability net, unlike every external-CLI
+    /// run which pushes on success, failure and timeout alike. The completion
+    /// path must publish them to the run's goal branch on origin.
+    #[tokio::test]
+    async fn internal_run_pushes_clean_work_to_the_goal_branch_on_success() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let run_id = "20260901_internal_success";
+        let wt = create_goal_worktree(&repo, &baseline, run_id)
+            .await
+            .unwrap();
+        commit_in_worktree(&wt, "work.txt");
+        let head = String::from_utf8(git(&wt, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let outcome = finalize_internal_run(&wt, &baseline, Ok(())).await;
+
+        assert!(matches!(outcome, GoalOutcome::Success(Some(_))));
+        let goal_ref = format!("refs/heads/{}", goal_branch_name(run_id));
+        let tip =
+            String::from_utf8(git(&repo, &["ls-remote", "origin", &goal_ref]).stdout).unwrap();
+        assert!(
+            tip.starts_with(&head),
+            "internal-engine work must reach origin at the completion safe point"
+        );
+        let main_tip =
+            String::from_utf8(git(&repo, &["ls-remote", "origin", "refs/heads/main"]).stdout)
+                .unwrap();
+        assert!(
+            main_tip.starts_with(&baseline),
+            "origin/main must NOT move on the completion path"
+        );
+    }
+
+    /// W4, for the internal engine: a failed run must not destroy the work
+    /// either — whatever the subagent committed before it failed is pushed, so
+    /// the retry (or a human) can build on it.
+    #[tokio::test]
+    async fn internal_run_pushes_partial_work_on_failure() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let run_id = "20260901_internal_failure";
+        let wt = create_goal_worktree(&repo, &baseline, run_id)
+            .await
+            .unwrap();
+        commit_in_worktree(&wt, "partial.txt");
+        let head = String::from_utf8(git(&wt, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let outcome = finalize_internal_run(&wt, &baseline, Err("boom".to_string())).await;
+
+        assert!(matches!(outcome, GoalOutcome::Failed(e) if e == "boom"));
+        let goal_ref = format!("refs/heads/{}", goal_branch_name(run_id));
+        let tip =
+            String::from_utf8(git(&repo, &["ls-remote", "origin", &goal_ref]).stdout).unwrap();
+        assert!(
+            tip.starts_with(&head),
+            "a failed internal run's partial commits must still reach origin (W4)"
+        );
+    }
+
+    /// The credential guard stays ahead of the push: work that trips the scan
+    /// is Blocked and NOTHING reaches the remote.
+    #[tokio::test]
+    async fn internal_run_never_pushes_credential_shaped_work() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let run_id = "20260901_internal_blocked";
+        let wt = create_goal_worktree(&repo, &baseline, run_id)
+            .await
+            .unwrap();
+        std::fs::write(wt.join(".env"), "OPENAI_API_KEY=sk-live-not-a-real-key\n").unwrap();
+        git(&wt, &["add", "-f", ".env"]);
+        git(&wt, &["commit", "-q", "-m", "oops"]);
+
+        let outcome = finalize_internal_run(&wt, &baseline, Ok(())).await;
+
+        assert!(
+            matches!(outcome, GoalOutcome::Blocked { .. }),
+            "credential-shaped work must block, not complete"
+        );
+        let goal_ref = format!("refs/heads/{}", goal_branch_name(run_id));
+        let tip =
+            String::from_utf8(git(&repo, &["ls-remote", "origin", &goal_ref]).stdout).unwrap();
+        assert!(
+            tip.trim().is_empty(),
+            "blocked work must never reach the remote"
+        );
     }
 }
