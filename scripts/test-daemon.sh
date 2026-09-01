@@ -29,9 +29,24 @@
 # librarian change that broke hardening_tests passed this gate and failed CI.
 # A gate whose scope is narrower than it appears is worse than no gate.
 #
+# Profile
+# -------
+# Debug by default, matching CI. A `--release` argument (or
+# TEST_DAEMON_PROFILE=release) runs the same gate against the release profile
+# instead — which is what the disk doctrine needs when target/debug has been
+# reclaimed and only the warm release tree exists: building a whole second
+# debug tree to run one filter costs ~100 GB this machine does not have.
+# The profile decides BOTH the cargo flag and the directory the dylibs are
+# signed in; hardcoding "/debug" while cargo built into "/release" signed zero
+# dylibs and pointed DYLD_LIBRARY_PATH at nothing, which is the exact silent
+# SIGKILL this script exists to prevent.
+#
 # Usage:
-#   scripts/test-daemon.sh                    # all daemon lib + integration tests
-#   scripts/test-daemon.sh voice::speakable   # filter, as passed to cargo test
+#   scripts/test-daemon.sh                          # debug, lib + integration
+#   scripts/test-daemon.sh voice::speakable         # debug, filtered
+#   scripts/test-daemon.sh --release                # release, all
+#   scripts/test-daemon.sh --release voice::speak   # release, filtered
+#   TEST_DAEMON_PROFILE=release scripts/test-daemon.sh voice::speak
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,16 +61,30 @@ cd "$ROOT"
 # where it actually builds; fall back to the guess only if that fails.
 TARGET_DIR="$(cargo metadata --no-deps --format-version 1 2>/dev/null \
   | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
-PROFILE_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$ROOT/target}}/debug"
+
+# Profile first, filter second. The profile may arrive as an argument or in the
+# environment; anything else in $1 is a cargo test filter, exactly as before.
+PROFILE="${TEST_DAEMON_PROFILE:-debug}"
+case "${1:-}" in
+  --release|release) PROFILE="release"; shift ;;
+  --debug|debug)     PROFILE="debug";   shift ;;
+esac
+case "$PROFILE" in
+  debug)   CARGO_PROFILE_FLAG=() ;;
+  release) CARGO_PROFILE_FLAG=(--release) ;;
+  *) echo "[test-daemon] unknown profile '$PROFILE' (use debug or release)" >&2; exit 2 ;;
+esac
+
+PROFILE_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$ROOT/target}}/$PROFILE"
 FILTER="${1:-}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   # Only macOS needs the signing dance; elsewhere plain cargo works.
-  exec cargo test -p permagent-daemon --lib --tests ${FILTER:+"$FILTER"}
+  exec cargo test -p permagent-daemon "${CARGO_PROFILE_FLAG[@]}" --lib --tests ${FILTER:+"$FILTER"}
 fi
 
-echo "[test-daemon] building test binary…"
-cargo build -p permagent-daemon --tests
+echo "[test-daemon] building test binary ($PROFILE)…"
+cargo build -p permagent-daemon "${CARGO_PROFILE_FLAG[@]}" --tests
 
 echo "[test-daemon] ad-hoc signing dylibs in $PROFILE_DIR"
 shopt -s nullglob
@@ -73,5 +102,5 @@ echo "[test-daemon] signed $signed dylib(s)"
 # test binary only; nothing here changes how the app itself is built or shipped.
 export DYLD_LIBRARY_PATH="$PROFILE_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 
-echo "[test-daemon] running tests${FILTER:+ (filter: $FILTER)}"
-exec cargo test -p permagent-daemon --lib --tests ${FILTER:+"$FILTER"}
+echo "[test-daemon] running tests in $PROFILE${FILTER:+ (filter: $FILTER)}"
+exec cargo test -p permagent-daemon "${CARGO_PROFILE_FLAG[@]}" --lib --tests ${FILTER:+"$FILTER"}
