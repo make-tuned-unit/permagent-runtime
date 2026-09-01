@@ -2,6 +2,8 @@ import { useRef, useState, useEffect } from 'react';
 import type { CameraMode } from './types';
 import { COLORS } from './constants';
 import { radius, textSize } from '../../styles/tokens';
+import { CanvasLegend } from '../common/CanvasLegend';
+import { WORLD_GESTURES, worldVocabulary } from './worldLegend';
 
 interface WorldHUDProps {
   mode: CameraMode;
@@ -65,6 +67,24 @@ export function WorldHUD({
 
   return (
     <>
+      {/* The hall's key. It is here, in orbit — the mode every user starts in —
+          because the badge below only ever said "WASD to walk" once the camera
+          had already switched, which teaches the gesture to someone who has
+          already been surprised by it. The badge keeps its reminder for while
+          you are walking; the key is where you learn it first. */}
+      <CanvasLegend
+        canvasId="world"
+        gestures={WORLD_GESTURES}
+        vocabulary={worldVocabulary()}
+        palette={{
+          bg: 'rgba(10, 14, 26, 0.86)',
+          border: `${COLORS.neonCyan}30`,
+          text: COLORS.primaryMarble,
+          dim: `${COLORS.primaryMarble}99`,
+          accent: COLORS.neonCyan,
+        }}
+      />
+
       <div style={hudStyle}>
         <div style={badgeStyle}>
           {mode === 'orbit' ? 'ORBIT' : 'WALKING'}
