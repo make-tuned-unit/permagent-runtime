@@ -270,7 +270,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                     // and every line names the destination it is about.
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '0 12px 10px' }}>
                       {rowResults.map(({ dest, result }) => (
-                        <span key={dest} style={{ fontSize: 11, color: result.ok ? colors.textMuted : colors.danger }}>
+                        <span key={dest} style={{ fontSize: textSize.micro, color: result.ok ? colors.textMuted : colors.danger }}>
                           {result.text}
                         </span>
                       ))}
