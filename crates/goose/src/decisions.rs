@@ -1089,10 +1089,25 @@ pub struct Decision {
     pub acted_by: Option<String>,
     pub created_at: String,
     pub resolved_at: Option<String>,
+    /// A verdict a channel that cannot authenticate has PROPOSED (D29).
+    /// The decision is still `open` and still unanswered; this only says what
+    /// the user said out loud, so the confirm surface can offer it in one tap.
+    /// Expired stagings never surface — this is `None` past the TTL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub staged_answer: Option<StagedAnswer>,
 }
 
 fn row_to_decision(r: &sqlx::sqlite::SqliteRow) -> Decision {
     let payload_str: String = r.get("payload_json");
+    // `try_get`, not `get`: several joins select an explicit column list that
+    // predates this field, and a missing column must read as "nothing staged"
+    // rather than panic.
+    let staged_answer = r
+        .try_get::<Option<String>, _>("staged_answer_json")
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str::<StagedAnswer>(&s).ok())
+        .filter(|s| !s.is_expired());
     Decision {
         id: r.get("id"),
         kind: r.get("kind"),
@@ -1111,12 +1126,179 @@ fn row_to_decision(r: &sqlx::sqlite::SqliteRow) -> Decision {
         acted_by: r.get("acted_by"),
         created_at: r.get("created_at"),
         resolved_at: r.get("resolved_at"),
+        staged_answer,
     }
 }
 
 const DECISION_COLUMNS: &str = "id, kind, goal_id, project_id, tier, headline, detail, \
      payload_json, rank, status, answer, answer_note, answer_choice_id, answer_input, \
-     acted_by, created_at, resolved_at";
+     acted_by, created_at, resolved_at, staged_answer_json";
+
+// ── Staged answers: voice proposes, a tap commits (D29) ─────────────────────
+//
+// NIST SP 800-63B-4 §3.2.3.2: "Biometric comparison based on voice SHALL NOT
+// be used", and §3.2.3: a biometric may never stand alone as an authenticator.
+// A spoken verdict therefore cannot BE an answer at any tier — not even the
+// lowest, and not even with a voiceprint enrolled. What it can be is a
+// proposal: the utterance is staged against the still-open decision, and the
+// answer happens only when someone taps Commit on an unlocked device (the
+// possession factor the standard does endorse).
+//
+// This is enforcement, not prompt guidance: the voice route calls
+// [`stage_answer`], which cannot resolve a decision, instead of the answer
+// path, which is the only thing that can.
+
+/// How long a staged verdict stays offerable. Stale staging must not lie in
+/// wait: a "yes" said half an hour ago is no longer evidence of present
+/// intent, so it stops being one-tap committable and the row is swept.
+pub const STAGED_ANSWER_TTL_SECS: i64 = 30 * 60;
+
+/// A verdict proposed on a channel that cannot authenticate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StagedAnswer {
+    /// `approve` or `reject` — the verdict the user said.
+    pub answer: String,
+    /// Anything said alongside the verdict, verbatim.
+    pub note: Option<String>,
+    /// When it was said (RFC3339, UTC), for the TTL and the "2m ago" label.
+    pub staged_at: String,
+    /// The channel that carried the proposal, e.g. `"voice"`. Never an
+    /// authority claim — it names who could not authenticate.
+    pub staged_via: String,
+}
+
+impl StagedAnswer {
+    /// Seconds since the verdict was spoken. `None` when `staged_at` is
+    /// unparseable — an unreadable timestamp is treated as expired below
+    /// rather than as freshly staged.
+    pub fn age_secs(&self) -> Option<i64> {
+        chrono::DateTime::parse_from_rfc3339(&self.staged_at)
+            .ok()
+            .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds())
+    }
+
+    /// Past the TTL (or unreadable) — must not be offered for commit.
+    pub fn is_expired(&self) -> bool {
+        match self.age_secs() {
+            Some(age) => age >= STAGED_ANSWER_TTL_SECS,
+            None => true,
+        }
+    }
+}
+
+/// Stage a proposed verdict against an OPEN decision, leaving it open.
+///
+/// Deliberately does no tier gating, because it grants no authority: nothing
+/// here can resolve a decision, run an effect, or append an audit row. The
+/// checks that remain are the ones that stop a proposal being un-committable
+/// later — the decision must exist, be open, and accept this verdict.
+pub async fn stage_answer(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+    answer: &str,
+    note: Option<String>,
+    staged_via: &str,
+) -> Result<StagedAnswer, AnswerError> {
+    if !matches!(answer, "approve" | "reject") {
+        return Err(AnswerError::Invalid(format!(
+            "only a bare approve/reject verdict can be staged, got '{}'",
+            answer
+        )));
+    }
+    let decision = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+    if decision.status != "open" {
+        return Err(AnswerError::AlreadyResolved(decision.status));
+    }
+    if !answer_allowed_for_kind(&decision.kind, answer) {
+        return Err(AnswerError::Invalid(format!(
+            "answer '{}' is not supported for decision kind '{}'",
+            answer, decision.kind
+        )));
+    }
+
+    let staged = StagedAnswer {
+        answer: answer.to_string(),
+        note,
+        staged_at: now_timestamp(),
+        staged_via: staged_via.to_string(),
+    };
+    let json = serde_json::to_string(&staged)
+        .map_err(|e| AnswerError::Db(format!("staged answer unserializable: {e}")))?;
+
+    // `WHERE status = 'open'` so a decision answered between the read above and
+    // this write keeps its resolution and gains no ghost staging.
+    let result =
+        sqlx::query("UPDATE decisions SET staged_answer_json = ? WHERE id = ? AND status = 'open'")
+            .bind(&json)
+            .bind(decision_id)
+            .execute(pool)
+            .await
+            .map_err(|e| AnswerError::Db(e.to_string()))?;
+    if result.rows_affected() == 0 {
+        return Err(AnswerError::AlreadyResolved("answered".to_string()));
+    }
+
+    crate::events::emit(crate::events::decision_staged(
+        decision_id,
+        &decision.kind,
+        answer,
+        staged_via,
+        decision.tier,
+    ));
+
+    Ok(staged)
+}
+
+/// Read the live staged verdict for a decision, if one is still offerable.
+/// Expired stagings read as `None` (and are swept by
+/// [`expire_stale_staged_answers`]).
+pub async fn staged_answer(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+) -> Result<Option<StagedAnswer>, String> {
+    Ok(get_decision(pool, decision_id)
+        .await?
+        .and_then(|d| d.staged_answer))
+}
+
+/// Discard a staged verdict. The user's "no, I didn't mean that" — and the
+/// same call the commit path uses to clear staging it has consumed.
+pub async fn clear_staged_answer(pool: &Pool<Sqlite>, decision_id: &str) -> Result<bool, String> {
+    let result = sqlx::query(
+        "UPDATE decisions SET staged_answer_json = NULL \
+         WHERE id = ? AND staged_answer_json IS NOT NULL",
+    )
+    .bind(decision_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Sweep staged verdicts past the TTL. Returns how many were dropped.
+///
+/// The read path already refuses to surface an expired staging, so this is
+/// hygiene rather than the guarantee — but it is what keeps a month-old "yes"
+/// from sitting in the row at all.
+pub async fn expire_stale_staged_answers(pool: &Pool<Sqlite>) -> Result<u64, String> {
+    let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(STAGED_ANSWER_TTL_SECS))
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+    let result = sqlx::query(
+        "UPDATE decisions SET staged_answer_json = NULL \
+         WHERE staged_answer_json IS NOT NULL \
+           AND (json_extract(staged_answer_json, '$.staged_at') IS NULL \
+                OR json_extract(staged_answer_json, '$.staged_at') <= ?)",
+    )
+    .bind(&cutoff)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(result.rows_affected())
+}
 
 /// Request to create a decision. `headline` and `detail` are both REQUIRED
 /// (amendment A1): `headline` is a plain-language outcome statement
@@ -1693,7 +1875,7 @@ pub async fn list_open_decisions(pool: &Pool<Sqlite>) -> Result<Vec<OpenDecision
         "SELECT d.id, d.kind, d.goal_id, d.project_id, d.tier, d.headline, d.detail, \
                 d.payload_json, d.rank, d.status, d.answer, d.answer_note, \
                 d.answer_choice_id, d.answer_input, d.acted_by, d.created_at, d.resolved_at, \
-                c.title AS goal_title \
+                d.staged_answer_json, c.title AS goal_title \
          FROM decisions d LEFT JOIN cards c ON d.goal_id = c.id \
          WHERE d.status = 'open' \
          ORDER BY d.rank DESC NULLS LAST, d.created_at ASC",
@@ -2190,9 +2372,12 @@ async fn answer_decision_inner(
         .map_err(|e| AnswerError::Db(e.to_string()))?;
 
     // Atomic open → answered: zero rows affected means we lost a race.
+    // `staged_answer_json = NULL`: a proposal is consumed by the commit, and a
+    // resolved decision must never carry one (nothing would ever clear it).
     let result = sqlx::query(
         "UPDATE decisions SET status = 'answered', answer = ?, answer_note = ?, \
-         answer_choice_id = ?, answer_input = ?, acted_by = ?, resolved_at = ? \
+         answer_choice_id = ?, answer_input = ?, acted_by = ?, resolved_at = ?, \
+         staged_answer_json = NULL \
          WHERE id = ? AND status = 'open'",
     )
     .bind(&answer.answer)
@@ -4205,5 +4390,204 @@ mod tests {
             .await
             .expect("jesse's own hand is never self-referential");
         assert_eq!(answered.status, "answered");
+    }
+
+    // ── D29: voice proposes, a tap commits ──
+
+    /// A Tier-2 decision, i.e. the tier the spoken path used to be able to
+    /// clear outright.
+    async fn tier2_risk_gate(pool: &Pool<Sqlite>) -> Decision {
+        create_decision(
+            pool,
+            NewDecision {
+                kind: "risk_gate".to_string(),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Allow a shell command to run".to_string()),
+                detail: Some("cc_shell: rm -rf ./build".to_string()),
+                payload: serde_json::json!({
+                    "action_class": "cc_shell",
+                    "summary": "remove the build directory",
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn staging_leaves_the_decision_open_and_unanswered() {
+        let pool = test_pool().await;
+        let d = tier2_risk_gate(&pool).await;
+        assert_eq!(
+            d.tier, 2,
+            "sanity: cc_shell is the tier voice must not clear"
+        );
+
+        let staged = stage_answer(&pool, &d.id, "approve", None, "voice")
+            .await
+            .expect("a proposal is always allowed — it grants nothing");
+        assert_eq!(staged.answer, "approve");
+        assert_eq!(staged.staged_via, "voice");
+
+        let after = get_decision(&pool, &d.id).await.unwrap().unwrap();
+        assert_eq!(after.status, "open", "staging must not resolve anything");
+        assert!(after.answer.is_none());
+        assert!(after.acted_by.is_none());
+        assert_eq!(
+            after.staged_answer.as_ref().map(|s| s.answer.as_str()),
+            Some("approve")
+        );
+
+        // And nothing was written to the authority record.
+        let audit_answers: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decision_audit WHERE decision_id = ? AND outcome != 'created'",
+        )
+        .bind(&d.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(audit_answers, 0, "a proposal is not an audited act");
+
+        // No effect was queued either.
+        let outbox: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM effect_outbox WHERE decision_id = ?")
+                .bind(&d.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(outbox, 0);
+    }
+
+    #[tokio::test]
+    async fn the_tap_commits_the_staged_verdict_as_jesse_not_as_voice() {
+        let pool = test_pool().await;
+        let d = tier2_risk_gate(&pool).await;
+        stage_answer(&pool, &d.id, "approve", None, "voice")
+            .await
+            .unwrap();
+
+        // The confirm surface answers through the ordinary path, under the
+        // tapping device's own credential.
+        let (answered, _proof) = answer_decision_with_principal(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+            "master",
+        )
+        .await
+        .expect("the tap is the authentication");
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.acted_by.as_deref(), Some("jesse"));
+        assert!(
+            answered.staged_answer.is_none(),
+            "the commit consumes the proposal"
+        );
+
+        let (acted_by, principal): (String, Option<String>) = sqlx::query_as(
+            "SELECT acted_by, principal FROM decision_audit \
+             WHERE decision_id = ? AND outcome = 'approve'",
+        )
+        .bind(&d.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(acted_by, "jesse");
+        assert_eq!(
+            principal.as_deref(),
+            Some("master"),
+            "the audit names the credential that committed, never 'voice'"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_staged_verdict_expires_and_stops_being_offered() {
+        let pool = test_pool().await;
+        let d = tier2_risk_gate(&pool).await;
+        stage_answer(&pool, &d.id, "reject", None, "voice")
+            .await
+            .unwrap();
+
+        // Age it past the TTL in place — the same row the sweep and the read
+        // path both see.
+        let stale = serde_json::json!({
+            "answer": "reject",
+            "note": null,
+            "staged_at": (chrono::Utc::now()
+                - chrono::Duration::seconds(STAGED_ANSWER_TTL_SECS + 60))
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string(),
+            "staged_via": "voice",
+        })
+        .to_string();
+        sqlx::query("UPDATE decisions SET staged_answer_json = ? WHERE id = ?")
+            .bind(&stale)
+            .bind(&d.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert!(
+            staged_answer(&pool, &d.id).await.unwrap().is_none(),
+            "an expired proposal is never offered for commit"
+        );
+        assert_eq!(expire_stale_staged_answers(&pool).await.unwrap(), 1);
+        assert!(
+            staged_answer(&pool, &d.id).await.unwrap().is_none(),
+            "and the sweep clears the row"
+        );
+
+        // A fresh one survives the same sweep.
+        stage_answer(&pool, &d.id, "reject", None, "voice")
+            .await
+            .unwrap();
+        assert_eq!(expire_stale_staged_answers(&pool).await.unwrap(), 0);
+        assert!(staged_answer(&pool, &d.id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn discarding_a_staged_verdict_clears_it() {
+        let pool = test_pool().await;
+        let d = tier2_risk_gate(&pool).await;
+        stage_answer(&pool, &d.id, "approve", None, "voice")
+            .await
+            .unwrap();
+        assert!(clear_staged_answer(&pool, &d.id).await.unwrap());
+        assert!(staged_answer(&pool, &d.id).await.unwrap().is_none());
+        assert!(
+            !clear_staged_answer(&pool, &d.id).await.unwrap(),
+            "discarding twice is a no-op, not an error"
+        );
+        let after = get_decision(&pool, &d.id).await.unwrap().unwrap();
+        assert_eq!(
+            after.status, "open",
+            "discard leaves the decision to answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn staging_refuses_a_resolved_decision_and_a_non_verdict() {
+        let pool = test_pool().await;
+        let d = tier2_risk_gate(&pool).await;
+        assert!(matches!(
+            stage_answer(&pool, &d.id, "choice", None, "voice")
+                .await
+                .expect_err("only a bare verdict can be staged"),
+            AnswerError::Invalid(_)
+        ));
+
+        answer_decision(&pool, &d.id, &approve(), ACTOR_JESSE)
+            .await
+            .unwrap();
+        assert!(matches!(
+            stage_answer(&pool, &d.id, "approve", None, "voice")
+                .await
+                .expect_err("an answered decision takes no proposals"),
+            AnswerError::AlreadyResolved(_)
+        ));
     }
 }

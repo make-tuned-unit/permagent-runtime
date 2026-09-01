@@ -3549,6 +3549,23 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .await?;
     }
 
+    // Staged (proposed-but-uncommitted) answers — D29 / NIST SP 800-63B-4.
+    // A channel that cannot authenticate (voice) writes its verdict HERE and
+    // the decision stays `open`; only a tap on the confirm surface answers it.
+    // Added AFTER the widening rebuild above so a legacy DB gets the column on
+    // the table it ends up with, not on one that is about to be replaced.
+    // Staged answers are TTL-bounded and disposable, so nothing is lost when a
+    // rebuild does drop the column's contents.
+    let decision_cols: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('decisions')")
+            .fetch_all(&mut *tx)
+            .await?;
+    if !decision_cols.iter().any(|c| c == "staged_answer_json") {
+        sqlx::query("ALTER TABLE decisions ADD COLUMN staged_answer_json TEXT")
+            .execute(&mut *tx)
+            .await?;
+    }
+
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_decisions_open
          ON decisions(status, rank DESC, created_at) WHERE status = 'open'",

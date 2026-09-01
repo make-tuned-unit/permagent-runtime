@@ -710,6 +710,7 @@ mod tests {
             acted_by: Some("jesse".to_string()),
             created_at: "2026-06-11T00:00:00.000Z".to_string(),
             resolved_at: Some("2026-06-11T00:00:01.000Z".to_string()),
+            staged_answer: None,
         }
     }
 
