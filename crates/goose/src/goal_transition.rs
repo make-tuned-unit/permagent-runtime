@@ -547,13 +547,36 @@ pub async fn park_goal(
 }
 
 /// Requeue a goal whose worker died (e.g. daemon restart): InProgress → Ready
-/// with an incremented attempt count and the abandonment reason recorded.
+/// with `new_attempt_count` recorded as the attempt count and the abandonment
+/// reason recorded as `last_error`.
+///
+/// The caller decides the count. The restart reconciler passes the CURRENT count
+/// unchanged when the interruption was a daemon-lifecycle change rather than a
+/// worker failure (R2a) — see `classify_restart_charge`.
 pub async fn requeue_goal(
     pool: &Pool<Sqlite>,
     card_id: &str,
     actor: &str,
     new_attempt_count: u64,
     reason: &str,
+) -> Result<(), GuardError> {
+    requeue_goal_with_meta(pool, card_id, actor, new_attempt_count, reason, &[]).await
+}
+
+/// [`requeue_goal`], additionally merging `extra_meta` into the card's metadata
+/// inside the SAME transaction.
+///
+/// Atomicity is the point: the restart exemption's idempotency marker
+/// (`restart_forgiven_lifecycle`) must land with the requeue it describes, or a
+/// crash between the two would hand the same goal a second free pass for the
+/// same interruption.
+pub async fn requeue_goal_with_meta(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    actor: &str,
+    new_attempt_count: u64,
+    reason: &str,
+    extra_meta: &[(&str, serde_json::Value)],
 ) -> Result<(), GuardError> {
     // BEGIN IMMEDIATE: this guard reads the goal row / audit-chain head before
     // upgrading to a write; taking the write lock up front avoids the un-retryable
@@ -597,6 +620,9 @@ pub async fn requeue_goal(
         "last_error".to_string(),
         serde_json::Value::String(reason.to_string()),
     );
+    for (key, value) in extra_meta {
+        meta.insert((*key).to_string(), value.clone());
+    }
     let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
         .map_err(|e| GuardError::Db(e.to_string()))?;
 

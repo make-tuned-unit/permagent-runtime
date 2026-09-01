@@ -6398,6 +6398,58 @@ pub fn daemon_lifecycle_id() -> &'static str {
     ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
 }
 
+/// Metadata key recording the `dispatched_lifecycle` a goal has ALREADY been
+/// forgiven an attempt for (R2a). The restart exemption is granted once per
+/// interruption: a goal that comes back round on the same stamp is charged
+/// normally, so a restart loop can never buy unlimited free retries.
+pub const RESTART_FORGIVEN_LIFECYCLE: &str = "restart_forgiven_lifecycle";
+
+/// Whether the boot reconciler charges an attempt for an orphaned in-flight
+/// goal. Named and pure so the classification is assertable directly (R4's
+/// chaos gate needs it without a daemon).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartCharge {
+    /// The interruption is a proven daemon-lifecycle change and this goal has
+    /// not been forgiven for it yet — requeue at the SAME attempt count.
+    NoCharge,
+    /// Charge the attempt: either the interruption cannot be shown to be a
+    /// restart, or this goal has already had its one free pass for it.
+    Charge,
+}
+
+/// Decide whether an orphaned in-flight goal's requeue consumes an attempt.
+///
+/// Only reached on the boot path, where `resume_single_goal` has already
+/// established that no live in-process tracker owns the goal. The rule:
+///
+/// * No `dispatched_lifecycle` stamp → **Charge**. The exemption forgives
+///   evidence of a restart, never the absence of it.
+/// * Stamp equal to the forgiven-lifecycle marker (or to the current process's
+///   own id) → **Charge**. One exemption per interruption.
+/// * Otherwise → **NoCharge**. The daemon that dispatched this goal is gone;
+///   the worker did not fail at its task, it was taken down mid-work.
+///
+/// The budget is not made infinite by this: dispatch itself increments
+/// `attempt_count` (see `dispatch_goal`), so a goal that keeps being
+/// restart-interrupted still climbs one attempt per real dispatch and parks at
+/// the cap in the end. What stops is the *double* charge — one for the
+/// dispatch, another for the interruption that ended it.
+pub fn classify_restart_charge(meta: &serde_json::Value) -> RestartCharge {
+    let Some(dispatched) = meta.get("dispatched_lifecycle").and_then(|v| v.as_str()) else {
+        return RestartCharge::Charge;
+    };
+    if dispatched == daemon_lifecycle_id() {
+        return RestartCharge::Charge;
+    }
+    let forgiven = meta
+        .get(RESTART_FORGIVEN_LIFECYCLE)
+        .and_then(|v| v.as_str());
+    if forgiven == Some(dispatched) {
+        return RestartCharge::Charge;
+    }
+    RestartCharge::NoCharge
+}
+
 /// Resume in-progress goals after daemon restart.
 ///
 /// Scans for goal cards in the `in_progress` state and either:
@@ -6625,6 +6677,7 @@ async fn resume_single_goal(
             card.title,
             session_id.unwrap_or("?")
         );
+        Ok(())
     } else {
         // Before treating a dead-worker goal as abandoned: the worker may have
         // finished and committed its work in the detached worktree, but the
@@ -6638,7 +6691,29 @@ async fn resume_single_goal(
         }
 
         // Case 1: session is dead — requeue, or park on budget exhaustion.
-        let new_attempt = attempt_count.saturating_add(1);
+        //
+        // R2a: whether that requeue COSTS an attempt depends on why the session
+        // is gone. A goal carrying a prior `dispatched_lifecycle` was taken down
+        // with its daemon, not defeated by its task, and charging it burned whole
+        // budgets in single restart storms (R0's census: every one of the eleven
+        // cap-exhausted goals, ~100% restart-caused, three attempts spent in
+        // nineteen minutes). Dispatch already charges an attempt of its own, so
+        // skipping the charge here removes a double count, not the cap: a goal
+        // that keeps being interrupted still climbs one per real dispatch and
+        // parks in the end.
+        //
+        // Note the blast radius, by design: `is_session_busy` structurally cannot
+        // see an external-CLI worker's subprocess, so for that whole engine class
+        // EVERY goal in flight across a restart lands here looking like "worker
+        // vanished", and the exemption applies to all of them. That is the
+        // intended trade — the alternative (charging them all) is what the census
+        // measured — and it stays true until a real liveness signal (PID
+        // tracking) exists for external-CLI workers.
+        let charge = classify_restart_charge(&card.metadata_json);
+        let new_attempt = match charge {
+            RestartCharge::Charge => attempt_count.saturating_add(1),
+            RestartCharge::NoCharge => attempt_count,
+        };
         let budget = goal_transition::goal_budget(&card.metadata_json);
         // The condition tested above is "the worker SESSION is dead" — which is
         // usually, but not necessarily, a daemon restart. Naming the cause
@@ -6649,7 +6724,17 @@ async fn resume_single_goal(
         // requests served continuously straight through the supposed restart).
         // The message must describe what was observed, so the next reader looks
         // at the worker rather than the daemon.
-        let abandon_reason = "Worker session ended before the goal completed";
+        //
+        // When the attempt is not charged the reason SAYS so, and still leads
+        // with the observation: the journal has to be honest about both what was
+        // seen and what it cost.
+        let abandon_reason = match charge {
+            RestartCharge::Charge => "Worker session ended before the goal completed",
+            RestartCharge::NoCharge => {
+                "Worker session ended before the goal completed — the daemon lifecycle changed \
+                 since dispatch, so this attempt was not charged"
+            }
+        };
 
         // Also honor token/wallclock budgets on the resume path (S4).
         let other_exhaustion = goal_transition::check_budget(pool, &card.metadata_json).await?;
@@ -6677,29 +6762,42 @@ async fn resume_single_goal(
                 exhaustion.describe(),
                 decision_id
             );
+            Ok(())
         } else {
-            // Retriable: requeue to Ready through the guard.
-            goal_transition::requeue_goal(
+            // Retriable: requeue to Ready through the guard. On a no-charge
+            // requeue the forgiven lifecycle is stamped in the SAME transaction,
+            // so this interruption can never be forgiven twice.
+            let extra_meta: Vec<(&str, serde_json::Value)> = match charge {
+                RestartCharge::NoCharge => dispatched_lifecycle
+                    .map(|lc| vec![(RESTART_FORGIVEN_LIFECYCLE, serde_json::json!(lc))])
+                    .unwrap_or_default(),
+                RestartCharge::Charge => Vec::new(),
+            };
+            goal_transition::requeue_goal_with_meta(
                 pool,
                 card_id,
                 decisions::ACTOR_SYSTEM,
                 new_attempt,
                 abandon_reason,
+                &extra_meta,
             )
             .await
             .map_err(String::from)?;
 
             tracing::info!(
                 target: "permagentd::brain",
-                "Goal '{}' requeued to Ready — worker session gone (attempt {}/{})",
+                "Goal '{}' requeued to Ready — worker session gone (attempt {}/{}, {})",
                 card.title,
                 new_attempt,
-                budget.attempt_cap
+                budget.attempt_cap,
+                match charge {
+                    RestartCharge::NoCharge => "attempt NOT charged: daemon lifecycle changed",
+                    RestartCharge::Charge => "attempt charged",
+                }
             );
+            Ok(())
         }
     }
-
-    Ok(())
 }
 
 /// Recover a dead-worker goal whose worktree already holds committed work.
@@ -8847,17 +8945,14 @@ mod tests {
         );
     }
 
-    /// Merge `dispatched_lifecycle` into a card's metadata (mirrors what the
-    /// dispatch path stamps), preserving every other field.
-    async fn stamp_lifecycle(pool: &sqlx::Pool<sqlx::Sqlite>, card: &cards::Card, lifecycle: &str) {
+    /// Merge one string key into a card's LIVE metadata, preserving the rest.
+    async fn stamp_meta(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, key: &str, value: &str) {
+        let card = cards::get_card(pool, card_id).await.unwrap().unwrap();
         let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
-        meta.insert(
-            "dispatched_lifecycle".to_string(),
-            serde_json::json!(lifecycle),
-        );
+        meta.insert(key.to_string(), serde_json::json!(value));
         cards::update_card(
             pool,
-            &card.id,
+            card_id,
             cards::UpdateCard {
                 metadata_json: Some(serde_json::Value::Object(meta)),
                 ..Default::default()
@@ -8865,6 +8960,12 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    /// Merge `dispatched_lifecycle` into a card's metadata (mirrors what the
+    /// dispatch path stamps), preserving every other field.
+    async fn stamp_lifecycle(pool: &sqlx::Pool<sqlx::Sqlite>, card: &cards::Card, lifecycle: &str) {
+        stamp_meta(pool, &card.id, "dispatched_lifecycle", lifecycle).await;
     }
 
     /// Defect 1 regression: a goal dispatched in the CURRENT daemon lifecycle
@@ -8904,6 +9005,11 @@ mod tests {
     /// Crash-recovery preserved: a goal carrying a *different* lifecycle id (it
     /// was dispatched by a prior, now-dead daemon process) is a genuine orphan
     /// and IS reclaimed to Ready.
+    ///
+    /// R2a: and the attempt is NOT charged. The interruption is a confirmed
+    /// daemon-lifecycle change, not a worker that failed at its task — charging
+    /// it burned entire attempt budgets in a single restart storm (R0's census:
+    /// 11 cap-exhausted goals, ~100% restart-caused).
     #[tokio::test]
     async fn resume_reclaims_goal_from_prior_lifecycle() {
         let pool = test_pool().await;
@@ -8926,7 +9032,111 @@ mod tests {
         );
         assert_eq!(
             updated.metadata_json.get("attempt_count").unwrap().as_u64(),
+            Some(1),
+            "a restart interruption must not consume an attempt"
+        );
+        assert_eq!(
+            updated
+                .metadata_json
+                .get(RESTART_FORGIVEN_LIFECYCLE)
+                .and_then(|v| v.as_str()),
+            Some("some-prior-daemon-lifecycle-id"),
+            "the forgiven lifecycle must be recorded so the exemption cannot repeat"
+        );
+        let reason = updated
+            .metadata_json
+            .get("last_error")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            reason.contains("not charged"),
+            "the journal must say plainly that no attempt was charged: {reason}"
+        );
+    }
+
+    /// The idempotency guard: the exemption is granted once per interruption.
+    /// A goal already forgiven for THIS `dispatched_lifecycle` is charged
+    /// normally, so a restart loop can never buy infinite free retries.
+    #[tokio::test]
+    async fn resume_charges_a_goal_already_forgiven_for_this_lifecycle() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_lifecycle(&pool, &card, "prior-lifecycle").await;
+        stamp_meta(
+            &pool,
+            &card.id,
+            RESTART_FORGIVEN_LIFECYCLE,
+            "prior-lifecycle",
+        )
+        .await;
+
+        resume_single_goal(&pool, &None, &card.id, &card.project_id)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(
+            updated.metadata_json.get("attempt_count").unwrap().as_u64(),
             Some(2),
+            "a second free pass for the same interruption must not be granted"
+        );
+    }
+
+    /// A goal whose interruption cannot be PROVEN to be a lifecycle change (no
+    /// `dispatched_lifecycle` stamp at all) is charged as before. The exemption
+    /// forgives evidence, not absence of it.
+    #[tokio::test]
+    async fn resume_charges_an_orphan_with_no_lifecycle_evidence() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        resume_single_goal(&pool, &None, &card.id, &card.project_id)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(
+            updated.metadata_json.get("attempt_count").unwrap().as_u64(),
+            Some(2),
+            "an unexplained dead worker still consumes its attempt"
+        );
+    }
+
+    #[test]
+    fn restart_charge_classification() {
+        let cur = daemon_lifecycle_id();
+        // No evidence of a lifecycle change → charge.
+        assert_eq!(
+            classify_restart_charge(&serde_json::json!({})),
+            RestartCharge::Charge
+        );
+        // A recorded prior lifecycle → the interruption is proven → no charge.
+        assert_eq!(
+            classify_restart_charge(&serde_json::json!({"dispatched_lifecycle": "old"})),
+            RestartCharge::NoCharge
+        );
+        // Already forgiven for that same lifecycle → charge.
+        assert_eq!(
+            classify_restart_charge(&serde_json::json!({
+                "dispatched_lifecycle": "old",
+                (RESTART_FORGIVEN_LIFECYCLE): "old",
+            })),
+            RestartCharge::Charge
+        );
+        // Forgiven for a DIFFERENT, earlier lifecycle → this is a new
+        // interruption and earns its own exemption.
+        assert_eq!(
+            classify_restart_charge(&serde_json::json!({
+                "dispatched_lifecycle": "old",
+                (RESTART_FORGIVEN_LIFECYCLE): "older",
+            })),
+            RestartCharge::NoCharge
+        );
+        // The caller never reaches this function for a goal owned by the live
+        // process, but the classification is honest about it anyway.
+        assert_eq!(
+            classify_restart_charge(&serde_json::json!({"dispatched_lifecycle": cur})),
+            RestartCharge::Charge
         );
     }
 
