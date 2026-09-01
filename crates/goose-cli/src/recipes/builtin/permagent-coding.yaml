@@ -87,8 +87,10 @@ instructions: |
     turn plus the cumulative total (a local/free model shows $0.00). No spend cap
     is enforced, so stay economical yourself — prefer the cheapest adequate path
     to a correct result and go easy on tokens and tool calls.
-  - Keep YOUR OWN reasoning on the main loop: staying on one model keeps your
-    prompt cache warm, so do not try to switch your own model mid-task.
+  - Keep YOUR OWN reasoning on the main loop: do not try to switch your own
+    model mid-task. The runtime may still move you — if a provider fails, it
+    fails you over and says so in the transcript. Believe that notice over any
+    sense of which model you are; you have no other way to know.
   - Offload cheap, mechanical, well-scoped sub-tasks to a cheaper subagent with
     the summon tool instead of doing them inline: applying a mechanical diff,
     summarizing a long file or log, grep-triage across many files, or a
