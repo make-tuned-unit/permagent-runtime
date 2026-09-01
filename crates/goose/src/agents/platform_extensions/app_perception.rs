@@ -10,8 +10,8 @@ use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::tool_execution::ToolCallContext;
 use crate::app_views::{self, AnalyticsWindow};
 use crate::{
-    activity_journal, briefings, cards, decisions, people, person_meetings, projects, scheduler,
-    skills,
+    activity_journal, briefings, cards, decisions, people, person_meetings, project_documents,
+    projects, scheduler, skills,
 };
 use anyhow::Result as AnyResult;
 use async_trait::async_trait;
@@ -151,6 +151,34 @@ pub const TAB_SURFACES: &[TabSurface] = &[
         reads: "activity_journal",
     },
 ];
+/// One sub-panel nested inside a shipped tab, the surface that observes its
+/// store, and the store name — the panel-level counterpart to [`TabSurface`].
+///
+/// Added for #5/#4: `project_documents` shipped inside the Projects tab's
+/// Documents panel with no observe_app coverage at all — the TAB-level guard
+/// only ever checked the Projects tab's OWN `reads: projects`, so a whole
+/// nested store could hide behind a tab that otherwise looked covered. This
+/// closes that gap the same way `TAB_SURFACES` closed the tab-level one.
+pub struct PanelSurface {
+    pub tab: &'static str,
+    pub panel: &'static str,
+    pub surface: &'static str,
+    pub reads: &'static str,
+}
+
+/// Which `observe_app` surface reads each shipped panel's store, and from
+/// where. `observe_projects` now reports `documents_count` per project, so
+/// `project_documents` is covered by the `projects` surface even though that
+/// surface's OWN top-level `reads` stays `projects` — a panel is allowed to
+/// share its parent tab's surface as long as that surface genuinely touches
+/// the panel's store, which `documents_count` proves it does.
+pub const PANEL_SURFACES: &[PanelSurface] = &[PanelSurface {
+    tab: "Projects",
+    panel: "Documents",
+    surface: "projects",
+    reads: "project_documents",
+}];
+
 const LIST_LIMIT: usize = 5;
 
 /// A separate descriptor is intentional: the platform-extension descriptor
@@ -869,19 +897,26 @@ impl AppPerceptionClient {
             );
         }
         let total = projects.len();
-        let items = projects
-            .into_iter()
-            .take(LIST_LIMIT)
-            .map(|project| {
-                json!({
-                    "name": safe_text(&project.name, 120),
-                    "status": safe_text(&project.status, 40),
-                    "description": safe_text(&project.description, 240),
-                    "has_site": project.site_url.is_some(),
-                    "has_repository": project.repo_url.is_some()
-                })
-            })
-            .collect();
+        let mut items = Vec::new();
+        for project in projects.into_iter().take(LIST_LIMIT) {
+            // #4/#5 forensics: `project_documents` had no observable aspect at
+            // all — a project's Documents panel could hold real files while
+            // `observe_app` said nothing about them existing. A per-project
+            // COUNT is cheap (LIST_LIMIT-bounded) and is what makes the
+            // Projects surface's `reads` cover `project_documents` for the
+            // coverage guard below.
+            let documents_count = project_documents::count_documents(pool, &project.id)
+                .await
+                .unwrap_or(0);
+            items.push(json!({
+                "name": safe_text(&project.name, 120),
+                "status": safe_text(&project.status, 40),
+                "description": safe_text(&project.description, 240),
+                "has_site": project.site_url.is_some(),
+                "has_repository": project.repo_url.is_some(),
+                "documents_count": documents_count
+            }));
+        }
         available("projects", json!({"projects": ranked(items, total)}))
     }
 
@@ -1315,6 +1350,10 @@ impl AppPerceptionClient {
                     "size_bytes": f.size_bytes,
                     "status": safe_text(&f.status, 40),
                     "arrived_at": safe_text(&f.created_at, 80),
+                    // #5: which project this file was routed to, when any —
+                    // absent this, the agent could see a file was "routed"
+                    // but not name where it went.
+                    "project_id": f.project_id,
                 })
             })
             .collect();
@@ -2443,6 +2482,107 @@ mod tests {
         assert_eq!(value["data"]["files"]["returned"], LIST_LIMIT);
         assert_eq!(value["data"]["files"]["truncated"], true);
         assert!(!value.to_string().contains(secret_disk_path));
+    }
+
+    /// #5: `observe_inbox` used to say a file was "routed" with no way to say
+    /// WHERE — the agent could see the status flip but not name the project.
+    ///
+    /// FAILS BEFORE: the mapped item has no `project_id` key at all (absent,
+    /// not null), since the field did not exist.
+    #[tokio::test]
+    async fn observe_inbox_reports_the_project_a_file_was_routed_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = test_client(dir.path().to_path_buf());
+        let pool = memory_pool().await;
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Routed".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::inbox::insert_inbox_file(
+            &pool,
+            &crate::inbox::NewInboxFile {
+                filename: "brief.pdf".to_string(),
+                disk_path: "brief.pdf".to_string(),
+                project_id: Some(project.id.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let value = client.observe_inbox(&pool).await;
+        assert_eq!(value["status"], "available");
+        assert_eq!(
+            value["data"]["files"]["items"][0]["project_id"],
+            project.id.as_str()
+        );
+    }
+
+    /// #5 (documents_count): `observe_projects` said nothing about a
+    /// project's document count — a project with real documents attached
+    /// looked identical, from the agent's own eyes, to one with none.
+    ///
+    /// FAILS BEFORE: the mapped item has no `documents_count` key.
+    #[tokio::test]
+    async fn observe_projects_reports_documents_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = test_client(dir.path().to_path_buf());
+        let pool = memory_pool().await;
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Docs Aware".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::project_documents::insert_document(
+            &pool,
+            "doc-1",
+            &project.id,
+            "brief.pdf",
+            "application/pdf",
+            100,
+            "/tmp/doc-1",
+        )
+        .await
+        .unwrap();
+        crate::project_documents::insert_document(
+            &pool,
+            "doc-2",
+            &project.id,
+            "deck.pdf",
+            "application/pdf",
+            200,
+            "/tmp/doc-2",
+        )
+        .await
+        .unwrap();
+
+        let value = client.observe_projects(&pool).await;
+        assert_eq!(value["status"], "available");
+        let items = value["data"]["projects"]["items"].as_array().unwrap();
+        let entry = items
+            .iter()
+            .find(|p| p["name"] == "Docs Aware")
+            .expect("the project must be in the observed list");
+        assert_eq!(entry["documents_count"], 2);
     }
 
     #[tokio::test]
