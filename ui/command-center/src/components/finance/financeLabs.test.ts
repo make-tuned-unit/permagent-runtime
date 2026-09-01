@@ -7,6 +7,7 @@ import {
   appendUniverse,
   killSummary,
   loopTagLabel,
+  loopTagTitle,
   pickIsApproved,
   requiredKeysSet,
   sortPicks,
@@ -96,10 +97,34 @@ describe('killSummary', () => {
 });
 
 describe('loopTagLabel', () => {
-  it('says what happened instead of "loop kill"', () => {
+  it('says what happened, in one word, whatever the reason was', () => {
+    // Nearly every row on a normal cycle carries this tag. A label that
+    // changes its wording and its width per row makes the column fifteen
+    // sentences to read; one word makes it something to skim.
     expect(loopTagLabel({ passed: false, kills: ['in-sample ICIR 0.12 is below 0.3 — likely noise'] }))
-      .toBe('filtered: looks like noise');
+      .toBe('filtered');
+    expect(loopTagLabel({ passed: false, kills: ['signal half-life 2.4d is under 5d'] }))
+      .toBe('filtered');
     expect(loopTagLabel({ passed: true, kills: [] })).toBe('signal checked');
     expect(loopTagLabel(null)).toBe('');
+  });
+});
+
+describe('loopTagTitle', () => {
+  it('leads with the plain-language reason and then the check\'s own words', () => {
+    const title = loopTagTitle({
+      passed: false,
+      kills: ['in-sample ICIR 0.12 is below 0.3 — likely noise'],
+    });
+    // The headline the label used to carry is not lost — it moved here.
+    expect(title).toContain('looks like noise');
+    expect(title).toContain('Why it was filtered:');
+    expect(title).toContain('in-sample ICIR 0.12 is below 0.3');
+  });
+
+  it('says something useful when the check gave no sentences', () => {
+    expect(loopTagTitle({ passed: false, kills: [] })).toBe('Filtered — filtered out.');
+    expect(loopTagTitle({ passed: true, kills: [] })).toContain('passed the significance check');
+    expect(loopTagTitle(null)).toBeUndefined();
   });
 });

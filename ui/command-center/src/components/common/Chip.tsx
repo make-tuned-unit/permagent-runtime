@@ -28,6 +28,24 @@
  *
  * Adoption is deliberately incremental — this lands with the World HUD pills
  * and the Brain's dead-entity chip, the two places the confusion was worst.
+ *
+ * ## Two things a chip in a long list needs
+ *
+ * `quiet` is the density rule made into a prop. The default treatment is
+ * calibrated for a chip that appears once or twice on a surface; the same
+ * treatment down a column of fifteen rows reads as fifteen alerts, and the
+ * one row that genuinely differs is lost inside them. A quiet chip drops its
+ * fill, thins its hairline and dims its tone, so a repeated label reads as a
+ * rhythm and the emphasis budget is spent on the rare state instead. It comes
+ * back up to full on hover, so nothing is lost — only postponed.
+ *
+ * The interactive kinds also take the app's shared `.pa-btn` interaction
+ * rules. An inline style cannot express `:hover` or `:active` at all, so a
+ * clickable chip was pressable with no acknowledgement — the same defect the
+ * Button primitive exists to fix, and a chip action is a button that happens
+ * to sit inline (U3 §1.3). Their colours are therefore handed to the shared
+ * rules as custom properties rather than set inline, which is what lets hover
+ * actually land.
  */
 
 import type { CSSProperties, ReactNode } from 'react';
@@ -47,6 +65,13 @@ interface ChipBase {
    * other caller should reach for `tone`.
    */
   color?: string;
+  /**
+   * Draw this as a caption rather than a mark: no fill, a thinner hairline,
+   * the tone dimmed. For a label that is true of most rows in a list, where
+   * the default treatment repeated fifteen times reads as fifteen alerts. The
+   * rare row keeps the default and gets the emphasis.
+   */
+  quiet?: boolean;
   /** Overrides the kind's own explanation. */
   title?: string;
   style?: CSSProperties;
@@ -68,7 +93,17 @@ export type ChipProps = ChipBase & (
   | { kind: 'static'; asOf?: never; pulse?: never; pressed?: never; onClick?: never }
   | { kind: 'filter'; pressed: boolean; onClick: () => void; asOf?: never; pulse?: never }
   | { kind: 'count'; asOf?: never; pulse?: never; pressed?: never; onClick?: never }
-  | { kind: 'link'; onClick: () => void; asOf?: never; pulse?: never; pressed?: never }
+  | {
+    kind: 'link';
+    onClick: () => void;
+    /** When the destination is a disclosure on this same page rather than
+     *  another surface, the chip says so the way any disclosure control does.
+     *  Still never `aria-pressed`: an expanded row is not an on state. */
+    expanded?: boolean;
+    /** Id of the region `expanded` refers to. */
+    controls?: string;
+    asOf?: never; pulse?: never; pressed?: never;
+  }
 );
 
 function toneColor(tone: ChipTone, colors: ThemeColors): string {
@@ -97,7 +132,7 @@ const SHELL: CSSProperties = {
 };
 
 export function Chip(props: ChipProps) {
-  const { kind, tone = 'neutral', color, title, style, children } = props;
+  const { kind, tone = 'neutral', color, quiet, title, style, children } = props;
   const { colors, reduceMotion } = useTheme();
   const accent = color ?? toneColor(tone, colors);
 
@@ -109,18 +144,39 @@ export function Chip(props: ChipProps) {
   const live = kind === 'state';
   const pulsing = live && props.pulse === true && !reduceMotion;
 
-  const hover = kind === 'filter' || kind === 'link' ? { cursor: 'pointer' } : null;
+  const interactive = kind === 'filter' || kind === 'link';
+
+  // The distinction that matters: a live or active chip is FILLED, a fixed
+  // label is an outline. Fill reads as signal; outline reads as caption. A
+  // quiet chip is an outline whatever its kind — it is a caption by request.
+  const filled = !quiet
+    && kind !== 'static'
+    && !(kind === 'filter' && !props.pressed);
+  const background = filled ? withAlpha(accent, 0.14) : 'transparent';
+  const borderColor = withAlpha(accent, quiet ? 0.22 : kind === 'static' ? 0.28 : 0.42);
+  const foreground = quiet ? withAlpha(accent, 0.78) : accent;
+
   const shell: CSSProperties = {
     ...SHELL,
-    color: accent,
-    // The distinction that matters: a live or active chip is FILLED, a fixed
-    // label is an outline. Fill reads as signal; outline reads as caption.
-    background: kind === 'static' ? 'transparent'
-      : kind === 'filter' && !props.pressed ? 'transparent'
-        : withAlpha(accent, 0.14),
-    border: `1px solid ${withAlpha(accent, kind === 'static' ? 0.28 : 0.42)}`,
+    ...(quiet ? { fontWeight: 600 } : null),
     ...(kind === 'count' ? { fontFamily: font.mono, ...tabularNums } : null),
-    ...hover,
+    // An interactive chip hands its colours to `.pa-btn` instead of setting
+    // them inline, because an inline value would win over the hover rule and
+    // leave the press unacknowledged — the defect, not the styling.
+    ...(interactive
+      ? {
+        '--pa-btn-bg': background,
+        '--pa-btn-bg-hover': withAlpha(accent, filled ? 0.22 : 0.12),
+        '--pa-btn-border': borderColor,
+        '--pa-btn-border-hover': withAlpha(accent, quiet ? 0.42 : 0.6),
+        '--pa-btn-fg': foreground,
+        // A quiet chip comes back up to full when you reach for it.
+        '--pa-btn-fg-hover': accent,
+        '--pa-btn-pad': SHELL.padding,
+        '--pa-btn-radius': `${radius.pill}px`,
+        '--pa-btn-weight': quiet ? 600 : 700,
+      } as CSSProperties
+      : { color: foreground, background, border: `1px solid ${borderColor}` }),
     ...style,
   };
 
@@ -144,13 +200,18 @@ export function Chip(props: ChipProps) {
     </>
   );
 
-  if (kind === 'filter' || kind === 'link') {
+  if (props.kind === 'filter' || props.kind === 'link') {
     return (
       <button
         type="button"
+        // The app's one set of interaction rules: hover, the 80ms pressed
+        // give, and the focus ring every control shares.
+        className="pa-btn"
         // Only a filter has an on/off state to report. A link has a
         // destination, which `aria-pressed` would misdescribe.
         aria-pressed={props.kind === 'filter' ? props.pressed : undefined}
+        aria-expanded={props.kind === 'link' ? props.expanded : undefined}
+        aria-controls={props.kind === 'link' ? props.controls : undefined}
         onClick={props.onClick}
         title={explain}
         data-testid={props['data-testid']}

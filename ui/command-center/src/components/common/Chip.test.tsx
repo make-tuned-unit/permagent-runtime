@@ -116,4 +116,49 @@ describe('Chip — the other kinds', () => {
     expect(render(<Chip kind="static">LOCAL</Chip>).tagName).toBe('SPAN');
     expect(render(<Chip kind="count">12</Chip>).tagName).toBe('SPAN');
   });
+
+  it('lets a link say its destination is a disclosure on this page', () => {
+    const el = render(
+      <Chip kind="link" expanded controls="row-detail" onClick={() => {}}>filtered</Chip>,
+    );
+    expect(el.getAttribute('aria-expanded')).toBe('true');
+    expect(el.getAttribute('aria-controls')).toBe('row-detail');
+    // Still not a toggle: an open row is not an on state.
+    expect(el.getAttribute('aria-pressed')).toBeNull();
+  });
+
+  it('gives a clickable chip the app\'s hover and press rules', () => {
+    // An inline style cannot express :hover or :active at all, so a chip that
+    // set its own colours was pressable with no acknowledgement.
+    const el = render(<Chip kind="link" tone="accent" onClick={() => {}}>Acme</Chip>);
+    expect(el.className).toContain('pa-btn');
+    expect(el.style.getPropertyValue('--pa-btn-bg-hover')).toBeTruthy();
+    expect(el.style.background).toBe('');
+  });
+});
+
+describe('Chip — quiet', () => {
+  it('drops the fill so a label on every row reads as a rhythm, not an alarm', () => {
+    const loud = render(<Chip kind="link" tone="danger" onClick={() => {}}>filtered</Chip>);
+    const loudBg = loud.style.getPropertyValue('--pa-btn-bg');
+    expect(loudBg).not.toBe('transparent');
+
+    const quiet = render(<Chip kind="link" tone="danger" quiet onClick={() => {}}>filtered</Chip>);
+    expect(quiet.style.getPropertyValue('--pa-btn-bg')).toBe('transparent');
+    // The hairline survives — it is still a control at rest (R5.1).
+    expect(quiet.style.getPropertyValue('--pa-btn-border')).toBeTruthy();
+    // And it comes back up to full when you reach for it, so nothing is lost.
+    expect(quiet.style.getPropertyValue('--pa-btn-fg'))
+      .not.toBe(quiet.style.getPropertyValue('--pa-btn-fg-hover'));
+  });
+
+  it('changes nothing for a chip that did not ask for it', () => {
+    // The default treatment is calibrated for a chip that appears once or
+    // twice; every existing caller keeps it.
+    const el = render(<Chip kind="static" tone="accent">LOCAL</Chip>);
+    expect(el.style.background).toBe('transparent');
+    expect(el.style.fontWeight).toBe('700');
+    expect(render(<Chip kind="static" tone="accent" quiet>LOCAL</Chip>).style.fontWeight)
+      .toBe('600');
+  });
 });

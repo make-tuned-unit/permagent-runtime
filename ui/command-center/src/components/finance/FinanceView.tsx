@@ -15,6 +15,7 @@ import { api, apiFetch, uploadFinanceStatement } from '../../lib/api';
 import { ViewHeader } from '../common/ViewHeader';
 import { AsOf } from '../common/AsOf';
 import { Button, SUCCESS_FLASH_MS } from '../common/Button';
+import { Chip } from '../common/Chip';
 import { navigateToTool } from '../../lib/store';
 import { GLOSSARY } from '../../lib/vocabulary';
 import { AGENT_TRIM } from '../world/shared/palette';
@@ -46,6 +47,7 @@ import {
   parseUniverse,
   appendUniverse,
   loopTagLabel,
+  loopTagTitle,
   pickIsApproved,
   sortPicks,
 } from './financeLabs';
@@ -1422,8 +1424,8 @@ function PicksSection({
       <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 10px', opacity: 0.85 }} data-testid="picks-legend">
         How a name gets here: scanner ranks it {'→'} Yahoo prices it {'→'} a
         significance check asks whether the signal is real {'→'} the Financier
-        picks at most one. Names that fail the check stay listed, tagged in red {'—'} click a
-        tag to see why.
+        picks at most one. Names that fail the check stay listed and are tagged
+        “filtered” {'—'} click a tag to read why.
       </p>
       {ranked.length === 0 ? (
         <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>
@@ -1472,11 +1474,6 @@ function PickRow({
   const yahoo = pick.quote?.price ?? null;
   const mark = yahoo ?? pick.pickerPrice ?? null;
   const rowId = `pick-detail-${pick.ticker.replace(/[^A-Za-z0-9]/g, '-')}`;
-  const loopTitle = loop
-    ? loop.passed
-      ? 'This name passed the significance check.'
-      : `Why it was filtered: ${loop.kills.join('; ')}`
-    : undefined;
   return (
     <article
       data-testid="pick-row"
@@ -1559,35 +1556,30 @@ function PickRow({
         )}
         {loop && (
           // The tag IS the affordance: the reason it names is one click away,
-          // and hovering shows the full sentence without a click at all.
-          <button
-            type="button"
-            className="pa-btn"
+          // and hovering shows the whole thing without a click at all.
+          //
+          // Quiet, because on a normal cycle nearly every row is filtered.
+          // The tag was a filled danger pill carrying a per-row phrase, so a
+          // list of fifteen read as a wall of fifteen alerts of ragged widths
+          // — and the column stopped saying anything, least of all which row
+          // was different. The common case is now a dim hairline of a uniform
+          // width, and the emphasis budget goes where the news is: the rare
+          // name that passed keeps the filled mark, and the Financier's
+          // approval above it stays the one loud thing in the row.
+          <Chip
+            kind="link"
+            tone={loop.passed ? 'success' : 'danger'}
+            quiet={!loop.passed}
+            expanded={open}
+            controls={rowId}
+            title={loopTagTitle(loop)}
             data-testid="pick-loop-tag"
-            data-passed={loop.passed ? 'true' : 'false'}
-            aria-expanded={open}
-            aria-controls={rowId}
-            title={loopTitle}
             onClick={() => setOpen((v) => !v)}
-            style={{
-              ...type.micro,
-              '--pa-btn-bg': warnFill(loop.passed ? colors.success : colors.danger, 0.10),
-              '--pa-btn-bg-hover': warnFill(loop.passed ? colors.success : colors.danger, 0.20),
-              '--pa-btn-border': warnFill(loop.passed ? colors.success : colors.danger, 0.35),
-              '--pa-btn-border-hover': warnFill(loop.passed ? colors.success : colors.danger, 0.55),
-              '--pa-btn-fg': loop.passed ? colors.success : colors.danger,
-              '--pa-btn-pad': '1px 8px',
-              '--pa-btn-weight': 600,
-              // The one shape the radius ruling reserves the full pill for is a
-              // chip, and this reads as one — a tag on a row, not an action bar.
-              '--pa-btn-radius': `${radius.pill}px`,
-              fontFamily: font.body,
-              whiteSpace: 'nowrap',
-            } as CSSProperties}
+            style={{ gap: 4 }}
           >
             {loopTagLabel(loop)}
-            {!loop.passed && <span aria-hidden="true" style={{ opacity: 0.7 }}> ⓘ</span>}
-          </button>
+            {!loop.passed && <span aria-hidden="true" style={{ opacity: 0.7 }}>ⓘ</span>}
+          </Chip>
         )}
         <span style={{ ...type.caption, color: colors.textMuted, ...tabularNums }}>
           {money.fmt(yahoo ?? pick.pickerPrice, { source: pick.quote?.currency })}

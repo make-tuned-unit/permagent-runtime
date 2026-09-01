@@ -81,10 +81,31 @@ export function killSummary(kills: string[]): string {
   return 'filtered out';
 }
 
-/** What the red/green tag on a pick row actually says. */
+/**
+ * What the tag on a pick row says.
+ *
+ * One word, because on a normal cycle nearly every row carries this tag, and a
+ * tag that changes its width and its wording per row turns the column into
+ * fifteen different sentences to read instead of one thing to skim. The
+ * headline that used to be the label — "looks like noise", "fades too fast" —
+ * is not lost: it leads the hover text below, and the daemon's own sentences
+ * are in the row's expansion, one click away on the tag itself.
+ */
 export function loopTagLabel(loop: { passed: boolean; kills: string[] } | null | undefined): string {
   if (!loop) return '';
-  return loop.passed ? 'signal checked' : `filtered: ${killSummary(loop.kills)}`;
+  return loop.passed ? 'signal checked' : 'filtered';
+}
+
+/** The whole reason, without a click: the plain-language headline first, then
+ *  the check's own sentences. */
+export function loopTagTitle(
+  loop: { passed: boolean; kills: string[] } | null | undefined,
+): string | undefined {
+  if (!loop) return undefined;
+  if (loop.passed) return 'This name passed the significance check.';
+  const why = loop.kills.filter((k) => k.trim().length > 0).join('; ');
+  const headline = `Filtered — ${killSummary(loop.kills)}.`;
+  return why ? `${headline} Why it was filtered: ${why}` : headline;
 }
 
 export function pickIsApproved(ticker: string, approved: string | null | undefined): boolean {

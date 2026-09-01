@@ -234,10 +234,16 @@ it('explains a filtered pick on the tag, and the tag opens the reason', async ()
   expect(container.querySelector('[data-testid="picks-legend"]')).toBeTruthy();
 
   const tag = container.querySelector('[data-testid="pick-loop-tag"]') as HTMLButtonElement;
-  expect(tag.textContent).toContain('filtered: looks like noise');
+  expect(tag.textContent).toContain('filtered');
   expect(tag.textContent).not.toMatch(/loop kill/);
-  // Hovering is enough to get the full reason.
+  // The reason is not in the label: nearly every row carries this tag, and a
+  // per-row phrase turns the column into fifteen sentences to read.
+  expect(tag.textContent).not.toContain('looks like noise');
+  // Hovering is enough to get the reason, headline first.
+  expect(tag.getAttribute('title')).toContain('looks like noise');
   expect(tag.getAttribute('title')).toContain('likely noise');
+  // And the common case whispers: a hairline, no fill.
+  expect(tag.style.getPropertyValue('--pa-btn-bg')).toBe('transparent');
   // The row starts closed, and the tag is what opens it.
   expect(container.querySelector('[data-testid="pick-loop-detail"]')).toBeNull();
   await act(async () => { tag.click(); });
@@ -327,4 +333,52 @@ it('gives the pick row controls the primitive\'s press feedback', async () => {
   const toggle = row.querySelector('button.pa-btn[aria-expanded]') as HTMLButtonElement;
   expect(toggle).toBeTruthy();
   expect(toggle.getAttribute('aria-controls')).toBeTruthy();
+});
+
+it('keeps a column of filtered rows quiet and spends the emphasis on the rest', async () => {
+  // The screenshot this fixes: fifteen filled danger pills of ragged widths,
+  // one per row, so the column read as a wall of alerts and the one row that
+  // was different was lost inside it. The common case is now a dim hairline of
+  // a uniform width; the fill is reserved for the rare name that passed, and
+  // the Financier's approval stays the one loud thing in the row.
+  const filtered = Array.from({ length: 15 }, (_, i) => ({
+    ticker: `F${i}`, companyName: `F${i} Inc`, rank: i + 2, score: 1,
+    priceMismatch: false, fundamentals: { available: false },
+    loop: { passed: false, kills: ['in-sample ICIR 0.12 is below 0.3 — likely noise'], batchSize: 16 },
+  }));
+  apiFetch.mockResolvedValue(board({
+    pickerEnabled: true,
+    dailyPick: { day: '2026-08-31', asOf: '2026-08-31T12:00:00Z', ticker: 'WIN', why: 'held up', candidateCount: 16 },
+    picks: [
+      {
+        ticker: 'WIN', companyName: 'Win Inc', rank: 1, score: 9,
+        priceMismatch: false, fundamentals: { available: false },
+        loop: { passed: true, kills: [], batchSize: 16 },
+      },
+      ...filtered,
+    ],
+  }));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+
+  // Every row is on screen, not just the preview.
+  const showAll = Array.from(container.querySelectorAll('button'))
+    .find((b) => b.textContent?.startsWith('Show ')) as HTMLButtonElement;
+  await act(async () => { showAll.click(); });
+
+  const tags = Array.from(container.querySelectorAll('[data-testid="pick-loop-tag"]')) as HTMLElement[];
+  expect(tags).toHaveLength(16);
+  const quiet = tags.filter((t) => t.style.getPropertyValue('--pa-btn-bg') === 'transparent');
+  const marked = tags.filter((t) => t.style.getPropertyValue('--pa-btn-bg') !== 'transparent');
+  // Fifteen whisper; the one that passed does not.
+  expect(quiet).toHaveLength(15);
+  expect(marked).toHaveLength(1);
+  expect(marked[0].textContent).toContain('signal checked');
+  // Every filtered tag reads the same width, because it says the same word.
+  expect(new Set(quiet.map((t) => t.textContent))).toEqual(new Set(['filteredⓘ']));
+
+  // And the loudest mark in the column is still the rarest one.
+  const badge = container.querySelector('[data-testid="pick-financier-badge"]') as HTMLElement;
+  expect(badge).toBeTruthy();
+  expect(badge.style.background).toBeTruthy();
 });
