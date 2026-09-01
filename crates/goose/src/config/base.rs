@@ -293,6 +293,26 @@ impl Default for Config {
     }
 }
 
+/// Announce a completed config write on the daemon bus (#629 liveness).
+///
+/// This lives on `Config` itself rather than on the `/config/*` HTTP handlers
+/// on purpose. The handlers are one caller among many — the CLI's `configure`,
+/// the provider signup flows, the extension registry, and (next) the agent's
+/// own config tools all write through `set_param`/`set_secret`. An emit per
+/// handler would be an emit per caller, and every caller added later would be
+/// silently missing one. One writer, one announcement.
+///
+/// `changed` is the "REAL mutations only" gate this bus requires: writing a key
+/// back at its current value is a file write but not a change, and a Settings
+/// pane must not churn because some bookkeeping key was re-persisted
+/// identically.
+fn announce_config_change<S: AsRef<str>>(keys: &[S], change: &str, secret: bool, changed: bool) {
+    if !changed || keys.is_empty() {
+        return;
+    }
+    crate::events::emit(crate::events::config_changed(keys, change, secret));
+}
+
 pub trait ConfigValue {
     const KEY: &'static str;
     const DEFAULT: &'static str;
@@ -933,10 +953,18 @@ impl Config {
     /// - There is an error reading or writing the config file
     /// - There is an error serializing the value
     pub fn set_param<V: Serialize>(&self, key: &str, value: V) -> Result<(), ConfigError> {
-        let _guard = self.guard.lock().unwrap();
-        let mut values = self.load_raw()?;
-        values.insert(serde_yaml::to_value(key)?, serde_yaml::to_value(value)?);
-        self.save_values(&values)
+        let changed = {
+            let _guard = self.guard.lock().unwrap();
+            let mut values = self.load_raw()?;
+            let yaml_key = serde_yaml::to_value(key)?;
+            let yaml_value = serde_yaml::to_value(value)?;
+            let changed = values.get(&yaml_key) != Some(&yaml_value);
+            values.insert(yaml_key, yaml_value);
+            self.save_values(&values)?;
+            changed
+        };
+        announce_config_change(&[key], "set", false, changed);
+        Ok(())
     }
 
     /// Set several non-secret configuration values with one atomic file write.
@@ -946,15 +974,23 @@ impl Config {
         K: AsRef<str>,
         V: Serialize,
     {
-        let _guard = self.guard.lock().unwrap();
-        let mut values = self.load_raw()?;
-        for (key, value) in params {
-            values.insert(
-                serde_yaml::to_value(key.as_ref())?,
-                serde_yaml::to_value(value)?,
-            );
-        }
-        self.save_values(&values)
+        let changed_keys = {
+            let _guard = self.guard.lock().unwrap();
+            let mut values = self.load_raw()?;
+            let mut changed_keys: Vec<String> = Vec::new();
+            for (key, value) in params {
+                let yaml_key = serde_yaml::to_value(key.as_ref())?;
+                let yaml_value = serde_yaml::to_value(value)?;
+                if values.get(&yaml_key) != Some(&yaml_value) {
+                    changed_keys.push(key.as_ref().to_string());
+                }
+                values.insert(yaml_key, yaml_value);
+            }
+            self.save_values(&values)?;
+            changed_keys
+        };
+        announce_config_change(&changed_keys, "set", false, !changed_keys.is_empty());
+        Ok(())
     }
 
     /// Delete a configuration value in the config file.
@@ -971,13 +1007,18 @@ impl Config {
     /// - There is an error reading or writing the config file
     /// - There is an error serializing the value
     pub fn delete(&self, key: &str) -> Result<(), ConfigError> {
-        // Lock before reading to prevent race condition.
-        let _guard = self.guard.lock().unwrap();
+        let existed = {
+            // Lock before reading to prevent race condition.
+            let _guard = self.guard.lock().unwrap();
 
-        let mut values = self.load_raw()?;
-        values.shift_remove(key);
+            let mut values = self.load_raw()?;
+            let existed = values.shift_remove(key).is_some();
 
-        self.save_values(&values)
+            self.save_values(&values)?;
+            existed
+        };
+        announce_config_change(&[key], "deleted", false, existed);
+        Ok(())
     }
 
     /// The configured per-key source map, e.g.
@@ -1276,7 +1317,9 @@ impl Config {
         let _guard = self.guard.lock().unwrap();
 
         let mut values = self.all_secrets()?;
-        values.insert(key.to_string(), serde_json::to_value(value)?);
+        let new_value = serde_json::to_value(value)?;
+        let changed = values.get(key) != Some(&new_value);
+        values.insert(key.to_string(), new_value);
 
         match &self.secrets {
             SecretStorage::Keyring { service } => {
@@ -1299,6 +1342,8 @@ impl Config {
 
         self.invalidate_secrets_cache();
 
+        // Name only, flagged secret — see `events::config_changed`.
+        announce_config_change(&[key], "set", true, changed);
         Ok(())
     }
 
@@ -1317,7 +1362,7 @@ impl Config {
         let _guard = self.guard.lock().unwrap();
 
         let mut values = self.all_secrets()?;
-        values.remove(key);
+        let existed = values.remove(key).is_some();
 
         match &self.secrets {
             SecretStorage::Keyring { service } => {
@@ -1340,6 +1385,7 @@ impl Config {
 
         self.invalidate_secrets_cache();
 
+        announce_config_change(&[key], "deleted", true, existed);
         Ok(())
     }
 
