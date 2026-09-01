@@ -1517,9 +1517,12 @@ pub async fn drain_effect_outbox(pool: &Pool<Sqlite>) -> Result<(), String> {
         if claimed.rows_affected() == 0 {
             continue;
         }
+        // Cloned so `decision_id` (the outer binding) survives past the async
+        // block below — the failure arm needs it too, to write an audit row.
+        let decision_id_for_apply = decision_id.clone();
         let result = async {
-            let decision_id =
-                decision_id.ok_or_else(|| "effect outbox row has no decision_id".to_string())?;
+            let decision_id = decision_id_for_apply
+                .ok_or_else(|| "effect outbox row has no decision_id".to_string())?;
             let decision = decisions::get_decision(pool, &decision_id)
                 .await?
                 .ok_or_else(|| format!("decision '{decision_id}' no longer exists"))?;
@@ -1561,6 +1564,44 @@ pub async fn drain_effect_outbox(pool: &Pool<Sqlite>) -> Result<(), String> {
                 .execute(pool)
                 .await
                 .map_err(|e| e.to_string())?;
+
+                // Audit trail (CASE A fix #4): before this, only the inline
+                // HTTP-answer path (`record_effect_failure`,
+                // routes/decisions.rs:915) ever wrote a decision_audit row for
+                // an effect failure. A failure surfaced later by THIS
+                // background drain — every retry, and the terminal dead-letter
+                // — produced nothing: no audit row, and the decisions row kept
+                // status=answered/answer=approve, indistinguishable from a
+                // decision whose effect actually ran. Mirror the inline path
+                // here so every failed attempt is on the record, and the final
+                // one is nameable as a dead-letter (decision_history's
+                // `outcome` column — a decision that dead-lettered carries an
+                // `effect_dead: …` audit row a successful one never gets).
+                if let Some(ref did) = decision_id {
+                    if let Ok(Some(decision)) = decisions::get_decision(pool, did).await {
+                        let status_now: String =
+                            sqlx::query_scalar("SELECT status FROM effect_outbox WHERE id = ?")
+                                .bind(&id)
+                                .fetch_one(pool)
+                                .await
+                                .unwrap_or_else(|_| "pending".to_string());
+                        let outcome = if status_now == "dead" {
+                            format!("effect_dead: {error}")
+                        } else {
+                            format!("effect_retry: {error}")
+                        };
+                        if let Err(audit_err) =
+                            decisions::record_effect_outcome(pool, &decision, &outcome).await
+                        {
+                            tracing::error!(
+                                target: "permagentd::decisions",
+                                decision = %did,
+                                "effect-outbox failure could not be audit-recorded: {audit_err} \
+                                 (original effect error: {error})"
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -2377,6 +2418,120 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    /// CASE A fix #4: before this fix, an effect driven all the way to `dead`
+    /// through repeated `drain_effect_outbox` calls left ZERO decision_audit
+    /// rows beyond the original answer — no per-attempt trail, and the
+    /// decisions row stayed indistinguishable from one whose effect actually
+    /// applied. Every failed attempt (retried or terminal) must now leave its
+    /// own audit row, and the terminal one must be nameable as a dead-letter.
+    #[tokio::test]
+    async fn dead_lettered_effect_leaves_an_audit_row_per_failed_attempt() {
+        let pool = test_pool().await;
+        // A `file_to_project` whose target project never appears: every
+        // attempt fails NotFound (retriable), so five drains exhaust
+        // max_attempts=5 and land the row on 'dead'.
+        let never_appears = "never-appears-project";
+        let decision = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "file_to_project".to_string(),
+                headline: Some("File a note that can never land".to_string()),
+                detail: Some("The target project never appears".to_string()),
+                payload: serde_json::json!({
+                    "project_id": never_appears,
+                    "project_name": "Never",
+                    "body": "This never lands.",
+                    "content_origin": "test fixture",
+                    "people": []
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (decision, _) = decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+
+        let audit_before: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM decision_audit WHERE decision_id = ?")
+                .bind(&decision.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        // `create_decision` writes a 'created' row, `answer_decision` writes
+        // the 'approve' row — nothing about the effect itself yet.
+        assert_eq!(audit_before, 2, "just creation + the answer so far");
+
+        // Drive every attempt to failure: 5 drains exhausts max_attempts=5.
+        for _ in 0..5 {
+            drain_effect_outbox(&pool).await.unwrap();
+            sqlx::query(
+                "UPDATE effect_outbox
+                 SET next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                 WHERE decision_id = ?",
+            )
+            .bind(&decision.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let (status, attempts): (String, i64) =
+            sqlx::query_as("SELECT status, attempts FROM effect_outbox WHERE decision_id = ?")
+                .bind(&decision.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "dead");
+        assert_eq!(attempts, 5);
+
+        let audit_outcomes: Vec<String> = sqlx::query_scalar(
+            "SELECT outcome FROM decision_audit WHERE decision_id = ? ORDER BY seq",
+        )
+        .bind(&decision.id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        // 2 (created + approved) + 5 (one per failed attempt) = 7. Today: 2.
+        assert_eq!(
+            audit_outcomes.len(),
+            7,
+            "expected an audit row per failed attempt on top of the created+answer rows, got: \
+             {audit_outcomes:?}"
+        );
+        assert!(
+            audit_outcomes[2..6]
+                .iter()
+                .all(|o| o.starts_with("effect_retry:")),
+            "{audit_outcomes:?}"
+        );
+        assert!(
+            audit_outcomes[6].starts_with("effect_dead:"),
+            "the terminal attempt must be nameable as a dead-letter — distinguishable from a \
+             successful decision's audit trail: {audit_outcomes:?}"
+        );
+
+        // decision_history (the read path decisions/history rows come from)
+        // must actually carry that dead-letter marker — a UI-readable field
+        // distinguishing this decision from one whose effect succeeded.
+        let history = decisions::decision_history(&pool, 50, None).await.unwrap();
+        assert!(
+            history
+                .iter()
+                .any(|h| h.decision.id == decision.id && h.outcome.starts_with("effect_dead:")),
+            "decision_history must surface the dead-letter outcome"
         );
     }
 
