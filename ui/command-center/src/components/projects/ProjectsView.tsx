@@ -533,6 +533,13 @@ export function ProjectKanban({ project }: { project: Project }) {
   const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
   const pendingCard = useCommandCenter(s => s.pendingCardNavigation);
   const clearPendingCardNavigation = useCommandCenter(s => s.clearPendingCardNavigation);
+  // #629 liveness for the board itself. `cards::create_card` / `move_card` /
+  // `update_card` / `delete_card` and the column writers now emit
+  // `project_changed(.., "cards")`, which `livenessSync` maps to
+  // `bumpProjects()`. Before this the board refetched on mount, after its own
+  // mutations, and on `goal_state_changed` — so a plain (non-goal) card added
+  // by the agent or on another device simply never appeared.
+  const projectsRev = useCommandCenter(s => s.projectsRev);
   // The card the dashboard's to-do list asked us to surface. Held in local
   // state so the ring outlives the store entry, which is cleared as soon as we
   // consume it (one-shot deep link — see openCardOnBoard).
@@ -605,6 +612,9 @@ export function ProjectKanban({ project }: { project: Project }) {
   }, [project.id, loadBoard]);
 
   useEffect(() => { loadBoard(); }, [loadBoard]);
+  // `projectsRev > 0` guard: skip the duplicate fetch on first mount, matching
+  // the projects-list effect above.
+  useEffect(() => { if (projectsRev > 0) loadBoard(); }, [projectsRev, loadBoard]);
   // Live board: refetch when any goal is created or transitions (shared
   // subscription) so Henry's changes appear without a full app reload.
   useGoalEvents(loadBoard);

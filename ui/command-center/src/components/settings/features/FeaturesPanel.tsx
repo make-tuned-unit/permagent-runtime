@@ -18,6 +18,7 @@
 import { useEffect, useState } from 'react';
 import { H1, Row, Section, Toggle } from '../atoms';
 import { api, type CouncilMembers, type CouncilSeat } from '../../../lib/api';
+import { useCommandCenter } from '../../../lib/store';
 import { font } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import {
@@ -48,6 +49,8 @@ export function FeaturesPanel({ goto }: PanelProps) {
   const [members, setMembers] = useState<CouncilMembers | null>(null);
   const [membersError, setMembersError] = useState<string | null>(null);
 
+  const configRev = useCommandCenter(s => s.configRev);
+
   useEffect(() => {
     let active = true;
     for (const row of FEATURE_ROWS) {
@@ -59,7 +62,10 @@ export function FeaturesPanel({ goto }: PanelProps) {
       .then(list => { if (active) setIntegrations(list); })
       .catch(() => { if (active) setIntegrations([]); });
     return () => { active = false; };
-  }, []);
+    // `configRev` = the daemon's `config_changed` frame. These toggles write
+    // config keys, and so does the agent; without this the panel showed the
+    // flags as they were when it mounted.
+  }, [configRev]);
 
   useEffect(() => {
     if (flags.council_enabled !== true) {
