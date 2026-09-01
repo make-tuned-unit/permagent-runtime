@@ -24,7 +24,7 @@
  *      them 10px — a size below every reference console's floor and below the
  *      ramp's own smallest role. Whether 10px becomes 11 (labels, numbers) or
  *      12 (prose) is a product call about density on a 1280x800 window, and it
- *      is Jesse's to make (U2 §2.2 / J1), not a codemod's. So the budget below
+ *      is the user's to make (U2 §2.2 / J1), not a codemod's. So the budget below
  *      says how many exist today and refuses to let the number grow. Adding a
  *      `nano: 10` token is the one option explicitly ruled out: it would
  *      ratify solving density by shrinking, which R7 forbids.
