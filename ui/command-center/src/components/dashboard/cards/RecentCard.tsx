@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { font, radius } from '../../../styles/tokens';
+import { duration, ease, font, radius, space } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { useCommandCenter } from '../../../lib/store';
 import { SectionTitle, StatusIcon, EmptyNote } from '../atoms';
@@ -37,8 +37,8 @@ export function RecentCard({ items }: Props) {
       borderRadius: radius.lg,
       background: colors.surface,
       border: `1px solid ${colors.border}`,
-      boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-      padding: 16,
+      boxShadow: [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
+      padding: space.xxl,
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden',
     }}>
@@ -46,7 +46,7 @@ export function RecentCard({ items }: Props) {
       {items.length === 0 ? (
         <EmptyNote hint="Sessions you run will appear here">No recent activity</EmptyNote>
       ) : (
-        <div style={{ flex: 1, overflow: 'auto', marginRight: -8, paddingRight: 8 }}>
+        <div style={{ flex: 1, overflow: 'auto', marginRight: -space.md, paddingRight: space.md }}>
           {items.map((item, i) => (
             <ActivityItem key={item.id} item={item} isLast={i === items.length - 1} onOpen={openSession} />
           ))}
@@ -57,12 +57,17 @@ export function RecentCard({ items }: Props) {
 }
 
 function ActivityItem({ item, isLast, onOpen }: { item: RecentSession; isLast: boolean; onOpen: (id: string) => void }) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const statusColor: Record<string, string> = {
     completed: colors.success,
     paused: colors.danger,
     awaiting_input: colors.cyan,
   };
+  // Was `colors.border` as the hover fill — a hairline color reused as a
+  // surface tint by coincidence of matching alpha. `fillHover`/`fillActive`
+  // name what this row actually wants (D10), and give it real press feedback,
+  // which it had none of before.
+  const fadeTransition = reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}, box-shadow ${duration.fast}ms ${ease.out}`;
   return (
     <div
       onClick={() => onOpen(item.id)}
@@ -70,15 +75,17 @@ function ActivityItem({ item, isLast, onOpen }: { item: RecentSession; isLast: b
       tabIndex={0}
       aria-label={`Open conversation: ${item.title}`}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(item.id); } }}
-      onMouseEnter={e => { e.currentTarget.style.background = colors.border; }}
+      onMouseEnter={e => { e.currentTarget.style.background = colors.fillHover; e.currentTarget.style.transition = fadeTransition; }}
       onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
-      onFocus={e => { e.currentTarget.style.background = colors.border; e.currentTarget.style.boxShadow = `0 0 0 2px ${colors.cyanGlow}`; }}
+      onPointerDown={e => { e.currentTarget.style.background = colors.fillActive; }}
+      onPointerUp={e => { e.currentTarget.style.background = colors.fillHover; }}
+      onFocus={e => { e.currentTarget.style.background = colors.fillHover; e.currentTarget.style.boxShadow = `0 0 0 2px ${colors.cyanGlow}`; e.currentTarget.style.transition = fadeTransition; }}
       onBlur={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.boxShadow = 'none'; }}
       style={{
-      display: 'flex', alignItems: 'center', gap: 10, padding: '7px 8px',
+      display: 'flex', alignItems: 'center', gap: space.lg, padding: `${space.md}px`,
       borderBottom: isLast ? 'none' : `1px solid ${colors.border}`,
       cursor: 'pointer', borderRadius: radius.sm, outline: 'none',
-      background: 'transparent', transition: 'background 100ms, box-shadow 100ms',
+      background: 'transparent', transition: fadeTransition,
     }}>
       <StatusIcon state={item.state} />
       <div style={{ flex: 1, minWidth: 0 }}>

@@ -1,5 +1,5 @@
 import { memo, useState, type CSSProperties } from 'react';
-import { radius, textSize } from '../../../styles/tokens';
+import { duration, ease, radius, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
 import { SectionTitle, EmptyNote } from '../atoms';
@@ -43,8 +43,8 @@ export const TodosCard = memo(function TodosCard({ todos }: Props) {
       borderRadius: radius.lg,
       background: colors.surface,
       border: `1px solid ${colors.border}`,
-      boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-      padding: 16,
+      boxShadow: [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
+      padding: space.xxl,
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden',
     }}>
@@ -85,7 +85,7 @@ export const TodosCard = memo(function TodosCard({ todos }: Props) {
           Nothing due
         </EmptyNote>
       ) : (
-        <div style={{ flex: 1, overflowY: 'auto', marginTop: 4, marginRight: -8, paddingRight: 8 }}>
+        <div style={{ flex: 1, overflowY: 'auto', marginTop: 4, marginRight: -space.md, paddingRight: space.md }}>
           {groups.map(group => (
             <Group key={group.bucket} group={group} today={today} todos={todos} />
           ))}
@@ -112,7 +112,7 @@ function Group({ group, today, todos }: { group: DueGroup; today: string; todos:
         fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.6,
         color: overdue ? colors.danger : colors.textDim,
         fontWeight: 600, marginBottom: 6, position: 'sticky', top: 0,
-        background: colors.surface, paddingBottom: 2,
+        background: colors.surface, paddingBottom: space.xs,
       }}>
         {group.label} · {group.todos.length}
       </div>
@@ -126,7 +126,7 @@ function Group({ group, today, todos }: { group: DueGroup; today: string; todos:
 function TodoRow({
   todo, bucket, today, todos,
 }: { todo: DueTodo; bucket: DueBucket; today: string; todos: UseDueTodos }) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const [hovered, setHovered] = useState(false);
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -146,12 +146,15 @@ function TodoRow({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        display: 'flex', alignItems: 'center', gap: 10,
-        padding: '7px 8px', marginBottom: 2,
+        display: 'flex', alignItems: 'center', gap: space.lg,
+        padding: `${space.md}px`, marginBottom: 2,
         borderRadius: radius.sm,
-        background: hovered ? colors.borderHi : 'transparent',
+        // Was `colors.borderHi` — a cyan-tinted hairline reused as a hover
+        // fill. Neutral `fillHover` matches D10/D8: rows get a visible hover,
+        // not a second tinted accent competing with the Decisions card's.
+        background: hovered ? colors.fillHover : 'transparent',
         opacity: busy ? 0.5 : 1,
-        transition: 'background 120ms ease, opacity 120ms ease',
+        transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}, opacity ${duration.fast}ms ${ease.out}`,
       }}
     >
       {/* Title + provenance. Clicking opens the card on its own board.
@@ -192,7 +195,7 @@ function TodoRow({
             if (e.key === 'Escape') setEditing(false);
           }}
           style={{
-            fontSize: textSize.micro, padding: '2px 4px', colorScheme: 'inherit',
+            fontSize: textSize.micro, padding: `${space.xs}px`, colorScheme: 'inherit',
             borderRadius: radius.sm, border: `1px solid ${colors.border}`,
             background: colors.surface, color: colors.text,
           }}

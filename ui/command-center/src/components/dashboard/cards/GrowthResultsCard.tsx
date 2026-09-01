@@ -1,5 +1,6 @@
 import { memo, useEffect, useState } from 'react';
-import { font, radius, textSize } from '../../../styles/tokens';
+import { duration, ease, font, radius, space, textSize } from '../../../styles/tokens';
+import type { ThemeColors } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { SectionTitle, EmptyNote, StatCompact } from '../atoms';
 import { apiFetch } from '../../../lib/api';
@@ -17,7 +18,7 @@ import { lastCumulativeNet } from '../../grow/growthTrend';
  * the same line per project underneath.
  */
 export const GrowthResultsCard = memo(function GrowthResultsCard() {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const setOpenGrowLens = useCommandCenter((s) => s.setOpenGrowLens);
   const growProject = useCommandCenter((s) => s.growProject);
   const [data, setData] = useState<GrowthResultsData | null>(null);
@@ -63,8 +64,8 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
         borderRadius: radius.lg,
         background: colors.surface,
         border: `1px solid ${colors.border}`,
-        boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-        padding: 16,
+        boxShadow: [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
+        padding: space.xxl,
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
       }}
@@ -85,7 +86,7 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{
             display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-            gap: '10px 12px',
+            gap: `${space.lg}px ${space.xl}px`,
           }}>
             <StatCompact label="Helped" value={fleet.helped} cyan={fleet.helped > 0} />
             <StatCompact label="Hindered" value={fleet.hindered} />
@@ -116,18 +117,15 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
                   // a truncating project name that must flex, a stats line, and
                   // a fixed-width sparkline, all laid out by the button itself.
                   // The primitive wraps its children in a single span, which
-                  // would collapse that three-part row. Left as a raw button.
-                  <button
+                  // would collapse that three-part row. Left as a raw button —
+                  // which is why it needs its own hover/press feedback (D10);
+                  // this row had none before.
+                  <GrowthProjectRow
                     key={row.projectId}
-                    type="button"
                     onClick={() => openProject(row.projectId)}
                     title={`Open ${row.projectName} results`}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 10,
-                      width: '100%', padding: '5px 0',
-                      border: 'none', borderTop: `1px solid ${colors.border}`,
-                      background: 'transparent', cursor: 'pointer', textAlign: 'left',
-                    }}
+                    reduceMotion={reduceMotion}
+                    colors={colors}
                   >
                     <span style={{
                       fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
@@ -150,7 +148,7 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
                         stroke={net < 0 ? colors.danger : colors.cyan}
                       />
                     </div>
-                  </button>
+                  </GrowthProjectRow>
                 );
               })}
             </div>
@@ -160,3 +158,43 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
     </div>
   );
 });
+
+/**
+ * The per-project row's own hover/press feedback (D10) — a plain `<button>`
+ * had none. `fillHover`/`fillActive` layer over the card's own `colors.surface`
+ * (the row sits directly on it), so a hover reads as the same surface lit up
+ * a shade, not a second material.
+ */
+function GrowthProjectRow({
+  onClick, title, reduceMotion, colors, children,
+}: {
+  onClick: () => void;
+  title: string;
+  reduceMotion: boolean;
+  colors: ThemeColors;
+  children: React.ReactNode;
+}) {
+  const [hover, setHover] = useState(false);
+  const [pressed, setPressed] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => { setHover(false); setPressed(false); }}
+      onPointerDown={() => setPressed(true)}
+      onPointerUp={() => setPressed(false)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: space.lg,
+        width: '100%', padding: `${space.sm}px 0`,
+        border: 'none', borderTop: `1px solid ${colors.border}`,
+        background: pressed ? colors.fillActive : hover ? colors.fillHover : 'transparent',
+        cursor: 'pointer', textAlign: 'left', borderRadius: radius.xs,
+        transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}`,
+      }}
+    >
+      {children}
+    </button>
+  );
+}

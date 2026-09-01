@@ -15,7 +15,7 @@ import { useState, useEffect, useRef, useCallback, type CSSProperties } from 're
 import {
   FiFlag, FiHelpCircle, FiCheckCircle, FiBookOpen, FiBell, FiAlertTriangle, FiActivity,
 } from 'react-icons/fi';
-import { font, radius, textSize } from '../../../styles/tokens';
+import { duration, ease, font, radius, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
 import { StateBlock } from '../../common/StateBlock';
@@ -191,14 +191,14 @@ export function TimelineCard() {
         borderRadius: radius.lg,
         background: colors.surface,
         border: `1px solid ${colors.border}`,
-        boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-        padding: '18px 20px',
+        boxShadow: [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
+        padding: `${space.xxxl}px`,
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
       }}>
         <SectionTitle title="Timeline" right={items.length > 0 ? 'last 90 days' : undefined} />
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap',
+          display: 'flex', alignItems: 'center', gap: space.sm, flexWrap: 'wrap',
           margin: '2px 0 8px',
         }}>
           {KIND_CHIPS.map((chip, idx) => {
@@ -235,7 +235,7 @@ export function TimelineCard() {
               onChange={e => setActor(e.target.value || null)}
               aria-label="Filter by actor"
               style={{
-                padding: '3px 6px',
+                padding: `${space.xs}px ${space.sm}px`,
                 borderRadius: radius.sm,
                 border: `1px solid ${actor ? colors.cyan : colors.border}`,
                 background: 'transparent',
@@ -276,7 +276,7 @@ export function TimelineCard() {
               <div key={group.label}>
                 <div style={{
                   position: 'sticky', top: 0, zIndex: 1,
-                  padding: '6px 0 4px',
+                  padding: `${space.sm}px 0 ${space.xs}px`,
                   background: colors.surface,
                   fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600,
                   letterSpacing: '0.10em', textTransform: 'uppercase',
@@ -347,10 +347,11 @@ function TimelineRow({ item, isLast, onOpenDecisions }: {
   isLast: boolean;
   onOpenDecisions: () => void;
 }) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
   const openInBrowser = useBrowserNavigate();
   const [hover, setHover] = useState(false);
+  const [pressed, setPressed] = useState(false);
 
   const meta = KIND_META[item.kind] ?? { icon: FiActivity, colorKey: 'cyan' as const };
   const Icon = meta.icon;
@@ -372,15 +373,21 @@ function TimelineRow({ item, isLast, onOpenDecisions }: {
     <div
       onClick={onClick}
       onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+      onMouseLeave={() => { setHover(false); setPressed(false); }}
+      onPointerDown={() => onClick && setPressed(true)}
+      onPointerUp={() => setPressed(false)}
       title={onClick ? 'View evidence' : undefined}
       style={{
-        display: 'flex', alignItems: 'center', gap: 12, padding: '9px 6px',
+        display: 'flex', alignItems: 'center', gap: space.xl, padding: `${space.lg}px ${space.sm}px`,
         borderBottom: isLast ? 'none' : `1px solid ${colors.border}`,
         borderRadius: radius.sm,
         cursor: onClick ? 'pointer' : 'default',
-        background: onClick && hover ? colors.cyanSoft : 'transparent',
-        transition: 'background 120ms ease',
+        // Was `colors.cyanSoft` — every row tinting the accent on hover is
+        // exactly the "rainbow tinting" anti-slop item (D8: one tinted action
+        // per view, and it isn't this list). Neutral fillHover/fillActive
+        // instead, with real press feedback where there was none.
+        background: !onClick ? 'transparent' : pressed ? colors.fillActive : hover ? colors.fillHover : 'transparent',
+        transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}`,
       }}
     >
       <div style={{

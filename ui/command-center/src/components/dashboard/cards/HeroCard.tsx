@@ -1,4 +1,4 @@
-import { font, radius, textSize } from '../../../styles/tokens';
+import { font, radius, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Mobius, type MobiusState } from '../../mobius/Mobius';
 import type { DashboardAgent } from '../useDashboard';
@@ -17,11 +17,14 @@ export function HeroCard({ agent, activeCount }: Props) {
   return (
     <div style={{
       position: 'relative', overflow: 'hidden',
-      padding: 24, borderRadius: radius.lg,
+      padding: space.huge, borderRadius: radius.lg,
       background: gradient.card,
       border: `1px solid ${colors.border}`,
+      // The one card with no shadow at all — the elevation ladder gives every
+      // card the same raised step (D1) instead of leaving this one flat.
+      boxShadow: colors.elevationRaised,
       height: '100%', boxSizing: 'border-box',
-      display: 'flex', alignItems: 'center', gap: 24,
+      display: 'flex', alignItems: 'center', gap: space.huge,
     }}>
       <div style={{ flex: 1 }}>
         <div style={{

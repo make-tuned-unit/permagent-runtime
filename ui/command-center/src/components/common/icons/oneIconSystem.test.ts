@@ -65,11 +65,6 @@ const DRAWINGS: Record<string, { count: number; why: string }> = {
     count: 1,
     why: 'a QR code — a crispEdges module matrix, drawn from the payload',
   },
-  'components/dashboard/Dashboard.tsx': {
-    count: 1,
-    why: 'the card resize grip: two parallel diagonal strokes, a decorative '
-      + 'corner mark, and Feather has no resize handle',
-  },
   'components/sidebar/Sidebar.tsx': {
     count: 1,
     why: "the ratified set's own render site — it draws the paths that set owns",

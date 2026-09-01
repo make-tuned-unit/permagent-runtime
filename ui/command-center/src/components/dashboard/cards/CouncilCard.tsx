@@ -3,7 +3,7 @@
  */
 
 import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from 'react';
-import { font, radius, textSize } from '../../../styles/tokens';
+import { font, radius, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { api, type CouncilLatest } from '../../../lib/api';
 import { Button } from '../../common/Button';
@@ -55,8 +55,8 @@ export function CouncilCard() {
           borderRadius: radius.lg,
           background: colors.surface,
           border: `1px solid ${colors.border}`,
-          boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-          padding: '18px 20px',
+          boxShadow: [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
+          padding: `${space.xxxl}px`,
           display: 'flex', flexDirection: 'column',
           overflow: 'hidden',
         }}
@@ -70,7 +70,7 @@ export function CouncilCard() {
         </div>
 
         {error && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.md, alignItems: 'flex-start' }}>
             <div style={{ fontSize: textSize.small, color: colors.text, lineHeight: 1.5 }}>
               Couldn't load the Council report — the daemon didn't answer.
             </div>
@@ -105,7 +105,7 @@ export function CouncilCard() {
               {report.markdown}
             </div>
             <div style={{
-              display: 'flex', gap: 10, marginTop: 10, alignItems: 'center',
+              display: 'flex', gap: space.lg, marginTop: 10, alignItems: 'center',
               fontSize: textSize.micro, color: colors.textDim, flexWrap: 'wrap',
             }}>
               <span>{session?.status} · {positions.length} take{positions.length === 1 ? '' : 's'}</span>
