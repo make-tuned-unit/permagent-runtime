@@ -591,7 +591,7 @@ mod tests {
     }
 
     /// The single most important test in this file. F0 §7: "if a backtest on
-    /// Jesse's own pool shows a large return improvement, the correct first
+    /// the user's own pool shows a large return improvement, the correct first
     /// hypothesis is a bug — lookahead through unadjusted prices, survivorship
     /// in the scanner pool, or a channel computed inclusive of the current bar
     /// — or overfit. Not a discovery." This pins the third one.

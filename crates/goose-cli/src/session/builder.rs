@@ -1140,10 +1140,10 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         );
         // No opening greeting here. The banner already ends on "<name> is
         // ready", and a second line saying hello is one more thing to read
-        // before you can start working (Jesse, 2026-08-31: "I don't need it to
-        // say Hello sir."). The persona's `opening_greeting` is unchanged and
-        // still Chat's — a graphical client opening on an empty thread has a
-        // blank space to fill; a terminal prompt does not.
+        // before you can start working (ruling 2026-08-31, the user: "I don't
+        // need it to say Hello sir."). The persona's `opening_greeting` is
+        // unchanged and still Chat's — a graphical client opening on an empty
+        // thread has a blank space to fill; a terminal prompt does not.
     }
     session
 }
