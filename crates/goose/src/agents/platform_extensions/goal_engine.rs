@@ -1061,11 +1061,22 @@ pub async fn reap_terminal_goal_worktree(
 }
 
 /// Boot-time sweep reclaiming orphaned goal worktrees left by crashed or prior
-/// daemon lifecycles (#504). Each `cli-*` dir under `repo`'s worktrees dir that
-/// is NOT in `active_run_ids` is reaped under the push-safety guard: a readable
-/// worktree with unpushed commits is kept; an unreadable one (its git admin ref
-/// already gone, so its commits are unreachable regardless) is safe to delete.
-/// Returns the number of dirs reclaimed.
+/// daemon lifecycles (#504). Each goal-worktree dir under `repo`'s worktrees dir
+/// that is NOT in `active_run_ids` is reaped under the push-safety guard: a
+/// readable worktree with unpushed commits is kept; an unreadable one (its git
+/// admin ref already gone, so its commits are unreachable regardless) is safe to
+/// delete. Returns the number of dirs reclaimed.
+///
+/// R1b: the match used to be `starts_with("cli-")`, which is the external-CLI
+/// engine's run-id shape only. Internal-engine worktrees are named by session id
+/// and so were never swept in either direction — never wrongly destroyed, but
+/// never cleaned up either: two of them were still on disk eleven days after
+/// their goals ended. The safety model is unchanged (the active-goal exclusion
+/// and the unpushed-commit guard below are what protect work, not the name), with
+/// one addition for the newly-included names: a dir that is not a git worktree at
+/// all is left alone, since nothing proves Permagent created it. `cli-` dirs keep
+/// their unconditional treatment — that prefix is proof enough of provenance, and
+/// #504's second leak form is a `cli-` dir git no longer tracks.
 pub async fn sweep_orphaned_worktrees(repo: &Path, active_run_ids: &[String]) -> usize {
     let dir = goal_worktrees_dir(repo);
     let mut entries = match tokio::fs::read_dir(&dir).await {
@@ -1081,6 +1092,9 @@ pub async fn sweep_orphaned_worktrees(repo: &Path, active_run_ids: &[String]) ->
         }
         let name = match path.file_name().and_then(|n| n.to_str()) {
             Some(n) if n.starts_with("cli-") => n.to_string(),
+            // Any other dir must carry a `.git` entry (every git worktree has
+            // one) before the sweep will touch it.
+            Some(n) if path.join(".git").exists() => n.to_string(),
             _ => continue,
         };
         if active_run_ids.iter().any(|id| id == &name) {
@@ -3036,6 +3050,68 @@ mod tests {
         assert!(wt_active.exists(), "active goal worktree must be skipped");
         assert!(wt_unpushed.exists(), "unpushed worktree must be protected");
         assert!(!wt_done.exists(), "finished pushed worktree must be reaped");
+    }
+
+    // ── R1b: the sweep's `cli-` name filter (internal-engine worktrees) ──────
+
+    /// D13/R1b: internal-engine worktrees are named by session id, with no
+    /// `cli-` prefix, so the boot sweep never saw them and they accumulated —
+    /// two 11-day-old dirs were still on disk when R0 looked. They must be
+    /// swept under the SAME safety rules as the external ones: active goals
+    /// skipped, unpushed commits protected, pushed/orphaned dirs reclaimed.
+    #[tokio::test]
+    async fn sweep_covers_internal_engine_worktrees_under_the_same_guards() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        // Session-id-shaped run ids, exactly as `InternalSubagentEngine` mints.
+        let wt_active = create_goal_worktree(&repo, &baseline, "20260901_1")
+            .await
+            .unwrap();
+        let wt_unpushed = create_goal_worktree(&repo, &baseline, "20260901_2")
+            .await
+            .unwrap();
+        commit_in_worktree(&wt_unpushed, "new.txt");
+        let wt_done = create_goal_worktree(&repo, &baseline, "20260901_3")
+            .await
+            .unwrap();
+
+        let active = vec!["20260901_1".to_string()];
+        let reclaimed = sweep_orphaned_worktrees(&repo, &active).await;
+
+        assert_eq!(reclaimed, 1, "only the finished pushed worktree is reaped");
+        assert!(
+            wt_active.exists(),
+            "an internal-engine worktree belonging to a live goal must be skipped"
+        );
+        assert!(
+            wt_unpushed.exists(),
+            "an internal-engine worktree with unpushed commits must be protected"
+        );
+        assert!(
+            !wt_done.exists(),
+            "a finished, fully-pushed internal-engine worktree must be reclaimed"
+        );
+    }
+
+    /// The widened filter must not turn the sweep into a general-purpose
+    /// `rm -rf` of its parent directory: a dir that is not a git worktree at
+    /// all (no `.git` entry) is left alone, because nothing proves Permagent
+    /// created it.
+    #[tokio::test]
+    async fn sweep_leaves_non_worktree_directories_alone() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, _baseline) = init_repo_with_remote(tmp.path());
+        let stranger = tmp.path().join(GOAL_WORKTREES_DIR).join("notes");
+        std::fs::create_dir_all(&stranger).unwrap();
+        std::fs::write(stranger.join("scratch.md"), "mine").unwrap();
+
+        let reclaimed = sweep_orphaned_worktrees(&repo, &[]).await;
+
+        assert_eq!(reclaimed, 0);
+        assert!(
+            stranger.exists(),
+            "a directory that is not a goal worktree must never be reaped"
+        );
     }
 
     // ── R1a/D13: the internal engine's durability net ────────────────────────
