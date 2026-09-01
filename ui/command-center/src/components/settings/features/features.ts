@@ -4,11 +4,15 @@
  * re-reads on every tick of its loop, so a flip lands at the next tick with no
  * restart. Kept free of React so the copy and the key table are unit-testable.
  *
- * These keys are ALSO written by the agent's own page under Settings → Agents,
- * and `strix_enabled` additionally by the Guard block in the Models pane. One
- * key, three places, never a second key — the daemon serialises the key it reads
- * on every agent row (`gate.config_key`), and every surface writes THAT through
- * the same `/config/upsert` call, so the surfaces cannot drift apart.
+ * These keys are ALSO written by the agent's own page under Settings → Agents.
+ * One key, never a second — the daemon serialises the key it reads on every
+ * agent row (`gate.config_key`), and every surface writes THAT through the same
+ * `/config/upsert` call, so the surfaces cannot drift apart.
+ *
+ * `strix_enabled` is the exception, and deliberately so (J8/C7): the Guard is
+ * the one worker here that runs live exploit tooling, so it has exactly ONE
+ * writable switch — its own agent page — and this board shows its state and
+ * points there. `switchedAt` marks that.
  *
  * The set mirrors the Rust gate table
  * (`crates/goose/src/agents/self_knowledge/mod.rs::worker_gate`), which pins it
@@ -30,6 +34,12 @@ export type FeatureRow = {
   what: string;
   /** How soon a flip takes effect. Every loop here re-reads the flag per tick. */
   effect: string;
+  /**
+   * This worker's switch is NOT writable here — it has one home, named by this
+   * agent id, and this board only reads it. Set for the Guard, whose switch
+   * arms live exploit tooling and therefore gets one deliberate place to flip.
+   */
+  switchedAt?: { agentId: string; why: string };
 };
 
 /** Row order is the display order. */
@@ -62,7 +72,11 @@ export const FEATURE_ROWS: readonly FeatureRow[] = [
     key: 'strix_enabled',
     label: 'The Guard (security sweeps)',
     what: 'Sweeps ONE of your own projects per pass — rotating, least-recently-scanned first — for exposed secrets, vulnerable dependencies, injection and access-control weaknesses, and files a security report with a fix plan as a note on that project. It reports only: it never edits code to fix what it found. Needs the external `strix` scanner and Docker, locally or on the host in `strix_docker_ssh`, and each sweep spends your API credits.',
-    effect: 'Off by default. Takes effect within about 15 minutes, no restart. Sweep cadence is a cost dial under Settings → Models.',
+    effect: 'Off by default. Takes effect within about 15 minutes, no restart. The switch and the sweep cadence both live on the Guard\'s own page.',
+    switchedAt: {
+      agentId: 'strix',
+      why: 'A scanner that runs live exploit tooling is switched on deliberately, in one place — not from a list of six.',
+    },
   },
   {
     key: 'council_enabled',

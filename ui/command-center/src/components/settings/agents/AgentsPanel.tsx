@@ -53,6 +53,7 @@ import {
 import { worldAgentIdForAgent } from '../../../lib/worldAgentIds';
 import { ROSTER } from '../../world/agents/roster';
 import { AgentPortrait } from './AgentPortrait';
+import { AgentSettingsBlock } from './agentSettings';
 import { SkillsSection } from './SkillsSection';
 
 type PanelProps = { goto: (key: string) => void };
@@ -668,6 +669,11 @@ function AgentDetailPane({
           onFlipped={reloadAfterFlip}
         />
       )}
+
+      {/* This agent's own settings, which used to sit under Models because
+          they each name a model (J8/C7). Models keeps "which brain answers
+          which job"; how an agent behaves belongs to the agent. */}
+      <AgentSettingsBlock agentId={id} />
 
       <Section title="World">
         <WorldLink agentId={id} />

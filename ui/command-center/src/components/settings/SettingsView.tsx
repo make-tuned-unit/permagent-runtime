@@ -26,7 +26,7 @@ import { resolveSettingsSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
 import { PronunciationSection } from '../voice/PronunciationSection';
-import { H1, Section, Row, TextInput, Chip, Slider, Kbd, SaveButton } from './atoms';
+import { H1, Section, Row, TextInput, Chip, Slider, Kbd, SaveButton, ModelStateBadge, selectStyle } from './atoms';
 import { Button } from '../common/Button';
 import { StateBlock } from '../common/StateBlock';
 import { Toggle } from '../common/Toggle';
@@ -75,12 +75,6 @@ const ghost = (colors: C): React.CSSProperties => ({
   height: 32,
   fontFamily: font.body, fontSize: textSize.caption, gap: 6,
 } as React.CSSProperties);
-const selectStyle = (colors: C): React.CSSProperties => ({
-  height: 34, padding: '0 12px', borderRadius: radius.md,
-  background: colors.inputBg, border: `1px solid ${colors.border}`,
-  color: colors.text, fontFamily: font.body, fontSize: textSize.small,
-  minWidth: 240, cursor: 'pointer',
-});
 
 // ── Voice model route readout ────────────────────────────────────────
 // Mirrors crates/goose/src/config/voice_model.rs::resolve_voice_model — this
@@ -132,14 +126,20 @@ const CATEGORIES = [
   // The former Console overlay (Sessions / Inbox / Trace / Governance) folded
   // into Settings — 2026-08 ruling. Governance's panels merged into Spend,
   // Sovereignty, Models, and Autonomy.
-  { group: 'Console', items: [
+  // "Console" named the retired overlay, not what the group holds: Sessions,
+  // Downloads, Activity and Spend are all records of what already happened.
+  { group: 'History', items: [
     { key: 'sessions',    label: 'Sessions',         icon: FiClock },
-    { key: 'inbox',       label: 'Inbox',            icon: FiInbox },
+    // "Inbox" is the decision queue's word everywhere else in the app; this
+    // pane is where in-app browser downloads land. Say which it is.
+    { key: 'inbox',       label: 'Downloads',        icon: FiInbox },
     { key: 'activity',    label: 'Activity',         icon: FiActivity },
     { key: 'spend',       label: 'Spend',            icon: FiDollarSign },
   ]},
   { group: 'Connections', items: [
-    { key: 'tools',       label: 'Tools & MCPs',     icon: FiEdit3 },
+    // MCP is defined once, in the pane's own subtitle — a nav label is not the
+    // place to teach an acronym.
+    { key: 'tools',       label: 'Tools',            icon: FiEdit3 },
     { key: 'models',      label: 'Models',           icon: FiCpu },
     { key: 'keys',        label: 'API keys',         icon: FiKey },
     { key: 'devices',    label: 'Devices',          icon: FiSmartphone },
@@ -356,7 +356,7 @@ export function MemoryPanel({ goto }: { goto?: (key: string) => void }) {
       <Section title="Manage">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <Button colors={colors} style={ghost(colors)} onClick={() => navigateToTool('memory')}>Open Brain view</Button>
-          <Button colors={colors} style={ghost(colors)} onClick={() => goto?.('models')}>Nightly pruning (Librarian schedule) →</Button>
+          <Button colors={colors} style={ghost(colors)} onClick={() => goto?.('agents')}>Nightly pruning (the Librarian's schedule) →</Button>
           {/* Export/Forget removed (2026-07-10 audit): a destructive-styled
               button with no handler is worse than no button. They return
               with real endpoints behind them. */}
@@ -585,7 +585,9 @@ function ToolsPanel({ goto }: PanelProps) {
 
   return (
     <div>
-      <H1 sub="Tools your agent can use. These follow the Model Context Protocol — connect a server and the agent can call into it.">Tools &amp; MCPs</H1>
+      {/* MCP is defined here, once — the nav label carries the user's word and
+          the pane carries the acronym. */}
+      <H1 sub="Tools your agent can use. Most arrive over MCP — the Model Context Protocol — so connecting a server is what gives the agent something new it can call.">Tools</H1>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>{enabledCount} of {extensions.length} enabled</span>
@@ -635,43 +637,9 @@ function ToolsPanel({ goto }: PanelProps) {
 type OllamaModel = { name: string; size: number; digest: string; modified_at: string };
 type OllamaRunning = { name: string; size: number; size_vram: number; digest: string; expires_at: string };
 type OllamaStatus = { reachable: boolean; installed: OllamaModel[]; running: OllamaRunning[] };
-type LibSchedule = { enabled: boolean; start_time: string; duration_minutes: number; model: string; run_if_launched_in_window: boolean; pruning_enabled?: boolean };
-
 function formatBytes(b: number): string {
   if (b < 1e9) return `${(b / 1e6).toFixed(0)} MB`;
   return `${(b / 1e9).toFixed(1)} GB`;
-}
-
-function nextRunText(sched: LibSchedule): string {
-  if (!sched.enabled) return 'Disabled';
-  const [h, m] = sched.start_time.split(':').map(Number);
-  const now = new Date();
-  const next = new Date(now);
-  next.setHours(h, m, 0, 0);
-  if (next <= now) next.setDate(next.getDate() + 1);
-  const diff = next.getTime() - now.getTime();
-  const hrs = Math.floor(diff / 3600000);
-  const mins = Math.floor((diff % 3600000) / 60000);
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
-  const mStr = String(m).padStart(2, '0');
-  if (hrs < 1) return `Next run: in ${mins}m (${h12}:${mStr} ${ampm})`;
-  return `Next run: in ${hrs}h ${mins}m (${h12}:${mStr} ${ampm})`;
-}
-
-function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'missing' }) {
-  const { colors } = useThemeHook();
-  const styles: Record<string, { bg: string; text: string; label: string }> = {
-    running: { bg: colors.cyanSoft, text: colors.cyan, label: 'Loaded' },
-    installed: { bg: colors.surfaceHi, text: colors.textMuted, label: 'Installed' },
-    missing: { bg: `${colors.danger}1A`, text: colors.danger, label: 'Not installed' },
-  };
-  const s = styles[state];
-  return (
-    <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: radius.pill, background: s.bg, color: s.text }}>
-      {s.label}
-    </span>
-  );
 }
 
 // ── Chat / Voice / Harness role table ──────────────────────────────────
@@ -835,10 +803,6 @@ function RoleModelRow({
 export function ModelsPanel({ goto }: PanelProps) {
   const { colors } = useThemeHook();
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
-  const [schedule, setSchedule] = useState<LibSchedule | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [runningNow, setRunningNow] = useState(false);
-  const [libError, setLibError] = useState<string | null>(null);
 
   // Primary-model readout (merged from the retired Governance → Models panel).
   // Read-only: the model/provider switch itself lives in the provider modal on
@@ -939,135 +903,16 @@ export function ModelsPanel({ goto }: PanelProps) {
     return () => { active = false; };
   }, []);
 
-  // Strix — the security sweep loop (crate::strix). The daemon re-reads
-  // `strix_enabled` every tick, so a flip here takes effect at the next tick
-  // without a restart.
-  const [strix, setStrix] = useState<boolean | null>(null);
-  /** Now only the cadence dial's — the switch carries its own failures. */
-  const [strixError, setStrixError] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    api.readConfig('strix_enabled')
-      .then(r => { if (active) setStrix(r === true); })
-      .catch(() => { if (active) setStrix(false); });
-    return () => { active = false; };
-  }, []);
-  // The optimistic flip, the revert and the message all moved into `Toggle`,
-  // which was written from this function: it only has to do the write, and let
-  // a throw be the failure.
-  const saveStrix = async (v: boolean) => {
-    await api.upsertConfig('strix_enabled', v);
-    setStrix(v);
-  };
-  // Sweep cadence (strix_sweep_hours) — each sweep is a real agentic scan of
-  // every active project on the user's API credits, so the cadence is theirs
-  // to set. Daemon default is daily; changes apply within ~15 minutes.
-  const [strixHours, setStrixHours] = useState<number>(24);
-  const [strixDockerSsh, setStrixDockerSsh] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    api.readConfig('strix_sweep_hours')
-      .then(r => {
-        const v = Number(r);
-        if (active && Number.isFinite(v) && v > 0) setStrixHours(v);
-      })
-      .catch(() => { /* unset — daemon default (24h) applies */ });
-    api.readConfig('strix_docker_ssh')
-      .then(r => {
-        if (active && typeof r === 'string' && r.trim()) setStrixDockerSsh(r.trim());
-      })
-      .catch(() => { /* unset — scans locally */ });
-    return () => { active = false; };
-  }, []);
-  const saveStrixHours = (v: number) => {
-    const prev = strixHours;
-    setStrixHours(v);
-    setStrixError(null);
-    api.upsertConfig('strix_sweep_hours', v).catch(err => {
-      setStrixHours(prev);
-      setStrixError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  };
-
-  // The Watcher (daemon proactive.rs) — teachability keys. `watcher_topics` =
-  // subjects to follow (relevant by the user's say-so); `watcher_muted_subjects`
-  // = subjects never to nudge about. Comma-separated in the UI, stored as
-  // string arrays; the daemon re-reads both on every news check.
-  const [watcherTopics, setWatcherTopics] = useState<string>('');
-  const [watcherMuted, setWatcherMuted] = useState<string>('');
-  const [watcherError, setWatcherError] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    api.readConfig('watcher_topics')
-      .then(r => { if (active && Array.isArray(r)) setWatcherTopics((r as string[]).join(', ')); })
-      .catch(() => { /* unset — no topics taught yet */ });
-    api.readConfig('watcher_muted_subjects')
-      .then(r => { if (active && Array.isArray(r)) setWatcherMuted((r as string[]).join(', ')); })
-      .catch(() => { /* unset — nothing muted */ });
-    return () => { active = false; };
-  }, []);
-  const saveWatcherList = (key: 'watcher_topics' | 'watcher_muted_subjects', raw: string) => {
-    setWatcherError(null);
-    const list = raw.split(',').map(s => s.trim()).filter(Boolean);
-    api.upsertConfig(key, list).catch(err => {
-      setWatcherError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  };
-
   // Poll Ollama status while panel is visible
   useEffect(() => {
     let active = true;
     const poll = () => {
       api.getOllamaStatus().then(s => { if (active) setOllama(s); }).catch(() => {});
-      api.getLibrarianSchedule().then(s => { if (active) setSchedule(s); }).catch(() => {});
     };
     poll();
     const id = setInterval(poll, 8000);
     return () => { active = false; clearInterval(id); };
   }, []);
-
-  const modelState = (name: string): 'running' | 'installed' | 'missing' => {
-    if (!ollama) return 'missing';
-    if (ollama.running.some(m => m.name === name || m.name.startsWith(name + ':'))) return 'running';
-    if (ollama.installed.some(m => m.name === name || m.name.startsWith(name + ':'))) return 'installed';
-    return 'missing';
-  };
-
-  const handleScheduleChange = async (patch: Partial<LibSchedule>) => {
-    if (!schedule) return;
-    const prev = schedule;
-    const next = { ...schedule, ...patch };
-    setSchedule(next);
-    setSaving(true);
-    setLibError(null);
-    try {
-      await api.setLibrarianSchedule(next);
-    } catch (err) {
-      // Revert + surface (2026-07 wiring audit): the swallowed catch left the
-      // panel showing a schedule the daemon never persisted.
-      setSchedule(prev);
-      setLibError(`Couldn't save the Librarian schedule: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    setSaving(false);
-  };
-
-  const handleRunNow = async () => {
-    setRunningNow(true);
-    setLibError(null);
-    let started = true;
-    try {
-      await api.runLibrarianNow();
-    } catch (err) {
-      // Swallowed into `libError`, so the Button contract needs the explicit
-      // `false` — a run that never started must not finish with a tick.
-      started = false;
-      setLibError(`Couldn't start the Librarian: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    setRunningNow(false);
-    // Refresh status to show model as loaded
-    api.getOllamaStatus().then(setOllama).catch(() => {});
-    return started;
-  };
 
   return (
     <div>
@@ -1202,204 +1047,26 @@ export function ModelsPanel({ goto }: PanelProps) {
         )}
       </Section>
 
-      {/* ── Librarian Schedule ───────────────────────────────────── */}
-      {schedule && (
-        <Section title="Librarian schedule">
-          {libError && (
-            <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{libError}</div>
-          )}
-          <Row label="Enabled" hint="Run the Librarian on a daily schedule to describe memories.">
-            <Toggle on={schedule.enabled} onChange={v => handleScheduleChange({ enabled: v })} label="Nightly librarian pass" />
-          </Row>
-          {schedule.enabled && (
-            <>
-              <Row label="Start time" hint="Daily start time (24h). The Librarian model will warm-load at this time.">
-                <input
-                  type="time"
-                  value={schedule.start_time}
-                  onChange={e => handleScheduleChange({ start_time: e.target.value })}
-                  style={{ ...selectStyle(colors), minWidth: 120, width: 'auto' }}
-                />
-              </Row>
-              <Row label="Duration" hint="How long to keep the model loaded (minutes).">
-                <input
-                  type="number"
-                  min={15}
-                  max={720}
-                  value={schedule.duration_minutes}
-                  onChange={e => handleScheduleChange({ duration_minutes: Math.max(15, Math.min(720, parseInt(e.target.value) || 15)) })}
-                  style={{ ...selectStyle(colors), minWidth: 100, width: 'auto' }}
-                />
-                <span style={{ fontSize: textSize.micro, color: colors.textDim, marginLeft: 6 }}>min</span>
-              </Row>
-              <Row label="Model" hint="Ollama model used by the Librarian. Installed models only.">
-                <span style={{ fontSize: textSize.small, color: colors.text, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <select
-                    style={{ ...selectStyle(colors), width: 'auto', minWidth: 160 }}
-                    value={schedule.model}
-                    onChange={e => handleScheduleChange({ model: e.target.value })}
-                  >
-                    {!(ollama?.installed ?? []).some(m => m.name === schedule.model) && (
-                      <option value={schedule.model}>{schedule.model} (not installed)</option>
-                    )}
-                    {(ollama?.installed ?? []).map(m => (
-                      <option key={m.name} value={m.name}>{m.name}</option>
-                    ))}
-                  </select>
-                  <ModelStateBadge state={modelState(schedule.model)} />
-                </span>
-              </Row>
-              <Row label="Nightly pruning" hint="Let the Librarian retire stale, low-signal memories during its window.">
-                <Toggle on={schedule.pruning_enabled ?? false} onChange={v => handleScheduleChange({ pruning_enabled: v })} />
-              </Row>
-              <Row label="Next run" hint={nextRunText(schedule)}>
-                <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>{nextRunText(schedule)}</span>
-              </Row>
-            </>
-          )}
-          <Row label="Run now" hint="Manually warm-load the model and trigger a Librarian run.">
-            <Button
-              colors={colors}
-              onClick={handleRunNow}
-              disabled={runningNow || modelState(schedule.model) === 'missing'}
-              style={{
-                '--pa-btn-bg': colors.cyanSoft,
-                '--pa-btn-fg': runningNow ? colors.textDim : colors.cyan,
-                '--pa-btn-border': colors.borderHi,
-                '--pa-btn-border-hover': colors.cyan,
-                '--pa-btn-bg-hover': colors.cyanSoft,
-                '--pa-btn-bg-active': colors.cyanGlow,
-                '--pa-btn-pad': '0 14px',
-                '--pa-btn-radius': `${radius.sm}px`,
-                '--pa-btn-weight': 600,
-                height: 30, fontSize: textSize.caption, fontFamily: font.body,
-              } as CSSProperties}
-            >
-              {runningNow ? 'Warming...' : 'Run Librarian now'}
-            </Button>
-          </Row>
-          {saving && <div style={{ fontSize: 10, color: colors.textDim, textAlign: 'right', padding: '4px 0' }}>Saving...</div>}
-        </Section>
-      )}
-
-      {/* ── The Guard security sweeps ────────────────────────────── */}
+      {/* ── Where the agents' own settings went ──────────────────
+          The Guard's switch and cadence, the Watcher's teaching keys and the
+          Librarian's schedule used to live here, because each of them names a
+          model — which is true of nearly everything in this app. They are the
+          agents' settings, so they live on the agents' page now (J8/C7), and
+          this pane keeps only its stated purpose: which brain answers which
+          job. One entry point per concept; this is the pointer to it. */}
       <Section
-        title="Security sweeps (The Guard)"
-        sub="The Guard — born of the Strix pentest engine — probes your own projects for security flaws. Each sweep scans ONE active project (rotating through them, least-recently-scanned first) and files a security report with a fix plan as a note on that project, plus a findings checklist on its Overview. Requires the external `strix` scanner and Docker: locally, or on the host in `strix_docker_ssh` (rsync there, scan against that machine's Docker, pull `.strix` back). A forwarded Docker socket is not enough. The cadence below is a cost dial that applies once the Guard is on: every sweep runs on your API credits. Changes apply within ~15 minutes — no restart needed."
+        title="Agent settings"
+        sub="How the Guard sweeps, what the Watcher follows, and when the Librarian runs are settings of those agents, not of the model table. They live on each agent's own page."
       >
-        {strixError && (
-          <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{strixError}</div>
-        )}
-        <Row label="Enable the Guard" hint="Off by default — a scanner that runs live exploit tooling is switched on deliberately, never by upgrade.">
-          {strix === null ? (
-            <span style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading…</span>
-          ) : (
-            <Toggle on={strix} onChange={saveStrix} />
-          )}
-        </Row>
-        {/* Three surfaces write this flag and none of them can disagree: there is
-            exactly one config key and no agent-scoped write path, so every one of
-            them upserts `strix_enabled`. Saying so — and pointing at the other
-            two — is what stops the next person hunting for "the real" switch. */}
-        <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, padding: '2px 0 10px' }}>
-          This is the same switch as Settings → Features and the Guard's own page under
-          Settings → Agents — one config key (<code style={{ fontFamily: font.mono }}>strix_enabled</code>),
-          so flipping it anywhere is the same flag.
-          <span style={{ display: 'inline-flex', gap: 12, marginLeft: 10 }}>
-            <Button
-              colors={colors}
-              variant="bare"
-              type="button"
-              data-testid="guard-open-features"
-              onClick={() => goto('features')}
-              style={{
-                '--pa-btn-fg': colors.cyan,
-                '--pa-btn-bg-hover': 'transparent',
-                '--pa-btn-pad': '0',
-                fontFamily: font.body, fontSize: textSize.micro, textDecoration: 'underline',
-              } as CSSProperties}
-            >
-              All worker switches
-            </Button>
-            <Button
-              colors={colors}
-              variant="bare"
-              type="button"
-              data-testid="guard-open-agents"
-              onClick={() => goto('agents')}
-              style={{
-                '--pa-btn-fg': colors.cyan,
-                '--pa-btn-bg-hover': 'transparent',
-                '--pa-btn-pad': '0',
-                fontFamily: font.body, fontSize: textSize.micro, textDecoration: 'underline',
-              } as CSSProperties}
-            >
-              The Guard's agent page
-            </Button>
-          </span>
-        </div>
-        <Row label="Sweep every" hint="How often the Guard scans the next project in the rotation. Daily is the cost-effective default.">
-          <select
-            value={strixHours}
-            onChange={e => saveStrixHours(Number(e.target.value))}
-            style={{
-              background: colors.inputBg, color: colors.text, fontSize: textSize.caption,
-              border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '4px 8px',
-            }}
+        <Row label="The Guard, the Watcher, the Librarian" hint="Switches, cadences and schedules — one page per agent.">
+          <Button
+            colors={colors}
+            style={ghost(colors)}
+            data-testid="models-open-agents"
+            onClick={() => goto('agents')}
           >
-            <option value={12}>12 hours</option>
-            <option value={24}>24 hours (recommended)</option>
-            <option value={72}>3 days</option>
-            <option value={168}>Weekly</option>
-          </select>
-        </Row>
-        <Row
-          label="Scanner host"
-          hint={strixDockerSsh
-            ? 'Docker and strix run on this machine. This Mac rsyncs the project there and pulls .strix back — a forwarded Docker socket is not enough.'
-            : 'Unset: scans on this Mac, which needs local Docker and strix. Set strix_docker_ssh in ~/.permagent/config.yaml to scan on another host.'}
-        >
-          <span style={{ fontSize: textSize.caption, color: colors.text, fontFamily: font.mono }}>
-            {strixDockerSsh ?? 'this Mac'}
-          </span>
-        </Row>
-      </Section>
-
-      {/* ── The Watcher proactive nudges ─────────────────────────── */}
-      <Section
-        title="Proactive nudges (The Watcher)"
-        sub="The Watcher reaches out at most about once a day with the ONE thing genuinely worth your attention — news grounded in your active projects, or a memory thread that went quiet. Separately, it delivers the Financier's overbought sell signals on stocks you already hold (daily per symbol; does not use that taste budget). Teach it here: topics you want followed, and subjects it should never raise again. Changes apply at its next check — no restart needed."
-      >
-        {watcherError && (
-          <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{watcherError}</div>
-        )}
-        <Row label="Topics to follow" hint="Comma-separated. Treated as relevant by your say-so, alongside subjects inferred from your active projects.">
-          <input
-            value={watcherTopics}
-            onChange={e => setWatcherTopics(e.target.value)}
-            onBlur={() => saveWatcherList('watcher_topics', watcherTopics)}
-            onKeyDown={e => { if (e.key === 'Enter') saveWatcherList('watcher_topics', watcherTopics); }}
-            placeholder="e.g. local-first software, prediction markets"
-            style={{
-              width: 260, fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
-              background: colors.inputBg, border: `1px solid ${colors.border}`,
-              borderRadius: radius.sm, padding: '6px 10px', outline: 'none',
-            }}
-          />
-        </Row>
-        <Row label="Muted subjects" hint="Comma-separated. The Watcher never nudges about these again.">
-          <input
-            value={watcherMuted}
-            onChange={e => setWatcherMuted(e.target.value)}
-            onBlur={() => saveWatcherList('watcher_muted_subjects', watcherMuted)}
-            onKeyDown={e => { if (e.key === 'Enter') saveWatcherList('watcher_muted_subjects', watcherMuted); }}
-            placeholder="e.g. crypto prices"
-            style={{
-              width: 260, fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
-              background: colors.inputBg, border: `1px solid ${colors.border}`,
-              borderRadius: radius.sm, padding: '6px 10px', outline: 'none',
-            }}
-          />
+            Open Agents →
+          </Button>
         </Row>
       </Section>
     </div>
@@ -1867,7 +1534,7 @@ function InboxPane() {
   const { colors } = useThemeHook();
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <H1 sub="Files you download in the in-app browser land here — send them to the Brain, a project, or the post scheduler. You choose; nothing is routed for you.">Inbox</H1>
+      <H1 sub="Files you download in the in-app browser land here — send them to the Brain, a project, or the post scheduler. You choose; nothing is routed for you.">Downloads</H1>
       <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: radius.lg, overflow: 'hidden' }}>
         <InboxPanel embedded />
       </div>

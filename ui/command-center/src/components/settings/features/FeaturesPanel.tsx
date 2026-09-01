@@ -20,6 +20,7 @@ import { H1, Row, Section } from '../atoms';
 import { Button } from '../../common/Button';
 import { Toggle } from '../../common/Toggle';
 import { api, type CouncilMembers, type CouncilSeat } from '../../../lib/api';
+import { useCommandCenter } from '../../../lib/store';
 import { font, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import {
@@ -44,6 +45,9 @@ const UNLOADED = Object.fromEntries(FEATURE_ROWS.map(r => [r.key, null])) as Fla
 
 export function FeaturesPanel({ goto }: PanelProps) {
   const { colors } = useTheme();
+  // Lands ON the agent's page, not near it — the one place its switch is
+  // written (J8/C7).
+  const openAgentSettings = useCommandCenter(s => s.openAgentSettings);
   const [flags, setFlags] = useState<FlagState>(UNLOADED);
   const [integrations, setIntegrations] = useState<IntegrationStatus[] | null>(null);
   const [members, setMembers] = useState<CouncilMembers | null>(null);
@@ -109,11 +113,44 @@ export function FeaturesPanel({ goto }: PanelProps) {
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
                 {value === null ? (
                   <span style={{ fontSize: textSize.caption, color: colors.textDim, paddingTop: 4 }}>Loading…</span>
+                ) : row.switchedAt ? (
+                  // Read-only here on purpose: the row stays so the board still
+                  // lists every worker, but the flag has exactly one writer.
+                  <span
+                    data-testid={`feature-readonly-${row.key}`}
+                    style={{
+                      fontSize: textSize.caption, color: value ? colors.cyan : colors.textMuted,
+                      paddingTop: 4, whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {value ? 'On' : 'Off'}
+                  </span>
                 ) : (
                   <Toggle on={value} onChange={v => save(row.key, v)} />
                 )}
                 <div style={{ flex: 1, fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, paddingTop: 3 }}>
                   <div>{row.effect}</div>
+                  {row.switchedAt && (
+                    <div style={{ marginTop: 4 }}>
+                      {row.switchedAt.why}{' '}
+                      <Button
+                        colors={colors}
+                        variant="bare"
+                        data-testid={`feature-open-agent-${row.key}`}
+                        onClick={() => openAgentSettings(row.switchedAt!.agentId)}
+                        style={{
+                          '--pa-btn-fg': colors.cyan,
+                          '--pa-btn-bg-hover': 'transparent',
+                          '--pa-btn-pad': '0',
+                          fontFamily: font.body,
+                          fontSize: textSize.micro,
+                          textDecoration: 'underline',
+                        } as CSSProperties}
+                      >
+                        Open {row.label.replace(/\s*\(.*\)$/, '')} →
+                      </Button>
+                    </div>
+                  )}
                   {isConcierge && (
                     <div
                       data-testid="concierge-precondition"

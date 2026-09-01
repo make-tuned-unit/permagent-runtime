@@ -16,7 +16,16 @@ const SEED_SECRET_VALUE = 'super-secret-value-NEVER-RENDER-me-9f3a';
 vi.mock('../../../lib/api', () => ({
   apiFetch: vi.fn(),
   getApiBaseUrl: vi.fn(() => 'http://localhost:1234'),
-  api: { readConfig: vi.fn(), upsertConfig: vi.fn() },
+  // Resolved by default: the Guard's own settings block (relocated here from
+  // Models, J8/C7) reads its cadence keys on mount, and a bare `vi.fn()` hands
+  // it `undefined` to call `.then` on.
+  api: {
+    readConfig: vi.fn(async () => null),
+    upsertConfig: vi.fn(async () => ({})),
+    getLibrarianSchedule: vi.fn(async () => null),
+    getOllamaStatus: vi.fn(async () => ({ reachable: false, installed: [], running: [] })),
+    runLibrarianNow: vi.fn(async () => ({})),
+  },
 }));
 
 /**

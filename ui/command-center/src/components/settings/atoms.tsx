@@ -3,6 +3,37 @@ import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
+/**
+ * The Settings select/input look. Lived in `SettingsView` until the Guard,
+ * Watcher and Librarian panes moved out to Agents and needed the same
+ * controls — one definition, so a relocated setting cannot look relocated.
+ */
+export function selectStyle(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
+  return {
+    height: 34, padding: '0 12px', borderRadius: radius.md,
+    background: colors.inputBg, border: `1px solid ${colors.border}`,
+    color: colors.text, fontFamily: font.body, fontSize: textSize.small,
+    minWidth: 240, cursor: 'pointer',
+  };
+}
+
+/** Whether an Ollama model is loaded, on disk, or absent. Shared by the Models
+ *  pane's model table and the Librarian's schedule, wherever it lives. */
+export function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'missing' }) {
+  const { colors } = useTheme();
+  const styles: Record<string, { bg: string; text: string; label: string }> = {
+    running: { bg: colors.cyanSoft, text: colors.cyan, label: 'Loaded' },
+    installed: { bg: colors.surfaceHi, text: colors.textMuted, label: 'Installed' },
+    missing: { bg: `${colors.danger}1A`, text: colors.danger, label: 'Not installed' },
+  };
+  const s = styles[state];
+  return (
+    <span style={{ fontSize: textSize.micro, fontWeight: 600, padding: '2px 8px', borderRadius: radius.pill, background: s.bg, color: s.text }}>
+      {s.label}
+    </span>
+  );
+}
+
 export function H1({ children, sub }: { children: React.ReactNode; sub?: string }) {
   const { colors } = useTheme();
   return (
