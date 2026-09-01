@@ -2691,6 +2691,9 @@ mod tests {
     // `council_action` is a Decision Inbox kind (approve files a board card),
     // named in the same descriptor so the agent does not invent a tool for filing
     // those proposals.
+    // `root_path` is a Project's own field (the workspace path a project may or
+    // may not have set), named in the Project Manager descriptor so the agent
+    // knows project_documents_list/project_document_read work without one.
     const NON_TOOL_PROSE_TOKENS: &[&str] = &[
         "sub_recipes",
         "worker_persona",
@@ -2701,6 +2704,7 @@ mod tests {
         "decision_inbox",
         "council_enabled",
         "council_action",
+        "root_path",
     ];
 
     /// Every tool name that exists in the runtime: the statically-derived
