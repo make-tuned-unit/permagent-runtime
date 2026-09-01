@@ -211,6 +211,19 @@ impl PermissionManager {
         let yaml_content =
             serde_yaml::to_string(&*map).expect("Failed to serialize permission config");
         fs::write(&self.config_path, yaml_content).expect("Failed to write to permission.yaml");
+        drop(map);
+
+        // permission.yaml is the ONE settings file that does not go through
+        // `Config` (it has its own writer, right here), so the `config_changed`
+        // emit on `Config::set_param` cannot cover it. Announcing here keeps
+        // the invariant "every settings write announces itself once" true —
+        // the key name is namespaced so a client can tell a tool-approval
+        // change from a config.yaml key of the same name.
+        crate::events::emit(crate::events::config_changed(
+            &[format!("{name}.{principal_name}")],
+            "set",
+            false,
+        ));
     }
 
     /// Removes all entries where the principal name starts with the given extension name.

@@ -1049,6 +1049,7 @@ impl Scheduler {
             .await
             .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
 
+        let job_id = stored_job.id.clone();
         {
             // Insert AND persist under a single lock hold so the new job reaches
             // disk before the lock is released. Otherwise sync_from_storage could
@@ -1060,6 +1061,12 @@ impl Scheduler {
             write_jobs_to_disk(&self.storage_path, &list)?;
         }
 
+        // #1090 pattern: the announcement belongs to the writer, not the caller.
+        // Every entry point — the /schedule routes, platform__manage_schedule,
+        // platform__recipes' create_recipe, `schedule_recipe` — lands here, so
+        // an agent-created automation now shows up on the Automate tab exactly
+        // like a hand-created one instead of waiting out the 60s backstop poll.
+        crate::events::emit(crate::events::schedule_changed(&job_id, "created"));
         Ok(())
     }
 
@@ -1494,6 +1501,7 @@ impl Scheduler {
         }
 
         persist_jobs(&self.storage_path, &self.jobs).await?;
+        crate::events::emit(crate::events::schedule_changed(id, "deleted"));
         Ok(())
     }
 
@@ -1575,6 +1583,10 @@ impl Scheduler {
         crate::events::activity::emit_activity(crate::events::activity::automation_job_started(
             sched_id, sched_id,
         ));
+        // Announced here, not at the HTTP route, so an agent's run_recipe /
+        // manage_schedule(run_now) moves the Automate tab's run history the same
+        // way the button does. Mirrors the cron path's pair in `create_job_task`.
+        crate::events::emit(crate::events::schedule_changed(sched_id, "run_started"));
 
         let job_start_instant = std::time::Instant::now();
         let brain_snapshot = self.brain.read().await.clone();
@@ -1614,6 +1626,8 @@ impl Scheduler {
             let mut tasks = self.running_tasks.lock().await;
             tasks.remove(sched_id);
         }
+
+        crate::events::emit(crate::events::schedule_changed(sched_id, "run_finished"));
 
         let duration_ms = job_start_instant.elapsed().as_millis() as u64;
 
@@ -1713,7 +1727,9 @@ impl Scheduler {
             }
         }
 
-        persist_jobs(&self.storage_path, &self.jobs).await
+        persist_jobs(&self.storage_path, &self.jobs).await?;
+        crate::events::emit(crate::events::schedule_changed(sched_id, "paused"));
+        Ok(())
     }
 
     pub async fn unpause_schedule(&self, sched_id: &str) -> Result<(), SchedulerError> {
@@ -1740,7 +1756,9 @@ impl Scheduler {
             }
         }
 
-        persist_jobs(&self.storage_path, &self.jobs).await
+        persist_jobs(&self.storage_path, &self.jobs).await?;
+        crate::events::emit(crate::events::schedule_changed(sched_id, "unpaused"));
+        Ok(())
     }
 
     pub async fn update_schedule(
@@ -1794,7 +1812,9 @@ impl Scheduler {
             }
         }
 
-        persist_jobs(&self.storage_path, &self.jobs).await
+        persist_jobs(&self.storage_path, &self.jobs).await?;
+        crate::events::emit(crate::events::schedule_changed(sched_id, "updated"));
+        Ok(())
     }
 
     /// Generalized reschedule: change a job's KIND (cron / one-time / interval)
@@ -1865,7 +1885,9 @@ impl Scheduler {
             }
         }
 
-        persist_jobs(&self.storage_path, &self.jobs).await
+        persist_jobs(&self.storage_path, &self.jobs).await?;
+        crate::events::emit(crate::events::schedule_changed(sched_id, "updated"));
+        Ok(())
     }
 
     /// How long a cancelled run gets to observe its token and clean up before
@@ -3749,5 +3771,96 @@ prompt: 'collect {{ hours }}h from {{ log_dir }} with {{ recipe_dir }}/collector
             jobs[0].last_run.is_some(),
             "Job should have attempted to run without panicking"
         );
+    }
+
+    /// R1 "one writer, one announcement": the AGENT's schedule path must
+    /// announce identically to the human's.
+    ///
+    /// FAILS BEFORE: every `schedule_changed` emit lived in the
+    /// `/schedule/*` HTTP handlers. `platform__manage_schedule` and
+    /// `platform__recipes` call the SchedulerTrait directly — no handler
+    /// involved — so an automation the agent created, paused, resumed or
+    /// deleted announced nothing at all, and the Automate tab (which listens on
+    /// this exact frame, `lib/useScheduleEvents.ts`) waited out its 60s backstop
+    /// poll or missed it entirely.
+    ///
+    /// Driven through `Arc<dyn SchedulerTrait>` on purpose: that is the type
+    /// the agent tools hold, so this exercises their path and not a shortcut.
+    #[tokio::test]
+    async fn the_agents_schedule_path_announces_every_mutation() {
+        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))]);
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "r1_agent_path");
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler: Arc<dyn crate::scheduler_trait::SchedulerTrait> =
+            Scheduler::new(storage_path, session_manager).await.unwrap();
+
+        let changes = |rx: &mut tokio::sync::broadcast::Receiver<crate::events::PermagentEvent>| {
+            let mut seen = Vec::new();
+            while let Ok(e) = rx.try_recv() {
+                if e.event_type == crate::events::PermagentEventType::ScheduleChanged
+                    && e.payload.get("schedule_id").and_then(|v| v.as_str())
+                        == Some("r1_agent_path")
+                {
+                    seen.push(
+                        e.payload
+                            .get("change")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
+                }
+            }
+            seen
+        };
+
+        let mut rx = crate::events::subscribe();
+        scheduler
+            .add_scheduled_job(
+                ScheduledJob {
+                    id: "r1_agent_path".to_string(),
+                    source: recipe_path.to_string_lossy().to_string(),
+                    cron: "0 0 * * * *".to_string(),
+                    ..Default::default()
+                },
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(changes(&mut rx), vec!["created"], "create was silent");
+
+        let mut rx = crate::events::subscribe();
+        scheduler.pause_schedule("r1_agent_path").await.unwrap();
+        assert_eq!(changes(&mut rx), vec!["paused"], "pause was silent");
+
+        let mut rx = crate::events::subscribe();
+        scheduler.unpause_schedule("r1_agent_path").await.unwrap();
+        assert_eq!(changes(&mut rx), vec!["unpaused"], "unpause was silent");
+
+        let mut rx = crate::events::subscribe();
+        scheduler
+            .update_schedule("r1_agent_path", "0 30 * * * *".to_string())
+            .await
+            .unwrap();
+        assert_eq!(changes(&mut rx), vec!["updated"], "update was silent");
+
+        // A rejected write announces nothing: the bus is for real mutations.
+        let mut rx = crate::events::subscribe();
+        assert!(scheduler
+            .remove_scheduled_job("no-such-job", false)
+            .await
+            .is_err());
+        assert!(
+            changes(&mut rx).is_empty(),
+            "a failed delete announced a change"
+        );
+
+        let mut rx = crate::events::subscribe();
+        scheduler
+            .remove_scheduled_job("r1_agent_path", false)
+            .await
+            .unwrap();
+        assert_eq!(changes(&mut rx), vec!["deleted"], "delete was silent");
     }
 }

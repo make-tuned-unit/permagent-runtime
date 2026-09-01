@@ -13,6 +13,22 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+/// Announce a completed ledger write on the daemon bus.
+///
+/// This module is the one writer both the `/api/finance/*` routes and the
+/// agent's 24 `platform__finance` tools go through, so a single emit per
+/// function here is what makes the two paths announce identically. Before it,
+/// neither did: the Finance view's only way to notice ANY change — including
+/// one the agent made mid-conversation — was its 60-second poll.
+///
+/// The frame carries `kind` + `change` and no ids or figures. The view reads
+/// one aggregate (`GET /api/finance`); there is no per-row fetch for an id to
+/// address, and money is exactly the sort of value that must not sit in a
+/// replayed bus buffer.
+fn announce(kind: &str, change: &str) {
+    crate::events::emit(crate::events::finance_changed(kind, change));
+}
+
 /// Config key for the holdings RSI-14 heat threshold (default 74).
 pub const RSI_THRESHOLD_KEY: &str = "finance_rsi_threshold";
 /// Default RSI-14 threshold. One of the overbought signs on open lots.
@@ -152,9 +168,11 @@ pub async fn add_watchlist(
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
-    get_watchlist_item(pool, &id)
+    let item = get_watchlist_item(pool, &id)
         .await?
-        .ok_or_else(|| "watchlist row vanished after insert".into())
+        .ok_or_else(|| "watchlist row vanished after insert".to_string())?;
+    announce("watchlist", "created");
+    Ok(item)
 }
 
 pub async fn remove_watchlist(pool: &Pool<Sqlite>, symbol: &str) -> Result<bool, String> {
@@ -164,7 +182,11 @@ pub async fn remove_watchlist(pool: &Pool<Sqlite>, symbol: &str) -> Result<bool,
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(result.rows_affected() > 0)
+    let removed = result.rows_affected() > 0;
+    if removed {
+        announce("watchlist", "deleted");
+    }
+    Ok(removed)
 }
 
 async fn get_watchlist_item(
@@ -225,9 +247,11 @@ pub async fn add_note(
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
-    get_note(pool, &id)
+    let note = get_note(pool, &id)
         .await?
-        .ok_or_else(|| "note vanished after insert".into())
+        .ok_or_else(|| "note vanished after insert".to_string())?;
+    announce("note", "created");
+    Ok(note)
 }
 
 pub async fn update_note(
@@ -265,9 +289,11 @@ pub async fn update_note(
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
-    get_note(pool, id)
+    let note = get_note(pool, id)
         .await?
-        .ok_or_else(|| "note vanished after update".into())
+        .ok_or_else(|| "note vanished after update".to_string())?;
+    announce("note", "updated");
+    Ok(note)
 }
 
 pub async fn delete_note(pool: &Pool<Sqlite>, id: &str) -> Result<bool, String> {
@@ -276,7 +302,11 @@ pub async fn delete_note(pool: &Pool<Sqlite>, id: &str) -> Result<bool, String> 
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(result.rows_affected() > 0)
+    let deleted = result.rows_affected() > 0;
+    if deleted {
+        announce("note", "deleted");
+    }
+    Ok(deleted)
 }
 
 async fn get_note(pool: &Pool<Sqlite>, id: &str) -> Result<Option<FinanceNote>, String> {
@@ -395,9 +425,11 @@ pub async fn add_position(pool: &Pool<Sqlite>, p: NewPosition) -> Result<Positio
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
-    get_position(pool, &id)
+    let position = get_position(pool, &id)
         .await?
-        .ok_or_else(|| "position vanished after insert".into())
+        .ok_or_else(|| "position vanished after insert".to_string())?;
+    announce("position", "created");
+    Ok(position)
 }
 
 /// Rewrite a ledger lot. Used when the Finance tab edits a trade that never
@@ -431,9 +463,11 @@ pub async fn update_position(
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
-    get_position(pool, &current.id)
+    let position = get_position(pool, &current.id)
         .await?
-        .ok_or_else(|| "position vanished after update".into())
+        .ok_or_else(|| "position vanished after update".to_string())?;
+    announce("position", "updated");
+    Ok(position)
 }
 
 pub async fn close_position(
@@ -465,9 +499,11 @@ pub async fn close_position(
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
-    get_position(pool, id)
+    let position = get_position(pool, id)
         .await?
-        .ok_or_else(|| "position vanished after close".into())
+        .ok_or_else(|| "position vanished after close".to_string())?;
+    announce("position", "updated");
+    Ok(position)
 }
 
 pub async fn delete_position(pool: &Pool<Sqlite>, id: &str) -> Result<bool, String> {
@@ -476,7 +512,11 @@ pub async fn delete_position(pool: &Pool<Sqlite>, id: &str) -> Result<bool, Stri
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(result.rows_affected() > 0)
+    let deleted = result.rows_affected() > 0;
+    if deleted {
+        announce("position", "deleted");
+    }
+    Ok(deleted)
 }
 
 async fn get_position(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Position>, String> {
@@ -576,6 +616,11 @@ pub async fn insert_transactions(
         .map_err(|e| e.to_string())?;
         inserted += 1;
     }
+    // One frame for the whole import, not one per row: a statement is hundreds
+    // of transactions and the view refetches the same aggregate either way.
+    if inserted > 0 {
+        announce("transactions", "imported");
+    }
     Ok(inserted)
 }
 
@@ -590,7 +635,11 @@ pub async fn recategorize(pool: &Pool<Sqlite>, id: &str, category: &str) -> Resu
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(result.rows_affected() > 0)
+    let ok = result.rows_affected() > 0;
+    if ok {
+        announce("transactions", "recategorized");
+    }
+    Ok(ok)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
