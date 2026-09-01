@@ -80,6 +80,11 @@ export const GLOSSARY = {
   halfLife:
     'Half-life — how long one of this loop\'s edges keeps working before it decays to half its '
     + 'strength. A short half-life means the loop has to be re-run often to stay useful.',
+  /** Finance — what changing the display currency does, and what it does not. */
+  displayCurrency:
+    'Changes what these figures are shown in, and nothing else. Your holdings, journal and '
+    + 'imported transactions stay in the currency they were recorded in — a converted figure '
+    + 'is marked by its own prefix (CA$), and the rate it used is shown beside this control.',
   /** Finance — the Financier's approval mark on a pick. */
   financierApproved:
     'The Financier reviewed this pick and approved it: the numbers behind it held up to a '

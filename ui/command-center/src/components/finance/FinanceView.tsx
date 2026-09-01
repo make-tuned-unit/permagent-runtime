@@ -6,13 +6,14 @@
  * Holdings, household, watchlist, and notes are the default surface.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
 import { duration, ease, font, radius, tabularNums, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { api, apiFetch, uploadFinanceStatement } from '../../lib/api';
 import { ViewHeader } from '../common/ViewHeader';
+import { AsOf } from '../common/AsOf';
 import { Button, SUCCESS_FLASH_MS } from '../common/Button';
 import { navigateToTool } from '../../lib/store';
 import { GLOSSARY } from '../../lib/vocabulary';
@@ -20,6 +21,21 @@ import { AGENT_TRIM } from '../world/shared/palette';
 import { PolybotKeys } from './PolybotKeys';
 import { FundamentalsKey } from './FundamentalsKey';
 import { sparklinePolyline, sparklineZeroY } from '../grow/growthTrend';
+import {
+  BASE_CURRENCY,
+  DISPLAY_CURRENCIES,
+  USD_MONEY,
+  currencyLabel,
+  makeMoney,
+  rateLine,
+  type Money,
+} from './money';
+import {
+  FX_STALE_AFTER_MS,
+  useDisplayCurrency,
+  useFxRates,
+  type FxStatus,
+} from './displayCurrency';
 import {
   PICKER_DISCLAIMER,
   PICKER_ENABLED_KEY,
@@ -333,32 +349,18 @@ const CATEGORIES = [
   'uncategorized',
 ] as const;
 
-function fmtMoney(n: number | null | undefined, currency = 'USD'): string {
-  if (n == null || Number.isNaN(n)) return '—';
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency: currency.length === 3 ? currency : 'USD',
-      maximumFractionDigits: 2,
-    }).format(n);
-  } catch {
-    return n.toFixed(2);
-  }
-}
-
-function fmtPct(n: number | null | undefined): string {
-  if (n == null || Number.isNaN(n)) return '';
-  const sign = n > 0 ? '+' : '';
-  return `${sign}${n.toFixed(2)}%`;
-}
-
-function fmtSigned(n: number | null | undefined, currency = 'USD'): string {
-  if (n == null || Number.isNaN(n)) return '—';
-  const abs = fmtMoney(Math.abs(n), currency);
-  if (n < 0) return `−${abs}`;
-  if (n > 0) return `+${abs}`;
-  return abs;
-}
+/**
+ * The reader's currency, carried to the nineteen figures on this tab.
+ *
+ * A context rather than a prop because every one of those figures is inside a
+ * section that already takes five props, and because the failure mode a prop
+ * would allow — one section quietly left on the old formatter, rendering `$`
+ * beside its neighbours' `CA$` — is exactly the half-converted board the
+ * formatter's own rules forbid. The default is the plain USD formatter, so a
+ * section rendered outside the provider is still correct rather than empty.
+ */
+const MoneyContext = createContext<Money>(USD_MONEY);
+const useMoney = () => useContext(MoneyContext);
 
 function fmtWhen(iso: string | null | undefined): string {
   if (!iso) return '—';
@@ -379,6 +381,9 @@ export function FinanceView() {
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState<TradeDraft>(emptyDraft);
   const [optIn, setOptIn] = useState({ polybot: false, picker: false });
+  const [currency, setCurrency] = useDisplayCurrency();
+  const fx = useFxRates(currency);
+  const money = makeMoney(currency, fx.rates);
 
   const load = useCallback(async () => {
     try {
@@ -444,14 +449,23 @@ export function FinanceView() {
     });
 
   return (
+    <MoneyContext.Provider value={money}>
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: font.body, color: colors.text }}>
       <ViewHeader
         title="Finance"
         subtitle="Holdings, household, and research. Optional desks stay off until you turn them on."
         actions={
-          <Button colors={colors} type="button" onClick={() => load()}>
-            Refresh
-          </Button>
+          <>
+            <CurrencyControl
+              colors={colors}
+              money={money}
+              fx={fx}
+              onChange={setCurrency}
+            />
+            <Button colors={colors} type="button" onClick={() => load()}>
+              Refresh
+            </Button>
+          </>
         }
       />
       <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px 48px' }}>
@@ -521,6 +535,74 @@ export function FinanceView() {
         )}
       </div>
     </div>
+    </MoneyContext.Provider>
+  );
+}
+
+/**
+ * The display-currency control, and the one place the conversion explains
+ * itself.
+ *
+ * It lives in the view header because it is a Finance display preference and
+ * this is Finance's own chrome — one concept, one home. The caption under it
+ * is the honesty half and is not optional: a board full of `CA$` figures with
+ * no rate and no date on screen is a board asking to be trusted about a number
+ * it never showed you. So the rate, its age, and — when there is no rate — the
+ * plain sentence saying the board fell back to US dollars all surface here,
+ * once, rather than beside every figure.
+ */
+function CurrencyControl({
+  colors, money, fx, onChange,
+}: {
+  colors: ThemeColors;
+  money: Money;
+  fx: { asOf: string | number | null; status: FxStatus };
+  onChange: (code: string) => void;
+}) {
+  const line = rateLine(money.display, money.rates);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, ...type.label, color: colors.textMuted }}>
+        Show in
+        <select
+          data-testid="finance-currency"
+          aria-label="Display currency"
+          title={GLOSSARY.displayCurrency}
+          value={money.requested}
+          onChange={(e) => onChange(e.target.value)}
+          style={{ ...inputStyle(colors), ...type.caption, padding: '4px 8px', minWidth: 0 }}
+        >
+          {DISPLAY_CURRENCIES.map((c) => (
+            <option key={c.code} value={c.code}>{c.code}</option>
+          ))}
+        </select>
+      </label>
+      {money.requested !== BASE_CURRENCY && (
+        <div
+          data-testid="finance-currency-note"
+          data-status={fx.status}
+          style={{ ...type.micro, color: fx.status === 'ready' ? colors.textMuted : colors.stale }}
+        >
+          {fx.status === 'ready' && line ? (
+            <>
+              {line}
+              {' · '}
+              <AsOf
+                asOf={fx.asOf}
+                prefix="as of"
+                staleAfterMs={FX_STALE_AFTER_MS}
+                dot
+                data-testid="finance-currency-asof"
+              />
+            </>
+          ) : fx.status === 'loading' ? (
+            'Checking the rate…'
+          ) : (
+            `Rate unavailable — showing ${currencyLabel(BASE_CURRENCY)}`
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -533,6 +615,7 @@ function SummaryStrip({
   mutate: (fn: () => Promise<unknown>) => Promise<boolean>;
   setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<boolean>;
 }) {
+  const money = useMoney();
   const p = board.polybot;
   const asOf = p.asOf || p.lastUpdated;
   // Lives here, not in PickerControls, so the "your list: empty" line in the
@@ -546,7 +629,7 @@ function SummaryStrip({
             <Eyebrow colors={colors}>Polybot</Eyebrow>
             <Hero
               colors={colors}
-              value={fmtMoney(p.currentBalance)}
+              value={money.fmt(p.currentBalance)}
               tone={p.stale ? colors.warning : colors.text}
             />
             {/* The mechanism around this sentence already escalates correctly —
@@ -571,8 +654,8 @@ function SummaryStrip({
                   : `Live file · ${fmtWhen(asOf)}`}
             </div>
             <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
-              <Mini colors={colors} label="Realized" value={fmtSigned(p.realizedPnl)} tone={toneFor(p.realizedPnl, colors)} />
-              <Mini colors={colors} label="Open" value={fmtMoney(p.openExposure)} />
+              <Mini colors={colors} label="Realized" value={money.signed(p.realizedPnl)} tone={toneFor(p.realizedPnl, colors)} />
+              <Mini colors={colors} label="Open" value={money.fmt(p.openExposure)} />
               <Mini colors={colors} label="Trades" value={p.tradeCount != null ? String(p.tradeCount) : '—'} />
             </div>
             <div style={{ ...type.caption, color: colors.textMuted, marginTop: 8 }}>
@@ -588,15 +671,15 @@ function SummaryStrip({
 
         <Card colors={colors} testId="finance-holdings-card">
           <Eyebrow colors={colors}>Holdings</Eyebrow>
-          <Hero colors={colors} value={fmtSigned(board.holdings.netPnl)} tone={toneFor(board.holdings.netPnl, colors)} />
+          <Hero colors={colors} value={money.signed(board.holdings.netPnl)} tone={toneFor(board.holdings.netPnl, colors)} />
           <div style={{ ...type.caption, color: colors.textMuted, marginTop: 4 }}>
             Net P&amp;L · {board.holdings.openCount} open
             {' · '}
             {board.holdings.source === 'picker' ? 'Picker journal' : 'local ledger'}
           </div>
           <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
-            <Mini colors={colors} label="Unrealized" value={fmtSigned(board.holdings.netUnrealized)} tone={toneFor(board.holdings.netUnrealized, colors)} />
-            <Mini colors={colors} label="Realized" value={fmtSigned(board.holdings.netRealized)} tone={toneFor(board.holdings.netRealized, colors)} />
+            <Mini colors={colors} label="Unrealized" value={money.signed(board.holdings.netUnrealized)} tone={toneFor(board.holdings.netUnrealized, colors)} />
+            <Mini colors={colors} label="Realized" value={money.signed(board.holdings.netRealized)} tone={toneFor(board.holdings.netRealized, colors)} />
           </div>
           <HoldingsSparkline values={board.holdings.trend ?? []} colors={colors} />
         </Card>
@@ -1024,6 +1107,7 @@ function HoldingsSection({
   setDraft: (d: TradeDraft) => void;
   onRecorded: (hint: string | null) => void;
 }) {
+  const money = useMoney();
   const [filter, setFilter] = useState<'open' | 'all'>('open');
   const [showForm, setShowForm] = useState(false);
   const editing = Boolean(draft.editingId);
@@ -1107,7 +1191,7 @@ function HoldingsSection({
             <Field colors={colors} label="Entry date">
               <input value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} placeholder="YYYY-MM-DD" style={inputStyle(colors)} required />
             </Field>
-            <Field colors={colors} label="Entry price">
+            <Field colors={colors} label={money.converting ? `Entry price (${BASE_CURRENCY})` : 'Entry price'}>
               <input value={draft.price} onChange={(e) => setDraft({ ...draft, price: e.target.value })} placeholder="0.00" style={inputStyle(colors)} required />
             </Field>
             <Field colors={colors} label="Shares">
@@ -1118,7 +1202,7 @@ function HoldingsSection({
             <Field colors={colors} label="Exit date">
               <input value={draft.exitDate} onChange={(e) => setDraft({ ...draft, exitDate: e.target.value })} placeholder="YYYY-MM-DD" style={inputStyle(colors)} />
             </Field>
-            <Field colors={colors} label="Exit price">
+            <Field colors={colors} label={money.converting ? `Exit price (${BASE_CURRENCY})` : 'Exit price'}>
               <input value={draft.exitPrice} onChange={(e) => setDraft({ ...draft, exitPrice: e.target.value })} placeholder="0.00" style={inputStyle(colors)} />
             </Field>
             <Field colors={colors} label="Notes" wide>
@@ -1181,15 +1265,15 @@ function HoldingsSection({
                       {p.quoteError ? (
                         <span style={{ color: colors.textMuted }}>{p.quoteError}</span>
                       ) : closed ? (
-                        fmtMoney(p.exitPrice)
+                        money.fmt(p.exitPrice)
                       ) : (
-                        fmtMoney(p.last, p.quote?.currency ?? undefined)
+                        money.fmt(p.last, { source: p.quote?.currency })
                       )}
                     </td>
                     <td style={{ ...td(colors), textAlign: 'right', ...tabularNums, color: toneFor(pnl, colors), fontWeight: 600 }}>
-                      {fmtSigned(pnl)}
+                      {money.signed(pnl)}
                       {!closed && p.unrealizedPct != null ? (
-                        <div style={{ ...type.caption, color: colors.textMuted, fontWeight: 400 }}>{fmtPct(p.unrealizedPct)}</div>
+                        <div style={{ ...type.caption, color: colors.textMuted, fontWeight: 400 }}>{money.pct(p.unrealizedPct)}</div>
                       ) : null}
                     </td>
                     <td style={{ ...td(colors), textAlign: 'right', ...tabularNums, color: rsiHot ? colors.danger : colors.text }}>
@@ -1225,6 +1309,7 @@ function LotActions({
   mutate: (fn: () => Promise<unknown>) => Promise<boolean>;
   onEdit: () => void;
 }) {
+  const money = useMoney();
   const [closing, setClosing] = useState(false);
   const [exitDate, setExitDate] = useState(todayIso());
   const [exitPrice, setExitPrice] = useState(row.last != null ? String(row.last) : '');
@@ -1268,8 +1353,18 @@ function LotActions({
           }}
           style={{ display: 'flex', gap: 6 }}
         >
-          <input value={exitDate} onChange={(e) => setExitDate(e.target.value)} style={{ ...inputStyle(colors), minWidth: 110 }} required />
-          <input value={exitPrice} onChange={(e) => setExitPrice(e.target.value)} style={{ ...inputStyle(colors), minWidth: 80 }} required />
+          <input value={exitDate} onChange={(e) => setExitDate(e.target.value)} aria-label="Exit date" style={{ ...inputStyle(colors), minWidth: 110 }} required />
+          {/* The journal is recorded, not converted — the number typed here is
+              the one that gets stored, so the field says which currency it is
+              in whenever the board around it is showing another. */}
+          <input
+            value={exitPrice}
+            onChange={(e) => setExitPrice(e.target.value)}
+            aria-label={money.converting ? `Exit price (${BASE_CURRENCY})` : 'Exit price'}
+            placeholder={money.converting ? `Exit price (${BASE_CURRENCY})` : 'Exit price'}
+            style={{ ...inputStyle(colors), minWidth: 80 }}
+            required
+          />
           <Button colors={colors} variant="primary" type="submit" pending={busy} disabled={busy}>Mark closed</Button>
         </form>
       )}
@@ -1371,6 +1466,7 @@ function PickRow({
   colors: ThemeColors;
   onPrefill: (draft: TradeDraft) => void;
 }) {
+  const money = useMoney();
   const [open, setOpen] = useState(approved);
   const loop = pick.loop;
   const yahoo = pick.quote?.price ?? null;
@@ -1494,7 +1590,7 @@ function PickRow({
           </button>
         )}
         <span style={{ ...type.caption, color: colors.textMuted, ...tabularNums }}>
-          {fmtMoney(yahoo ?? pick.pickerPrice, pick.quote?.currency ?? undefined)}
+          {money.fmt(yahoo ?? pick.pickerPrice, { source: pick.quote?.currency })}
         </span>
         <Button
           colors={colors}
@@ -1518,8 +1614,8 @@ function PickRow({
       {open && (
         <div id={rowId} style={{ ...type.caption, color: colors.textMuted, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', ...tabularNums }}>
-            <span>Scan {fmtMoney(pick.pickerPrice)}</span>
-            <span>Yahoo {pick.quoteError ? pick.quoteError : fmtMoney(yahoo, pick.quote?.currency ?? undefined)}</span>
+            <span>Scan {money.fmt(pick.pickerPrice)}</span>
+            <span>Yahoo {pick.quoteError ? pick.quoteError : money.fmt(yahoo, { source: pick.quote?.currency })}</span>
             <span>RSI {pick.pickerRsi != null ? pick.pickerRsi.toFixed(1) : '—'}</span>
             {pick.score != null && <span>Score {pick.score.toFixed(1)}</span>}
           </div>
@@ -1565,6 +1661,7 @@ function HouseholdSection({
   mutate: (fn: () => Promise<unknown>) => Promise<boolean>;
   setError: (s: string | null) => void;
 }) {
+  const money = useMoney();
   const fileRef = useRef<HTMLInputElement>(null);
   const [hint, setHint] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -1590,9 +1687,9 @@ function HouseholdSection({
     <Card colors={colors}>
       <SectionTitle colors={colors}>Household</SectionTitle>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, margin: '12px 0 16px' }}>
-        <Mini colors={colors} label="30-day run-rate" value={fmtMoney(household.forecast.runRate30d)} large />
-        <Mini colors={colors} label="90-day run-rate" value={fmtMoney(household.forecast.runRate90d)} large />
-        <Mini colors={colors} label="Spent (window)" value={fmtMoney(household.forecast.spend90d)} large />
+        <Mini colors={colors} label="30-day run-rate" value={money.fmt(household.forecast.runRate30d)} large />
+        <Mini colors={colors} label="90-day run-rate" value={money.fmt(household.forecast.runRate90d)} large />
+        <Mini colors={colors} label="Spent (window)" value={money.fmt(household.forecast.spend90d)} large />
         <Mini colors={colors} label="Days" value={String(household.forecast.daysUsed)} large />
       </div>
       <div
@@ -1632,7 +1729,7 @@ function HouseholdSection({
       {household.forecast.byCategory.length > 0 && (
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
           {household.forecast.byCategory.slice(0, 6).map((c) => (
-            <Mini key={c.category} colors={colors} label={c.category} value={fmtMoney(c.amount)} />
+            <Mini key={c.category} colors={colors} label={c.category} value={money.fmt(c.amount)} />
           ))}
         </div>
       )}
@@ -1654,7 +1751,7 @@ function HouseholdSection({
                 <td style={{ ...td(colors), ...tabularNums, color: colors.textMuted }}>{t.date}</td>
                 <td style={td(colors)}>{t.payee}</td>
                 <td style={{ ...td(colors), textAlign: 'right', ...tabularNums, color: toneFor(t.amount, colors) }}>
-                  {fmtSigned(t.amount)}
+                  {money.signed(t.amount)}
                 </td>
                 <td style={td(colors)}>
                   <select
@@ -1691,6 +1788,7 @@ function WatchlistSection({
   busy: boolean;
   mutate: (fn: () => Promise<unknown>) => Promise<boolean>;
 }) {
+  const money = useMoney();
   const [symbol, setSymbol] = useState('');
   const [label, setLabel] = useState('');
 
@@ -1740,9 +1838,9 @@ function WatchlistSection({
                       <span style={{ color: colors.textMuted }}>{row.quoteError}</span>
                     ) : (
                       <>
-                        <div>{fmtMoney(q?.price, q?.currency ?? undefined)}</div>
+                        <div>{money.fmt(q?.price, { source: q?.currency })}</div>
                         <div style={{ ...type.caption, color: toneFor(q?.change ?? null, colors) }}>
-                          {fmtPct(q?.changePercent)}
+                          {money.pct(q?.changePercent)}
                         </div>
                       </>
                     )}

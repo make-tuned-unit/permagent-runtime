@@ -22,6 +22,7 @@ const OWNERS: Record<GlossaryKey, string> = {
   icir: 'components/finance/FinanceView.tsx',
   halfLife: 'components/finance/FinanceView.tsx',
   financierApproved: 'components/finance/FinanceView.tsx',
+  displayCurrency: 'components/finance/FinanceView.tsx',
   impactConfidence: 'components/grow/GrowView.tsx',
   cleanRuns: 'components/projects/VerificationApprovalPanel.tsx',
   costMeter: 'components/build/CostStatusline.tsx',
