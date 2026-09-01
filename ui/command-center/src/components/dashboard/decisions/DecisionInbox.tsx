@@ -235,6 +235,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                   decision={d}
                   onAnswer={inbox.answer}
                   onConflictSettled={inbox.refresh}
+                  onDiscardStaged={inbox.discardStaged}
                   onCancelGoal={
                     d.goal_id && d.project_id
                       ? async () => {

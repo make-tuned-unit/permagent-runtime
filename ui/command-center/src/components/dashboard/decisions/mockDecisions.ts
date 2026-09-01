@@ -395,4 +395,10 @@ export const mockDecisionsClient: DecisionsClient = {
   async cancelGoal(_projectId: string, _goalId: string): Promise<void> {
     await sleep(LATENCY_MS);
   },
+
+  async discardStaged(id: string): Promise<void> {
+    await sleep(LATENCY_MS);
+    const d = pending.find(x => x.id === id);
+    if (d) d.staged_answer = null;
+  },
 };

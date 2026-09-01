@@ -31,7 +31,13 @@ import { font, radius, textSize } from '../../../styles/tokens';
 import { Button } from '../../common/Button';
 import { useTheme } from '../../../styles/useTheme';
 import type { AnswerBody, Decision } from './types';
-import { checkApprovalOf, choiceOptions, recommendedChoiceId, draftText } from './types';
+import {
+  checkApprovalOf,
+  choiceOptions,
+  recommendedChoiceId,
+  draftText,
+  stagedSummary,
+} from './types';
 import type { AnswerResult } from './useDecisions';
 import { EvidenceDigest } from './EvidenceDigest';
 import { decisionsClient } from './client';
@@ -49,6 +55,9 @@ interface Props {
   /** Cancel this decision's goal (#490) — kills the worker and marks it
    *  terminal; the list refreshes after. Absent for non-goal decisions. */
   onCancelGoal?: () => Promise<void>;
+  /** Throw away a staged (spoken, uncommitted) verdict — D29's discard.
+   *  Absent only where the surface cannot refresh itself afterwards. */
+  onDiscardStaged?: (id: string) => Promise<void>;
 }
 
 interface PendingAnswer {
@@ -183,7 +192,13 @@ export function pushedRejectWarning(
   );
 }
 
-export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCancelGoal }: Props) {
+export function DecisionItem({
+  decision: d,
+  onAnswer,
+  onConflictSettled,
+  onCancelGoal,
+  onDiscardStaged,
+}: Props) {
   const { colors } = useTheme();
   const { data: persona } = usePersona();
   const agentName = persona?.display_name ?? 'your agent';
@@ -203,6 +218,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const argsId = useId();
   const [cancelErr, setCancelErr] = useState<string | null>(null);
   const [answerErr, setAnswerErr] = useState<string | null>(null);
+  const [discardErr, setDiscardErr] = useState<string | null>(null);
   // Where the goal's work was pushed (dispatch_evidence.push_target), fetched
   // from the canonical evidence record for the informed-reject warning (#458).
   const [pushTarget, setPushTarget] = useState<string | null>(null);
@@ -230,7 +246,9 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
     setSubmitting(true);
     setAnswerErr(null);
     try {
-      const body: AnswerBody = { ...p.body, note: note.trim() ? note.trim() : undefined };
+      // A typed note wins; otherwise whatever the answer already carried (a
+      // staged verdict brings the words that were said with it) survives.
+      const body: AnswerBody = { ...p.body, note: note.trim() ? note.trim() : p.body.note };
       const result = await onAnswer(d.id, body);
       if (!result.ok) {
         setConflict(true);
@@ -287,6 +305,16 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   // command/cwd/reason render as their own block — the whole point of the
   // card is that the user can see EXACTLY what they'd be authorising.
   const checkApproval = checkApprovalOf(d);
+  // D29: a verdict said out loud but not committed. Voice cannot authenticate
+  // (NIST SP 800-63B-4 §3.2.3.2), so the daemon staged it against a decision
+  // that is still open and still unanswered — this row is where it becomes an
+  // answer, and the tap is what authenticates it. Expired stagings (30-minute
+  // TTL) never arrive here, so anything present is live.
+  const staged = d.staged_answer ?? null;
+  const stagedVerdict =
+    staged && (staged.answer === 'approve' || staged.answer === 'reject')
+      ? (staged.answer as 'approve' | 'reject')
+      : null;
   const intelItems = d.kind === 'project_intel_proposal' && Array.isArray(d.payload?.items)
     ? d.payload.items.filter((item): item is Record<string, unknown> =>
         typeof item === 'object' && item !== null)
@@ -470,6 +498,108 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           }}>
             {agentName} recommends · {recommended.label}
           </span>
+        </div>
+      )}
+
+      {/* Staged verdict (D29): what was said out loud, and the tap that makes
+          it an answer. Deliberately loud — a proposal sitting unnoticed is the
+          failure mode — and the discard beside it is the same size, because
+          "I didn't mean that" must be as easy as "yes I did". */}
+      {staged && stagedVerdict && !conflict && !pending && (
+        <div
+          data-testid={`staged-${d.id}`}
+          style={{
+            marginTop: 10, borderRadius: radius.md,
+            border: `1px solid ${colors.purpleBright}`,
+            background: colors.purpleSoft, padding: '10px 12px',
+            display: 'flex', flexDirection: 'column', gap: 8,
+          }}
+        >
+          <div style={{
+            display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap',
+            fontSize: textSize.caption, fontWeight: 600, color: colors.text,
+          }}>
+            <span aria-hidden="true">🎙</span>
+            <span>{stagedSummary(staged)}</span>
+            <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, fontWeight: 400 }}>
+              {/* formatAge says "now" under a minute — "now ago" would be nonsense. */}
+              · {formatAge(staged.staged_at) === 'now' ? 'just now' : `${formatAge(staged.staged_at)} ago`}
+            </span>
+          </div>
+          {/* Honest about what has and has not happened yet. */}
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>
+            Heard, not committed — nothing has happened yet. Committing does
+            this: {effectTextFor(d.kind, stagedVerdict, agentName, riskActionClass)}
+          </div>
+          {staged.note && (
+            <div style={{
+              fontSize: textSize.micro, color: colors.textMuted,
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
+            }}>
+              Said with it: {staged.note}
+            </div>
+          )}
+          {stagedVerdict === 'reject' && pushedRejectWarning(d.kind, pushTarget) && (
+            <span role="alert" style={{
+              fontSize: textSize.caption, fontWeight: 600, color: colors.warning,
+              display: 'flex', gap: 6, alignItems: 'baseline',
+            }}>
+              <span aria-hidden="true">⚠</span>
+              {pushedRejectWarning(d.kind, pushTarget)}
+            </span>
+          )}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {/* One tap, and it travels the ordinary answer route: same actor,
+                same tier gate, attributed to this device — never to "voice". */}
+            <Btn
+              variant="primary"
+              disabled={submitting}
+              onClick={() =>
+                submit({
+                  body: {
+                    answer: stagedVerdict,
+                    note: staged.note ?? undefined,
+                  },
+                  confirmLabel: '',
+                  effectText: '',
+                })
+              }
+            >
+              {submitting
+                ? 'Sending…'
+                : stagedVerdict === 'approve' ? 'Commit approve' : 'Commit reject'}
+            </Btn>
+            {onDiscardStaged && (
+              <Btn
+                danger
+                disabled={submitting}
+                onClick={async () => {
+                  setDiscardErr(null);
+                  try {
+                    await onDiscardStaged(d.id);
+                    return true;
+                  } catch (e) {
+                    setDiscardErr(
+                      e instanceof Error ? e.message : "The discard didn't send — try again.",
+                    );
+                    return false;
+                  }
+                }}
+              >
+                Discard
+              </Btn>
+            )}
+          </div>
+          {answerErr && (
+            <span role="alert" style={{ fontSize: textSize.micro, color: colors.danger }}>
+              Couldn't send: {answerErr}
+            </span>
+          )}
+          {discardErr && (
+            <span role="alert" style={{ fontSize: textSize.micro, color: colors.danger }}>
+              Couldn't discard: {discardErr}
+            </span>
+          )}
         </div>
       )}
 

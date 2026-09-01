@@ -93,6 +93,7 @@ export function ChatPendingDecisions({ overlay = false }: { overlay?: boolean })
             // conflict settles the same way it does there: refetch and let the
             // item leave.
             onConflictSettled={inbox.refresh}
+            onDiscardStaged={inbox.discardStaged}
           />
         ))}
       </div>
