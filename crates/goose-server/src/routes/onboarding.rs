@@ -213,6 +213,97 @@ mod tests {
         }
     }
 
+    /// The panel-level half of the coverage guard above (#5 forensics).
+    ///
+    /// `every_shipped_tab_is_observable_or_exempt` only ever checked a tab's
+    /// OWN top-level `reads` — it never looked at `panels`, a sub-section
+    /// nested inside a tab that renders its own distinct store (e.g. the
+    /// Documents panel inside the Projects tab's detail view). That gap is
+    /// exactly how `project_documents` shipped invisible to the agent: the
+    /// Projects tab looked fully covered (`reads: projects` ↔ `surface:
+    /// projects`) while a whole nested store had no aspect naming it anywhere.
+    ///
+    /// Mirrors the tab-level test's shape: every catalog panel with a `reads`
+    /// value must have exactly one `PANEL_SURFACES` entry, that entry's
+    /// surface must be in `OBSERVABLE_SURFACES`, and its `reads` must match
+    /// the catalog panel's `reads` verbatim (names are not evidence, same
+    /// lesson as the tab-level guard's own history).
+    #[test]
+    fn every_shipped_panel_is_observable() {
+        use permagent::agents::platform_extensions::app_perception::{
+            OBSERVABLE_SURFACES, PANEL_SURFACES,
+        };
+
+        let catalog = crate::app_catalog::init();
+        let shipped_tabs: std::collections::HashSet<String> =
+            catalog.tabs.iter().map(|t| t.name.to_lowercase()).collect();
+
+        // Reverse direction: every PANEL_SURFACES entry must name a real
+        // shipped tab AND a real panel on it — a stale entry (tab renamed,
+        // panel removed) would otherwise silently claim coverage of nothing.
+        for entry in PANEL_SURFACES {
+            assert!(
+                shipped_tabs.contains(&entry.tab.to_lowercase()),
+                "PANEL_SURFACES names tab {:?}, which is not a shipped tab",
+                entry.tab
+            );
+            let tab = catalog
+                .tabs
+                .iter()
+                .find(|t| t.name.eq_ignore_ascii_case(entry.tab))
+                .expect("just proved this tab is shipped");
+            assert!(
+                tab.panels
+                    .iter()
+                    .any(|p| p.name.eq_ignore_ascii_case(entry.panel)),
+                "PANEL_SURFACES names panel {:?} on tab {:?}, which the catalog does not list",
+                entry.panel,
+                entry.tab
+            );
+        }
+
+        // Forward direction: every catalog panel must be covered.
+        for tab in &catalog.tabs {
+            for panel in &tab.panels {
+                let matches: Vec<_> = PANEL_SURFACES
+                    .iter()
+                    .filter(|e| {
+                        e.tab.eq_ignore_ascii_case(&tab.name)
+                            && e.panel.eq_ignore_ascii_case(&panel.name)
+                    })
+                    .collect();
+                assert!(
+                    matches.len() == 1,
+                    "panel {:?} ships inside tab {:?} but the agent cannot see its store \
+                     ({:?}): add a PANEL_SURFACES entry mapping it to an observe_app aspect. \
+                     Everything in the app is meant to be queryable by the agent — this is \
+                     exactly how project_documents shipped unobservable.",
+                    panel.name,
+                    tab.name,
+                    panel.reads
+                );
+                let entry = matches[0];
+                assert!(
+                    OBSERVABLE_SURFACES.contains(&entry.surface),
+                    "PANEL_SURFACES maps {:?}/{:?} to surface {:?}, which is not in OBSERVABLE_SURFACES",
+                    entry.tab,
+                    entry.panel,
+                    entry.surface
+                );
+                assert_eq!(
+                    entry.reads,
+                    panel.reads.as_str(),
+                    "PANEL_SURFACES entry for {:?}/{:?} claims to read {:?}, but the catalog \
+                     panel reads {:?} — the aspect reads a different store than the panel renders",
+                    tab.name,
+                    panel.name,
+                    entry.reads,
+                    panel.reads
+                );
+            }
+        }
+    }
+
     /// The "no fake lesson" guarantee at the mounted-surface layer: every
     /// teachable capability's navigate target must be a tab in the **shipped**
     /// app catalog (parsed from catalog.yaml), not just the crate-local
