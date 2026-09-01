@@ -6404,6 +6404,9 @@ pub fn daemon_lifecycle_id() -> &'static str {
 /// normally, so a restart loop can never buy unlimited free retries.
 pub const RESTART_FORGIVEN_LIFECYCLE: &str = "restart_forgiven_lifecycle";
 
+/// Briefing `kind` for the boot reconciler's own report (R2b).
+pub const RESTART_RECONCILE_BRIEFING_KIND: &str = "restart_reconcile";
+
 /// Whether the boot reconciler charges an attempt for an orphaned in-flight
 /// goal. Named and pure so the classification is assertable directly (R4's
 /// chaos gate needs it without a daemon).
@@ -6450,6 +6453,108 @@ pub fn classify_restart_charge(meta: &serde_json::Value) -> RestartCharge {
     RestartCharge::NoCharge
 }
 
+/// What the reconciler did with one in-flight goal it found at boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeDisposition {
+    /// Dispatched in THIS lifecycle — a live tracker owns it; not an orphan.
+    OwnedByLiveTracker,
+    /// The worker session is still alive; a polling tracker was re-attached.
+    Reattached,
+    /// The worktree held committed work — routed to Review with evidence.
+    ResumedToReview,
+    /// Requeued to Ready without charging the attempt (restart interruption).
+    RequeuedNoCharge,
+    /// Requeued to Ready with the attempt charged.
+    RequeuedCharged,
+    /// Budget exhausted — parked in Failed with an unblock decision.
+    ParkedFailed,
+}
+
+/// The boot reconciliation pass, as one value (R2b).
+///
+/// A restart that silently rewrites goal state is exactly the condition R0 had
+/// to reconstruct from the journal a month after the fact. The pass reports
+/// itself instead.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReconcileReport {
+    /// In-flight goal cards found, including those a live tracker owns.
+    pub examined: usize,
+    pub owned_by_live_tracker: usize,
+    pub reattached: usize,
+    pub resumed_to_review: usize,
+    pub requeued_no_charge: usize,
+    pub requeued_charged: usize,
+    pub parked_failed: usize,
+    /// Goals whose reconciliation itself errored (logged, then skipped).
+    pub errors: usize,
+}
+
+impl ReconcileReport {
+    fn record(&mut self, disposition: ResumeDisposition) {
+        match disposition {
+            ResumeDisposition::OwnedByLiveTracker => self.owned_by_live_tracker += 1,
+            ResumeDisposition::Reattached => self.reattached += 1,
+            ResumeDisposition::ResumedToReview => self.resumed_to_review += 1,
+            ResumeDisposition::RequeuedNoCharge => self.requeued_no_charge += 1,
+            ResumeDisposition::RequeuedCharged => self.requeued_charged += 1,
+            ResumeDisposition::ParkedFailed => self.parked_failed += 1,
+        }
+    }
+
+    /// Goals this pass actually acted on — everything but the ones a live
+    /// tracker in this same process already owns.
+    pub fn reconciled(&self) -> usize {
+        self.reattached
+            + self.resumed_to_review
+            + self.requeued_no_charge
+            + self.requeued_charged
+            + self.parked_failed
+    }
+
+    /// The one line that stands alone in Henry's brief.
+    pub fn summary(&self) -> String {
+        let n = self.reconciled();
+        format!(
+            "Reconciled {} interrupted goal{} after a daemon restart",
+            n,
+            if n == 1 { "" } else { "s" }
+        )
+    }
+
+    /// The breakdown, one disposition per line. Every line is printed even at
+    /// zero: a report that omits its empty rows cannot be told from a report
+    /// that never looked (the `job_health` rule).
+    pub fn detail(&self) -> String {
+        format!(
+            "Boot reconciliation of in-flight goals (daemon lifecycle {}):\n\
+             - examined: {} in-flight goal(s); {} already owned by a live tracker in this process\n\
+             - {} requeued to Ready — no attempt charged (restart interruption)\n\
+             - {} requeued to Ready — attempt charged\n\
+             - {} recovered to Review from committed worktree evidence\n\
+             - {} parked in Failed (budget exhausted)\n\
+             - {} re-attached to a still-live worker session\n\
+             - {} could not be reconciled (see the daemon log)",
+            daemon_lifecycle_id(),
+            self.examined,
+            self.owned_by_live_tracker,
+            self.requeued_no_charge,
+            self.requeued_charged,
+            self.resumed_to_review,
+            self.parked_failed,
+            self.reattached,
+            self.errors,
+        )
+    }
+
+    fn severity(&self) -> crate::briefings::Severity {
+        if self.parked_failed > 0 || self.errors > 0 {
+            crate::briefings::Severity::Attention
+        } else {
+            crate::briefings::Severity::Info
+        }
+    }
+}
+
 /// Resume in-progress goals after daemon restart.
 ///
 /// Scans for goal cards in the `in_progress` state and either:
@@ -6462,21 +6567,43 @@ pub async fn resume_in_progress_goals(
         .pool_clone()
         .await
         .map_err(|e| e.to_string())?;
+    let manager = AgentManager::instance().await.ok();
+    reconcile_in_progress_goals(&pool, &manager).await;
+    Ok(())
+}
+
+/// The reconciliation pass itself, over a pool rather than a `SessionManager`,
+/// so a test can run a whole boot without a daemon.
+pub async fn reconcile_in_progress_goals(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    manager: &Option<Arc<AgentManager>>,
+) -> ReconcileReport {
+    let mut report = ReconcileReport::default();
 
     // Find all in-progress goal cards across all projects
-    let rows = sqlx::query_as::<_, (String, String)>(
+    let rows = match sqlx::query_as::<_, (String, String)>(
         "SELECT c.id, c.project_id FROM cards c
          JOIN board_columns bc ON c.column_id = bc.id
          WHERE c.card_type = 'goal'
            AND bc.state_binding = 'in_progress'
            AND c.archived_at IS NULL",
     )
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "Could not enumerate in-progress goals for restart reconciliation: {}",
+                e
+            );
+            return report;
+        }
+    };
 
     if rows.is_empty() {
-        return Ok(());
+        return report;
     }
 
     tracing::info!(
@@ -6485,20 +6612,50 @@ pub async fn resume_in_progress_goals(
         rows.len()
     );
 
-    let manager = AgentManager::instance().await.ok();
-
+    report.examined = rows.len();
     for (card_id, project_id) in rows {
-        if let Err(e) = resume_single_goal(&pool, &manager, &card_id, &project_id).await {
-            tracing::warn!(
-                target: "permagentd::brain",
-                "Failed to resume goal {}: {}",
-                card_id,
-                e
-            );
+        match resume_single_goal(pool, manager, &card_id, &project_id).await {
+            Ok(disposition) => report.record(disposition),
+            Err(e) => {
+                report.errors += 1;
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "Failed to resume goal {}: {}",
+                    card_id,
+                    e
+                );
+            }
         }
     }
 
-    Ok(())
+    // R2b: leave an audit trail. A restart that rewrites goal state in silence
+    // is the condition R0 had to reconstruct from the journal a month later —
+    // and the log lines this pass already wrote reach nobody. A boot that found
+    // nothing to reconcile files nothing: this is a report of work done, not a
+    // heartbeat (a per-boot "all quiet" briefing on a machine restarting four
+    // times a day is noise that teaches people to ignore the surface).
+    tracing::info!(
+        target: "permagentd::brain",
+        "{}",
+        report.detail()
+    );
+    if report.reconciled() > 0 {
+        crate::briefings::file_briefing(
+            pool,
+            crate::briefings::NewBriefing {
+                from_agent: "orchestrator".to_string(),
+                kind: RESTART_RECONCILE_BRIEFING_KIND.to_string(),
+                severity: report.severity(),
+                summary: report.summary(),
+                detail: Some(report.detail()),
+                ref_kind: None,
+                ref_id: None,
+            },
+        )
+        .await;
+    }
+
+    report
 }
 
 /// Boot-time sweep that reclaims goal worktrees orphaned by crashed or prior
@@ -6569,7 +6726,7 @@ async fn resume_single_goal(
     manager: &Option<Arc<AgentManager>>,
     card_id: &str,
     project_id: &str,
-) -> Result<(), String> {
+) -> Result<ResumeDisposition, String> {
     let card = cards::get_card(pool, card_id)
         .await?
         .ok_or_else(|| format!("Card {} not found during resume", card_id))?;
@@ -6592,7 +6749,7 @@ async fn resume_single_goal(
             "Goal '{}' was dispatched in the current daemon lifecycle — live tracker owns it, not reclaiming",
             card.title
         );
-        return Ok(());
+        return Ok(ResumeDisposition::OwnedByLiveTracker);
     }
 
     let session_id = meta
@@ -6677,7 +6834,7 @@ async fn resume_single_goal(
             card.title,
             session_id.unwrap_or("?")
         );
-        Ok(())
+        Ok(ResumeDisposition::Reattached)
     } else {
         // Before treating a dead-worker goal as abandoned: the worker may have
         // finished and committed its work in the detached worktree, but the
@@ -6687,7 +6844,7 @@ async fn resume_single_goal(
         // first — if it holds commits since baseline, capture the evidence and
         // route to Review (where a live completion would have landed).
         if try_complete_dead_worker_from_worktree(pool, &card, project_id, session_id).await {
-            return Ok(());
+            return Ok(ResumeDisposition::ResumedToReview);
         }
 
         // Case 1: session is dead — requeue, or park on budget exhaustion.
@@ -6762,7 +6919,7 @@ async fn resume_single_goal(
                 exhaustion.describe(),
                 decision_id
             );
-            Ok(())
+            Ok(ResumeDisposition::ParkedFailed)
         } else {
             // Retriable: requeue to Ready through the guard. On a no-charge
             // requeue the forgiven lifecycle is stamped in the SAME transaction,
@@ -6795,7 +6952,10 @@ async fn resume_single_goal(
                     RestartCharge::Charge => "attempt charged",
                 }
             );
-            Ok(())
+            Ok(match charge {
+                RestartCharge::NoCharge => ResumeDisposition::RequeuedNoCharge,
+                RestartCharge::Charge => ResumeDisposition::RequeuedCharged,
+            })
         }
     }
 }
@@ -9138,6 +9298,60 @@ mod tests {
             classify_restart_charge(&serde_json::json!({"dispatched_lifecycle": cur})),
             RestartCharge::Charge
         );
+    }
+
+    /// R2b: the boot reconciler must leave an audit trail. A restart that
+    /// silently rewrites goal state is the condition R0 spent a day
+    /// reconstructing from the journal; the pass reports itself instead.
+    #[tokio::test]
+    async fn the_boot_reconciler_reports_what_it_did() {
+        let pool = test_pool().await;
+        crate::session::spectral_schema::apply_briefings_schema(&pool)
+            .await
+            .unwrap();
+        let orphan = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_lifecycle(&pool, &orphan, "prior-lifecycle").await;
+        let live = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_lifecycle(&pool, &live, daemon_lifecycle_id()).await;
+
+        let report = reconcile_in_progress_goals(&pool, &None).await;
+
+        assert_eq!(report.examined, 2);
+        assert_eq!(report.requeued_no_charge, 1);
+        assert_eq!(report.owned_by_live_tracker, 1);
+        assert_eq!(report.reconciled(), 1);
+
+        let filed = crate::briefings::unacknowledged(&pool, 10).await;
+        let brief = filed
+            .iter()
+            .find(|b| b.kind == RESTART_RECONCILE_BRIEFING_KIND)
+            .expect("the reconciler must file its summary");
+        assert!(
+            brief.summary.contains("1 interrupted goal"),
+            "summary must count what it touched: {}",
+            brief.summary
+        );
+        assert!(
+            brief
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("no attempt charged"),
+            "the detail must break the reconciliation down by disposition"
+        );
+    }
+
+    /// A boot that finds nothing in flight files nothing — the reconciler is a
+    /// report of work done, not a heartbeat.
+    #[tokio::test]
+    async fn a_quiet_boot_files_no_briefing() {
+        let pool = test_pool().await;
+        crate::session::spectral_schema::apply_briefings_schema(&pool)
+            .await
+            .unwrap();
+        let report = reconcile_in_progress_goals(&pool, &None).await;
+        assert_eq!(report.examined, 0);
+        assert!(crate::briefings::unacknowledged(&pool, 10).await.is_empty());
     }
 
     #[tokio::test]
