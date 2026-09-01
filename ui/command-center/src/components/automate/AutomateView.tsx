@@ -22,6 +22,8 @@ import {
 import { usePersona } from '../settings/useSettings';
 import { RunRoster } from './RunRoster';
 import { Button, SUCCESS_FLASH_MS } from '../common/Button';
+import { JobProgress } from '../common/JobProgress';
+import { useLongRunningJob, type LongRunningJob } from '../../hooks/useLongRunningJob';
 import { FormModal } from '../common/FormModal';
 import { ViewHeader } from '../common/ViewHeader';
 import { AsOf } from '../common/AsOf';
@@ -294,6 +296,15 @@ export interface BulkActionResponse {
   run_id: string;
   results: BulkActionResult[];
   blocked: BulkActionBlocked[];
+}
+
+/** What a finished sweep is able to say about itself. The server answers
+ *  per item, so the summary line can too — "Cleaning..." with no count was
+ *  the same sentence for 2 files and for 2,000. */
+export interface BulkSweepSummary {
+  cleaned: number;
+  failed: number;
+  bytes: number;
 }
 
 export class BulkActionBlockedError extends Error {
@@ -1522,7 +1533,7 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
   // of single actions, which is the exact shape of the incident this fix
   // closes). Updates local state from `results`; blocked entries are the
   // server's own veto and are surfaced rather than silently dropped.
-  const handleBulkAction = async (findingIds: string[]): Promise<void> => {
+  const handleBulkAction = async (findingIds: string[]): Promise<BulkSweepSummary> => {
     const response = await bulkTrashFindings(run.id, findingIds);
     if (response.results.length > 0) {
       const byId = new Map(response.results.map(r => [r.finding_id, r]));
@@ -1539,6 +1550,11 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
       }));
       void refreshLifetime();
     }
+    return {
+      cleaned: response.results.filter(r => !r.error).length,
+      failed: response.results.filter(r => r.error).length,
+      bytes: response.results.reduce((n, r) => n + (r.size_recovered_bytes ?? 0), 0),
+    };
   };
 
   const totalRecovered = sumRunRecovered(findings);
@@ -1872,7 +1888,7 @@ function FindingsPanel({
 findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, lifetime }: {
   findings: Finding[]; actionInFlight: string | null;
   onAction: (findingId: string, action: string, confirmed?: boolean) => Promise<void>;
-  onBulkAction: (findingIds: string[]) => Promise<void>;
+  onBulkAction: (findingIds: string[]) => Promise<BulkSweepSummary>;
   totalRecovered: number; allActioned: boolean;
   lifetime: RecoveryTotals | null;
 }) {
@@ -1881,29 +1897,56 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
   const [previewGroup, setPreviewGroup] = useState<string | null>(null);
   const [includeRegenerable, setIncludeRegenerable] = useState(false);
-  const [cleaning, setCleaning] = useState(false);
-  const [bulkError, setBulkError] = useState<string | null>(null);
+  const sweepTargets = useRef<Finding[]>([]);
 
-  const closeDialog = () => { setPreviewGroup(null); setIncludeRegenerable(false); setBulkError(null); };
-
-  const confirmBulk = async (eligible: Finding[]) => {
-    if (eligible.length === 0) return;
-    setCleaning(true); setBulkError(null);
-    try {
-      await onBulkAction(eligible.map(f => f.id));
-      closeDialog();
-    } catch (err) {
-      if (err instanceof BulkActionBlockedError) {
-        // The server vetoed something the client thought was eligible (a
-        // race with a fresher scan, say) — show it rather than pretend
-        // success. The dialog stays open so blocked/excluded stay visible.
-        setBulkError(`${err.message}${err.blocked.length ? ` (${err.blocked.length} item${err.blocked.length === 1 ? '' : 's'} blocked)` : ''}`);
-      } else {
-        setBulkError(err instanceof Error ? err.message : String(err));
+  /**
+   * The cleanup sweep, on the app's one long-running-job machine.
+   *
+   * A single POST that may be moving thousands of files used to be one
+   * `cleaning` boolean and the word "Cleaning..." — the same sentence for two
+   * files and for two thousand, and a success that was only visible as the
+   * dialog disappearing. Now the terminal phases are written out: the success
+   * line names how much came back, and a server veto keeps the dialog open
+   * with the server's own words in it rather than vanishing like a success.
+   *
+   * The sweep is one request with no progress channel, so there is no size to
+   * report and `<JobProgress>` draws the honest indeterminate band.
+   */
+  const sweep = useLongRunningJob<BulkSweepSummary>({
+    run: async ({ report }) => {
+      const items = sweepTargets.current;
+      report({ stage: 'trashing', status: `Moving ${items.length} item${items.length === 1 ? '' : 's'} to Trash` });
+      try {
+        return await onBulkAction(items.map(f => f.id));
+      } catch (err) {
+        if (err instanceof BulkActionBlockedError) {
+          // The server vetoed something the client thought was eligible (a
+          // race with a fresher scan, say) — say so rather than pretend
+          // success. The dialog stays open so blocked/excluded stay visible.
+          throw new Error(
+            `${err.message}${err.blocked.length ? ` (${err.blocked.length} item${err.blocked.length === 1 ? '' : 's'} blocked)` : ''}`,
+          );
+        }
+        throw err;
       }
-    } finally {
-      setCleaning(false);
-    }
+    },
+    summarize: (s) =>
+      s.failed > 0
+        ? `Moved ${s.cleaned} to Trash · ${s.failed} could not be removed`
+        : `Moved ${s.cleaned} to Trash — ${formatBytes(s.bytes)} recovered`,
+    onSuccess: (s) => {
+      // Only a clean sweep closes the dialog; anything the server refused
+      // stays on screen next to the list it refused it from.
+      if (s.failed === 0) { setPreviewGroup(null); setIncludeRegenerable(false); }
+    },
+  });
+
+  const closeDialog = () => { setPreviewGroup(null); setIncludeRegenerable(false); sweep.reset(); };
+
+  const confirmBulk = (eligible: Finding[]) => {
+    if (eligible.length === 0) return;
+    sweepTargets.current = eligible;
+    void sweep.start();
   };
 
   const totalPending = findings.filter(f => !f.action_taken).length;
@@ -1945,6 +1988,11 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
             Clean Up All — {formatBytes(totalPendingBytes)}
           </Button>
         )}
+        {/* The sweep outlives its dialog: a clean run closes the dialog, and
+            this is where the run gets to say what it actually did. */}
+        {!previewGroup && (
+          <JobProgress job={sweep} label="Cleanup sweep" style={{ marginTop: 12 }} />
+        )}
       </div>
       {previewGroup && (() => {
         const pool = (previewGroup === '__all__' ? findings : (groups.get(previewGroup) || [])).filter(f => !f.action_taken);
@@ -1955,8 +2003,7 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
             onToggleRegenerable={setIncludeRegenerable}
             onCancel={closeDialog}
             onConfirm={confirmBulk}
-            busy={cleaning}
-            error={bulkError}
+            sweep={sweep}
           />
         );
       })()}
@@ -2047,14 +2094,15 @@ function CategoryBadge({ category }: { category: CategoryKey }) {
 // ═══════════════════════════════════════════════════════════════════════
 
 export function BulkConfirmDialog({
-pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, busy, error }: {
+pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, sweep }: {
   pending: Finding[];
   includeRegenerable: boolean;
   onToggleRegenerable: (v: boolean) => void;
   onCancel: () => void;
   onConfirm: (eligible: Finding[]) => void;
-  busy: boolean;
-  error: string | null;
+  /** The sweep this dialog arms. Owned by the caller, because a clean run
+   *  closes the dialog and the run still has something to say afterwards. */
+  sweep: LongRunningJob<BulkSweepSummary>;
 }) {
   const { colors } = useTheme();
   const { eligible, excluded } = bulkEligible(pending, includeRegenerable);
@@ -2115,21 +2163,29 @@ pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, busy, err
           })}
         </div>
       )}
-      {error && (
-        <div style={{ padding: '10px 20px', fontSize: textSize.caption, color: colors.danger, background: withAlpha(colors.danger, 0.08) }}>{error}</div>
+      {sweep.phase !== 'idle' && (
+        <div style={{ padding: '10px 20px' }}>
+          {/* Retry is the Move button below — a second one here would be two
+              answers to "how do I try again". */}
+          <JobProgress job={sweep} label="Cleanup sweep" onRetry={null} />
+        </div>
       )}
       <div style={{ padding: '12px 20px', display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: `1px solid ${colors.border}` }}>
         <Button colors={colors} onClick={onCancel} style={actionVars(colors)}>Cancel</Button>
-        {/* The work runs in the caller's `confirmBulk`, not in this click, so
-            the in-flight state arrives as a prop — same shape as a form submit. */}
+        {/* The work runs in the caller's sweep, not in this click, so the
+            in-flight state arrives on the job — same shape as a form submit.
+            The button's own spinner is off: the job strip above is the one
+            in-flight indicator, and two would be one too many. */}
         <Button
           colors={colors}
           variant="primary"
-          pending={busy}
+          disabled={sweep.running}
+          minPendingMs={0}
+          flashSuccess={false}
           onClick={() => onConfirm(eligible)}
           style={PRIMARY_ACTION_VARS}
         >
-          {busy ? 'Cleaning...' : `Move ${eligible.length} to Trash`}
+          {sweep.running ? 'Cleaning...' : `Move ${eligible.length} to Trash`}
         </Button>
       </div>
     </div>

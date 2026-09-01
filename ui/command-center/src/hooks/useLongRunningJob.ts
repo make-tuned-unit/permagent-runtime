@@ -240,6 +240,28 @@ export function useLongRunningJob<T>(options: UseLongRunningJobOptions<T>): Long
   };
 }
 
+/**
+ * A job that has never been started. For tests, and for surfaces that must
+ * render the strip before the real job exists — `<JobProgress>` draws nothing
+ * for it, which is exactly right.
+ */
+export function idleJob<T>(): LongRunningJob<T> {
+  return {
+    phase: 'idle',
+    running: false,
+    reading: {},
+    percent: null,
+    error: null,
+    result: null,
+    summary: null,
+    startedAt: null,
+    finishedAt: null,
+    start: async () => {},
+    abort: () => {},
+    reset: () => {},
+  };
+}
+
 // ── Runners ─────────────────────────────────────────────────────────────────
 
 /**

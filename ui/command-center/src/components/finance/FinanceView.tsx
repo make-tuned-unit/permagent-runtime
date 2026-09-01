@@ -16,6 +16,8 @@ import { ViewHeader } from '../common/ViewHeader';
 import { AsOf } from '../common/AsOf';
 import { Button, SUCCESS_FLASH_MS } from '../common/Button';
 import { Chip } from '../common/Chip';
+import { JobProgress } from '../common/JobProgress';
+import { useLongRunningJob, pollingRunner, type LongRunningJob } from '../../hooks/useLongRunningJob';
 import { navigateToTool } from '../../lib/store';
 import { GLOSSARY } from '../../lib/vocabulary';
 import { AGENT_TRIM } from '../world/shared/palette';
@@ -337,6 +339,11 @@ interface DailyPick {
 }
 
 const POLL_MS = 60_000;
+/** How often a running Picker scan is asked whether it is done. */
+const SCAN_POLL_MS = 5_000;
+/** Ticks the scan may go without ever reporting `scanInProgress` before the
+ *  job stops waiting and reports whatever the board now says. */
+const SCAN_GRACE_TICKS = 4;
 
 const CATEGORIES = [
   'housing',
@@ -408,7 +415,64 @@ export function FinanceView() {
     return () => { live = false; };
   }, []);
 
-  const scanRunning = Boolean(board?.picker.scanInProgress);
+  /**
+   * The Picker scan, as a job rather than a boolean.
+   *
+   * The POST returns the moment the daemon accepts the scan, so the old
+   * `mutate()` spinner measured the request and not the work: the button
+   * ticked "done" while the scanner was still ranking. The scan's real
+   * progress lives in `/api/finance`'s `picker.scanInProgress`, so this is the
+   * poll-until-terminal shape — and every tick's board is pushed back into the
+   * view, which is what keeps the rest of the tab live during a scan.
+   *
+   * There is no total to report (the scanner never says how many tickers are
+   * left), so `JobProgress` draws the honest indeterminate band rather than a
+   * fabricated percentage.
+   */
+  const scanJob = useLongRunningJob<PickerStatus>({
+    run: pollingRunner<PickerStatus>({
+      begin: async () => {
+        await apiFetch('/api/finance/picker/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+      },
+      poll: (() => {
+        // The scanner may not have flipped `scanInProgress` by the first poll,
+        // and a fast scan may already be finished. Neither is a failure — but
+        // "never saw it run" must not be reported as a completed scan either,
+        // so give it a bounded grace window and then report what the board says.
+        let sawRunning = false;
+        let quiet = 0;
+        return async () => {
+          const next = await apiFetch<FinanceBoard>('/api/finance');
+          setBoard(next);
+          setError(null);
+          const p = next.picker;
+          if (!p.reachable) {
+            return { done: true, error: p.detail ?? 'the scanner stopped answering' };
+          }
+          if (p.scanInProgress) {
+            sawRunning = true;
+            return { done: false, reading: { stage: 'scanning', status: p.detail ?? 'Ranking the universe' } };
+          }
+          if (!sawRunning && quiet++ < SCAN_GRACE_TICKS) {
+            return { done: false, reading: { stage: 'starting', status: 'Waiting for the scanner to pick it up' } };
+          }
+          return { done: true, result: p };
+        };
+      })(),
+      intervalMs: SCAN_POLL_MS,
+    }),
+    summarize: (p) =>
+      p.results != null
+        ? `Scan complete — ${p.results} ranked`
+        : 'Scan finished — the scanner reported no ranking',
+  });
+
+  // A scan this UI did not start (launchd, another client) still deserves a
+  // faster board; one it did start is already being polled by the job above.
+  const scanRunning = Boolean(board?.picker.scanInProgress) && !scanJob.running;
   useEffect(() => {
     void load();
     const t = setInterval(() => { void load(); }, scanRunning ? 10_000 : POLL_MS);
@@ -494,6 +558,7 @@ export function FinanceView() {
               board={view}
               colors={colors}
               busy={busy}
+              scanJob={scanJob}
               mutate={mutate}
               setLab={setLab}
             />
@@ -609,11 +674,13 @@ function CurrencyControl({
 }
 
 function SummaryStrip({
-  board, colors, busy, mutate, setLab,
+  board, colors, busy, scanJob, mutate, setLab,
 }: {
   board: FinanceBoard;
   colors: ThemeColors;
   busy: boolean;
+  /** Threaded down from the view, whose board refresh IS this job's poll. */
+  scanJob: LongRunningJob<PickerStatus>;
   mutate: (fn: () => Promise<unknown>) => Promise<boolean>;
   setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<boolean>;
 }) {
@@ -732,6 +799,7 @@ function SummaryStrip({
                 universe={board.pickerUniverse ?? []}
                 colors={colors}
                 busy={busy}
+                scanJob={scanJob}
                 mutate={mutate}
                 setLab={setLab}
                 showAdd={showPickerAdd}
@@ -962,12 +1030,14 @@ function PolybotControls({
 }
 
 function PickerControls({
-  picker, universe, colors, busy, mutate, setLab, showAdd, setShowAdd,
+  picker, universe, colors, busy, scanJob, mutate, setLab, showAdd, setShowAdd,
 }: {
   picker: PickerStatus;
   universe: string[];
   colors: ThemeColors;
   busy: boolean;
+  /** Owned by the view, because its poll is the view's board refresh. */
+  scanJob: LongRunningJob<PickerStatus>;
   mutate: (fn: () => Promise<unknown>) => Promise<boolean>;
   setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<boolean>;
   /** Owned by the card so the "Your tickers · none yet" caption can open the
@@ -999,12 +1069,14 @@ function PickerControls({
           colors={colors}
           type="button"
           data-testid="picker-scan"
-          disabled={busy || picker.scanInProgress}
-          onClick={() => mutate(() =>
-            apiFetch('/api/finance/picker/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
-          )}
+          disabled={busy || picker.scanInProgress || scanJob.running}
+          // The job owns the in-flight state from here on, so the button must
+          // not also hold a spinner for the accept-POST: two indicators for one
+          // scan is how "is it still going?" became unanswerable.
+          minPendingMs={0}
+          onClick={() => { void scanJob.start(); }}
         >
-          {picker.scanInProgress ? 'Scan running…' : 'Run scan'}
+          {picker.scanInProgress || scanJob.running ? 'Scan running…' : 'Run scan'}
         </Button>
         <Button
           colors={colors}
@@ -1026,6 +1098,7 @@ function PickerControls({
           Turn off
         </Button>
       </div>
+      <JobProgress job={scanJob} label="Picker scan" />
       {universe.length > 0 && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} data-testid="picker-extras">
           {universe.map((t) => (

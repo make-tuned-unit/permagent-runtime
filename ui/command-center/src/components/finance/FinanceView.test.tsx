@@ -382,3 +382,54 @@ it('keeps a column of filtered rows quiet and spends the emphasis on the rest', 
   expect(badge).toBeTruthy();
   expect(badge.style.background).toBeTruthy();
 });
+
+it('a Picker scan reports the scan, not the accept-POST, and names what it found', async () => {
+  vi.useFakeTimers();
+  try {
+    // The POST is accepted instantly; the scan itself takes two polls.
+    let started = false;
+    let ticks = 0;
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path === '/api/finance/picker/scan') { started = true; return {}; }
+      if (started) ticks += 1;
+      const running = started && ticks <= 2;
+      return board({
+        pickerEnabled: true,
+        picker: {
+          reachable: true, baseUrl: 'http://127.0.0.1:8080',
+          scanInProgress: running,
+          detail: running ? 'Ranking the universe' : null,
+          results: started && !running ? 41 : null,
+          scanDate: '2026-09-01',
+        },
+      });
+    });
+
+    await act(async () => { root.render(<FinanceView />); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    const scan = container.querySelector('[data-testid="picker-scan"]') as HTMLButtonElement;
+    expect(scan).toBeTruthy();
+    await act(async () => { scan.click(); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    // In flight: the strip is up, and it does NOT claim a percentage the
+    // scanner never gave.
+    const strip = container.querySelector('[data-testid="job-progress"]') as HTMLElement;
+    expect(strip).toBeTruthy();
+    expect(strip.getAttribute('data-phase')).toBe('running');
+    expect(container.querySelector('[data-testid="job-progress-percent"]')).toBeNull();
+    expect(container.querySelector('[data-testid="job-progress-bar"]')?.getAttribute('data-determinate'))
+      .toBe('false');
+
+    // Two more polls and the scan lands — as a named success, not a vanish.
+    for (let i = 0; i < 3; i++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    }
+    const done = container.querySelector('[data-testid="job-progress"]') as HTMLElement;
+    expect(done.getAttribute('data-phase')).toBe('succeeded');
+    expect(done.textContent).toContain('41 ranked');
+  } finally {
+    vi.useRealTimers();
+  }
+});

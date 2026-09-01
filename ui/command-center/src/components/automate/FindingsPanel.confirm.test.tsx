@@ -14,7 +14,8 @@
 import { act } from 'react-dom/test-utils';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BulkConfirmDialog, FindingRow, type Finding } from './AutomateView';
+import { BulkConfirmDialog, FindingRow, type Finding, type BulkSweepSummary } from './AutomateView';
+import { idleJob } from '../../hooks/useLongRunningJob';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -71,8 +72,7 @@ describe('BulkConfirmDialog', () => {
           onToggleRegenerable={() => {}}
           onCancel={() => {}}
           onConfirm={() => {}}
-          busy={false}
-          error={null}
+          sweep={idleJob<BulkSweepSummary>()}
         />,
       );
     });
@@ -92,8 +92,7 @@ describe('BulkConfirmDialog', () => {
           onToggleRegenerable={() => {}}
           onCancel={() => {}}
           onConfirm={() => {}}
-          busy={false}
-          error={null}
+          sweep={idleJob<BulkSweepSummary>()}
         />,
       );
     });
@@ -114,8 +113,7 @@ describe('BulkConfirmDialog', () => {
           onToggleRegenerable={() => {}}
           onCancel={() => {}}
           onConfirm={onConfirm}
-          busy={false}
-          error={null}
+          sweep={idleJob<BulkSweepSummary>()}
         />,
       );
     });
@@ -125,6 +123,56 @@ describe('BulkConfirmDialog', () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
     const eligible = onConfirm.mock.calls[0][0] as Finding[];
     expect(eligible.map(f => f.id).sort()).toEqual(['safe-1', 'safe-2']);
+  });
+
+  it('a sweep the server refuses stays on screen, in the server\'s own words', async () => {
+    const sweep = {
+      ...idleJob<BulkSweepSummary>(),
+      phase: 'failed' as const,
+      error: 'Some findings cannot be bulk-removed. (1 item blocked)',
+    };
+    await act(async () => {
+      root.render(
+        <BulkConfirmDialog
+          pending={pending}
+          includeRegenerable={false}
+          onToggleRegenerable={() => {}}
+          onCancel={() => {}}
+          onConfirm={() => {}}
+          sweep={sweep}
+        />,
+      );
+    });
+    // The dialog is still up, the reason is the server's, and the Move button
+    // is still there to try again with.
+    expect(container.textContent).toContain('Some findings cannot be bulk-removed. (1 item blocked)');
+    expect(container.textContent).toContain('Excluded — will not be removed');
+    expect([...container.querySelectorAll('button')].some(b => b.textContent?.startsWith('Move'))).toBe(true);
+  });
+
+  it('while the sweep runs the Move button is held and the job strip is the one indicator', async () => {
+    const sweep = {
+      ...idleJob<BulkSweepSummary>(),
+      phase: 'running' as const,
+      running: true,
+      reading: { stage: 'trashing', status: 'Moving 2 items to Trash' },
+    };
+    await act(async () => {
+      root.render(
+        <BulkConfirmDialog
+          pending={pending}
+          includeRegenerable={false}
+          onToggleRegenerable={() => {}}
+          onCancel={() => {}}
+          onConfirm={() => {}}
+          sweep={sweep}
+        />,
+      );
+    });
+    const move = [...container.querySelectorAll('button')].find(b => b.textContent?.includes('Cleaning'));
+    expect(move).toBeTruthy();
+    expect((move as HTMLButtonElement).disabled).toBe(true);
+    expect(container.textContent).toContain('Moving 2 items to Trash');
   });
 });
 
