@@ -13,6 +13,10 @@
  *   workspace_changed → refreshWorkspaces() refetches layouts, PRESERVING this
  *                       client's active workspace
  *   identity_changed  → refreshIdentity() re-reads /api/agent/identity
+ *   config_changed    → configRev bump (every Settings pane's read effect
+ *                       depends on it)
+ *   finance_changed   → financeRev bump (FinanceView's load effect depends
+ *                       on it)
  *
  * Also asserts the honesty gates: replayed frames never fire a refetch (the
  * daemon replays ≤1000 frames on every reconnect), and a same-kind burst
@@ -92,6 +96,8 @@ beforeEach(() => {
     projectsRev: 0,
     peopleRev: 0,
     identityRev: 0,
+    configRev: 0,
+    financeRev: 0,
     agentName: 'Agent',
     sessions: [],
     workspaces: [],
@@ -119,6 +125,47 @@ describe('project_changed → projects surfaces refetch', () => {
     route(frame('project_changed', { project_id: 'p1', change: 'documents' }));
     await flush();
     expect(useCommandCenter.getState().projectsRev).toBe(1);
+  });
+});
+
+describe('config_changed → open Settings panes refetch', () => {
+  // FAILS BEFORE: `config_changed` was not in REFRESH_BY_TYPE (the frame did
+  // not exist), so a key written by the agent — or on a second device — left
+  // every Settings pane rendering the value it read at mount.
+  it('bumps configRev so the Settings read effects re-run', async () => {
+    route(frame('config_changed', { keys: ['GOOSE_PROVIDER'], change: 'set', secret: false }));
+    await flush();
+    expect(useCommandCenter.getState().configRev).toBe(1);
+  });
+
+  it('treats a secret write exactly like any other — the name is all it needs', async () => {
+    route(frame('config_changed', { keys: ['OPENAI_API_KEY'], change: 'set', secret: true }));
+    await flush();
+    expect(useCommandCenter.getState().configRev).toBe(1);
+  });
+
+  it('coalesces a multi-key write (set_params) into ONE refetch signal', async () => {
+    route(frame('config_changed', { keys: ['GOOSE_PROVIDER'], change: 'set', secret: false }));
+    route(frame('config_changed', { keys: ['GOOSE_MODEL'], change: 'set', secret: false }));
+    await flush();
+    expect(useCommandCenter.getState().configRev).toBe(1);
+  });
+
+  it('ignores a replayed frame — a reconnect burst must not restage Settings', async () => {
+    route(frame('config_changed', { keys: ['GOOSE_MODEL'], change: 'set' }, { replayed: true }));
+    route(frame('config_changed', { keys: ['GOOSE_MODEL'], change: 'set' }, { timestamp: STALE_TS }));
+    await flush();
+    expect(useCommandCenter.getState().configRev).toBe(0);
+  });
+});
+
+describe('finance_changed → Finance view refetch', () => {
+  // FAILS BEFORE: no such frame and no listener; the Finance view's only way to
+  // see an agent's trade record was its 60s poll.
+  it('bumps financeRev so FinanceView re-reads /api/finance', async () => {
+    route(frame('finance_changed', { kind: 'position', change: 'created' }));
+    await flush();
+    expect(useCommandCenter.getState().financeRev).toBe(1);
   });
 });
 
