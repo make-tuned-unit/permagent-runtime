@@ -40,7 +40,7 @@ import { FeaturesPanel } from './features/FeaturesPanel';
 import { timeAgo } from './format';
 import { useDecisions } from '../dashboard/decisions/useDecisions';
 import { DecisionInbox } from '../dashboard/decisions/DecisionInbox';
-import { formatAge } from '../dashboard/decisions/format';
+import { summarizeDecisions } from '../dashboard/decisions/summary';
 import { getOpenOnLaunch, setOpenOnLaunch, OPEN_ON_LAUNCH_OPTIONS, type OpenOnLaunch } from '../../lib/openOnLaunch';
 import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 
@@ -379,17 +379,31 @@ export function MemoryPanel({ goto }: { goto?: (key: string) => void }) {
 // a user is already there (e.g. via env or old YAML), so they can switch back.
 const SELECTABLE_TRUST_MODES = new Set(['auto', 'chat']);
 
-/** Compact pending-approvals strip (Settings → Autonomy). Reuses the shared
- *  Decision-Inbox data hook + overlay — never forks that surface. Replaces the
- *  old Governance → Approvals panel; its "posture" card is gone because
- *  Autonomy IS the writer of that mode. */
+/**
+ * Compact pending-approvals strip (Settings → Autonomy) — a labelled REFERENCE
+ * to the canonical rendering, which is Home's decisions card (J3).
+ *
+ * It used to build its own sentence ("Pending approvals: 3") and open its own
+ * copy of the inbox overlay. Two different sentences about one number is how a
+ * user comes to suspect there are two queues, so the words now come from the
+ * shared `summarizeDecisions` — the same ones Home says — and the action hands
+ * the user to Home rather than rendering the board a second time two clicks
+ * deep in Settings. This is the "Open X →" convention Settings already uses
+ * four times.
+ *
+ * The overlay stays as the fallback for the one case where the reference cannot
+ * be honoured: no workspace holds Home, so there is nowhere to send anyone. A
+ * control that looks like it worked and did nothing is the worse failure.
+ */
 export function ApprovalsStrip() {
   const { colors } = useThemeHook();
   const inbox = useDecisions();
   const { data } = inbox;
+  const { data: persona } = usePersona();
+  const agentName = persona?.display_name ?? 'your agent';
+  const openInbox = useCommandCenter(s => s.openDecisionInbox);
   const [open, setOpen] = useState(false);
-  const pending = data?.total_pending ?? 0;
-  const oldest = data?.oldest_pending_at ?? null;
+  const s = summarizeDecisions(data, agentName);
   return (
     <>
       <div style={{
@@ -397,16 +411,20 @@ export function ApprovalsStrip() {
         padding: '9px 12px', marginBottom: 12, borderRadius: radius.md,
         background: colors.bgDeeper, border: `1px solid ${colors.border}`,
       }}>
-        <span style={{ fontSize: textSize.caption, color: pending > 0 ? colors.text : colors.textMuted }}>
-          {data === null
-            ? 'Checking the Decision Inbox…'
-            : `Pending approvals: ${pending}`}
-          {data !== null && pending > 0 && oldest && (
-            <span style={{ color: colors.textDim }}> · oldest {formatAge(oldest)}</span>
+        <span style={{ fontSize: textSize.caption, color: s.count > 0 ? colors.text : colors.textMuted }}>
+          {s.loading ? s.headline : s.allClear ? s.allClearLabel : s.headline}
+          {s.oldestLabel && (
+            <span style={{ color: colors.textDim }}> · {s.oldestLabel}</span>
           )}
         </span>
         <div style={{ flex: 1 }} />
-        <Button colors={colors} style={ghost(colors)} onClick={() => setOpen(true)}>Open Decision Inbox →</Button>
+        <Button
+          colors={colors}
+          style={ghost(colors)}
+          onClick={() => { if (!openInbox()) setOpen(true); }}
+        >
+          Open Decisions on Home →
+        </Button>
       </div>
       {open && <DecisionInbox inbox={inbox} onClose={() => setOpen(false)} />}
     </>

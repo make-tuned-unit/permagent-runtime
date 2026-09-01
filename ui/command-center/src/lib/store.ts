@@ -473,6 +473,15 @@ interface CommandCenterStore {
   focusWorldAgent: (id: string) => boolean;
   clearPendingWorldAgent: () => void;
 
+  // --- Decision Inbox deep-link (J3: Home is the canonical rendering) ---
+  /** A reference elsewhere asked to be taken to Home's decisions card. */
+  pendingDecisionInbox: boolean;
+  /** False when no workspace holds Home: there is nowhere to send the user,
+   *  and the caller must say so rather than leave a control that looks like it
+   *  worked (the `focusWorldAgent` rule). */
+  openDecisionInbox: () => boolean;
+  clearPendingDecisionInbox: () => void;
+
   // --- Project terminal launch (from agent: project_launch event) ---
   pendingTerminalLaunch: PendingTerminalLaunch | null;
   setPendingTerminalLaunch: (launch: PendingTerminalLaunchInput | null) => void;
@@ -1819,6 +1828,17 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     return true;
   },
   clearPendingWorldAgent: () => set({ pendingWorldAgent: null }),
+
+  pendingDecisionInbox: false,
+  openDecisionInbox: () => {
+    // Same rule as focusWorldAgent: only arm the pending open if the
+    // destination is actually reachable, or the flag sits in the store and
+    // yanks a later, unrelated visit to Home.
+    if (!navigateToTool('dashboard')) return false;
+    set({ pendingDecisionInbox: true });
+    return true;
+  },
+  clearPendingDecisionInbox: () => set({ pendingDecisionInbox: false }),
 
   pendingTerminalLaunch: null,
   setPendingTerminalLaunch: (launch) => set({
