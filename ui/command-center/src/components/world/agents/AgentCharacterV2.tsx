@@ -403,7 +403,10 @@ export function AgentCharacterV2({
     const halo = rig.workHalo;
     if (halo) {
       const want = hud === 'working' && !m.walking ? 0.55 : 0;
-      const next = halo.mat.opacity + (want - halo.mat.opacity) * Math.min(1, dt * 5);
+      // Two-sided clamp (defense in depth, WORLD_VIEW bugfix): guards against
+      // a negative dt driving opacity the wrong way, same reasoning as the
+      // damp() call sites above.
+      const next = halo.mat.opacity + (want - halo.mat.opacity) * THREE.MathUtils.clamp(dt * 5, 0, 1);
       halo.mat.opacity = next;
       halo.group.visible = next > 0.02;
       if (halo.group.visible) {

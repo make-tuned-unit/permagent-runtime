@@ -43,8 +43,12 @@ export function tickAmbience(delta: number): void {
   const target =
     IDLE_LEVEL +
     (MAX_LEVEL - IDLE_LEVEL) * Math.min(working / FULL_BUSY_COUNT, 1);
-  // Exponential smoothing — frame-rate independent, no overshoot.
-  level += (target - level) * Math.min(1, delta * RAMP_RATE);
+  // Exponential smoothing — frame-rate independent, no overshoot. Two-sided
+  // clamp (defense in depth, WORLD_VIEW bugfix): a negative `delta` from a
+  // misbehaving driven clock would otherwise push `level` away from target
+  // instead of toward it. No THREE dependency in this module, so this is a
+  // plain clamp rather than THREE.MathUtils.clamp.
+  level += (target - level) * Math.min(1, Math.max(0, delta * RAMP_RATE));
 }
 
 /** Current ambience level in [1, 1.5]. Safe to call from any useFrame loop. */
