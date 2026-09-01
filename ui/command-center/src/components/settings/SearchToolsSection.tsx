@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, type CSSProperties } from 'react';
 import { FiCheck, FiExternalLink } from 'react-icons/fi';
 import { api } from '../../lib/api';
+import { useCommandCenter } from '../../lib/store';
 import { SEARCH_PROVIDERS, buildSearchExtensionQuery, saveAndEnableSearchProvider, type SearchProvider } from '../../lib/searchProviders';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { font, radius } from '../../styles/tokens';
@@ -65,7 +66,10 @@ export function SearchToolsSection() {
     }));
   }, []);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  // `config_changed` → refetch: the API-key rows and the enabled flags here are
+  // both config entries the agent can write.
+  const configRev = useCommandCenter(s => s.configRev);
+  useEffect(() => { refresh(); }, [refresh, configRev]);
 
   // Resolves `false` on failure — the Button contract's "it failed" signal.
   // This catch turns the throw into a row-level message, so without it a key

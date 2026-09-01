@@ -18,7 +18,7 @@ import { Button, SUCCESS_FLASH_MS } from '../common/Button';
 import { Chip } from '../common/Chip';
 import { JobProgress } from '../common/JobProgress';
 import { useLongRunningJob, pollingRunner, type LongRunningJob } from '../../hooks/useLongRunningJob';
-import { navigateToTool } from '../../lib/store';
+import { navigateToTool, useCommandCenter } from '../../lib/store';
 import { GLOSSARY } from '../../lib/vocabulary';
 import { AGENT_TRIM } from '../world/shared/palette';
 import { PolybotKeys } from './PolybotKeys';
@@ -473,11 +473,19 @@ export function FinanceView() {
   // A scan this UI did not start (launchd, another client) still deserves a
   // faster board; one it did start is already being polled by the job above.
   const scanRunning = Boolean(board?.picker.scanInProgress) && !scanJob.running;
+  // `financeRev` is bumped by `livenessSync` on the daemon's `finance_changed`
+  // frame, which `finance_ledger` emits on every real write — including the
+  // agent's, which is the case the poll served worst. A trade the agent records
+  // mid-conversation used to sit invisible here for up to a minute while the
+  // user watched the tab it happened on. The poll stays as the backstop for
+  // everything the ledger does not own (quotes, and the external Picker
+  // scanner's progress, neither of which emits).
+  const financeRev = useCommandCenter(s => s.financeRev);
   useEffect(() => {
     void load();
     const t = setInterval(() => { void load(); }, scanRunning ? 10_000 : POLL_MS);
     return () => clearInterval(t);
-  }, [load, scanRunning]);
+  }, [load, scanRunning, financeRev]);
 
   // Returns whether the action actually succeeded. The error is still shown in
   // the banner, but the boolean is what lets a Button decide between a success

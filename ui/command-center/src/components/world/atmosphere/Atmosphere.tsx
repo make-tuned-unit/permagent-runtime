@@ -115,7 +115,11 @@ function Lighting() {
       _lastKeyHex = tod.keyColor;
       _keyTarget.set(tod.keyColor);
     }
-    const k = Math.min(1, dt * 0.8);
+    // Two-sided clamp (defense in depth, WORLD_VIEW bugfix): dt is normally
+    // >= 0, but if a caller ever hands this a negative delta (e.g. a driven
+    // clock that briefly regresses), a bare `Math.min(1, dt * 0.8)` would let
+    // a negative factor through and drive `lerp` backward past its target.
+    const k = THREE.MathUtils.clamp(dt * 0.8, 0, 1);
     key.color.lerp(_keyTarget, k);
     key.intensity = THREE.MathUtils.damp(key.intensity, tod.keyIntensity, 0.8, dt);
     fill.intensity = THREE.MathUtils.damp(fill.intensity, tod.fillIntensity, 0.8, dt);
