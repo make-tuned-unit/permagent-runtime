@@ -123,9 +123,7 @@ impl Shape {
                 .as_array()
                 .is_some_and(|a| a.iter().all(serde_json::Value::is_string)),
             Shape::Number => value.as_f64().is_some_and(f64::is_finite),
-            Shape::Enum(options) => value
-                .as_str()
-                .is_some_and(|s| options.iter().any(|o| *o == s)),
+            Shape::Enum(options) => value.as_str().is_some_and(|s| options.contains(&s)),
             Shape::Text => value.is_string(),
             Shape::Fields => value.is_object(),
         };
