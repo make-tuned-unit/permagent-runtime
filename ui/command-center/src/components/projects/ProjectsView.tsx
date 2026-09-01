@@ -13,7 +13,6 @@ import { PERSONAL_ID, CANCELLABLE_STATES, type Project, type BoardColumn, type C
 import { ViewHeader } from '../common/ViewHeader';
 import { StateBlock } from '../common/StateBlock';
 
-const LS_KEY = 'permagent-projects-last-opened';
 
 function isProject(value: unknown): value is Project {
   if (!value || typeof value !== 'object') return false;
@@ -53,7 +52,10 @@ function emitProjectSelected(project: Project, sessionId: string | null = null) 
 export function ProjectsView() {
   const { gradient, colors } = useTheme();
   const [projects, setProjects] = useState<Project[]>([]);
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  // The selection is shared with Grow and Build now (J7), and remembered
+  // across launches by the store rather than by this view.
+  const activeProjectId = useCommandCenter(s => s.currentProjectId);
+  const setActiveProjectId = useCommandCenter(s => s.setCurrentProject);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const pendingProjectNavigation = useCommandCenter(s => s.pendingProjectNavigation);
@@ -106,14 +108,13 @@ export function ProjectsView() {
     if (projectsRev > 0) loadProjects();
   }, [projectsRev, loadProjects]);
 
-  // On first load, restore last-opened project.
+  // The restore is the store's (it reads the remembered id at creation); this
+  // only drops a remembered id the list no longer contains, so a deleted
+  // project cannot leave every surface pointed at nothing.
   useEffect(() => {
-    if (loading || projects.length === 0) return;
-    const saved = localStorage.getItem(LS_KEY);
-    if (saved && projects.some(p => p.id === saved)) {
-      setActiveProjectId(saved);
-    }
-  }, [loading, projects]);
+    if (loading || projects.length === 0 || !activeProjectId) return;
+    if (!projects.some(p => p.id === activeProjectId)) setActiveProjectId(null);
+  }, [loading, projects, activeProjectId, setActiveProjectId]);
 
   // Agent/voice navigation: open a specific project when pendingProjectNavigation
   // is set. The id is resolved daemon-side against the LIVE project list
@@ -132,7 +133,6 @@ export function ProjectsView() {
     const target = projects.find(p => p.id === pendingProjectNavigation);
     if (target) {
       setActiveProjectId(target.id);
-      localStorage.setItem(LS_KEY, target.id);
       emitProjectSelected(target);
       refreshedForPendingRef.current = null;
       setPendingProjectNavigation(null);
@@ -155,16 +155,14 @@ export function ProjectsView() {
 
   const openProject = useCallback((id: string) => {
     setActiveProjectId(id);
-    localStorage.setItem(LS_KEY, id);
     // Emit activity so agent knows which project is now active
     const project = projects.find(p => p.id === id);
     if (project) emitProjectSelected(project);
-  }, [projects]);
+  }, [projects, setActiveProjectId]);
 
   const backToAll = useCallback(() => {
     setActiveProjectId(null);
-    localStorage.removeItem(LS_KEY);
-  }, []);
+  }, [setActiveProjectId]);
 
   const handleStatusChange = useCallback(async (projectId: string, newStatus: string) => {
     try {
@@ -205,10 +203,9 @@ export function ProjectsView() {
 
   if (activeProjectId) {
     const project = projects.find(p => p.id === activeProjectId);
-    if (!project) {
-      setActiveProjectId(null);
-      return null;
-    }
+    // The effect above drops an id the list has lost; until it runs, show the
+    // board rather than setting state during render.
+    if (!project) return null;
     return (
       <ProjectWorkspace
         project={project}

@@ -374,6 +374,20 @@ interface CommandCenterStore {
   projectsRev: number;
   bumpProjects: () => void;
   /**
+   * The one "which project am I looking at" (J7).
+   *
+   * Projects, Grow and Build each tracked their own, so opening a project on
+   * one surface told the other two nothing and "which project is this?" had
+   * three right answers. This is the single selection they all read.
+   *
+   * The explicit escape hatch: **Build's terminal tabs keep their own
+   * `rootPath`**, fixed at tab creation. Changing the current project must
+   * never re-point a shell somebody is working in — it changes what the next
+   * launch will target, not what the running one is doing.
+   */
+  currentProjectId: string | null;
+  setCurrentProject: (id: string | null) => void;
+  /**
    * #629: bumped when `identity_changed` arrives — identity consumers
    * (chat header, world nameplate, settings persona) re-read
    * /api/agent/identity. `refreshIdentity` also updates `agentName` directly.
@@ -730,6 +744,17 @@ const OPEN_EVENT_BY_TOOL: Partial<Record<ToolType, { event: ActivityEventName; s
   finance: { event: 'finance_opened', surface: 'finance' },
 };
 
+/**
+ * Where the shared project selection is remembered across launches. It is the
+ * key ProjectsView already wrote, deliberately: consolidating the three
+ * selections must not cost anyone their last-opened project.
+ */
+export const CURRENT_PROJECT_KEY = 'permagent-projects-last-opened';
+
+function readStoredProject(): string | null {
+  try { return localStorage.getItem(CURRENT_PROJECT_KEY); } catch { return null; }
+}
+
 /** Extract the primary tool type from a workspace layout tree. */
 function primaryToolType(node: LayoutNode): ToolType | null {
   if (node.type === 'panel') return node.tool;
@@ -1019,6 +1044,14 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   bumpPeople: () => set(s => ({ peopleRev: s.peopleRev + 1 })),
   projectsRev: 0,
   bumpProjects: () => set(s => ({ projectsRev: s.projectsRev + 1 })),
+  currentProjectId: readStoredProject(),
+  setCurrentProject: (id) => {
+    try {
+      if (id) localStorage.setItem(CURRENT_PROJECT_KEY, id);
+      else localStorage.removeItem(CURRENT_PROJECT_KEY);
+    } catch { /* no storage — the selection still holds for this session */ }
+    set({ currentProjectId: id });
+  },
   identityRev: 0,
   refreshIdentity: async () => {
     try {

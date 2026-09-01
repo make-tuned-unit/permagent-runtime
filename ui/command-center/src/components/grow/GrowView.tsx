@@ -388,7 +388,11 @@ export function GrowView() {
   const { colors, gradient, reduceMotion } = useTheme();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsState, setProjectsState] = useState<LoadState>('loading');
-  const [activeId, setActiveId] = useState<string | null>(null);
+  // Shared with Projects and Build (J7): opening a project in one of them
+  // points this one at the same project, and vice versa. Grow used to forget
+  // its project on every mount; now it remembers the app's.
+  const activeId = useCommandCenter((st) => st.currentProjectId);
+  const setActiveId = useCommandCenter((st) => st.setCurrentProject);
   const [posts, setPosts] = useState<SocialCard[]>([]);
   const [postsState, setPostsState] = useState<LoadState>('loading');
   const [postsMutationError, setPostsMutationError] = useState<string | null>(null);
@@ -426,7 +430,6 @@ export function GrowView() {
       .then((ps) => {
         const real = ps.filter((p) => p.status !== 'archived');
         setProjects(real);
-        setActiveId((cur) => cur ?? real[0]?.id ?? null);
         setProjectsState('ready');
       })
       .catch(() => setProjectsState('error'));
@@ -522,6 +525,16 @@ export function GrowView() {
 
   const active = projects.find((p) => p.id === activeId) ?? null;
 
+  // Grow needs *a* project to show, and the shared selection starts empty on a
+  // first run. Adopt the first one only when nothing at all is selected — NOT
+  // when the selection simply isn't in this list. Grow hides archived
+  // projects; silently re-pointing the shared selection because of that would
+  // yank the Projects tab off the board the user deliberately opened.
+  useEffect(() => {
+    if (activeId || projects.length === 0) return;
+    setActiveId(projects[0].id);
+  }, [activeId, projects, setActiveId]);
+
   /** Every project change goes through here — the dropdown and the cross-tab
    *  deep link alike, so one of them can never feel different from the other. */
   const switchProject = useCallback((id: string) => {
@@ -540,7 +553,7 @@ export function GrowView() {
       // Release the pin once the new content has had time to lay out.
       swapTimer.current = setTimeout(() => setPinnedHeight(undefined), SWAP_SETTLE_MS);
     }, SWAP_FADE_MS);
-  }, [activeId, reduceMotion]);
+  }, [activeId, reduceMotion, setActiveId]);
 
   useEffect(() => () => clearTimeout(swapTimer.current), []);
 
@@ -690,6 +703,10 @@ export function GrowView() {
             borderRadius: radius.md, padding: '6px 10px', fontSize: textSize.small, fontFamily: font.body,
           }}
         >
+          {/* The shared selection can point at a project Grow doesn't track.
+              An unlisted value would render the switcher blank, which reads as
+              "no project" rather than "not this one". */}
+          {activeId && !active && <option value={activeId} disabled>Not tracked here</option>}
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
           </>}
@@ -817,9 +834,14 @@ export function GrowView() {
           </section>
           )}
         </div>
-      ) : (
+      ) : projects.length === 0 ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: colors.textDim, fontSize: textSize.small }}>
           Create a project in the Projects tab, then grow it here.
+        </div>
+      ) : (
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: colors.textDim, fontSize: textSize.small, textAlign: 'center', padding: '0 24px', lineHeight: 1.6 }}>
+          The project you have open isn't tracked here — Grow skips archived
+          projects. Pick one from the switcher above.
         </div>
       )}
     </div>

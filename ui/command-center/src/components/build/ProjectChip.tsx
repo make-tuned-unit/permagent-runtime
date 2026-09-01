@@ -22,6 +22,15 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
   const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
+  // Build's half of the one shared project selection (J7). The chip now says
+  // which project the app is on rather than the generic word "Projects", and
+  // launching from it moves that selection.
+  //
+  // THE ESCAPE HATCH, stated: terminal tabs keep their own `rootPath`, fixed
+  // when the tab was created. Changing the current project changes what the
+  // NEXT launch targets — it never re-points a shell somebody is working in.
+  const currentProjectId = useCommandCenter(s => s.currentProjectId);
+  const setCurrentProject = useCommandCenter(s => s.setCurrentProject);
 
   // Hide native browser webview while dropdown is open (z-index fix)
   useEffect(() => {
@@ -48,6 +57,7 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
 
   const handleLaunch = (project: Project, agent: string) => {
     touch(project.id);
+    setCurrentProject(project.id);
     onLaunch(project, agent);
     setOpen(false);
   };
@@ -55,9 +65,12 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
   const handleVisit = (project: Project) => {
     if (!project.siteUrl) return;
     touch(project.id);
+    setCurrentProject(project.id);
     onVisitSite(project.siteUrl);
     setOpen(false);
   };
+
+  const current = projects.find(p => p.id === currentProjectId) ?? null;
 
   // This chip is the only way to launch a coding agent against a project, so
   // it is never removed: a daemon failure, an empty list and a load in flight
@@ -85,7 +98,9 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
         } as CSSProperties}
       >
         <FiFolder size={10} />
-        Projects
+        <span style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {current ? current.name : 'Projects'}
+        </span>
         <FiChevronDown size={8} />
       </Button>
 
@@ -167,6 +182,7 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
             <ProjectRow
               key={project.id}
               project={project}
+              isCurrent={project.id === currentProjectId}
               onLaunch={handleLaunch}
               onVisit={handleVisit}
             />
@@ -178,13 +194,17 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
 }
 
 function ProjectRow({
-project, onLaunch, onVisit }: {
+project, isCurrent, onLaunch, onVisit }: {
   project: Project;
+  /** The app's current project — opened here, in Projects, or in Grow. */
+  isCurrent: boolean;
   onLaunch: (p: Project, agent: string) => void;
   onVisit: (p: Project) => void;
 }) {
   const { colors } = useTheme();
-  const [expanded, setExpanded] = useState(false);
+  // The one the app is already on opens ready to launch: it is the row the
+  // user came here for.
+  const [expanded, setExpanded] = useState(isCurrent);
 
   return (
     <div style={{ padding: '0 4px' }}>
@@ -214,6 +234,14 @@ project, onLaunch, onVisit }: {
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {project.name}
         </span>
+        {isCurrent && (
+          <span
+            data-testid="project-chip-current"
+            style={{ fontSize: textSize.micro, fontFamily: font.mono, color: colors.cyan, flexShrink: 0 }}
+          >
+            current
+          </span>
+        )}
         <FiChevronDown
           size={8} color={colors.textDim}
           style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}
