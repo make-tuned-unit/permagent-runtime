@@ -28,6 +28,13 @@ pub struct ProjectDocument {
 }
 
 /// Insert a new project-document row. Returns `uploaded_at`.
+///
+/// The single writer both the multipart upload route and the inbox `project`
+/// route (`save_project_document`, shared by both) go through, so this is
+/// where `project_changed(project_id, "documents")` belongs (#629 one-writer
+/// rule) — emitting it here, rather than in each HTTP handler, is what makes
+/// EVERY caller announce, including the ones a future caller adds without
+/// remembering to emit anything itself.
 pub async fn insert_document(
     pool: &Pool<Sqlite>,
     id: &str,
@@ -59,7 +66,20 @@ pub async fn insert_document(
             .await
             .map_err(|e| e.to_string())?;
 
+    crate::events::emit(crate::events::project_changed(project_id, "documents"));
+
     Ok(uploaded_at)
+}
+
+/// Count of documents attached to a project — `observe_projects`' cheap
+/// per-project figure (LIST_LIMIT-bounded, so a COUNT beats fetching every
+/// row).
+pub async fn count_documents(pool: &Pool<Sqlite>, project_id: &str) -> Result<i64, String> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM project_documents WHERE project_id = ?")
+        .bind(project_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// List a project's documents, newest first.
@@ -122,6 +142,10 @@ pub async fn delete_document(
             .execute(pool)
             .await
             .map_err(|e| e.to_string())?;
+        // One-writer rule (#629): the delete route used to emit this itself;
+        // it now lives here so any other caller of `delete_document` announces
+        // too, same reasoning as `insert_document` above.
+        crate::events::emit(crate::events::project_changed(project_id, "documents"));
     }
 
     Ok(path)
