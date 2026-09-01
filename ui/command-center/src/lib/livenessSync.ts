@@ -18,6 +18,8 @@
  *   identity_changed  → refreshIdentity()     (agentName + identityRev bump →
  *                                              chat header / nameplate / settings)
  *   session_changed   → loadSessions()        (sessions overlay re-reads)
+ *   config_changed    → bumpConfig()          (open Settings panes refetch)
+ *   finance_changed   → bumpFinance()         (Finance view refetches)
  *
  * Wired into {@link routeGlobalFrame} (hooks/useAppNavigate.ts) — the ONE
  * global /events subscription in the main window — so no surface opens its own
@@ -78,6 +80,17 @@ const REFRESH_BY_TYPE: Record<string, (event: unknown) => void> = {
   },
   identity_changed: () => { void useCommandCenter.getState().refreshIdentity(); },
   session_changed: () => { void useCommandCenter.getState().loadSessions(); },
+  // Emitted by the shared `Config` writer on every real key change — a human's
+  // Settings edit, the CLI's `configure`, and (the reason the frame exists) the
+  // agent's own writes, which no HTTP handler sees. Settings panes read their
+  // keys on mount and never again, so this is what stops a pane from showing a
+  // value that stopped being true while it was open. The frame names the keys
+  // and never their values; the refresh is a plain refetch, so a secret key's
+  // name is all any client needs.
+  config_changed: () => useCommandCenter.getState().bumpConfig(),
+  // Emitted by `finance_ledger`, the single writer behind both the Finance
+  // routes and the agent's finance tools.
+  finance_changed: () => useCommandCenter.getState().bumpFinance(),
 };
 
 /** Coerce one wire field to a finite number, else 0 — this is untrusted wire

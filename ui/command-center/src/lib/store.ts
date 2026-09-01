@@ -364,6 +364,24 @@ interface CommandCenterStore {
   projectsRev: number;
   bumpProjects: () => void;
   /**
+   * Monotonic revision bumped when a `config_changed` event arrives on
+   * /events. Every Settings pane reads its config on mount and never again, so
+   * before this a key changed by the agent — or on another device — left the
+   * pane showing a value that was no longer true, with nothing to correct it
+   * short of navigating away and back. Panes add this to their load effect's
+   * deps; that is the whole subscription.
+   */
+  configRev: number;
+  bumpConfig: () => void;
+  /**
+   * Monotonic revision bumped when a `finance_changed` event arrives on
+   * /events. The Finance view polls `/api/finance` once a minute; this makes an
+   * agent's trade record or watchlist edit land immediately instead of up to
+   * 60s later.
+   */
+  financeRev: number;
+  bumpFinance: () => void;
+  /**
    * #629: bumped when `identity_changed` arrives — identity consumers
    * (chat header, world nameplate, settings persona) re-read
    * /api/agent/identity. `refreshIdentity` also updates `agentName` directly.
@@ -983,6 +1001,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   bumpPeople: () => set(s => ({ peopleRev: s.peopleRev + 1 })),
   projectsRev: 0,
   bumpProjects: () => set(s => ({ projectsRev: s.projectsRev + 1 })),
+  configRev: 0,
+  bumpConfig: () => set(s => ({ configRev: s.configRev + 1 })),
+  financeRev: 0,
+  bumpFinance: () => set(s => ({ financeRev: s.financeRev + 1 })),
   identityRev: 0,
   refreshIdentity: async () => {
     try {

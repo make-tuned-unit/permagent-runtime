@@ -364,6 +364,11 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
   // below write YAML, which the env silently wins over.
   const [effectiveTrust, setEffectiveTrust] = useState<string | null>(null);
   const [trustError, setTrustError] = useState<string | null>(null);
+  // `configRev` is the /events subscription: the daemon emits `config_changed`
+  // from the shared `Config` writer, so a GOOSE_MODE change made by the agent,
+  // the CLI, or another device re-reads here instead of leaving this pane
+  // showing a mode that is no longer in force.
+  const configRev = useCommandCenter(s => s.configRev);
   useEffect(() => {
     api.getConfig().then(cfg => {
       const mode = (cfg.config as Record<string, unknown>)?.GOOSE_MODE;
@@ -376,7 +381,7 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
       const eff = cfg.effective_goose_mode;
       setEffectiveTrust(typeof eff === 'string' && eff !== '' ? eff : null);
     }).catch(() => setTrust('auto'));
-  }, []);
+  }, [configRev]);
   const saveTrust = (mode: string) => {
     // Defense in depth: the hanging modes are also disabled in the UI below, but
     // never write one from a fresh selection even if a click slips through.
@@ -492,6 +497,11 @@ function ToolsPanel({ goto }: PanelProps) {
   const { colors } = useThemeHook();
   const [extensions, setExtensions] = useState<ToolExtension[]>([]);
   const [loading, setLoading] = useState(true);
+  // Re-read on `config_changed`. The agent's `manage_extensions` writes the
+  // same `extensions` config entry this panel renders, and used not to write
+  // it at all — this pane showed stale enabled/disabled state for the whole
+  // session it was open.
+  const configRev = useCommandCenter(s => s.configRev);
 
   useEffect(() => {
     api.getExtensions()
@@ -499,7 +509,7 @@ function ToolsPanel({ goto }: PanelProps) {
       // the same class of crash this panel just had.
       .then(r => { setExtensions(Array.isArray(r?.extensions) ? r.extensions : []); setLoading(false); })
       .catch(() => setLoading(false));
-  }, []);
+  }, [configRev]);
 
   const enabledCount = extensions.filter(e => e.enabled).length;
   // stdio servers that declare required env vars are the ones with API keys —
@@ -767,6 +777,10 @@ export function ModelsPanel({ goto }: PanelProps) {
   // Read-only: the model/provider switch itself lives in the provider modal on
   // API keys, and the per-role roster lives on Settings → Agents.
   const [primary, setPrimary] = useState<{ model: string | null; provider: string | null; mode: string | null } | null>(null);
+  // Every read effect in this panel takes `configRev` so a key changed
+  // anywhere else — agent, CLI, second device — re-reads here. The one
+  // deliberate exception is the Watcher list below; see the note there.
+  const configRev = useCommandCenter(s => s.configRev);
   useEffect(() => {
     let active = true;
     api.getConfig().then(cfg => {
@@ -779,7 +793,7 @@ export function ModelsPanel({ goto }: PanelProps) {
       });
     }).catch(() => {});
     return () => { active = false; };
-  }, []);
+  }, [configRev]);
 
   // Voice model (crates/goose/src/config/voice_model.rs) — which model
   // answers a SPOKEN turn; chat is unaffected. Both `voice_provider` and
@@ -860,7 +874,7 @@ export function ModelsPanel({ goto }: PanelProps) {
       setHarnessCfg({ provider: asConfigString(hp), model: asConfigString(hm) });
     }).catch(() => {});
     return () => { active = false; };
-  }, []);
+  }, [configRev]);
 
   // Strix — the security sweep loop (crate::strix). The daemon re-reads
   // `strix_enabled` every tick, so a flip here takes effect at the next tick
@@ -873,7 +887,7 @@ export function ModelsPanel({ goto }: PanelProps) {
       .then(r => { if (active) setStrix(r === true); })
       .catch(() => { if (active) setStrix(false); });
     return () => { active = false; };
-  }, []);
+  }, [configRev]);
   const saveStrix = (v: boolean) => {
     const prev = strix;
     setStrix(v);
@@ -902,7 +916,7 @@ export function ModelsPanel({ goto }: PanelProps) {
       })
       .catch(() => { /* unset — scans locally */ });
     return () => { active = false; };
-  }, []);
+  }, [configRev]);
   const saveStrixHours = (v: number) => {
     const prev = strixHours;
     setStrixHours(v);
@@ -928,6 +942,12 @@ export function ModelsPanel({ goto }: PanelProps) {
     api.readConfig('watcher_muted_subjects')
       .then(r => { if (active && Array.isArray(r)) setWatcherMuted((r as string[]).join(', ')); })
       .catch(() => { /* unset — nothing muted */ });
+    // Deliberately NOT keyed on `configRev`, unlike every other read in this
+    // panel: these two states ARE the text inputs' `value`, so a refetch
+    // triggered by an unrelated key changing would overwrite whatever the user
+    // was halfway through typing. Losing a draft to a background refresh is a
+    // worse bug than the staleness it would fix, and these fields save on blur
+    // anyway.
     return () => { active = false; };
   }, []);
   const saveWatcherList = (key: 'watcher_topics' | 'watcher_muted_subjects', raw: string) => {

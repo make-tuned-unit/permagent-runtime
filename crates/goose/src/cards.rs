@@ -13,6 +13,24 @@ use uuid::Uuid;
 use crate::goal_transition::PROTECTED_GOAL_METADATA_KEYS;
 use crate::projects::PERSONAL_PROJECT_ID;
 
+/// Announce that a project's Kanban board changed.
+///
+/// The frame is `project_changed(project_id, "cards")` rather than a new
+/// `card_changed` type, because that is what the board actually listens to:
+/// `livenessSync.ts` maps `project_changed` → `bumpProjects()`, and
+/// `ProjectKanban` refetches `/columns` + `/cards` off `projectsRev`. Inventing
+/// a card frame would mean a second wire type, a second store counter, and a
+/// second subscription for a surface that already refetches the whole board in
+/// one shot — an emit nobody listens to is worse than no emit, and a listener
+/// that duplicates an existing one is only marginally better.
+///
+/// Emitted here, on the shared writer, so a card the agent creates or moves
+/// announces itself exactly like one dragged in the UI. Before this, neither
+/// path emitted at all: card writes were invisible to every other open client.
+fn announce_board_change(project_id: &str) {
+    crate::events::emit(crate::events::project_changed(project_id, "cards"));
+}
+
 /// Check a metadata replacement against the protected-key set for goal cards.
 /// Any change (add / remove / modify) to a protected key is refused. The
 /// `dispatch_evidence` key is deliberately NOT protected (Lane L2 appends\n/// its `verdict` sub-object there, #466).
@@ -533,9 +551,11 @@ pub async fn create_column(
     .await
     .map_err(|e| e.to_string())?;
 
-    get_column(pool, &id)
+    let column = get_column(pool, &id)
         .await?
-        .ok_or_else(|| "Failed to read created column".to_string())
+        .ok_or_else(|| "Failed to read created column".to_string())?;
+    announce_board_change(&column.project_id);
+    Ok(column)
 }
 
 #[derive(Debug, Default)]
@@ -550,9 +570,9 @@ pub async fn update_column(
     input: UpdateColumn,
 ) -> Result<Option<BoardColumn>, String> {
     let existing = get_column(pool, column_id).await?;
-    if existing.is_none() {
+    let Some(existing) = existing else {
         return Ok(None);
-    }
+    };
 
     if let Some(ref name) = input.name {
         sqlx::query("UPDATE board_columns SET name = ? WHERE id = ?")
@@ -572,10 +592,17 @@ pub async fn update_column(
             .map_err(|e| e.to_string())?;
     }
 
-    get_column(pool, column_id).await
+    let updated = get_column(pool, column_id).await?;
+    announce_board_change(&existing.project_id);
+    Ok(updated)
 }
 
 pub async fn delete_column(pool: &Pool<Sqlite>, column_id: &str) -> Result<bool, String> {
+    let project_id = match get_column(pool, column_id).await? {
+        Some(c) => c.project_id,
+        None => return Ok(false),
+    };
+
     // Refuse if cards are present
     let card_count: i32 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM cards WHERE column_id = ? AND archived_at IS NULL",
@@ -598,7 +625,11 @@ pub async fn delete_column(pool: &Pool<Sqlite>, column_id: &str) -> Result<bool,
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(result.rows_affected() > 0)
+    let deleted = result.rows_affected() > 0;
+    if deleted {
+        announce_board_change(&project_id);
+    }
+    Ok(deleted)
 }
 
 // ── Card operations ────────────────────────────────────────────────────────
@@ -777,6 +808,9 @@ pub async fn create_card(pool: &Pool<Sqlite>, input: CreateCard) -> Result<Card,
         ));
     }
 
+    // Every card, goal or not: the Kanban board is what changed, and
+    // `goal_state_changed` only reaches the goal surfaces.
+    announce_board_change(&card.project_id);
     Ok(card)
 }
 
@@ -1406,6 +1440,7 @@ pub async fn update_card(
     if existing.is_none() {
         return Ok(None);
     }
+    let project_id = existing.as_ref().map(|c| c.project_id.clone());
 
     if let Some(ref title) = input.title {
         sqlx::query("UPDATE cards SET title = ? WHERE id = ?")
@@ -1480,22 +1515,30 @@ pub async fn update_card(
             .map_err(|e| e.to_string())?;
     }
 
-    get_card(pool, card_id).await
+    let updated = get_card(pool, card_id).await?;
+    if let Some(project_id) = project_id {
+        announce_board_change(&project_id);
+    }
+    Ok(updated)
 }
 
 pub async fn delete_card(pool: &Pool<Sqlite>, card_id: &str) -> Result<bool, String> {
     // Goal deletion is a Tier-2 action (user_data_deletion): it requires a
     // risk_gate decision approved by the user, executed via
     // goal_transition::delete_goal_checked.
-    if let Some(card) = get_card(pool, card_id).await? {
-        if card.card_type == "goal" {
-            return Err(
-                "Goal cards cannot be deleted directly. Goal deletion is Tier 2 \
-                 (user_data_deletion): file a risk_gate decision and have the user approve it."
-                    .to_string(),
-            );
+    let project_id = match get_card(pool, card_id).await? {
+        Some(card) => {
+            if card.card_type == "goal" {
+                return Err(
+                    "Goal cards cannot be deleted directly. Goal deletion is Tier 2 \
+                     (user_data_deletion): file a risk_gate decision and have the user approve it."
+                        .to_string(),
+                );
+            }
+            card.project_id
         }
-    }
+        None => return Ok(false),
+    };
 
     let result = sqlx::query("DELETE FROM cards WHERE id = ?")
         .bind(card_id)
@@ -1507,11 +1550,13 @@ pub async fn delete_card(pool: &Pool<Sqlite>, card_id: &str) -> Result<bool, Str
     // points at it is answered. Without this, Henry keeps raising a decision
     // that no longer exists. Best-effort — deleting a card must not fail
     // because a briefing could not be cleared.
-    if result.rows_affected() > 0 {
+    let deleted = result.rows_affected() > 0;
+    if deleted {
         crate::briefings::resolve_for_ref(pool, "card", card_id).await;
+        announce_board_change(&project_id);
     }
 
-    Ok(result.rows_affected() > 0)
+    Ok(deleted)
 }
 
 /// Move a card to a different column (and optionally reposition).
@@ -1563,7 +1608,9 @@ pub async fn move_card(
         .await
         .map_err(|e| e.to_string())?;
 
-    get_card(pool, card_id).await
+    let moved = get_card(pool, card_id).await?;
+    announce_board_change(&card.project_id);
+    Ok(moved)
 }
 
 /// Batch reorder: accepts a list of (card_id, column_id, position) tuples.
@@ -1575,6 +1622,7 @@ pub async fn reorder_cards(
     moves: &[(String, String, i32)],
 ) -> Result<(), String> {
     // Validate before applying anything.
+    let mut projects: Vec<String> = Vec::new();
     for (card_id, column_id, _position) in moves {
         if let Some(card) = get_card(pool, card_id).await? {
             if card.card_type == "goal" && column_id != &card.column_id {
@@ -1582,6 +1630,9 @@ pub async fn reorder_cards(
                     "Reorder batch refused: entry for card '{}' would change a goal's column. {}",
                     card_id, GOAL_MOVE_REFUSAL
                 ));
+            }
+            if !projects.contains(&card.project_id) {
+                projects.push(card.project_id.clone());
             }
         }
     }
@@ -1594,6 +1645,12 @@ pub async fn reorder_cards(
             .execute(pool)
             .await
             .map_err(|e| e.to_string())?;
+    }
+    // One frame per board touched, not one per card: the listener refetches a
+    // whole board either way, and a 200-card reorder must not become 200 frames
+    // in a 1000-frame replay buffer.
+    for project_id in &projects {
+        announce_board_change(project_id);
     }
     Ok(())
 }

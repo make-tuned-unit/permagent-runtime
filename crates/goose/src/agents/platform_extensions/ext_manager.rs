@@ -19,6 +19,75 @@ use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "Extension Manager";
 
+/// The durable half of `manage_extensions`: write the enabled flag to the SAME
+/// config entry the Settings UI writes through `POST /config/extensions`, then
+/// report what actually happened.
+///
+/// Why this exists: `manage_extensions` used to mutate only the live in-session
+/// `ExtensionManager`. The tool reported success, the tools really did appear
+/// or vanish for the rest of that conversation, and then the change evaporated
+/// at the next daemon restart — while the Settings pane, which reads config.yaml,
+/// showed the old state the entire time. Live effect without persistence is the
+/// same class of bug as a save that silently fails.
+///
+/// It writes through `config::set_extension_enabled` rather than looping back
+/// over loopback HTTP the way `save_pronunciation` does. That tool has no choice
+/// — the voice lexicon lives in the daemon crate, unreachable from here —
+/// whereas the extension registry is `crate::config`, one call away. Going
+/// direct removes a bearer-token read, a network hop, and a 401 failure mode,
+/// and lands on the identical writer the route calls, which is what "one source
+/// of truth" was asking for. That write emits `config_changed`, which is what
+/// refreshes an open Settings pane.
+///
+/// Split out from `manage_extensions_impl` so this half is testable without
+/// standing up a provider and a session manager to get an `ExtensionManager`.
+fn persist_and_report(
+    action: ManageExtensionAction,
+    extension_name: &str,
+    key: &str,
+) -> Vec<Content> {
+    let enabled = action == ManageExtensionAction::Enable;
+    let (verb, past) = if enabled {
+        ("enabled", "installed")
+    } else {
+        ("disabled", "disabled")
+    };
+    let persisted = crate::config::set_extension_enabled(key, enabled);
+    // Say plainly whether the change outlives the session. An extension present
+    // at runtime but absent from config.yaml (a recipe-supplied one, say) can be
+    // toggled live and cannot be persisted; reporting that as a plain success is
+    // what teaches the model to promise durability it did not get.
+    let note = if persisted {
+        format!(
+            " and saved to your configuration — it will still be {verb} after a restart, and \
+             the Settings pane now shows it that way."
+        )
+    } else {
+        format!(
+            " for THIS SESSION ONLY. '{extension_name}' has no entry in config.yaml, so the \
+             change could not be saved and will be gone after a restart. Tell the user that \
+             rather than reporting it as saved."
+        )
+    };
+    vec![Content::text(format!(
+        "The extension '{extension_name}' has been {past}{note}"
+    ))]
+}
+
+/// Test seam for [`persist_and_report`] — the durable half of
+/// `manage_extensions`, reachable without standing up an `ExtensionManager`
+/// (which needs a provider and a session manager). Exercises the production
+/// function, not a copy of it.
+#[doc(hidden)]
+pub fn persist_and_report_for_tests(enable: bool, extension_name: &str, key: &str) -> Vec<Content> {
+    let action = if enable {
+        ManageExtensionAction::Enable
+    } else {
+        ManageExtensionAction::Disable
+    };
+    persist_and_report(action, extension_name, key)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ExtensionManagerToolError {
     #[error("Unknown tool: {tool_name}")]
@@ -163,16 +232,19 @@ impl ExtensionManagerClient {
             })?;
 
         if action == ManageExtensionAction::Disable {
-            return extension_manager
+            // Live effect first, durable second: if the in-session removal
+            // fails there is nothing to persist, and a config entry saying
+            // "disabled" for tools that are still loaded would be the same lie
+            // in the other direction.
+            extension_manager
                 .remove_extension(&extension_name)
                 .await
-                .map(|_| {
-                    vec![Content::text(format!(
-                        "The extension '{}' has been disabled successfully",
-                        extension_name
-                    ))]
-                })
-                .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None));
+                .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+            return Ok(persist_and_report(
+                ManageExtensionAction::Disable,
+                &extension_name,
+                &crate::config::name_to_key(&extension_name),
+            ));
         }
 
         let config = match get_extension_by_name(&extension_name) {
@@ -188,17 +260,17 @@ impl ExtensionManagerClient {
                 ));
             }
         };
+        let key = config.key();
 
         extension_manager
             .add_extension(config, None, None, None)
             .await
-            .map(|_| {
-                vec![Content::text(format!(
-                    "The extension '{}' has been installed successfully",
-                    extension_name
-                ))]
-            })
-            .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))
+            .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+        Ok(persist_and_report(
+            ManageExtensionAction::Enable,
+            &extension_name,
+            &key,
+        ))
     }
 
     async fn handle_list_resources(

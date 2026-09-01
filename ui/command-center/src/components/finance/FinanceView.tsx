@@ -13,7 +13,7 @@ import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { api, apiFetch, uploadFinanceStatement } from '../../lib/api';
 import { ViewHeader } from '../common/ViewHeader';
-import { navigateToTool } from '../../lib/store';
+import { navigateToTool, useCommandCenter } from '../../lib/store';
 import { AGENT_TRIM } from '../world/shared/palette';
 import { PolybotKeys } from './PolybotKeys';
 import { FundamentalsKey } from './FundamentalsKey';
@@ -399,11 +399,19 @@ export function FinanceView() {
   }, []);
 
   const scanRunning = Boolean(board?.picker.scanInProgress);
+  // `financeRev` is bumped by `livenessSync` on the daemon's `finance_changed`
+  // frame, which `finance_ledger` emits on every real write — including the
+  // agent's, which is the case the poll served worst. A trade the agent records
+  // mid-conversation used to sit invisible here for up to a minute while the
+  // user watched the tab it happened on. The poll stays as the backstop for
+  // everything the ledger does not own (quotes, and the external Picker
+  // scanner's progress, neither of which emits).
+  const financeRev = useCommandCenter(s => s.financeRev);
   useEffect(() => {
     void load();
     const t = setInterval(() => { void load(); }, scanRunning ? 10_000 : POLL_MS);
     return () => clearInterval(t);
-  }, [load, scanRunning]);
+  }, [load, scanRunning, financeRev]);
 
   const mutate = useCallback(async (fn: () => Promise<unknown>) => {
     setBusy(true);
