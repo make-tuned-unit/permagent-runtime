@@ -8,7 +8,7 @@ import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
 import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse, type IncidentView } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
-import { font, radius, setDensity as setDensityFn, setIdleAnim, setMobiusGlow, setReduceMotion as setReduceMotionFn, setShowHeroMobius, setTheme as setThemeFn, type IdleAnim, type ThemePref, type UIDensity, textSize } from '../../styles/tokens';
+import { font, radius, setDensity as setDensityFn, setIdleAnim, setMobiusGlow, setReduceMotion as setReduceMotionFn, setTheme as setThemeFn, type IdleAnim, type ThemePref, type UIDensity, textSize } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import {
@@ -1154,7 +1154,6 @@ function AppearancePanel() {
         <Row label="Animation when idle">
           <div style={{ display: 'flex', gap: 8 }}>{animOptions.map((a, i) => <Chip key={a} on={prefs.idleAnim === a} onClick={() => setIdleAnim(a)}>{animLabels[i]}</Chip>)}</div>
         </Row>
-        <Row label="Show in dashboard hero"><Toggle on={prefs.showHeroMobius} onChange={v => setShowHeroMobius(v)} /></Row>
       </Section>
       <Section title="Density">
         <Row label="UI density"><div style={{ display: 'flex', gap: 8 }}>{densityOptions.map((d, i) => <Chip key={d} on={prefs.density === d} onClick={() => setDensityFn(d)}>{densityLabels[i]}</Chip>)}</div></Row>
