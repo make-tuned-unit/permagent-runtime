@@ -80,11 +80,11 @@ FILTER="${1:-}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   # Only macOS needs the signing dance; elsewhere plain cargo works.
-  exec cargo test -p permagent-daemon "${CARGO_PROFILE_FLAG[@]}" --lib --tests ${FILTER:+"$FILTER"}
+  exec cargo test -p permagent-daemon ${CARGO_PROFILE_FLAG[@]+"${CARGO_PROFILE_FLAG[@]}"} --lib --tests ${FILTER:+"$FILTER"}
 fi
 
 echo "[test-daemon] building test binary ($PROFILE)…"
-cargo build -p permagent-daemon "${CARGO_PROFILE_FLAG[@]}" --tests
+cargo build -p permagent-daemon ${CARGO_PROFILE_FLAG[@]+"${CARGO_PROFILE_FLAG[@]}"} --tests
 
 echo "[test-daemon] ad-hoc signing dylibs in $PROFILE_DIR"
 shopt -s nullglob
@@ -103,4 +103,4 @@ echo "[test-daemon] signed $signed dylib(s)"
 export DYLD_LIBRARY_PATH="$PROFILE_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 
 echo "[test-daemon] running tests in $PROFILE${FILTER:+ (filter: $FILTER)}"
-exec cargo test -p permagent-daemon "${CARGO_PROFILE_FLAG[@]}" --lib --tests ${FILTER:+"$FILTER"}
+exec cargo test -p permagent-daemon ${CARGO_PROFILE_FLAG[@]+"${CARGO_PROFILE_FLAG[@]}"} --lib --tests ${FILTER:+"$FILTER"}
