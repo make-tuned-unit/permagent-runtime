@@ -2041,6 +2041,7 @@ async fn execute_job_inner(
                 agent
                     .set_persona_block_override(worker.system_prompt_block(), worker.display_name())
                     .await;
+                agent.set_worker_key(Some(worker_key.clone())).await;
                 resolved = true;
                 tracing::info!(
                     target: "permagentd::brain",

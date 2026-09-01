@@ -52,6 +52,7 @@ pub mod packs;
 pub mod people;
 pub mod projects;
 pub mod prompts;
+pub mod public_apis;
 pub mod reader;
 pub mod recipe;
 pub mod recipe_utils;
@@ -178,6 +179,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(sampling::routes(state.clone()))
         .merge(features::routes())
         .merge(finance::routes(state.clone()))
+        .merge(public_apis::routes())
         .merge(dev_roots::routes())
         .merge(onboarding::routes())
         // Built-in browser bookmarks + saved tab sets (#790): small JSON state.

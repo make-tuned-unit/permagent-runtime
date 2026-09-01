@@ -22,6 +22,7 @@ const isChatWindow =
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
 import { VoiceVisualizer } from './VoiceVisualizer';
+import { handsFreeStatusLabel } from './voiceStatus';
 
 const STATE_LABELS: Record<VoiceState, string> = {
   idle: '',
@@ -74,6 +75,10 @@ export function VoiceButton() {
   const state = (engine?.state ?? remote?.state ?? 'idle') as VoiceState;
   const error = engine?.error ?? null;
   const handsFree = engine?.handsFree ?? (isChatWindow && remote !== null);
+  const gatedWakePhrase =
+    engine?.wakeWord.active && engine.wakeWord.gated
+      ? engine.wakeWord.phrase
+      : null;
   const noop = () => {};
   const activate = engine?.activate ?? (isChatWindow ? requestVoiceStart : noop);
   const deactivate = engine?.deactivate ?? (isChatWindow ? requestVoiceEnd : noop);
@@ -237,7 +242,7 @@ export function VoiceButton() {
             <VoiceVisualizer getAnalyser={getAnalyser} active />
           ) : (
             <span style={{ fontSize: 10, color: colors.cyan, whiteSpace: 'nowrap' }}>
-              {state === 'recording' ? '● listening' : state === 'processing' ? 'thinking…' : '◉ hands-free'}
+              {handsFreeStatusLabel(state, gatedWakePhrase)}
             </span>
           )}
         </button>

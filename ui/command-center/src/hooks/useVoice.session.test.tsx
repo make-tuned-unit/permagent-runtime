@@ -170,6 +170,19 @@ afterEach(() => {
 });
 
 describe('useVoice — session rebinding', () => {
+  it('sends exactly one wake_start while hands-free activation awaits acknowledgement', async () => {
+    render('session-A');
+    act(() => { void hook.current!.setHandsFree(true); });
+    await flush();
+
+    const ws = MockWebSocket.instances[0];
+    act(() => ws.serverReady());
+    await flush();
+
+    expect(ws.jsonSent().filter(m => m.type === 'wake_start')).toHaveLength(1);
+    expect(hook.current!.handsFree).toBe(true);
+  });
+
   it("rebinds the socket in 'ready' state: old socket closed, new URL carries the new session id (the broken case)", async () => {
     const ws1 = await activateTo('session-A');
     expect(ws1.url).toContain('session_id=session-A');

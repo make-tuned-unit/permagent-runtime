@@ -599,6 +599,31 @@ mod tests {
     }
 
     #[test]
+    fn test_qwen38_split_json_deserializes() {
+        let json = include_str!("../providers/declarative/qwen38_split.json");
+        let config: DeclarativeProviderConfig =
+            serde_json::from_str(json).expect("qwen38_split.json should parse");
+        assert_eq!(config.name, "qwen38_split");
+        assert_eq!(config.display_name, "Qwen3.8-27B (split)");
+        assert!(matches!(config.engine, ProviderEngine::OpenAI));
+        assert_eq!(config.api_key_env, "");
+        assert!(!config.requires_auth);
+        assert!(config.skip_canonical_filtering);
+        assert_eq!(config.supports_streaming, Some(true));
+        assert_eq!(config.base_url, "${QWEN38_SPLIT_HOST}/v1/chat/completions");
+        assert_eq!(config.models.len(), 1);
+        assert_eq!(config.models[0].name, "qwen3.8-27b");
+        assert_eq!(config.models[0].context_limit, 4096);
+
+        let env_vars = config.env_vars.as_ref().expect("env_vars should be set");
+        assert_eq!(env_vars[0].name, "QWEN38_SPLIT_HOST");
+        assert_eq!(
+            env_vars[0].default,
+            Some("http://127.0.0.1:8081".to_string())
+        );
+    }
+
+    #[test]
     fn test_existing_json_files_still_deserialize_without_new_fields() {
         let json = include_str!("../providers/declarative/groq.json");
         let config: DeclarativeProviderConfig =

@@ -500,6 +500,14 @@ mod tests {
     /// off. (Before 2026-08-24 this test used a "Bad request (400)" message;
     /// that case is now classified permanent, which is the point of the fix.)
     #[test]
+    fn stream_decode_is_retried_as_a_network_error() {
+        let config = RetryConfig::default();
+        let error = ProviderError::stream_decode("error decoding response body");
+        assert!(should_retry(&error, &config));
+        assert!(!error.is_permanent());
+    }
+
+    #[test]
     fn default_config_retries_unclassified_request_failed() {
         let config = RetryConfig::default();
         let error = ProviderError::RequestFailed("Request failed with status 502".into());

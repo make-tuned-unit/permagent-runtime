@@ -251,10 +251,20 @@ impl Agent {
         }
 
         // Prepare system prompt
-        let extensions_info = self
+        let worker_key = {
+            let pm = self.prompt_manager.lock().await;
+            pm.worker_key().map(str::to_owned)
+        };
+        let mut extensions_info = self
             .extension_manager
             .get_extensions_info(working_dir)
             .await;
+        for ext in &mut extensions_info {
+            if crate::public_apis::is_public_apis_extension(&ext.name) {
+                ext.instructions =
+                    crate::public_apis::instructions_for_agent(worker_key.as_deref());
+            }
+        }
 
         // The self-knowledge capability inventory is scoped to this list only
         // for a session that DECLARED an explicit extension set — recipe/CLI
@@ -809,7 +819,11 @@ impl Agent {
 
 fn is_local_provider(provider: &str) -> bool {
     let provider = provider.to_ascii_lowercase();
-    provider == "local" || provider.contains("ollama")
+    provider == "local"
+        || provider.contains("ollama")
+        || provider == "lmstudio"
+        || provider == "llama_swap"
+        || provider == "qwen38_split"
 }
 
 /// Check whether a tool should be callable by an app based on MCP Apps visibility metadata.
@@ -916,6 +930,7 @@ mod tests {
         assert!(is_local_provider("local"));
         assert!(is_local_provider("ollama"));
         assert!(is_local_provider("remote-ollama"));
+        assert!(is_local_provider("qwen38_split"));
         assert!(!is_local_provider("anthropic"));
     }
 

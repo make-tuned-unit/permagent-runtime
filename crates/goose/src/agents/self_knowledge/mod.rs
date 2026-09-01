@@ -2207,7 +2207,8 @@ mod tests {
             analyze, app_conductor, app_perception, apps, browser, chatrecall, council, dashboard,
             desktop, developer, ext_manager, file_to_project, finance, forecaster, inbox_tools,
             listen, model_manager, orchestrator, people, project_manager, pronunciation,
-            recipe_author, retrospect, skills, storage_health, summarize, summon, todo,
+            public_apis, recipe_author, retrospect, skills, storage_health, summarize, summon,
+            todo,
         };
 
         let mut project_manager_tools = project_manager::ProjectManagerClient::get_tools();
@@ -2227,6 +2228,7 @@ mod tests {
         });
         project_manager_tools.extend(review_gated_tools);
 
+        #[cfg_attr(not(feature = "code-mode"), allow(unused_mut))]
         let mut inventories = vec![
             (analyze::EXTENSION_NAME, analyze::AnalyzeClient::get_tools()),
             (
@@ -2294,6 +2296,10 @@ mod tests {
             (
                 pronunciation::EXTENSION_NAME,
                 pronunciation::PronunciationClient::get_tools(),
+            ),
+            (
+                public_apis::EXTENSION_NAME,
+                public_apis::PublicApisClient::get_tools(),
             ),
             (
                 recipe_author::EXTENSION_NAME,

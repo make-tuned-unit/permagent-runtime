@@ -44,7 +44,7 @@ final class DictationRecorder: NSObject, ObservableObject, AVAudioRecorderDelega
 
     func start() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .default)
+        try session.setCategory(.record, mode: .spokenAudio)
         try session.setActive(true)
 
         // Application Support, NOT `FileManager.temporaryDirectory`. iOS is

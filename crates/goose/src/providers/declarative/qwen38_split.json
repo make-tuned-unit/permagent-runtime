@@ -1,0 +1,31 @@
+{
+  "name": "qwen38_split",
+  "engine": "openai",
+  "display_name": "Qwen3.8-27B (split)",
+  "description": "Local two-machine llama-server split of Qwen3.8-27B over an OpenAI-compatible API. Same endpoint the Librarian uses (http://127.0.0.1:8081). Start it with ~/.local/llama/qwen38-split.sh. Context is 4096 tokens — the split is launched with -c 4096.",
+  "api_key_env": "",
+  "base_url": "${QWEN38_SPLIT_HOST}/v1/chat/completions",
+  "env_vars": [
+    {
+      "name": "QWEN38_SPLIT_HOST",
+      "required": false,
+      "secret": false,
+      "primary": true,
+      "default": "http://127.0.0.1:8081",
+      "description": "Base URL of the Qwen3.8-27B llama-server split (default: http://127.0.0.1:8081)"
+    }
+  ],
+  "models": [
+    {
+      "name": "qwen3.8-27b",
+      "context_limit": 4096,
+      "input_token_cost": null,
+      "output_token_cost": null,
+      "currency": null,
+      "supports_cache_control": null
+    }
+  ],
+  "supports_streaming": true,
+  "requires_auth": false,
+  "skip_canonical_filtering": true
+}

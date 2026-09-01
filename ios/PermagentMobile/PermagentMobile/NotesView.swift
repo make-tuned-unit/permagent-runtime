@@ -407,7 +407,7 @@ final class NoteDictationRecorder: ObservableObject {
         permissionDenied = false
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .default)
+            try session.setCategory(.record, mode: .spokenAudio)
             try session.setActive(true)
 
             let url = FileManager.default.temporaryDirectory

@@ -1,0 +1,22 @@
+[err] 2026-08-27T22:44:51.000000Z INFO permagentd::voice: speaker_print enroll start
+[err] 2026-08-27T22:44:52.000000Z INFO permagentd::voice: Recording started, sample_rate=16000
+[err] 2026-08-27T22:44:55.000000Z INFO permagentd::voice: Recording stopped, 48000 samples (3.0s audio)
+[err] 2026-08-27T22:44:55.050000Z INFO permagentd::voice: speaker_print enroll have=1 need=3
+[err] 2026-08-27T22:44:56.000000Z INFO permagentd::voice: Recording started, sample_rate=16000
+[err] 2026-08-27T22:45:00.900000Z INFO permagentd::voice: Recording stopped, 78400 samples (4.9s audio)
+[err] 2026-08-27T22:45:00.950000Z INFO permagentd::voice: speaker_print enroll have=2 need=3
+[err] 2026-08-27T22:45:02.000000Z INFO permagentd::voice: Recording started, sample_rate=16000
+[err] 2026-08-27T22:45:06.000000Z INFO permagentd::voice: Recording stopped, 64000 samples (4.0s audio)
+[err] 2026-08-27T22:45:06.050000Z INFO permagentd::voice: speaker_print enroll have=3 need=3
+[err] 2026-08-27T22:45:06.100000Z INFO permagentd::voice: speaker_print enrolled n=3
+[err] 2026-08-27T22:46:48.000000Z INFO permagentd::voice: Recording started, sample_rate=16000
+[err] 2026-08-27T22:47:21.100000Z INFO permagentd::voice: Recording stopped, 529600 samples (33.1s audio)
+[err] 2026-08-27T22:47:21.161000Z INFO permagentd::voice: speaker_print admit score=0.997 gate_ms=61
+[err] 2026-08-27T22:47:21.681000Z INFO permagentd::voice: TIMING STT: 520ms | transcript: "[redacted background speech]"
+[err] 2026-08-27T22:47:21.721000Z INFO permagentd::voice: pipeline: setup=4ms ctx+recall=8ms reply_setup=28ms (total pre-stream=621ms)
+[err] 2026-08-27T22:47:25.029000Z INFO permagentd::voice: TTFT: 3308ms after stream start
+[err] 2026-08-27T22:47:26.058000Z INFO permagentd::voice: STREAM sentence 1: 24chars TTS=1029ms
+[err] 2026-08-27T22:47:26.065000Z INFO permagentd::voice: TIMING first audio: 4664ms after speech-end
+[err] 2026-08-27T22:47:31.061000Z INFO permagentd::voice: TIMING Total: 9961ms (STT=520ms Reply+TTS=9441ms, TTS_total=1400ms, 2 sentences)
+[err] 2026-08-27T22:48:30.000000Z INFO permagentd::voice: Recording started, sample_rate=16000
+[err] 2026-08-27T22:48:32.045000Z INFO permagentd::voice: speaker_print early_reject score=0.231 gate_ms=45

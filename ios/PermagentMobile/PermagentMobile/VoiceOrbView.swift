@@ -102,9 +102,10 @@ struct VoiceOrbView: View {
     var level: Double
     /// True while the agent is speaking; false while listening or thinking.
     var speaking: Bool
-    /// Thinking has no audio, so the orb swells on its own rather than flatlining.
+    /// Thinking has no audio; it rotates without a listening-style pulse.
     var thinking: Bool
-    /// Hands-free listening (or ready-and-armed). Must breathe even at RMS 0.
+    /// Hands-free listening (or ready-and-armed). This is the only state with
+    /// a synthetic pulse at RMS 0.
     var listening: Bool = false
     /// A word speech cannot say — shown on the Orb, never spoken.
     var teachWord: String? = nil
@@ -143,19 +144,20 @@ struct VoiceOrbView: View {
             if let word = teachWord, !word.isEmpty {
                 VStack(spacing: 6) {
                     Text(word)
-                        .font(.system(size: diameter * 0.11, weight: .semibold, design: .rounded))
+                        .font(.system(size: max(18 as CGFloat, diameter * 0.13), weight: .semibold, design: .rounded))
                         .foregroundStyle(Color.white)
-                        .shadow(color: Color.black.opacity(0.55), radius: 8, y: 2)
-                        .minimumScaleFactor(0.5)
+                        .minimumScaleFactor(0.45)
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
                     Text("SAY THIS")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .font(.system(size: max(9 as CGFloat, diameter * 0.032), weight: .bold, design: .rounded))
                         .tracking(1.6)
-                        .foregroundStyle(Color.white.opacity(0.72))
+                        .foregroundStyle(Color.white.opacity(0.78))
                 }
-                .padding(.horizontal, 18)
-                .frame(maxWidth: diameter * 0.72)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .frame(maxWidth: diameter * 0.78)
+                .background(Color.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Say \(word)")
             }
@@ -178,8 +180,8 @@ struct VoiceOrbView: View {
         let level = self.level.isFinite ? min(1.5, max(0, self.level)) : 0
 
         // Band targets live in VoiceOrbDrive so listening/speaking life can
-        // be regression-tested. Listening breathes at RMS 0; speaking keeps
-        // a residual pulse and swells harder than the old level-only path.
+        // be regression-tested. Only listening breathes at RMS 0; speaking
+        // follows the playback envelope and thinking turns without swelling.
         let bands = VoiceOrbDrive.bands(
             thinking: thinking,
             listening: listening,
