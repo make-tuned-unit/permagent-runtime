@@ -22,6 +22,10 @@ export function ProvidersSection() {
   const providersError = useCommandCenter(s => s.providersError);
   const loadProviders = useCommandCenter(s => s.loadProviders);
   const setDefaultProvider = useCommandCenter(s => s.setDefaultProvider);
+  // `config_changed` → refetch. `POST /config/set_provider` and every API-key
+  // write land as config writes, so a provider connected from another surface
+  // (or by the agent) shows up here without a remount.
+  const configRev = useCommandCenter(s => s.configRev);
   const [configuring, setConfiguring] = useState<ProviderInfo | null>(null);
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
@@ -52,7 +56,7 @@ export function ProvidersSection() {
       .catch(() => setSecretSources(undefined));
   }, []);
 
-  useEffect(() => { loadSecretSources(); }, [loadSecretSources]);
+  useEffect(() => { loadSecretSources(); }, [loadSecretSources, configRev]);
 
   // loadProviders never rejects (it sets providersError internally), so `.finally`
   // is enough to end the loading state; the flag distinguishes failure from empty.
@@ -61,7 +65,7 @@ export function ProvidersSection() {
     Promise.resolve(loadProviders()).finally(() => setLoading(false));
   }, [loadProviders]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, configRev]);
 
   // Only user-defined ("Custom") providers can be removed — built-in ones have
   // no on-disk definition to delete.

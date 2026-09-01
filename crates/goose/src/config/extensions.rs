@@ -109,11 +109,20 @@ pub fn remove_extension(key: &str) {
     save_extensions_map(extensions);
 }
 
-pub fn set_extension_enabled(key: &str, enabled: bool) {
+/// Flip one extension's `enabled` flag in config.yaml.
+///
+/// Returns whether an entry with that key existed and was written. Callers that
+/// report success to a user or an agent MUST check it: a silent `false` here is
+/// how "the agent said it disabled the extension, Settings still shows it on"
+/// happens.
+pub fn set_extension_enabled(key: &str, enabled: bool) -> bool {
     let mut extensions = get_extensions_map();
     if let Some(entry) = extensions.get_mut(key) {
         entry.enabled = enabled;
         save_extensions_map(extensions);
+        true
+    } else {
+        false
     }
 }
 
