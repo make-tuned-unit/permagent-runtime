@@ -20,6 +20,9 @@ import { WatcherHUD } from './WatcherHUD';
 import { StewardHUD } from './StewardHUD';
 import { StrixHUD } from './StrixHUD';
 import { FinancierHUD } from './FinancierHUD';
+import { CouncilHUD } from './CouncilHUD';
+import { PolybotHUD } from './PolybotHUD';
+import { PickerHUD } from './PickerHUD';
 import { AgentPicker } from './AgentPicker';
 import { PerfProbe, perfProbeEnabled, devDprOverride } from './shared/PerfProbe';
 import { useWorldVisibility } from './atmosphere/useWorldVisibility';
@@ -305,7 +308,11 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   const [hoveredStation, setHoveredStation] = useState<string | null>(null);
   const [showFps, setShowFps] = useState(false);
   const [activeHud, setActiveHud] = useState<
-    'henry' | 'librarian' | 'reader' | 'watcher' | 'steward' | 'strix' | 'financier' | null
+    | 'henry' | 'librarian' | 'reader' | 'watcher' | 'steward' | 'strix' | 'financier'
+    // J11's three: a seat with no emitter still gets a panel, because a
+    // character you can walk up to and learn nothing from is worse than none.
+    | 'council' | 'polybot' | 'picker'
+    | null
   >(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // Perf (bible §8 item 2): pause the render loop whenever this view has no
@@ -337,6 +344,12 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       setActiveHud('strix');
     } else if (id === 'financier') {
       setActiveHud('financier');
+    } else if (id === 'council') {
+      setActiveHud('council');
+    } else if (id === 'polybot') {
+      setActiveHud('polybot');
+    } else if (id === 'picker') {
+      setActiveHud('picker');
     } else {
       setActiveHud(null);
     }
@@ -616,6 +629,18 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       />
       <FinancierHUD
         visible={activeHud === 'financier'}
+        onClose={() => setActiveHud(null)}
+      />
+      <CouncilHUD
+        visible={activeHud === 'council'}
+        onClose={() => setActiveHud(null)}
+      />
+      <PolybotHUD
+        visible={activeHud === 'polybot'}
+        onClose={() => setActiveHud(null)}
+      />
+      <PickerHUD
+        visible={activeHud === 'picker'}
         onClose={() => setActiveHud(null)}
       />
       <AgentPicker

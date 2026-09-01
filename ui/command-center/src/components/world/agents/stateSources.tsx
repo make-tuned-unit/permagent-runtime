@@ -154,32 +154,38 @@ export function AgentStateSources() {
     });
   }, []);
 
+  // ── Static seats — a real seat, an emitter that has not shipped ──────
+  // J11's three (Council, Polybot, Picker). They are published ONCE, at idle,
+  // from the `static` source: no toggler, no pulse, nothing that moves on its
+  // own. A seat that animates is claiming to know something, and for these
+  // three nothing does yet — their HUDs say so in words, and their live desk
+  // facts (the finance board, the Council's last session) are read there
+  // rather than invented here. When an emitter lands, its case goes on the
+  // `agent_state_changed` branch above and the roster's `wire` flips to
+  // 'daemon'; nothing else has to change.
+  useEffect(() => {
+    for (const a of ROSTER) {
+      if (a.wire === 'static') setAgentSource(a.id, a.name, 'idle', 'static');
+    }
+  }, []);
+
   // ── Sim agents — roster from /api/agents, activity from local sim ──
   useEffect(() => {
     let cancelled = false;
-    // Strix, Steward, Financier and the Forecaster are excluded alongside Henry
-    // and the Librarian because they have a real wire: agent_state_changed.
-    // Leaving one in the ambient toggler has sim state fighting daemon truth —
-    // and the sim wins, because it fires every 20–40s whatever is happening.
-    // Steward events arrive as `git_steward` and are mapped to the world id.
+    // Exactly the entries whose own roster row says `wire: 'sim'` — nothing
+    // reports them, so ambient life is the honest reading and the §4 clamp
+    // holds it to idle/available.
     //
-    // The Forecaster was the one that got missed. Its roster entry has always
-    // said its pose is a real wire, and that was true — the forecaster platform
-    // extension announces "working" and "available" on the `forecaster` id
-    // (crates/goose/src/agents/platform_extensions/forecaster.rs). But it was
-    // never taken out of this filter, so a fabricated timer flipped the same
-    // avatar between idle and available on its own schedule, overwriting the
-    // announcements within half a minute of each one. The comment was accurate
-    // about the wire and the screen was showing a coin flip.
-    const simAgents = ROSTER.filter(
-      (a) =>
-        a.id !== 'henry' &&
-        a.id !== 'librarian' &&
-        a.id !== 'strix' &&
-        a.id !== 'steward' &&
-        a.id !== 'financier' &&
-        a.id !== 'forecaster',
-    );
+    // This used to be a hand-written list of ids to EXCLUDE, and the Forecaster
+    // is why it is not any more. Its roster entry has always said its pose is a
+    // real wire, and that was true — the forecaster platform extension
+    // announces "working" and "available" on the `forecaster` id
+    // (crates/goose/src/agents/platform_extensions/forecaster.rs). It was
+    // simply never added to the exclusion list, so a fabricated timer flipped
+    // the avatar every 20–40 seconds and buried each real announcement. Two
+    // files disagreeing about one agent is a defect waiting to be re-filed;
+    // now there is one place to say it, on the entry itself.
+    const simAgents = ROSTER.filter((a) => a.wire === 'sim');
     const names = new Map(simAgents.map((a) => [a.id, a.name]));
 
     // Roster consumption: pick up display names from the daemon when present.
