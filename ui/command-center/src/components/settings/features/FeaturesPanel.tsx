@@ -55,6 +55,8 @@ export function FeaturesPanel({ goto }: PanelProps) {
   /** The integrations read failed — see `conciergePreconditionCopy`. */
   const [integrationsError, setIntegrationsError] = useState(false);
 
+  const configRev = useCommandCenter(s => s.configRev);
+
   useEffect(() => {
     let active = true;
     for (const row of FEATURE_ROWS) {
@@ -66,7 +68,10 @@ export function FeaturesPanel({ goto }: PanelProps) {
       .then(list => { if (active) { setIntegrations(list); setIntegrationsError(false); } })
       .catch(() => { if (active) setIntegrationsError(true); });
     return () => { active = false; };
-  }, []);
+    // `configRev` = the daemon's `config_changed` frame. These toggles write
+    // config keys, and so does the agent; without this the panel showed the
+    // flags as they were when it mounted.
+  }, [configRev]);
 
   useEffect(() => {
     if (flags.council_enabled !== true) {

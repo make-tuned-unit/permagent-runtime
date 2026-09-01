@@ -1232,7 +1232,7 @@ impl ProjectManagerClient {
         )
         .await?
         .ok_or_else(|| format!("Project {} disappeared mid-write", project.id))?;
-        crate::events::emit(crate::events::project_changed(&updated.id, "updated"));
+        // `projects::update_project` emits `project_changed(updated)`.
         Ok(vec![Content::text(format!(
             "Saved the {pillar} strategy for \"{}\" — it now shows on the Grow tab's Strategy lens and the user can edit it there.",
             updated.name
@@ -1263,7 +1263,7 @@ impl ProjectManagerClient {
         )
         .await?
         .ok_or_else(|| format!("Project {} disappeared mid-write", project.id))?;
-        crate::events::emit(crate::events::project_changed(&updated.id, "updated"));
+        // `projects::update_project` emits `project_changed(updated)`.
         Ok(vec![Content::text(format!(
             "Saved the brand kit for \"{}\" — voice, origin, and palette now apply to every social still on this project. Other projects are unchanged.",
             updated.name

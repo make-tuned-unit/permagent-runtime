@@ -32,6 +32,7 @@ import { getReduceMotion, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { TourMode } from './camera/TourMode';
+import { createFrameClock, stepFrameClock, type FrameClock } from './frameClock';
 
 // DEV-ONLY: window.__worldDev harness for ambience evidence (no-op in prod).
 installDevHarness();
@@ -186,17 +187,24 @@ const FRAME_TOLERANCE_MS = 4;
 
 function FrameCap({ active }: { active: boolean }) {
   const advance = useThree((s) => s.advance);
+  // Lives in a ref, not a local inside the effect below: the effect re-runs
+  // on every `active` transition (every workspace tab round-trip, via
+  // useWorldVisibility's ResizeObserver), and this accumulator must survive
+  // that re-run unchanged — see frameClock.ts for why re-deriving the
+  // timeline from a fresh performance.now() baseline after a hide/show cycle
+  // used to send r3f a deeply negative delta and white out the scene.
+  const clockRef = useRef<FrameClock | null>(null);
+  if (clockRef.current === null) clockRef.current = createFrameClock();
   useEffect(() => {
     if (!active) return;
     const minDelta = 1000 / TARGET_FPS - FRAME_TOLERANCE_MS;
-    const t0 = performance.now();
     let last = -Infinity;
     let handle = 0;
     const tick = (now: number) => {
       handle = requestAnimationFrame(tick);
       if (now - last < minDelta) return;
       last = now;
-      advance((now - t0) / 1000);
+      advance(stepFrameClock(clockRef.current!, now));
     };
     handle = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(handle);
