@@ -38,6 +38,7 @@ pub mod echo;
 pub mod events;
 pub mod executable_skills;
 pub mod execution;
+pub mod finance_indicators;
 pub mod finance_ledger;
 pub mod finance_statements;
 pub mod financier_close;
