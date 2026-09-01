@@ -137,6 +137,61 @@ pub fn check_scope(target: &str, roots: &[PathBuf]) -> Result<PathBuf, ScopeRefu
     Err(ScopeRefusal::OutsideProjectRoots)
 }
 
+/// Directories rsync skips and the empty-tree preflight skips. Keep the two
+/// lists the same: a path that never reaches the scanner must not count as
+/// scannable, or Kinrows-style trees look populated locally and empty to Strix.
+pub const SCAN_EXCLUDES: &[&str] = &[
+    ".git",
+    "target",
+    "node_modules",
+    "dist",
+    "build",
+    ".next",
+    "__pycache__",
+];
+
+/// True when the scanner (or our preflight) found nothing it can send to the
+/// model. Kinrows hit this as `RuntimeError: Prepared model input is empty`
+/// (health-watch 2026-08-27); treat it as a skip, not a crash.
+pub fn is_empty_input_skip(err: &str) -> bool {
+    err.contains("no scannable files") || err.contains("Prepared model input is empty")
+}
+
+pub fn classify_scanner_failure(status: std::process::ExitStatus, detail: &str) -> String {
+    if detail.contains("Prepared model input is empty") {
+        "no scannable files: scanner produced empty model input".to_string()
+    } else {
+        format!("scanner exited {status}: {detail}")
+    }
+}
+
+/// Any regular file under `root` that rsync would copy. Empty after excludes
+/// means Strix will crash with empty model input — refuse before spawning it.
+pub fn has_scannable_files(root: &Path) -> bool {
+    fn walk(dir: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if SCAN_EXCLUDES.iter().any(|ex| *ex == name.as_ref()) {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                if walk(&path) {
+                    return true;
+                }
+            } else if path.is_file() {
+                return true;
+            }
+        }
+        false
+    }
+    walk(root)
+}
+
 /// Self-knowledge descriptor. Rendered into `<permagent_self>` only while the
 /// flag is on (see `self_knowledge::worker_descriptor_visible`), so the brief —
 /// and its snapshots — are byte-identical until the Guard is deliberately enabled.
@@ -276,6 +331,50 @@ mod tests {
         assert_eq!(
             check_scope(root.join("no-such-dir").to_str().unwrap(), &roots),
             Err(ScopeRefusal::NotAPath)
+        );
+    }
+
+    #[test]
+    fn empty_model_input_is_a_skip_not_a_crash() {
+        let kinrows = "scanner exited exit status: 1: RuntimeError: Prepared model input is empty";
+        assert!(is_empty_input_skip(kinrows));
+        assert!(is_empty_input_skip("no scannable files"));
+        assert!(!is_empty_input_skip(
+            "scanner exited exit status: 2: Authentication Error, Model not found"
+        ));
+
+        let status = std::os::unix::process::ExitStatusExt::from_raw(1 << 8);
+        assert_eq!(
+            classify_scanner_failure(status, "RuntimeError: Prepared model input is empty"),
+            "no scannable files: scanner produced empty model input"
+        );
+        assert_eq!(
+            classify_scanner_failure(status, "Authentication Error, Model not found"),
+            format!("scanner exited {status}: Authentication Error, Model not found")
+        );
+    }
+
+    #[test]
+    fn empty_tree_and_excluded_only_trees_are_not_scannable() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(
+            !has_scannable_files(tmp.path()),
+            "empty directory must skip"
+        );
+
+        std::fs::create_dir_all(tmp.path().join("node_modules")).unwrap();
+        std::fs::write(tmp.path().join("node_modules").join("pkg.js"), "x").unwrap();
+        std::fs::create_dir_all(tmp.path().join("target")).unwrap();
+        std::fs::write(tmp.path().join("target").join("app"), "x").unwrap();
+        assert!(
+            !has_scannable_files(tmp.path()),
+            "rsync-excluded files must not count as scannable"
+        );
+
+        std::fs::write(tmp.path().join("main.rs"), "fn main() {}").unwrap();
+        assert!(
+            has_scannable_files(tmp.path()),
+            "a real source file must be scannable"
         );
     }
 }

@@ -1,13 +1,9 @@
 /**
  * Finance — money board.
  *
- * Layout follows two systems, not a third generic dashboard:
- *   Stripe Dashboard — one hero figure per account, tabular numerals, the
- *   as-of clock next to the number so a stale snapshot cannot be read as live.
- *   Linear — charcoal cards, hairline borders, accent only on status and the
- *   one action that starts the scanner.
- * Tokens stay Permagent (Manrope/Inter, #00D5FF, radius.md). Research ledger
- * plus process control for the user's Polybot. Keys stay in the keychain.
+ * Cards match the rest of the app (Projects Panel: veil, hairline, uppercase
+ * 11px title). Polybot and Picker stay off until the user turns them on.
+ * Holdings, household, watchlist, and notes are the default surface.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -15,10 +11,25 @@ import type { CSSProperties, FormEvent, ReactNode } from 'react';
 import { font, radius, tabularNums, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
-import { apiFetch, uploadFinanceStatement } from '../../lib/api';
+import { api, apiFetch, uploadFinanceStatement } from '../../lib/api';
 import { ViewHeader } from '../common/ViewHeader';
 import { navigateToTool, useCommandCenter } from '../../lib/store';
+import { AGENT_TRIM } from '../world/shared/palette';
 import { PolybotKeys } from './PolybotKeys';
+import { FundamentalsKey } from './FundamentalsKey';
+import { sparklinePolyline, sparklineZeroY } from '../grow/growthTrend';
+import {
+  PICKER_DISCLAIMER,
+  PICKER_ENABLED_KEY,
+  PICKER_UNIVERSE_KEY,
+  PICKS_PREVIEW,
+  POLYBOT_DISCLAIMER,
+  POLYBOT_ENABLED_KEY,
+  parseUniverse,
+  appendUniverse,
+  pickIsApproved,
+  sortPicks,
+} from './financeLabs';
 
 interface Quote {
   symbol: string;
@@ -124,6 +135,7 @@ interface HoldingsView {
   netUnrealized: number;
   netRealized: number;
   netPnl: number;
+  trend?: number[];
   rows: HoldingRow[];
 }
 
@@ -276,11 +288,16 @@ interface HouseholdView {
 
 interface FinanceBoard {
   polybot: PolybotStatus;
+  polybotEnabled?: boolean;
   holdings: HoldingsView;
   watchlist: WatchlistRow[];
   notes: FinanceNote[];
   positions: Position[];
   picker: PickerStatus;
+  pickerEnabled?: boolean;
+  pickerUniverse?: string[];
+  pickerUniverseCount?: number | null;
+  fundamentalsConfigured?: boolean;
   picks: ValidatedPick[];
   sellSignals: SellSignal[];
   rsiThreshold: number;
@@ -358,6 +375,7 @@ export function FinanceView() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState<TradeDraft>(emptyDraft);
+  const [optIn, setOptIn] = useState({ polybot: false, picker: false });
 
   const load = useCallback(async () => {
     try {
@@ -367,6 +385,17 @@ export function FinanceView() {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load the Finance tab');
     }
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    void Promise.all([
+      api.readConfig(POLYBOT_ENABLED_KEY).then((v) => v === true).catch(() => false),
+      api.readConfig(PICKER_ENABLED_KEY).then((v) => v === true).catch(() => false),
+    ]).then(([polybot, picker]) => {
+      if (live) setOptIn({ polybot, picker });
+    });
+    return () => { live = false; };
   }, []);
 
   const scanRunning = Boolean(board?.picker.scanInProgress);
@@ -396,11 +425,28 @@ export function FinanceView() {
     }
   }, [load]);
 
+  const view: FinanceBoard | null = board && {
+    ...board,
+    polybotEnabled: board.polybotEnabled ?? optIn.polybot,
+    pickerEnabled: board.pickerEnabled ?? optIn.picker,
+    pickerUniverse: board.pickerUniverse ?? [],
+    pickerUniverseCount: board.pickerUniverseCount ?? null,
+    fundamentalsConfigured: board.fundamentalsConfigured ?? false,
+  };
+
+  const setLab = (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) =>
+    mutate(async () => {
+      await api.upsertConfig(key, on);
+      setOptIn((s) => (
+        key === POLYBOT_ENABLED_KEY ? { ...s, polybot: on } : { ...s, picker: on }
+      ));
+    });
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: font.body, color: colors.text }}>
       <ViewHeader
         title="Finance"
-        subtitle="Research board — Polybot keys live in the keychain; the bot can trade"
+        subtitle="Holdings, household, and research. Optional desks stay off until you turn them on."
         actions={
           <button type="button" onClick={() => { void load(); }} style={ghostBtn(colors)}>
             Refresh
@@ -425,19 +471,20 @@ export function FinanceView() {
         {!board && !error && (
           <div style={{ ...type.small, color: colors.textMuted }}>Loading…</div>
         )}
-        {board && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 1120 }}>
+        {view && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1120 }}>
             <SummaryStrip
-              board={board}
+              board={view}
               colors={colors}
               busy={busy}
               mutate={mutate}
+              setLab={setLab}
             />
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <HoldingsSection
-                holdings={board.holdings}
-                rsiThreshold={board.rsiThreshold}
-                picker={board.picker}
+                holdings={view.holdings}
+                rsiThreshold={view.rsiThreshold}
+                picker={view.picker}
                 colors={colors}
                 busy={busy}
                 mutate={mutate}
@@ -445,11 +492,9 @@ export function FinanceView() {
                 setDraft={setDraft}
                 onRecorded={(hint) => { if (hint) setError(hint); }}
               />
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                <TomorrowSection pick={board.dailyPick ?? null} colors={colors} />
-                <SellSignalsSection signals={board.sellSignals} threshold={board.rsiThreshold} colors={colors} />
+              {view.pickerEnabled && (
                 <PicksSection
-                  board={board}
+                  board={view}
                   colors={colors}
                   onPrefill={(next) => {
                     setDraft(next);
@@ -458,18 +503,18 @@ export function FinanceView() {
                     });
                   }}
                 />
-              </div>
+              )}
             </div>
             <HouseholdSection
-              household={board.household}
+              household={view.household}
               colors={colors}
               busy={busy}
               mutate={mutate}
               setError={setError}
             />
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
-              <WatchlistSection board={board} colors={colors} busy={busy} mutate={mutate} />
-              <NotesSection board={board} colors={colors} busy={busy} mutate={mutate} />
+              <WatchlistSection board={view} colors={colors} busy={busy} mutate={mutate} />
+              <NotesSection board={view} colors={colors} busy={busy} mutate={mutate} />
             </div>
           </div>
         )}
@@ -479,97 +524,256 @@ export function FinanceView() {
 }
 
 function SummaryStrip({
-  board, colors, busy, mutate,
+  board, colors, busy, mutate, setLab,
 }: {
   board: FinanceBoard;
   colors: ThemeColors;
   busy: boolean;
   mutate: (fn: () => Promise<unknown>) => Promise<void>;
+  setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<void>;
 }) {
   const p = board.polybot;
   const asOf = p.asOf || p.lastUpdated;
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
-      <Card colors={colors} warn={p.stale}>
-        <Eyebrow colors={colors}>Polybot</Eyebrow>
-        <Hero
-          colors={colors}
-          value={fmtMoney(p.currentBalance)}
-          tone={p.stale ? colors.warning : colors.text}
-        />
-        <div style={{ ...type.caption, color: colors.textMuted, marginTop: 6 }}>
-          {p.stale
-            ? `As of ${fmtWhen(asOf)}${p.staleDays != null ? ` · ${p.staleDays}d stale` : ''}`
-            : p.paused
-              ? 'Paused · live file'
-              : `Live file · ${fmtWhen(asOf)}`}
-        </div>
-        <div style={{ display: 'flex', gap: 16, marginTop: 12, flexWrap: 'wrap' }}>
-          <Mini colors={colors} label="Realized" value={fmtSigned(p.realizedPnl)} tone={toneFor(p.realizedPnl, colors)} />
-          <Mini colors={colors} label="Open" value={fmtMoney(p.openExposure)} />
-          <Mini colors={colors} label="Trades" value={p.tradeCount != null ? String(p.tradeCount) : '—'} />
-        </div>
-        <div style={{ ...type.caption, color: colors.textMuted, marginTop: 8 }}>
-          {p.running ? `Running${p.pid != null ? ` · pid ${p.pid}` : ''}` : 'Process down'}
-          {p.paused ? ' · paused' : ''}
-          {p.credentialsReady ? ' · keys in keychain' : ' · keys missing'}
-        </div>
-        {p.detail && (
-          <p style={{ ...type.caption, color: p.stale ? colors.warning : colors.textMuted, margin: '10px 0 0' }}>
-            {p.detail}
-          </p>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, alignItems: 'start' }}>
+        {board.polybotEnabled && (
+          <Card colors={colors} warn={p.stale} testId="finance-polybot-card">
+            <Eyebrow colors={colors}>Polybot</Eyebrow>
+            <Hero
+              colors={colors}
+              value={fmtMoney(p.currentBalance)}
+              tone={p.stale ? colors.warning : colors.text}
+            />
+            <div style={{ ...type.caption, color: colors.textMuted, marginTop: 4 }}>
+              {p.stale
+                ? `As of ${fmtWhen(asOf)}${p.staleDays != null ? ` · ${p.staleDays}d stale` : ''}`
+                : p.paused
+                  ? 'Paused · live file'
+                  : `Live file · ${fmtWhen(asOf)}`}
+            </div>
+            <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
+              <Mini colors={colors} label="Realized" value={fmtSigned(p.realizedPnl)} tone={toneFor(p.realizedPnl, colors)} />
+              <Mini colors={colors} label="Open" value={fmtMoney(p.openExposure)} />
+              <Mini colors={colors} label="Trades" value={p.tradeCount != null ? String(p.tradeCount) : '—'} />
+            </div>
+            <div style={{ ...type.caption, color: colors.textMuted, marginTop: 8 }}>
+              {p.running ? `Running${p.pid != null ? ` · pid ${p.pid}` : ''}` : 'Process down'}
+              {p.paused ? ' · paused' : ''}
+              {p.credentialsReady ? ' · keys in keychain' : ' · keys missing'}
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <PolybotControls polybot={p} colors={colors} busy={busy} mutate={mutate} setLab={setLab} />
+            </div>
+          </Card>
         )}
-        <div style={{ marginTop: 14 }}>
-          <PolybotControls polybot={p} colors={colors} busy={busy} mutate={mutate} />
-        </div>
-      </Card>
 
-      <Card colors={colors}>
-        <Eyebrow colors={colors}>Holdings</Eyebrow>
-        <Hero colors={colors} value={fmtSigned(board.holdings.netPnl)} tone={toneFor(board.holdings.netPnl, colors)} />
-        <div style={{ ...type.caption, color: colors.textMuted, marginTop: 6 }}>
-          Net P&amp;L · {board.holdings.openCount} open
-          {' · '}
-          {board.holdings.source === 'picker' ? 'Picker journal' : 'local ledger'}
-        </div>
-        <div style={{ display: 'flex', gap: 16, marginTop: 12, flexWrap: 'wrap' }}>
-          <Mini colors={colors} label="Unrealized" value={fmtSigned(board.holdings.netUnrealized)} tone={toneFor(board.holdings.netUnrealized, colors)} />
-          <Mini colors={colors} label="Realized" value={fmtSigned(board.holdings.netRealized)} tone={toneFor(board.holdings.netRealized, colors)} />
-        </div>
-      </Card>
+        <Card colors={colors} testId="finance-holdings-card">
+          <Eyebrow colors={colors}>Holdings</Eyebrow>
+          <Hero colors={colors} value={fmtSigned(board.holdings.netPnl)} tone={toneFor(board.holdings.netPnl, colors)} />
+          <div style={{ ...type.caption, color: colors.textMuted, marginTop: 4 }}>
+            Net P&amp;L · {board.holdings.openCount} open
+            {' · '}
+            {board.holdings.source === 'picker' ? 'Picker journal' : 'local ledger'}
+          </div>
+          <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
+            <Mini colors={colors} label="Unrealized" value={fmtSigned(board.holdings.netUnrealized)} tone={toneFor(board.holdings.netUnrealized, colors)} />
+            <Mini colors={colors} label="Realized" value={fmtSigned(board.holdings.netRealized)} tone={toneFor(board.holdings.netRealized, colors)} />
+          </div>
+          <HoldingsSparkline values={board.holdings.trend ?? []} colors={colors} />
+        </Card>
 
-      <Card colors={colors} warn={!board.picker.reachable}>
-        <Eyebrow colors={colors}>Scanner</Eyebrow>
-        <Hero
+        {board.pickerEnabled && (
+          <Card colors={colors} warn={!board.picker.reachable && (board.pickerUniverse?.length ?? 0) === 0} testId="finance-picker-card">
+            <Eyebrow colors={colors}>Picker</Eyebrow>
+            <Hero
+              colors={colors}
+              value={board.picker.reachable ? (board.picker.scanInProgress ? 'Scanning' : 'Up') : ((board.pickerUniverse?.length ?? 0) ? 'Universe' : 'Idle')}
+              tone={board.picker.reachable ? colors.success : colors.text}
+            />
+            <div style={{ ...type.caption, color: colors.textMuted, marginTop: 4 }}>
+              {(board.pickerUniverseCount ?? 0) > 0
+                ? `Picker universe · ${board.pickerUniverseCount?.toLocaleString()} names`
+                : board.picker.reachable
+                  ? `${board.picker.results != null ? `${board.picker.results} ranked` : 'ready'}${board.picker.scanDate ? ` · ${board.picker.scanDate}` : ''}`
+                  : 'Connected when the scanner is up'}
+              {(board.pickerUniverse?.length ?? 0) > 0
+                ? ` · ${board.pickerUniverse?.length} extra${board.pickerUniverse?.length === 1 ? '' : 's'} you added`
+                : ''}
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <PickerControls
+                picker={board.picker}
+                universe={board.pickerUniverse ?? []}
+                colors={colors}
+                busy={busy}
+                mutate={mutate}
+                setLab={setLab}
+              />
+            </div>
+          </Card>
+        )}
+      </div>
+      {(!board.polybotEnabled || !board.pickerEnabled) && (
+        <LabsRow
+          polybotOn={Boolean(board.polybotEnabled)}
+          pickerOn={Boolean(board.pickerEnabled)}
           colors={colors}
-          value={board.picker.reachable ? (board.picker.scanInProgress ? 'Scanning' : 'Up') : 'Down'}
-          tone={board.picker.reachable ? colors.success : colors.warning}
+          busy={busy}
+          setLab={setLab}
         />
-        <div style={{ ...type.caption, color: colors.textMuted, marginTop: 6 }}>
-          {board.picker.reachable
-            ? `${board.picker.results != null ? `${board.picker.results} ranked` : 'ready'}${board.picker.scanDate ? ` · ${board.picker.scanDate}` : ''}`
-            : board.picker.detail || 'not running at 127.0.0.1:8080'}
-        </div>
-        <div style={{ marginTop: 14 }}>
-          <PickerControls picker={board.picker} colors={colors} busy={busy} mutate={mutate} />
-        </div>
-      </Card>
+      )}
+      <FundamentalsKey compact onChanged={() => void mutate(async () => undefined)} />
+    </div>
+  );
+}
+
+function LabsRow({
+  polybotOn, pickerOn, colors, busy, setLab,
+}: {
+  polybotOn: boolean;
+  pickerOn: boolean;
+  colors: ThemeColors;
+  busy: boolean;
+  setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<void>;
+}) {
+  const [dialog, setDialog] = useState<'polybot' | 'picker' | null>(null);
+  return (
+    <>
+      <div
+        data-testid="finance-labs-row"
+        style={{
+          display: 'flex',
+          gap: 8,
+          flexWrap: 'wrap',
+          alignItems: 'center',
+        }}
+      >
+        {!polybotOn && (
+          <button
+            type="button"
+            data-testid="finance-enable-polybot"
+            disabled={busy}
+            onClick={() => setDialog('polybot')}
+            style={ghostBtn(colors)}
+          >
+            Turn on Polybot
+          </button>
+        )}
+        {!pickerOn && (
+          <button
+            type="button"
+            data-testid="finance-enable-picker"
+            disabled={busy}
+            onClick={() => setDialog('picker')}
+            style={ghostBtn(colors)}
+          >
+            Turn on Picker
+          </button>
+        )}
+        <span style={{ ...type.caption, color: colors.textMuted }}>
+          Optional desks. Off until you opt in.
+        </span>
+      </div>
+      {dialog === 'polybot' && (
+        <DisclaimerDialog
+          title="Turn on Polybot"
+          body={POLYBOT_DISCLAIMER}
+          confirmLabel="I understand this can lose real money"
+          colors={colors}
+          busy={busy}
+          onCancel={() => setDialog(null)}
+          onConfirm={() => {
+            void setLab(POLYBOT_ENABLED_KEY, true).then(() => setDialog(null));
+          }}
+        />
+      )}
+      {dialog === 'picker' && (
+        <DisclaimerDialog
+          title="Turn on Picker"
+          body={PICKER_DISCLAIMER}
+          confirmLabel="Enable Picker"
+          colors={colors}
+          busy={busy}
+          requireCheck={false}
+          onCancel={() => setDialog(null)}
+          onConfirm={() => {
+            void setLab(PICKER_ENABLED_KEY, true).then(() => setDialog(null));
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function DisclaimerDialog({
+  title, body, confirmLabel, colors, busy, onCancel, onConfirm, requireCheck = true,
+}: {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  colors: ThemeColors;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  requireCheck?: boolean;
+}) {
+  const [checked, setChecked] = useState(!requireCheck);
+  return (
+    <div
+      data-testid="finance-disclaimer"
+      style={{
+        border: `1px solid ${colors.border}`,
+        borderRadius: 10,
+        padding: '12px 14px',
+        background: colors.bgDeeper,
+        maxWidth: 560,
+      }}
+    >
+      <div style={{ ...type.label, color: colors.textMuted, marginBottom: 8 }}>{title}</div>
+      <p style={{ ...type.small, color: colors.text, margin: 0, lineHeight: 1.5 }}>{body}</p>
+      {requireCheck && (
+        <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 12, ...type.caption, color: colors.text }}>
+          <input
+            type="checkbox"
+            data-testid="finance-disclaimer-check"
+            checked={checked}
+            onChange={(e) => setChecked(e.target.checked)}
+            style={{ marginTop: 2 }}
+          />
+          <span>I have read this. The bot can place real orders.</span>
+        </label>
+      )}
+      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <button
+          type="button"
+          disabled={busy || !checked}
+          onClick={onConfirm}
+          style={primaryBtn(colors)}
+        >
+          {confirmLabel}
+        </button>
+        <button type="button" disabled={busy} onClick={onCancel} style={ghostBtn(colors)}>
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
 
 function PolybotControls({
-  polybot, colors, busy, mutate,
+  polybot, colors, busy, mutate, setLab,
 }: {
   polybot: PolybotStatus;
   colors: ThemeColors;
   busy: boolean;
   mutate: (fn: () => Promise<unknown>) => Promise<void>;
+  setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<void>;
 }) {
-  const [showKeys, setShowKeys] = useState(!polybot.credentialsReady);
+  const [showKeys, setShowKeys] = useState(false);
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
         <button
           type="button"
           disabled={busy || (Boolean(polybot.running) && !polybot.paused)}
@@ -607,6 +811,14 @@ function PolybotControls({
         >
           {showKeys ? 'Hide keys' : 'Keys'}
         </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void setLab(POLYBOT_ENABLED_KEY, false)}
+          style={ghostBtn(colors)}
+        >
+          Turn off
+        </button>
       </div>
       {showKeys && (
         <PolybotKeys compact onChanged={() => void mutate(async () => undefined)} />
@@ -616,35 +828,111 @@ function PolybotControls({
 }
 
 function PickerControls({
-  picker, colors, busy, mutate,
+  picker, universe, colors, busy, mutate, setLab,
 }: {
   picker: PickerStatus;
+  universe: string[];
   colors: ThemeColors;
   busy: boolean;
   mutate: (fn: () => Promise<unknown>) => Promise<void>;
+  setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<void>;
 }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const saveExtras = (next: string[]) =>
+    mutate(() => api.upsertConfig(PICKER_UNIVERSE_KEY, next.join('\n')));
+
   return (
-    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-      <button
-        type="button"
-        disabled={busy || picker.reachable}
-        onClick={() => void mutate(() =>
-          apiFetch('/api/finance/picker/start', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
-        )}
-        style={picker.reachable ? ghostBtn(colors) : primaryBtn(colors)}
-      >
-        {picker.reachable ? 'Running' : 'Start scanner'}
-      </button>
-      <button
-        type="button"
-        disabled={busy || !picker.reachable || picker.scanInProgress}
-        onClick={() => void mutate(() =>
-          apiFetch('/api/finance/picker/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
-        )}
-        style={ghostBtn(colors)}
-      >
-        {picker.scanInProgress ? 'Scan running…' : 'Run scan'}
-      </button>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button
+          type="button"
+          disabled={busy || picker.reachable}
+          onClick={() => void mutate(() =>
+            apiFetch('/api/finance/picker/start', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
+          )}
+          style={ghostBtn(colors)}
+        >
+          {picker.reachable ? 'Scanner up' : 'Start scanner'}
+        </button>
+        <button
+          type="button"
+          disabled={busy || picker.scanInProgress}
+          onClick={() => void mutate(() =>
+            apiFetch('/api/finance/picker/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
+          )}
+          style={ghostBtn(colors)}
+        >
+          {picker.scanInProgress ? 'Scan running…' : 'Run scan'}
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowAdd((v) => !v)}
+          style={ghostBtn(colors)}
+        >
+          {showAdd ? 'Hide add' : 'Add ticker'}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void setLab(PICKER_ENABLED_KEY, false)}
+          style={ghostBtn(colors)}
+        >
+          Turn off
+        </button>
+      </div>
+      {universe.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} data-testid="picker-extras">
+          {universe.map((t) => (
+            <span
+              key={t}
+              style={{
+                ...type.micro,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                border: `1px solid ${colors.border}`,
+                borderRadius: radius.sm,
+                padding: '2px 6px',
+                fontFamily: font.mono,
+              }}
+            >
+              {t}
+              <button
+                type="button"
+                disabled={busy}
+                aria-label={`Remove ${t}`}
+                onClick={() => void saveExtras(universe.filter((x) => x !== t))}
+                style={{ ...ghostBtn(colors), padding: '0 4px', border: 'none' }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {showAdd && (
+        <form
+          data-testid="picker-universe"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const next = appendUniverse(universe, draft);
+            void saveExtras(next).then(() => setDraft(''));
+          }}
+          style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}
+        >
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="AAPL, SHOP.TO — added to your universe"
+            style={{ ...inputStyle(colors), flex: 1, minWidth: 140 }}
+          />
+          <button type="submit" disabled={busy || parseUniverse(draft).length === 0} style={primaryBtn(colors)}>
+            Add
+          </button>
+        </form>
+      )}
     </div>
   );
 }
@@ -788,7 +1076,8 @@ function HoldingsSection({
               All ({holdings.rows.length})
             </button>
           </div>
-          <table style={tableStyle()}>
+          <div style={{ overflowX: 'auto', minWidth: 0 }}>
+          <table style={{ ...tableStyle(), tableLayout: 'fixed' }}>
             <thead>
               <tr>
                 <th style={th(colors)}>Symbol</th>
@@ -845,6 +1134,7 @@ function HoldingsSection({
               })}
             </tbody>
           </table>
+          </div>
         </>
       )}
     </Card>
@@ -872,8 +1162,8 @@ function LotActions({
     : `/api/finance/positions/${encodeURIComponent(row.id)}`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
-      <div style={{ display: 'flex', gap: 6 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end', minWidth: 0 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
         <button type="button" disabled={busy} onClick={onEdit} style={ghostBtn(colors)}>Edit</button>
         {!row.exitDate && (
           <button type="button" disabled={busy} onClick={() => setClosing((c) => !c)} style={ghostBtn(colors)}>
@@ -912,76 +1202,6 @@ function LotActions({
   );
 }
 
-function TomorrowSection({
-  pick, colors,
-}: {
-  pick: DailyPick | null;
-  colors: ThemeColors;
-}) {
-  const ticker = pick?.ticker?.trim() || null;
-  return (
-    <Card colors={colors}>
-      <SectionTitle colors={colors}>Tomorrow</SectionTitle>
-      <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 8px' }}>
-        15:30 ET close scan · Opus on names that cleared the loop gate. A
-        hypothesis, not an order. None is valid.
-      </p>
-      {!pick && (
-        <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>
-          No close judgment yet. The scanner runs at 15:30 ET on trading days.
-        </p>
-      )}
-      {pick && !ticker && (
-        <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>{pick.why}</p>
-      )}
-      {pick && ticker && (
-        <article>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
-            <strong style={{ ...type.heading }}>{ticker}</strong>
-            {pick.companyName && (
-              <span style={{ ...type.caption, color: colors.textMuted }}>{pick.companyName}</span>
-            )}
-            <span style={{ ...type.micro, color: colors.textMuted }}>{pick.day}</span>
-          </div>
-          <p style={{ ...type.small, color: colors.text, margin: '8px 0 0' }}>{pick.why}</p>
-        </article>
-      )}
-    </Card>
-  );
-}
-
-function SellSignalsSection({
-  signals, threshold, colors,
-}: {
-  signals: SellSignal[];
-  threshold: number;
-  colors: ThemeColors;
-}) {
-  return (
-    <Card colors={colors} warn={signals.length > 0}>
-      <SectionTitle colors={colors}>Overbought</SectionTitle>
-      <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 8px' }}>
-        Open lots · RSI-14 ≥ {threshold} or two heat signs. The Watcher notifies
-        when a lot you hold looks hot. A signal, not an order.
-      </p>
-      {signals.length === 0 ? (
-        <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>None right now.</p>
-      ) : (
-        <ul style={{ margin: 0, paddingLeft: 16 }}>
-          {signals.map((a) => (
-            <li key={a.symbol} style={{ ...type.small, color: colors.danger, marginBottom: 8 }}>
-              <div>{a.summary}</div>
-              {a.signs.length > 0 && (
-                <div style={{ ...type.caption, color: colors.textMuted }}>{a.signs.join(' · ')}</div>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </Card>
-  );
-}
-
 function PicksSection({
   board, colors, onPrefill,
 }: {
@@ -989,53 +1209,127 @@ function PicksSection({
   colors: ThemeColors;
   onPrefill: (draft: TradeDraft) => void;
 }) {
+  const approved = board.dailyPick?.ticker ?? null;
+  const ranked = sortPicks(board.picks, approved);
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? ranked : ranked.slice(0, PICKS_PREVIEW);
+  const hidden = ranked.length - visible.length;
+
   return (
-    <Card colors={colors}>
+    <Card colors={colors} testId="finance-picks-card">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
         <SectionTitle colors={colors}>Picks</SectionTitle>
         <button type="button" onClick={() => navigateToTool('world')} style={ghostBtn(colors)}>
           Financier
         </button>
       </div>
-      <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 12px' }}>
-        Yahoo + loop gate on the first eight. Ranker never sees holdings or bankroll.
+      <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 10px' }}>
+        Your universe, Yahoo + loop gate. Gold means the Financier approved it.
       </p>
-      {board.picks.length === 0 ? (
-        <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>No picks this cycle.</p>
+      {ranked.length === 0 ? (
+        <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>
+          {(board.pickerUniverse?.length ?? 0) === 0 && !(board.pickerUniverseCount)
+            ? 'Add tickers, or run a scan on the Picker universe.'
+            : 'No picks this cycle.'}
+        </p>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {board.picks.map((p) => (
-            <PickCard key={p.ticker} pick={p} colors={colors} onPrefill={onPrefill} />
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {visible.map((p) => (
+            <PickRow
+              key={p.ticker}
+              pick={p}
+              approved={pickIsApproved(p.ticker, approved)}
+              colors={colors}
+              onPrefill={onPrefill}
+            />
           ))}
+          {hidden > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAll(true)}
+              style={{ ...ghostBtn(colors), alignSelf: 'flex-start', marginTop: 8 }}
+            >
+              Show {hidden} more
+            </button>
+          )}
         </div>
       )}
     </Card>
   );
 }
 
-function PickCard({
-  pick, colors, onPrefill,
+function PickRow({
+  pick, approved, colors, onPrefill,
 }: {
   pick: ValidatedPick;
+  approved: boolean;
   colors: ThemeColors;
   onPrefill: (draft: TradeDraft) => void;
 }) {
+  const [open, setOpen] = useState(approved);
   const loop = pick.loop;
   const yahoo = pick.quote?.price ?? null;
   const mark = yahoo ?? pick.pickerPrice ?? null;
   return (
-    <article style={{ border: `1px solid ${colors.border}`, padding: '10px 12px', borderRadius: radius.sm }}>
+    <article
+      data-testid="pick-row"
+      data-approved={approved ? 'true' : 'false'}
+      style={{
+        borderTop: `1px solid ${colors.border}`,
+        padding: '8px 0',
+      }}
+    >
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
-        <strong style={{ ...type.heading }}>{pick.ticker}</strong>
-        {pick.companyName && <span style={{ ...type.caption, color: colors.textMuted }}>{pick.companyName}</span>}
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            cursor: 'pointer',
+            fontFamily: font.body,
+            color: colors.text,
+            display: 'flex',
+            gap: 8,
+            alignItems: 'baseline',
+            flex: 1,
+            minWidth: 0,
+            textAlign: 'left',
+          }}
+        >
+          <strong style={{ fontSize: 13, fontWeight: 600 }}>{pick.ticker}</strong>
+          {pick.companyName && (
+            <span style={{ ...type.caption, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {pick.companyName}
+            </span>
+          )}
+        </button>
+        {approved && (
+          <span
+            data-testid="pick-financier-badge"
+            style={{
+              ...type.micro,
+              color: '#3d2e0a',
+              background: AGENT_TRIM.financier,
+              fontWeight: 700,
+              letterSpacing: '0.04em',
+              textTransform: 'uppercase',
+              padding: '2px 7px',
+              borderRadius: 999,
+            }}
+          >
+            Agent approved
+          </span>
+        )}
         {loop && (
           <span style={{ ...type.micro, color: loop.passed ? colors.success : colors.danger, fontWeight: 600 }}>
             {loop.passed ? 'loop pass' : 'loop kill'}
           </span>
         )}
-        {pick.priceMismatch && (
-          <span style={{ ...type.micro, color: colors.danger }}>price ≠ Yahoo</span>
-        )}
+        <span style={{ ...type.caption, color: colors.textMuted, ...tabularNums }}>
+          {fmtMoney(yahoo ?? pick.pickerPrice, pick.quote?.currency ?? undefined)}
+        </span>
         <button
           type="button"
           onClick={() => onPrefill({
@@ -1050,25 +1344,27 @@ function PickCard({
             editingId: null,
             source: null,
           })}
-          style={{ ...ghostBtn(colors), marginLeft: 'auto' }}
+          style={ghostBtn(colors)}
         >
           Prefill
         </button>
       </div>
-      <div style={{ ...type.caption, color: colors.textMuted, marginTop: 6, display: 'flex', gap: 12, flexWrap: 'wrap', ...tabularNums }}>
-        <span>Scan {fmtMoney(pick.pickerPrice)}</span>
-        <span>Yahoo {pick.quoteError ? pick.quoteError : fmtMoney(yahoo, pick.quote?.currency ?? undefined)}</span>
-        <span>RSI {pick.pickerRsi != null ? pick.pickerRsi.toFixed(1) : '—'}</span>
-        {pick.score != null && <span>Score {pick.score.toFixed(1)}</span>}
-      </div>
-      {pick.reason && (
-        <p style={{ ...type.caption, color: colors.textMuted, margin: '6px 0 0' }}>{pick.reason}</p>
-      )}
-      {loop && (
-        <p style={{ ...type.caption, color: colors.textMuted, margin: '4px 0 0' }}>
-          ICIR {fmtNum(loop.icir)} · half-life {loop.halfLifeDays != null ? `${loop.halfLifeDays.toFixed(1)}d` : '—'}
-          {loop.kills.length > 0 ? ` · ${loop.kills.join('; ')}` : ''}
-        </p>
+      {open && (
+        <div style={{ ...type.caption, color: colors.textMuted, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', ...tabularNums }}>
+            <span>Scan {fmtMoney(pick.pickerPrice)}</span>
+            <span>Yahoo {pick.quoteError ? pick.quoteError : fmtMoney(yahoo, pick.quote?.currency ?? undefined)}</span>
+            <span>RSI {pick.pickerRsi != null ? pick.pickerRsi.toFixed(1) : '—'}</span>
+            {pick.score != null && <span>Score {pick.score.toFixed(1)}</span>}
+          </div>
+          {pick.reason && <p style={{ margin: 0 }}>{pick.reason}</p>}
+          {loop && (
+            <p style={{ margin: 0 }}>
+              ICIR {fmtNum(loop.icir)} · half-life {loop.halfLifeDays != null ? `${loop.halfLifeDays.toFixed(1)}d` : '—'}
+              {loop.kills.length > 0 ? ` · ${loop.kills.join('; ')}` : ''}
+            </p>
+          )}
+        </div>
       )}
     </article>
   );
@@ -1361,21 +1657,81 @@ function NotesSection({
   );
 }
 
+function HoldingsSparkline({ values, colors }: { values: number[]; colors: ThemeColors }) {
+  if (values.length < 2) return null;
+  const W = 240;
+  const H = 40;
+  const poly = sparklinePolyline(values, W, H);
+  const zeroY = sparklineZeroY(values, H);
+  const n = values.length;
+  let sumX = 0;
+  let sumY = 0;
+  let sumXY = 0;
+  let sumXX = 0;
+  values.forEach((y, i) => {
+    sumX += i;
+    sumY += y;
+    sumXY += i * y;
+    sumXX += i * i;
+  });
+  const denom = n * sumXX - sumX * sumX || 1;
+  const slope = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+  const fitted = values.map((_, i) => intercept + slope * i);
+  const min = Math.min(0, ...values);
+  const max = Math.max(0, ...values);
+  const span = max - min || 1;
+  const pad = 2;
+  const innerW = Math.max(1, W - pad * 2);
+  const innerH = Math.max(1, H - pad * 2);
+  const yOf = (v: number) => pad + innerH - ((v - min) / span) * innerH;
+  const x0 = pad;
+  const x1 = pad + innerW;
+  const trend = `${x0.toFixed(1)},${yOf(fitted[0]).toFixed(1)} ${x1.toFixed(1)},${yOf(fitted[n - 1]).toFixed(1)}`;
+
+  return (
+    <svg
+      data-testid="holdings-sparkline"
+      viewBox={`0 0 ${W} ${H}`}
+      preserveAspectRatio="none"
+      width="100%"
+      height={40}
+      role="img"
+      aria-label="Holdings net P&L trend"
+      style={{ marginTop: 10, display: 'block' }}
+    >
+      {zeroY != null && (
+        <line x1={0} x2={W} y1={zeroY} y2={zeroY} stroke={colors.border} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+      )}
+      {poly && (
+        <polyline points={poly} fill="none" stroke={colors.success} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      )}
+      <polyline points={trend} fill="none" stroke={AGENT_TRIM.financier} strokeWidth={1.25} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
 function Card({
-  children, colors, warn,
+  children, colors, warn, testId,
 }: {
   children: ReactNode;
   colors: ThemeColors;
   warn?: boolean;
+  testId?: string;
 }) {
+  const { theme } = useTheme();
+  const veil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
   return (
-    <section style={{
-      background: colors.surface,
-      border: `1px solid ${warn ? warnFill(colors.warning, 0.45) : colors.border}`,
-      borderRadius: radius.md,
-      padding: '16px 18px',
-      boxShadow: colors.cardShadow,
-    }}
+    <section
+      data-testid={testId}
+      style={{
+        background: veil,
+        border: `1px solid ${warn ? warnFill(colors.warning, 0.45) : colors.border}`,
+        borderRadius: 10,
+        padding: '14px 16px',
+        overflow: 'hidden',
+        minWidth: 0,
+      }}
     >
       {children}
     </section>
@@ -1385,11 +1741,14 @@ function Card({
 function Hero({ colors, value, tone }: { colors: ThemeColors; value: string; tone?: string }) {
   return (
     <div style={{
-      ...type.title,
+      fontFamily: font.display,
+      fontSize: 19,
+      fontWeight: 600,
+      lineHeight: 1.15,
+      letterSpacing: '-0.015em',
       ...tabularNums,
       color: tone ?? colors.text,
-      letterSpacing: '-0.02em',
-      marginTop: 4,
+      marginTop: 2,
     }}
     >
       {value}
@@ -1438,7 +1797,17 @@ function Field({
 
 function SectionTitle({ children, colors }: { children: string; colors: ThemeColors }) {
   return (
-    <h2 style={{ ...type.heading, color: colors.text, margin: 0 }}>{children}</h2>
+    <h2 style={{
+      fontSize: 11,
+      fontWeight: 600,
+      color: colors.textMuted,
+      textTransform: 'uppercase',
+      letterSpacing: '0.06em',
+      margin: 0,
+    }}
+    >
+      {children}
+    </h2>
   );
 }
 

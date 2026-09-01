@@ -383,9 +383,12 @@ mod tests {
             details: "slow down".into(),
             retry_delay: None,
         };
+        let stream = ProviderError::stream_decode("error decoding response body");
         assert!(may_silent_precommit_failover(false, &net));
         assert!(may_silent_precommit_failover(false, &server));
         assert!(may_silent_precommit_failover(false, &rate));
+        assert!(may_silent_precommit_failover(false, &stream));
+        assert!(!may_silent_precommit_failover(true, &stream));
         assert!(!may_silent_precommit_failover(true, &net));
         assert!(!may_silent_precommit_failover(false, &billing_error()));
         assert!(!may_silent_precommit_failover(

@@ -7,10 +7,18 @@
 import SwiftUI
 
 @main
+@MainActor
 struct PermagentApp: App {
     @StateObject private var session = HubSession()
     @ObservedObject private var route = AppRoute.shared
     @State private var splashDone = false
+
+    init() {
+        // WatchConnectivity may launch the phone app in the background while
+        // the screen is locked. Install and activate the delegate before any
+        // SwiftUI view task or pairing bootstrap is allowed to run.
+        HubWatchRelay.shared.start()
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -227,6 +235,11 @@ struct MainTabs: View {
     // refresh() has finished (see HubSession.bootstrap / pair).
     @ObservedObject private var identity = AgentIdentity.shared
     @State private var tab: AppTab = .home
+    /// Versioned because v1 used the non-neural spectral print. Every install
+    /// gets this setup at most once; an existing learned hub print is detected
+    /// and completes without recording again.
+    @AppStorage("voiceIdentitySetupCompletedV2") private var voiceSetupCompleted = false
+    @State private var showVoiceSetup = false
     var body: some View {
         TabView(selection: $tab) {
             HomeView(tab: $tab).tabItem { Label("Home", systemImage: "circle.hexagongrid.fill") }
@@ -248,5 +261,14 @@ struct MainTabs: View {
         }
         .id(identity.displayName)
         .liquidGlassTabMinimize()
+        .onAppear {
+            if !voiceSetupCompleted { showVoiceSetup = true }
+        }
+        .fullScreenCover(isPresented: $showVoiceSetup) {
+            VoiceIdentityView(onboarding: true) {
+                voiceSetupCompleted = true
+                showVoiceSetup = false
+            }
+        }
     }
 }

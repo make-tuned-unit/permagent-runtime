@@ -17,6 +17,7 @@ pub mod prosody;
 pub mod provider;
 pub mod sherpa_backend;
 pub mod speakable;
+pub mod speaker_print;
 pub mod speech_normalize;
 pub mod spoken_verdict;
 pub mod user_lexicon;

@@ -7,7 +7,16 @@
 //!     Text: {"type":"stop"}
 //!     Text: {"type":"wake_start","sample_rate":16000}   (hands-free: begin keyword spotting)
 //!     Text: {"type":"wake_stop"}
+//!     Text: {"type":"enroll_start"}
+//!     Text: {"type":"enroll_done"}
+//!     Text: {"type":"enroll_skip"}
+//!     Text: {"type":"enroll_clear"}
 //!   Server → Client:
+//!     Text: {"type":"voice_print","enrolled":true|false}  (after ready)
+//!     Text: {"type":"enroll_status","have":1,"need":3,"prompt":"..."}
+//!     Text: {"type":"enrolled"}
+//!     Text: {"type":"enroll_retry","reason":"..."}
+//!     Text: {"type":"enroll_cleared"}
 //!     Text: {"type":"transcript","text":"..."}
 //!     Text: {"type":"reply_start"}
 //!     Binary: [tts pcm_f32le audio]
@@ -18,7 +27,7 @@
 //!     Text: {"type":"navigate",...}            (after narration; desktop only)
 //!     Text: {"type":"reply_end","sample_rate":24000}
 //!     Text: {"type":"error","message":"..."}
-//!     Text: {"type":"wake_status","active":true,"phrase":"Hey Henry"}
+//!     Text: {"type":"wake_status","active":true,"phrase":"Hey <agent>"}
 //!     Text: {"type":"wake","kind":"wake"|"stop"}        (keyword detected)
 //!     Text: {"type":"stopped"}                          (spoken stop cancelled the in-flight turn)
 //!
@@ -27,9 +36,15 @@
 //! never off-machine. Detections come back as `wake` events; a stop phrase
 //! that lands while a reply is still being generated cancels the turn
 //! server-side and is announced with `stopped`.
+//!
+//! Speaker print (N3): after `ready` the hub sends `voice_print`. iOS is the
+//! enrollment UI (three orb sentences). Desktop/watch share the same print
+//! and fail OPEN when none exists. On `stop`, if a print exists and cosine
+//! is below threshold, the hub sends `idle` and skips STT — same as empty
+//! speech. Score is logged; audio is not.
 
 use crate::routes::errors::ErrorResponse;
-use crate::state::{build_kokoro_tts, AppState, SharedTts};
+use crate::state::{build_kokoro_tts, AppState, SharedSpeakerVerifier, SharedTts};
 use crate::voice::provider::{AudioOutput, SttConfig, TtsConfig};
 use axum::{
     extract::{
@@ -62,6 +77,10 @@ pub const VOICE_REPLY_STYLE: &str =
      questions. For a story or a longer ask, keep going — do not stop at three \
      sentences to ask if they want more. Never say 'do you want me to continue', \
      'shall I go on', or any mid-reply continue offer; if there is more, say it. \
+     Complete the answer or action they actually asked for before offering any \
+     optional adjacent detail. Never replace the conclusion with a generic \
+     'there is more' cue. Use standard spoken spellings, not eye dialect such \
+     as 'doin'', 'gonna', or dropped final letters. \
      Speak as you would in a real conversation — with feeling, not a flat \
      reading: let a reaction through, vary the length of sentences, take a breath. \
      USE CONTRACTIONS the way people do: I'm, don't, should've, would've, it's, I'll, haven't. \
@@ -373,6 +392,11 @@ pub fn http_routes(state: Arc<AppState>) -> Router {
         .route("/voice/synthesize", post(synthesize_voice))
         .route("/voice/wake/models", get(wake_models_status))
         .route("/voice/wake/models/download", post(download_wake_models))
+        .route("/voice/speaker/models", get(speaker_models_status))
+        .route(
+            "/voice/speaker/models/download",
+            post(download_speaker_models),
+        )
         .route(
             "/voice/pronunciations",
             axum::routing::get(list_pronunciations).put(save_pronunciation_route),
@@ -617,6 +641,97 @@ async fn download_wake_models(
     Ok((code, Json(status)))
 }
 
+// ── Learned speaker identity model ─────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct SpeakerModelStatus {
+    pub models_present: bool,
+    pub verifier_loaded: bool,
+    pub enrolled: bool,
+    pub downloading: bool,
+}
+
+async fn current_speaker_status(state: &Arc<AppState>) -> SpeakerModelStatus {
+    let models_present =
+        crate::voice::speaker_print::SpeakerModelPaths::default_paths().models_exist();
+    let verifier_loaded = state.speaker_verifier.read().await.is_some();
+    let downloading = get_download_manager()
+        .get_progress(crate::voice::speaker_print::DOWNLOAD_ID)
+        .is_some_and(|p| p.status == DownloadStatus::Downloading);
+    SpeakerModelStatus {
+        models_present,
+        verifier_loaded,
+        enrolled: crate::voice::speaker_print::load().is_some(),
+        downloading,
+    }
+}
+
+async fn speaker_models_status(State(state): State<Arc<AppState>>) -> Json<SpeakerModelStatus> {
+    Json(current_speaker_status(&state).await)
+}
+
+async fn start_speaker_model_download(state: &Arc<AppState>) -> anyhow::Result<()> {
+    let paths = crate::voice::speaker_print::SpeakerModelPaths::default_paths();
+    if paths.models_exist() {
+        if state.speaker_verifier.read().await.is_none() {
+            let verifier =
+                tokio::task::spawn_blocking(crate::state::build_speaker_verifier).await?;
+            if let Some(verifier) = verifier {
+                *state.speaker_verifier.write().await = Some(verifier);
+            }
+        }
+        return Ok(());
+    }
+
+    let files = vec![permagent::download_manager::DownloadFile::new(
+        crate::voice::speaker_print::MODEL_URL,
+        paths.model_path,
+        Some(crate::voice::speaker_print::MODEL_SHA256.to_string()),
+    )];
+    let slot: SharedSpeakerVerifier = state.speaker_verifier.clone();
+    let on_complete: Box<dyn FnOnce() + Send + 'static> = Box::new(move || {
+        tokio::spawn(async move {
+            match tokio::task::spawn_blocking(crate::state::build_speaker_verifier).await {
+                Ok(Some(verifier)) => {
+                    *slot.write().await = Some(verifier);
+                    tracing::info!(
+                        target: "permagentd::voice",
+                        "CAM++ speaker identity model hot-loaded"
+                    );
+                }
+                _ => tracing::error!(
+                    target: "permagentd::voice",
+                    "Speaker identity model downloaded but failed to load"
+                ),
+            }
+        });
+    });
+    get_download_manager()
+        .download_model_sharded(
+            crate::voice::speaker_print::DOWNLOAD_ID.to_string(),
+            files,
+            crate::voice::speaker_print::MODEL_BYTES,
+            Some(on_complete),
+        )
+        .await?;
+    Ok(())
+}
+
+async fn download_speaker_models(
+    State(state): State<Arc<AppState>>,
+) -> Result<(StatusCode, Json<SpeakerModelStatus>), ErrorResponse> {
+    start_speaker_model_download(&state).await.map_err(|e| {
+        ErrorResponse::internal(format!("Speaker model download failed to start: {e}"))
+    })?;
+    let status = current_speaker_status(&state).await;
+    let code = if status.verifier_loaded {
+        StatusCode::OK
+    } else {
+        StatusCode::ACCEPTED
+    };
+    Ok((code, Json(status)))
+}
+
 // ── Standalone synth primitive ─────────────────────────────────────────────
 //
 // The one text→audio path that doesn't exist on the `/voice` WS (which only
@@ -854,6 +969,14 @@ enum ClientMessage {
     WakeStart { sample_rate: Option<u32> },
     #[serde(rename = "wake_stop")]
     WakeStop,
+    #[serde(rename = "enroll_start")]
+    EnrollStart,
+    #[serde(rename = "enroll_done")]
+    EnrollDone,
+    #[serde(rename = "enroll_skip")]
+    EnrollSkip,
+    #[serde(rename = "enroll_clear")]
+    EnrollClear,
 }
 
 #[derive(Serialize)]
@@ -895,7 +1018,7 @@ enum ServerMessage {
     #[serde(rename = "ready")]
     Ready,
     /// Wake-listening state after a `wake_start`/`wake_stop`. `phrase` is the
-    /// human-readable wake phrase (e.g. "Hey Henry") for the UI hint; `reason`
+    /// human-readable wake phrase derived from the persona for the UI hint; `reason`
     /// explains inactivity ("downloading" while the model fetch runs).
     #[serde(rename = "wake_status")]
     WakeStatus {
@@ -916,6 +1039,28 @@ enum ServerMessage {
     /// The word was stored (or skipped). Clear the Orb placement.
     #[serde(rename = "taught")]
     Taught { word: String },
+    #[serde(rename = "voice_print")]
+    VoicePrint {
+        enrolled: bool,
+        available: bool,
+        downloading: bool,
+    },
+    /// Learned identity rejected this talker. Unlike generic idle, clients use
+    /// this to require a short quiet interval before VAD can open again.
+    #[serde(rename = "speaker_rejected")]
+    SpeakerRejected,
+    #[serde(rename = "enroll_status")]
+    EnrollStatus {
+        have: usize,
+        need: usize,
+        prompt: Option<String>,
+    },
+    #[serde(rename = "enrolled")]
+    Enrolled,
+    #[serde(rename = "enroll_retry")]
+    EnrollRetry { reason: String },
+    #[serde(rename = "enroll_cleared")]
+    EnrollCleared,
 }
 
 /// RAII cleanup for navigation interception: guarantees the session's entry is
@@ -951,6 +1096,77 @@ impl Drop for VoiceOriginGuard {
 
 fn send_json(msg: &ServerMessage) -> Message {
     Message::Text(serde_json::to_string(msg).unwrap().into())
+}
+
+fn enroll_status_msg(have: usize) -> ServerMessage {
+    ServerMessage::EnrollStatus {
+        have,
+        need: crate::voice::speaker_print::NEED_UTTERANCES,
+        prompt: crate::voice::speaker_print::prompt_at(have).map(str::to_string),
+    }
+}
+
+async fn voice_print_msg(state: &Arc<AppState>) -> ServerMessage {
+    let status = current_speaker_status(state).await;
+    ServerMessage::VoicePrint {
+        enrolled: status.enrolled,
+        available: status.verifier_loaded,
+        downloading: status.downloading,
+    }
+}
+
+async fn speaker_embedding(
+    state: &Arc<AppState>,
+    samples: &[f32],
+    sample_rate: u32,
+) -> anyhow::Result<Option<Vec<f32>>> {
+    let verifier = state
+        .speaker_verifier
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("learned speaker verifier is not loaded"))?;
+    let owned = samples.to_vec();
+    tokio::task::spawn_blocking(move || verifier.extract(&owned, sample_rate)).await?
+}
+
+async fn learned_speaker_gate(
+    state: &Arc<AppState>,
+    samples: &[f32],
+    sample_rate: u32,
+) -> crate::voice::speaker_print::Gate {
+    let Some(print) = crate::voice::speaker_print::load() else {
+        return crate::voice::speaker_print::Gate::Open;
+    };
+    match speaker_embedding(state, samples, sample_rate).await {
+        Ok(Some(embedding)) => crate::voice::speaker_print::gate_against(Some(&print), &embedding),
+        Ok(None) | Err(_) => crate::voice::speaker_print::Gate::Unavailable,
+    }
+}
+
+fn early_speaker_gate_ready(
+    enrolling: bool,
+    already_checked: bool,
+    enrolled: bool,
+    samples: usize,
+    sample_rate: u32,
+) -> bool {
+    !enrolling
+        && !already_checked
+        && enrolled
+        && sample_rate > 0
+        && samples >= sample_rate as usize * 2
+}
+
+/// Re-place a parked word after reconnect. iOS barge-in closes the socket
+/// (this morning: teach at 11:14:29, close 1001 at 11:14:34) and the new
+/// socket used to never send `teach` again — the agent still spoke ASK_FIRST
+/// on the dying socket, then the orb came back empty.
+fn pending_teach_msg(session_id: &str) -> Option<ServerMessage> {
+    let pending = permagent::events::voice_pronounce::peek(session_id)?;
+    Some(ServerMessage::Teach {
+        word: permagent::events::voice_pronounce::display_word(&pending.word),
+    })
 }
 
 /// Push any captured clipboard bodies down this socket NOW. The caller
@@ -1028,6 +1244,15 @@ async fn handle_voice_socket(
         tracing::warn!(target: "permagentd::voice", "Failed to send ready — client disconnected");
         return;
     }
+    let _ = socket.send(send_json(&voice_print_msg(&state).await)).await;
+    let remainder_key = session_id.as_deref().unwrap_or("voice-anon");
+    if let Some(teach) = pending_teach_msg(remainder_key) {
+        tracing::info!(
+            target: "permagentd::voice",
+            "replaying pending teach after connect"
+        );
+        let _ = socket.send(send_json(&teach)).await;
+    }
 
     // Load proper-noun dictionary from Brain for post-STT correction.
     let entity_dict = if let Some(ref brain) = state.brain {
@@ -1054,7 +1279,13 @@ async fn handle_voice_socket(
 
     let mut audio_buffer: Vec<f32> = Vec::new();
     let mut recording = false;
+    // Set after the early 2s learned-speaker check. An admitted turn does not
+    // pay for the same embedding again at Stop.
+    let mut speaker_gate: Option<crate::voice::speaker_print::Gate> = None;
     let mut client_sample_rate: u32 = 16000;
+    // Per-socket enrollment buffer. `Some` means Stop collects a print
+    // utterance and must not run STT or the pronunciation teach path.
+    let mut enroll: Option<Vec<Vec<f32>>> = None;
     // Cancellation flag: set when the socket closes to abort in-flight TTS work.
     // Prevents a stale handler from holding the TTS mutex while a new handler
     // starts on a reconnected socket.
@@ -1083,6 +1314,7 @@ async fn handle_voice_socket(
                     Ok(ClientMessage::Start { sample_rate }) => {
                         audio_buffer.clear();
                         recording = true;
+                        speaker_gate = None;
                         client_sample_rate = sample_rate.unwrap_or(16000);
                         tracing::info!(target: "permagentd::voice", "Recording started, sample_rate={}", client_sample_rate);
                     }
@@ -1113,10 +1345,93 @@ async fn handle_voice_socket(
                             continue;
                         }
 
-                        // --- STT ---
-                        let stt_start = std::time::Instant::now();
                         let samples = std::mem::take(&mut audio_buffer);
                         let sr = client_sample_rate;
+
+                        // Enrollment collects a print. Never STT, never agent,
+                        // never pronunciation teach — setup is a separate surface.
+                        if let Some(ref mut collected) = enroll {
+                            match speaker_embedding(&state, &samples, sr).await {
+                                Ok(Some(emb)) => {
+                                    collected.push(emb);
+                                    let have = collected.len();
+                                    tracing::info!(
+                                        target: "permagentd::voice",
+                                        "speaker_print enroll have={have} need={}",
+                                        crate::voice::speaker_print::NEED_UTTERANCES
+                                    );
+                                    let _ = socket.send(send_json(&enroll_status_msg(have))).await;
+                                }
+                                Ok(None) => {
+                                    let _ = socket
+                                        .send(send_json(&ServerMessage::EnrollRetry {
+                                            reason: "That was too short — say the full sentence."
+                                                .into(),
+                                        }))
+                                        .await;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        target: "permagentd::voice",
+                                        "speaker enrollment inference failed: {e}"
+                                    );
+                                    let _ = socket
+                                        .send(send_json(&ServerMessage::EnrollRetry {
+                                            reason: "Voice identity isn't ready yet. Try again in a moment."
+                                                .into(),
+                                        }))
+                                        .await;
+                                }
+                            }
+                            let _ = socket.send(send_json(&ServerMessage::Idle)).await;
+                            continue;
+                        }
+
+                        // Gate other talkers before STT so a reject feels like
+                        // empty speech (idle), not a 4 s think. No print → open.
+                        let gate_start = std::time::Instant::now();
+                        let gate = match speaker_gate.take() {
+                            Some(gate) => gate,
+                            None => learned_speaker_gate(&state, &samples, sr).await,
+                        };
+                        let gate_ms = gate_start.elapsed().as_millis();
+                        match gate {
+                            crate::voice::speaker_print::Gate::Reject { score } => {
+                                tracing::info!(
+                                    target: "permagentd::voice",
+                                    "speaker_print reject score={score:.3} gate_ms={gate_ms}"
+                                );
+                                let _ = socket
+                                    .send(send_json(&ServerMessage::SpeakerRejected))
+                                    .await;
+                                continue;
+                            }
+                            crate::voice::speaker_print::Gate::Admit { score } => {
+                                tracing::info!(
+                                    target: "permagentd::voice",
+                                    "speaker_print admit score={score:.3} gate_ms={gate_ms}"
+                                );
+                            }
+                            crate::voice::speaker_print::Gate::Open => {
+                                tracing::debug!(
+                                    target: "permagentd::voice",
+                                    "speaker_print open gate_ms={gate_ms}"
+                                );
+                            }
+                            crate::voice::speaker_print::Gate::Unavailable => {
+                                tracing::warn!(
+                                    target: "permagentd::voice",
+                                    "speaker_print unavailable gate_ms={gate_ms}; enrolled identity fails closed"
+                                );
+                                let _ = socket
+                                    .send(send_json(&ServerMessage::SpeakerRejected))
+                                    .await;
+                                continue;
+                            }
+                        }
+
+                        // --- STT ---
+                        let stt_start = std::time::Instant::now();
                         let stt_ref = stt.clone();
                         let transcript = tokio::task::spawn_blocking(move || {
                             stt_ref.transcribe(&samples, sr, &SttConfig::default())
@@ -1176,7 +1491,6 @@ async fn handle_voice_socket(
 
                         // Unspoken leftover from a spoken-budget cut. "Continue."
                         // last night started a cold agent turn and lost the story.
-                        let remainder_key = session_id.as_deref().unwrap_or("voice-anon");
 
                         // Listen-once: we asked how a name is said. This turn
                         // is the pronunciation, not a new story beat.
@@ -1279,7 +1593,7 @@ async fn handle_voice_socket(
 
                         // Spoken yes/no while a decision is waiting: settle it
                         // as the user (this socket is their own hand) instead of
-                        // sending the transcript to Henry, who cannot answer
+                        // sending the transcript to the agent, which cannot answer
                         // Tier-2 / live-channel kinds.
                         if let Some(verdict) =
                             crate::voice::spoken_verdict::spoken_decision_verdict(&transcript)
@@ -1430,6 +1744,125 @@ async fn handle_voice_socket(
                     Ok(ClientMessage::WakeStop) => {
                         wake = None;
                     }
+                    Ok(ClientMessage::EnrollStart) => {
+                        audio_buffer.clear();
+                        recording = false;
+                        speaker_gate = None;
+                        if state.speaker_verifier.read().await.is_none() {
+                            if let Err(e) = start_speaker_model_download(&state).await {
+                                tracing::warn!(
+                                    target: "permagentd::voice",
+                                    "speaker model auto-download failed to start: {e}"
+                                );
+                            }
+                            if state.speaker_verifier.read().await.is_none() {
+                                enroll = None;
+                                let _ = socket
+                                    .send(send_json(&ServerMessage::EnrollRetry {
+                                        reason: "Preparing voice identity. This setup will continue when the model is ready."
+                                            .into(),
+                                    }))
+                                    .await;
+                                let _ =
+                                    socket.send(send_json(&voice_print_msg(&state).await)).await;
+                                continue;
+                            }
+                        }
+                        enroll = Some(Vec::new());
+                        tracing::info!(
+                            target: "permagentd::voice",
+                            "speaker_print enroll start"
+                        );
+                        let _ = socket.send(send_json(&enroll_status_msg(0))).await;
+                    }
+                    Ok(ClientMessage::EnrollDone) => match enroll.take() {
+                        Some(collected)
+                            if collected.len() >= crate::voice::speaker_print::NEED_UTTERANCES =>
+                        {
+                            match crate::voice::speaker_print::from_utterances(&collected) {
+                                Some(print) => match crate::voice::speaker_print::save(&print) {
+                                    Ok(()) => {
+                                        tracing::info!(
+                                            target: "permagentd::voice",
+                                            "speaker_print enrolled n={}",
+                                            print.n_utterances
+                                        );
+                                        let _ =
+                                            socket.send(send_json(&ServerMessage::Enrolled)).await;
+                                        let _ = socket
+                                            .send(send_json(&voice_print_msg(&state).await))
+                                            .await;
+                                    }
+                                    Err(e) => {
+                                        enroll = Some(collected);
+                                        let _ = socket
+                                            .send(send_json(&ServerMessage::EnrollRetry {
+                                                reason: format!(
+                                                    "Couldn't save the voice print: {e}"
+                                                ),
+                                            }))
+                                            .await;
+                                    }
+                                },
+                                None => {
+                                    enroll = Some(collected);
+                                    let _ = socket
+                                        .send(send_json(&ServerMessage::EnrollRetry {
+                                            reason: "Those three takes didn't line up — try again."
+                                                .into(),
+                                        }))
+                                        .await;
+                                }
+                            }
+                        }
+                        Some(collected) => {
+                            let have = collected.len();
+                            enroll = Some(collected);
+                            let _ = socket
+                                .send(send_json(&ServerMessage::EnrollRetry {
+                                    reason: format!(
+                                        "Say all {} sentences first ({have} so far).",
+                                        crate::voice::speaker_print::NEED_UTTERANCES
+                                    ),
+                                }))
+                                .await;
+                            let _ = socket.send(send_json(&enroll_status_msg(have))).await;
+                        }
+                        None => {
+                            let _ = socket
+                                .send(send_json(&ServerMessage::EnrollRetry {
+                                    reason: "Start enrollment first.".into(),
+                                }))
+                                .await;
+                        }
+                    },
+                    Ok(ClientMessage::EnrollSkip) => {
+                        enroll = None;
+                        recording = false;
+                        audio_buffer.clear();
+                        tracing::info!(
+                            target: "permagentd::voice",
+                            "speaker_print enroll skip"
+                        );
+                        let _ = socket.send(send_json(&voice_print_msg(&state).await)).await;
+                    }
+                    Ok(ClientMessage::EnrollClear) => {
+                        enroll = None;
+                        recording = false;
+                        audio_buffer.clear();
+                        if let Err(e) = crate::voice::speaker_print::clear() {
+                            tracing::warn!(
+                                target: "permagentd::voice",
+                                "speaker_print clear failed: {e}"
+                            );
+                        }
+                        tracing::info!(
+                            target: "permagentd::voice",
+                            "speaker_print enroll cleared"
+                        );
+                        let _ = socket.send(send_json(&ServerMessage::EnrollCleared)).await;
+                        let _ = socket.send(send_json(&voice_print_msg(&state).await)).await;
+                    }
                     Err(e) => {
                         tracing::warn!(target: "permagentd::voice", "Invalid voice message: {}", e);
                     }
@@ -1441,6 +1874,56 @@ async fn handle_voice_socket(
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect();
                 audio_buffer.extend_from_slice(&chunk);
+                // Do not let a wrong speaker hold the client open until the
+                // 60-second cap. Once two seconds are available, run CAM++ and
+                // terminate the capture immediately on rejection. Enrollment
+                // clips are intentionally exempt from their own identity gate.
+                if early_speaker_gate_ready(
+                    enroll.is_some(),
+                    speaker_gate.is_some(),
+                    crate::voice::speaker_print::load().is_some(),
+                    audio_buffer.len(),
+                    client_sample_rate,
+                ) {
+                    let gate_started = std::time::Instant::now();
+                    let gate =
+                        learned_speaker_gate(&state, &audio_buffer, client_sample_rate).await;
+                    let gate_ms = gate_started.elapsed().as_millis();
+                    match gate {
+                        crate::voice::speaker_print::Gate::Admit { score } => {
+                            tracing::info!(
+                                target: "permagentd::voice",
+                                "speaker_print early_admit score={score:.3} gate_ms={gate_ms}"
+                            );
+                            speaker_gate = Some(gate);
+                        }
+                        crate::voice::speaker_print::Gate::Reject { score } => {
+                            tracing::info!(
+                                target: "permagentd::voice",
+                                "speaker_print early_reject score={score:.3} gate_ms={gate_ms}"
+                            );
+                            recording = false;
+                            audio_buffer.clear();
+                            let _ = socket
+                                .send(send_json(&ServerMessage::SpeakerRejected))
+                                .await;
+                        }
+                        crate::voice::speaker_print::Gate::Unavailable => {
+                            tracing::warn!(
+                                target: "permagentd::voice",
+                                "speaker_print early_unavailable gate_ms={gate_ms}; failing closed"
+                            );
+                            recording = false;
+                            audio_buffer.clear();
+                            let _ = socket
+                                .send(send_json(&ServerMessage::SpeakerRejected))
+                                .await;
+                        }
+                        crate::voice::speaker_print::Gate::Open => {
+                            speaker_gate = Some(gate);
+                        }
+                    }
+                }
                 if audio_buffer.len() % 16000 < chunk.len() {
                     tracing::debug!(
                         target: "permagentd::voice",
@@ -1500,14 +1983,14 @@ fn truncate_str(s: &str, max_chars: usize) -> &str {
     }
 }
 
-/// Default cap on how many sentences are SPOKEN in one turn.
+/// Emergency cap on how many sentences are spoken in one turn.
 ///
-/// The full reply always reaches the client as `ReplyText`. Eight sentences
-/// is roughly 40 seconds of Kokoro speech — long for a spoken answer, and
-/// well past the "1-3 sentences" the system prompt asks for. The cue when
-/// this cap hits is origin-aware ([`permagent::events::voice_origin::budget_notice`])
-/// so a phone listener is not told the rest is on a Mac screen.
-const DEFAULT_MAX_SPOKEN_SENTENCES: u32 = 8;
+/// Voice replies are prompted to be concise and the listener can barge in.
+/// Cutting an otherwise complete answer at eight sentences made the runtime
+/// announce "there's more" before it had delivered its conclusion. A very
+/// high guard still bounds a pathological model loop without shaping ordinary
+/// conversation; its cue remains origin-aware.
+const DEFAULT_MAX_SPOKEN_SENTENCES: u32 = 100;
 
 /// Config key (`~/.permagent/config.yaml`) overriding the spoken-length budget.
 /// Clamped to [1, 100]; 0 would mute replies entirely, which is never intended.
@@ -1715,7 +2198,7 @@ async fn stream_reply_with_tts(
     let reply_setup_ms = t_reply.elapsed().as_millis();
     tracing::info!(
         target: "permagentd::voice",
-        "  pipeline: setup={}ms ctx+recall={}ms reply_setup={}ms (total pre-stream={}ms)",
+        "  pipeline: setup={}ms ctx+recall={}ms reply_setup={}ms (speech-end-to-stream={}ms)",
         setup_ms, ctx_recall_ms, reply_setup_ms,
         pipeline_start.elapsed().as_millis()
     );
@@ -2528,7 +3011,9 @@ pub fn find_speakable_boundary(text: &str, first_chunk: bool) -> Option<(usize, 
     while let Some((i, ch)) = iter.next() {
         if (ch == '.' || ch == '!' || ch == '?') && i >= sentence_min {
             let after = iter.peek().map(|(_, c)| *c);
-            if after.is_none() || after == Some(' ') || after == Some('\n') {
+            if (after.is_none() || after == Some(' ') || after == Some('\n'))
+                && !(ch == '.' && period_is_mid_sentence_initialism(text, i))
+            {
                 return Some((i, i + ch.len_utf8()));
             }
         }
@@ -2559,6 +3044,26 @@ pub fn find_speakable_boundary(text: &str, first_chunk: bool) -> Option<(usize, 
     }
 
     None
+}
+
+/// `U.S. tariffs` and similar initialisms are not sentence endings. Streaming
+/// at the second period produced a standalone "The U.S." TTS buffer in the
+/// live 2026-08-28 session, making the following predicate sound detached.
+/// Only suppress the boundary when the next non-space character is lowercase;
+/// `I moved to the U.S. Canada came next.` still ends where it should.
+fn period_is_mid_sentence_initialism(text: &str, period_at: usize) -> bool {
+    let bytes = text.as_bytes();
+    if period_at < 3
+        || bytes.get(period_at) != Some(&b'.')
+        || !bytes[period_at - 1].is_ascii_uppercase()
+        || bytes[period_at - 2] != b'.'
+        || !bytes[period_at - 3].is_ascii_uppercase()
+    {
+        return false;
+    }
+    text.get(period_at + 1..)
+        .and_then(|tail| tail.chars().find(|ch| !ch.is_whitespace()))
+        .is_some_and(|ch| ch.is_lowercase())
 }
 
 #[cfg(test)]
@@ -2686,6 +3191,17 @@ mod tests {
     }
 
     #[test]
+    fn initialism_period_does_not_split_a_sentence_mid_predicate() {
+        let text = "The U.S. has imposed new tariffs.";
+        let (end, _) = find_speakable_boundary(text, false).expect("final sentence boundary");
+        assert_eq!(text.get(..=end), Some(text));
+
+        let two = "I moved to the U.S. Canada came next.";
+        let (end, _) = find_speakable_boundary(two, false).expect("first sentence boundary");
+        assert_eq!(two.get(..=end), Some("I moved to the U.S."));
+    }
+
+    #[test]
     fn prepare_spoken_strips_delivery_tags() {
         let (speech, speed) = prepare_spoken("[excited] We shipped it!").unwrap();
         assert_eq!(speech, "We shipped it!");
@@ -2711,6 +3227,66 @@ mod tests {
         })
         .unwrap();
         assert_eq!(taught["type"], "taught");
+    }
+
+    #[test]
+    fn reconnect_replays_a_parked_teach_word() {
+        let sid = "teach-replay-test";
+        permagent::events::voice_pronounce::clear(sid);
+        permagent::events::voice_pronounce::begin(sid, "Elspeth", None);
+        let msg = pending_teach_msg(sid).expect("parked teach");
+        let v = serde_json::to_value(msg).unwrap();
+        assert_eq!(v["type"], "teach");
+        assert_eq!(v["word"], "Elspeth");
+        permagent::events::voice_pronounce::clear(sid);
+        assert!(pending_teach_msg(sid).is_none());
+    }
+
+    #[test]
+    fn enroll_client_frames_deserialize() {
+        for ty in ["enroll_start", "enroll_done", "enroll_skip", "enroll_clear"] {
+            let raw = format!(r#"{{"type":"{ty}"}}"#);
+            serde_json::from_str::<ClientMessage>(&raw).unwrap_or_else(|e| panic!("{ty}: {e}"));
+        }
+    }
+
+    #[test]
+    fn enroll_server_frames_are_not_teach() {
+        let status = serde_json::to_value(enroll_status_msg(0)).unwrap();
+        assert_eq!(status["type"], "enroll_status");
+        assert_eq!(status["have"], 0);
+        assert_eq!(status["need"], 3);
+        assert_eq!(status["prompt"], crate::voice::speaker_print::PROMPTS[0]);
+        let enrolled = serde_json::to_value(ServerMessage::Enrolled).unwrap();
+        assert_eq!(enrolled["type"], "enrolled");
+        assert!(enrolled.get("word").is_none());
+        let print = serde_json::to_value(ServerMessage::VoicePrint {
+            enrolled: false,
+            available: true,
+            downloading: false,
+        })
+        .unwrap();
+        assert_eq!(print["type"], "voice_print");
+        assert_eq!(print["enrolled"], serde_json::json!(false));
+        assert_eq!(print["available"], serde_json::json!(true));
+        assert_eq!(print["downloading"], serde_json::json!(false));
+        let rejected = serde_json::to_value(ServerMessage::SpeakerRejected).unwrap();
+        assert_eq!(rejected["type"], "speaker_rejected");
+        assert!(rejected.get("message").is_none());
+    }
+
+    #[test]
+    fn early_speaker_gate_waits_for_two_seconds_and_never_gates_enrollment() {
+        assert!(!early_speaker_gate_ready(
+            false, false, true, 31_999, 16_000
+        ));
+        assert!(early_speaker_gate_ready(false, false, true, 32_000, 16_000));
+        assert!(!early_speaker_gate_ready(true, false, true, 64_000, 16_000));
+        assert!(!early_speaker_gate_ready(false, true, true, 64_000, 16_000));
+        assert!(!early_speaker_gate_ready(
+            false, false, false, 64_000, 16_000
+        ));
+        assert!(!early_speaker_gate_ready(false, false, true, 64_000, 0));
     }
 
     /// 20260821_14: empty STT must serialize as `idle`, never the toast string.
@@ -2855,6 +3431,15 @@ mod tests {
             assert_eq!(digest.len(), 64);
             assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()));
         }
+    }
+
+    #[test]
+    fn speaker_identity_url_and_digest_pass_download_policy() {
+        permagent::download_manager::validate_download_url(crate::voice::speaker_print::MODEL_URL)
+            .expect("CAM++ URL must be allowlisted");
+        let digest = crate::voice::speaker_print::MODEL_SHA256;
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 
     /// End-to-end proof that the shipping Kokoro release URL fetches via the

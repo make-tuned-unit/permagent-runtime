@@ -91,6 +91,7 @@ pub mod project_stack;
 pub mod projects;
 pub mod prompt_template;
 pub mod providers;
+pub mod public_apis;
 pub mod python_runtime;
 pub mod reader;
 pub mod recipe;

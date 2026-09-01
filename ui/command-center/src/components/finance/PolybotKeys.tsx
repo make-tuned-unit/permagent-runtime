@@ -3,6 +3,7 @@ import { api } from '../../lib/api';
 import { font, radius, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
+import { requiredKeysSet } from './financeLabs';
 
 export const POLYBOT_SECRET_FIELDS: Array<{
   key: string;
@@ -33,6 +34,7 @@ export function PolybotKeys({
   const [rows, setRows] = useState<Record<string, Row>>(() =>
     Object.fromEntries(POLYBOT_SECRET_FIELDS.map((f) => [f.key, blank()])),
   );
+  const [editing, setEditing] = useState<string | null>(null);
 
   const patch = (key: string, next: Partial<Row>) =>
     setRows((prev) => ({ ...prev, [key]: { ...prev[key], ...next } }));
@@ -57,6 +59,7 @@ export function PolybotKeys({
     try {
       await api.upsertConfig(key, value, true);
       patch(key, { input: '', masked: '' });
+      setEditing(null);
       await refresh();
       onChanged?.();
     } catch (e) {
@@ -70,6 +73,7 @@ export function PolybotKeys({
     patch(key, { busy: true, error: '' });
     try {
       await api.removeConfig(key, true);
+      setEditing(null);
       await refresh();
       onChanged?.();
     } catch (e) {
@@ -79,49 +83,50 @@ export function PolybotKeys({
     }
   };
 
+  const maskedMap = Object.fromEntries(
+    POLYBOT_SECRET_FIELDS.map((f) => [f.key, rows[f.key]?.masked ?? '']),
+  );
+  const { have, need } = requiredKeysSet(POLYBOT_SECRET_FIELDS, maskedMap);
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: compact ? 8 : 10 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: compact ? 6 : 8 }} data-testid="polybot-keys">
       <p style={{ ...type.caption, color: colors.textMuted, margin: 0, lineHeight: 1.45 }}>
-        Stored in the macOS keychain under Permagent. Never written to chat, the
+        {have} of {need} required keys in the keychain. Never written to chat, the
         LaunchAgent plist, or git.
       </p>
       {POLYBOT_SECRET_FIELDS.map((f) => {
         const r = rows[f.key];
         const saved = Boolean(r.masked);
+        const open = editing === f.key;
         return (
-          <div key={f.key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline' }}>
-              <span style={{ ...type.caption, color: colors.text, fontWeight: 600 }}>
+          <div key={f.key} data-testid="polybot-key-row" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', minHeight: 22 }}>
+              <span style={{ ...type.caption, color: colors.text, fontWeight: 600, flex: '0 1 140px' }}>
                 {f.label}
                 {f.required ? '' : ' · optional'}
               </span>
-              <span style={{ ...type.caption, color: saved ? colors.success : colors.textMuted, fontFamily: font.mono }}>
+              <span
+                style={{
+                  ...type.caption,
+                  color: saved ? colors.success : colors.textMuted,
+                  fontFamily: font.mono,
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
                 {saved ? r.masked : 'not set'}
               </span>
-            </div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <input
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                value={r.input}
-                onChange={(e) => patch(f.key, { input: e.target.value })}
-                placeholder={saved ? 'replace…' : f.hint}
-                style={{
-                  flex: 1, fontFamily: font.mono, fontSize: 11, color: colors.text,
-                  background: colors.inputBg, border: `1px solid ${colors.border}`,
-                  borderRadius: radius.sm, padding: '6px 8px', outline: 'none',
-                }}
-              />
               <button
                 type="button"
-                disabled={r.busy || !r.input.trim()}
-                onClick={() => void save(f.key)}
-                style={keyBtn(colors, true)}
+                onClick={() => setEditing(open ? null : f.key)}
+                style={keyBtn(colors, false)}
               >
-                {r.busy ? '…' : 'Save'}
+                {open ? 'Cancel' : saved ? 'Replace' : 'Add'}
               </button>
-              {saved && (
+              {saved && !open && (
                 <button
                   type="button"
                   disabled={r.busy}
@@ -132,6 +137,31 @@ export function PolybotKeys({
                 </button>
               )}
             </div>
+            {open && (
+              <div data-testid="polybot-key-editor" style={{ display: 'flex', gap: 6 }}>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={r.input}
+                  onChange={(e) => patch(f.key, { input: e.target.value })}
+                  placeholder={f.hint}
+                  style={{
+                    flex: 1, fontFamily: font.mono, fontSize: 11, color: colors.text,
+                    background: colors.inputBg, border: `1px solid ${colors.border}`,
+                    borderRadius: radius.sm, padding: '6px 8px', outline: 'none',
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={r.busy || !r.input.trim()}
+                  onClick={() => void save(f.key)}
+                  style={keyBtn(colors, true)}
+                >
+                  {r.busy ? '…' : 'Save'}
+                </button>
+              </div>
+            )}
             {r.error && (
               <div style={{ ...type.caption, color: colors.danger }}>{r.error}</div>
             )}
@@ -146,11 +176,12 @@ function keyBtn(colors: ThemeColors, primary: boolean): CSSProperties {
   return {
     fontFamily: font.body,
     fontSize: 11,
-    padding: '6px 10px',
+    padding: '4px 8px',
     borderRadius: radius.sm,
     border: `1px solid ${primary ? colors.cyan : colors.border}`,
     color: primary ? colors.cyan : colors.textMuted,
     background: 'transparent',
     cursor: 'pointer',
+    flexShrink: 0,
   };
 }

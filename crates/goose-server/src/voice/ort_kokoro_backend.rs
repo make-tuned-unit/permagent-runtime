@@ -248,6 +248,15 @@ fn technical_lexicon() -> PronunciationLexicon {
         ("url", "jˌuːˌɑːrˈɛl"),
         ("cli", "sˌiːˌɛlˈaɪ"),
         ("uuid", "jˌuːjˌuːˌaɪdˈiː"),
+        // Exact unresolved tokens from the 2026-08-28 iPhone transcript.
+        // Without these misaki spells each one aloud letter by letter; the
+        // logs showed `gpt`, `seo`, and colloquial `doin` reaching that path.
+        ("gpt", "ʤˌiːpˌiːtˈiː"),
+        ("chatgpt", "tʃˈæt ʤˌiːpˌiːtˈiː"),
+        ("seo", "ˌɛsˌiːˈəʊ"),
+        ("usa", "jˌuːˌɛsˈeɪ"),
+        ("doin", "dˈuːɪŋ"),
+        ("doin'", "dˈuːɪŋ"),
     ])
 }
 
@@ -895,6 +904,22 @@ mod tests {
                 "{word} should sound like {respelling}"
             );
         }
+    }
+
+    #[test]
+    fn live_session_acronyms_and_dropped_g_do_not_fall_back_to_spelling() {
+        let g2p = real_g2p();
+        let lex = technical_lexicon();
+        let (_, unresolved) = phonemize(
+            &g2p,
+            "ChatGPT referrals, SEO, USA, and I'm doin' well.",
+            &lex,
+        )
+        .unwrap();
+        assert!(
+            unresolved.is_empty(),
+            "live-session words must have explicit speech forms: {unresolved:?}"
+        );
     }
 
     /// "coworking" is IN misaki's dictionary and WRONG there — kˈaʊɜːkɪŋ, the

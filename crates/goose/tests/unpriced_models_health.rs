@@ -33,7 +33,8 @@ use permagent::providers::canonical::{cost_of, maybe_get_pricing, worst_case_pri
 /// Providers whose models run on this machine (or are otherwise not billed
 /// per token), where a missing price is CORRECT rather than a hole.
 /// `agents::reply_parts::is_local_provider` is the runtime counterpart.
-const LOCAL_OR_FREE_PROVIDERS: &[&str] = &["ollama", "local", "lmstudio", "llama_swap"];
+const LOCAL_OR_FREE_PROVIDERS: &[&str] =
+    &["ollama", "local", "lmstudio", "llama_swap", "qwen38_split"];
 
 fn is_local_or_free(provider: &str) -> bool {
     let p = provider.to_ascii_lowercase();

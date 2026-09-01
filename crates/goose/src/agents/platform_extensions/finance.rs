@@ -263,6 +263,10 @@ impl FinanceClient {
                  The Orchestrator (the main session) can see this tab and will query you. \
                  Answer with your tools — do not send them to look it up themselves. \
                  You own the numbers.\n\n\
+                 Public data sources the user enabled under Settings → Data sources \
+                 (Finance, crypto, …) flow here automatically. Call them with \
+                 public_api_call; public_api_list shows what is on. The Orchestrator \
+                 can call every enabled source, not only finance.\n\n\
                  You never size a position yourself. You cannot place an order except by \
                  starting the user's Polybot, which can.",
             );
