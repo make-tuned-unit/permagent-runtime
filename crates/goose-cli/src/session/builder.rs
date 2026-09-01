@@ -503,6 +503,26 @@ fn startup_failover(
     ))
 }
 
+/// Put a startup-failover notice where this session's reader will actually
+/// find it, and return it when the caller still has to file it.
+///
+/// Interactive gets the terminal print and nothing else — the user is looking
+/// at the terminal, and the footer will agree with it from the first turn.
+/// Headless has neither: `render_notice` writes to a tty nobody reads, and a
+/// scheduled recipe or Build-tab launch has no footer at all. So the sentence
+/// goes to stderr (the harness run's captured output — never stdout, which
+/// `--output-format json` owns) AND comes back for the session journal, which
+/// is the only place a reader can find it afterwards.
+fn deliver_failover_notice(notice: String, interactive: bool) -> Option<String> {
+    if interactive {
+        output::render_notice(&notice);
+        None
+    } else {
+        eprintln!("note: {notice}");
+        Some(notice)
+    }
+}
+
 /// Probe a self-hosted endpoint BEFORE the first turn, and fail over now rather
 /// than burning a turn discovering it.
 ///
@@ -515,15 +535,18 @@ fn startup_failover(
 /// Only endpoints the user hosts themselves are probed, on exactly the gate
 /// `/model` already uses (`super::provider_probe_url`, loopback or private LAN);
 /// a cloud provider pays no round trip here.
+///
+/// Returns the announcement when the caller still owes it a home — see
+/// [`deliver_failover_notice`].
 async fn failover_if_endpoint_is_dead(
     resolved: ResolvedProviderConfig,
     interactive: bool,
-) -> ResolvedProviderConfig {
+) -> (ResolvedProviderConfig, Option<String>) {
     let Some(url) = super::provider_probe_url(&resolved.provider_name) else {
-        return resolved;
+        return (resolved, None);
     };
     if super::endpoint_is_reachable(&url).await {
-        return resolved;
+        return (resolved, None);
     }
 
     match startup_failover(
@@ -540,10 +563,7 @@ async fn failover_if_endpoint_is_dead(
                 probe_url = %url,
                 "startup probe found the endpoint dead; switched before the first turn"
             );
-            if interactive {
-                output::render_notice(&notice);
-            }
-            switched
+            (switched, deliver_failover_notice(notice, interactive))
         }
         // Nothing to fall back to. Say what is wrong now, in a sentence that
         // names the port, instead of letting turn one die on a raw socket error.
@@ -554,7 +574,7 @@ async fn failover_if_endpoint_is_dead(
                 resolved.provider_name,
                 super::unreachable_notice(&url)
             ));
-            resolved
+            (resolved, None)
         }
     }
 }
@@ -974,7 +994,8 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // Resolution answers "what is configured", not "what is up". Settle a dead
     // self-hosted endpoint HERE, so the banner below prints what will actually
     // serve and turn one is not spent finding a closed port.
-    let resolved = failover_if_endpoint_is_dead(resolved, session_config.interactive).await;
+    let (resolved, headless_failover_notice) =
+        failover_if_endpoint_is_dead(resolved, session_config.interactive).await;
 
     let recipe = session_config.recipe.as_ref();
 
@@ -988,6 +1009,21 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 
     let session_id =
         resolve_session_id(&session_config, &session_manager, agent.config.goose_mode).await;
+
+    // M2b: file the startup failover in the session's own journal, now that the
+    // session exists. A headless run has no banner and no footer, so without
+    // this the transcript claims nothing about which model actually served it —
+    // and whoever reads the run afterwards has no way to find out.
+    if let Some(notice) = headless_failover_notice {
+        let message = permagent::conversation::message::Message::assistant()
+            .with_system_notification(
+                permagent::conversation::message::SystemNotificationType::InlineMessage,
+                notice,
+            );
+        if let Err(e) = session_manager.add_message(&session_id, &message).await {
+            tracing::warn!("Failed to journal the startup failover notice: {e}");
+        }
+    }
 
     if session_config.resume {
         handle_resumed_session_workdir(&agent, &session_id, session_config.interactive).await;
@@ -1267,6 +1303,25 @@ mod tests {
             first_configured([s("   "), s(""), None, None, s("session")]),
             s("session"),
             "a blanked-out key is unset, not a provider named whitespace"
+        );
+    }
+
+    /// M2b: a headless run has no terminal and no footer, so the notice the
+    /// interactive path prints must survive as something the session journal
+    /// can hold. Returning `None` here is what made a scheduled recipe run on
+    /// a model its own transcript never named.
+    #[test]
+    fn a_headless_failover_notice_survives_for_the_journal() {
+        let notice = "Switched to anthropic/claude-haiku-4-5.".to_string();
+        assert_eq!(
+            deliver_failover_notice(notice.clone(), false),
+            Some(notice.clone()),
+            "headless must keep the sentence — stderr alone is not a journal"
+        );
+        assert_eq!(
+            deliver_failover_notice(notice, true),
+            None,
+            "interactive already printed it; journalling it twice would double up"
         );
     }
 

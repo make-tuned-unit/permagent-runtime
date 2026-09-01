@@ -2394,22 +2394,38 @@ impl Agent {
                                     Ok(p) => p.get_name().to_string(),
                                     Err(_) => "the model provider".to_string(),
                                 };
-                                if self
+                                if let Some(target) = self
                                     .switch_to_permanent_failure_fallback(
                                         &session_config.id,
                                         &failed_provider,
                                     )
                                     .await
-                                    .is_some()
                                 {
                                     tracing::info!(
                                         target: "permagent::cost_router",
                                         session_id = %session_config.id,
                                         from_provider = %failed_provider,
-                                        "silent pre-commit failover after a stream decode error"
+                                        to_provider = %target.provider,
+                                        to_model = %target.model,
+                                        "pre-commit failover after a stream decode error"
                                     );
                                     permanent_failure_fallback_used = true;
                                     did_switch_provider_this_iteration = true;
+                                    // M2b: this arm was the last silent one. A
+                                    // dropped SSE body switched the model with
+                                    // nothing in the transcript to say so, which
+                                    // is the same dishonesty the NetworkError
+                                    // sibling below already stopped doing.
+                                    let message = Message::assistant().with_system_notification(
+                                        SystemNotificationType::InlineMessage,
+                                        crate::cost_router::fallback::precommit_failover_reply(
+                                            &failed_provider,
+                                            provider_err,
+                                            &target,
+                                        ),
+                                    );
+                                    persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                                    yield AgentEvent::Message(message);
                                     break;
                                 }
                             }
