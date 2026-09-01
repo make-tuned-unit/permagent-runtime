@@ -2115,7 +2115,7 @@ export function SettingsView() {
                     {it.label}
                     {it.key === 'inbox' && downloadUnread > 0 && (
                       <span style={{
-                        marginLeft: 'auto', minWidth: 16, height: 16, padding: '0 4px', borderRadius: 999,
+                        marginLeft: 'auto', minWidth: 16, height: 16, padding: '0 4px', borderRadius: radius.pill,
                         background: colors.cyan, color: colors.textOnCyan, fontSize: 10, fontWeight: 700,
                         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                       }}>{downloadUnread > 9 ? '9+' : downloadUnread}</span>
