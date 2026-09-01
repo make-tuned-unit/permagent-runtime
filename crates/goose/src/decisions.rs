@@ -38,6 +38,7 @@ const OUTBOX_ELIGIBLE_KINDS: &[&str] = &[
     "file_to_project",
     "automation_proposal",
     "model_upgrade",
+    "config_change_proposal",
     "person_merge_proposal",
     "person_delete_proposal",
     "council_action",
@@ -456,6 +457,31 @@ pub struct ModelUpgradePayload {
     pub current_model: Option<String>,
 }
 
+/// Payload for `kind='config_change_proposal'` — the agent proposing a change
+/// to a SENSITIVE setting it may never write itself (autonomy, sovereignty,
+/// budget ceilings, provider/model). Filed by `configure_propose`; approval
+/// applies the write server-side, rejection writes nothing.
+///
+/// `key_class` is stored alongside `key` on purpose. The apply path
+/// re-validates that the key really belongs to that class before writing, so a
+/// payload that was mutated after filing cannot smuggle a key from a class the
+/// user did not see on the card — the approval authorises what the card said.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigChangeProposalPayload {
+    /// One of `configure_app::PROPOSAL_CLASSES` ids.
+    pub key_class: String,
+    /// The config key the approval will write.
+    pub key: String,
+    /// The value the approval will write.
+    pub value: serde_json::Value,
+    /// The value at proposal time, for the card. Display only.
+    #[serde(default)]
+    pub current_value: Option<String>,
+    /// Why the user should approve it.
+    pub rationale: String,
+}
+
 /// A capability the agent found itself missing while trying to do what the user
 /// asked — surfaced as a request rather than acted on.
 ///
@@ -666,6 +692,23 @@ fn validate_capability_gap_payload(p: &CapabilityGapPayload) -> Result<(), Strin
         );
     }
     Ok(())
+}
+
+/// Validate a `config_change_proposal` at file time.
+///
+/// Delegates the class/key/shape check to `configure_app` rather than
+/// duplicating the allowlist: the tool that files the card, this gate, and the
+/// effect that applies it must agree on exactly one table, or a card can be
+/// filed that the approval then refuses to honour.
+fn validate_config_change_payload(p: &ConfigChangeProposalPayload) -> Result<(), String> {
+    if p.rationale.trim().is_empty() {
+        return Err("config_change_proposal requires a non-empty rationale".to_string());
+    }
+    crate::agents::platform_extensions::configure_app::validate_proposed_change(
+        &p.key_class,
+        &p.key,
+        &p.value,
+    )
 }
 
 fn validate_model_upgrade_payload(p: &ModelUpgradePayload) -> Result<(), String> {
@@ -1070,6 +1113,7 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "project_intel_proposal",
         "file_to_project",
         "model_upgrade",
+        "config_change_proposal",
         "tool_approval",
         "session_gate",
         "capability_gap",
@@ -1160,6 +1204,12 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "model_upgrade" => {
             match serde_json::from_value::<ModelUpgradePayload>(req.payload.clone()) {
                 Ok(p) => validate_model_upgrade_payload(&p),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        "config_change_proposal" => {
+            match serde_json::from_value::<ConfigChangeProposalPayload>(req.payload.clone()) {
+                Ok(p) => validate_config_change_payload(&p),
                 Err(e) => Err(e.to_string()),
             }
         }
@@ -1767,6 +1817,7 @@ fn answer_allowed_for_kind(kind: &str, answer: &str) -> bool {
         | "project_intel_proposal"
         | "file_to_project"
         | "model_upgrade"
+        | "config_change_proposal"
         | "tool_approval"
         | "session_gate"
         | "person_merge_proposal"

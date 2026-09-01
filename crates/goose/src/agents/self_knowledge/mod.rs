@@ -1619,6 +1619,74 @@ mod tests {
         assert!(brief.contains("3 job(s) scheduled"));
     }
 
+    /// **R2 self-knowledge gate.** The agent must KNOW it can now change
+    /// settings — and must not believe it can change more than it can.
+    ///
+    /// The brief is where that belief comes from ("trust it over any assumption
+    /// about your own abilities"), so this asserts against the rendered brief,
+    /// not against the registry string: it must name all three tools, name the
+    /// keys that really are directly writable, name the classes that are
+    /// proposal-only, and contain none of the overclaims that would have the
+    /// agent promise a settings change it will then be refused.
+    #[test]
+    fn the_brief_says_what_configure_can_and_cannot_change() {
+        use crate::agents::platform_extensions::configure_app;
+
+        let (stable, volatile) = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            flags: FeatureFlags::default(),
+            dispatchable_workers: Vec::new(),
+            agent_briefings: None,
+            declared_extensions: None,
+        }
+        .build_parts();
+        let brief = format!("{stable}{volatile}");
+
+        for tool in [
+            configure_app::CONFIGURE_READ,
+            configure_app::CONFIGURE_SET,
+            configure_app::CONFIGURE_PROPOSE,
+        ] {
+            assert!(
+                brief.contains(tool),
+                "the brief never names {tool}, so the agent cannot know it has it"
+            );
+        }
+        for w in configure_app::WRITABLE_KEYS {
+            assert!(
+                brief.contains(w.key),
+                "the brief must name {} as directly writable",
+                w.key
+            );
+        }
+        for class in configure_app::PROPOSAL_CLASSES {
+            assert!(
+                brief.contains(class.id),
+                "the brief must name the proposal-only class {}",
+                class.id
+            );
+        }
+        assert!(
+            brief.contains("propose_model_upgrade"),
+            "the brief must keep pointing at the model-specific proposal path"
+        );
+
+        // Honesty: the entry must not promise a general settings-writing power.
+        let lower = brief.to_lowercase();
+        for overclaim in [
+            "change any setting",
+            "any setting",
+            "all settings",
+            "every setting",
+        ] {
+            assert!(
+                !lower.contains(overclaim),
+                "the capability brief overclaims with {overclaim:?}"
+            );
+        }
+    }
+
     /// The two config-backed flags must reach the brief only through
     /// [`FeatureFlags`]. Before this, the renderer read `Config::global()` itself,
     /// so the brief — and the four canonical prompt snapshots taken from it —
@@ -2204,10 +2272,11 @@ mod tests {
     ///   branch lands here automatically.
     fn extension_tool_inventories() -> Vec<(&'static str, Vec<rmcp::model::Tool>)> {
         use crate::agents::platform_extensions::{
-            analyze, app_conductor, app_perception, apps, browser, chatrecall, council, dashboard,
-            desktop, developer, ext_manager, file_to_project, finance, forecaster, inbox_tools,
-            listen, model_manager, orchestrator, people, project_manager, pronunciation,
-            recipe_author, retrospect, skills, storage_health, summarize, summon, todo,
+            analyze, app_conductor, app_perception, apps, browser, chatrecall, configure_app,
+            council, dashboard, desktop, developer, ext_manager, file_to_project, finance,
+            forecaster, inbox_tools, listen, model_manager, orchestrator, people, project_manager,
+            pronunciation, recipe_author, retrospect, skills, storage_health, summarize, summon,
+            todo,
         };
 
         let mut project_manager_tools = project_manager::ProjectManagerClient::get_tools();
@@ -2246,6 +2315,10 @@ mod tests {
             (
                 chatrecall::EXTENSION_NAME,
                 chatrecall::ChatRecallClient::get_tools(),
+            ),
+            (
+                configure_app::EXTENSION_NAME,
+                configure_app::ConfigureClient::get_tools(),
             ),
             (council::EXTENSION_NAME, council::CouncilClient::get_tools()),
             (
@@ -2672,6 +2745,19 @@ mod tests {
         "decision_inbox",
         "council_enabled",
         "council_action",
+        // Configure (R2) names the CONFIG KEYS it can write and the proposal
+        // classes it can file under. They are snake_case like a tool name and
+        // are neither — naming them is the whole point of the entry, since a
+        // model that does not know the exact key cannot call configure_set.
+        "initiative_enabled",
+        "playbook_enabled",
+        "concierge_enabled",
+        "strix_enabled",
+        "dev_roots",
+        "watcher_topics",
+        "watcher_muted_subjects",
+        "librarian_schedule",
+        "provider_or_model",
     ];
 
     /// Every tool name that exists in the runtime: the statically-derived
