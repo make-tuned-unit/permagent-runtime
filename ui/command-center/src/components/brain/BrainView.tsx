@@ -17,8 +17,7 @@ import {
   useBrainSearch,
   type BrainSearchResult,
 } from './brainSearch';
-
-type ViewMode = 'graph' | 'list';
+import { readViewMode, rememberViewMode, type BrainViewMode as ViewMode } from './viewMode';
 
 const TOP_FILTERS: { key: keyof TypeFilters; label: string; shape: string }[] = [
   { key: 'person', label: 'people', shape: '●' },
@@ -54,10 +53,13 @@ export function BrainView() {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<BrainScene | null>(null);
 
-  const [viewMode, setViewMode] = useState<ViewMode>('graph');
+  // List by default; Graph is a toggle away and the choice sticks (J12). The
+  // graph has no legend and an undiscoverable interaction model, so it was the
+  // hardest surface in the app to meet first.
+  const [viewMode, setViewMode] = useState<ViewMode>(readViewMode);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [modeBeforeSearch, setModeBeforeSearch] = useState<ViewMode>('graph');
+  const [modeBeforeSearch, setModeBeforeSearch] = useState<ViewMode>(readViewMode);
 
   const { data, loading, error, refresh } = useBrainData();
   const { results: searchResults, loading: searchLoading, error: searchError } = useBrainSearch(debouncedSearch);
@@ -498,7 +500,14 @@ export function BrainView() {
               colors={colors}
               variant="bare"
               type="button"
-              onClick={() => setViewMode(mode)}
+              onClick={() => {
+                // A deliberate choice, so it is the one that gets remembered —
+                // unlike the search auto-switch below, which is the app
+                // changing the view on the user's behalf.
+                setViewMode(mode);
+                setModeBeforeSearch(mode);
+                rememberViewMode(mode);
+              }}
               style={{
                 ...chipVars(
                   viewMode === mode ? colors.cyanSoft : 'transparent',
