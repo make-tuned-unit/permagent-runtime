@@ -3,6 +3,12 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import type { BrainGraph, GraphEntity, GraphMemory } from './useBrainData';
+import {
+  MEMORY_FRESH,
+  MEMORY_STALE,
+  NODE_COLORS,
+  NODE_COLOR_FALLBACK,
+} from './graphPalette';
 
 // ── Types ──────────────────────────────────────────────────────────────
 interface SimNode {
@@ -63,12 +69,10 @@ const K_CENTER = 0.012;
 const COOLING = 0.997;
 const MIN_ALPHA = 0.05;
 
-const NODE_COLORS: Record<string, number> = {
-  person: 0xc8e0ff, project: 0xa855f7, tool: 0x22d3ee,
-  location: 0x4ade80, organization: 0xfb923c, concept: 0x7bb7ff,
-};
-const MEM_FRESH = new THREE.Color(0x00d5ff);
-const MEM_STALE = new THREE.Color(0x4a5468);
+// Colours live in `graphPalette.ts` — the key that explains them has to draw
+// the same swatches, and one fact belongs in one place.
+const MEM_FRESH = new THREE.Color(MEMORY_FRESH);
+const MEM_STALE = new THREE.Color(MEMORY_STALE);
 
 const EDGE_COLORS: Record<string, [number, number, number]> = {
   self: [0.6, 0.85, 1.0],
@@ -309,7 +313,7 @@ export class BrainScene {
     // Entities
     for (const ent of data.entities) {
       const kind = ent.type as string;
-      const nodeColor = NODE_COLORS[kind] || 0x7bb7ff;
+      const nodeColor = NODE_COLORS[kind] || NODE_COLOR_FALLBACK;
       let geo: THREE.BufferGeometry;
       if (kind === 'project' || kind === 'tool' || kind === 'organization') geo = new THREE.BoxGeometry(0.85, 0.85, 0.85);
       else if (kind === 'concept' || kind === 'location') geo = new THREE.OctahedronGeometry(0.7, 0);
@@ -440,7 +444,7 @@ export class BrainScene {
       ? '#eaf6ff'
       : node.kind === 'memory'
         ? '#9fb3cc'
-        : `#${new THREE.Color(NODE_COLORS[node.kind] || 0x7bb7ff).lerp(new THREE.Color(0xffffff), 0.55).getHexString()}`;
+        : `#${new THREE.Color(NODE_COLORS[node.kind] || NODE_COLOR_FALLBACK).lerp(new THREE.Color(0xffffff), 0.55).getHexString()}`;
     const sprite = makeLabelSprite(labelText(node.kind, node.label), color);
     sprite.position.copy(node.pos);
     this.scene.add(sprite);

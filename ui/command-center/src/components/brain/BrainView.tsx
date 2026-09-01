@@ -10,6 +10,8 @@ import { useBrainData, type GraphMemory, type GraphEntity } from './useBrainData
 import { BrainList } from './BrainList';
 import { resolveFocusedMemory, deriveMemoryTitle, formatMemoryAge } from './brainMemoryFocus';
 import { Chip } from '../common/Chip';
+import { CanvasLegend } from '../common/CanvasLegend';
+import { BRAIN_GESTURES, BRAIN_VOCABULARY } from './brainLegend';
 import { MEMORY_STRENGTH } from '../../lib/vocabulary';
 import {
   resolveSearchGraphNode,
@@ -830,6 +832,19 @@ export function BrainView() {
           </>)}
         </div>
       </div>
+
+      {/* The graph's key. Only in graph mode, and not over an empty or broken
+          one: a vocabulary for shapes that are not on screen is noise. It sits
+          above the time slider, on the side the side-panel never covers. */}
+      {viewMode === 'graph' && !error && !isEmpty && (
+        <CanvasLegend
+          canvasId="brain-graph"
+          gestures={BRAIN_GESTURES}
+          vocabulary={BRAIN_VOCABULARY}
+          palette={{ bg: glass.bg, border: glass.border }}
+          style={{ bottom: 72 }}
+        />
+      )}
 
       {/* Time slider */}
       <div style={{
