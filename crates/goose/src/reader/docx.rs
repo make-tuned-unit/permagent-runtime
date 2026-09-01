@@ -26,6 +26,11 @@ pub fn extract_docx_text(bytes: &[u8]) -> Result<String, String> {
 
 /// Walk WordprocessingML and pull run text, honoring paragraph/line breaks.
 /// Deliberately minimal — see the module doc.
+// string_slice: every byte index below is either `i` (only ever advanced to
+// a byte matching ASCII `<`, which cannot be a UTF-8 continuation byte) or a
+// `find()` result on `&xml[i..]` (a byte offset that is always a char
+// boundary), so every slice here is char-boundary safe by construction.
+#[allow(clippy::string_slice)]
 fn xml_runs_to_text(xml: &str) -> String {
     let mut out = String::new();
     let mut in_run_text = false;
@@ -132,6 +137,8 @@ mod tests {
     }
 
     #[test]
+    // string_slice: both indices are `find()` results, always char-boundary safe.
+    #[allow(clippy::string_slice)]
     fn preserves_paragraph_breaks() {
         let bytes = build_test_docx(&["First paragraph.", "Second paragraph."]);
         let text = extract_docx_text(&bytes).unwrap();
