@@ -388,6 +388,129 @@ fn emit_person_updated(payload: &decisions::EnrichmentProposalPayload) {
     }
 }
 
+/// Future returned by an installed [`PostLandingHook`].
+pub type PostLandingFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+/// Runs after an approval fast-forwards trunk, by project id. The daemon
+/// installs one that refreshes the project's code map — an existing map now
+/// describes the pre-landing tree.
+///
+/// Detached and best-effort by contract: the approval has already committed,
+/// and must never fail or wait on a tree-sitter pass. Uninstalled, landing is
+/// unaffected.
+pub type PostLandingHook = Box<dyn Fn(Pool<Sqlite>, String) -> PostLandingFuture + Send + Sync>;
+
+/// Process-global post-landing hook. Same shape and contract as
+/// `orchestrator::GOAL_DISPATCH_HOOK`.
+pub static POST_LANDING_HOOK: std::sync::OnceLock<PostLandingHook> = std::sync::OnceLock::new();
+
+/// Install the post-landing hook. Idempotent (OnceLock) — a second call is a
+/// no-op.
+pub fn install_post_landing_hook(hook: PostLandingHook) {
+    let _ = POST_LANDING_HOOK.set(hook);
+}
+
+/// Fast-forward an approved goal's work onto the project trunk.
+///
+/// The first member is `None` when there is nothing to land at all (no
+/// evidence, no commits, or a project with no `root_path` — a project we
+/// cannot locate on disk has no trunk to land onto, and the daemon's cwd is
+/// emphatically not it). Otherwise it is `(resolved_project_id, outcome)`:
+/// the project id comes back because the post-landing code-map refresh needs
+/// the id this fn RESOLVED (`decision.project_id` may be absent; the card's is
+/// the fallback). The outcome is reported on the approval in every case,
+/// including refusals — a dirty tree or diverged trunk must be visible, not
+/// silent. The second member surfaces a failure to persist the durable
+/// NeedsMerge follow-up after the approval itself has already committed.
+///
+/// Lives here, in the OUTBOX effect path, because that is the only path an
+/// approval actually takes: `approve_review` is outbox-eligible, so
+/// `execute_effect` delegates before reaching its own inline arm. This code
+/// spent its whole life in that unreachable arm (L7, 2026-08-31).
+async fn land_approved_goal(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+    project_id: Option<&str>,
+) -> (
+    Option<(String, crate::goal_landing::LandOutcome)>,
+    Option<String>,
+) {
+    let Some(card) = crate::cards::get_card(pool, goal_id).await.ok().flatten() else {
+        return (None, None);
+    };
+    let project_id = project_id.unwrap_or(card.project_id.as_str()).to_string();
+    let Some(root) = crate::projects::get_project_by_id_or_slug(pool, &project_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|project| project.root_path)
+    else {
+        return (None, None);
+    };
+
+    let Some(req) =
+        crate::goal_landing::land_request_from_metadata(&card.metadata_json, Some(&root))
+    else {
+        return (None, None);
+    };
+    let outcome = crate::goal_landing::land(&req).await;
+    let warning = if let crate::goal_landing::LandOutcome::NeedsMerge { branch, trunk } = &outcome {
+        ensure_needs_merge_decision(pool, goal_id, &card.title, &card.project_id, branch, trunk)
+            .await
+            .err()
+            .map(|error| format!("could not create manual-merge inbox item: {}", error))
+    } else {
+        None
+    };
+
+    (Some((project_id, outcome)), warning)
+}
+
+/// Leave one durable, copy-pasteable recovery item when automatic landing
+/// cannot fast-forward. An existing open unblock for the goal wins: two open
+/// requests for the same goal would compete for the human's answer.
+async fn ensure_needs_merge_decision(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+    goal_title: &str,
+    project_id: &str,
+    branch: &str,
+    trunk: &str,
+) -> Result<(), String> {
+    if decisions::find_open_decision_for_goal(pool, goal_id, "unblock")
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let detail = format!(
+        "Goal \"{}\" ({}) finished on branch `{}`, but it could not be fast-forwarded onto trunk `{}`.\n\nMerge it:\n```sh\ngit switch {}\ngit merge {}\n```\n\nOr rebase it:\n```sh\ngit switch {}\ngit rebase {}\ngit switch {}\ngit merge --ff-only {}\n```",
+        goal_title, goal_id, branch, trunk, trunk, branch, branch, trunk, trunk, branch
+    );
+    decisions::create_decision(
+        pool,
+        decisions::NewDecision {
+            kind: "unblock".to_string(),
+            goal_id: Some(goal_id.to_string()),
+            project_id: Some(project_id.to_string()),
+            headline: Some(
+                "Goal work could not land and needs a manual merge or rebase".to_string(),
+            ),
+            detail: Some(detail),
+            payload: serde_json::to_value(decisions::UnblockPayload {
+                reason: decisions::UnblockReason::Stuck,
+                spent: None,
+                cap: None,
+            })
+            .map_err(|error| error.to_string())?,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok(())
+}
+
 /// Apply an outbox-eligible decision effect without daemon `AppState`.
 ///
 /// `tool_approval` and `session_gate` deliberately are not handled here.
@@ -445,17 +568,42 @@ pub async fn apply_decision_effect(
                 },
             )
             .await?;
+            // Approving used to move the card and merge NOTHING, so the work
+            // stayed on `goal/<run_id>` and the trunk never saw it — measured
+            // 2026-08-09, fixed in the inline arm, and that fix never ran
+            // because this path short-circuits it (L7). Land it here, where an
+            // approval actually arrives. Fast-forward only, and the outcome is
+            // ALWAYS reported: a landing that silently declined is exactly the
+            // failure this replaces.
+            let (landing, landing_warning) =
+                land_approved_goal(pool, goal_id, decision.project_id.as_deref()).await;
+            let effect = match &landing {
+                Some((_, outcome)) => {
+                    format!("goal approved: Review → Complete; {}", outcome.describe())
+                }
+                None => "goal approved: Review → Complete".to_string(),
+            };
+
+            // The trunk just moved: an existing code map now describes the
+            // pre-landing tree. Refresh it DETACHED and best-effort — the
+            // approval response never waits on (and can never fail because of)
+            // a tree-sitter pass. Fast-forward only: refusals and no-op
+            // landings changed nothing, so there is nothing to re-index.
+            if let Some((project_id, crate::goal_landing::LandOutcome::FastForwarded { .. })) =
+                &landing
+            {
+                if let Some(hook) = POST_LANDING_HOOK.get() {
+                    tokio::spawn(hook(pool.clone(), project_id.clone()));
+                }
+            }
+
             // D10: promote the dependents this goal was blocking AND start
             // them. Promotion alone left them in Ready with no worker until a
             // human called resume_roadmap by hand.
             //
-            // This arm does not land the approved work onto the trunk — the
-            // only `goal_landing::land` call site is the inline approve_review
-            // arm in routes/decisions.rs, which `execute_effect` never reaches
-            // because approve_review is outbox-eligible and delegates here
-            // first. If landing is ever restored on this path, the nudge
-            // belongs AFTER it: a dependent builds on the trunk.
-            let warning = match decision.project_id.as_deref() {
+            // AFTER landing, deliberately: a dependent starts against the
+            // trunk, so it must not begin before its parent's work is on it.
+            let promotion_warning = match decision.project_id.as_deref() {
                 Some(project_id) => {
                     crate::agents::platform_extensions::orchestrator::promote_and_dispatch_dependents(
                         pool, project_id, goal_id,
@@ -465,10 +613,12 @@ pub async fn apply_decision_effect(
                 None => None,
             };
             crate::recognition::write_back_decision_outcome(pool, goal_id, true).await;
-            Ok((
-                Some("goal approved: Review → Complete".to_string()),
-                warning,
-            ))
+            let warning = match (promotion_warning, landing_warning) {
+                (Some(promotion), Some(landing)) => Some(format!("{}; {}", promotion, landing)),
+                (Some(warning), None) | (None, Some(warning)) => Some(warning),
+                (None, None) => None,
+            };
+            Ok((Some(effect), warning))
         }
         ("approve_review", Some("reject")) => {
             let Some(goal_id) = decision.goal_id.as_deref() else {
@@ -1638,6 +1788,236 @@ mod tests {
             "approving a goal must ask the dispatcher to start the dependent it \
              just unblocked — not leave it waiting for a manual resume_roadmap"
         );
+    }
+
+    fn git_in(root: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .expect("git must be on PATH for this test");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A trunk on `main` and a `goal/run-1` branch one commit ahead of it.
+    /// Returns (repo root, the branch's head commit).
+    fn repo_with_finished_goal_branch() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_in(root, &["init", "-b", "main"]);
+        git_in(root, &["config", "user.email", "test@example.com"]);
+        git_in(root, &["config", "user.name", "Test"]);
+        std::fs::write(root.join("README.md"), "base\n").unwrap();
+        git_in(root, &["add", "-A"]);
+        git_in(root, &["commit", "-m", "base"]);
+        git_in(root, &["checkout", "-b", "goal/run-1"]);
+        std::fs::write(root.join("work.txt"), "the goal's work\n").unwrap();
+        git_in(root, &["add", "-A"]);
+        git_in(root, &["commit", "-m", "the work"]);
+        let head = git_in(root, &["rev-parse", "HEAD"]);
+        git_in(root, &["checkout", "main"]);
+        (dir, head)
+    }
+
+    /// L7: approving a review is supposed to fast-forward the work onto trunk.
+    /// It did not. `land_approved_goal` lived in `routes/decisions.rs`'s INLINE
+    /// approve arm, and `execute_effect` short-circuits every outbox-eligible
+    /// kind — `approve_review` among them — into `apply_decision_effect`
+    /// before reaching it. The only call site of `goal_landing::land` was
+    /// unreachable, so approved work sat on `goal/<run_id>` forever and the
+    /// D10 nudge then started dependents against a trunk missing their parent.
+    #[tokio::test]
+    async fn approving_a_review_through_the_outbox_lands_the_branch_on_trunk() {
+        let (repo, head) = repo_with_finished_goal_branch();
+        let root = repo.path().to_string_lossy().into_owned();
+
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Landing test".to_string(),
+                root_path: Some(root.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let goal = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Finished goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 0,
+                    "goal_state": "review",
+                    "dispatch_evidence": {
+                        "worktree_path": "/tmp/.permagent-goal-worktrees/run-1",
+                        "head_commit": head,
+                        "commits": ["abc123 the work"],
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(project.id.clone()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+
+        let (effect, _warning) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git_in(repo.path(), &["rev-parse", "HEAD"]),
+            head,
+            "approval did not fast-forward trunk onto the approved work"
+        );
+        let effect = effect.unwrap_or_default();
+        assert!(
+            effect.contains("main"),
+            "the landing outcome must be reported on the approval, not left silent: {effect}"
+        );
+    }
+
+    // ── manual-merge recovery (moved with `ensure_needs_merge_decision` from
+    // routes/decisions.rs, whose copy of it was unreachable) ───────────────
+
+    async fn needs_merge_test_goal(pool: &Pool<Sqlite>) -> crate::cards::Card {
+        crate::cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let review_col = crate::cards::get_goal_column(pool, PERSONAL_PROJECT_ID, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        crate::cards::create_card(
+            pool,
+            crate::cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Ship durable landing recovery".to_string(),
+                description: None,
+                card_type: Some("goal".to_string()),
+                column_id: Some(review_col.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({})),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_second_needs_merge_landing_does_not_create_another_open_decision() {
+        let pool = test_pool().await;
+        let goal = needs_merge_test_goal(&pool).await;
+        for _ in 0..2 {
+            ensure_needs_merge_decision(
+                &pool,
+                &goal.id,
+                &goal.title,
+                PERSONAL_PROJECT_ID,
+                "goal/run-123",
+                "main",
+            )
+            .await
+            .unwrap();
+        }
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions \
+             WHERE goal_id = ? AND kind = 'unblock' AND status = 'open'",
+        )
+        .bind(&goal.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn needs_merge_decision_names_refs_and_copy_pasteable_git_commands() {
+        let pool = test_pool().await;
+        let goal = needs_merge_test_goal(&pool).await;
+        ensure_needs_merge_decision(
+            &pool,
+            &goal.id,
+            &goal.title,
+            PERSONAL_PROJECT_ID,
+            "goal/run-123",
+            "main",
+        )
+        .await
+        .unwrap();
+
+        let decision = decisions::find_open_decision_for_goal(&pool, &goal.id, "unblock")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(decision.kind, "unblock");
+        assert_eq!(decision.goal_id.as_deref(), Some(goal.id.as_str()));
+        assert_eq!(decision.project_id.as_deref(), Some(PERSONAL_PROJECT_ID));
+        assert!(decision.headline.contains("could not land"));
+        for expected in [
+            goal.id.as_str(),
+            goal.title.as_str(),
+            "goal/run-123",
+            "main",
+            "git switch main\ngit merge goal/run-123",
+            "git switch goal/run-123\ngit rebase main\ngit switch main\ngit merge --ff-only goal/run-123",
+        ] {
+            assert!(
+                decision.detail.contains(expected),
+                "decision detail must contain {expected:?}: {}",
+                decision.detail
+            );
+        }
     }
 
     #[tokio::test]

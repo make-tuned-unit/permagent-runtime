@@ -190,6 +190,18 @@ impl AppState {
         crate::verification::install_review_hook();
         tracing::info!("Goal review hook installed (post-Review verification)");
 
+        // L7: an approval that fast-forwards trunk leaves any existing code map
+        // describing the pre-landing tree. The landing itself lives in
+        // `permagent`, which cannot reach the daemon's indexer, so the refresh
+        // comes back through this hook. Safe in every AppState — unlike the
+        // dispatch hook, this starts no worker: with no Brain (every unit test)
+        // it returns immediately.
+        permagent::decisions_effects::install_post_landing_hook(Box::new(|pool, project_id| {
+            Box::pin(async move {
+                crate::routes::projects::refresh_code_map_after_landing(&pool, &project_id).await;
+            })
+        }));
+
         // Per-project wing rules (spectral-recognition prep, the "double
         // lever"): wing labels are both the recognition-validation ground
         // truth and the gate on Spectral's TACT fast path. Generated from the
