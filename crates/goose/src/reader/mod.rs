@@ -8,8 +8,9 @@
 //! and answers follow-ups via Brain recall, never holding the raw document.
 //!
 //! Phase 1 covers images (screenshots, photos) via Apple Vision OCR. Phase 2
-//! adds documents: PDF text-layer extraction (lopdf) and plain-text/code
-//! passthrough. Scanned (image-only) PDFs and docx are follow-ups.
+//! adds documents: PDF text-layer extraction (lopdf), plain-text/code
+//! passthrough, and minimal `.docx` run-text extraction (see [`docx`]).
+//! Scanned (image-only) PDFs are still a follow-up.
 //!
 //! ## The `is_visual` decision (the make-or-break UX knob)
 //!
@@ -23,6 +24,7 @@
 //! hardcoded magic. When `is_visual` is true the Reader does NOT ingest; the
 //! caller passes the image to the agent as before.
 
+pub mod docx;
 pub mod garble;
 pub mod pdf;
 pub mod vision_ocr;
@@ -443,7 +445,8 @@ pub async fn ingest_image(image_bytes: &[u8], filename: &str) -> anyhow::Result<
 ///
 /// Documents are never "visual" — there is nothing for the agent to *see*, only
 /// text to read — so `is_visual` is always false. Phase 2 handles text-bearing
-/// PDFs and plain-text/code; scanned (image-only) PDFs and docx are follow-ups.
+/// PDFs, plain-text/code, and `.docx`; scanned (image-only) PDFs are still a
+/// follow-up.
 pub async fn ingest_document(bytes: &[u8], filename: &str, mime: &str) -> anyhow::Result<Digest> {
     let key = content_key(bytes);
 
@@ -647,7 +650,11 @@ const MAX_TEXT_INGEST_BYTES: usize = 8 * 1024 * 1024;
 const TEXT_TRUNCATION_MARKER: &str = "\n[text truncated: document too large to fully ingest]";
 
 /// Extract plain text from a document's bytes by type.
-async fn extract_document_text(bytes: &[u8], filename: &str, mime: &str) -> anyhow::Result<String> {
+pub(crate) async fn extract_document_text(
+    bytes: &[u8],
+    filename: &str,
+    mime: &str,
+) -> anyhow::Result<String> {
     let ext = std::path::Path::new(filename)
         .extension()
         .and_then(|e| e.to_str())
@@ -683,6 +690,24 @@ async fn extract_document_text(bytes: &[u8], filename: &str, mime: &str) -> anyh
             );
         }
         Ok(text)
+    } else if mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        || ext == "docx"
+    {
+        let owned = bytes.to_vec();
+        let text = tokio::task::spawn_blocking(move || docx::extract_docx_text(&owned))
+            .await
+            .map_err(|e| anyhow::anyhow!("docx task panicked: {e}"))?
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        if text.len() > MAX_TEXT_INGEST_BYTES {
+            let mut end = MAX_TEXT_INGEST_BYTES;
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            let head = text.get(..end).unwrap_or_else(|| text.as_ref());
+            Ok(format!("{head}{TEXT_TRUNCATION_MARKER}"))
+        } else {
+            Ok(text)
+        }
     } else if is_texty(mime, &ext) {
         let text = String::from_utf8_lossy(bytes);
         if text.len() > MAX_TEXT_INGEST_BYTES {
@@ -1319,5 +1344,73 @@ mod tests {
             assert!(!k.contains("viking://"));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1: a dropped `.docx` used to bail out of `extract_document_text` with
+    /// "unsupported document type" (a zip archive matches neither the PDF nor
+    /// the texty branch) — `ingest_document` returned `Err` for every `.docx`
+    /// no matter what it said, and the best-effort Brain index at
+    /// `routes/projects.rs` logged a warning and silently indexed nothing.
+    ///
+    /// FAILS BEFORE: `ingest_document` returns `Err("unsupported document
+    /// type: mime=... ext=docx")`. Builds a minimal in-memory `.docx` (via the
+    /// `zip` crate, mirroring `docx::tests::build_test_docx`) with a known
+    /// paragraph and proves the resulting digest actually reflects it — not
+    /// just that the call succeeded.
+    #[tokio::test]
+    async fn docx_ingest_succeeds_and_digest_reflects_the_paragraph() {
+        use std::io::Write;
+
+        let paragraph = "Q3 revenue grew fourteen percent over the prior quarter.";
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body><w:p><w:r><w:t>{paragraph}</w:t></w:r></w:p></w:body>
+</w:document>"#
+        );
+        let mut bytes = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("word/document.xml", opts).unwrap();
+            zip.write_all(xml.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+
+        let digest = ingest_document(
+            &bytes,
+            "quarterly-brief.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        .await
+        .expect("a real .docx must ingest, not bail as an unsupported type");
+
+        assert!(!digest.is_visual, "a document is never visual");
+        assert!(digest.char_count > 0, "extracted text must be non-empty");
+        // `summarize()` prefers a live Ollama pass when one is reachable (this
+        // is a shared dev machine, not a hermetic sandbox — it sometimes IS),
+        // and only degrades to a plain truncation of the extracted text when
+        // it isn't. Either way the digest's `char_count` came from the real
+        // extraction, which is what actually distinguishes "ingested the
+        // docx's real content" from "ingested something" — assert the
+        // deterministic extraction itself carries the paragraph, matching
+        // char_count exactly, rather than the summary text (which a live
+        // model may legitimately paraphrase away).
+        let extracted = extract_document_text(
+            &bytes,
+            "quarterly-brief.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        .await
+        .unwrap();
+        assert!(
+            extracted.contains(paragraph),
+            "the underlying extraction must contain the paragraph, got: {extracted:?}"
+        );
+        assert_eq!(
+            digest.char_count,
+            extracted.chars().filter(|c| !c.is_whitespace()).count(),
+            "digest's char_count must reflect the SAME text just proven to contain the paragraph"
+        );
     }
 }
