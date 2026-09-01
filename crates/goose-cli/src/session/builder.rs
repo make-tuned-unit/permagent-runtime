@@ -471,6 +471,94 @@ fn resolve_provider_and_model(
     }
 }
 
+/// Pure: what a resolved-but-dead local endpoint becomes, and the sentence that
+/// says so. `None` when nothing is configured to fall back to — the caller must
+/// then stay put and report the dead endpoint rather than substitute a model
+/// nobody chose.
+///
+/// The announcement is the SAME builder the mid-turn failover uses
+/// (`cost_router::fallback::precommit_failover_reply`), so a switch reads
+/// identically whether it happened at startup or three turns in.
+fn startup_failover(
+    resolved: &ResolvedProviderConfig,
+    fallback: Option<&permagent::cost_router::role_map::RoleModel>,
+) -> Option<(ResolvedProviderConfig, String)> {
+    let target = fallback?;
+    let model_config = permagent::model::ModelConfig::new(&target.model)
+        .ok()?
+        .with_canonical_limits(&target.provider)
+        .with_temperature(resolved.model_config.temperature);
+    let notice = permagent::cost_router::fallback::precommit_failover_reply(
+        &resolved.provider_name,
+        &permagent::providers::errors::ProviderError::NetworkError(String::new()),
+        target,
+    );
+    Some((
+        ResolvedProviderConfig {
+            provider_name: target.provider.clone(),
+            model_name: target.model.clone(),
+            model_config,
+        },
+        notice,
+    ))
+}
+
+/// Probe a self-hosted endpoint BEFORE the first turn, and fail over now rather
+/// than burning a turn discovering it.
+///
+/// Session 20260831_10 (2026-08-31): the coding harness resolved
+/// `qwen38_split`/`qwen3.8-27b` from the harness role default — a source that
+/// answers "is it configured", never "is it up" — printed that as the banner,
+/// then spent a whole turn's latency finding the split's port closed before the
+/// mid-turn failover moved it to `anthropic/claude-haiku-4-5`.
+///
+/// Only endpoints the user hosts themselves are probed, on exactly the gate
+/// `/model` already uses (`super::provider_probe_url`, loopback or private LAN);
+/// a cloud provider pays no round trip here.
+async fn failover_if_endpoint_is_dead(
+    resolved: ResolvedProviderConfig,
+    interactive: bool,
+) -> ResolvedProviderConfig {
+    let Some(url) = super::provider_probe_url(&resolved.provider_name) else {
+        return resolved;
+    };
+    if super::endpoint_is_reachable(&url).await {
+        return resolved;
+    }
+
+    match startup_failover(
+        &resolved,
+        permagent::cost_router::fallback::permanent_failure_fallback(&resolved.provider_name)
+            .as_ref(),
+    ) {
+        Some((switched, notice)) => {
+            tracing::warn!(
+                target: "permagent::cost_router",
+                from_provider = %resolved.provider_name,
+                to_provider = %switched.provider_name,
+                to_model = %switched.model_name,
+                probe_url = %url,
+                "startup probe found the endpoint dead; switched before the first turn"
+            );
+            if interactive {
+                output::render_notice(&notice);
+            }
+            switched
+        }
+        // Nothing to fall back to. Say what is wrong now, in a sentence that
+        // names the port, instead of letting turn one die on a raw socket error.
+        None => {
+            output::render_error(&format!(
+                "`{}` is {} No fallback model is configured, so this session will \
+                 start on it anyway and the first turn will fail.",
+                resolved.provider_name,
+                super::unreachable_notice(&url)
+            ));
+            resolved
+        }
+    }
+}
+
 async fn resolve_session_id(
     session_config: &SessionBuilderConfig,
     session_manager: &permagent::session::session_manager::SessionManager,
@@ -883,6 +971,10 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 
     let resolved =
         resolve_provider_and_model(&session_config, config, saved_provider, saved_model_config);
+    // Resolution answers "what is configured", not "what is up". Settle a dead
+    // self-hosted endpoint HERE, so the banner below prints what will actually
+    // serve and turn one is not spent finding a closed port.
+    let resolved = failover_if_endpoint_is_dead(resolved, session_config.interactive).await;
 
     let recipe = session_config.recipe.as_ref();
 
@@ -1074,6 +1166,46 @@ mod tests {
             "What are we building?"
         );
         assert_ne!(fallback, "Henry");
+    }
+
+    // ── startup reachability (M-startup) ──────────────────────────────────
+
+    fn dead_split() -> ResolvedProviderConfig {
+        ResolvedProviderConfig {
+            provider_name: "qwen38_split".to_string(),
+            model_name: "qwen3.8-27b".to_string(),
+            model_config: permagent::model::ModelConfig::new("qwen3.8-27b").unwrap(),
+        }
+    }
+
+    /// Source #4 (the harness role default) is an UNVERIFIED claim:
+    /// `qwen38_split` declares `requires_auth: false`, so it reads as
+    /// configured for the ~18 hours a day the split is not running. Waiting
+    /// for the first turn to discover that costs a full turn of latency and,
+    /// before M2, said nothing. Resolve the switch at startup instead.
+    #[test]
+    fn a_dead_local_endpoint_resolves_to_the_fallback_before_the_first_turn() {
+        let target = permagent::cost_router::role_map::RoleModel {
+            provider: "anthropic".to_string(),
+            model: "claude-haiku-4-5".to_string(),
+        };
+        let (switched, notice) =
+            startup_failover(&dead_split(), Some(&target)).expect("a configured fallback applies");
+        assert_eq!(switched.provider_name, "anthropic");
+        assert_eq!(switched.model_name, "claude-haiku-4-5");
+        assert_eq!(
+            switched.model_config.model_name, "claude-haiku-4-5",
+            "the ModelConfig must be rebuilt for the new model, not carried over"
+        );
+        assert!(notice.contains("qwen38_split"), "{notice}");
+        assert!(notice.contains("anthropic/claude-haiku-4-5"), "{notice}");
+    }
+
+    /// No fallback configured is not a licence to pretend: stay put, and let
+    /// the caller say the endpoint is dead.
+    #[test]
+    fn no_configured_fallback_means_no_silent_substitution() {
+        assert!(startup_failover(&dead_split(), None).is_none());
     }
 
     /// The five sources in `resolve_provider_and_model`'s order:

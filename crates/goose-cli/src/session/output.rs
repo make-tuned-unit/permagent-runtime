@@ -636,6 +636,14 @@ pub fn render_error(message: &str) {
     println!("\n  {} {}\n", style("error:").red().bold(), message);
 }
 
+/// Something changed that the user did not ask for and must know about, and
+/// nothing failed — a startup failover onto a different model, for instance.
+/// Deliberately not `render_error`: calling a successful recovery an error
+/// teaches people to ignore the word.
+pub fn render_notice(message: &str) {
+    println!("\n  {} {}\n", style("note:").yellow().bold(), message);
+}
+
 pub fn render_prompts(prompts: &HashMap<String, Vec<String>>) {
     println!();
     for (extension, prompts) in prompts {
