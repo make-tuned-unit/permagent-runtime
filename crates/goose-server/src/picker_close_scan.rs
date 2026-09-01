@@ -57,13 +57,21 @@ async fn run_once(state: &Arc<AppState>) -> Result<(), String> {
         return Ok(());
     }
 
-    permagent::events::emit(permagent::events::agent_state_changed(
-        "financier",
-        "The Financier",
-        "working",
-    ));
-
+    // The scan is the PICKER's work — its scanner, its universe, its 45-minute
+    // budget — and it announced under `financier`, so the Financier's orb lit
+    // for a desk it was only waiting on and the Picker's stayed dark through
+    // the one thing it does all day (agent-QA D22, misattribution half).
+    announce_scan("working");
     let started = start_and_wait().await;
+    announce_scan(if started.is_ok() {
+        "available"
+    } else {
+        "error"
+    });
+
+    // From here it IS the Financier: Opus reads the survivors, one pick or
+    // none, then the exit check on open holdings.
+    announce_judgement("working");
     let pick = match started {
         Err(e) => financier_close::none_pick(&day, format!("{e} No pick invented."), 0),
         Ok(()) => {
@@ -101,12 +109,29 @@ async fn run_once(state: &Arc<AppState>) -> Result<(), String> {
         }
     }
 
+    announce_judgement("available");
+    Ok(())
+}
+
+/// The Picker — the close-scan desk. Its own seat in the World keys off this
+/// exact id; the display name matches the roster entry.
+fn announce_scan(state: &str) {
+    permagent::events::emit(permagent::events::agent_state_changed(
+        "picker",
+        "The Picker",
+        state,
+    ));
+}
+
+/// The Financier — reads the survivors, names at most one pick, files the
+/// exit notices. Separate from the scan so neither desk takes credit for the
+/// other's minutes.
+fn announce_judgement(state: &str) {
     permagent::events::emit(permagent::events::agent_state_changed(
         "financier",
         "The Financier",
-        "available",
+        state,
     ));
-    Ok(())
 }
 
 async fn start_and_wait() -> Result<(), String> {
@@ -145,4 +170,28 @@ fn emit_pick(pick: &DailyPick) {
         None,
         None,
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D22: one pass, two desks. The scan belongs to the Picker and the
+    /// judgement to the Financier, and before this every frame in the pass
+    /// carried the Financier's id — so Picker work lit the wrong orb and the
+    /// Picker's own seat never moved.
+    #[tokio::test]
+    async fn the_scan_and_the_judgement_announce_as_different_desks() {
+        let mut bus = permagent::events::subscribe();
+        announce_scan("working");
+        announce_judgement("working");
+
+        let scan = bus.try_recv().expect("the scan must announce");
+        assert_eq!(scan.payload["agent_id"], "picker");
+        assert_eq!(scan.payload["name"], "The Picker");
+
+        let judged = bus.try_recv().expect("the judgement must announce");
+        assert_eq!(judged.payload["agent_id"], "financier");
+        assert_eq!(judged.payload["name"], "The Financier");
+    }
 }

@@ -41,6 +41,10 @@ pub mod growth_sweep;
 pub mod middleware;
 pub mod notification_router;
 pub mod openapi;
+// Alongside `council_sweep` and `growth_sweep`: the daemon's background loops
+// are declared here as well as in `main.rs` so their unit tests run under
+// `--lib` (`scripts/test-daemon.sh`) instead of only inside the binary target.
+pub mod picker_close_scan;
 pub mod routes;
 pub mod session_event_bus;
 pub mod state;
