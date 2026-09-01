@@ -761,6 +761,17 @@ impl AppState {
         // Seed starter recipes (Workspace Snapshot, Storage Insights) on first run.
         crate::automation::starters::seed_starter_recipes(agent_manager.scheduler().as_ref()).await;
 
+        // R2b: reconcile goals interrupted by the previous daemon lifecycle,
+        // here at boot rather than waiting for the first agent session to load
+        // the orchestrator extension. A machine that restarts and then sits
+        // idle used to leave its in-flight goals stranded in `in_progress`
+        // until something happened to build an OrchestratorRouter. That late
+        // trigger is still in place and is idempotent — both claim the same
+        // process-wide guard, so only whichever fires first sweeps.
+        permagent::agents::platform_extensions::orchestrator::spawn_boot_reconcile(
+            agent_manager.session_manager_arc(),
+        );
+
         // First-run welcome memories (#298): seed once onboarding is complete.
         // Idempotent (config marker); also triggered immediately on completion via
         // the /config upsert handler. This startup pass covers onboarding that
