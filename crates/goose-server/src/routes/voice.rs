@@ -1591,50 +1591,57 @@ async fn handle_voice_socket(
                             }
                         }
 
-                        // Spoken yes/no while a decision is waiting: settle it
-                        // as the user (this socket is their own hand) instead of
-                        // sending the transcript to the agent, which cannot answer
-                        // Tier-2 / live-channel kinds.
+                        // Spoken yes/no while a decision is waiting: STAGE it
+                        // instead of sending the transcript to the agent (which
+                        // cannot answer Tier-2 / live-channel kinds anyway).
+                        //
+                        // It used to answer, as the user, at any tier — with the
+                        // audit recording the principal as the literal string
+                        // "voice": no speaker, no device, and on a machine with
+                        // no voiceprint enrolled the speaker gate admits anyone.
+                        // NIST SP 800-63B-4 §3.2.3.2 bars voice as a biometric
+                        // comparison outright and §3.2.3 bars any biometric from
+                        // standing alone, so enrolling a print would not have
+                        // fixed it. Voice proposes; the tap on the confirm
+                        // surface — possession of the unlocked device — commits.
                         if let Some(verdict) =
                             crate::voice::spoken_verdict::spoken_decision_verdict(&transcript)
                         {
                             if let Some(decision_id) =
                                 pick_spoken_decision(&state, session_id.as_deref()).await
                             {
-                                match crate::routes::decisions::apply_jesse_answer(
-                                    &state,
-                                    &decision_id,
-                                    permagent::decisions::DecisionAnswer {
-                                        answer: verdict.to_string(),
-                                        note: None,
-                                        choice_id: None,
-                                        input_text: None,
-                                    },
-                                    "voice",
-                                )
-                                .await
-                                {
-                                    Ok(outcome) => {
-                                        let spoken = if verdict == "approve" {
-                                            format!("Approved: {}.", outcome.decision.headline)
-                                        } else {
-                                            format!("Rejected: {}.", outcome.decision.headline)
-                                        };
-                                        let _ = speak_canned_reply(
-                                            &state,
-                                            tts.clone(),
-                                            &mut socket,
-                                            &spoken,
-                                            cancelled.clone(),
+                                match pool_for_voice(&state).await {
+                                    Some(pool) => {
+                                        match crate::voice::spoken_verdict::stage_spoken_verdict(
+                                            &pool,
+                                            &decision_id,
+                                            verdict,
                                         )
-                                        .await;
-                                        continue;
+                                        .await
+                                        {
+                                            Ok(spoken) => {
+                                                let _ = speak_canned_reply(
+                                                    &state,
+                                                    tts.clone(),
+                                                    &mut socket,
+                                                    &spoken,
+                                                    cancelled.clone(),
+                                                )
+                                                .await;
+                                                continue;
+                                            }
+                                            Err(msg) => {
+                                                tracing::warn!(
+                                                    target: "permagentd::voice",
+                                                    "staging a spoken verdict failed: {msg}"
+                                                );
+                                            }
+                                        }
                                     }
-                                    Err((status, msg)) => {
+                                    None => {
                                         tracing::warn!(
                                             target: "permagentd::voice",
-                                            status = %status,
-                                            "spoken decision answer failed: {msg}"
+                                            "no pool available to stage a spoken verdict"
                                         );
                                     }
                                 }
@@ -2566,8 +2573,14 @@ fn pronunciation_coaching(transcript_oov: &[String]) -> Option<String> {
     crate::voice::oov_log::coaching_prompt()
 }
 
+/// The Spectral pool, or `None` when it cannot be reached. The voice socket
+/// only ever needs it to STAGE a verdict — it has no answer path.
+async fn pool_for_voice(state: &Arc<AppState>) -> Option<sqlx::Pool<sqlx::Sqlite>> {
+    state.session_manager().pool_clone().await.ok()
+}
+
 async fn pick_spoken_decision(state: &Arc<AppState>, session_id: Option<&str>) -> Option<String> {
-    let pool = state.session_manager().pool_clone().await.ok()?;
+    let pool = pool_for_voice(state).await?;
     let items = permagent::decisions::list_open_decisions(&pool)
         .await
         .ok()?;

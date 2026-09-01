@@ -17,7 +17,7 @@ use crate::state::AppState;
 use axum::{
     extract::{Extension, Path, Query, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use permagent::decisions::{self, AnswerError, DecisionAnswer};
@@ -119,6 +119,15 @@ async fn list_decisions_handler(
     if let Err(e) = permagent::decision_inbox::curation::rerank_open_decisions(&pool).await {
         tracing::warn!("Decision rerank failed (non-fatal): {}", e);
     }
+    // D29 TTL sweep: a spoken verdict older than 30 minutes stops being
+    // offerable. The read path already refuses to surface one, so this is the
+    // hygiene half — it keeps a stale "yes" from sitting in the row at all.
+    // Failure-tolerant, exactly like the rerank above.
+    match decisions::expire_stale_staged_answers(&pool).await {
+        Ok(n) if n > 0 => tracing::info!("expired {n} stale staged verdict(s)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("Staged-verdict expiry failed (non-fatal): {}", e),
+    }
     let mut items = decisions::list_open_decisions(&pool)
         .await
         .map_err(internal)?;
@@ -160,11 +169,37 @@ async fn answer_decision_handler(
     Ok(Json(outcome))
 }
 
+/// Throw away a staged (spoken, uncommitted) verdict — D29's discard.
+///
+/// Cannot resolve anything: it clears the proposal and leaves the decision open
+/// to be answered, ignored, or spoken about again. Idempotent — a second tap
+/// (or one racing the commit) is a 204, never a 404.
+async fn discard_staged_answer_handler(
+    State(state): State<Arc<AppState>>,
+    Path(decision_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let pool = pool_of(&state).await?;
+    let cleared = decisions::clear_staged_answer(&pool, &decision_id)
+        .await
+        .map_err(internal)?;
+    tracing::info!(
+        decision_id = %decision_id,
+        cleared,
+        "discarded a staged verdict"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Answer an open decision as the user and run its gated effect.
 ///
-/// Shared by the HTTP inbox path and the voice spoken-yes path: both are the
-/// user's own channel (authenticated UI / authenticated voice socket), not a
-/// model tool call.
+/// Reached from the authenticated HTTP inbox path ONLY. It used to be shared
+/// with the voice socket's spoken yes/no, on the reasoning that both were "the
+/// user's own channel" — but a microphone cannot say whose mouth it is, and
+/// NIST SP 800-63B-4 §3.2.3.2 forbids treating voice as a biometric comparison
+/// at all. The spoken path now stages a proposal
+/// (`voice::spoken_verdict::stage_spoken_verdict`) and the tap that lands here
+/// is what authenticates it. Keep it that way: a test in `spoken_verdict.rs`
+/// fails if `routes/voice.rs` mentions this function again.
 pub(crate) async fn apply_jesse_answer(
     state: &Arc<AppState>,
     decision_id: &str,
@@ -1006,6 +1041,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/decisions", get(list_decisions_handler))
         .route("/api/decisions/history", get(history_handler))
         .route("/api/decisions/{id}/answer", post(answer_decision_handler))
+        .route(
+            "/api/decisions/{id}/staged",
+            delete(discard_staged_answer_handler),
+        )
         .with_state(state)
 }
 
