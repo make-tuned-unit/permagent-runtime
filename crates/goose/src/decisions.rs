@@ -284,6 +284,111 @@ pub struct RepoTarget {
     pub evidence: Vec<String>,
 }
 
+/// `risk_gate` action classes for the Financier's exit notices. Advisory is
+/// Tier 1 (agent policy or the user may answer); urgent escalates to Tier 2,
+/// user-only — a 55-day breakdown or a 25% drawdown is not something a policy
+/// should be able to wave through on the user's behalf. Seeded in
+/// `spectral_schema` and reconciled by `migrate_v52_to_v53`.
+pub const SELL_NOTICE_ADVISORY: &str = "finance_sell_notice";
+pub const SELL_NOTICE_URGENT: &str = "finance_sell_notice_urgent";
+
+/// The indicator readings behind an exit notice, F0 §5.4's `evidence` block.
+///
+/// Every field is `Option` for the same reason the buy-side block is: absent
+/// means "not computable from the history that came back", never zero and
+/// never a shortened window.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct SellNoticeEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dch_lo20: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dch_hi20: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dch_lo55: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sma50: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sma100: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sma200: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atr20: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atr_pct: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chandelier: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chan_pos_252: Option<f64>,
+    /// Reported as CONTEXT only. Volume plays no part in any exit trigger
+    /// (F0 §5.3) — there is no credible evidence for volume-divergence exits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rvol: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dollar_volume_20d: Option<f64>,
+}
+
+/// Payload sub-type for a Financier exit notice, carried on `kind='risk_gate'`.
+///
+/// A sub-typed payload on an existing kind rather than a new `decisions.kind`:
+/// a new top-level kind costs a templated SQLite table rebuild (the `kind`
+/// CHECK constraint) plus registrations in the validator allowlist, the
+/// payload-match arm, `answer_allowed_for_kind` and `OUTBOX_ELIGIBLE_KINDS`,
+/// where a discriminant field on `RiskGatePayload` costs one optional field
+/// and keeps every pre-existing payload byte-identical on the wire.
+/// [`RepoTarget`] set that precedent; this follows it.
+///
+/// **It proposes. It never trades.** No code path connects the decision
+/// effect-apply layer to Picker's trade journal or to any order placement, and
+/// nothing here adds one. An approve records that the user agreed with the
+/// rule; the selling, if any, is theirs to do.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SellNoticePayload {
+    pub symbol: String,
+    /// Stable key for the rule that fired — the dedupe axis, so one holding
+    /// can carry a chandelier notice and a 55-day-breakdown notice at once
+    /// without either re-filing itself daily.
+    pub trigger: String,
+    /// `"advisory"` or `"urgent"`.
+    pub urgency: String,
+    pub trigger_date: String,
+    pub trigger_close: f64,
+    /// The exact inequality with BOTH numbers substituted, e.g.
+    /// `"close 3.41 < dch_lo(20) 3.55 AND close 3.41 < sma(100) 3.88, 2nd
+    /// consecutive close"`. A rule is auditable only if its own numbers are in
+    /// it.
+    pub rule_fired: String,
+    /// The price at which this signal would be void.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalidation_level: Option<f64>,
+    /// What that level IS, in words — the levels differ per trigger.
+    pub invalidation_note: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance_to_invalidation_pct: Option<f64>,
+    pub entry_date: String,
+    pub entry_price: f64,
+    pub shares: i64,
+    pub unrealized_pnl_pct: f64,
+    pub unrealized_pnl_usd: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub days_held: Option<i64>,
+    #[serde(default)]
+    pub evidence: SellNoticeEvidence,
+    /// The case AGAINST acting, always present. Without it the reader only
+    /// ever sees the case for selling, which is not a decision aid.
+    #[serde(default)]
+    pub counter_evidence: Vec<String>,
+    /// Why no probability is attached.
+    pub caveat: String,
+}
+
+/// The standing caveat on every exit notice. One constant so it cannot drift
+/// into a softer phrasing on some path.
+pub const SELL_NOTICE_CAVEAT: &str = "This is a rule firing, not a forecast. No probability is \
+     attached because the engine is not calibrated. It is a proposal, never an order — nothing \
+     in Permagent can place a trade.";
+
 /// Payload for `kind='risk_gate'` — permission to perform a risky action class.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -296,6 +401,10 @@ pub struct RiskGatePayload {
     /// risk_gate payload parsing and byte-identical on the wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_target: Option<RepoTarget>,
+    /// The Financier's exit notice (`finance_sell_notice*`). Same
+    /// default-and-skip discipline as `repo_target`, for the same reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sell_notice: Option<SellNoticePayload>,
 }
 
 /// Payload for `kind='automation_proposal'` — the Initiative layer (#360) noticed
@@ -1475,6 +1584,36 @@ pub async fn find_open_session_gate(
     )))
     .bind(target_session_id)
     .bind(request_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.as_ref().map(row_to_decision))
+}
+
+/// Find the open Financier exit notice for one holding and one rule, if any.
+///
+/// The dedupe axis is the PAIR. Keying on the symbol alone would mean a lot
+/// that broke its 20-day channel on Monday could never also raise a 55-day
+/// breakdown on Thursday; keying on the rule alone would collapse two
+/// different holdings into one card. Both cadences that can file — the 15:30
+/// close scan and the 6-hour sweep — check this first, so the sweep is a
+/// silent no-op on anything the close scan already raised rather than a second
+/// opinion arriving hours later.
+pub async fn find_open_sell_notice(
+    pool: &Pool<Sqlite>,
+    symbol: &str,
+    trigger: &str,
+) -> Result<Option<Decision>, String> {
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM decisions \
+         WHERE kind = 'risk_gate' AND status = 'open' \
+           AND json_extract(payload_json, '$.sell_notice.symbol') = ? \
+           AND json_extract(payload_json, '$.sell_notice.trigger') = ? \
+         ORDER BY created_at DESC LIMIT 1",
+        DECISION_COLUMNS
+    )))
+    .bind(symbol)
+    .bind(trigger)
     .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?;

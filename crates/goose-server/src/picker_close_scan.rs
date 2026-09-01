@@ -3,9 +3,18 @@
 //! Start the user's scanner half an hour before the NYSE close. When the
 //! scan finishes, The Financier asks Opus to name at most one surviving
 //! pick for tomorrow — or none. Invented tickers are refused.
+//!
+//! The same pass also runs the exit check on open holdings. Both halves want
+//! the same thing — the day's closing bars, once, on a trading day — and this
+//! is where that already happens. The exit check ran on an unrelated six-hour
+//! ticker before, which meant a notice tied to "the close" could be computed
+//! at 04:00 on a Sunday. It still runs there as a safety net, but this is now
+//! the primary cadence, and the shared ticker+rule dedupe keeps the two from
+//! ever filing the same card twice.
 
 use crate::state::AppState;
 use permagent::financier_close::{self, DailyPick};
+use permagent::overbought;
 use permagent::picker;
 use permagent::trading_calendar;
 use std::sync::Arc;
@@ -78,6 +87,20 @@ async fn run_once(state: &Arc<AppState>) -> Result<(), String> {
 
     financier_close::save(&pool, &pick).await?;
     emit_pick(&pick);
+
+    // The sell side, on the same closing bars. A failure here must not lose
+    // the day's pick, which is already saved: log it and finish.
+    match overbought::file_sell_notices(&pool).await {
+        Ok(filed) => {
+            for message in &filed {
+                tracing::info!(target: "permagentd::finance", "sell notice filed: {message}");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(target: "permagentd::finance", "exit check skipped: {e}");
+        }
+    }
+
     permagent::events::emit(permagent::events::agent_state_changed(
         "financier",
         "The Financier",

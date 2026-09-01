@@ -1333,6 +1333,13 @@ impl SessionStorage {
                     if version < 52 {
                         spectral_schema::migrate_v51_to_v52(&self.pool).await?;
                     }
+                    // v53: the Financier's exit-notice risk_policy classes.
+                    // Without them an advisory sell notice resolves fail-closed
+                    // to Tier 2 and is indistinguishable from an urgent one.
+                    // INSERT OR IGNORE, additive and base-independent.
+                    if version < 53 {
+                        spectral_schema::migrate_v52_to_v53(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB
