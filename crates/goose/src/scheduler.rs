@@ -2171,6 +2171,27 @@ fn render_scheduled_prompt(
     )
 }
 
+/// The agent a scheduled run IS, when it is one at all — `(agent_id, name)`.
+///
+/// A job earns an identity only by declaring one (`worker_persona`) that names
+/// a real worker descriptor. That is the whole mapping, and deliberately so:
+/// `workspace-snapshot`, `health-review` and `storage-insights` declare no
+/// persona because they are the scheduler's own errands, not a character's, and
+/// handing them a borrowed orb would animate an agent that is not working.
+/// `git-steward` is the one starter that IS an agent's embodiment today, and
+/// the alias map here is the same one the agents surface resolves through, so
+/// its runs land on `git_steward` — the exact id `steward_sweep.rs::announce`
+/// already uses. Before this, the weekday recipe's multi-minute fleet pass was
+/// invisible in the World while the 15-minute native sweep was not (D11).
+fn job_announce_identity(job: &ScheduledJob) -> Option<(&'static str, &'static str)> {
+    let key = job.worker_persona.as_deref()?;
+    let descriptor_id = crate::config::agent_identity::descriptor_id_for_worker_key(key);
+    crate::agents::self_knowledge::WORKER_DESCRIPTORS
+        .iter()
+        .find(|d| d.id == descriptor_id)
+        .map(|d| (d.id, d.display_name))
+}
+
 #[allow(clippy::too_many_lines)]
 async fn execute_job(
     job: ScheduledJob,
@@ -2181,7 +2202,14 @@ async fn execute_job(
     persona: Option<crate::config::agent_identity::SharedPersona>,
     agent_config: Option<crate::config::agent_identity::SharedAgentConfig>,
 ) -> Result<String> {
-    crate::providers::inflight::background(execute_job_inner(
+    // Wrapped HERE rather than in the cron tick so a manual `run_now` announces
+    // too: from the World's side there is no difference between the Steward
+    // sweeping because it is Tuesday and sweeping because someone pressed Run.
+    let announce = job_announce_identity(&job);
+    if let Some((id, name)) = announce {
+        crate::events::emit(crate::events::agent_state_changed(id, name, "working"));
+    }
+    let result = crate::providers::inflight::background(execute_job_inner(
         job,
         jobs,
         job_id,
@@ -2190,7 +2218,15 @@ async fn execute_job(
         persona,
         agent_config,
     ))
-    .await
+    .await;
+    if let Some((id, name)) = announce {
+        // A failed run is a real failure, and the Steward HUD already draws it
+        // (`SWEEP BLOCKED`). Silence on failure would leave the orb amber until
+        // the next fire — a worse lie than the red one is true.
+        let state = if result.is_ok() { "available" } else { "error" };
+        crate::events::emit(crate::events::agent_state_changed(id, name, state));
+    }
+    result
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2841,6 +2877,58 @@ mod tests {
     async fn scheduled_job_agents_are_headless() {
         let agent = new_scheduled_job_agent();
         assert!(agent.is_headless(), "scheduled-job agents must be headless");
+    }
+
+    /// D11: the weekday `git-steward` recipe is the Steward's OWN embodiment —
+    /// a multi-minute LLM pass over every repo — and it announced nothing, so
+    /// the World's Steward pill sat at STANDING BY through the whole run while
+    /// the native 15-min sweep (which announces) was the only thing that could
+    /// ever light it.
+    ///
+    /// The mapping is deliberately narrow: a job announces as an agent only
+    /// when it DECLARES one (`worker_persona`) and that persona names a real
+    /// worker descriptor. `workspace-snapshot` and `health-review` declare no
+    /// persona — they are the scheduler's own work, not a character's — so
+    /// they stay silent rather than being given a borrowed identity.
+    #[test]
+    fn only_a_worker_persona_job_announces_as_an_agent() {
+        let steward = ScheduledJob {
+            id: "git-steward".to_string(),
+            worker_persona: Some("steward".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            job_announce_identity(&steward),
+            Some((
+                crate::steward::SELF_KNOWLEDGE_FEATURE.id,
+                crate::steward::SELF_KNOWLEDGE_FEATURE.display_name
+            )),
+            "the recipe must announce on the SAME id the native sweep does \
+             (steward_sweep.rs::announce), or it lights a second, empty orb"
+        );
+
+        for id in ["workspace-snapshot", "health-review", "storage-insights"] {
+            let job = ScheduledJob {
+                id: id.to_string(),
+                ..Default::default()
+            };
+            assert_eq!(
+                job_announce_identity(&job),
+                None,
+                "{id} declares no worker persona and must not borrow one"
+            );
+        }
+
+        let unknown = ScheduledJob {
+            id: "custom".to_string(),
+            worker_persona: Some("not_a_worker".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            job_announce_identity(&unknown),
+            None,
+            "a persona key that names no worker descriptor has no orb to light"
+        );
     }
 
     /// `recipe_dir` is a built-in template variable, not a declared parameter.
@@ -3515,6 +3603,58 @@ prompt: 'collect {{ hours }}h from {{ log_dir }} with {{ recipe_dir }}/collector
 
         let jobs = scheduler.list_scheduled_jobs().await;
         assert!(jobs[0].last_run.is_some(), "Job should have run");
+    }
+
+    /// D11, on the real cron path: a fire of a worker-persona job must put an
+    /// `agent_state_changed` frame on the bus, or the World View has nothing to
+    /// render no matter how long the run takes. The run itself fails here (no
+    /// real provider), which is the point of asserting only the FIRST frame:
+    /// `working` is emitted before the work, not derived from its outcome.
+    #[tokio::test]
+    async fn worker_persona_job_announces_working_on_the_bus() {
+        let _guard = env_lock::lock_env([
+            ("GOOSE_PROVIDER", Some("openai")),
+            ("GOOSE_MODEL", Some("gpt-4o")),
+            ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
+            ("OPENAI_CUSTOM_HEADERS", Some("")),
+            ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
+        ]);
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "git-steward");
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(storage_path, session_manager).await.unwrap();
+
+        let mut bus = crate::events::subscribe();
+
+        scheduler
+            .add_scheduled_job(
+                ScheduledJob {
+                    id: "git-steward".to_string(),
+                    source: recipe_path.to_string_lossy().to_string(),
+                    cron: "* * * * * *".to_string(),
+                    worker_persona: Some("steward".to_string()),
+                    ..Default::default()
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        sleep(Duration::from_millis(1500)).await;
+
+        let mut announced = false;
+        while let Ok(evt) = bus.try_recv() {
+            let payload = &evt.payload;
+            if payload["agent_id"] == crate::steward::SELF_KNOWLEDGE_FEATURE.id
+                && payload["state"] == "working"
+            {
+                announced = true;
+            }
+        }
+        assert!(
+            announced,
+            "a git-steward fire must announce `working` on the git_steward id"
+        );
     }
 
     #[tokio::test]
