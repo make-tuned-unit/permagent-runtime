@@ -15,6 +15,8 @@ import { useCommandCenter } from '../../lib/store';
 import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { DirectoryPerson } from '../projects/types';
+import { CanvasLegend } from '../common/CanvasLegend';
+import { PEOPLE_GESTURES, PEOPLE_VOCABULARY } from './peopleLegend';
 import { isBridge, isYou, layoutPeopleGraph, type GraphNode } from './peopleGraph';
 import { PersonFace } from './PersonFace';
 import { shouldShowLabel } from './peopleFace';
@@ -115,6 +117,17 @@ export function PeopleGraph() {
         }}>
           No people match that search.
         </div>
+      )}
+      {/* The key. The graph's whole premise — you at the centre, everyone else
+          grouped by a shared project, a bigger face for whoever bridges two
+          groups — lived only in the layout code until now. Not shown over a
+          failed or still-loading load: there is nothing to explain yet. */}
+      {status === 'ready' && (
+        <CanvasLegend
+          canvasId="people-graph"
+          gestures={PEOPLE_GESTURES}
+          vocabulary={PEOPLE_VOCABULARY}
+        />
       )}
       {status === 'ready' && (
         <Canvas

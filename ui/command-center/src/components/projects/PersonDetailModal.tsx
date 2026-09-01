@@ -898,20 +898,35 @@ function PersonProjects({ colors, rows, status, onRetry, onOpen }: {
         <Small colors={colors}>Not on any project yet — add them from a project's People panel.</Small>
       )}
       {rows.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {rows.map(row => (
-            <Chip
-              key={row.project_id}
-              kind="link"
-              tone="accent"
-              data-testid={`person-project-${row.project_id}`}
-              title={`Open ${row.project_name}${row.role ? ` — ${row.role}` : ''}`}
-              onClick={() => onOpen(row.project_id)}
-            >
-              {row.project_name}
-            </Chip>
-          ))}
-        </div>
+        <>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {rows.map(row => (
+              <Chip
+                key={row.project_id}
+                kind="link"
+                tone="accent"
+                data-testid={`person-project-${row.project_id}`}
+                title={`Open ${row.project_name}${row.role ? ` — ${row.role}` : ''}`}
+                onClick={() => onOpen(row.project_id)}
+              >
+                {row.project_name}
+              </Chip>
+            ))}
+          </div>
+          {/* Where this person sits in the People graph, in the graph's own
+              words. The graph groups by shared project and draws whoever is on
+              several of them larger, as a bridge between those groups — its key
+              says so, and this is the surface you land on from it, so the two
+              have to agree. Only when the list actually loaded: a failed fetch
+              gets the message above, never a claim about the picture. */}
+          <div data-testid="person-projects-cluster" style={{ marginTop: 6 }}>
+            <Small colors={colors}>
+              {rows.length > 1
+                ? `In the People graph they bridge these ${rows.length} groups.`
+                : `In the People graph they sit with ${rows[0].project_name}.`}
+            </Small>
+          </div>
+        </>
       )}
     </section>
   );

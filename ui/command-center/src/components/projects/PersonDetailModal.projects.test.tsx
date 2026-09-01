@@ -134,6 +134,38 @@ describe('PersonDetailModal projects row', () => {
   });
 });
 
+describe('PersonDetailModal carries the graph’s premise', () => {
+  it('says which group the graph puts a single-project person in', async () => {
+    mockApi({ projectsFail: false });
+    await render();
+    const cluster = container.querySelector('[data-testid="person-projects-cluster"]')!;
+    expect(cluster.textContent).toContain('Acme Deal');
+  });
+
+  it('names a multi-project person as a bridge, the way the key does', async () => {
+    apiFetch.mockReset().mockImplementation((url: string) => {
+      if (url.endsWith('/meetings')) return Promise.resolve(meetings);
+      if (url.endsWith('/projects')) {
+        return Promise.resolve([
+          ...projects,
+          { project_id: 'p2', project_name: 'Beta Launch', project_status: 'active', role: null, added_at: '2026-01-02T00:00:00Z' },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    await render();
+    const cluster = container.querySelector('[data-testid="person-projects-cluster"]')!;
+    expect(cluster.textContent).toContain('bridge');
+    expect(cluster.textContent).toContain('2');
+  });
+
+  it('claims nothing about the graph when the list did not load', async () => {
+    mockApi({ projectsFail: true });
+    await render();
+    expect(container.querySelector('[data-testid="person-projects-cluster"]')).toBeNull();
+  });
+});
+
 describe('PersonDetailModal project loading', () => {
   it('counts the real project links when the list loaded', async () => {
     mockApi({ projectsFail: false });

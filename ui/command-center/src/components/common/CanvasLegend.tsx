@@ -221,7 +221,7 @@ function Section({ label, palette, children }: { label: string; palette: LegendP
     <div style={{ display: 'grid', gap: 3 }}>
       <span style={{
         fontFamily: font.mono,
-        fontSize: 9,
+        fontSize: textSize.micro,
         letterSpacing: '0.12em',
         textTransform: 'uppercase',
         color: palette.dim,
