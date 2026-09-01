@@ -8,7 +8,7 @@ import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import {
   getNotificationPrefs, setNotificationPref, getOsNotificationsEnabled,
-  setOsNotificationsEnabled, KIND_LABELS, type NotificationKind,
+  setOsNotificationsEnabled, KIND_LABELS, useNotifications, type NotificationKind,
 } from '../../lib/notifications';
 import { ProvidersSection } from './ProvidersSection';
 import { DevRootsSection } from './DevRootsSection';
@@ -2191,6 +2191,12 @@ export function SettingsView() {
   const setPendingSettingsSection = useCommandCenter(s => s.setPendingSettingsSection);
   const [section, setSection] = useState<string>(() => resolveSettingsSection(pendingSettingsSection));
 
+  // #6 download feedback: the Inbox nav entry carries an unread count of
+  // 'download' notifications (files landed via `inbox_file_received`), fed by
+  // the same notification stream the toast/tray read — not a second poll.
+  const { items: notificationItems } = useNotifications();
+  const downloadUnread = notificationItems.filter(n => n.kind === 'download' && !n.read).length;
+
   // Honor an agent/voice deep-link (Settings → <pane>): when the store carries a
   // pending section, jump to that pane and consume it so it only fires once.
   useEffect(() => {
@@ -2230,6 +2236,13 @@ export function SettingsView() {
                 }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><path d={it.icon} /></svg>
                   {it.label}
+                  {it.key === 'inbox' && downloadUnread > 0 && (
+                    <span style={{
+                      marginLeft: 'auto', minWidth: 16, height: 16, padding: '0 4px', borderRadius: 999,
+                      background: colors.cyan, color: colors.textOnCyan, fontSize: 10, fontWeight: 700,
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    }}>{downloadUnread > 9 ? '9+' : downloadUnread}</span>
+                  )}
                 </button>
               );
             })}
