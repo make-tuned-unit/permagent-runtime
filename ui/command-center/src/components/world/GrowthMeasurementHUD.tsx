@@ -79,7 +79,7 @@ export function GrowthMeasurementHUD({ visible, onClose }: GrowthMeasurementHUDP
   const lastJudgedAt = fleet?.recent?.[0]?.judgedAt ?? null;
 
   return (
-    <HudShell visible={visible} onClose={onClose} title="GROWTH MEASUREMENT" statusPill={statusPill}>
+    <HudShell visible={visible} onClose={onClose} title="THE GROWER" statusPill={statusPill}>
       <div style={{ padding: '4px 14px 8px' }}>
         <span style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5 }}>
           Every 6 hours: verify a shipped growth action, freeze its
