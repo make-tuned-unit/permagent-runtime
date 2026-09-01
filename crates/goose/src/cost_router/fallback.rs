@@ -172,6 +172,49 @@ pub fn permanent_failure_reply(
     }
 }
 
+/// A short, payload-free phrase for the class of pre-commit failure that
+/// triggered a silent switch. Derived from the error VARIANT, never from its
+/// string: `NetworkError`'s own text carries the socket we failed to open
+/// (`127.0.0.1:8081`), which is log material, not something to read aloud.
+fn precommit_failure_cause(err: &ProviderError) -> &'static str {
+    if err.is_stream_decode() {
+        return "the model stream dropped before any reply started";
+    }
+    match err {
+        ProviderError::NetworkError(_) => "connection refused or unroutable",
+        ProviderError::ServerError(_) => "the provider returned a server error",
+        ProviderError::RateLimitExceeded { .. } => "the provider is rate-limiting this model",
+        _ => "the request failed before any reply started",
+    }
+}
+
+/// The ONE sentence for a *silent* pre-commit failover — the arm that used to
+/// say nothing at all.
+///
+/// Session 20260831_10 (2026-08-31): the coding harness resolved
+/// `qwen38_split`/`qwen3.8-27b` from the harness-role default, the split's port
+/// was dead in the evening, and [`may_silent_precommit_failover`] switched the
+/// session to `anthropic/claude-haiku-4-5`. The ONLY trace was one
+/// `tracing::warn!` in the daemon log; the transcript, the CLI and TTS heard
+/// nothing, and the model went on to self-report an identity it never had.
+///
+/// Unlike [`permanent_failure_reply`] this path always HAS a target — it is
+/// only reached after the switch succeeded — so the sentence states the switch
+/// as done, not as an offer. Same payload-free rule
+/// ([`tests::precommit_reply_never_contains_the_raw_error`]).
+pub fn precommit_failover_reply(
+    failed_provider: &str,
+    err: &ProviderError,
+    fallback: &RoleModel,
+) -> String {
+    format!(
+        "{failed_provider} unreachable ({}) — switched this session to {}/{}.",
+        precommit_failure_cause(err),
+        fallback.provider,
+        fallback.model
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,5 +438,66 @@ mod tests {
             false,
             &ProviderError::Authentication("nope".into())
         ));
+    }
+
+    /// M2: the pre-commit failover used to be silent. Session 20260831_10 was
+    /// served by `anthropic/claude-haiku-4-5` after `qwen38_split`'s port was
+    /// found dead, and NOTHING in the transcript said so.
+    #[test]
+    fn precommit_reply_names_both_ends_of_the_switch() {
+        let err = ProviderError::NetworkError(
+            "Could not connect to 127.0.0.1:8081 — check your network connection and try again."
+                .to_string(),
+        );
+        let target = RoleModel {
+            provider: "anthropic".into(),
+            model: "claude-haiku-4-5".into(),
+        };
+        let reply = precommit_failover_reply("qwen38_split", &err, &target);
+        assert!(reply.contains("qwen38_split"), "{reply}");
+        assert!(reply.contains("anthropic/claude-haiku-4-5"), "{reply}");
+        assert!(reply.to_lowercase().contains("unreachable"), "{reply}");
+        assert!(
+            reply.to_lowercase().contains("switched this session"),
+            "{reply}"
+        );
+    }
+
+    /// Same payload-free guarantee as the announced permanent path: a raw
+    /// socket/endpoint string is log material, never TTS material.
+    #[test]
+    fn precommit_reply_never_contains_the_raw_error() {
+        let err = ProviderError::NetworkError(
+            "Could not connect to 127.0.0.1:8081 — check your network connection and try again."
+                .to_string(),
+        );
+        let target = RoleModel {
+            provider: "anthropic".into(),
+            model: "claude-haiku-4-5".into(),
+        };
+        let reply = precommit_failover_reply("qwen38_split", &err, &target);
+        for leaked in ["127.0.0.1", "8081", "check your network"] {
+            assert!(!reply.contains(leaked), "leaked {leaked:?}: {reply}");
+        }
+    }
+
+    /// The other silent-failover arm shares the sentence, and must not claim a
+    /// dropped stream was an unreachable host.
+    #[test]
+    fn precommit_reply_distinguishes_a_dropped_stream_from_a_dead_host() {
+        let target = RoleModel {
+            provider: "openai".into(),
+            model: "gpt-5.4".into(),
+        };
+        let stream = precommit_failover_reply(
+            "anthropic",
+            &ProviderError::stream_decode("error decoding response body"),
+            &target,
+        );
+        assert!(stream.contains("stream"), "{stream}");
+        assert!(
+            !stream.to_lowercase().contains("connection refused"),
+            "{stream}"
+        );
     }
 }

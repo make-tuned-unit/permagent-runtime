@@ -2434,22 +2434,41 @@ impl Agent {
                                     Ok(p) => p.get_name().to_string(),
                                     Err(_) => "the model provider".to_string(),
                                 };
-                                if self
+                                if let Some(target) = self
                                     .switch_to_permanent_failure_fallback(
                                         &session_config.id,
                                         &failed_provider,
                                     )
                                     .await
-                                    .is_some()
                                 {
                                     tracing::info!(
                                         target: "permagent::cost_router",
                                         session_id = %session_config.id,
                                         from_provider = %failed_provider,
-                                        "silent pre-commit failover after a transient network error"
+                                        to_provider = %target.provider,
+                                        to_model = %target.model,
+                                        "pre-commit failover after a transient network error"
                                     );
                                     permanent_failure_fallback_used = true;
                                     did_switch_provider_this_iteration = true;
+                                    // M2: this switch used to be SILENT — the
+                                    // one-line daemon warn was its entire trace,
+                                    // so a session served by a different model
+                                    // than its banner claimed had nothing in the
+                                    // transcript to say so (20260831_10). Announce
+                                    // it the way the CreditsExhausted sibling
+                                    // already does. The turn still finishes on the
+                                    // new model; only the silence is removed.
+                                    let message = Message::assistant().with_system_notification(
+                                        SystemNotificationType::InlineMessage,
+                                        crate::cost_router::fallback::precommit_failover_reply(
+                                            &failed_provider,
+                                            provider_err,
+                                            &target,
+                                        ),
+                                    );
+                                    persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                                    yield AgentEvent::Message(message);
                                     break;
                                 }
                             }
