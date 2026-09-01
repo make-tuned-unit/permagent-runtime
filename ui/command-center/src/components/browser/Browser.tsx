@@ -20,6 +20,7 @@ import { BookmarksBar } from './BookmarksBar';
 import {
   applyEvent,
   bufferEvent,
+  downloadCapturedDecision,
   extractTitle,
   isPlaceholderUrl,
   popupTabDecision,
@@ -29,7 +30,6 @@ import {
 import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
 import { createBoundsPump } from './boundsPump';
-import { reserveFromLeft } from './reservedRect';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
 
@@ -108,7 +108,6 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   const { colors } = useTheme();
   const overlayBlocking = useCommandCenter(s => s.overlayBlockingBrowser);
   const chatLauncherSize = useCommandCenter(s => s.chatLauncherSize);
-  const sidebarTooltipRect = useCommandCenter(s => s.sidebarTooltipRect);
   const chatDockOpen = useCommandCenter(s => s.chatDockOpen);
   const pendingBrowserUrl = useCommandCenter(s => s.pendingBrowserUrl);
   const clearPendingBrowserUrl = useCommandCenter(s => s.clearPendingBrowserUrl);
@@ -367,6 +366,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     // within a tick of the hide (reported live 2026-08-06).
     if (useCommandCenter.getState().overlayBlockingBrowser > 0) {
       lastAppliedBoundsRef.current = null;
+      useCommandCenter.getState().setBrowserPaneRect(null);
       tabsRef.current.forEach((t) => {
         if (t.webviewId) inv.invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
       });
@@ -381,6 +381,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     // Hide webviews when container is hidden (workspace switch)
     if (rect.width === 0 || rect.height === 0) {
       lastAppliedBoundsRef.current = null;
+      useCommandCenter.getState().setBrowserPaneRect(null);
       currentTabs.forEach((t) => {
         if (t.webviewId) inv.invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
       });
@@ -413,31 +414,30 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
       }
     }
 
-    // Sidebar hover label: same class of problem as the launcher corner, and
-    // the same remedy. The tooltip is drawn to the RIGHT of the rail, into
-    // this pane; a native child surface composites above the shell's DOM, so
-    // the only way it stays visible is for the browser's rect not to reach it.
-    // Reported 2026-08-19 as "browser full view + terminal toggled off",
-    // which is precisely when this pane spans the full width — with the
-    // terminal showing, BuildView's horizontal split puts the browser on the
-    // right half and the tooltip lands over the terminal's DOM instead.
-    // `reserveFromLeft` returns the input untouched when there is no overlap,
-    // so every other layout keeps the bounds it has today.
-    const reserved = reserveFromLeft(
-      { x: rect.x, y: rect.y, width, height },
-      useCommandCenter.getState().sidebarTooltipRect,
-    );
+    // NOTE what is deliberately NOT here any more: a sidebar-tooltip
+    // reservation. Until 2026-09-01 this bounds-subtracted the sidebar hover
+    // label's rect the same way the launcher corner is subtracted above, so
+    // that a portalled DOM tooltip (which a native child surface always
+    // composites over) stayed visible. That worked, but it meant showing a
+    // tooltip could push a real `update_browser_bounds` call — the Browser's
+    // geometry held hostage to whether a hover happened to be up elsewhere in
+    // the shell. `SidebarTooltip` now reads `browserPaneRect` (published just
+    // below) and places ITSELF out of the way instead
+    // (sidebar/tooltipPlacement.ts has the non-intersection proof). This
+    // component reacts to nothing about the sidebar, full stop.
+    const finalRect = { x: rect.x, y: rect.y, width, height };
+    useCommandCenter.getState().setBrowserPaneRect(finalRect);
 
     currentTabs.forEach((t) => {
       if (!t.webviewId) return;
       if (t.id === currentActiveId) {
-        lastAppliedBoundsRef.current = { ...reserved };
+        lastAppliedBoundsRef.current = { ...finalRect };
         inv.invoke('update_browser_bounds', {
           webviewId: t.webviewId,
-          x: reserved.x,
-          y: reserved.y,
-          width: reserved.width,
-          height: reserved.height,
+          x: finalRect.x,
+          y: finalRect.y,
+          width: finalRect.width,
+          height: finalRect.height,
         }).catch(() => {});
       } else {
         inv.invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
@@ -578,9 +578,12 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
 
   // ── Re-sync when the chat launcher appears/disappears/resizes (#553) ──
   // Event-driven, not polled — composes with the nap-safe pump suspension.
+  // Deliberately NOT dependent on anything sidebar/tooltip-related — see the
+  // note in syncBounds. This is what makes "update_browser_bounds gets called
+  // zero times for a tooltip" true by construction rather than by discipline.
   useEffect(() => {
     syncBounds();
-  }, [chatLauncherSize, chatDockOpen, sidebarTooltipRect, syncBounds]);
+  }, [chatLauncherSize, chatDockOpen, syncBounds]);
 
   // ── Hide all webviews when a transient overlay is open ──
   useEffect(() => {
@@ -609,6 +612,14 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   // fire — but one click must be one tab even if it does.
   const lastPopupRef = useRef<{ url: string; at: number } | null>(null);
 
+  // Webviews whose main frame has actually committed a page (`browser_page_load`
+  // with loading:true — see tabIdentity.ts's doc on that field). A
+  // download-converted navigation never fires that event at all: WebKit hands
+  // us a WKDownload instead of content, so `downloadCapturedDecision` below
+  // uses membership here to tell a tab that is genuinely dead (never showed
+  // anything) from one that already has real content behind it.
+  const committedWebviewsRef = useRef<Set<string>>(new Set());
+
   // Listen for navigation events from Tauri
   useEffect(() => {
     if (!api) return;
@@ -622,6 +633,10 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     api.listen('browser_page_load', (e) => {
       const payload = e.payload as { webview_id: string; url: string; loading: boolean };
       if (payload.loading) {
+        // A commit: this webview's main frame now has real content behind
+        // it. Recorded so `browser_download_captured` (below) can tell a
+        // dead download-only tab from one someone is actually looking at.
+        committedWebviewsRef.current.add(payload.webview_id);
         const navTab = tabsRef.current.find((t) => t.webviewId === payload.webview_id);
         emitActivity(api, 'browser_navigated', {
           url: payload.url,
@@ -728,12 +743,63 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
       unlistenOAuthComplete = fn;
     });
 
+    // A download-converted navigation (browser.rs's `on_download`, Requested
+    // arm). The tab this landed in either never committed anything — WebKit
+    // handed us a WKDownload instead of a page, so the tab is a dead end with
+    // no content and no way to close itself (reported 2026-09-01, a Gmail
+    // `.docx` chip) — or it already had a real page loaded, in which case the
+    // click just triggered a download from content the user is still looking
+    // at. `downloadCapturedDecision` tells the two apart.
+    let unlistenDownloadCaptured: (() => void) | null = null;
+    api.listen('browser_download_captured', (e) => {
+      const payload = e.payload as { webview_id: string; filename: string; url: string };
+      const decision = downloadCapturedDecision(
+        tabsRef.current,
+        committedWebviewsRef.current,
+        payload.webview_id,
+      );
+      console.info(
+        '[browser] download captured:',
+        payload.filename,
+        decision.shouldClose ? '— closing the dead tab it opened in' : '— tab already had content, leaving it',
+      );
+      if (decision.shouldClose && decision.tabId) {
+        const closedTabId = decision.tabId;
+        committedWebviewsRef.current.delete(payload.webview_id);
+        if (apiRef.current) {
+          apiRef.current.invoke('close_browser', { webviewId: payload.webview_id }).catch(() => {});
+        }
+        setTabs((prev) => {
+          const idx = prev.findIndex((t) => t.id === closedTabId);
+          if (idx === -1) return prev;
+          const next = prev.filter((t) => t.id !== closedTabId);
+          if (closedTabId === activeTabIdRef.current) {
+            if (next.length === 0) {
+              const replacement = createTab();
+              setActiveTabId(replacement.id);
+              return [replacement];
+            }
+            setActiveTabId(next[Math.min(idx, next.length - 1)].id);
+          }
+          return next;
+        });
+      }
+      // Same affordance the manual "Save to inbox" button lights up, so an
+      // auto-captured download is not a silent success only the console saw.
+      setLastSavedFilename(payload.filename);
+      setSavingToInbox('done');
+      setTimeout(() => setSavingToInbox(null), 2500);
+    }).then((fn) => {
+      unlistenDownloadCaptured = fn;
+    });
+
     return () => {
       unlisten?.();
       unlistenTitle?.();
       unlistenNewWindow?.();
       unlistenOAuth?.();
       unlistenOAuthComplete?.();
+      unlistenDownloadCaptured?.();
     };
   }, [api, ingest, resyncUrl]);
 
@@ -939,12 +1005,20 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   // Save the open tab into the Downloads inbox (#392/#393, and the 2026-08-19
   // report that nothing downloaded ever arrived there).
   //
-  // This is the human-facing half of the capture path. WebKit renders a PDF or
-  // a Word document instead of downloading it — `canShowMIMEType` is true for
-  // both — so there is no download event to hook and no amount of fixing
-  // `on_download` produces one. The only way such a file reaches the inbox is
-  // for someone to ask for it, so: a button.
+  // This is the human-facing half of the capture path. WebKit renders a PDF,
+  // a CSV or an image instead of downloading it — `canShowMIMEType` is true
+  // for those — so there is no download event to hook for them and no amount
+  // of fixing `on_download` produces one. The only way one of those reaches
+  // the inbox is for someone to ask for it, so: a button.
+  //
+  // A Word document is the OTHER case (corrected 2026-09-01): WebKit cannot
+  // render `.docx`, `canShowMIMEType` is false, and `on_download`'s Requested
+  // arm DOES fire and DOES capture it — the button is not the only path for
+  // that one. `lastSavedFilename` below is shared with that auto-captured
+  // path so both light up the same "Saved to your inbox" affordance instead
+  // of a docx save being visible only in the console.
   const [savingToInbox, setSavingToInbox] = useState<null | 'busy' | 'done' | 'failed'>(null);
+  const [lastSavedFilename, setLastSavedFilename] = useState<string | null>(null);
   const saveToInbox = useCallback(async () => {
     const inv = apiRef.current;
     const tab = tabsRef.current.find(t => t.id === activeTabIdRef.current);
@@ -960,6 +1034,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
         expectDocument: false,
       }) as { filename: string };
       console.info('[permagent] browser: saved to inbox:', capture.filename);
+      setLastSavedFilename(capture.filename);
       setSavingToInbox('done');
     } catch (err) {
       console.error('[permagent] browser: save to inbox failed:', err);
@@ -1161,7 +1236,9 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
             } as CSSProperties}
             title={
               savingToInbox === 'done'
-                ? 'Saved to your inbox'
+                ? lastSavedFilename
+                  ? `Saved "${lastSavedFilename}" to your inbox`
+                  : 'Saved to your inbox'
                 : savingToInbox === 'failed'
                   ? 'Could not save this tab — see the console for why'
                   : 'Save this page or document to your Downloads inbox'
