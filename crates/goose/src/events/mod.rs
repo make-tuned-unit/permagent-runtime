@@ -1014,7 +1014,7 @@ pub fn workspace_changed(workspace_id: &str, change: &str) -> PermagentEvent {
 }
 
 /// A project (or an owned collection of it) changed. `change` ∈
-/// `created|updated|deleted|touched|tags|memories|documents|notes`.
+/// `created|updated|deleted|touched|tags|memories|documents|notes|growth_actions`.
 pub fn project_changed(project_id: &str, change: &str) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::ProjectChanged,
