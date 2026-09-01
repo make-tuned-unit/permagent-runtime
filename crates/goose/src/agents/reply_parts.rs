@@ -291,6 +291,21 @@ impl Agent {
         let provider = self.provider().await?;
         let model_config = provider.get_model_config();
 
+        // M3: tell the model which model it is. Read from the live provider
+        // handle every turn — the SAME one the composer footer reads — so a
+        // mid-session failover moves this line with it instead of leaving the
+        // model to guess (and, on 2026-08-31, to guess wrong).
+        {
+            let mut pm = self.prompt_manager.lock().await;
+            pm.add_system_prompt_extra(
+                crate::agents::prompt_manager::MODEL_IDENTITY_KEY.to_string(),
+                crate::agents::prompt_manager::model_identity_line(
+                    provider.get_name(),
+                    &model_config.model_name,
+                ),
+            );
+        }
+
         let goose_mode = *self.current_goose_mode.lock().await;
 
         // Live scheduled-job count for the self-knowledge brief (Queryable). The
@@ -905,6 +920,110 @@ mod tests {
             let usage = ProviderUsage::new("mock".to_string(), Usage::default());
             Ok(stream_from_single_message(message, usage))
         }
+    }
+
+    /// A mock whose provider name is settable, so a test can actually switch
+    /// providers mid-session the way a failover does.
+    #[derive(Clone)]
+    struct NamedMockProvider {
+        name: &'static str,
+        model_config: ModelConfig,
+    }
+
+    #[async_trait]
+    impl Provider for NamedMockProvider {
+        fn get_name(&self) -> &str {
+            self.name
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            self.model_config.clone()
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            let message = Message::assistant().with_text("ok");
+            let usage = ProviderUsage::new(self.name.to_string(), Usage::default());
+            Ok(stream_from_single_message(message, usage))
+        }
+    }
+
+    /// M3: session 20260831_10 had NO model-identity fact anywhere in its
+    /// prompt, so when the harness silently moved it off `qwen38_split` the
+    /// model confabulated a third model name entirely. The line must be live
+    /// (it follows a switch) and volatile (it must not bust the cached prefix).
+    #[tokio::test]
+    async fn the_prompt_says_which_model_is_actually_serving() -> anyhow::Result<()> {
+        let agent = crate::agents::Agent::new();
+        let session = agent
+            .config
+            .session_manager
+            .create_session(
+                std::env::current_dir().unwrap(),
+                "test-model-identity".to_string(),
+                SessionType::Hidden,
+                GooseMode::default(),
+            )
+            .await?;
+
+        agent
+            .update_provider(
+                std::sync::Arc::new(NamedMockProvider {
+                    name: "qwen38_split",
+                    model_config: ModelConfig::new("qwen3.8-27b").unwrap(),
+                }),
+                &session.id,
+            )
+            .await?;
+        let (_, _, parts) = agent
+            .prepare_tools_and_prompt(&session.id, session.working_dir.as_path())
+            .await?;
+        assert!(
+            parts
+                .volatile_suffix()
+                .contains("You are currently served by qwen38_split/qwen3.8-27b."),
+            "no live model identity in the volatile tail: {}",
+            parts.volatile_suffix()
+        );
+        assert!(
+            !parts
+                .stable_prefix()
+                .contains("You are currently served by"),
+            "a per-turn fact in the cached prefix busts the prompt cache"
+        );
+
+        // The failover: same session, different provider AND model.
+        agent
+            .update_provider(
+                std::sync::Arc::new(NamedMockProvider {
+                    name: "anthropic",
+                    model_config: ModelConfig::new("claude-haiku-4-5").unwrap(),
+                }),
+                &session.id,
+            )
+            .await?;
+        let (_, _, parts) = agent
+            .prepare_tools_and_prompt(&session.id, session.working_dir.as_path())
+            .await?;
+        assert!(
+            parts
+                .volatile_suffix()
+                .contains("You are currently served by anthropic/claude-haiku-4-5."),
+            "identity did not follow the switch: {}",
+            parts.volatile_suffix()
+        );
+        assert!(
+            !parts.render().contains("qwen38_split"),
+            "the pre-failover identity survived the switch: {}",
+            parts.render()
+        );
+        Ok(())
     }
 
     #[test]

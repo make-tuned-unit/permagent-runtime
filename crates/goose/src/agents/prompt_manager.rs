@@ -437,7 +437,27 @@ const VOLATILE_EXTRA_KEYS: &[&str] = &[
     // is detected (`Agent::dispatch_tool_call`) — an insertion partway through
     // a session by construction.
     "skill_proposals",
+    // Which provider and model are ACTUALLY serving this turn
+    // (`reply_parts::prepare_tools_and_prompt`, read from the live
+    // `Agent::provider`). Volatile because a mid-session failover changes it —
+    // that is the entire reason the line exists.
+    MODEL_IDENTITY_KEY,
 ];
+
+/// Key for the live "which model is answering" line.
+///
+/// Session 20260831_10 (2026-08-31): the harness silently failed over from
+/// `qwen38_split` to `anthropic/claude-haiku-4-5`, and the model — which has
+/// never had a model-identity fact anywhere in its prompt — asserted it was
+/// running on a third model entirely. There was no wrong string to delete; the
+/// fact was simply absent.
+pub const MODEL_IDENTITY_KEY: &str = "model_identity";
+
+/// The one live self-identity sentence, from the SAME provider handle the
+/// composer footer reads (`Agent::provider`), so the two can never disagree.
+pub fn model_identity_line(provider_name: &str, model_name: &str) -> String {
+    format!("You are currently served by {provider_name}/{model_name}.")
+}
 
 /// Prefix for the per-subdirectory hint extras the agent accumulates as it works
 /// (`SubdirectoryHintTracker::load_new_hints` keys them by directory path), so
