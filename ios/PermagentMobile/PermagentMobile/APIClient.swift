@@ -734,6 +734,10 @@ enum KeychainStore {
         SecItemDelete(query as CFDictionary)
         var add = query
         add[kSecValueData as String] = data
+        // The locked phone is the watch's network relay. Make the pairing
+        // credential available after the first device unlock so a
+        // WatchConnectivity background launch can authenticate while locked.
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         SecItemAdd(add as CFDictionary, nil)
     }
     static func load() -> HubConfig? {
@@ -745,7 +749,14 @@ enum KeychainStore {
         var out: AnyObject?
         guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess,
               let data = out as? Data else { return nil }
-        return try? JSONDecoder().decode(HubConfig.self, from: data)
+        guard let config = try? JSONDecoder().decode(HubConfig.self, from: data) else { return nil }
+        var updateQuery = query
+        updateQuery.removeValue(forKey: kSecReturnData as String)
+        let accessibility: [String: Any] = [
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        SecItemUpdate(updateQuery as CFDictionary, accessibility as CFDictionary)
+        return config
     }
 }
 

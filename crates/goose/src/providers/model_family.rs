@@ -66,6 +66,7 @@ const SELF_HOSTED_PROVIDERS: &[&str] = &[
     "ollama",
     "lmstudio",
     "llama_swap",
+    "qwen38_split",
     "local",
     "local_inference",
 ];

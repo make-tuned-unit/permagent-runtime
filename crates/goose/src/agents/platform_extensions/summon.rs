@@ -1376,7 +1376,13 @@ impl SummonClient {
         let worker_key = worker_persona?;
         let config = crate::config::agent_identity::load_agent_config();
         if let Some(worker) = config.workers.get(worker_key) {
-            Some((worker.system_prompt_block(), worker.display_name()))
+            Some((
+                crate::public_apis::attach_to_persona_block(
+                    &worker.system_prompt_block(),
+                    Some(worker_key),
+                ),
+                worker.display_name(),
+            ))
         } else {
             tracing::warn!(
                 target: "permagentd::brain",

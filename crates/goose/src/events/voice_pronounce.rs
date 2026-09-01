@@ -208,24 +208,47 @@ fn tidy_listen(s: &str) -> String {
 }
 
 /// Candidate respellings to try, in order, from one listen.
+///
+/// A listen is a word or a short sounds-like (`else peth`, `pig keeper`).
+/// A complaint sentence must not become `sounds_like` — 2026-08-27 kitchen
+/// wrote `pinkiepper` → `You can't say the word "pig keeper"`.
 pub fn save_candidates(word: &str, transcript: &str) -> Vec<String> {
     let mut out = Vec::new();
     let heard = sounds_like_from_listen(transcript);
-    if !heard.is_empty() {
+    if is_usable_respelling(&heard) {
         out.push(heard);
     }
     let raw = transcript
         .trim()
         .trim_end_matches(['.', '!', ',', '?'])
         .trim();
-    if !raw.is_empty() && !out.iter().any(|s| s.eq_ignore_ascii_case(raw)) {
+    if is_usable_respelling(raw) && !out.iter().any(|s| s.eq_ignore_ascii_case(raw)) {
         out.push(raw.to_string());
     }
+    // Only fall back to the pending word when the listen was actually a
+    // short respelling. A sentence must ASK_AGAIN, not save STT garbage as
+    // its own spelling.
     let word = word.trim();
-    if !word.is_empty() && !out.iter().any(|s| s.eq_ignore_ascii_case(word)) {
+    if !word.is_empty() && !out.is_empty() && !out.iter().any(|s| s.eq_ignore_ascii_case(word)) {
         out.push(word.to_string());
     }
     out
+}
+
+fn is_usable_respelling(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() {
+        return false;
+    }
+    let lower = s.to_ascii_lowercase();
+    if lower.contains("can't say")
+        || lower.contains("cant say")
+        || lower.contains("you can't")
+        || lower.contains("you cant")
+    {
+        return false;
+    }
+    s.split_whitespace().count() <= 4
 }
 
 /// Spoken when a word is placed on the Orb. Never names or spells the word —
@@ -311,6 +334,12 @@ mod tests {
     }
 
     #[test]
+    fn two_word_respelling_of_pigkeeper_still_saves() {
+        let c = save_candidates("pigkeeper", "pig keeper");
+        assert!(c.iter().any(|s| s.eq_ignore_ascii_case("pig keeper")));
+    }
+
+    #[test]
     fn skip_cues() {
         assert!(is_skip_cue("Never mind."));
         assert!(is_skip_cue("skip it"));
@@ -339,6 +368,27 @@ mod tests {
             "Elspeth"
         );
         assert_eq!(display_word("taran"), "Taran");
+    }
+
+    /// 2026-08-27 kitchen: STT heard `pinkiepper`, the user said
+    /// `You can't say the word "pig keeper"`, and `save_candidates` kept the
+    /// whole complaint as a respelling. A listen is a word or a short
+    /// sounds-like, not a sentence. Do not "fix" pronunciations.json here —
+    /// this tripwire must catch the save path.
+    #[test]
+    fn kitchen_complaint_is_not_a_respelling_of_pinkiepper() {
+        let c = save_candidates("pinkiepper", r#"You can't say the word "pig keeper""#);
+        assert!(
+            c.iter().all(|s| {
+                let lower = s.to_ascii_lowercase();
+                !lower.contains("can't say") && !lower.contains("cant say")
+            }),
+            "complaint leaked into save candidates: {c:?}"
+        );
+        assert!(
+            c.iter().all(|s| s.split_whitespace().count() <= 3),
+            "a full sentence is not a respelling: {c:?}"
+        );
     }
 
     #[test]

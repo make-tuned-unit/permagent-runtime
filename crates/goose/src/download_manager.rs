@@ -39,6 +39,10 @@ const ALLOWED_GITHUB_PATH_PREFIXES: &[&str] = &[
     "/thewh1teagle/kokoro-onnx/releases/download/",
     // sherpa-onnx pretrained-model releases (wake-word KWS zipformer).
     "/k2-fsa/sherpa-onnx/releases/download/kws-models/",
+    // sherpa-onnx publishes CAM++ under this misspelled upstream release tag.
+    // Keep the exact tag pinned rather than widening trust to every release in
+    // the repository. The asset itself is separately SHA-256 pinned.
+    "/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/",
 ];
 
 /// Validate that `raw` is an HTTPS URL pointing at an allowlisted download
@@ -1060,6 +1064,14 @@ mod tests {
     fn allows_sherpa_kws_release_path() {
         assert!(validate_download_url(
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn allows_sherpa_speaker_identity_release_path() {
+        assert!(validate_download_url(
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
         )
         .is_ok());
     }

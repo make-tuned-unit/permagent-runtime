@@ -7,17 +7,20 @@
 // pushed back over WatchConnectivity.
 
 import Foundation
+import UIKit
 import WatchConnectivity
 
 @MainActor
 final class HubWatchRelay: NSObject, WCSessionDelegate {
     static let shared = HubWatchRelay()
+    private var processingFiles: Set<URL> = []
 
     func start() {
         guard WCSession.isSupported() else { return }
         let session = WCSession.default
         session.delegate = self
         session.activate()
+        Task { await drainPendingFiles() }
     }
 
     func pushStatus() {
@@ -79,11 +82,19 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
         // first, then hop to the actor to transcribe.
         let requestId = (file.metadata?["id"] as? String) ?? UUID().uuidString
         let kind = (file.metadata?["kind"] as? String) ?? "note"
-        let dest = FileManager.default.temporaryDirectory.appendingPathComponent("watch-\(requestId).wav")
-        try? FileManager.default.removeItem(at: dest)
-        try? FileManager.default.copyItem(at: file.fileURL, to: dest)
-        Task { @MainActor in
-            await transcribeFile(at: dest, requestId: requestId, kind: kind)
+        do {
+            let dest = try Self.stage(file: file.fileURL, requestId: requestId, kind: kind)
+            Task { @MainActor in
+                await processStagedFile(at: dest, requestId: requestId, kind: kind)
+            }
+        } catch {
+            Task { @MainActor in
+                send(WatchResponse.fail(
+                    requestId,
+                    op: kind == "chat" ? "chatDelta" : "transcript",
+                    "The iPhone could not save the incoming recording."
+                ))
+            }
         }
     }
 
@@ -207,7 +218,10 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
     }
 
     private func transcribeFile(at url: URL, requestId: String, kind: String) async {
-        guard let data = try? Data(contentsOf: url) else {
+        let data = await Task.detached(priority: .userInitiated) {
+            try? Data(contentsOf: url)
+        }.value
+        guard let data else {
             send(WatchResponse.fail(requestId, op: kind == "chat" ? "chatDelta" : "transcript",
                                     "The recording never arrived."))
             return
@@ -251,6 +265,76 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
 
     private static func encode(_ payload: WatchResponse) -> Data {
         (try? JSONEncoder().encode(payload)) ?? Data()
+    }
+
+    private func processStagedFile(at url: URL, requestId: String, kind: String) async {
+        guard processingFiles.insert(url).inserted else { return }
+        let lease = PhoneBackgroundLease(name: "Permagent watch voice \(requestId)")
+        defer {
+            processingFiles.remove(url)
+            try? FileManager.default.removeItem(at: url)
+            lease.end()
+        }
+        await transcribeFile(at: url, requestId: requestId, kind: kind)
+    }
+
+    private func drainPendingFiles() async {
+        let inbox = Self.inboxDirectory()
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: inbox,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        for file in files where file.pathExtension == "wav" {
+            let stem = file.deletingPathExtension().lastPathComponent
+            let parts = stem.split(separator: "~", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { continue }
+            await processStagedFile(at: file, requestId: parts[0], kind: parts[1])
+        }
+    }
+
+    nonisolated private static func stage(file source: URL,
+                                          requestId: String,
+                                          kind: String) throws -> URL {
+        let safeId = requestId.filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+        let safeKind = kind == "chat" ? "chat" : "note"
+        let inbox = inboxDirectory()
+        try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        let dest = inbox.appendingPathComponent("\(safeId)~\(safeKind).wav")
+        try? FileManager.default.removeItem(at: dest)
+        try FileManager.default.copyItem(at: source, to: dest)
+        return dest
+    }
+
+    nonisolated private static func inboxDirectory() -> URL {
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("WatchRelayInbox", isDirectory: true)
+    }
+}
+
+@MainActor
+private final class PhoneBackgroundLease {
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    init(name: String) {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            self?.end()
+        }
+    }
+
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+    }
+
+    deinit {
+        if identifier != .invalid {
+            UIApplication.shared.endBackgroundTask(identifier)
+        }
     }
 }
 

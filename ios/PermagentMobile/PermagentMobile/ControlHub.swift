@@ -48,6 +48,12 @@ struct ControlHubView: View {
                             subtitle: "Teach the voice a word once — remembered on every device",
                             accent: ChatSurface.spark)
 
+                    hubLink(destination: VoiceIdentityView(),
+                            icon: "waveform.badge.person.crop",
+                            title: "Voice identity",
+                            subtitle: "Set, redo, or forget whose voice your agent answers",
+                            accent: Brand.violet)
+
                 }
                 .padding()
             }
@@ -100,6 +106,214 @@ struct ControlHubView: View {
             }
         }
         .buttonStyle(.plain)
+    }
+}
+
+// ── Voice identity ──────────────────────────────────────────────────────────
+
+private struct SpeakerIdentityStatus: Decodable {
+    let models_present: Bool
+    let verifier_loaded: Bool
+    let enrolled: Bool
+    let downloading: Bool
+}
+
+/// Dedicated identity setup/management. Enrollment deliberately has no Orb:
+/// the Orb is the live conversation surface, while this is a one-time setup
+/// flow and an explicit Control thereafter.
+struct VoiceIdentityView: View {
+    var onboarding = false
+    var onFinished: () -> Void = {}
+
+    @StateObject private var engine = VoiceEngine()
+    @State private var preparing = true
+    @State private var preparationError: String?
+
+    var body: some View {
+        ZStack {
+            ChatSurface.bg.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    header
+                    Text("Your voice stays on your hub as a learned identity embedding. Enrollment audio is never saved.")
+                        .font(.brandCaption)
+                        .foregroundStyle(ChatSurface.muted)
+
+                    RaisedCard { content }
+
+                    if onboarding, !engine.printEnrolled {
+                        Button("Skip for now") {
+                            engine.skipEnroll()
+                            onFinished()
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ChatSurface.muted)
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+                .padding(20)
+            }
+        }
+        .task { await prepare() }
+        .onDisappear { engine.stop() }
+        .onChange(of: engine.printEnrolled) { wasEnrolled, enrolled in
+            guard onboarding, !wasEnrolled, enrolled else { return }
+            Task {
+                try? await Task.sleep(for: .milliseconds(700))
+                onFinished()
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(onboarding ? "ONE-TIME SETUP" : "CONTROL")
+                    .font(.brandLabel)
+                    .foregroundStyle(ChatSurface.spark)
+                Text("Voice identity")
+                    .font(.brandTitle)
+                    .foregroundStyle(ChatSurface.text)
+            }
+            Spacer()
+            if onboarding {
+                Button(action: onFinished) {
+                    Image(systemName: "xmark")
+                        .foregroundStyle(ChatSurface.text)
+                        .frame(width: 38, height: 38)
+                }
+                .glassChrome(in: Circle(), interactive: true)
+                .accessibilityLabel("Skip voice identity setup")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if preparing || engine.identityModelDownloading {
+            HStack(spacing: 12) {
+                ProgressView()
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Preparing private voice identity")
+                        .font(.brandHeadline)
+                        .foregroundStyle(ChatSurface.text)
+                    Text("Downloading and loading the verified speaker model…")
+                        .font(.brandCaption)
+                        .foregroundStyle(ChatSurface.muted)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else if let preparationError {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Voice identity isn't ready")
+                    .font(.brandHeadline)
+                    .foregroundStyle(Brand.danger)
+                Text(preparationError)
+                    .font(.brandCaption)
+                    .foregroundStyle(ChatSurface.muted)
+                Button("Try again") { Task { await prepare() } }
+                    .buttonStyle(.borderedProminent)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else if engine.enrolling, let prompt = engine.enrollPrompt {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Sentence \(min(engine.enrollHave + 1, engine.enrollNeed)) of \(engine.enrollNeed)")
+                    .font(.brandLabel)
+                    .foregroundStyle(ChatSurface.spark)
+                Text(prompt)
+                    .font(.brandTitle)
+                    .foregroundStyle(ChatSurface.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                Label("Say the sentence naturally. Recording stops after you pause.", systemImage: "mic.fill")
+                    .font(.brandCaption)
+                    .foregroundStyle(ChatSurface.muted)
+                Button("Cancel setup") { engine.skipEnroll() }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ChatSurface.muted)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else if engine.printEnrolled {
+            VStack(alignment: .leading, spacing: 14) {
+                Label("Your voice is protected", systemImage: "checkmark.shield.fill")
+                    .font(.brandHeadline)
+                    .foregroundStyle(ChatSurface.spark)
+                Text("Your agent uses learned speaker verification to reject other talkers before transcription.")
+                    .font(.brandCaption)
+                    .foregroundStyle(ChatSurface.muted)
+                HStack(spacing: 12) {
+                    Button("Redo my voice") { engine.beginEnroll() }
+                        .buttonStyle(.borderedProminent)
+                    Button("Forget my voice", role: .destructive) { engine.clearEnroll() }
+                        .buttonStyle(.bordered)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            VStack(alignment: .leading, spacing: 14) {
+                Label("Only answer your voice", systemImage: "waveform.badge.person.crop")
+                    .font(.brandHeadline)
+                    .foregroundStyle(ChatSurface.text)
+                Text("You'll say three short sentences. This runs once during setup; you can change it later in Control.")
+                    .font(.brandCaption)
+                    .foregroundStyle(ChatSurface.muted)
+                Button("Set my voice") { engine.beginEnroll() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!engine.identityModelAvailable)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+
+        if let notice = engine.notice {
+            Text(notice)
+                .font(.brandCaption)
+                .foregroundStyle(Brand.warning)
+                .padding(.top, 8)
+        }
+        if case .failed(let reason) = engine.state {
+            Text(reason)
+                .font(.brandCaption)
+                .foregroundStyle(Brand.danger)
+                .padding(.top, 8)
+        }
+    }
+
+    @MainActor
+    private func prepare() async {
+        preparing = true
+        preparationError = nil
+        do {
+            var status = try await APIClient.shared.get(
+                "/voice/speaker/models", as: SpeakerIdentityStatus.self
+            )
+            if status.enrolled, onboarding {
+                preparing = false
+                onFinished()
+                return
+            }
+            if !status.verifier_loaded {
+                try await APIClient.shared.send("/voice/speaker/models/download")
+                for _ in 0..<120 {
+                    try await Task.sleep(for: .seconds(1))
+                    status = try await APIClient.shared.get(
+                        "/voice/speaker/models", as: SpeakerIdentityStatus.self
+                    )
+                    if status.verifier_loaded { break }
+                }
+            }
+            guard status.verifier_loaded else {
+                throw APIError.daemon("The speaker model did not finish loading.")
+            }
+            preparing = false
+            // This is a setup/control screen, not a conversation surface. Do
+            // not let ambient speech open a normal agent turn before the user
+            // explicitly begins an enrollment take.
+            engine.handsFree = false
+            await engine.start(sessionId: nil)
+        } catch {
+            preparing = false
+            preparationError = String(describing: error)
+        }
     }
 }
 

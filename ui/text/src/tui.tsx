@@ -76,6 +76,10 @@ import {
   writeTranscript,
 } from "./editorExtras.js";
 import {
+  modelsFromConfiguredProviders,
+  resolveModelSelection,
+} from "./modelPicker.js";
+import {
   CONTINUE_PROMPT,
   enableAutonomous,
   formatAutonomousStatus,
@@ -1290,12 +1294,20 @@ function App({
       const client = clientRef.current;
       const sid = sessionIdRef.current;
       if (!client || !sid) return;
-      const providerRaw = await client.goose.GooseConfigRead({
-        key: "GOOSE_PROVIDER",
-      });
-      const provider =
-        typeof providerRaw.value === "string" ? providerRaw.value : "";
-      await client.goose.GooseConfigUpsert({ key: "GOOSE_MODEL", value: model });
+
+      const details = await client.goose.GooseProvidersDetails({});
+      const resolved = resolveModelSelection(
+        modelsFromConfiguredProviders(details.providers),
+        model,
+      );
+      if ("error" in resolved) {
+        throw new Error(resolved.error);
+      }
+      const provider = resolved.providerName;
+      const modelId = resolved.model;
+
+      await client.goose.GooseConfigUpsert({ key: "GOOSE_PROVIDER", value: provider });
+      await client.goose.GooseConfigUpsert({ key: "GOOSE_MODEL", value: modelId });
       const ext = client.goose as GooseClient["goose"] & {
         GooseSessionProviderUpdate?: (p: {
           sessionId: string;
@@ -1303,20 +1315,20 @@ function App({
           model: string;
         }) => Promise<void>;
       };
-      if (provider && typeof ext.GooseSessionProviderUpdate === "function") {
+      if (typeof ext.GooseSessionProviderUpdate === "function") {
         await ext.GooseSessionProviderUpdate({
           sessionId: sid,
           provider,
-          model,
+          model: modelId,
         });
       }
       try {
-        await client.unstable_setSessionModel({ sessionId: sid, modelId: model });
+        await client.unstable_setSessionModel({ sessionId: sid, modelId });
       } catch {
         // session model ACP method is optional
       }
-      setStatus(`model → ${model}`);
-      setModelName(model);
+      setStatus(`model → ${provider}/${modelId}`);
+      setModelName(modelId);
     },
     [],
   );

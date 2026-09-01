@@ -360,7 +360,15 @@ where
 /// assistant turn as one message).
 pub(crate) fn coalesce_turn_messages(messages: Vec<Message>) -> (Vec<Message>, usize) {
     let (merged, issues) = merge_consecutive_messages(messages);
-    (merged, issues.len())
+    // Consecutive-role merge concatenates content arrays, which can leave
+    // adjacent Text/Thinking parts in one message — the same split-delta
+    // shape that made MOIM's issue list grow every turn of session
+    // 20260827_1. Fold those here so the persisted turn is already clean.
+    let folded: Vec<Message> = merged
+        .into_iter()
+        .map(Message::coalesce_adjacent_text_and_thinking)
+        .collect();
+    (folded, issues.len())
 }
 
 async fn persist_turn_ending_message(
@@ -2369,6 +2377,50 @@ impl Agent {
                             state_guard.mark_error();
                             break;
                         }
+                        Err(ref provider_err) if provider_err.is_stream_decode() => {
+                            #[cfg(feature = "telemetry")]
+                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                            error!("Error: {}", provider_err);
+                            // A dropped SSE body is transient. Before any assistant
+                            // text was committed, silent-failover to the next model
+                            // the same way a connect failure does. After commit, ask
+                            // the user to resend — never "rejected as invalid".
+                            if crate::cost_router::fallback::may_silent_precommit_failover(
+                                stream_committed,
+                                provider_err,
+                            ) && !permanent_failure_fallback_used
+                            {
+                                let failed_provider = match self.provider().await {
+                                    Ok(p) => p.get_name().to_string(),
+                                    Err(_) => "the model provider".to_string(),
+                                };
+                                if self
+                                    .switch_to_permanent_failure_fallback(
+                                        &session_config.id,
+                                        &failed_provider,
+                                    )
+                                    .await
+                                    .is_some()
+                                {
+                                    tracing::info!(
+                                        target: "permagent::cost_router",
+                                        session_id = %session_config.id,
+                                        from_provider = %failed_provider,
+                                        "silent pre-commit failover after a stream decode error"
+                                    );
+                                    permanent_failure_fallback_used = true;
+                                    did_switch_provider_this_iteration = true;
+                                    break;
+                                }
+                            }
+                            yield AgentEvent::Message(
+                                Message::assistant().with_text(
+                                    "The model stream dropped before the reply finished.\n\nPlease resend your message to try again."
+                                )
+                            );
+                            state_guard.mark_error();
+                            break;
+                        }
                         Err(ref provider_err @ ProviderError::NetworkError(_)) => {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
@@ -2821,6 +2873,11 @@ impl Agent {
     pub async fn set_persona_block_override(&self, block: String, display_name: String) {
         let mut prompt_manager = self.prompt_manager.lock().await;
         prompt_manager.set_persona_block_override(block, display_name);
+    }
+
+    pub async fn set_worker_key(&self, key: Option<String>) {
+        let mut prompt_manager = self.prompt_manager.lock().await;
+        prompt_manager.set_worker_key(key);
     }
 
     pub async fn update_provider(
@@ -3453,6 +3510,25 @@ mod tests {
         let (folded, merges) = coalesce_turn_messages(turn.clone());
         assert_eq!(merges, 0);
         assert_eq!(folded.len(), turn.len());
+    }
+
+    /// Session 20260827_1: one assistant turn arrived as two adjacent text
+    /// parts. Persisting them un-coalesced made every later MOIM inject
+    /// re-report `"Merged text content"` once per historical message.
+    #[test]
+    fn a_split_text_assistant_turn_is_persisted_as_one_part() {
+        let turn = vec![Message::assistant()
+            .with_text("first")
+            .with_text(" answer  ")];
+        let (folded, merges) = coalesce_turn_messages(turn);
+        assert_eq!(merges, 0, "one message, already alternating");
+        assert_eq!(folded.len(), 1);
+        assert_eq!(
+            folded[0].content.len(),
+            1,
+            "adjacent text parts must be one part before persist"
+        );
+        assert_eq!(folded[0].content[0].as_text().unwrap(), "first answer  ");
     }
 
     struct ActionRequiredProvider {

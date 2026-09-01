@@ -1088,10 +1088,15 @@ pub(crate) async fn dispatch_goal_fn(
 
     // Resolve worker persona for the subagent
     let config = agent_identity::load_agent_config();
-    let persona_override = config
-        .workers
-        .get(&worker_key)
-        .map(|w| (w.system_prompt_block(), w.display_name()));
+    let persona_override = config.workers.get(&worker_key).map(|w| {
+        (
+            crate::public_apis::attach_to_persona_block(
+                &w.system_prompt_block(),
+                Some(&worker_key),
+            ),
+            w.display_name(),
+        )
+    });
 
     // Look up project for root_path context
     let project = crate::projects::get_project(&pool, &card.project_id)
@@ -1287,13 +1292,23 @@ pub(crate) async fn dispatch_goal_fn(
             let provider = get_provider_fn(context).await?;
             // This is the one dispatch path whose tool set this process
             // composes, so extension grants are genuinely enforced here.
-            let extensions = narrow_extensions_for_agent(
+            let parent = parent_extensions_fn(context);
+            let narrowed = narrow_extensions_for_agent(
                 narrow_extensions_for_agent(
-                    parent_extensions_fn(context),
+                    parent.clone(),
                     worker_cfg.and_then(|worker| worker.extension_grants.as_deref()),
                 ),
                 dispatch_scope.as_deref(),
             );
+            // A Settings → Data sources toggle must flow to the suggested
+            // agent without a restart. Restore `public_apis` from the parent
+            // when this worker is a consumer, unless the goal itself scoped
+            // tools (that filter is per-goal and stays absolute).
+            let extensions = if dispatch_scope.is_none() {
+                super::public_apis::ensure_extension_for_agent(&parent, narrowed, &worker_key)
+            } else {
+                narrowed
+            };
             // Resolve the worker's workflow role → its model (#730 wiring): the
             // hand-CONFIGURED mapping wins; otherwise the recommender-DERIVED
             // best-fit map (ruling 2026-08-18 — the cheapest model the
@@ -2049,6 +2064,7 @@ impl OrchestratorClient {
                 agent
                     .set_persona_block_override(worker.system_prompt_block(), worker.display_name())
                     .await;
+                agent.set_worker_key(Some(worker_key.clone())).await;
             } else {
                 tracing::warn!(
                     target: "permagentd::brain",

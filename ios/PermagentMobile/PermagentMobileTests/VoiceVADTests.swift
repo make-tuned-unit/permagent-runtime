@@ -327,10 +327,11 @@ final class VoiceVADTests: XCTestCase {
         XCTAssertEqual(bleed.step(rms: 0.035, phase: .speaking, now: 1), .none)
         XCTAssertEqual(bleed.step(rms: 0.035, phase: .speaking, now: 1.085), .none,
                        "speaker TTS bleed barged in — interrupting himself")
-        XCTAssertEqual(bleed.step(rms: 0.09, phase: .speaking, now: 2), .none)
-        XCTAssertEqual(bleed.step(rms: 0.09, phase: .speaking, now: 2.085), .none,
+        XCTAssertEqual(bleed.step(rms: 0.06, phase: .speaking, now: 2), .none)
+        XCTAssertEqual(bleed.step(rms: 0.06, phase: .speaking, now: 2.085), .none,
                        "speakerphone barge needs three frames so echo cannot cut him")
-        XCTAssertEqual(bleed.step(rms: 0.09, phase: .speaking, now: 2.17), .interrupt)
+        XCTAssertEqual(bleed.step(rms: 0.06, phase: .speaking, now: 2.17), .interrupt,
+                       "ordinary speech must interrupt without requiring a shout")
     }
 
     /// The built-in preset preserves the calibrated ratios: keepalive at
@@ -369,5 +370,57 @@ final class VoiceVADTests: XCTestCase {
         }
         XCTAssertEqual(end.action, .endTurn)
         XCTAssertLessThan(end.at, 0.85, "uncommitted abort drifted to +\(end.at)s")
+    }
+
+    /// 2026-08-27 07:44–07:52 ADT: six speakerphone turns rode kitchen
+    /// music/hiss at *just above* keepalive (0.0055) all the way to maxTurnMs
+    /// 60 s, then STT came back empty. `testSpeakerphoneRoomHissDoesNotHoldTheTurn`
+    /// uses 0.0035 — *below* keepalive — and already passes. Music at cooking
+    /// volume sits *on* the floor and is spectrally flat (`voiceLike: false`).
+    /// Those frames must not refresh lastVoice.
+    func testSpeakerphoneKeepaliveHissAbortsUncommittedTurn() {
+        var vad = VoiceVAD(config: VoiceVAD.speakerphoneConfig)
+        var now: TimeInterval = 10_440
+        beginTurn(&vad, rms: 0.012, at: &now)
+        let hiss = VoiceVAD.speakerphoneConfig.keepalive + 0.0002
+        let start = now
+        var ended: (action: VoiceVAD.Action, at: TimeInterval)?
+        while now - start < 3 {
+            now += dt
+            let action = vad.step(rms: hiss, phase: .listening, now: now, voiceLike: false)
+            if action != .none {
+                ended = (action, now - start)
+                break
+            }
+        }
+        guard let end = ended else {
+            return XCTFail("keepalive hiss rode the turn — kitchen music would sit to the 60 s cap")
+        }
+        XCTAssertEqual(end.action, .endTurn)
+        XCTAssertLessThan(end.at, 1.0, "hiss-held endpoint at +\(end.at)s — must abort uncommitted, not ride")
+    }
+
+    /// Flat kitchen-music spectrum must not count as voice; a voiced vowel must.
+    func testKitchenMusicSpectrumIsNotVoiceAndAVowelIs() {
+        func db(_ value: Float) -> Float {
+            max(0, min(255, (255 / 70) * (value + 100)))
+        }
+        let flat = (0..<32).map { _ in db(-55) }
+        XCTAssertFalse(VoiceSpectrum.looksLikeVoice(flat), "flat broadband must veto")
+        let vowel = (0..<32).map { i -> Float in
+            db(i <= 4 ? -40 : i < 12 ? -62 : -78)
+        }
+        XCTAssertTrue(VoiceSpectrum.looksLikeVoice(vowel), "voiced vowel must fail-open-admit")
+        XCTAssertTrue(VoiceSpectrum.looksLikeVoice([]), "empty spectrum must fail open")
+        XCTAssertTrue(VoiceSpectrum.looksLikeVoice(Array(repeating: 0, count: 32)),
+                      "digital silence must fail open")
+    }
+
+    /// Music-like frames must not open a turn even when RMS is over onset.
+    func testFlatSpectrumDoesNotBeginATurn() {
+        var vad = VoiceVAD(config: VoiceVAD.speakerphoneConfig)
+        XCTAssertEqual(vad.step(rms: 0.02, phase: .ready, now: 1, voiceLike: false), .none)
+        XCTAssertEqual(vad.step(rms: 0.02, phase: .ready, now: 1.085, voiceLike: false), .none)
+        XCTAssertEqual(vad.step(rms: 0.02, phase: .ready, now: 1.17, voiceLike: false), .none)
     }
 }

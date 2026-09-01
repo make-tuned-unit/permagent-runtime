@@ -905,6 +905,72 @@ mod tests {
         assert_ne!(fingerprint("p", "ab", "c"), fingerprint("p", "a", "bc"));
     }
 
+    /// Live Grow reads `SELECT *` into `GrowthActionRow`. A table created at
+    /// v42 — before `verified_commit` existed — is invisible to the version
+    /// ladder, so apply must ADD the column or every board load fails with
+    /// `no column found for name: verified_commit` (health-watch 2026-08-27).
+    #[tokio::test]
+    async fn apply_schema_adds_verified_commit_on_an_old_table() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE growth_actions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                title TEXT NOT NULL,
+                recommendation TEXT NOT NULL,
+                category TEXT,
+                artifact_kind TEXT,
+                artifact TEXT,
+                target_metric TEXT,
+                target_dir TEXT,
+                baseline_json TEXT,
+                status TEXT NOT NULL,
+                verified_by TEXT,
+                verified_at TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(project_id, fingerprint)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO growth_actions
+             (id, project_id, fingerprint, title, recommendation, status, created_at)
+             VALUES ('act-1','p1','fp-1','Add FAQ','Ship FAQ schema','suggested',
+                     '2026-08-11T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let before = sqlx::query_as::<_, GrowthActionRow>("SELECT * FROM growth_actions")
+            .fetch_all(&pool)
+            .await;
+        assert!(
+            before.is_err(),
+            "old table must fail the current row type before apply"
+        );
+        let err = before.unwrap_err().to_string();
+        assert!(
+            err.contains("verified_commit"),
+            "expected missing verified_commit, got {err}"
+        );
+
+        apply_growth_actions_schema(&pool).await.unwrap();
+
+        let rows = list_for_project(&pool, "p1").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "act-1");
+        assert!(rows[0].verified_commit.is_none());
+        assert!(rows[0].verified_detail.is_none());
+    }
+
     #[tokio::test]
     async fn regenerating_the_same_advice_resolves_to_one_row() {
         let pool = pool().await;

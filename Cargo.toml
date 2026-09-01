@@ -22,7 +22,7 @@ string_slice = "warn"
 
 [workspace.dependencies]
 rmcp = { version = "1.7.0", features = ["schemars", "auth"] }
-agent-client-protocol-schema = { version = "0.11", features = ["unstable"] }
+agent-client-protocol-schema = { version = "0.12", features = ["unstable"] }
 sacp = "11.0.0"
 arboard = "3"
 anyhow = "1.0"
@@ -77,13 +77,13 @@ sha2 = "0.11"
 shell-words = "1.1.1"
 test-case = "3.3.1"
 url = "2.5.8"
-opentelemetry = "0.31"
-opentelemetry_sdk = { version = "0.31", features = ["metrics"] }
-opentelemetry-otlp = "0.31"
-opentelemetry-appender-tracing = { version = "0.31", features = ["experimental_span_attributes"] }
-opentelemetry-stdout = { version = "0.31", features = ["trace", "metrics", "logs"] }
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["metrics"] }
+opentelemetry-otlp = "0.32"
+opentelemetry-appender-tracing = { version = "0.32", features = ["experimental_span_attributes"] }
+opentelemetry-stdout = { version = "0.32", features = ["trace", "metrics", "logs"] }
 tracing-futures = { version = "0.2", features = ["futures-03"] }
-tracing-opentelemetry = "0.32"
+tracing-opentelemetry = "0.33"
 
 spectral = { git = "https://github.com/make-tuned-unit/spectral", rev = "7025328e198a2df4826f5c4aba173162d16cc521" }
 rayon = "1.12"
@@ -107,13 +107,6 @@ v8 = { path = "vendor/v8" }
 # TODO: switch to crates.io release once it includes the unstable feature and updates org from symposium-dev to agentclientprotocol
 sacp = { git = "https://github.com/agentclientprotocol/symposium-acp", rev = "14086c9" }
 sacp-derive = { git = "https://github.com/agentclientprotocol/symposium-acp", rev = "14086c9" }
-# TODO: switch to released version in opentelemetry 0.32.0
-# https://github.com/open-telemetry/opentelemetry-rust/issues/3408
-opentelemetry = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "345cd74a" }
-opentelemetry_sdk = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "345cd74a" }
-opentelemetry-appender-tracing = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "345cd74a" }
-opentelemetry-otlp = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "345cd74a" }
-opentelemetry-stdout = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "345cd74a" }
 
 # ============================================================
 # Local Spectral development (uncomment when iterating on Spectral)
