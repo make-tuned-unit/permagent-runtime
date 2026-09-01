@@ -303,15 +303,14 @@ export function Dashboard() {
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 40px' }}>
 
-      {/* Echo — a forgotten thread from your Brain, resurfaced unprompted.
-          Renders itself only when there's a genuinely dormant thread and it
-          hasn't shown recently; otherwise nothing. Hidden while arranging cards. */}
-      {!isEditMode && <Echo />}
-
-      {/* Learn next — the onboarding coach surfaces one capability the user
-          hasn't tried yet and offers to have the agent teach it. Renders only
-          when there's a genuinely unused feature; hidden while arranging cards. */}
+      {/* The banner slot (C8): ONE of these is on screen at a time, never both.
+          Echo resurfaces a dormant Brain thread; Learn next coaches an untried
+          capability. They are unrelated features that were rendering
+          simultaneously in identical shells, which read as one banner split in
+          two — `bannerSlot` now hands the slot to whichever has something to
+          say, Learn next first. Both are hidden while arranging cards. */}
       {!isEditMode && <LearnNext />}
+      {!isEditMode && <Echo />}
 
       {/* CSS Grid — reflows natively with the container, no JS width measurement */}
       <div

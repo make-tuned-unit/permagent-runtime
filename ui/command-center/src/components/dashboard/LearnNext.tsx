@@ -13,8 +13,9 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
-import { font, radius, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
+import { HomeBanner, bannerGhostBtn, bannerPrimaryBtn } from './HomeBanner';
+import { useBannerSlot } from './bannerSlot';
 import { useCommandCenter } from '../../lib/store';
 import { setSpeakReplies } from '../../lib/speakReplies';
 
@@ -107,7 +108,11 @@ export function LearnNext() {
   }, []);
 
   const item = items[idx] ?? null;
-  if (!item || !visible) return null;
+  // One banner at a time on Home (C8). Learn next has first claim: a user who
+  // has not tried a capability needs it more than a memory they can find
+  // again, and this retires itself once there is nothing left to teach.
+  const holdsSlot = useBannerSlot('learn-next', Boolean(item) && visible);
+  if (!holdsSlot || !item) return null;
 
   const dismiss = () => {
     const st = readState();
@@ -147,123 +152,36 @@ export function LearnNext() {
   const progress = totals ? `${totals.used}/${totals.teachable} explored` : '';
 
   return (
-    <div
-      role="note"
-      aria-label={`Learn next: ${item.display_name}`}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 18,
-        marginBottom: 20,
-        padding: '14px 16px',
-        borderRadius: 14,
-        background: colors.surface,
-        border: `1px solid ${colors.borderHi}`,
-        boxShadow: colors.cardShadow,
-        overflow: 'hidden',
-      }}
-    >
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div
-          style={{
-            fontFamily: font.mono,
-            fontSize: 10,
-            letterSpacing: '0.14em',
-            color: colors.textDim,
-            marginBottom: 4,
-            display: 'flex',
-            gap: 10,
-            alignItems: 'center',
-          }}
-        >
-          <span>✦ LEARN NEXT</span>
-          {progress && <span style={{ color: colors.textMuted }}>{progress}</span>}
-        </div>
-        <div style={{ fontFamily: font.body, fontSize: textSize.body, color: colors.text, lineHeight: 1.4 }}>
-          You haven&apos;t tried{' '}
-          <span style={{ fontWeight: 700, color: colors.cyan }}>{item.display_name}</span> yet —{' '}
-          <span style={{ color: colors.textMuted }}>{summarize(item.what_it_does)}.</span>
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-        {/* Every control here now rides the Button primitive. Its look arrives
-            as `--pa-btn-*` custom properties, never as an inline
-            `color`/`background`/`border`: an inline declaration outranks the
-            `:hover` rule and would cancel the very states being adopted. */}
-        {items.length > 1 && (
-          <Button
-            colors={colors}
-            type="button"
-            onClick={nextTip}
-            aria-label="Show a different capability"
-            title="Next tip"
-            style={{
-              '--pa-btn-bg': 'transparent',
-              '--pa-btn-fg': colors.textMuted,
-              '--pa-btn-border': colors.border,
-              '--pa-btn-bg-hover': colors.surfaceHi,
-              '--pa-btn-fg-hover': colors.text,
-              '--pa-btn-border-hover': colors.borderHi,
-              '--pa-btn-bg-active': colors.surface,
-              '--pa-btn-pad': '7px 10px',
-              '--pa-btn-radius': '9px',
-              '--pa-btn-weight': 400,
-              fontFamily: font.body,
-              fontSize: textSize.caption,
-              whiteSpace: 'nowrap',
-            } as CSSProperties}
-          >
-            ›
+    <HomeBanner
+      kicker="LEARN NEXT"
+      meta={progress}
+      ariaLabel={`Learn next: ${item.display_name}`}
+      data-testid="home-banner-learn-next"
+      onDismiss={dismiss}
+      dismissLabel="Dismiss this suggestion"
+      actions={
+        <>
+          {items.length > 1 && (
+            <Button
+              colors={colors}
+              type="button"
+              onClick={nextTip}
+              aria-label="Show a different capability"
+              title="Next tip"
+              style={{ ...bannerGhostBtn(colors), '--pa-btn-pad': '7px 10px', '--pa-btn-weight': 400 } as CSSProperties}
+            >
+              ›
+            </Button>
+          )}
+          <Button colors={colors} type="button" onClick={showMe} style={bannerPrimaryBtn(colors)}>
+            Show me
           </Button>
-        )}
-        <Button
-          colors={colors}
-          type="button"
-          onClick={showMe}
-          style={{
-            '--pa-btn-bg': colors.cyanSoft,
-            '--pa-btn-fg': colors.cyan,
-            '--pa-btn-border': colors.cyan,
-            '--pa-btn-bg-hover': colors.cyanSoft,
-            '--pa-btn-fg-hover': colors.cyan,
-            '--pa-btn-border-hover': colors.cyan,
-            '--pa-btn-bg-active': colors.cyanGlow,
-            '--pa-btn-pad': '7px 14px',
-            '--pa-btn-radius': '9px',
-            '--pa-btn-weight': 600,
-            fontFamily: font.body,
-            fontSize: textSize.caption,
-            whiteSpace: 'nowrap',
-          } as CSSProperties}
-        >
-          Show me
-        </Button>
-        <Button
-          colors={colors}
-          variant="bare"
-          type="button"
-          onClick={dismiss}
-          aria-label="Dismiss this suggestion"
-          title="Not now"
-          style={{
-            '--pa-btn-bg': 'transparent',
-            '--pa-btn-fg': colors.textDim,
-            '--pa-btn-border': 'transparent',
-            '--pa-btn-bg-hover': colors.surfaceHi,
-            '--pa-btn-fg-hover': colors.text,
-            '--pa-btn-bg-active': colors.surface,
-            '--pa-btn-pad': '0',
-            '--pa-btn-radius': `${radius.md}px`,
-            '--pa-btn-weight': 400,
-            width: 26,
-            height: 26,
-            fontSize: textSize.caption,
-          } as CSSProperties}
-        >
-          ✕
-        </Button>
-      </div>
-    </div>
+        </>
+      }
+    >
+      You haven&apos;t tried{' '}
+      <span style={{ fontWeight: 700, color: colors.cyan }}>{item.display_name}</span> yet —{' '}
+      <span style={{ color: colors.textMuted }}>{summarize(item.what_it_does)}.</span>
+    </HomeBanner>
   );
 }

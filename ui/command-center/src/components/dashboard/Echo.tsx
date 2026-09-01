@@ -14,8 +14,9 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import type { BrainGraph, GraphEntity } from '../brain/useBrainData';
 import { useTheme } from '../../styles/useTheme';
-import { font, radius, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
+import { HomeBanner, bannerGhostBtn, bannerPrimaryBtn } from './HomeBanner';
+import { useBannerSlot } from './bannerSlot';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 
 const LS_KEY = 'permagent-echo-state';
@@ -120,6 +121,10 @@ export function Echo() {
   const [drawn, setDrawn] = useState(false);
   const gradId = useRef(`echo-thread-${Math.round(performance.now())}`).current;
 
+  // One banner at a time on Home (C8). Echo yields to Learn next; whether it
+  // is actually the one on screen is what the cooldown below is spent on.
+  const holdsSlot = useBannerSlot('echo', Boolean(pick) && visible);
+
   // Decide-and-fetch once on mount, respecting the cooldowns.
   useEffect(() => {
     const st = readState();
@@ -136,7 +141,6 @@ export function Echo() {
         if (p) {
           setPick(p);
           setVisible(true);
-          writeState({ ...st, lastShownAt: now, lastShownEntity: p.entity.id });
         }
       } catch {
         /* Brain unreachable — no echo, no noise */
@@ -146,6 +150,15 @@ export function Echo() {
       cancelled = true;
     };
   }, []);
+
+  // The ~daily cooldown is spent when the echo is SEEN, not when it is
+  // chosen: an echo that lost the slot to Learn next would otherwise burn its
+  // day without ever having been on screen.
+  useEffect(() => {
+    if (!holdsSlot || !pick) return;
+    const st = readState();
+    writeState({ ...st, lastShownAt: Date.now(), lastShownEntity: pick.entity.id });
+  }, [holdsSlot, pick]);
 
   // Draw the thread in after the card mounts (or instantly under reduced motion).
   useEffect(() => {
@@ -158,7 +171,7 @@ export function Echo() {
     return () => clearTimeout(t);
   }, [visible, reduce]);
 
-  if (!pick || !visible) return null;
+  if (!holdsSlot || !pick) return null;
 
   const dismiss = () => {
     writeState({ ...readState(), dismissedUntil: Date.now() + DISMISS_COOLDOWN });
@@ -174,165 +187,77 @@ export function Echo() {
     setVisible(false);
   };
 
-  return (
-    <div
-      role="note"
-      aria-label={`Echo: a dormant thread — ${pick.entity.name}`}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 18,
-        marginBottom: 20,
-        padding: '14px 16px',
-        borderRadius: 14,
-        background: colors.surface,
-        border: `1px solid ${colors.borderHi}`,
-        boxShadow: colors.cardShadow,
-        overflow: 'hidden',
-      }}
-    >
-      {/* The signature "red string of memory" — a thread drawing itself from the
-          dormant concept (then) toward now. */}
-      <svg width="132" height="46" viewBox="0 0 132 46" style={{ flexShrink: 0 }} aria-hidden>
-        <defs>
-          <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0" stopColor={colors.cyan} />
-            <stop offset="1" stopColor={colors.purple} />
-          </linearGradient>
-        </defs>
-        <path
-          d="M12 23 C 46 6, 86 40, 120 23"
-          fill="none"
-          stroke={`url(#${gradId})`}
-          strokeWidth="2"
-          strokeLinecap="round"
-          pathLength={1}
-          strokeDasharray={1}
-          strokeDashoffset={drawn ? 0 : 1}
-          style={{ transition: reduce ? undefined : 'stroke-dashoffset 900ms cubic-bezier(0.22,1,0.36,1)' }}
-        />
-        {/* then (dormant) */}
-        <circle cx="12" cy="23" r="4.5" fill={colors.cyan}>
-          {!reduce && <animate attributeName="opacity" values="0.55;1;0.55" dur="2.6s" repeatCount="indefinite" />}
-        </circle>
-        {/* now */}
-        <circle cx="120" cy="23" r="4.5" fill={colors.purple} opacity={drawn ? 1 : 0} style={{ transition: 'opacity 500ms ease 700ms' }} />
-      </svg>
-
-      {/* The words, in Henry's voice */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div
-          style={{
-            fontFamily: font.mono,
-            fontSize: 10,
-            letterSpacing: '0.14em',
-            color: colors.textDim,
-            marginBottom: 4,
-          }}
-        >
-          ✦ ECHO
-        </div>
-        <div style={{ fontFamily: font.body, fontSize: textSize.body, color: colors.text, lineHeight: 1.4 }}>
-          You wove{' '}
-          <Button
-            colors={colors}
-            variant="bare"
-            type="button"
-            className="hover:underline"
-            onClick={explore}
-            style={{
-              '--pa-btn-fg': colors.cyan,
-              '--pa-btn-fg-hover': colors.cyan,
-              '--pa-btn-bg-hover': 'transparent',
-              '--pa-btn-bg-active': 'transparent',
-              '--pa-btn-pad': '0',
-              '--pa-btn-radius': '0',
-              font: 'inherit',
-              fontWeight: 700,
-            } as CSSProperties}
-          >
-            {pick.entity.name}
-          </Button>{' '}
-          through {pick.count} memories, then it went quiet — last touched {relTime(pick.lastMs)}.
-          <span style={{ color: colors.textMuted }}> Threads like this are where the good ideas hide.</span>
-        </div>
-      </div>
-
-      {/* Actions */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-        <Button colors={colors} type="button" onClick={ask} style={primaryBtn(colors)}>
-          Pick it back up
-        </Button>
-        <Button colors={colors} type="button" onClick={explore} style={ghostBtn(colors)}>
-          Explore
-        </Button>
-        <Button
-          colors={colors}
-          variant="bare"
-          type="button"
-          onClick={dismiss}
-          aria-label="Dismiss this echo"
-          title="Not now"
-          style={dismissBtn(colors)}
-        >
-          ✕
-        </Button>
-      </div>
-    </div>
+  const thread = (
+    /* The signature "red string of memory" — a thread drawing itself from the
+       dormant concept (then) toward now. */
+    <svg width="132" height="46" viewBox="0 0 132 46" style={{ flexShrink: 0 }} aria-hidden>
+      <defs>
+        <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stopColor={colors.cyan} />
+          <stop offset="1" stopColor={colors.purple} />
+        </linearGradient>
+      </defs>
+      <path
+        d="M12 23 C 46 6, 86 40, 120 23"
+        fill="none"
+        stroke={`url(#${gradId})`}
+        strokeWidth="2"
+        strokeLinecap="round"
+        pathLength={1}
+        strokeDasharray={1}
+        strokeDashoffset={drawn ? 0 : 1}
+        style={{ transition: reduce ? undefined : 'stroke-dashoffset 900ms cubic-bezier(0.22,1,0.36,1)' }}
+      />
+      {/* then (dormant) */}
+      <circle cx="12" cy="23" r="4.5" fill={colors.cyan}>
+        {!reduce && <animate attributeName="opacity" values="0.55;1;0.55" dur="2.6s" repeatCount="indefinite" />}
+      </circle>
+      {/* now */}
+      <circle cx="120" cy="23" r="4.5" fill={colors.purple} opacity={drawn ? 1 : 0} style={{ transition: 'opacity 500ms ease 700ms' }} />
+    </svg>
   );
-}
 
-/* The three action buttons ride the Button primitive, so their look arrives as
-   `--pa-btn-*` custom properties rather than as inline `color`/`background`:
-   an inline declaration outranks the `:hover` rule and would silently cancel
-   the hover and press states the primitive exists to provide. Resting values
-   are unchanged. */
-function primaryBtn(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
-  return {
-    '--pa-btn-bg': colors.cyanSoft,
-    '--pa-btn-fg': colors.cyan,
-    '--pa-btn-border': colors.cyan,
-    '--pa-btn-bg-hover': colors.cyanSoft,
-    '--pa-btn-fg-hover': colors.cyan,
-    '--pa-btn-border-hover': colors.cyan,
-    '--pa-btn-bg-active': colors.cyanGlow,
-    '--pa-btn-pad': '7px 14px',
-    '--pa-btn-radius': '9px',
-    '--pa-btn-weight': 600,
-    fontFamily: font.body,
-    fontSize: textSize.caption,
-    whiteSpace: 'nowrap',
-  } as CSSProperties;
-}
-function ghostBtn(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
-  return {
-    '--pa-btn-bg': 'transparent',
-    '--pa-btn-fg': colors.textMuted,
-    '--pa-btn-border': colors.border,
-    '--pa-btn-bg-hover': colors.surfaceHi,
-    '--pa-btn-fg-hover': colors.text,
-    '--pa-btn-border-hover': colors.borderHi,
-    '--pa-btn-bg-active': colors.surface,
-    '--pa-btn-pad': '7px 12px',
-    '--pa-btn-radius': '9px',
-    fontFamily: font.body,
-    fontSize: textSize.caption,
-    whiteSpace: 'nowrap',
-  } as CSSProperties;
-}
-function dismissBtn(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
-  return {
-    '--pa-btn-bg': 'transparent',
-    '--pa-btn-fg': colors.textDim,
-    '--pa-btn-border': 'transparent',
-    '--pa-btn-bg-hover': colors.surfaceHi,
-    '--pa-btn-fg-hover': colors.text,
-    '--pa-btn-bg-active': colors.surface,
-    '--pa-btn-pad': '0',
-    '--pa-btn-radius': `${radius.md}px`,
-    '--pa-btn-weight': 400,
-    width: 26,
-    height: 26,
-    fontSize: textSize.caption,
-  } as CSSProperties;
+  return (
+    <HomeBanner
+      kicker="ECHO"
+      ariaLabel={`Echo: a dormant thread — ${pick.entity.name}`}
+      data-testid="home-banner-echo"
+      art={thread}
+      onDismiss={dismiss}
+      dismissLabel="Dismiss this echo"
+      actions={
+        <>
+          <Button colors={colors} type="button" onClick={ask} style={bannerPrimaryBtn(colors)}>
+            Pick it back up
+          </Button>
+          <Button colors={colors} type="button" onClick={explore} style={bannerGhostBtn(colors)}>
+            Explore
+          </Button>
+        </>
+      }
+    >
+      You wove{' '}
+      <Button
+        colors={colors}
+        variant="bare"
+        type="button"
+        className="hover:underline"
+        onClick={explore}
+        style={{
+          '--pa-btn-fg': colors.cyan,
+          '--pa-btn-fg-hover': colors.cyan,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-bg-active': 'transparent',
+          '--pa-btn-pad': '0',
+          '--pa-btn-radius': '0',
+          font: 'inherit',
+          fontWeight: 700,
+        } as CSSProperties}
+      >
+        {pick.entity.name}
+      </Button>{' '}
+      through {pick.count} memories, then it went quiet — last touched {relTime(pick.lastMs)}.
+      <span style={{ color: colors.textMuted }}> Threads like this are where the good ideas hide.</span>
+    </HomeBanner>
+  );
 }
