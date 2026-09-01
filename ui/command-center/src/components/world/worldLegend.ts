@@ -27,6 +27,7 @@
  */
 
 import type { LegendRow } from '../common/CanvasLegend';
+import type { CameraMode } from './types';
 import { ROSTER } from './agents/roster';
 
 /** "the Reader and the Watcher" — a plain-English list, in the roster's order. */
@@ -37,7 +38,23 @@ export function ambientAgentNames(): string {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
-export const WORLD_GESTURES: LegendRow[] = [
+/**
+ * Walking mode is a different control scheme, not a different camera angle:
+ * `WorldCamera` unmounts <OrbitControls> entirely, so drag and scroll do
+ * nothing there. The key follows the mode rather than listing every gesture
+ * the hall has ever had — offering a control that is currently dead is the
+ * same lie as offering one that never existed.
+ */
+export function worldGestures(mode: CameraMode): LegendRow[] {
+  return mode === 'third-person' ? WALKING_GESTURES : ORBIT_GESTURES;
+}
+
+export const WALKING_GESTURES: LegendRow[] = [
+  { term: 'WASD or the arrows', meaning: 'walks the agent you opened; the camera follows' },
+  { term: 'Esc or right-click', meaning: 'takes you back to the view from above' },
+];
+
+export const ORBIT_GESTURES: LegendRow[] = [
   { term: 'Drag', meaning: 'turns the hall around you' },
   { term: 'Scroll', meaning: 'moves you closer in or further back' },
   { term: 'Right-drag or arrow keys', meaning: 'slides the view sideways' },

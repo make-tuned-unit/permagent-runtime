@@ -85,6 +85,17 @@ describe('World key', () => {
     expect(text).toContain('ambience, not a claim');
   });
 
+  it('stops offering orbit gestures once they are dead', () => {
+    // Walking mode unmounts <OrbitControls> — drag and scroll do nothing there,
+    // so the key must not keep offering them.
+    render('third-person');
+    const text = legend()!.textContent ?? '';
+    expect(text).not.toContain('Drag');
+    expect(text).not.toContain('Scroll');
+    expect(text).toContain('WASD');
+    expect(text).toContain('Esc');
+  });
+
   it('keeps the camera-mode badge it always had', () => {
     render('orbit');
     expect(container.textContent).toContain('ORBIT');

@@ -3,7 +3,7 @@ import type { CameraMode } from './types';
 import { COLORS } from './constants';
 import { radius, textSize } from '../../styles/tokens';
 import { CanvasLegend } from '../common/CanvasLegend';
-import { WORLD_GESTURES, worldVocabulary } from './worldLegend';
+import { worldGestures, worldVocabulary } from './worldLegend';
 
 interface WorldHUDProps {
   mode: CameraMode;
@@ -74,7 +74,7 @@ export function WorldHUD({
           you are walking; the key is where you learn it first. */}
       <CanvasLegend
         canvasId="world"
-        gestures={WORLD_GESTURES}
+        gestures={worldGestures(mode)}
         vocabulary={worldVocabulary()}
         palette={{
           bg: 'rgba(10, 14, 26, 0.86)',
