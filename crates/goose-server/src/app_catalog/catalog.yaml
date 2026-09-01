@@ -102,6 +102,9 @@ tabs:
       - User asks about their projects, repos, or codebases
       - User wants to open or switch to a specific project
     customizable_layout: false
+    panels:
+      - name: Documents
+        reads: project_documents
 
   - name: People
     tool_type: people
