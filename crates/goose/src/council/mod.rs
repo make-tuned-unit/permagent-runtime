@@ -142,6 +142,51 @@ pub async fn convene(
         );
     }
 
+    // Past the refusals: from here a session really is running, and it runs for
+    // minutes — two rounds across every connected provider, then a chair. The
+    // World had no way to know that (no council event constructor existed at
+    // all, agent-QA D-N5-1), so the seat sat at its cadence pill through the
+    // whole thing. Announcing HERE and not at the top is the point: a convene
+    // that was refused for being off, locked, or unseated did no work, and
+    // `Err` before this line must stay silent.
+    announce("working");
+    let convened = run_session(pool, trigger, extra_question, caller, members).await;
+    // Any transition off `working` is also the Council HUD's cue to re-read
+    // `/api/council/latest` — the report, if there is one, is written by now.
+    announce(end_state(&convened));
+    convened
+}
+
+/// The Council's agent id. Kept next to the emitter that uses it because the
+/// World keys its seat off this exact string.
+fn announce(state_label: &str) {
+    crate::events::emit(crate::events::agent_state_changed(
+        AGENT_ID,
+        SELF_KNOWLEDGE_FEATURE.display_name,
+        state_label,
+    ));
+}
+
+/// What a finished session leaves the seat showing.
+///
+/// A session whose members all failed returns `Ok` — the row is written, the
+/// run is over — but there is no report at the end of it, and calling that
+/// `available` would draw a healthy Council over a debate nobody attended.
+/// Only a session that produced a report is available.
+fn end_state(convened: &Result<Convened, String>) -> &'static str {
+    match convened {
+        Ok(c) if c.error.is_none() => "available",
+        _ => "error",
+    }
+}
+
+async fn run_session(
+    pool: &Pool<Sqlite>,
+    trigger: store::Trigger,
+    extra_question: Option<&str>,
+    caller: &dyn debate::MemberCaller,
+    members: Vec<membership::Member>,
+) -> Result<Convened, String> {
     let snapshot = brief::assemble(pool, extra_question).await?;
     let brief_value = serde_json::to_value(&snapshot).unwrap_or(serde_json::json!({}));
     let session_id = store::insert_session(pool, trigger, extra_question, &brief_value).await?;
@@ -620,5 +665,48 @@ mod tests {
         assert!(lesson.contains("council_convene"));
         assert!(lesson.contains("council_enabled"));
         assert!(lesson.contains("Settings → Features"));
+    }
+
+    /// D-N5-1: the Council had no event of any kind, so the World seat could
+    /// only ever state its cadence. It announces on `council` — the id the
+    /// seat is keyed to — and only around a session that is really running.
+    #[tokio::test]
+    async fn convening_announces_on_the_council_id() {
+        let mut bus = crate::events::subscribe();
+        announce("working");
+        let evt = bus.try_recv().expect("convening must reach the bus");
+        assert_eq!(evt.payload["agent_id"], AGENT_ID);
+        assert_eq!(evt.payload["name"], "The Council");
+        assert_eq!(evt.payload["state"], "working");
+    }
+
+    /// A session where every member failed still returns `Ok` — the row is
+    /// written and the run is over — and drawing that as a healthy Council
+    /// would be a report the user could not find.
+    #[test]
+    fn only_a_session_that_produced_a_report_is_available() {
+        let good = Convened {
+            session_id: "s1".into(),
+            status: store::SessionStatus::Complete,
+            headline: "h".into(),
+            markdown: "m".into(),
+            n_members: 3,
+            n_ok: 3,
+            n_actions: 1,
+            error: None,
+        };
+        assert_eq!(end_state(&Ok(good.clone())), "available");
+        assert_eq!(
+            end_state(&Ok(Convened {
+                status: store::SessionStatus::Failed,
+                error: Some("every council member failed or timed out".into()),
+                ..good
+            })),
+            "error"
+        );
+        assert_eq!(
+            end_state(&Err("the brief could not be built".into())),
+            "error"
+        );
     }
 }
