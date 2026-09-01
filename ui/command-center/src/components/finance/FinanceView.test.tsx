@@ -24,6 +24,9 @@ vi.mock('../../lib/api', () => ({
 
 vi.mock('../../lib/store', () => ({
   navigateToTool: vi.fn(),
+  // FinanceView reads `financeRev` (bumped by livenessSync on finance_changed)
+  // only to re-trigger its poll effect; a stable value is enough here.
+  useCommandCenter: vi.fn(() => 0),
 }));
 
 import { FinanceView } from './FinanceView';

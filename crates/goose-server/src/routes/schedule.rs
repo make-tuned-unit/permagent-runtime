@@ -213,10 +213,10 @@ async fn create_schedule(
             _ => ErrorResponse::internal(format!("Error creating schedule: {}", e)),
         })?;
 
-    // Multi-client liveness (#629 pattern): fire only after the write
-    // succeeded, so the Automate tab's SSE subscription refreshes
-    // `/schedule/list` instead of relying on its 60s poll backstop.
-    permagent::events::emit(permagent::events::schedule_changed(&job.id, "created"));
+    // Multi-client liveness (#629 pattern): the `schedule_changed(created)`
+    // frame is emitted by `Scheduler::add_scheduled_job`, the writer every
+    // entry point shares — emitting it here too would double-announce this one
+    // path and still leave the agent's path silent.
 
     Ok(Json(job))
 }
@@ -312,7 +312,7 @@ async fn delete_schedule(
             }
             _ => ErrorResponse::internal(format!("Error deleting schedule: {}", e)),
         })?;
-    permagent::events::emit(permagent::events::schedule_changed(&id, "deleted"));
+    // `schedule_changed(deleted)` comes from `Scheduler::remove_scheduled_job`.
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -389,19 +389,15 @@ async fn run_now_handler(
     // session (observed live 2026-08-06; the disk-cleanup automation wedge).
     // Spawning makes the run's execution and cleanup unconditional; awaiting
     // the JoinHandle keeps the response identical for clients that stay.
-    let id_for_events = id.clone();
-    permagent::events::emit(permagent::events::schedule_changed(
-        &id_for_events,
-        "run_started",
-    ));
+    //
+    // The `run_started` / `run_finished` pair is emitted inside
+    // `Scheduler::run_now` itself, which is also what makes the agent's
+    // `run_recipe` / `manage_schedule(run_now)` announce its runs. Emitting
+    // around the spawn here would double every run the user starts by hand.
     let run = tokio::spawn(async move { scheduler.run_now(&id).await });
     let result = run.await.map_err(|e| {
         ErrorResponse::internal(format!("Schedule run task failed to complete: {e}"))
     })?;
-    permagent::events::emit(permagent::events::schedule_changed(
-        &id_for_events,
-        "run_finished",
-    ));
     match result {
         Ok(session_id) => Ok(Json(RunNowResponse { session_id })),
         Err(e) => match e {
@@ -566,7 +562,7 @@ async fn pause_schedule(
         }
         _ => ErrorResponse::internal(format!("Error pausing schedule: {}", e)),
     })?;
-    permagent::events::emit(permagent::events::schedule_changed(&id, "paused"));
+    // `schedule_changed(paused)` comes from `Scheduler::pause_schedule`.
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -601,7 +597,7 @@ async fn unpause_schedule(
         }
         _ => ErrorResponse::internal(format!("Error unpausing schedule: {}", e)),
     })?;
-    permagent::events::emit(permagent::events::schedule_changed(&id, "unpaused"));
+    // `schedule_changed(unpaused)` comes from `Scheduler::unpause_schedule`.
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -653,7 +649,7 @@ async fn update_schedule(
         .find(|job| job.id == id)
         .ok_or_else(|| ErrorResponse::internal("Schedule not found after update"))?;
 
-    permagent::events::emit(permagent::events::schedule_changed(&id, "updated"));
+    // `schedule_changed(updated)` comes from `Scheduler::update_schedule`.
 
     Ok(Json(updated_job))
 }

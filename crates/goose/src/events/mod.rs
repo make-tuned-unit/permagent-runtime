@@ -416,6 +416,20 @@ pub enum PermagentEventType {
     /// added for the 2026-08-25 "schedule polling storm" health-review fix.
     ScheduleChanged,
     SessionSpendChanged,
+    /// One or more configuration keys were written or removed. Emitted from
+    /// the shared `Config` writer itself (`config::base`), NOT from the HTTP
+    /// handlers, so an agent-originated write announces itself exactly like a
+    /// human one — that is the whole point of the frame.
+    ///
+    /// Payload carries KEY NAMES ONLY, never values. `secret: true` marks a
+    /// keychain/secret-store write: the name is still announced (Settings has
+    /// to know the row changed) but nothing about the value is, not even its
+    /// length.
+    ConfigChanged,
+    /// The finance ledger changed (watchlist / note / position / transactions).
+    /// Emitted from `finance_ledger`, the single writer both the Finance HTTP
+    /// routes and the agent's `platform__finance` tools go through.
+    FinanceChanged,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────
@@ -1168,6 +1182,44 @@ pub fn schedule_changed(schedule_id: &str, change: &str) -> PermagentEvent {
         PermagentEventType::ScheduleChanged,
         serde_json::json!({
             "schedule_id": schedule_id,
+            "change": change,
+        }),
+    )
+}
+
+/// One or more configuration keys were written or removed. `change` ∈
+/// `set|deleted`. `secret` marks a write to the secret store.
+///
+/// **Payload discipline is a security boundary here, not a style rule.** The
+/// frame carries key NAMES only. A `config_changed` for `OPENAI_API_KEY` says
+/// that key changed and nothing else — not the value, not a prefix, not a
+/// length. Anyone tempted to add the value for a client's convenience should
+/// note that this bus is replayed to every connected client from a 1000-frame
+/// buffer, so a value put here outlives the request that set it.
+pub fn config_changed<S: AsRef<str>>(keys: &[S], change: &str, secret: bool) -> PermagentEvent {
+    let names: Vec<&str> = keys.iter().map(|k| k.as_ref()).collect();
+    PermagentEvent::new(
+        PermagentEventType::ConfigChanged,
+        serde_json::json!({
+            "keys": names,
+            "change": change,
+            "secret": secret,
+        }),
+    )
+}
+
+/// The finance ledger changed. `kind` ∈ `watchlist|note|position|transactions`
+/// and `change` ∈ `created|updated|deleted|imported|recategorized`.
+///
+/// Ids are deliberately absent: the Finance view reads one aggregate
+/// (`GET /api/finance`) and has no per-row fetch to point an id at, so an id
+/// would be a field with no reader — the same "serde field never bound" trap
+/// the news-nudge `url` regression came from.
+pub fn finance_changed(kind: &str, change: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::FinanceChanged,
+        serde_json::json!({
+            "kind": kind,
             "change": change,
         }),
     )
