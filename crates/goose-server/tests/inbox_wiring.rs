@@ -371,3 +371,172 @@ async fn route_inbox_file_guard_rails() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+// ── #2: JSON errors from inbox routes ───────────────────────────────────────
+
+/// FAILS BEFORE: `routes/inbox.rs` returned axum's bare `(StatusCode, String)`
+/// on every rejection, which serializes as `text/plain` with the string as
+/// the whole body. `apiFetch` (`ui/command-center/src/lib/api.ts`) only ever
+/// calls `response.json()` on a non-2xx, so that body failed to parse and
+/// every inbox failure surfaced in the UI as the generic "Unknown error" — the
+/// real reason, and the filename it was about, never reached the user. Now
+/// every handler returns `ErrorResponse`, the same JSON `{ "message": … }`
+/// shape the rest of the daemon's routes use.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn rejected_route_answers_json_naming_the_file() {
+    test_root();
+
+    let state = permagent_daemon::state::AppState::new(true).await.unwrap();
+    let app = permagent_daemon::routes::inbox::routes(state.clone());
+
+    // A row whose bytes never landed on disk — routing it 409s.
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            "/api/inbox",
+            serde_json::json!({
+                "filename": "vanished-report.pdf",
+                "disk_path": "vanished-report.pdf"
+            }),
+        ))
+        .await
+        .unwrap();
+    let file_id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .oneshot(post_json(
+            &format!("/api/inbox/{file_id}/route"),
+            serde_json::json!({ "destination": "brain" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let content_type = resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        content_type.starts_with("application/json"),
+        "expected a JSON content-type, got {content_type:?}"
+    );
+    let body = body_json(resp).await;
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("vanished-report.pdf"),
+        "the error message must name the file that failed to route, got {body}"
+    );
+}
+
+// ── #5: the one writer announces on every caller ────────────────────────────
+
+/// FAILS BEFORE: `save_project_document` (the write path both the multipart
+/// upload route and this inbox `project` route share) never emitted
+/// `project_changed`; only the two HTTP handlers around it did — the upload
+/// handler after a successful multipart POST, and the delete handler. The
+/// inbox route called the shared function directly and announced nothing, so
+/// a project detail view already open in a second client never refreshed its
+/// Documents panel after a file was routed to it from the inbox.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn routing_to_a_project_announces_documents_changed() {
+    test_root();
+
+    let state = permagent_daemon::state::AppState::new(true).await.unwrap();
+    let app = permagent_daemon::routes::inbox::routes(state.clone());
+    let pool = state.session_manager().pool_clone().await.unwrap();
+
+    let project = permagent::projects::create_project(
+        &pool,
+        permagent::projects::CreateProject {
+            name: "Doc drop".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let inbox_dir = permagent::config::paths::Paths::inbox_dir();
+    std::fs::create_dir_all(&inbox_dir).unwrap();
+    std::fs::write(inbox_dir.join("brief.txt"), "brief contents").unwrap();
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            "/api/inbox",
+            serde_json::json!({
+                "filename": "brief.txt",
+                "content_type": "text/plain",
+                "disk_path": "brief.txt"
+            }),
+        ))
+        .await
+        .unwrap();
+    let file_id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    let mut rx = permagent::events::subscribe();
+    let resp = app
+        .oneshot(post_json(
+            &format!("/api/inbox/{file_id}/route"),
+            serde_json::json!({ "destination": "project", "project_id": project.id }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let mut saw = false;
+    while let Ok(evt) = rx.try_recv() {
+        if evt.event_type == permagent::events::PermagentEventType::ProjectChanged
+            && evt.payload["project_id"] == project.id.as_str()
+            && evt.payload["change"] == "documents"
+        {
+            saw = true;
+        }
+    }
+    assert!(
+        saw,
+        "routing an inbox file to a project must emit project_changed(id, \"documents\")"
+    );
+}
+
+// ── #6: download feedback ───────────────────────────────────────────────────
+
+/// FAILS BEFORE: `create_inbox_handler` emitted nothing at all — a file
+/// landing in the Downloads inbox produced no bus frame, so the client had no
+/// way to toast "you got a file" short of polling `GET /api/inbox`.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn creating_an_inbox_row_announces_arrival() {
+    test_root();
+
+    let state = permagent_daemon::state::AppState::new(true).await.unwrap();
+    let app = permagent_daemon::routes::inbox::routes(state.clone());
+
+    let mut rx = permagent::events::subscribe();
+    let resp = app
+        .oneshot(post_json(
+            "/api/inbox",
+            serde_json::json!({
+                "filename": "landed.pdf",
+                "disk_path": "landed.pdf",
+                "size_bytes": 99
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let mut saw = false;
+    while let Ok(evt) = rx.try_recv() {
+        if evt.event_type == permagent::events::PermagentEventType::InboxFileReceived
+            && evt.payload["filename"] == "landed.pdf"
+        {
+            saw = true;
+        }
+    }
+    assert!(
+        saw,
+        "POST /api/inbox must emit inbox_file_received naming the file"
+    );
+}

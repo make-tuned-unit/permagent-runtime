@@ -103,6 +103,17 @@ impl From<ModelConfigError> for ErrorResponse {
     }
 }
 
+/// Bridges the older `(StatusCode, String)` error shape (still returned by a
+/// few shared writers, e.g. `save_project_document`) into `ErrorResponse` so a
+/// handler using `?` gets the same JSON `{ message }` body every other route
+/// gets, instead of axum's bare-tuple `text/plain` response that made the
+/// client's `apiFetch` `response.json()` reject with "Unknown error".
+impl From<(StatusCode, String)> for ErrorResponse {
+    fn from((status, message): (StatusCode, String)) -> Self {
+        Self { message, status }
+    }
+}
+
 impl From<StatusCode> for ErrorResponse {
     fn from(status: StatusCode) -> Self {
         let message = status.canonical_reason().unwrap_or("Unknown error");

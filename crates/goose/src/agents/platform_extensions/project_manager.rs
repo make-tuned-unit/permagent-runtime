@@ -174,6 +174,20 @@ struct ProjectResolveParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ProjectDocumentsListParams {
+    /// Project ID (UUID) or slug
+    id_or_slug: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ProjectDocumentReadParams {
+    /// Project ID (UUID) or slug
+    id_or_slug: String,
+    /// Document ID, from project_documents_list
+    document_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ResearchProjectIntelParams {
     /// Project ID, slug, or exact name.
     project: String,
@@ -1504,7 +1518,9 @@ impl ProjectManagerClient {
             .ok_or_else(|| {
                 format!(
                     "Project \"{}\" has no root_path set, so there is nowhere to open a terminal. \
-                 Set one with project_update first.",
+                 Set one with project_update first. This only blocks the Build-tab terminal — \
+                 project_documents_list and project_document_read still work without a root_path, \
+                 since documents live in Permagent's own storage, not the project's filesystem folder.",
                     project.name
                 )
             })?;
@@ -1697,6 +1713,159 @@ impl ProjectManagerClient {
             } else {
                 ""
             }
+        ))])
+    }
+
+    /// Same 50 MB ceiling `routes/projects.rs::MAX_DOCUMENT_SIZE` enforces on
+    /// the write side — this crate cannot import that private constant (the
+    /// dependency runs the other way), so the value is kept in sync by hand.
+    /// It caps how much a single agent-initiated document read can pull into
+    /// the conversation, same reasoning as the write-side cap on how much a
+    /// single upload can land on disk.
+    const MAX_AGENT_DOCUMENT_READ_BYTES: usize = 50 * 1024 * 1024;
+    /// Extracted text past this length is truncated before it reaches the
+    /// model — a full 8MB text extraction (the Reader's own ceiling) would
+    /// otherwise blow a huge hole in the conversation for one tool call.
+    const MAX_AGENT_DOCUMENT_READ_CHARS: usize = 40_000;
+
+    /// `project_documents_list` — the read-only counterpart to
+    /// `save_project_document` (routes/projects.rs). Calls the exact same
+    /// [`crate::project_documents::list_documents`] the `GET
+    /// /api/projects/{id}/documents` route does, so what the agent sees here
+    /// is what the Documents panel shows.
+    async fn handle_project_documents_list(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let id_or_slug = args
+            .get("id_or_slug")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: id_or_slug")?;
+        let (project, pool) = self.resolve_project(id_or_slug).await?;
+
+        let docs = crate::project_documents::list_documents(&pool, &project.id).await?;
+        if docs.is_empty() {
+            return Ok(vec![Content::text(format!(
+                "Project \"{}\" has no documents attached.",
+                project.name
+            ))]);
+        }
+        let json: Vec<serde_json::Value> = docs
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "id": d.id,
+                    "filename": d.filename,
+                    "mime_type": d.mime_type,
+                    "size_bytes": d.size_bytes,
+                    "uploaded_at": d.uploaded_at,
+                })
+            })
+            .collect();
+        Ok(vec![Content::text(format!(
+            "{} document(s) on \"{}\"\n\n{}",
+            docs.len(),
+            project.name,
+            serde_json::to_string_pretty(&json).unwrap_or_default()
+        ))])
+    }
+
+    /// `project_document_read` — reads one project document's TEXT (not the
+    /// digest-only summary the passive Reader ingest pipeline hands back;
+    /// this is an explicit ask, so it gets the real extracted content).
+    /// Shares [`crate::reader::extract_document_text`] with the Reader —
+    /// including the new `.docx` branch — so a project document is readable
+    /// here the moment it's readable anywhere else.
+    async fn handle_project_document_read(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let id_or_slug = args
+            .get("id_or_slug")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: id_or_slug")?;
+        let document_id = args
+            .get("document_id")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: document_id")?;
+        let (project, pool) = self.resolve_project(id_or_slug).await?;
+
+        let doc = crate::project_documents::get_document(&pool, &project.id, document_id)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Document '{document_id}' not found on project \"{}\"",
+                    project.name
+                )
+            })?;
+
+        // Defense in depth, mirroring the write-side canonicalization guard
+        // in `routes/projects.rs::save_project_document`: the stored path
+        // must still resolve under THIS project's document root before we
+        // read it off disk.
+        let docs_base = dirs::home_dir()
+            .ok_or("no home directory")?
+            .join(".permagent")
+            .join("project-docs")
+            .join(&project.id);
+        let canonical_base = tokio::fs::canonicalize(&docs_base)
+            .await
+            .map_err(|e| format!("could not resolve this project's document root: {e}"))?;
+        let canonical_doc = tokio::fs::canonicalize(&doc.path)
+            .await
+            .map_err(|e| format!("{} is missing on disk: {e}", doc.filename))?;
+        if !canonical_doc.starts_with(&canonical_base) {
+            return Err(format!(
+                "{} escaped its project's storage root — refusing to read it",
+                doc.filename
+            ));
+        }
+
+        let data = tokio::fs::read(&canonical_doc)
+            .await
+            .map_err(|e| format!("could not read {}: {e}", doc.filename))?;
+        if data.len() > Self::MAX_AGENT_DOCUMENT_READ_BYTES {
+            return Err(format!(
+                "{} is {} bytes, over the {}-byte limit for an agent read — open it in the app instead",
+                doc.filename,
+                data.len(),
+                Self::MAX_AGENT_DOCUMENT_READ_BYTES
+            ));
+        }
+
+        let text = crate::reader::extract_document_text(&data, &doc.filename, &doc.mime_type)
+            .await
+            .map_err(|e| format!("could not extract text from {}: {e}", doc.filename))?;
+        if text.trim().is_empty() {
+            return Ok(vec![Content::text(format!(
+                "{} ({}) has no extractable text.",
+                doc.filename, doc.mime_type
+            ))]);
+        }
+
+        let (shown, truncated) = if text.chars().count() > Self::MAX_AGENT_DOCUMENT_READ_CHARS {
+            let head: String = text
+                .chars()
+                .take(Self::MAX_AGENT_DOCUMENT_READ_CHARS)
+                .collect();
+            (head, true)
+        } else {
+            (text, false)
+        };
+
+        Ok(vec![Content::text(format!(
+            "{} ({}, {} bytes){}\n\n{}",
+            doc.filename,
+            doc.mime_type,
+            doc.size_bytes,
+            if truncated {
+                " — truncated for this read"
+            } else {
+                ""
+            },
+            shown
         ))])
     }
 
@@ -2318,6 +2487,10 @@ impl ProjectManagerClient {
         let delete_schema = serde_json::to_value(schema_for!(ProjectDeleteParams)).unwrap();
         let list_schema = serde_json::to_value(schema_for!(ProjectListParams)).unwrap();
         let resolve_schema = serde_json::to_value(schema_for!(ProjectResolveParams)).unwrap();
+        let documents_list_schema =
+            serde_json::to_value(schema_for!(ProjectDocumentsListParams)).unwrap();
+        let document_read_schema =
+            serde_json::to_value(schema_for!(ProjectDocumentReadParams)).unwrap();
         let card_create_schema = serde_json::to_value(schema_for!(CardCreateParams)).unwrap();
         let card_move_schema = serde_json::to_value(schema_for!(CardMoveParams)).unwrap();
         let card_update_schema = serde_json::to_value(schema_for!(CardUpdateParams)).unwrap();
@@ -2416,6 +2589,46 @@ impl ProjectManagerClient {
             )
             .annotate(ToolAnnotations::from_raw(
                 Some("Resolve Project".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "project_documents_list".to_string(),
+                indoc! {r#"
+                List the documents attached to a project (the Documents panel on a project's
+                detail view) — filename, MIME type, size, and upload time for each. Use this
+                when the user asks what files/documents/attachments a project has, or before
+                project_document_read when you don't yet know a document's ID. Works even when
+                the project has no root_path set — documents live in Permagent's own storage,
+                not the project's filesystem folder.
+            "#}
+                .to_string(),
+                documents_list_schema.as_object().unwrap().clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("List Project Documents".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "project_document_read".to_string(),
+                indoc! {r#"
+                Read the extracted text of one project document (get its ID from
+                project_documents_list first). Supports PDF, plain text/markdown/code, and
+                .docx; other file types (images, etc.) report that there is no extractable
+                text. Use this when the user asks about the CONTENT of a specific project
+                document — "what does the contract say", "summarize that deck" — not just
+                its existence.
+            "#}
+                .to_string(),
+                document_read_schema.as_object().unwrap().clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Read Project Document".to_string()),
                 Some(false),
                 Some(false),
                 Some(false),
@@ -2918,6 +3131,8 @@ impl McpClientTrait for ProjectManagerClient {
             "project_delete" => self.handle_delete(arguments).await,
             "project_list" => self.handle_list(arguments).await,
             "project_resolve" => self.handle_resolve(arguments).await,
+            "project_documents_list" => self.handle_project_documents_list(arguments).await,
+            "project_document_read" => self.handle_project_document_read(arguments).await,
             "card_create" => self.handle_card_create(arguments).await,
             "card_move" => self.handle_card_move(arguments).await,
             "card_update" => self.handle_card_update(arguments).await,
@@ -3504,5 +3719,129 @@ mod tests {
             err.contains("standard") && err.contains("goal"),
             "unexpected: {err}"
         );
+    }
+
+    fn test_project_manager_client(data_dir: std::path::PathBuf) -> ProjectManagerClient {
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: std::sync::Arc::new(crate::session::SessionManager::new(data_dir)),
+            session: None,
+        };
+        ProjectManagerClient::new(context).unwrap()
+    }
+
+    fn json_args(v: serde_json::Value) -> JsonObject {
+        v.as_object().unwrap().clone()
+    }
+
+    /// #4 (the agent-blindness fix): `project_documents` had no agent-side
+    /// reader at all — `project_documents_list` / `project_document_read` did
+    /// not exist as tools, so an agent asked about a project's files could
+    /// only apologize. Exercises the handler methods `call_tool` dispatches
+    /// to, against a document saved through the shared writer
+    /// (`project_documents::insert_document` — what `save_project_document`
+    /// in the daemon crate itself calls; that route handler is unreachable
+    /// from this crate, so the writer is what's under test), on a project
+    /// that deliberately has NO root_path (proving these tools are not gated
+    /// behind it, unlike project_launch).
+    ///
+    /// FAILS BEFORE: neither handler method exists — this is a compile-time
+    /// proof by construction as much as a runtime one.
+    #[tokio::test]
+    async fn project_documents_list_and_read_work_without_a_root_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = test_project_manager_client(dir.path().to_path_buf());
+        let pool = client.context.session_manager.pool_clone().await.unwrap();
+
+        let project = projects::create_project(
+            &pool,
+            projects::CreateProject {
+                name: "No Root".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            project.root_path.is_none(),
+            "this project deliberately has no root_path"
+        );
+
+        // A minimal .docx (ties to fix 1) with a known paragraph.
+        let paragraph = "The vendor contract renews on the first of next month.";
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body><w:p><w:r><w:t>{paragraph}</w:t></w:r></w:p></w:body>
+</w:document>"#
+        );
+        let mut bytes = Vec::new();
+        {
+            use std::io::Write;
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("word/document.xml", opts).unwrap();
+            zip.write_all(xml.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+
+        // Land the bytes where `save_project_document` would have — the
+        // read-side canonicalization guard (mirroring the write-side one)
+        // requires the stored path to resolve under this project's document
+        // root.
+        let docs_base = dirs::home_dir()
+            .expect("home dir")
+            .join(".permagent")
+            .join("project-docs")
+            .join(&project.id);
+        tokio::fs::create_dir_all(&docs_base).await.unwrap();
+        let doc_id = "doc-1";
+        let doc_path = docs_base.join(doc_id);
+        tokio::fs::write(&doc_path, &bytes).await.unwrap();
+
+        crate::project_documents::insert_document(
+            &pool,
+            doc_id,
+            &project.id,
+            "contract.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            bytes.len() as i64,
+            &doc_path.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+
+        let listed = client
+            .handle_project_documents_list(Some(json_args(
+                serde_json::json!({ "id_or_slug": project.id }),
+            )))
+            .await
+            .expect("project_documents_list must succeed without a root_path");
+        let listed_text = listed[0]
+            .as_text()
+            .map(|t| t.text.as_str())
+            .unwrap_or_default();
+        assert!(
+            listed_text.contains("contract.docx"),
+            "must name the saved document, got: {listed_text}"
+        );
+
+        let read = client
+            .handle_project_document_read(Some(json_args(serde_json::json!({
+                "id_or_slug": project.id,
+                "document_id": doc_id,
+            }))))
+            .await
+            .expect("project_document_read must succeed without a root_path");
+        let read_text = read[0]
+            .as_text()
+            .map(|t| t.text.as_str())
+            .unwrap_or_default();
+        assert!(
+            read_text.contains(paragraph),
+            "must return the docx's real extracted text, got: {read_text}"
+        );
+
+        let _ = std::fs::remove_dir_all(&docs_base);
     }
 }
