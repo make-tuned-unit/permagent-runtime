@@ -39,22 +39,6 @@ export const color = {
   dangerStrong: '#EF4444',
 } as const;
 
-/**
- * The ink that goes on a bright, saturated fill — a flat cyan button, an amber
- * identity badge, a green trim. Near-black, so it clears 12:1 on any of them;
- * white on a bright fill is the recurring contrast failure this exists to stop
- * (white on #00BFEF is ~1.9:1).
- *
- * One value, one definition, three names' worth of call sites: `textOnCyan`
- * was the first name for it and is kept as an alias in every theme so the
- * existing call sites keep working. New code should say `textOnBright`, which
- * is what it actually means — the ink is a function of the fill's BRIGHTNESS,
- * not of its hue. Added 2026-09-02 for the Finance lane, which had minted a
- * local `FINANCIER_BADGE_INK` because the only token for this was named after
- * a colour its badge is not.
- */
-export const INK_ON_BRIGHT = '#04141B';
-
 export const font = {
   display: '"Manrope", "Satoshi", -apple-system, BlinkMacSystemFont, sans-serif',
   body: '"Inter", -apple-system, BlinkMacSystemFont, sans-serif',
@@ -308,6 +292,102 @@ export function trafficLightSpan(x: number = shell.trafficLights.x): number {
   return x + 2 * spacing + buttonSize;
 }
 
+/**
+ * The ink to print on a fixed IDENTITY-TRIM fill — `AGENT_TRIM` in
+ * `components/world/shared/palette.ts`.
+ *
+ * A function, not a token, and that is the whole point. The trim palette is
+ * frozen and theme-independent (an agent's colour is its identity, never
+ * repainted by state or theme), and it is neither one hue nor one lightness:
+ * `henry` is a near-white gold at 91% lightness, `strix` a dark oxblood at
+ * 42%. So there is no single ink that is legible on all of them, and the
+ * Finance lane was right to hand-pick `#3d2e0a` for the Financier's gold
+ * rather than reach for `textOnCyan`'s blue-black — but hand-picking is a
+ * per-agent decision that has to be made again for every future agent, and
+ * `world/**` alone carries twelve.
+ *
+ * The RULE is what generalises: ink on identity trim is that trim, taken to
+ * ink. Same hue, saturation pushed up, lightness driven away from the trim's
+ * until the pair clears AA — dark first, and toward light for the trims no
+ * dark ink can clear.
+ *
+ * The derivation is checked against the value Finance chose by eye:
+ * `inkOnTrim(AGENT_TRIM.financier)` returns `#3d2e0a`, which is that value.
+ * That agreement is the argument for the formula; `identityInk.test.ts`
+ * pins it, along with >= 4.5:1 for every entry in the frozen palette.
+ *
+ * Added 2026-09-02 at lane R11's request (a generic "ink on a bright identity
+ * -trim fill"), and it retires `FinanceView.tsx`'s local `FINANCIER_BADGE_INK`
+ * and its `financeColors.test.ts` allowlist entry.
+ */
+export function inkOnTrim(trim: string): string {
+  const { h, s: sat } = hexToHsl(trim);
+  // Dark first, from the 14% the Financier's ink sits at and downward; then,
+  // for the trims no dark ink can clear, the same construction upward. The
+  // ladder matters: a MID-lightness trim (librarian, polybot) clears AA with
+  // neither a 14% ink nor a 96% one, and simply picking a polarity would ship
+  // a 3.6:1 label. Walking to the first rung that clears it keeps the ink as
+  // close to the trim as legibility allows, instead of jumping to flat black.
+  const candidates: string[] = [];
+  for (let l = 0.14; l >= -0.001; l -= 0.02) {
+    candidates.push(hslToHex(h, Math.min(0.75, sat * 1.5), Math.max(0, l)));
+  }
+  for (let l = 0.96; l <= 1.001; l += 0.02) {
+    candidates.push(hslToHex(h, Math.min(0.35, sat), Math.min(1, l)));
+  }
+  const passing = candidates.find(c => contrastRatio(c, trim) >= 4.5);
+  if (passing) return passing;
+  // Unreachable for the current palette, and a sane floor if a future trim is
+  // pathological: the most legible thing we can draw.
+  return candidates.reduce((best, c) =>
+    contrastRatio(c, trim) > contrastRatio(best, trim) ? c : best);
+}
+
+/** #rgb / #rrggbb -> {h in [0,360), s and l in [0,1]}. */
+function hexToHsl(hex: string): { h: number; s: number; l: number } {
+  const [r, g, b] = hexToRgb(hex).map(v => v / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return { h: 0, s: 0, l };
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h: number;
+  if (max === r) h = 60 * (((g - b) / d) % 6);
+  else if (max === g) h = 60 * ((b - r) / d + 2);
+  else h = 60 * ((r - g) / d + 4);
+  return { h: (h + 360) % 360, s, l };
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  const seg = Math.floor(h / 60) % 6;
+  const rgb = [
+    [c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x],
+  ][seg].map(v => Math.round((v + m) * 255));
+  return `#${rgb.map(v => v.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace('#', '');
+  const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+  return [0, 2, 4].map(i => parseInt(full.slice(i, i + 2), 16)) as [number, number, number];
+}
+
+/** WCAG 2.x contrast ratio. Exported so gates can assert legibility. */
+export function contrastRatio(a: string, b: string): number {
+  const lum = (hex: string) => {
+    const [r, g, b2] = hexToRgb(hex).map(v => {
+      const c = v / 255;
+      return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b2;
+  };
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 export const shadow = {
   glow: '0 0 40px rgba(0,213,255,0.25)',
   glowStrong: '0 0 80px rgba(0,213,255,0.4)',
@@ -354,9 +434,6 @@ export interface ThemeColors {
    *  be a fixed dark ink — white/`colors.bg` fails WCAG contrast (and inverts to
    *  near-white on the silver theme). Never use textOnAccent on a flat-cyan fill. */
   textOnCyan: string;
-  /** The same ink as `textOnCyan`, under the name that says what it is for:
-   *  any bright, saturated fill, whatever its hue. Prefer this. */
-  textOnBright: string;
   /** Success semantic */
   success: string;
   /** Warning semantic */
@@ -460,8 +537,7 @@ const DARK_COLORS: ThemeColors = {
   userBubbleText: '#FFFFFF',
   inputBg: '#1E2433',
   textOnAccent: '#FFFFFF',
-  textOnCyan: INK_ON_BRIGHT,
-  textOnBright: INK_ON_BRIGHT,
+  textOnCyan: '#04141B',
   success: '#34D399',
   warning: '#FBBF24',
   // 8.6:1 on the dark ground, and a hue nobody mistakes for the amber alarm.
@@ -521,8 +597,7 @@ const SILVER_COLORS: ThemeColors = {
   userBubbleText: '#1E2530', // Graphite (BLACK text)
   inputBg: '#EEF2F7',       // Chrome Mist (recessed)
   textOnAccent: '#FFFFFF',
-  textOnCyan: INK_ON_BRIGHT,  // ~12:1 on #00BFEF (white would be ~1.9:1)
-  textOnBright: INK_ON_BRIGHT,
+  textOnCyan: '#04141B',    // Deep ink — ~12:1 on #00BFEF (white would be ~1.9:1)
   success: '#059669',
   warning: '#D97706',
   // Amber-700 — 4.9:1 on white (AA), a step deeper than the warning amber so
