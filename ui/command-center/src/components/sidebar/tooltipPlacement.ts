@@ -20,8 +20,9 @@
  *
  * THE GEOMETRY IS TIGHTER THAN IT LOOKS. `BuildView` wraps the terminal /
  * browser split in `padding: '12px 18px'`, so with the terminal hidden and
- * the rail collapsed (`Sidebar.tsx` `W = open ? 208 : 64`) the browser's
- * native rect starts at only 64 + 18 = 82px — a handful of pixels past a
+ * the rail collapsed (`Sidebar.tsx` `W = shell.rail.collapsed`, 76 since the
+ * rail went full-height and had to contain the traffic lights) the browser's
+ * native rect starts at only 76 + 18 = 94px — a handful of pixels past a
  * hover label's natural position at `anchor.right + 10`. There is not enough
  * ROOM to the label's right for a full label there in that layout, so rather
  * than truncate (illegible) or overlap (the whole bug), `placeSidebarTooltip`
