@@ -10,7 +10,7 @@
 
 import { useState, useCallback, useId, type CSSProperties } from 'react';
 import { useLiveGoals } from '../../../lib/useLiveGoals';
-import { font, radius, ease, textSize } from '../../../styles/tokens';
+import { font, radius, ease, duration, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
 import { DetailModal } from '../../common/DetailModal';
@@ -20,7 +20,7 @@ import type { HistoryItem } from './types';
 import { resolutionText, deadLetterText } from './types';
 import { DecisionItem } from './DecisionItem';
 import { decisionsClient } from './client';
-import { formatAge } from './format';
+import { formatAge, withAlpha } from './format';
 import { usePersona } from '../../settings/useSettings';
 
 interface Props {
@@ -184,7 +184,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
             <div style={{ padding: '48px 18px', textAlign: 'center' }}>
               <div style={{
                 width: 34, height: 34, borderRadius: '50%',
-                background: colors.success + '26', color: colors.success,
+                background: withAlpha(colors.success, 0.15), color: colors.success,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: textSize.heading, margin: '0 auto 10px',
               }}>✓</div>
@@ -203,7 +203,10 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                   <div style={{
                     fontFamily: font.body, fontSize: 10, fontWeight: 700,
                     letterSpacing: '0.10em', textTransform: 'uppercase',
-                    color: '#e8a33d', marginBottom: 6,
+                    // "Needs attention" is the warning semantic (D8), not a
+                    // bespoke amber — the dashboard's DecisionsCard made the
+                    // same call for the same bucket (one concept, one color).
+                    color: colors.warning, marginBottom: 6,
                   }}>
                     Parked goals — waiting on you
                   </div>
@@ -312,7 +315,10 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                     <span style={{
                       color: colors.textDim, fontSize: textSize.micro,
                       transform: tier1Open ? 'rotate(90deg)' : 'none',
-                      transition: reduceMotion ? 'none' : `transform 150ms ${ease.out}`,
+                      // D9: a control-state change, so the snappy spring
+                      // (240ms) — not the old bare bezier with no duration
+                      // token behind it.
+                      transition: reduceMotion ? 'none' : `transform ${duration.snappy}ms ${ease.snappy}`,
                     }}>▸</span>
                   </button>
                   {tier1Open && (
@@ -422,7 +428,7 @@ function HistoryList({ items, failed, onRetry }: {
               textTransform: 'uppercase', borderRadius: radius.xs, padding: '2px 6px',
               flexShrink: 0,
               color: item.tier === 1 ? colors.success : colors.cyan,
-              background: item.tier === 1 ? colors.success + '26' : colors.cyanSoft,
+              background: item.tier === 1 ? withAlpha(colors.success, 0.15) : colors.cyanSoft,
             }}>
               {item.tier === 1 ? agentName : 'you'}
             </span>
@@ -449,7 +455,7 @@ function HistoryList({ items, failed, onRetry }: {
               style={{
                 marginTop: 6, fontSize: textSize.caption, color: colors.danger,
                 borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-                background: colors.danger + '14', padding: '6px 10px',
+                background: withAlpha(colors.danger, 0.08), padding: '6px 10px',
               }}
             >
               {deadLetterText(item)}

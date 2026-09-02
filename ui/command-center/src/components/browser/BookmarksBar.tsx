@@ -13,6 +13,18 @@ import {
   saveTabSet,
   toggleBookmark,
 } from './bookmarksLogic';
+import {
+  ADDRESS_RADIUS,
+  CHIP_RADIUS,
+  CHROME_GEOM,
+  chromeBareVars,
+  dangerWash,
+} from './browserChrome';
+
+/** Dense chrome caption — was literal `10` / `text-[10px]` across this bar.
+ *  Not on the type ramp (micro=11); changing it would thicken the row and
+ *  shrink the webview. Request a ramp step from A1c if one is wanted. */
+const CHROME_CAPTION = 10;
 
 interface BookmarksBarProps {
   /** URL/title of the active tab — what the star bookmarks. */
@@ -30,6 +42,9 @@ interface BookmarksBarProps {
  * Bookmarks + saved-tabs row below the address bar (#790). All state is
  * daemon-persisted via /api/browser/bookmarks and /api/browser/tab-sets
  * (routes/browser_state.rs) so it survives app restarts — no localStorage.
+ *
+ * Sits on the parent glass chrome stack (D1/D3) — no fill of its own. The
+ * saved-tabs menu is an opaque elevated surface (D2: never glass-on-glass).
  */
 export function BookmarksBar({
   currentUrl,
@@ -157,11 +172,16 @@ export function BookmarksBar({
 
   const starred = isBookmarked(bookmarks, currentUrl);
   const canStar = isPersistableUrl(currentUrl);
+  const chipPad = `${CHROME_GEOM.chipPadY}px ${CHROME_GEOM.chipPadX}px`;
 
   return (
     <div
-      className="flex items-center gap-1 px-3 py-1"
-      style={{ backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}` }}
+      className="flex items-center min-w-0"
+      style={{
+        gap: CHROME_GEOM.bookmarksGap,
+        padding: `${CHROME_GEOM.bookmarksPadY}px ${CHROME_GEOM.bookmarksPadX}px`,
+        borderBottom: `1px solid ${colors.border}`,
+      }}
     >
       {/* Star: bookmark the current page */}
       <Button
@@ -170,14 +190,12 @@ export function BookmarksBar({
         onClick={handleStar}
         disabled={!canStar}
         aria-label="Bookmark this page"
-        style={{
-          '--pa-btn-fg': starred ? colors.cyan : colors.textMuted,
-          '--pa-btn-fg-hover': starred ? colors.cyan : colors.text,
-          '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
-          '--pa-btn-bg-active': 'rgba(255,255,255,0.09)',
-          '--pa-btn-pad': '4px',
-          '--pa-btn-radius': `${radius.xs}px`,
-        } as CSSProperties}
+        style={chromeBareVars(colors, {
+          fg: starred ? colors.cyan : colors.textMuted,
+          fgHover: starred ? colors.cyan : colors.text,
+          pad: `${CHROME_GEOM.chipPadY * 2}px`,
+          radiusPx: CHIP_RADIUS,
+        })}
         title={
           !canStar
             ? 'Open a page to bookmark it'
@@ -190,13 +208,15 @@ export function BookmarksBar({
       </Button>
 
       {/* Bookmark chips */}
-      <div className="flex flex-1 items-center gap-1 overflow-x-auto min-w-0">
+      <div className="flex flex-1 items-center min-w-0 overflow-x-auto" style={{ gap: CHROME_GEOM.bookmarksGap }}>
         {bookmarks.length === 0 ? (
           <span
-            className="text-[10px] px-1 select-none"
+            className="select-none"
             role={loadFailed ? 'alert' : undefined}
             style={{
               fontFamily: font.body,
+              fontSize: CHROME_CAPTION,
+              padding: `0 ${CHROME_GEOM.bookmarksGap}px`,
               color: loadFailed ? colors.danger : colors.textMuted,
               opacity: loadFailed ? 1 : 0.6,
             }}
@@ -221,22 +241,28 @@ export function BookmarksBar({
               flashSuccess={false}
               className="group shrink-0"
               style={{
-                '--pa-btn-fg': colors.textMuted,
-                '--pa-btn-fg-hover': colors.text,
-                '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
-                '--pa-btn-bg-active': 'rgba(255,255,255,0.09)',
-                '--pa-btn-pad': '2px 8px',
-                '--pa-btn-radius': `${radius.xs}px`,
-                fontFamily: font.body, fontSize: 10, gap: 4,
+                ...chromeBareVars(colors, {
+                  pad: chipPad,
+                  radiusPx: CHIP_RADIUS,
+                }),
+                fontFamily: font.body,
+                fontSize: CHROME_CAPTION,
+                gap: CHROME_GEOM.chipPadY * 2,
               } as CSSProperties}
               title={b.url}
             >
               <span className="truncate max-w-[140px]">{b.title || b.url}</span>
               <span
                 onClick={(e) => handleRemoveBookmark(b.url, e)}
-                className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-white/10 transition-colors"
-                style={{ color: colors.textMuted }}
+                className="opacity-0 group-hover:opacity-100"
+                style={{
+                  color: colors.textMuted,
+                  borderRadius: radius.xs,
+                  padding: 2,
+                }}
                 title="Remove bookmark"
+                onMouseEnter={(e) => { e.currentTarget.style.background = colors.fillHover; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
               >
                 <FiX size={9} />
               </span>
@@ -254,14 +280,16 @@ export function BookmarksBar({
             setSetsOpen((o) => !o);
             setArmedDelete(null);
           }}
-                    style={{
-            '--pa-btn-fg': setsOpen ? colors.cyan : colors.textMuted,
-            '--pa-btn-fg-hover': setsOpen ? colors.cyan : colors.text,
-            '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
-            '--pa-btn-bg-active': 'rgba(255,255,255,0.09)',
-            '--pa-btn-pad': '2px 8px',
-            '--pa-btn-radius': `${radius.xs}px`,
-            fontFamily: font.body, fontSize: 10, gap: 4,
+          style={{
+            ...chromeBareVars(colors, {
+              fg: setsOpen ? colors.cyan : colors.textMuted,
+              fgHover: setsOpen ? colors.cyan : colors.text,
+              pad: chipPad,
+              radiusPx: CHIP_RADIUS,
+            }),
+            fontFamily: font.body,
+            fontSize: CHROME_CAPTION,
+            gap: CHROME_GEOM.chipPadY * 2,
           } as CSSProperties}
           title="Saved tab sets"
         >
@@ -270,12 +298,27 @@ export function BookmarksBar({
         </Button>
 
         {setsOpen && (
+          // Opaque elevated menu — not glass (D2: parent chrome is already glass).
           <div
-            className="absolute right-0 top-full mt-1 w-64 rounded-md shadow-lg z-50 py-1"
-            style={{ backgroundColor: colors.bgDeeper, border: `1px solid ${colors.border}` }}
+            className="absolute right-0 top-full z-50 py-1"
+            style={{
+              marginTop: CHROME_GEOM.bookmarksGap,
+              width: 256,
+              backgroundColor: colors.surface,
+              border: `1px solid ${colors.border}`,
+              borderRadius: ADDRESS_RADIUS,
+              boxShadow: colors.elevationOverlay,
+            }}
           >
             {/* Save the currently open tabs as a named set */}
-            <div className="flex items-center gap-1 px-2 pb-1" style={{ borderBottom: `1px solid ${colors.border}` }}>
+            <div
+              className="flex items-center"
+              style={{
+                gap: CHROME_GEOM.bookmarksGap,
+                padding: `0 ${CHROME_GEOM.chipPadX}px ${CHROME_GEOM.bookmarksGap}px`,
+                borderBottom: `1px solid ${colors.border}`,
+              }}
+            >
               <input
                 type="text"
                 value={saveName}
@@ -289,8 +332,14 @@ export function BookmarksBar({
                     : 'No open tabs to save'
                 }
                 disabled={currentTabs.length === 0}
-                className="bookmarks-set-name flex-1 bg-transparent text-[10px] py-1 px-1 outline-none rounded"
-                style={{ fontFamily: font.mono, color: colors.text }}
+                className="bookmarks-set-name flex-1 bg-transparent outline-none"
+                style={{
+                  fontFamily: font.mono,
+                  fontSize: CHROME_CAPTION,
+                  color: colors.text,
+                  padding: `${CHROME_GEOM.bookmarksGap}px`,
+                  borderRadius: CHIP_RADIUS,
+                }}
               />
               <style>{`.bookmarks-set-name::placeholder { color: ${colors.textMuted}; opacity: 0.6; }`}</style>
               <Button
@@ -299,12 +348,14 @@ export function BookmarksBar({
                 onClick={handleSaveTabs}
                 disabled={currentTabs.length === 0 || !saveName.trim()}
                 style={{
-                  '--pa-btn-fg': colors.cyan,
-                  '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
-                  '--pa-btn-bg-active': 'rgba(255,255,255,0.09)',
-                  '--pa-btn-pad': '2px 6px',
-                  '--pa-btn-radius': `${radius.xs}px`,
-                  fontFamily: font.body, fontSize: 10,
+                  ...chromeBareVars(colors, {
+                    fg: colors.cyan,
+                    fgHover: colors.cyan,
+                    pad: `${CHROME_GEOM.chipPadY}px ${CHROME_GEOM.bookmarksGap + 2}px`,
+                    radiusPx: CHIP_RADIUS,
+                  }),
+                  fontFamily: font.body,
+                  fontSize: CHROME_CAPTION,
                 } as CSSProperties}
               >
                 Save
@@ -313,8 +364,13 @@ export function BookmarksBar({
 
             {tabSets.length === 0 ? (
               <div
-                className="px-3 py-2 text-[10px]"
-                style={{ fontFamily: font.body, color: colors.textMuted, opacity: 0.6 }}
+                style={{
+                  padding: `${CHROME_GEOM.chipPadX}px ${CHROME_GEOM.tabPadX}px`,
+                  fontFamily: font.body,
+                  fontSize: CHROME_CAPTION,
+                  color: colors.textMuted,
+                  opacity: 0.6,
+                }}
               >
                 No saved tab sets yet
               </div>
@@ -330,13 +386,14 @@ export function BookmarksBar({
                   onClick={() => handleRestore(set)}
                   className="group w-full"
                   style={{
-                    '--pa-btn-fg': colors.textMuted,
-                    '--pa-btn-fg-hover': colors.text,
-                    '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
-                    '--pa-btn-bg-active': 'rgba(255,255,255,0.09)',
-                    '--pa-btn-pad': '6px 12px',
-                    '--pa-btn-radius': '0',
-                    fontFamily: font.body, fontSize: 10, gap: 6, textAlign: 'left',
+                    ...chromeBareVars(colors, {
+                      pad: `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.tabPadX}px`,
+                      radiusPx: 0,
+                    }),
+                    fontFamily: font.body,
+                    fontSize: CHROME_CAPTION,
+                    gap: CHROME_GEOM.bookmarksGap + 2,
+                    textAlign: 'left',
                   } as CSSProperties}
                   title={`Restore ${set.tabs.length} tab${set.tabs.length !== 1 ? 's' : ''}`}
                 >
@@ -347,13 +404,21 @@ export function BookmarksBar({
                   </span>
                   <span
                     onClick={(e) => handleDeleteSet(set.name, e)}
-                    className={`rounded p-0.5 transition-colors ${
+                    className={armedDelete === set.name ? '' : 'opacity-0 group-hover:opacity-100'}
+                    style={
                       armedDelete === set.name
-                        ? 'bg-red-500/20 text-red-400'
-                        : 'opacity-0 group-hover:opacity-100 hover:bg-white/10'
-                    }`}
-                    style={armedDelete === set.name ? undefined : { color: colors.textMuted }}
+                        ? { background: dangerWash(colors), color: colors.danger, borderRadius: radius.xs, padding: 2 }
+                        : { color: colors.textMuted, borderRadius: radius.xs, padding: 2 }
+                    }
                     title={armedDelete === set.name ? 'Click again to delete' : 'Delete set'}
+                    onMouseEnter={(e) => {
+                      if (armedDelete === set.name) return;
+                      e.currentTarget.style.background = colors.fillHover;
+                    }}
+                    onMouseLeave={(e) => {
+                      if (armedDelete === set.name) return;
+                      e.currentTarget.style.background = 'transparent';
+                    }}
                   >
                     <FiTrash2 size={10} />
                   </span>

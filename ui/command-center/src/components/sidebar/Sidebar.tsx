@@ -6,6 +6,7 @@ import { useTheme } from '../../styles/useTheme';
 import { FiBell, FiChevronLeft, FiChevronRight, FiSettings } from 'react-icons/fi';
 import type { IconType } from 'react-icons';
 import { Button } from '../common/Button';
+import { Tooltip } from '../common/Tooltip';
 import { Mobius } from '../mobius/Mobius';
 import { markAllRead, toggleTray, useNotifications, useTrayOpen } from '../../lib/notifications';
 import { resolveIconPath } from '../common/icons';
@@ -325,49 +326,51 @@ export function Sidebar() {
 
       {/* Collapse / Expand toggle */}
       {open ? (
-        <Button
-          colors={colors}
-          variant="bare"
-          onClick={() => setOpen(false)}
-          title="Collapse"
-                    style={{
-            '--pa-btn-fg': colors.textDim,
-            '--pa-btn-fg-hover': colors.text,
-            '--pa-btn-bg-hover': colors.surfaceHi,
-            '--pa-btn-pad': '0',
-            '--pa-btn-radius': `${radius.md}px`,
-            width: 'calc(100% - 16px)', height: 32,
-            margin: '4px 8px 0',
-            gap: 8,
-            fontFamily: font.body, fontSize: textSize.micro,
-          } as CSSProperties}
-        >
-          <FiChevronLeft size={12} />
-          Collapse
-        </Button>
+        <Tooltip content="Collapse" placement="right">
+          <Button
+            colors={colors}
+            variant="bare"
+            onClick={() => setOpen(false)}
+            style={{
+              '--pa-btn-fg': colors.textDim,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': `${radius.md}px`,
+              width: 'calc(100% - 16px)', height: 32,
+              margin: '4px 8px 0',
+              gap: 8,
+              fontFamily: font.body, fontSize: textSize.micro,
+            } as CSSProperties}
+          >
+            <FiChevronLeft size={12} />
+            Collapse
+          </Button>
+        </Tooltip>
       ) : (
-        <Button
-          colors={colors}
-          variant="bare"
-          onClick={() => setOpen(true)}
-          title="Expand"
-          aria-label="Expand"
-          style={{
-            '--pa-btn-fg': colors.textDim,
-            '--pa-btn-fg-hover': colors.text,
-            '--pa-btn-bg-hover': colors.surfaceHi,
-            '--pa-btn-pad': '0',
-            '--pa-btn-radius': `${radius.md}px`,
-            width: 40, height: 32, margin: '4px auto 0',
-          } as CSSProperties}
-        >
-          <FiChevronRight size={12} />
-        </Button>
+        <Tooltip content="Expand" placement="right">
+          <Button
+            colors={colors}
+            variant="bare"
+            onClick={() => setOpen(true)}
+            aria-label="Expand"
+            style={{
+              '--pa-btn-fg': colors.textDim,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': `${radius.md}px`,
+              width: 40, height: 32, margin: '4px auto 0',
+            } as CSSProperties}
+          >
+            <FiChevronRight size={12} />
+          </Button>
+        </Tooltip>
       )}
 
       {/* Portalled to document.body — the rail sets overflow:hidden to animate
           its width, which would clip a tooltip rendered inside it. */}
-      <SidebarTooltip target={tooltipTarget} />
+      <SidebarTooltip target={tooltipTarget} onDismiss={hideTooltip} />
     </div>
   );
 }

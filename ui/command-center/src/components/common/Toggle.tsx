@@ -33,6 +33,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { ease, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Tooltip } from './Tooltip';
 
 /** `false` means "it failed" — the same signal `Button` takes. */
 export type ToggleOutcome = void | boolean;
@@ -41,7 +42,7 @@ export interface ToggleProps {
   on: boolean;
   onChange?: (next: boolean) => ToggleOutcome | Promise<ToggleOutcome>;
   disabled?: boolean;
-  /** Why this switch cannot be pressed. Rendered as its `title`; required
+  /** Why this switch cannot be pressed. Shown via the shared Tooltip; required
    *  reading whenever the disabling condition is not visible on the row. */
   disabledReason?: string;
   /** A message the caller owns, rendered where the switch puts its own — for
@@ -97,54 +98,65 @@ export function Toggle({ on, onChange, disabled = false, disabledReason, label, 
   const shown = desired ?? on;
   const message = error ?? failure;
 
-  return (
-    <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={shown}
-        aria-label={label}
-        aria-busy={busy || undefined}
-        data-pending={busy ? 'true' : undefined}
-        disabled={disabled}
-        title={disabled ? disabledReason : undefined}
-        onClick={flip}
+  const switchEl = (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={shown}
+      aria-label={label}
+      aria-busy={busy || undefined}
+      data-pending={busy ? 'true' : undefined}
+      disabled={disabled}
+      onClick={flip}
+      style={{
+        width: 36, height: 22, borderRadius: radius.pill, padding: 2,
+        background: shown ? colors.cyan : colors.surfaceHi,
+        border: 'none',
+        cursor: disabled ? 'not-allowed' : busy ? 'progress' : 'pointer',
+        position: 'relative',
+        opacity: disabled ? 0.55 : 1,
+        transition: `background 160ms ${ease.out}`,
+        boxShadow: shown ? `0 0 8px ${colors.cyanGlow}` : 'none',
+      }}
+    >
+      {/* The thumb carries the busy phase rather than a badge beside the
+          track: the switch is 36px wide, and anything alongside it would
+          move the row. Reuses the app's one spin keyframe, so it rides the
+          global prefers-reduced-motion guard. */}
+      <div
         style={{
-          width: 36, height: 22, borderRadius: radius.pill, padding: 2,
-          background: shown ? colors.cyan : colors.surfaceHi,
-          border: 'none',
-          cursor: disabled ? 'not-allowed' : busy ? 'progress' : 'pointer',
-          position: 'relative',
-          opacity: disabled ? 0.55 : 1,
-          transition: `background 160ms ${ease.out}`,
-          boxShadow: shown ? `0 0 8px ${colors.cyanGlow}` : 'none',
+          width: 18, height: 18, borderRadius: '50%', background: '#fff',
+          transform: shown ? 'translateX(14px)' : 'translateX(0)',
+          transition: 'transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}
       >
-        {/* The thumb carries the busy phase rather than a badge beside the
-            track: the switch is 36px wide, and anything alongside it would
-            move the row. Reuses the app's one spin keyframe, so it rides the
-            global prefers-reduced-motion guard. */}
-        <div
-          style={{
-            width: 18, height: 18, borderRadius: '50%', background: '#fff',
-            transform: shown ? 'translateX(14px)' : 'translateX(0)',
-            transition: 'transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
-        >
-          {busy && (
-            <span
-              className="pa-spin"
-              aria-hidden="true"
-              style={{
-                width: 10, height: 10, borderRadius: '50%',
-                border: `1.5px solid ${shown ? colors.cyan : colors.textMuted}`,
-                borderTopColor: 'transparent',
-              } as CSSProperties}
-            />
-          )}
-        </div>
-      </button>
+        {busy && (
+          <span
+            className="pa-spin"
+            aria-hidden="true"
+            style={{
+              width: 10, height: 10, borderRadius: '50%',
+              border: `1.5px solid ${shown ? colors.cyan : colors.textMuted}`,
+              borderTopColor: 'transparent',
+            } as CSSProperties}
+          />
+        )}
+      </div>
+    </button>
+  );
+
+  return (
+    <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
+      {disabled && disabledReason ? (
+        // Disabled buttons are not focusable and often skip pointer events;
+        // wrap so the reason stays reachable from keyboard and hover.
+        <Tooltip content={disabledReason}>
+          <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+            {switchEl}
+          </span>
+        </Tooltip>
+      ) : switchEl}
       {message && (
         <span style={{ fontSize: textSize.caption, color: colors.danger, lineHeight: 1.4, maxWidth: 420 }}>
           {message}

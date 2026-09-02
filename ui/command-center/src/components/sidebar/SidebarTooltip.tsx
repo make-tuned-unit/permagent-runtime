@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { font, radius, ease, textSize } from '../../styles/tokens';
-import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
+import {
+  TooltipBubble,
+  TOOLTIP_COLD_DELAY_MS,
+  TOOLTIP_WARM_WINDOW_MS,
+  isTooltipWarm,
+  noteTooltipHidden,
+  useTooltipDismiss,
+} from '../common/Tooltip';
 import { placeSidebarTooltip } from './tooltipPlacement';
 
 /**
@@ -39,16 +45,14 @@ import { placeSidebarTooltip } from './tooltipPlacement';
  *     over it with no native-surface conflict) rather than ever reaching into
  *     the browser's rect. The page never moves for this again.
  *
+ * The chrome (glass, concentric radius, spring-in, reduce-motion /
+ * reduce-transparency) lives in `common/Tooltip` (`TooltipBubble`). This file
+ * keeps the multi-row warm-hover controller and the browser-pane inversion.
+ *
  * The delay is short on first hover and drops to zero while the pointer is
  * moving between rows (the "warm" window), matching how OS menu bars behave:
  * deliberate on entry, instant once you are clearly browsing.
  */
-
-const COLD_DELAY_MS = 260;
-const WARM_WINDOW_MS = 700;
-
-/** Shared across rows: when a tooltip last closed, for the warm-hover window. */
-let lastHiddenAt = 0;
 
 export interface TooltipTarget {
   rect: DOMRect;
@@ -63,16 +67,15 @@ export function useSidebarTooltip() {
   const show = (el: HTMLElement | null, label: string, shortcut?: string) => {
     if (!el) return;
     clearTimeout(timer.current);
-    const warm = Date.now() - lastHiddenAt < WARM_WINDOW_MS;
     const commit = () => setTarget({ rect: el.getBoundingClientRect(), label, shortcut });
-    if (warm) commit();
-    else timer.current = setTimeout(commit, COLD_DELAY_MS);
+    if (isTooltipWarm()) commit();
+    else timer.current = setTimeout(commit, TOOLTIP_COLD_DELAY_MS);
   };
 
   const hide = () => {
     clearTimeout(timer.current);
     setTarget(prev => {
-      if (prev) lastHiddenAt = Date.now();
+      if (prev) noteTooltipHidden();
       return null;
     });
   };
@@ -82,56 +85,48 @@ export function useSidebarTooltip() {
   return { target, show, hide };
 }
 
-export function SidebarTooltip({ target }: { target: TooltipTarget | null }) {
-  const { colors, reduceMotion } = useTheme();
+// Re-export so existing warm-window timing references stay discoverable.
+export { TOOLTIP_COLD_DELAY_MS as COLD_DELAY_MS, TOOLTIP_WARM_WINDOW_MS as WARM_WINDOW_MS };
+
+export function SidebarTooltip({
+  target,
+  onDismiss,
+}: {
+  target: TooltipTarget | null;
+  /** Escape / scroll — parent clears its `useSidebarTooltip` target. */
+  onDismiss?: () => void;
+}) {
   // Read-only: the Browser publishes this from its own bounds sync and never
   // hears about the sidebar at all. See tooltipPlacement.ts for the geometry
   // proof that placing the label around this rect can never overlap it.
   const browserPaneRect = useCommandCenter(s => s.browserPaneRect);
+
+  useTooltipDismiss(Boolean(target), () => {
+    onDismiss?.();
+  });
 
   if (!target) return null;
 
   const placement = placeSidebarTooltip(target.rect, browserPaneRect);
   if (!placement.visible) return null;
 
+  // Right-of-rail resting pose (translateY -50%); enter with a short nudge.
+  const transform = 'translateY(-50%)';
+  const fromTransform = 'translateY(-50%) translateX(-4px)';
+
   return createPortal(
-    <div
-      role="tooltip"
-      style={{
-        position: 'fixed', top: placement.top, left: placement.left,
-        transform: 'translateY(-50%)',
-        zIndex: 9999, pointerEvents: 'none',
-        display: 'flex', alignItems: 'center', gap: 8,
-        flexWrap: 'wrap',
-        maxWidth: placement.maxWidth,
-        padding: '5px 9px',
-        borderRadius: radius.sm,
-        background: colors.surface,
-        border: `1px solid ${colors.border}`,
-        boxShadow: colors.elevationRaised ?? colors.cardShadow,
-        fontFamily: font.body, fontSize: textSize.caption, fontWeight: 500,
-        color: colors.text,
-        // Only the tight collapsed-rail-vs-full-browser layout ever sets a
-        // maxWidth narrow enough to matter; everywhere else the box is wide
-        // enough that this never wraps. Wrapping (not truncating) is the
-        // point — a label that cannot fit its natural width still shows every
-        // character, just on more than one line.
-        whiteSpace: placement.maxWidth !== undefined ? 'normal' : 'nowrap',
-        wordBreak: 'break-word',
-        animation: reduceMotion ? undefined : `sidebarTooltipIn 120ms ${ease.out}`,
-      }}
+    <TooltipBubble
+      id="pa-sidebar-tooltip"
+      left={placement.left}
+      top={placement.top}
+      transform={transform}
+      fromTransform={fromTransform}
+      maxWidth={placement.maxWidth}
+      wrap={placement.maxWidth !== undefined}
+      shortcut={target.shortcut}
     >
       {target.label}
-      {target.shortcut && (
-        <span style={{
-          fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
-          color: colors.textDim,
-          border: `1px solid ${colors.border}`,
-          borderRadius: radius.xs, padding: '1px 4px',
-          whiteSpace: 'nowrap',
-        }}>{target.shortcut}</span>
-      )}
-    </div>,
+    </TooltipBubble>,
     document.body,
   );
 }
