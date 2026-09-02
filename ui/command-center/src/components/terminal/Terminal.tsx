@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -6,7 +6,8 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import { useEventBus } from '../../lib/eventBus';
 import { useTheme } from '../../styles/useTheme';
-import { font } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
+import { Button } from '../common/Button';
 import { getXtermTheme } from './xtermTheme';
 import { onRepaintRegain } from '../../lib/repaintOnRegain';
 import { handlePtyData, type PtyDataPayload, type PtyStreamSink } from './ptyStream';
@@ -130,7 +131,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       const term = new XTerm({
         theme: getXtermTheme(theme, colors),
         fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, "DejaVu Sans Mono", monospace',
-        fontSize: 13,
+        fontSize: textSize.small,
         // MUST stay 1.0. Extra leading inserts a gap between rows that the
         // glyph cannot bridge, so every vertical box-drawing rule (│ ┃ ║) is
         // sliced into dashes and long horizontal rules (─ ━) drift off the
@@ -728,33 +729,55 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
             <span style={{ color: colors.textMuted }}>
               Prompt not delivered — the agent didn&apos;t take the terminal in time.
             </span>
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
               type="button"
               onClick={dismissPending}
               aria-label="Dismiss"
               className="shrink-0"
-              style={{ color: colors.textMuted, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+              style={{
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '0',
+                fontSize: textSize.caption,
+              } as CSSProperties}
             >
               <FiX size={12} />
-            </button>
+            </Button>
           </div>
           <div className="mt-2 flex items-center gap-2">
-            <button
+            <Button
+              colors={colors}
+              variant="primary"
               type="button"
               onClick={sendPendingNow}
-              className="flex items-center gap-1 rounded px-2 py-1"
-              style={{ backgroundColor: colors.cyan, color: colors.textOnCyan, border: 'none', cursor: 'pointer', fontFamily: font.body, fontWeight: 600 }}
+              // `gap: 4` is the old `gap-1` between the icon and the word.
+              style={{
+                '--pa-btn-pad': '4px 8px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                fontFamily: font.body,
+                fontSize: textSize.caption,
+                gap: 4,
+              } as CSSProperties}
             >
               <FiSend size={11} /> Send now
-            </button>
-            <button
+            </Button>
+            <Button
+              colors={colors}
               type="button"
               onClick={copyPending}
-              className="flex items-center gap-1 rounded px-2 py-1"
-              style={{ backgroundColor: 'transparent', color: colors.text, border: `1px solid ${colors.border}`, cursor: 'pointer', fontFamily: font.body }}
+              style={{
+                '--pa-btn-pad': '4px 8px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                fontFamily: font.body,
+                fontSize: textSize.caption,
+                gap: 4,
+              } as CSSProperties}
             >
               <FiCopy size={11} /> Copy
-            </button>
+            </Button>
           </div>
         </div>
       )}

@@ -135,6 +135,7 @@ impl GooseCompleter {
             "/prompts",
             "/prompt",
             "/mode",
+            "/model",
             "/recipe",
         ];
 
@@ -261,6 +262,27 @@ impl GooseCompleter {
         Ok((line.len(), vec![]))
     }
 
+    /// Candidates for the pinned composer's Tab key.
+    ///
+    /// The composer owns the TTY for the whole session, so rustyline's editor
+    /// — and every rule in [`Completer::complete`] below — never ran on the
+    /// daily path: `/model`, `/mode` and the prompt names had no completion at
+    /// all. Rather than restate those rules, this reuses them behind a
+    /// throwaway history. `Context` exists to carry history to completers that
+    /// consult it; none of ours do, so an empty one is honest rather than a
+    /// stub, and the composer stays free of rustyline's editor state.
+    pub fn composer_candidates(&self, line: &str) -> (usize, Vec<String>) {
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = Context::new(&history);
+        match self.complete(line, line.len(), &ctx) {
+            Ok((start, pairs)) => (
+                start.min(line.len()),
+                pairs.into_iter().map(|pair| pair.replacement).collect(),
+            ),
+            Err(_) => (line.len(), Vec::new()),
+        }
+    }
+
     /// Complete file paths
     fn complete_file_path(&self, line: &str, ctx: &Context) -> Result<(usize, Vec<Pair>)> {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -379,6 +401,12 @@ impl Completer for GooseCompleter {
 
         // For normal text (not slash commands), try file path completion
         self.complete_file_path(line, ctx)
+    }
+}
+
+impl super::composer::CompletionSource for GooseCompleter {
+    fn candidates(&self, line: &str) -> (usize, Vec<String>) {
+        self.composer_candidates(line)
     }
 }
 
@@ -545,6 +573,36 @@ mod tests {
         // Test no match
         let (_pos, candidates) = completer.complete_slash_commands("/nonexistent").unwrap();
         assert_eq!(candidates.len(), 0);
+    }
+
+    /// `/model` switches this harness session's provider, so it has to be
+    /// discoverable at the prompt the same way `/mode` is — the two share a
+    /// prefix, and only tab-completion tells them apart before you commit.
+    #[test]
+    fn model_command_is_offered_alongside_mode() {
+        let completer = GooseCompleter::new(create_test_cache());
+        let (_pos, candidates) = completer.complete_slash_commands("/mod").unwrap();
+        let displayed: Vec<&str> = candidates.iter().map(|c| c.display.as_str()).collect();
+        assert!(displayed.contains(&"/model"), "got {displayed:?}");
+        assert!(displayed.contains(&"/mode"), "got {displayed:?}");
+    }
+
+    /// The composer bypasses rustyline entirely, so the Tab seam has to reach
+    /// the same rules — otherwise the completer stays as dead on the daily
+    /// path as it was when only the fallback editor could see it.
+    #[test]
+    fn the_composer_seam_reaches_the_same_slash_command_rules() {
+        let completer = GooseCompleter::new(create_test_cache());
+        let (from, candidates) = completer.composer_candidates("/mod");
+        assert_eq!(from, 0, "the whole command is replaced, not appended to");
+        assert!(
+            candidates.contains(&"/model ".to_string()),
+            "{candidates:?}"
+        );
+        assert!(candidates.contains(&"/mode ".to_string()), "{candidates:?}");
+
+        let (_from, none) = completer.composer_candidates("/nonexistent");
+        assert!(none.is_empty(), "{none:?}");
     }
 
     #[test]

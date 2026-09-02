@@ -2,7 +2,7 @@
 // Mounted once at App root. Every item is a real daemon event (see
 // lib/notifications.ts); clicking one deep-links to its surface.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import {
   useNotifications,
   markAllRead,
@@ -11,8 +11,9 @@ import {
   type AppNotification,
 } from '../../lib/notifications';
 import { navigateToTool, useCommandCenter } from '../../lib/store';
-import { font, radius, ease } from '../../styles/tokens';
+import { font, radius, ease, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 const TOAST_MS = 6000;
 
@@ -86,19 +87,23 @@ export function NotificationHost() {
           boxShadow: colors.elevationFloating, padding: 8,
         }}>
           {items.length === 0 ? (
-            <div style={{ padding: 18, textAlign: 'center', fontSize: 12, color: colors.textDim }}>
+            <div style={{ padding: 18, textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
               Nothing needs you — all quiet.
             </div>
           ) : items.map((n) => (
+            /* Left as a raw <button> on purpose: this row IS the card — three
+               stacked blocks (title, body, timestamp) laid out by the button
+               itself. `.pa-btn`'s inline-flex + centring would turn them into
+               one centred row. */
             <button key={n.id} onClick={() => activate(n)} style={{
               display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
               padding: '9px 10px', borderRadius: radius.md, marginBottom: 2,
               background: n.read ? 'transparent' : colors.cyanSoft,
               border: 'none', color: colors.text,
             }}>
-              <div style={{ fontFamily: font.body, fontSize: 12, fontWeight: 600 }}>{n.title}</div>
+              <div style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600 }}>{n.title}</div>
               {n.body && (
-                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, lineHeight: 1.4 }}>{n.body}</div>
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 2, lineHeight: 1.4 }}>{n.body}</div>
               )}
               <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginTop: 3 }}>
                 {new Date(n.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -117,6 +122,8 @@ export function NotificationHost() {
       }}>
         {toasts.map((n) => (
           <div key={n.id} style={{ position: 'relative', pointerEvents: 'auto', width: 300 }}>
+            {/* Same reasoning as the tray row: the toast IS the button, a
+                stacked title + body block, and centring it would be wrong. */}
             <button
               onClick={() => { dismissToast(n.id); activate(n); }}
               style={{
@@ -127,22 +134,25 @@ export function NotificationHost() {
                 color: colors.text, animation: `pa-toast-in 220ms ${ease.out}`,
               }}
             >
-              <div style={{ fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan }}>{n.title}</div>
-              {n.body && <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>{n.body}</div>}
+              <div style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600, color: colors.cyan }}>{n.title}</div>
+              {n.body && <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 2 }}>{n.body}</div>}
             </button>
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
               onClick={(e) => { e.stopPropagation(); dismissToast(n.id); }}
               aria-label="Dismiss notification"
               title="Dismiss"
               style={{
+                '--pa-btn-fg': colors.textDim,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-pad': '0',
                 position: 'absolute', top: 6, right: 6, width: 18, height: 18,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: 'none', border: 'none', cursor: 'pointer',
-                color: colors.textDim, fontSize: 13, lineHeight: 1, padding: 0,
-              }}
+                fontSize: textSize.small, lineHeight: 1,
+              } as CSSProperties}
             >
               ×
-            </button>
+            </Button>
           </div>
         ))}
       </div>

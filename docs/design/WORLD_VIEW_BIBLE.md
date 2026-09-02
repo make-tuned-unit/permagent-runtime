@@ -32,12 +32,18 @@ WorldView itself):
 
 **Critical findings**
 
-1. **Agent state is 100% simulated.** `useAgentStates.ts` is a local wander loop with a
-   TODO to wire a WebSocket. The real `/events` feed carries only `LibrarianDescribe*`
-   events. Real state available today: Henry via `/api/henry/status` poll
-   (`idle | in_conversation | tool_call`), Librarian via `LibrarianDescribe*` phases, and
-   the live agent roster via `/api/agents`. There is **no per-agent working/available/error
-   event stream**. → See §9 stop item S1.
+1. **Agent state is 100% simulated.** ~~`useAgentStates.ts` is a local wander loop with a
+   TODO to wire a WebSocket.~~ **CORRECTED 2026-09-01 — this has been false for some time
+   and an audit that trusted it would be wrong.** `agent_state_changed` exists and six
+   emitters use it: `agent_state_tick.rs` (Henry), `steward_sweep.rs`, `strix.rs`,
+   `finance.rs`, `forecaster.rs`, `picker_close_scan.rs` (which announces under the
+   `financier` id — a known misattribution). Nine world sources are live end-to-end
+   (orb states, goal dispatch, the decision inbox, Librarian curation, Brain memory).
+   What remains is **charted silence, never a false claim**: each roster entry declares
+   its own `wire` — `daemon` (something reports it), `sim` (nothing does; the §4 clamp
+   holds it to idle/available), or `static` (nothing does YET — a fixed pose and a HUD
+   that says what it is waiting for). The Council, Polybot and the Picker are `static`
+   today. → See §9 stop item S1.
 2. **Issue #87 confirmed** (since resolved): Henry's trim was hardcoded `#00D9FF`,
    identical to the then-environment accent `neonCyan` — and the global token cyan
    is `#00D5FF`, a third near-duplicate. Resolved: Henry's trim is `#F0E6D0` (§9 D2),
@@ -197,8 +203,14 @@ instrument glow against dark stone.
 **A4 — The Automate Hall** (tab: Automate · landmark: a wall-mounted 6u **horologium** —
 a clockface of concentric bronze rings with cyan tick lights). A narrow gallery of
 scheduler boards: stone steles engraved with glowing timetable grids, a long planning
-table. Mood: rhythmic, quiet; the tick lights are the only animation, pulsing on a slow
-clock.
+table. Mood: rhythmic, quiet.
+
+The gallery is **bound to the real scheduler** (2026-09-01): one stele per registered job,
+its grid coloured by that job's real last outcome (`/api/job-health`), refreshed on
+`schedule_changed` and a 60s backstop. No jobs, or no answer from either source, renders an
+empty gallery — never a reassuring one. The horologium keeps its slow clock pulse, which is
+true whatever the scheduler is doing; the **amber tick is reserved for a run genuinely in
+flight** (`currently_running` off `/schedule/list`) and is otherwise still.
 
 **A5 — The Forum Antechamber** (tab: future Mesh · landmark: the existing **Stargate**
 itself, relocated to frame the NW threshold). Through the gate's doorway: a small liminal
@@ -346,7 +358,9 @@ state machine; simulation only fills documented gaps (§9 S1):
 export type AgentHudState = 'idle' | 'working' | 'available' | 'error';
 export interface AgentRuntimeState {
   id: string; name: string; hudState: AgentHudState;
-  source: 'daemon' | 'sim';   // honesty bit — evidence recordings must show 'daemon'
+  // Honesty bit — evidence recordings of working/error must show 'daemon'.
+  // 'static' = a real seat whose emitter has not shipped: never animated.
+  source: 'daemon' | 'sim' | 'static';
 }
 export function useAgentRuntimeStates(): AgentRuntimeState[];
 ```

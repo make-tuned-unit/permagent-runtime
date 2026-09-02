@@ -1,5 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { COLORS } from './constants';
+import { radius, textSize } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 // ── Tab definition ────────────────────────────────────────────────
 
@@ -36,6 +39,11 @@ export function HudShell({
   onTabChange,
   children,
 }: HudShellProps) {
+  // The HUD chrome paints from the world palette, not the app theme, so every
+  // colour below is still a `COLORS`/hex value — `colors` is here only because
+  // the button primitive takes a theme for its variant defaults.
+  const { colors } = useTheme();
+
   // ESC to close — capture phase
   useEffect(() => {
     if (!visible) return;
@@ -61,7 +69,15 @@ export function HudShell({
           </span>
           {statusPill}
         </div>
-        <button onClick={onClose} style={closeBtnStyle} title="Close (ESC)">✕</button>
+        <Button
+          colors={colors}
+          variant="bare"
+          type="button"
+          onClick={onClose}
+          title="Close (ESC)"
+          aria-label="Close"
+          style={closeBtnVars}
+        >✕</Button>
       </div>
 
       {/* Tab bar — only when tabs prop provided */}
@@ -71,26 +87,31 @@ export function HudShell({
             const isActive = tab.id === activeTab;
             const isDisabled = !!tab.disabled;
             return (
-              <button
+              <Button
                 key={tab.id}
+                colors={colors}
+                variant="bare"
+                type="button"
                 onClick={() => {
                   if (!isDisabled && onTabChange) onTabChange(tab.id);
                 }}
                 disabled={isDisabled}
+                flashSuccess={false}
                 style={{
-                  ...tabBtnBase,
-                  ...(idx === 0 ? { paddingLeft: 0 } : {}),
-                  color: isActive
+                  ...tabBtnVars,
+                  '--pa-btn-pad': idx === 0 ? '6px 10px 5px 0' : '6px 10px 5px',
+                  '--pa-btn-fg': isActive
                     ? tab.accentColor
                     : isDisabled
                       ? '#4B5563'
                       : '#6B7280',
+                  '--pa-btn-fg-hover': isActive ? tab.accentColor : COLORS.primaryMarble,
+                  // Only the underline is drawn — `.pa-btn`'s `border` shorthand
+                  // paints all four edges, so this longhand has to stay inline.
                   borderBottom: isActive
                     ? `2px solid ${tab.accentColor}`
                     : '2px solid transparent',
-                  cursor: isDisabled ? 'default' : 'pointer',
-                  opacity: isDisabled ? 0.45 : 1,
-                }}
+                } as CSSProperties}
               >
                 {tab.label}
                 {isDisabled && tab.disabledLabel && (
@@ -104,7 +125,7 @@ export function HudShell({
                     {tab.disabledLabel}
                   </span>
                 )}
-              </button>
+              </Button>
             );
           })}
         </div>
@@ -143,7 +164,7 @@ export function Section({ title, trimColor, children }: {
 
 export function StatRow({ label, value }: { label: string; value: string | number }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, lineHeight: 1.6 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: textSize.micro, lineHeight: 1.6 }}>
       <span style={{ color: '#9CA3AF' }}>{label}</span>
       <span style={{ color: COLORS.primaryMarble, fontWeight: 500 }}>{String(value)}</span>
     </div>
@@ -170,7 +191,7 @@ const panelStyle: React.CSSProperties = {
   background: 'rgba(10, 14, 26, 0.88)',
   backdropFilter: 'blur(12px)',
   border: `1px solid ${COLORS.marbleVeining}25`,
-  borderRadius: 8,
+  borderRadius: radius.md,
   fontFamily: 'monospace',
   color: COLORS.primaryMarble,
   zIndex: 20,
@@ -183,21 +204,21 @@ const headerStyle: React.CSSProperties = {
   justifyContent: 'space-between',
   alignItems: 'center',
   padding: '10px 14px 6px',
-  fontSize: 13,
+  fontSize: textSize.small,
   color: COLORS.primaryMarble,
   borderBottom: `1px solid ${COLORS.marbleVeining}20`,
   marginBottom: 0,
 };
 
-const closeBtnStyle: React.CSSProperties = {
-  background: 'none',
-  border: 'none',
-  color: '#6B7280',
-  cursor: 'pointer',
-  fontSize: 14,
-  padding: '2px 4px',
+const closeBtnVars = {
+  '--pa-btn-fg': '#6B7280',
+  '--pa-btn-fg-hover': COLORS.primaryMarble,
+  '--pa-btn-bg-hover': 'rgba(255,255,255,0.06)',
+  '--pa-btn-pad': '2px 4px',
+  '--pa-btn-radius': `${radius.xs}px`,
+  fontSize: textSize.body,
   lineHeight: 1,
-};
+} as CSSProperties;
 
 const tabBarStyle: React.CSSProperties = {
   display: 'flex',
@@ -207,13 +228,16 @@ const tabBarStyle: React.CSSProperties = {
   marginBottom: 4,
 };
 
-const tabBtnBase: React.CSSProperties = {
-  background: 'none',
-  border: 'none',
+const tabBtnVars = {
+  '--pa-btn-bg': 'transparent',
+  '--pa-btn-bg-hover': 'transparent',
+  '--pa-btn-bg-active': 'transparent',
+  '--pa-btn-border': 'transparent',
+  '--pa-btn-border-hover': 'transparent',
+  '--pa-btn-radius': '0',
+  '--pa-btn-weight': 700,
   fontFamily: 'monospace',
   fontSize: 10,
-  fontWeight: 700,
   letterSpacing: '0.08em',
-  padding: '6px 10px 5px',
   lineHeight: 1,
-};
+} as CSSProperties;

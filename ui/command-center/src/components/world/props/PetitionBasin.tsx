@@ -20,7 +20,7 @@ import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { ENV } from '../shared/palette';
-import { getReduceMotion } from '../../../styles/tokens';
+import { getReduceMotion, radius } from '../../../styles/tokens';
 import { navigateToTool } from '../../../lib/store';
 import { stoneDark, stoneMarble, metalBronze, lightCyan } from './materials';
 import {
@@ -160,7 +160,7 @@ export function PetitionBasin() {
           <div
             style={{
               padding: '4px 10px',
-              borderRadius: 4,
+              borderRadius: radius.xs,
               background: 'rgba(10, 14, 26, 0.82)',
               border: `1px solid ${ENV.neonCyan}55`,
               boxShadow: `0 0 12px ${ENV.neonCyan}33`,

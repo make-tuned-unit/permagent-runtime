@@ -176,7 +176,13 @@ impl ProviderRegistry {
             if !config.requires_auth {
                 config_keys.remove(api_key_index);
             } else if !config.api_key_env.is_empty() {
-                let api_key_required = provider_type == ProviderType::Declarative;
+                // The provider's own `requires_auth` decides this, for BOTH
+                // Custom and Declarative. Hard-wiring Custom to "optional"
+                // made a user-added provider that genuinely needs a key
+                // advertise `required: false` on it — which reads as
+                // "configured" to any caller that walks `config_keys`, and as
+                // "this field is optional" to onboarding and Settings.
+                let api_key_required = config.requires_auth;
                 config_keys[api_key_index] = super::base::ConfigKey::new(
                     &config.api_key_env,
                     api_key_required,
@@ -276,5 +282,75 @@ impl ProviderRegistry {
 
     pub fn remove_custom_providers(&mut self) {
         self.entries.retain(|name, _| !name.starts_with("custom_"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::declarative_providers::register_declarative_provider;
+    use crate::providers::base::ConfigKey;
+
+    fn declarative_config(name: &str, requires_auth: bool) -> DeclarativeProviderConfig {
+        serde_json::from_value(serde_json::json!({
+            "name": name,
+            "engine": "openai",
+            "display_name": name,
+            "api_key_env": "ACME_TEST_API_KEY",
+            "base_url": "https://example.invalid",
+            "models": [{ "name": "acme-1", "context_limit": 128000 }],
+            "requires_auth": requires_auth,
+        }))
+        .expect("declarative provider fixture")
+    }
+
+    fn api_key_of(registry: &ProviderRegistry, name: &str) -> Option<ConfigKey> {
+        registry
+            .all_metadata_with_types()
+            .into_iter()
+            .find(|(m, _)| m.name == name)
+            .and_then(|(m, _)| {
+                m.config_keys
+                    .into_iter()
+                    .find(|k| k.name == "ACME_TEST_API_KEY")
+            })
+    }
+
+    /// `api_key_required` used to be `provider_type == Declarative`, so a
+    /// user-added (`Custom`) provider that genuinely needs a key advertised
+    /// `required: false` on it. Anything walking `config_keys` — the old
+    /// Council check, onboarding, the Settings "is this field required?"
+    /// prompt — then read an unconfigured provider as configured. The flag
+    /// must come from the provider's own `requires_auth`.
+    #[test]
+    fn custom_provider_api_key_is_required_when_requires_auth() {
+        for provider_type in [ProviderType::Custom, ProviderType::Declarative] {
+            let mut registry = ProviderRegistry::new();
+            register_declarative_provider(
+                &mut registry,
+                declarative_config("acme_auth", true),
+                provider_type,
+            );
+            let key = api_key_of(&registry, "acme_auth")
+                .expect("the api key must survive registration when requires_auth");
+            assert!(
+                key.required,
+                "{provider_type:?} provider with requires_auth must mark its api key required"
+            );
+            assert!(key.secret && key.primary);
+        }
+    }
+
+    /// The other half of the branch: a provider that needs no auth drops the
+    /// key entirely rather than carrying a field nobody can fill.
+    #[test]
+    fn provider_without_requires_auth_drops_its_api_key() {
+        let mut registry = ProviderRegistry::new();
+        register_declarative_provider(
+            &mut registry,
+            declarative_config("acme_open", false),
+            ProviderType::Custom,
+        );
+        assert!(api_key_of(&registry, "acme_open").is_none());
     }
 }

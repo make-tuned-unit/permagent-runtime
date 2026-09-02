@@ -1,10 +1,11 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, type CSSProperties } from 'react';
 import { FiPlus, FiTrash2, FiMessageSquare, FiX } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
-import { toast } from '../../lib/notifications';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 
 function timeAgo(dateStr: string): string {
   const now = Date.now();
@@ -112,14 +113,18 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
     return () => window.removeEventListener('keydown', h);
   }, [onClose, confirmDelete]);
 
+  // Resolves `false` on failure so the Button contract never ticks on one: a
+  // create that threw must not look like a create that landed.
   const handleNewSession = async () => {
     try {
       const session = await api.createSession();
       await switchToSession(session.id);
       openChatDock();
       setActivePanel('chat');
+      return true;
     } catch (e) {
       console.error('Failed to create session:', e);
+      return false;
     }
   };
 
@@ -129,15 +134,13 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
     setActivePanel('chat');
   };
 
+  // The failure sentence is `ConfirmDialog`'s now, not a toast's: the daemon
+  // refusing (or never hearing) the delete leaves the session on screen, and
+  // the dialog that asked the question is where that belongs. It stays open,
+  // saying why, instead of closing as though the delete had happened.
   const handleDelete = async (sessionId: string) => {
+    await deleteSession(sessionId);
     setConfirmDelete(null);
-    try {
-      await deleteSession(sessionId);
-    } catch (e) {
-      // The daemon refused (or never heard) the delete — the session still
-      // exists and the store kept the open conversation intact; say so.
-      toast("Couldn't delete session", e instanceof Error ? e.message : String(e));
-    }
   };
 
   return (
@@ -153,26 +156,39 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
           Sessions
         </span>
         <div className="flex items-center gap-1">
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={handleNewSession}
-            className="flex items-center gap-1 text-[10px] transition px-2 py-1 rounded"
-            style={{ fontFamily: font.mono, color: colors.cyan }}
-            onMouseEnter={e => { e.currentTarget.style.opacity = '0.8'; e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
-            onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = 'transparent'; }}
+            style={{
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-bg-hover': colors.cyanSoft,
+              '--pa-btn-pad': '4px 8px',
+              '--pa-btn-radius': `${radius.xs}px`,
+              fontFamily: font.mono,
+              fontSize: 10,
+              gap: 4,
+            } as CSSProperties}
           >
             <FiPlus size={12} /> New
-          </button>
+          </Button>
           {onClose && (
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
               onClick={onClose}
               title="Close (Esc)"
-              className="flex items-center justify-center transition p-1 rounded"
-              style={{ color: colors.textMuted }}
-              onMouseEnter={e => { e.currentTarget.style.color = colors.text; e.currentTarget.style.backgroundColor = colors.border; }}
-              onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.backgroundColor = 'transparent'; }}
+              aria-label="Close"
+              style={{
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': colors.border,
+                '--pa-btn-pad': '4px',
+                '--pa-btn-radius': `${radius.xs}px`,
+              } as CSSProperties}
             >
               <FiX size={14} />
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -186,13 +202,21 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
             style={{ fontFamily: font.mono }}
           >
             <span style={{ color: colors.danger }}>Couldn't load sessions — the daemon may be unreachable.</span>
-            <button
-              onClick={() => loadSessions()}
+            <Button
+              colors={colors}
+              variant="bare"
               className="hover:underline"
-              style={{ color: colors.cyan, fontWeight: 600 }}
+              onClick={() => loadSessions()}
+              style={{
+                '--pa-btn-fg': colors.cyan,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '0',
+                '--pa-btn-weight': 600,
+                fontSize: 'inherit',
+              } as CSSProperties}
             >
               Retry
-            </button>
+            </Button>
           </div>
         )}
 
@@ -203,13 +227,20 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
           >
             <FiMessageSquare size={20} className="opacity-30" />
             <div>No sessions yet.</div>
-            <button
-              onClick={handleNewSession}
+            <Button
+              colors={colors}
+              variant="bare"
               className="hover:underline"
-              style={{ color: colors.cyan }}
+              onClick={handleNewSession}
+              style={{
+                '--pa-btn-fg': colors.cyan,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '0',
+                fontSize: 'inherit',
+              } as CSSProperties}
             >
               Click + New to start a chat.
-            </button>
+            </Button>
           </div>
         )}
 
@@ -250,43 +281,40 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
                 </div>
               </div>
 
-              <button
+              <Button
+                colors={colors}
+                variant="bare"
+                className="opacity-0 group-hover:opacity-100"
                 onClick={(e) => { e.stopPropagation(); setConfirmDelete(s.id); }}
-                className="opacity-0 group-hover:opacity-100 transition p-1 rounded"
-                style={{ color: colors.textMuted }}
-                onMouseEnter={e => { e.currentTarget.style.color = colors.danger; }}
-                onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
                 title="Delete session"
+                aria-label="Delete session"
+                style={{
+                  '--pa-btn-fg': colors.textMuted,
+                  '--pa-btn-fg-hover': colors.danger,
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-pad': '4px',
+                  '--pa-btn-radius': `${radius.xs}px`,
+                } as CSSProperties}
               >
                 <FiTrash2 size={12} />
-              </button>
+              </Button>
             </div>
           );
         })}
       </div>
 
-      {/* Delete confirmation */}
+      {/* Deleting a conversation has no undo, which is the tier that earns a
+          full-attention modal. It used to be hand-rolled chrome with no focus
+          trap, no dialog role and no way back to the button that opened it. */}
       {confirmDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setConfirmDelete(null)}>
-          <div
-            className="rounded-xl p-5 max-w-sm"
-            style={{ backgroundColor: colors.surface, border: `1px solid ${colors.border}`, boxShadow: colors.cardShadow }}
-            onClick={e => e.stopPropagation()}
-          >
-            <h3 className="mb-2" style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>Delete session?</h3>
-            <p className="text-xs mb-4" style={{ fontFamily: font.body, color: colors.textMuted }}>This will permanently delete this session and its messages.</p>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setConfirmDelete(null)}
-                className="px-3 py-1.5 text-sm rounded hover:bg-white/5 transition"
-                style={{ border: `1px solid ${colors.border}`, color: colors.textMuted }}
-              >
-                Cancel
-              </button>
-              <button onClick={() => handleDelete(confirmDelete)} className="px-3 py-1.5 text-sm rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 transition">Delete</button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          title="Delete session?"
+          consequence="This permanently deletes the conversation and every message in it. There is no undo."
+          confirmLabel="Delete"
+          failureLabel="Couldn't delete the session"
+          onConfirm={() => handleDelete(confirmDelete)}
+          onCancel={() => setConfirmDelete(null)}
+        />
       )}
     </div>
   );

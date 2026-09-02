@@ -9,6 +9,7 @@
 import { Html } from '@react-three/drei';
 import { useMeshStatus } from '../../shared/meshStatus';
 import { ENV } from '../../shared/palette';
+import { radius } from '../../../../styles/tokens';
 
 export function ForumPlaque() {
   const mesh = useMeshStatus();
@@ -20,7 +21,7 @@ export function ForumPlaque() {
       <div
         style={{
           padding: '5px 12px',
-          borderRadius: 4,
+          borderRadius: radius.xs,
           background: 'rgba(10, 14, 26, 0.85)',
           border: `1px solid ${accent}66`,
           boxShadow: online ? `0 0 14px ${accent}44` : 'none',

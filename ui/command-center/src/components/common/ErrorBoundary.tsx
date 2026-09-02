@@ -5,6 +5,7 @@
 // shell down with it.
 
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { radius, textSize } from '../../styles/tokens';
 
 interface Props {
   /** Human label for what failed, e.g. "the World View". */
@@ -52,10 +53,10 @@ export class ErrorBoundary extends Component<Props, State> {
         }}
       >
         <div style={{ fontSize: 26 }}>◇</div>
-        <div style={{ fontSize: 14, fontWeight: 600, color: '#E8E4DD' }}>
+        <div style={{ fontSize: textSize.body, fontWeight: 600, color: '#E8E4DD' }}>
           {what} hit a snag
         </div>
-        <div style={{ fontSize: 12, maxWidth: 380, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, maxWidth: 380, lineHeight: 1.5 }}>
           Something in this view stopped working — the rest of the app is fine.
           Try again, or switch tabs and come back.
         </div>
@@ -64,11 +65,11 @@ export class ErrorBoundary extends Component<Props, State> {
           style={{
             marginTop: 4,
             padding: '8px 18px',
-            borderRadius: 8,
+            borderRadius: radius.md,
             border: '1px solid rgba(0,213,255,0.4)',
             background: 'rgba(0,213,255,0.1)',
             color: '#00D5FF',
-            fontSize: 13,
+            fontSize: textSize.small,
             fontWeight: 600,
             cursor: 'pointer',
           }}

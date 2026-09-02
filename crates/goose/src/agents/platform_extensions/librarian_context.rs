@@ -364,6 +364,9 @@ async fn fetch_decisions(
                 acted_by: r.get("acted_by"),
                 created_at: r.get("created_at"),
                 resolved_at: r.get("resolved_at"),
+                // Answered rows only — a resolved decision never carries a
+                // staged proposal.
+                staged_answer: None,
             };
             let answer_text = answered_decision_answer_text(&decision);
             ContextItem {

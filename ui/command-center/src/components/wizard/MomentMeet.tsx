@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, Glass, Particles, Input, Textarea, WizardHeading, WizardSubhead, validateTrait } from './atoms';
 import { useTheme } from '../../styles/useTheme';
@@ -59,7 +59,7 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
 
         {/* Name */}
         <div style={{ marginBottom: 20 }}>
-          <label style={{ fontFamily: font.body, fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>
+          <label style={{ fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>
             Name
           </label>
           {editName ? (
@@ -87,22 +87,22 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
               <span style={{ fontFamily: font.display, fontSize: 22, fontWeight: 700, color: colors.text }}>
                 {persona.name || 'Click to name...'}
               </span>
-              <span style={{ fontSize: 11, color: colors.textDim }}>edit</span>
+              <span style={{ fontSize: textSize.micro, color: colors.textDim }}>edit</span>
             </div>
           )}
         </div>
 
         {/* Traits */}
         <div style={{ marginBottom: 20 }}>
-          <label style={{ fontFamily: font.body, fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 8 }}>
+          <label style={{ fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 8 }}>
             Traits
           </label>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
             {persona.traits.map((trait) => (
               <span key={trait} style={{
-                fontFamily: font.body, fontSize: 12, fontWeight: 500,
+                fontFamily: font.body, fontSize: textSize.caption, fontWeight: 500,
                 color: colors.cyan, background: colors.cyanSoft,
-                borderRadius: 999, padding: '5px 12px',
+                borderRadius: radius.pill, padding: '5px 12px',
                 display: 'inline-flex', alignItems: 'center', gap: 6,
               }}>
                 {trait}
@@ -133,7 +133,7 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
             placeholder="Add a trait — type and press Enter"
           />
           {traitError && (
-            <div role="alert" style={{ fontFamily: font.body, fontSize: 11, color: colors.danger, marginTop: 6 }}>
+            <div role="alert" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.danger, marginTop: 6 }}>
               {traitError}
             </div>
           )}
@@ -141,7 +141,7 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
 
         {/* Tone */}
         <div style={{ marginBottom: 20 }}>
-          <label style={{ fontFamily: font.body, fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>
+          <label style={{ fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>
             Tone
           </label>
           <Textarea
@@ -153,7 +153,7 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
 
         {/* Voice */}
         <div style={{ marginBottom: 20 }}>
-          <label style={{ fontFamily: font.body, fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>
+          <label style={{ fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>
             Voice
           </label>
           <VoicePicker value={persona.voiceId} onChange={v => updateField('voiceId', v)} />
@@ -161,7 +161,7 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
 
         {/* Greeting */}
         <div style={{ marginBottom: 20 }}>
-          <label style={{ fontFamily: font.body, fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>
+          <label style={{ fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>
             Opening greeting
           </label>
           <Textarea

@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from 'react';
-import { font, radius } from '../../../styles/tokens';
+import { font, radius, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { SectionTitle, EmptyNote, StatCompact } from '../atoms';
 import { apiFetch } from '../../../lib/api';
@@ -112,6 +112,11 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
               {byProject.map((row) => {
                 const net = lastCumulativeNet(row.points);
                 return (
+                  // Not on the Button primitive: the whole row IS the button —
+                  // a truncating project name that must flex, a stats line, and
+                  // a fixed-width sparkline, all laid out by the button itself.
+                  // The primitive wraps its children in a single span, which
+                  // would collapse that three-part row. Left as a raw button.
                   <button
                     key={row.projectId}
                     type="button"
@@ -125,7 +130,7 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
                     }}
                   >
                     <span style={{
-                      fontFamily: font.body, fontSize: 12, color: colors.text,
+                      fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                       minWidth: 0, flex: 1,
                     }}>{row.projectName}</span>

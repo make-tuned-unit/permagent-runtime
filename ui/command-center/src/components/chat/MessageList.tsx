@@ -1,8 +1,9 @@
-import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
+import { useRef, useEffect, useMemo, useState, useCallback, type CSSProperties } from 'react';
 import { FiChevronDown, FiMessageSquare, FiVolume2 } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { MessageBubble } from './MessageBubble';
 import { StreamingIndicator } from './StreamingIndicator';
 import { usePersona } from '../settings/useSettings';
@@ -174,16 +175,22 @@ export function MessageList() {
             <span className="text-[12px]" style={{ color: colors.danger, fontFamily: font.body }}>
               Couldn't load this conversation: {sessionLoadError}
             </span>
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
+              className="shrink-0 hover:underline"
               onClick={() => void loadSessionMessages(chatSessionId)}
-              className="text-[12px]"
               style={{
-                color: colors.cyan, background: 'none', border: 'none', cursor: 'pointer',
-                fontFamily: font.body, padding: 0, fontWeight: 600, flexShrink: 0,
-              }}
+                '--pa-btn-fg': colors.cyan,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '0',
+                '--pa-btn-weight': 600,
+                fontFamily: font.body,
+                fontSize: textSize.caption,
+              } as CSSProperties}
             >
               Retry
-            </button>
+            </Button>
           </div>
         )}
 
@@ -205,18 +212,22 @@ export function MessageList() {
                   <span className="text-[11px]" style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}>
                     {agentName}
                   </span>
-                  <button
+                  <Button
+                    colors={colors}
+                    variant="bare"
                     onClick={() => void speak(persona?.voice_id, greeting)}
                     title="Hear greeting"
                     aria-label="Hear greeting"
-                    className="flex items-center"
                     style={{
-                      background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                      color: speaking ? colors.cyan : colors.textMuted, opacity: speaking ? 1 : 0.6,
-                    }}
+                      '--pa-btn-fg': speaking ? colors.cyan : colors.textMuted,
+                      '--pa-btn-fg-hover': colors.cyan,
+                      '--pa-btn-bg-hover': 'transparent',
+                      '--pa-btn-pad': '0',
+                      opacity: speaking ? 1 : 0.6,
+                    } as CSSProperties}
                   >
                     <FiVolume2 size={13} />
-                  </button>
+                  </Button>
                 </div>
                 <div className="text-[13px] leading-relaxed whitespace-pre-wrap" style={{ fontFamily: font.body, color: colors.text }}>
                   {greeting}
@@ -240,19 +251,25 @@ export function MessageList() {
 
       {showJump && (
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10">
-          <button
+          <Button
+            colors={colors}
             onClick={jumpToBottom}
-            className="flex items-center gap-1 rounded-full shadow-lg px-3 py-1 text-[11px] transition"
             style={{
-              backgroundColor: colors.surface,
-              color: colors.cyan,
+              '--pa-btn-bg': colors.surface,
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-border': `${colors.cyan}33`,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-border-hover': colors.cyan,
+              '--pa-btn-pad': '4px 12px',
+              '--pa-btn-radius': `${radius.pill}px`,
               fontFamily: font.mono,
-              border: `1px solid ${colors.cyan}33`,
+              fontSize: textSize.micro,
+              gap: 4,
               boxShadow: colors.cardShadow,
-            }}
+            } as CSSProperties}
           >
             <FiChevronDown size={12} /> Jump to latest
-          </button>
+          </Button>
         </div>
       )}
     </div>

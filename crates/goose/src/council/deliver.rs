@@ -4,6 +4,7 @@ use sqlx::{Pool, Sqlite};
 
 use super::debate::{ChairAction, ChairReport, MAX_ACTIONS};
 use crate::briefings::{self, NewBriefing, Severity};
+use crate::decision_inbox::negatives;
 use crate::decisions::{self, NewDecision};
 use crate::events;
 
@@ -14,6 +15,7 @@ pub async fn file_briefing(
     session_id: &str,
     headline: &str,
     n_actions: usize,
+    verdict_missing: bool,
 ) -> Option<String> {
     briefings::file_briefing(
         pool,
@@ -22,9 +24,14 @@ pub async fn file_briefing(
             kind: "weekly_report".to_string(),
             severity: Severity::Attention,
             summary: format!(
-                "Council report: {headline} ({} action{})",
+                "Council report: {headline} ({} action{}){}",
                 n_actions,
-                if n_actions == 1 { "" } else { "s" }
+                if n_actions == 1 { "" } else { "s" },
+                if verdict_missing {
+                    " — no verdict line; the chair did not rule"
+                } else {
+                    ""
+                }
             ),
             detail: Some(format!("session {session_id}")),
             ref_kind: Some("council_session".to_string()),
@@ -53,6 +60,17 @@ pub async fn file_actions(
 ) -> Result<Vec<String>, String> {
     let mut ids = Vec::new();
     for action in report.actions.iter().take(MAX_ACTIONS) {
+        // Retained negative: the user already declined this exact
+        // recommendation. Re-filing it is re-litigation, so it is dropped here
+        // rather than queued for a second refusal — the Initiative layer's
+        // anti-nag guarantee, applied to the Council's actions.
+        if negatives::was_declined(pool, KIND, &action.title).await {
+            tracing::info!(
+                target: "permagent::council",
+                "action \"{}\" was already declined; not re-proposing", action.title
+            );
+            continue;
+        }
         match file_one(pool, session_id, action).await {
             Ok(id) => ids.push(id),
             Err(e) => tracing::warn!(target: "permagent::council", "action not filed: {e}"),
@@ -104,7 +122,9 @@ async fn file_one(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::spectral_schema::{apply_council_schema, init_spectral_db};
+    use crate::session::spectral_schema::{
+        apply_briefings_schema, apply_council_schema, init_spectral_db,
+    };
 
     async fn pool() -> Pool<Sqlite> {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -113,14 +133,13 @@ mod tests {
             .unwrap();
         init_spectral_db(&pool).await.unwrap();
         apply_council_schema(&pool).await.unwrap();
+        apply_briefings_schema(&pool).await.unwrap();
         pool
     }
 
-    #[tokio::test]
-    async fn files_at_most_five_council_actions() {
-        let pool = pool().await;
-        let project = crate::projects::create_project(
-            &pool,
+    async fn project(pool: &Pool<Sqlite>) -> String {
+        crate::projects::create_project(
+            pool,
             crate::projects::CreateProject {
                 name: "Permagent".into(),
                 slug: None,
@@ -133,26 +152,97 @@ mod tests {
             },
         )
         .await
-        .unwrap();
-        let actions: Vec<ChairAction> = (0..8)
-            .map(|i| ChairAction {
-                project_id: project.id.clone(),
-                project_name: "Permagent".into(),
-                title: format!("Do thing {i}"),
-                description: format!("Because {i}"),
-            })
-            .collect();
-        let report = ChairReport {
+        .unwrap()
+        .id
+    }
+
+    fn report_with(actions: Vec<ChairAction>) -> ChairReport {
+        ChairReport {
             headline: "H".into(),
             markdown: "# hi".into(),
             consensus: vec![],
             dissent: vec![],
             actions,
-        };
-        let ids = file_actions(&pool, "sess-1", &report).await.unwrap();
+            verdict_missing: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn files_at_most_five_council_actions() {
+        let pool = pool().await;
+        let project_id = project(&pool).await;
+        let actions: Vec<ChairAction> = (0..8)
+            .map(|i| ChairAction {
+                project_id: project_id.clone(),
+                project_name: "Permagent".into(),
+                title: format!("Do thing {i}"),
+                description: format!("Because {i}"),
+            })
+            .collect();
+        let ids = file_actions(&pool, "sess-1", &report_with(actions))
+            .await
+            .unwrap();
         assert_eq!(ids.len(), MAX_ACTIONS);
         let open = crate::decisions::list_open_decisions(&pool).await.unwrap();
         assert_eq!(open.len(), MAX_ACTIONS);
         assert!(open.iter().all(|i| i.decision.kind == KIND));
+    }
+
+    /// Retained negatives: a recommendation the user already declined is not
+    /// filed again, so the same argument is never re-litigated.
+    #[tokio::test]
+    async fn an_already_declined_action_is_not_re_proposed() {
+        let pool = pool().await;
+        let project_id = project(&pool).await;
+        let action = |title: &str| ChairAction {
+            project_id: project_id.clone(),
+            project_name: "Permagent".into(),
+            title: title.into(),
+            description: "why".into(),
+        };
+        negatives::record_decline(&pool, KIND, "Rewrite the homepage").await;
+
+        let ids = file_actions(
+            &pool,
+            "sess-2",
+            &report_with(vec![
+                // Different casing on purpose: the negative is case-folded.
+                action("rewrite the HOMEPAGE"),
+                action("Ship the pricing page"),
+            ]),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(ids.len(), 1, "the declined action must not be re-filed");
+        let open = crate::decisions::list_open_decisions(&pool).await.unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].decision.headline, "Ship the pricing page");
+    }
+
+    #[tokio::test]
+    async fn the_briefing_says_when_the_chair_never_ruled() {
+        let pool = pool().await;
+        file_briefing(&pool, "sess-3", "Ship the card", 2, true).await;
+        let items = crate::briefings::try_unacknowledged(&pool, 10)
+            .await
+            .unwrap();
+        assert!(
+            items.iter().any(|b| b.summary.contains("no verdict line")),
+            "{items:#?}"
+        );
+
+        file_briefing(&pool, "sess-4", "Ship the card", 2, false).await;
+        let items = crate::briefings::try_unacknowledged(&pool, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            items
+                .iter()
+                .filter(|b| b.summary.contains("no verdict line"))
+                .count(),
+            1,
+            "a ruled report must not be flagged"
+        );
     }
 }

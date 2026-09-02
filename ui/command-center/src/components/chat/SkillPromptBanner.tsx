@@ -1,13 +1,25 @@
+import { useState } from 'react';
 import { FiZap, FiX } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 export function SkillPromptBanner() {
   const { colors } = useTheme();
   const proposal = useCommandCenter(s => s.pendingSkillProposal);
   const saveSkillProposal = useCommandCenter(s => s.saveSkillProposal);
   const dismissSkillProposal = useCommandCenter(s => s.dismissSkillProposal);
+  const [failed, setFailed] = useState(false);
+
+  // Save-as-Skill is one of only two ways a skill is ever created, so a
+  // failure has to be visible here rather than in the console.
+  const save = async () => {
+    setFailed(false);
+    const ok = await saveSkillProposal();
+    if (!ok) setFailed(true);
+    return ok;
+  };
 
   if (!proposal) return null;
 
@@ -30,22 +42,35 @@ export function SkillPromptBanner() {
             {proposal.tool_used && <> using <span style={{ color: colors.cyan }}>{proposal.tool_used}</span></>}
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={saveSkillProposal}
-              className="rounded-md px-3 py-1 text-[11px] transition"
-              style={{ fontFamily: font.mono, backgroundColor: `${colors.cyan}33`, color: colors.cyan }}
+            <Button
+              colors={colors}
+              variant="ghostOn"
+              type="button"
+              onClick={save}
+              style={{ fontFamily: font.mono }}
             >
               Save as Skill
-            </button>
-            <button
+            </Button>
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
               onClick={dismissSkillProposal}
-              className="rounded-md px-2 py-1 text-[11px] transition"
               style={{ fontFamily: font.mono, color: colors.textMuted }}
             >
               <FiX size={12} className="inline mr-0.5" />
               Dismiss
-            </button>
+            </Button>
           </div>
+          {failed && (
+            <div
+              role="alert"
+              className="text-[11px] mt-2"
+              style={{ fontFamily: font.body, color: colors.danger }}
+            >
+              Couldn't save this as a skill — the daemon rejected it. Try again.
+            </div>
+          )}
         </div>
       </div>
     </div>

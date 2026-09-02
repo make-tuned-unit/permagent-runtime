@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
-import { font, radius, type } from '../../styles/tokens';
+import { font, radius, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button, MIN_PENDING_MS, SUCCESS_FLASH_MS } from '../common/Button';
 import { FUNDAMENTALS_KEY } from './financeLabs';
 
 export function FundamentalsKey({
@@ -15,8 +16,11 @@ export function FundamentalsKey({
   const [masked, setMasked] = useState('');
   const [input, setInput] = useState('');
   const [editing, setEditing] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [checked, setChecked] = useState(false);
   const [error, setError] = useState('');
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -24,6 +28,8 @@ export function FundamentalsKey({
       setMasked(r?.maskedValue ?? '');
     } catch {
       setMasked('');
+    } finally {
+      setChecked(true);
     }
   }, []);
 
@@ -31,34 +37,34 @@ export function FundamentalsKey({
 
   const save = async () => {
     const value = input.trim();
-    if (!value) return;
-    setBusy(true);
+    if (!value) return false;
     setError('');
     try {
       await api.upsertConfig(FUNDAMENTALS_KEY, value, true);
       setInput('');
-      setEditing(false);
       await refresh();
       onChanged?.();
+      // Let the button's success tick land before the editor closes under it.
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+      closeTimer.current = setTimeout(() => setEditing(false), MIN_PENDING_MS + SUCCESS_FLASH_MS);
+      return true;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
+      setError(`Couldn't save the key — ${detail(e)}`);
+      return false;
     }
   };
 
   const remove = async () => {
-    setBusy(true);
     setError('');
     try {
       await api.removeConfig(FUNDAMENTALS_KEY, true);
       setEditing(false);
       await refresh();
       onChanged?.();
+      return true;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
+      setError(`Couldn't remove the key — ${detail(e)}`);
+      return false;
     }
   };
 
@@ -71,19 +77,20 @@ export function FundamentalsKey({
           financialdatasets.ai
         </span>
         <span style={{ ...type.caption, color: saved ? colors.success : colors.textMuted, fontFamily: font.mono }}>
-          {saved ? masked : 'No key — quotes still work'}
+          {saved ? masked : checked ? 'No key — quotes still work' : 'Checking…'}
         </span>
-        <button
+        <Button
+          colors={colors}
           type="button"
           onClick={() => setEditing((v) => !v)}
-          style={btn(colors, false)}
+          style={{ flexShrink: 0 }}
         >
           {editing ? 'Cancel' : saved ? 'Replace' : 'Add key'}
-        </button>
+        </Button>
         {saved && !editing && (
-          <button type="button" disabled={busy} onClick={() => void remove()} style={btn(colors, false)}>
+          <Button colors={colors} type="button" onClick={() => remove()} style={{ flexShrink: 0 }}>
             Remove
-          </button>
+          </Button>
         )}
       </div>
       {editing && (
@@ -97,31 +104,32 @@ export function FundamentalsKey({
             placeholder="FINANCIAL_DATASETS_API_KEY"
             aria-label="financialdatasets.ai API key"
             style={{
-              flex: 1, fontFamily: font.mono, fontSize: 11, color: colors.text,
+              flex: 1, fontFamily: font.mono, fontSize: textSize.micro, color: colors.text,
               background: colors.inputBg, border: `1px solid ${colors.border}`,
               borderRadius: radius.sm, padding: '6px 8px', outline: 'none', minWidth: 0,
             }}
           />
-          <button type="button" disabled={busy || !input.trim()} onClick={() => void save()} style={btn(colors, true)}>
-            {busy ? '…' : 'Save'}
-          </button>
+          <Button
+            colors={colors}
+            variant="ghostOn"
+            type="button"
+            disabled={!input.trim()}
+            title={!input.trim() ? 'Enter a key first' : undefined}
+            onClick={() => save()}
+            style={{ flexShrink: 0 }}
+          >
+            Save
+          </Button>
         </div>
       )}
-      {error && <div style={{ ...type.caption, color: colors.danger }}>{error}</div>}
+      {error && (
+        <div role="alert" style={{ ...type.caption, color: colors.danger }}>{error}</div>
+      )}
     </div>
   );
 }
 
-function btn(colors: { cyan: string; border: string; textMuted: string }, primary: boolean) {
-  return {
-    fontFamily: font.body,
-    fontSize: 11,
-    padding: '4px 8px',
-    borderRadius: radius.sm,
-    border: `1px solid ${primary ? colors.cyan : colors.border}`,
-    color: primary ? colors.cyan : colors.textMuted,
-    background: 'transparent',
-    cursor: 'pointer',
-    flexShrink: 0,
-  };
+/** The daemon's own words, kept after the sentence that says what failed. */
+function detail(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }

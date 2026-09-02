@@ -1,5 +1,20 @@
 /**
- * Sidebar glyphs.
+ * The app's ONE ratified local icon set — the sidebar workspace glyphs.
+ *
+ * ICONS, EVERYWHERE ELSE, ARE `react-icons/fi` (Feather). That is the whole
+ * library, and this file is the whole exception (design-system ruling U2 §3.4:
+ * one library plus one named local set, nothing else). It lives in
+ * `components/common/icons/` rather than beside the sidebar so that its status
+ * is legible: it is the ratified set, not a set that happens to be local.
+ *
+ * It is NOT a precedent to copy. A second hand-drawn table is a third icon
+ * strategy, and the app has already paid for that once — SettingsView carried
+ * a 20-entry `icon:` path table with no stated reason, and it is now Feather
+ * components. Before drawing a glyph by hand, the bar is the one this file
+ * cleared below: a legibility failure of the library glyph, observed at the
+ * REAL rendered size, written down.
+ *
+ * What earns the exemption, in full:
  *
  * Three of these were replaced on 2026-08-03 because their names lied about
  * what they drew, and the drawings were interchangeable:

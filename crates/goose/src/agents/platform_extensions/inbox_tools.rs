@@ -19,6 +19,7 @@ use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::tool_execution::ToolCallContext;
 use crate::decisions;
+use crate::session::SessionType;
 use anyhow::Result;
 use async_trait::async_trait;
 use indoc::indoc;
@@ -44,6 +45,68 @@ const CHAT_PRINCIPAL: &str = "henry-chat";
 /// checkpoint that exists to require a human. Chat answers act as Henry and
 /// stop here.
 const MAX_TIER_FROM_CHAT: i64 = 1;
+
+/// The name of the write tool, so the capability filter and the dispatch
+/// refusal cannot drift apart.
+const ANSWER_TOOL: &str = "answer_decisions";
+
+/// Whether a session holds the decision-answering capability (D30).
+///
+/// The tier ceiling above answers "which decisions may an actor settle"; this
+/// answers the question nothing used to ask — "may this CALLER act as that
+/// actor at all". Answering a decision is the user's verdict relayed by the
+/// model; a session with no human reading the turn has no verdict to relay, so
+/// the tool is not a tool it may be told not to call — it is a capability it
+/// does not hold. Absent from `list_tools`, refused at dispatch.
+///
+/// Precedent for the enforcement point: `summon.rs` filters `delegate` out of
+/// a `SessionType::SubAgent` session's tool list AND refuses it in the handler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnswerCapability {
+    /// A human is watching this surface and can state the verdict being relayed.
+    Granted,
+    /// Structurally withheld from this session type — nobody is watching.
+    Withheld(SessionType),
+    /// The session could not be resolved, so nothing vouches for a human being
+    /// present. Fail-safe defaults: no evidence of a human ⇒ no authority.
+    WithheldUnknownSession,
+}
+
+impl AnswerCapability {
+    pub fn for_session_type(session_type: SessionType) -> Self {
+        if session_type.is_interactive() {
+            Self::Granted
+        } else {
+            Self::Withheld(session_type)
+        }
+    }
+
+    pub fn is_granted(&self) -> bool {
+        matches!(self, Self::Granted)
+    }
+
+    /// The refusal text handed back to the model. Names the reason, so the
+    /// model reports the boundary instead of retrying against it.
+    pub fn refusal(&self) -> Option<String> {
+        match self {
+            Self::Granted => None,
+            Self::Withheld(session_type) => Some(format!(
+                "answer_decisions is not available to a '{session_type}' session. Answering a \
+                 decision relays a verdict the user just gave out loud, and no user is watching \
+                 this session — a goal worker, a delegated subagent and a scheduled run all \
+                 answer to nobody. Leave the decision open: it is waiting for the user in the \
+                 Decision Inbox, and approving your own work would defeat the review that \
+                 decision exists to be."
+            )),
+            Self::WithheldUnknownSession => Some(
+                "answer_decisions is unavailable: this session could not be identified, so \
+                 nothing establishes that a user is present to give the verdict. The decision \
+                 stays open in the Decision Inbox."
+                    .to_string(),
+            ),
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct AnswerDecisionsParams {
@@ -137,7 +200,43 @@ impl InboxClient {
         Ok(vec![Content::text(lines.join("\n"))])
     }
 
-    async fn handle_answer(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+    /// Resolve the answering session's capability. Fails CLOSED: an
+    /// unresolvable session is treated as having no human behind it.
+    async fn answer_capability(&self, session_id: &str) -> AnswerCapability {
+        match self
+            .context
+            .session_manager
+            .get_session(session_id, false)
+            .await
+        {
+            Ok(session) => AnswerCapability::for_session_type(session.session_type),
+            Err(e) => {
+                tracing::warn!(
+                    session_id,
+                    error = %e,
+                    "could not resolve session type for the decision-answering capability; \
+                     withholding answer_decisions"
+                );
+                AnswerCapability::WithheldUnknownSession
+            }
+        }
+    }
+
+    async fn handle_answer(
+        &self,
+        session_id: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        // Capability gate FIRST — before parsing, before touching the pool.
+        // A session that does not hold the capability never reaches a write.
+        if let Some(refusal) = self.answer_capability(session_id).await.refusal() {
+            tracing::warn!(
+                session_id,
+                "refused answer_decisions: session type does not hold the capability"
+            );
+            return Err(refusal);
+        }
+
         let args = arguments.ok_or("Missing arguments")?;
         let params: AnswerDecisionsParams = serde_json::from_value(serde_json::Value::Object(args))
             .map_err(|e| format!("Invalid parameters: {e}"))?;
@@ -191,13 +290,17 @@ impl InboxClient {
                 choice_id: None,
                 input_text: None,
             };
-            match decisions::answer_decision_with_principal(
+            match decisions::answer_decision_as_session(
                 &pool,
                 id,
                 &answer,
                 // NEVER ACTOR_JESSE: see MAX_TIER_FROM_CHAT.
                 decisions::ACTOR_HENRY,
                 CHAT_PRINCIPAL,
+                // Declaring the session arms the self-reference block: even a
+                // capability-holding chat session may not settle a decision
+                // that judges its own work.
+                session_id,
             )
             .await
             {
@@ -261,7 +364,7 @@ impl InboxClient {
                 empty,
             ),
             Tool::new(
-                "answer_decisions".to_string(),
+                ANSWER_TOOL.to_string(),
                 "Apply the user's explicit approve/reject — stated in THIS conversation — to one \
                  or more decisions by id. Bundle what they approved together into one call, and \
                  read the list back to them first. NEVER call this on your own judgment; the \
@@ -280,12 +383,21 @@ impl InboxClient {
 impl McpClientTrait for InboxClient {
     async fn list_tools(
         &self,
-        _session_id: &str,
+        session_id: &str,
         _next_cursor: Option<String>,
         _cancel_token: CancellationToken,
     ) -> Result<ListToolsResult, Error> {
+        // Select from the full inventory so `get_tools()` stays the single
+        // declared superset (self-knowledge's drift guard reads it), and drop
+        // what this session type does not hold — mirroring summon's filter.
+        let mut tools = Self::get_tools();
+        if !self.answer_capability(session_id).await.is_granted() {
+            // Reading the inbox stays available to every session: a worker may
+            // legitimately need to know what is waiting. Only the write goes.
+            tools.retain(|t| t.name.as_ref() != ANSWER_TOOL);
+        }
         Ok(ListToolsResult {
-            tools: Self::get_tools(),
+            tools,
             next_cursor: None,
             meta: None,
         })
@@ -297,19 +409,105 @@ impl McpClientTrait for InboxClient {
 
     async fn call_tool(
         &self,
-        _ctx: &ToolCallContext,
+        ctx: &ToolCallContext,
         name: &str,
         arguments: Option<JsonObject>,
         _cancel_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
         let result = match name {
             "list_pending_decisions" => self.handle_list().await,
-            "answer_decisions" => self.handle_answer(arguments).await,
+            ANSWER_TOOL => self.handle_answer(&ctx.session_id, arguments).await,
             _ => Err(format!("Unknown tool: {name}")),
         };
         match result {
             Ok(content) => Ok(CallToolResult::success(content)),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D30: the capability is an ALLOW list over session types. Only the two
+    /// surfaces with a human reading the turn hold it.
+    #[test]
+    fn only_interactive_session_types_hold_the_answer_capability() {
+        for granted in [SessionType::User, SessionType::Terminal] {
+            assert_eq!(
+                AnswerCapability::for_session_type(granted),
+                AnswerCapability::Granted,
+                "{granted} is an interactive surface — chat must keep answering"
+            );
+        }
+        for withheld in [
+            SessionType::SubAgent,  // goal workers AND summoned children
+            SessionType::Scheduled, // cron recipes: nobody is watching
+            SessionType::Hidden,
+            SessionType::Gateway,
+            SessionType::Acp,
+        ] {
+            assert_eq!(
+                AnswerCapability::for_session_type(withheld),
+                AnswerCapability::Withheld(withheld),
+                "{withheld} runs unattended and must not answer decisions"
+            );
+        }
+    }
+
+    #[test]
+    fn a_withheld_capability_returns_a_typed_refusal_naming_the_session_type() {
+        let refusal = AnswerCapability::for_session_type(SessionType::SubAgent)
+            .refusal()
+            .expect("a withheld capability must explain itself");
+        assert!(refusal.contains("sub_agent"), "got: {refusal}");
+        assert!(
+            refusal.contains("Decision Inbox"),
+            "the refusal must say where the decision goes instead: {refusal}"
+        );
+        assert!(AnswerCapability::for_session_type(SessionType::Scheduled)
+            .refusal()
+            .unwrap()
+            .contains("scheduled"));
+    }
+
+    #[test]
+    fn an_unresolvable_session_fails_closed() {
+        let cap = AnswerCapability::WithheldUnknownSession;
+        assert!(!cap.is_granted());
+        assert!(cap.refusal().is_some());
+    }
+
+    #[test]
+    fn a_granted_capability_refuses_nothing() {
+        let cap = AnswerCapability::for_session_type(SessionType::User);
+        assert!(cap.is_granted());
+        assert!(cap.refusal().is_none());
+    }
+
+    /// The declared superset stays whole — self-knowledge's drift guard reads
+    /// `get_tools()`, and `list_tools` narrows from it per session.
+    #[test]
+    fn the_declared_inventory_still_carries_both_tools() {
+        let names: Vec<String> = InboxClient::get_tools()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(names.iter().any(|n| n == "list_pending_decisions"));
+        assert!(names.iter().any(|n| n == ANSWER_TOOL));
+    }
+
+    /// The filter `list_tools` applies, exercised without a live session row:
+    /// a withheld capability drops exactly the write tool and keeps the read.
+    #[test]
+    fn the_capability_filter_drops_only_the_write_tool() {
+        let mut tools = InboxClient::get_tools();
+        let cap = AnswerCapability::for_session_type(SessionType::SubAgent);
+        if !cap.is_granted() {
+            tools.retain(|t| t.name.as_ref() != ANSWER_TOOL);
+        }
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name.as_ref(), "list_pending_decisions");
     }
 }

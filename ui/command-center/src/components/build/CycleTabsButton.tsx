@@ -1,20 +1,25 @@
+import { type CSSProperties } from 'react';
 import { FiChevronRight } from 'react-icons/fi';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 export function CycleTabsButton({ pane, onCycle }: { pane: 'terminal' | 'browser'; onCycle: () => void }) {
   const { colors } = useTheme();
   return (
-    <button
+    <Button
+      colors={colors}
+      variant="bare"
       type="button"
       onClick={onCycle}
-      className="px-2.5 py-1.5 transition-colors"
-      style={{ color: colors.textMuted }}
-      onMouseEnter={event => { event.currentTarget.style.color = colors.cyan; }}
-      onMouseLeave={event => { event.currentTarget.style.color = colors.textMuted; }}
       aria-label={`Cycle ${pane} tabs`}
       title={`Cycle ${pane} tabs (Tab when pane is selected)`}
+      style={{
+        '--pa-btn-fg': colors.textMuted,
+        '--pa-btn-fg-hover': colors.cyan,
+        '--pa-btn-pad': '6px 10px',
+      } as CSSProperties}
     >
       <FiChevronRight size={13} aria-hidden="true" />
-    </button>
+    </Button>
   );
 }

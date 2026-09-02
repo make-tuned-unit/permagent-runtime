@@ -230,7 +230,8 @@ interface CommandCenterStore {
   providersError: boolean;
   currentModel: string | null;
   loadProviders: () => Promise<void>;
-  setDefaultProvider: (name: string, model: string) => Promise<void>;
+  /** Resolves `false` when the provider was not switched — see `deleteSkill`. */
+  setDefaultProvider: (name: string, model: string) => Promise<boolean>;
 
   // --- Operational state ---
   events: EventRecord[];
@@ -314,7 +315,16 @@ interface CommandCenterStore {
    * the seed turn is sent so buildAppContext can carry the id to the daemon.
    */
   discussSeedDecisionId: string | null;
-  discussDecision: (decisionId: string, headline: string) => Promise<void>;
+  /** Resolves `false` when no conversation was started, so nothing ticks. */
+  discussDecision: (decisionId: string, headline: string) => Promise<boolean>;
+
+  /**
+   * What "Discuss with {agent}" just did, said out loud on the surface it
+   * lands you on. The action replaces the whole chat — a real, invisible side
+   * effect on a button whose label promises only a discussion.
+   */
+  discussNotice: { tone: 'info' | 'error'; text: string } | null;
+  clearDiscussNotice: () => void;
 
   /**
    * Goal-detail modal (#503): the single detail view every goal surface — Kanban
@@ -364,6 +374,20 @@ interface CommandCenterStore {
   projectsRev: number;
   bumpProjects: () => void;
   /**
+   * The one "which project am I looking at" (J7).
+   *
+   * Projects, Grow and Build each tracked their own, so opening a project on
+   * one surface told the other two nothing and "which project is this?" had
+   * three right answers. This is the single selection they all read.
+   *
+   * The explicit escape hatch: **Build's terminal tabs keep their own
+   * `rootPath`**, fixed at tab creation. Changing the current project must
+   * never re-point a shell somebody is working in — it changes what the next
+   * launch will target, not what the running one is doing.
+   */
+  currentProjectId: string | null;
+  setCurrentProject: (id: string | null) => void;
+  /**
    * Monotonic revision bumped when a `config_changed` event arrives on
    * /events. Every Settings pane reads its config on mount and never again, so
    * before this a key changed by the agent — or on another device — left the
@@ -395,19 +419,31 @@ interface CommandCenterStore {
   // --- Skills state ---
   skills: SkillState[];
   skillsLoading: boolean;
+  /**
+   * Why the last load failed, or null. Separate from `skills: []` on purpose:
+   * the Library's empty copy ("No skills saved yet — skills are created when
+   * your agent detects repeated patterns") is a good sentence and a false one
+   * when the fetch never landed. Empty is a fact about the library; error is a
+   * fact about the connection, and they are not the same screen.
+   */
+  skillsError: string | null;
   selectedSkillId: string | null;
   setSelectedSkillId: (id: string | null) => void;
   loadSkills: () => Promise<void>;
-  deleteSkill: (id: string) => Promise<void>;
+  /** Resolves `false` when the delete did not land, so the control that asked
+   *  for it can say so instead of ticking. */
+  deleteSkill: (id: string) => Promise<boolean>;
   updateSkill: (id: string, updates: Partial<SkillState>) => Promise<boolean>;
 
   // --- Skill proposals ---
   pendingSkillProposal: SkillProposal | null;
   proposals: SkillProposal[];
-  saveSkillProposal: () => Promise<void>;
+  /** Resolves `false` when the skill was not created — see `deleteSkill`. */
+  saveSkillProposal: () => Promise<boolean>;
   dismissSkillProposal: () => void;
   loadProposals: () => Promise<void>;
-  saveProposal: (proposal: SkillProposal) => Promise<void>;
+  /** Resolves `false` when the skill was not created — see `deleteSkill`. */
+  saveProposal: (proposal: SkillProposal) => Promise<boolean>;
   dismissProposal: (argumentShapeHash: string) => void;
 
   // --- Sessions state ---
@@ -468,6 +504,15 @@ interface CommandCenterStore {
    *  worked. */
   focusWorldAgent: (id: string) => boolean;
   clearPendingWorldAgent: () => void;
+
+  // --- Decision Inbox deep-link (J3: Home is the canonical rendering) ---
+  /** A reference elsewhere asked to be taken to Home's decisions card. */
+  pendingDecisionInbox: boolean;
+  /** False when no workspace holds Home: there is nowhere to send the user,
+   *  and the caller must say so rather than leave a control that looks like it
+   *  worked (the `focusWorldAgent` rule). */
+  openDecisionInbox: () => boolean;
+  clearPendingDecisionInbox: () => void;
 
   // --- Project terminal launch (from agent: project_launch event) ---
   pendingTerminalLaunch: PendingTerminalLaunch | null;
@@ -717,6 +762,17 @@ const OPEN_EVENT_BY_TOOL: Partial<Record<ToolType, { event: ActivityEventName; s
   finance: { event: 'finance_opened', surface: 'finance' },
 };
 
+/**
+ * Where the shared project selection is remembered across launches. It is the
+ * key ProjectsView already wrote, deliberately: consolidating the three
+ * selections must not cost anyone their last-opened project.
+ */
+export const CURRENT_PROJECT_KEY = 'permagent-projects-last-opened';
+
+function readStoredProject(): string | null {
+  try { return localStorage.getItem(CURRENT_PROJECT_KEY); } catch { return null; }
+}
+
 /** Extract the primary tool type from a workspace layout tree. */
 function primaryToolType(node: LayoutNode): ToolType | null {
   if (node.type === 'panel') return node.tool;
@@ -725,7 +781,7 @@ function primaryToolType(node: LayoutNode): ToolType | null {
 }
 
 /** Deep-search a layout tree for a panel hosting the given tool. */
-function layoutHasTool(node: LayoutNode, tool: ToolType): boolean {
+export function layoutHasTool(node: LayoutNode, tool: ToolType): boolean {
   if (node.type === 'panel') return node.tool === tool;
   if (node.type === 'split') return node.children.some(c => layoutHasTool(c, tool));
   return false;
@@ -955,8 +1011,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       await api.setProvider(name, model);
       set({ currentModel: model });
       await get().loadProviders();
+      return true;
     } catch (e) {
+      // A swallowed error here used to resolve like a success, so "Set as
+      // default" ticked and the picker closed on a model the daemon never
+      // took. The caller renders the failure.
       console.error('Failed to set default provider:', e);
+      return false;
     }
   },
 
@@ -1001,6 +1062,14 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   bumpPeople: () => set(s => ({ peopleRev: s.peopleRev + 1 })),
   projectsRev: 0,
   bumpProjects: () => set(s => ({ projectsRev: s.projectsRev + 1 })),
+  currentProjectId: readStoredProject(),
+  setCurrentProject: (id) => {
+    try {
+      if (id) localStorage.setItem(CURRENT_PROJECT_KEY, id);
+      else localStorage.removeItem(CURRENT_PROJECT_KEY);
+    } catch { /* no storage — the selection still holds for this session */ }
+    set({ currentProjectId: id });
+  },
   configRev: 0,
   bumpConfig: () => set(s => ({ configRev: s.configRev + 1 })),
   financeRev: 0,
@@ -1264,13 +1333,34 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
    * already knowing the goal, proposal, and reasoning — not a cold "what's up?".
    */
   discussDecision: async (decisionId: string, headline: string) => {
+    // "Discuss with Aria" reads as "open a discussion", and it is: what it does
+    // NOT say is that it swaps the whole chat out from under you. Whatever
+    // conversation was on screen — mid-stream, possibly mid-answer — is
+    // replaced by a fresh session. Nothing was destroyed (the old session is in
+    // Sessions), but nothing said that either, so the visible effect was a chat
+    // that vanished when you pressed a button about something else.
+    const previousSessionId = get().chatSessionId;
     let sessionId: string;
     try {
       const session = await api.createSession();
       sessionId = session.id;
     } catch (err) {
-      console.error('discussDecision: createSession failed', err);
-      return;
+      // A dead button on a labelled control is not an outcome. Say it failed.
+      set({
+        discussNotice: {
+          tone: 'error',
+          text: `Couldn't start that conversation — ${err instanceof Error ? err.message : 'the daemon did not answer'}.`,
+        },
+      });
+      return false;
+    }
+    if (previousSessionId && previousSessionId !== sessionId) {
+      set({
+        discussNotice: {
+          tone: 'info',
+          text: 'Started a new conversation about this decision. The chat you were in is saved under Sessions.',
+        },
+      });
     }
     get().disconnectSession();
     set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
@@ -1286,7 +1376,11 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     } finally {
       set({ discussSeedDecisionId: null });
     }
+    return true;
   },
+
+  discussNotice: null,
+  clearDiscussNotice: () => set({ discussNotice: null }),
 
   switchToSession: async (sessionId: string) => {
     get().disconnectSession();
@@ -1307,8 +1401,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     // api.deleteSession throws on a non-2xx (it used to resolve on a 500, and
     // the old unconditional clear below then blanked the OPEN conversation for
     // a session the daemon never deleted). State clears only after a confirmed
-    // delete; failures propagate so the caller can surface them (SessionsList
-    // toasts) without losing the user's open chat.
+    // delete; failures propagate so the caller can surface them (SessionsList's
+    // ConfirmDialog stays open with the reason on it) without losing the user's
+    // open chat.
     try {
       await api.deleteSession(sessionId);
     } catch (e) {
@@ -1339,15 +1434,22 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Skills
   skills: [],
   skillsLoading: false,
+  skillsError: null,
   selectedSkillId: null,
   setSelectedSkillId: (id) => set({ selectedSkillId: id }),
   loadSkills: async () => {
-    set({ skillsLoading: true });
+    set({ skillsLoading: true, skillsError: null });
     try {
       const skills = await api.getSkills();
-      set({ skills: skills as SkillState[], skillsLoading: false });
-    } catch {
-      set({ skills: [], skillsLoading: false });
+      set({ skills: skills as SkillState[], skillsLoading: false, skillsError: null });
+    } catch (e) {
+      // The old line was `set({ skills: [] })` — a failed fetch rendered as the
+      // well-written "no skills yet" invitation, telling a user whose daemon
+      // was down that their agent had never learned anything.
+      set({
+        skillsLoading: false,
+        skillsError: e instanceof Error ? e.message : 'the daemon did not answer',
+      });
     }
   },
 
@@ -1358,8 +1460,12 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         skills: s.skills.filter(sk => sk.id !== id),
         selectedSkillId: s.selectedSkillId === id ? null : s.selectedSkillId,
       }));
+      return true;
     } catch (e) {
+      // A swallowed error here used to leave the skill in the list with no
+      // explanation anywhere on screen. The caller renders the failure.
       console.error('Failed to delete skill:', e);
+      return false;
     }
   },
 
@@ -1381,7 +1487,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   proposals: [],
   saveSkillProposal: async () => {
     const proposal = get().pendingSkillProposal;
-    if (!proposal) return;
+    if (!proposal) return false;
     try {
       const saved = await api.createSkill({
         name: proposal.description.slice(0, 64).replace(/\s+/g, '-').toLowerCase(),
@@ -1394,8 +1500,12 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       set({ pendingSkillProposal: null, selectedSkillId: saved.id, activePanel: 'skills' });
       get().loadSkills();
       get().loadProposals();
+      return true;
     } catch (e) {
+      // Save-as-Skill is one of only two creation paths into the whole
+      // feature; a silent failure here reads exactly like a dead button.
       console.error('Failed to save skill:', e);
+      return false;
     }
   },
   dismissSkillProposal: () => {
@@ -1421,8 +1531,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       if (!get().pendingSkillProposal && proposals.length > 0) {
         set({ pendingSkillProposal: proposals[0] });
       }
-    } catch {
-      set({ proposals: [] });
+    } catch (e) {
+      // NOT `set({ proposals: [] })`. `loadSkills` above already learned this:
+      // a failed refresh must not blank a list that loaded fine a minute ago,
+      // because "no proposals" and "we couldn't ask" look identical on screen
+      // and only one of them is true. Nothing here claims an empty list, so
+      // the honest failure is to keep what we have and say so in the log.
+      console.error('Failed to load skill proposals:', e);
     }
   },
   saveProposal: async (proposal: SkillProposal) => {
@@ -1442,8 +1557,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       }
       get().loadSkills();
       get().loadProposals();
+      return true;
     } catch (e) {
+      // A swallowed error here used to resolve like a success, leaving the
+      // proposal card on screen with no explanation. The caller renders the
+      // failure; resolving `false` also keeps the tick off it.
       console.error('Failed to save proposal:', e);
+      return false;
     }
   },
   dismissProposal: (argumentShapeHash: string) => {
@@ -1763,6 +1883,17 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     return true;
   },
   clearPendingWorldAgent: () => set({ pendingWorldAgent: null }),
+
+  pendingDecisionInbox: false,
+  openDecisionInbox: () => {
+    // Same rule as focusWorldAgent: only arm the pending open if the
+    // destination is actually reachable, or the flag sits in the store and
+    // yanks a later, unrelated visit to Home.
+    if (!navigateToTool('dashboard')) return false;
+    set({ pendingDecisionInbox: true });
+    return true;
+  },
+  clearPendingDecisionInbox: () => set({ pendingDecisionInbox: false }),
 
   pendingTerminalLaunch: null,
   setPendingTerminalLaunch: (launch) => set({

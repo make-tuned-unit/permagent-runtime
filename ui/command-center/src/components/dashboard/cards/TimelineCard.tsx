@@ -11,12 +11,14 @@
  * rows jump to the Memory tool, and news rows open the article.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
 import {
   FiFlag, FiHelpCircle, FiCheckCircle, FiBookOpen, FiBell, FiAlertTriangle, FiActivity,
 } from 'react-icons/fi';
-import { font, radius } from '../../../styles/tokens';
+import { font, radius, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
+import { Button } from '../../common/Button';
+import { StateBlock } from '../../common/StateBlock';
 import { SectionTitle } from '../atoms';
 import { apiFetch } from '../../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../../lib/store';
@@ -67,6 +69,10 @@ function useActivityJournal(kinds: string[] | null, actor: string | null) {
   const [nextBefore, setNextBefore] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  /** A cold-load failure. The old catch said "stale data stays" — true on a
+   *  refresh, and false on the first fetch, where there is no stale data and a
+   *  dead daemon rendered as "No activity yet": the agent has done nothing. */
+  const [error, setError] = useState(false);
   // Guards against a slow response landing after the filter changed.
   const fetchSeq = useRef(0);
 
@@ -84,7 +90,13 @@ function useActivityJournal(kinds: string[] | null, actor: string | null) {
         return fresh.length > 0 ? [...fresh, ...prev] : prev;
       });
       if (initial) setNextBefore(page.next_before ?? null);
-    } catch { /* ignore — stale data stays, matching useDashboard */ }
+      if (seq === fetchSeq.current) setError(false);
+    } catch {
+      // A refresh that fails keeps the rows already on screen (useDashboard's
+      // rule) and says nothing. A first page that fails has nothing to keep,
+      // and that is the case the empty state used to lie about.
+      if (seq === fetchSeq.current && initial) setError(true);
+    }
     if (seq === fetchSeq.current) setLoading(false);
   }, [kinds, actor]);
 
@@ -95,6 +107,7 @@ function useActivityJournal(kinds: string[] | null, actor: string | null) {
     setNextBefore(null);
     setLoading(true);
     setLoadingMore(false);
+    setError(false);
     fetchFirstPage(true);
     const interval = setInterval(() => fetchFirstPage(false), 30_000);
     return () => clearInterval(interval);
@@ -116,7 +129,13 @@ function useActivityJournal(kinds: string[] | null, actor: string | null) {
     if (seq === fetchSeq.current) setLoadingMore(false);
   }, [nextBefore, loadingMore, kinds, actor]);
 
-  return { items, loading, loadMore, hasMore: nextBefore !== null, loadingMore };
+  const retry = useCallback(() => {
+    setLoading(true);
+    setError(false);
+    return fetchFirstPage(true);
+  }, [fetchFirstPage]);
+
+  return { items, loading, error, retry, loadMore, hasMore: nextBefore !== null, loadingMore };
 }
 
 function dayLabel(ts: string): string {
@@ -148,7 +167,7 @@ export function TimelineCard() {
   const { colors } = useTheme();
   const [chipIdx, setChipIdx] = useState(0);
   const [actor, setActor] = useState<string | null>(null);
-  const { items, loading, loadMore, hasMore, loadingMore } =
+  const { items, loading, error, retry, loadMore, hasMore, loadingMore } =
     useActivityJournal(KIND_CHIPS[chipIdx].kinds, actor);
   const [inboxOpen, setInboxOpen] = useState(false);
   // Actor options accumulate across pages and filters so the select doesn't
@@ -185,23 +204,28 @@ export function TimelineCard() {
           {KIND_CHIPS.map((chip, idx) => {
             const active = idx === chipIdx;
             return (
-              <button
+              <Button
                 key={chip.label}
+                colors={colors}
+                variant={active ? 'ghostOn' : 'ghost'}
+                type="button"
                 onClick={() => setChipIdx(idx)}
                 aria-pressed={active}
                 style={{
-                  padding: '3px 9px',
-                  borderRadius: 999,
-                  border: `1px solid ${active ? colors.cyan : colors.border}`,
-                  background: active ? colors.cyanSoft : 'transparent',
-                  color: active ? colors.cyan : colors.textDim,
-                  fontFamily: font.body, fontSize: 11, fontWeight: 500,
-                  cursor: 'pointer',
-                  transition: 'color 120ms ease, border-color 120ms ease, background 120ms ease',
-                }}
+                  '--pa-btn-bg': active ? colors.cyanSoft : 'transparent',
+                  '--pa-btn-fg': active ? colors.cyan : colors.textDim,
+                  '--pa-btn-border': active ? colors.cyan : colors.border,
+                  '--pa-btn-bg-hover': active ? colors.cyanSoft : colors.surfaceHi,
+                  '--pa-btn-fg-hover': active ? colors.cyan : colors.text,
+                  '--pa-btn-border-hover': active ? colors.cyan : colors.borderHi,
+                  '--pa-btn-bg-active': active ? colors.cyanGlow : colors.surface,
+                  '--pa-btn-pad': '3px 9px',
+                  '--pa-btn-radius': `${radius.pill}px`,
+                  fontFamily: font.body, fontSize: textSize.micro,
+                } as CSSProperties}
               >
                 {chip.label}
-              </button>
+              </Button>
             );
           })}
           <div style={{ flex: 1 }} />
@@ -216,7 +240,7 @@ export function TimelineCard() {
                 border: `1px solid ${actor ? colors.cyan : colors.border}`,
                 background: 'transparent',
                 color: actor ? colors.cyan : colors.textDim,
-                fontFamily: font.body, fontSize: 11,
+                fontFamily: font.body, fontSize: textSize.micro,
                 cursor: 'pointer',
               }}
             >
@@ -227,16 +251,24 @@ export function TimelineCard() {
         </div>
         {items.length === 0 ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}>
-                {loading ? 'Loading activity…' : filtered ? 'Nothing matches this filter' : 'No activity yet'}
-              </div>
-              {!loading && !filtered && (
-                <div style={{ fontSize: 11, color: colors.textDim }}>
-                  Goal moves, decisions, and librarian runs will appear here
-                </div>
-              )}
-            </div>
+            {loading ? (
+              <div style={{ fontSize: textSize.small, color: colors.textMuted }}>Loading activity…</div>
+            ) : error ? (
+              <StateBlock
+                tone="error"
+                compact
+                title="Couldn't reach the activity journal."
+                detail="This is a connection problem, not a quiet day — the agent may well have been busy."
+                onRetry={() => { void retry(); }}
+              />
+            ) : (
+              <StateBlock
+                tone="empty"
+                compact
+                title={filtered ? 'Nothing matches this filter' : 'No activity yet'}
+                detail={filtered ? undefined : 'Goal moves, decisions, and librarian runs will appear here'}
+              />
+            )}
           </div>
         ) : (
           <div style={{ flex: 1, overflow: 'auto' }}>
@@ -246,7 +278,7 @@ export function TimelineCard() {
                   position: 'sticky', top: 0, zIndex: 1,
                   padding: '6px 0 4px',
                   background: colors.surface,
-                  fontFamily: font.body, fontSize: 11, fontWeight: 600,
+                  fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600,
                   letterSpacing: '0.10em', textTransform: 'uppercase',
                   color: colors.textDim,
                 }}>{group.label}</div>
@@ -261,22 +293,31 @@ export function TimelineCard() {
               </div>
             ))}
             {hasMore && (
-              <button
+              // No success tick: another page of rows appearing above is the
+              // confirmation, and `loadMore` swallows its own failure — a tick
+              // would claim a page that never arrived.
+              <Button
+                colors={colors}
+                type="button"
+                flashSuccess={false}
                 onClick={loadMore}
                 disabled={loadingMore}
                 style={{
-                  width: '100%', margin: '10px 0 4px', padding: '7px 0',
-                  borderRadius: radius.md,
-                  border: `1px solid ${colors.border}`,
-                  background: colors.cyanSoft,
-                  color: colors.textMuted,
-                  fontFamily: font.body, fontSize: 12, fontWeight: 500,
-                  cursor: loadingMore ? 'default' : 'pointer',
-                  transition: 'border-color 150ms ease',
-                }}
+                  '--pa-btn-bg': colors.cyanSoft,
+                  '--pa-btn-fg': colors.textMuted,
+                  '--pa-btn-border': colors.border,
+                  '--pa-btn-bg-hover': colors.cyanSoft,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-border-hover': colors.borderHi,
+                  '--pa-btn-bg-active': colors.cyanGlow,
+                  '--pa-btn-pad': '7px 0',
+                  '--pa-btn-radius': `${radius.md}px`,
+                  width: '100%', margin: '10px 0 4px',
+                  fontFamily: font.body, fontSize: textSize.caption,
+                } as CSSProperties}
               >
                 {loadingMore ? 'Loading…' : 'Show earlier'}
-              </button>
+              </Button>
             )}
           </div>
         )}
@@ -351,12 +392,12 @@ function TimelineRow({ item, isLast, onOpenDecisions }: {
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{
-          fontFamily: font.body, fontSize: 13, fontWeight: 500, color: colors.text,
+          fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{item.title}</div>
         {item.detail && (
           <div style={{
-            fontSize: 11, color: colors.textMuted, marginTop: 1,
+            fontSize: textSize.micro, color: colors.textMuted, marginTop: 1,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>{item.detail}</div>
         )}
@@ -366,7 +407,7 @@ function TimelineRow({ item, isLast, onOpenDecisions }: {
         flexShrink: 0,
       }}>{item.actor}</span>
       <span style={{
-        fontFamily: font.body, fontSize: 11, color: colors.textDim,
+        fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim,
         flexShrink: 0, minWidth: 44, textAlign: 'right',
       }}>{timeLabel(item.ts)}</span>
     </div>

@@ -2394,22 +2394,38 @@ impl Agent {
                                     Ok(p) => p.get_name().to_string(),
                                     Err(_) => "the model provider".to_string(),
                                 };
-                                if self
+                                if let Some(target) = self
                                     .switch_to_permanent_failure_fallback(
                                         &session_config.id,
                                         &failed_provider,
                                     )
                                     .await
-                                    .is_some()
                                 {
                                     tracing::info!(
                                         target: "permagent::cost_router",
                                         session_id = %session_config.id,
                                         from_provider = %failed_provider,
-                                        "silent pre-commit failover after a stream decode error"
+                                        to_provider = %target.provider,
+                                        to_model = %target.model,
+                                        "pre-commit failover after a stream decode error"
                                     );
                                     permanent_failure_fallback_used = true;
                                     did_switch_provider_this_iteration = true;
+                                    // M2b: this arm was the last silent one. A
+                                    // dropped SSE body switched the model with
+                                    // nothing in the transcript to say so, which
+                                    // is the same dishonesty the NetworkError
+                                    // sibling below already stopped doing.
+                                    let message = Message::assistant().with_system_notification(
+                                        SystemNotificationType::InlineMessage,
+                                        crate::cost_router::fallback::precommit_failover_reply(
+                                            &failed_provider,
+                                            provider_err,
+                                            &target,
+                                        ),
+                                    );
+                                    persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                                    yield AgentEvent::Message(message);
                                     break;
                                 }
                             }
@@ -2434,22 +2450,41 @@ impl Agent {
                                     Ok(p) => p.get_name().to_string(),
                                     Err(_) => "the model provider".to_string(),
                                 };
-                                if self
+                                if let Some(target) = self
                                     .switch_to_permanent_failure_fallback(
                                         &session_config.id,
                                         &failed_provider,
                                     )
                                     .await
-                                    .is_some()
                                 {
                                     tracing::info!(
                                         target: "permagent::cost_router",
                                         session_id = %session_config.id,
                                         from_provider = %failed_provider,
-                                        "silent pre-commit failover after a transient network error"
+                                        to_provider = %target.provider,
+                                        to_model = %target.model,
+                                        "pre-commit failover after a transient network error"
                                     );
                                     permanent_failure_fallback_used = true;
                                     did_switch_provider_this_iteration = true;
+                                    // M2: this switch used to be SILENT — the
+                                    // one-line daemon warn was its entire trace,
+                                    // so a session served by a different model
+                                    // than its banner claimed had nothing in the
+                                    // transcript to say so (20260831_10). Announce
+                                    // it the way the CreditsExhausted sibling
+                                    // already does. The turn still finishes on the
+                                    // new model; only the silence is removed.
+                                    let message = Message::assistant().with_system_notification(
+                                        SystemNotificationType::InlineMessage,
+                                        crate::cost_router::fallback::precommit_failover_reply(
+                                            &failed_provider,
+                                            provider_err,
+                                            &target,
+                                        ),
+                                    );
+                                    persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                                    yield AgentEvent::Message(message);
                                     break;
                                 }
                             }
@@ -2868,6 +2903,22 @@ impl Agent {
     pub async fn set_persona(&self, persona: crate::config::agent_identity::SharedPersona) {
         let mut prompt_manager = self.prompt_manager.lock().await;
         prompt_manager.set_persona(persona);
+    }
+
+    /// The name this agent would be told it has, right now — worker override,
+    /// else the live shared persona, else the last-known-good value.
+    ///
+    /// `prompt_manager` is `pub(super)`, so without this a caller outside
+    /// `permagent::agents` (the CLI banner, and any test of it) could not read
+    /// the installed identity back at all.
+    pub async fn persona_display_name(&self) -> String {
+        self.prompt_manager.lock().await.display_name()
+    }
+
+    /// The persona's own opening line, for a client-side greeting. Empty when
+    /// the persona sets none or a worker override is installed.
+    pub async fn persona_opening_greeting(&self) -> String {
+        self.prompt_manager.lock().await.opening_greeting()
     }
 
     pub async fn set_persona_block_override(&self, block: String, display_name: String) {

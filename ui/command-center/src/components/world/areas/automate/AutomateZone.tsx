@@ -1,7 +1,17 @@
-// Automate hall blockout — WORLD_VIEW_BIBLE.md §3 A4 (tab: Automate).
+// Automate hall — WORLD_VIEW_BIBLE.md §3 A4 (tab: Automate).
 // Narrow gallery of scheduler boards. Landmark: wall-mounted 6u horologium —
-// concentric bronze rings with cyan tick lights pulsing on a slow clock
-// (the only animation in the room).
+// concentric bronze rings with cyan tick lights pulsing on a slow clock.
+//
+// The gallery itself is no longer a blockout (agent-QA D19): the three stone
+// masses that stood in for scheduler steles are gone, replaced by one stele per
+// REAL registered job, coloured by that job's real last outcome and pulsing
+// only while a run is genuinely in flight (`areas/automate/scheduleActivity` →
+// `props/AutomateSteles`). Nothing here needed a new event: `schedule_changed`
+// has fired from nine call sites since 2026-08-25 and no world module listened.
+//
+// The horologium stays a clock. A clock marking time is true whatever the
+// scheduler is doing, so its slow pulse is not a claim about work — the steles
+// are where this room says what is happening.
 
 import { useEffect, useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
@@ -9,8 +19,14 @@ import * as THREE from 'three';
 import { ENV } from '../../shared/palette';
 import { getReduceMotion } from '../../../../styles/tokens';
 import { InstancedProp, type InstanceTransform } from '../../shared/instancing';
-import { ZoneShell, blockoutMat } from '../blockout';
+import { ZoneShell } from '../blockout';
 import type { ZoneContentProps } from '../ZoneMount';
+import { AutomateSteles } from '../../props/AutomateSteles';
+import { useScheduleActivity } from './scheduleActivity';
+
+// Module-level so the anchor registry sees a stable identity: a fresh array
+// literal each render would re-register the gallery's seats every frame.
+const STELE_ORIGIN: [number, number, number] = [24.5, 0, 0];
 
 const TICK_COUNT = 12;
 const tickGeo = new THREE.BoxGeometry(0.1, 0.22, 0.1);
@@ -70,22 +86,18 @@ function Horologium() {
 
 export default function AutomateZone({ onReady }: ZoneContentProps) {
   useEffect(() => { onReady(); }, [onReady]);
+  // Real scheduler state. Until a source answers, `jobs` is empty and the
+  // gallery renders as an empty gallery — an unknown scheduler must not read
+  // as a healthy one.
+  const { jobs } = useScheduleActivity();
 
   return (
     <group>
       {/* Narrow gallery per §3 — tighter width than the other wings */}
       <ZoneShell name="automate.shell" cx={24} depth={12} width={10} height={7} causeway={{ fromX: 15, width: 4.5 }} />
       <Horologium />
-      {/* Scheduler stele masses + long planning table stand-ins */}
-      <mesh position={[23, 1.6, -3.8]} material={blockoutMat} castShadow>
-        <boxGeometry args={[6, 3.2, 0.5]} />
-      </mesh>
-      <mesh position={[23, 1.6, 3.8]} material={blockoutMat} castShadow>
-        <boxGeometry args={[6, 3.2, 0.5]} />
-      </mesh>
-      <mesh position={[24, 0.45, 0]} material={blockoutMat} castShadow>
-        <boxGeometry args={[7, 0.9, 1.6]} />
-      </mesh>
+      {/* The steles face the causeway (-x), so the room reads on approach. */}
+      <AutomateSteles jobs={jobs} position={STELE_ORIGIN} rotationY={-Math.PI / 2} />
     </group>
   );
 }

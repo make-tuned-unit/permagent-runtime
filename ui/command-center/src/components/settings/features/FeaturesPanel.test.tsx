@@ -91,7 +91,10 @@ describe('FeaturesPanel', () => {
       'steward_scan_enabled',
       'strix_enabled',
     ]);
-    expect(toggles()).toHaveLength(6);
+    // Five writable switches: the Guard's row reads its state here but is
+    // flipped on its own page, so this board is not a second writer (J8/C7).
+    expect(toggles()).toHaveLength(5);
+    expect(container.querySelector('[data-testid="feature-readonly-strix_enabled"]')?.textContent).toBe('Off');
     expect(getCouncilMembers).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Initiative');
     expect(container.textContent).toContain('Decision Playbook');
@@ -146,16 +149,24 @@ describe('FeaturesPanel', () => {
     expect(line?.textContent).not.toContain(GMAIL_CONNECT_COMMAND);
   });
 
-  // REGRESSION, the write half of the Guard's row. Before `strix_enabled` joined
-  // FEATURE_ROWS this pane had four toggles and none of them wrote that key —
-  // toggles()[4] did not exist.
-  it('flipping the Guard row writes strix_enabled and nothing else', async () => {
+  // The Guard's row is a READOUT here, not a writer (J8/C7): its switch has
+  // one home, its own agent page, and this row points at it. A regression that
+  // gave it a toggle back would put a second writer on the flag.
+  it('the Guard row states its flag and links to the one place it is flipped', async () => {
+    readConfig.mockImplementation((key: string) => Promise.resolve(key === 'strix_enabled'));
     await mount();
-    expect(toggles()).toHaveLength(6);
-    await act(async () => { toggles()[4].click(); });
-    await flush();
-    expect(upsertConfig).toHaveBeenCalledTimes(1);
-    expect(upsertConfig).toHaveBeenCalledWith('strix_enabled', true);
+
+    expect(container.querySelector('[data-testid="feature-readonly-strix_enabled"]')?.textContent).toBe('On');
+    const link = container.querySelector('[data-testid="feature-open-agent-strix_enabled"]') as HTMLButtonElement;
+    expect(link).toBeTruthy();
+    expect(link.textContent).toContain('Open The Guard →');
+
+    // Reading is all it does: no click on this pane writes the flag.
+    for (const t of toggles()) {
+      await act(async () => { t.click(); });
+      await flush();
+    }
+    expect(upsertConfig.mock.calls.map(c => c[0])).not.toContain('strix_enabled');
   });
 
   // REGRESSION on the hand-written UNLOADED map. It listed the four original

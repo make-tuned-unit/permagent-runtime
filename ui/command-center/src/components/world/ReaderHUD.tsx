@@ -1,6 +1,8 @@
 import { COLORS } from './constants';
 import { AGENT_TRIM } from './shared/palette';
 import { HudShell, Section } from './HudShell';
+import { Chip } from '../common/Chip';
+import { textSize } from '../../styles/tokens';
 
 // The Reader — the local OCR / document-ingest pipeline (#336/#342). Unlike Henry and
 // the Librarian, the Reader has no live status endpoint yet (its state is sim-ambient
@@ -18,26 +20,25 @@ interface ReaderHUDProps {
 export function ReaderHUD({ visible, onClose }: ReaderHUDProps) {
   if (!visible) return null;
 
+  // Static, and now drawn as such. "LOCAL" is a fact about where the Reader
+  // runs — true whether or not anything is being read — but it used to render
+  // pixel-identically to the Steward's "SWEEPING", which is a claim that work
+  // is in flight right now. The engineering was always honest here; only the
+  // presentation lied.
   const statusPill = (
-    <div style={{
-      display: 'inline-block',
-      padding: '2px 8px',
-      borderRadius: 3,
-      fontSize: 10,
-      fontWeight: 700,
-      letterSpacing: '0.08em',
-      background: 'rgba(79, 209, 197, 0.14)',
-      color: READER_TRIM,
-      border: `1px solid ${READER_TRIM}55`,
-    }}>
+    <Chip
+      kind="static"
+      color={READER_TRIM}
+      title="Where the Reader runs — a capability, not a live status"
+    >
       LOCAL
-    </div>
+    </Chip>
   );
 
   return (
     <HudShell visible={visible} onClose={onClose} title="THE READER" statusPill={statusPill}>
       <div style={{ padding: '4px 14px 8px' }}>
-        <span style={{ fontSize: 11, color: '#9CA3AF', lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5 }}>
           On-device OCR &amp; document ingest — turns dropped files into Brain memories,
           entirely on this machine.
         </span>
@@ -50,7 +51,7 @@ export function ReaderHUD({ visible, onClose }: ReaderHUDProps) {
       </Section>
 
       <Section title="HOW TO FEED IT" trimColor={COLORS.neonAmber}>
-        <span style={{ fontSize: 11, color: '#D1D5DB', lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
           Drag a file onto the window. The Reader extracts its text locally and hands
           the digest to the Brain — nothing leaves the machine.
         </span>
@@ -61,7 +62,7 @@ export function ReaderHUD({ visible, onClose }: ReaderHUDProps) {
 
 function Bullet({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ fontSize: 11, color: '#D1D5DB', lineHeight: 1.7, display: 'flex', gap: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.7, display: 'flex', gap: 8 }}>
       <span style={{ color: READER_TRIM }}>·</span>
       <span>{children}</span>
     </div>

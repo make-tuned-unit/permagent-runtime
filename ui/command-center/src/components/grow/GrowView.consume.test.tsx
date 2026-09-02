@@ -75,7 +75,9 @@ beforeEach(() => {
     }
     return Promise.resolve([]); // posts / people / cards sub-resources
   }) as typeof apiFetch);
-  useCommandCenter.setState({ openGrowForProject: null, workspaces: [] });
+  // Grow reads the app's one shared project selection now (J7), so each test
+  // starts from "nothing opened anywhere" rather than inheriting the last.
+  useCommandCenter.setState({ openGrowForProject: null, workspaces: [], currentProjectId: null });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -123,7 +125,11 @@ describe('Grow deep-link is consumed exactly once', () => {
     await renderGrow();
     act(() => root.unmount());
 
-    // Manual revisit: fresh mount, no pending deep link left behind.
+    // Manual revisit with the shared selection cleared — as if another project
+    // had been opened elsewhere since. The seam must not re-fire; the default
+    // (first project) wins. (That the selection itself now SURVIVES a remount
+    // is the shared-selection contract, covered in ProjectsView's own tests.)
+    useCommandCenter.setState({ currentProjectId: null });
     apiFetchMock.mockClear();
     root = createRoot(container);
     await renderGrow();

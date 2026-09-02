@@ -1,21 +1,25 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { font, ease } from '../../styles/tokens';
+import { useEffect, useRef, useState, useCallback, useMemo, type CSSProperties } from 'react';
+import { ease, font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
+import { Button } from '../common/Button';
 import { Mobius } from '../mobius/Mobius';
 import { BrainScene, type TypeFilters } from './BrainScene';
 import { useBrainData, type GraphMemory, type GraphEntity } from './useBrainData';
 import { BrainList } from './BrainList';
-import { resolveFocusedMemory, deriveMemoryTitle } from './brainMemoryFocus';
+import { resolveFocusedMemory, deriveMemoryTitle, formatMemoryAge } from './brainMemoryFocus';
+import { Chip } from '../common/Chip';
+import { CanvasLegend } from '../common/CanvasLegend';
+import { BRAIN_GESTURES, BRAIN_VOCABULARY } from './brainLegend';
+import { MEMORY_STRENGTH } from '../../lib/vocabulary';
 import {
   resolveSearchGraphNode,
   searchResultToGraphMemory,
   useBrainSearch,
   type BrainSearchResult,
 } from './brainSearch';
-
-type ViewMode = 'graph' | 'list';
+import { readViewMode, rememberViewMode, type BrainViewMode as ViewMode } from './viewMode';
 
 const TOP_FILTERS: { key: keyof TypeFilters; label: string; shape: string }[] = [
   { key: 'person', label: 'people', shape: '●' },
@@ -51,10 +55,13 @@ export function BrainView() {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<BrainScene | null>(null);
 
-  const [viewMode, setViewMode] = useState<ViewMode>('graph');
+  // List by default; Graph is a toggle away and the choice sticks (J12). The
+  // graph has no legend and an undiscoverable interaction model, so it was the
+  // hardest surface in the app to meet first.
+  const [viewMode, setViewMode] = useState<ViewMode>(readViewMode);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [modeBeforeSearch, setModeBeforeSearch] = useState<ViewMode>('graph');
+  const [modeBeforeSearch, setModeBeforeSearch] = useState<ViewMode>(readViewMode);
 
   const { data, loading, error, refresh } = useBrainData();
   const { results: searchResults, loading: searchLoading, error: searchError } = useBrainSearch(debouncedSearch);
@@ -146,6 +153,29 @@ export function BrainView() {
     && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   const chipTransition = reduceMotion ? 'none' : `all 140ms ${ease.out}`;
 
+  /**
+   * The filter bar's chips. Every one of them was `border: 'none'` plus an
+   * inline background, which cannot express `:hover` or `:active` — so the
+   * whole bar was pressable with no acknowledgement whatsoever. The resting
+   * fills and type are exactly the ones that were here; only the states are
+   * new. `lit` is the on/off that drives the text colour, `fill` is passed
+   * separately because the topics chip has a third, half-on fill.
+   */
+  const chipVars = (fill: string, lit: boolean, pad: string, r: number, size: number): CSSProperties => ({
+    '--pa-btn-bg': fill,
+    '--pa-btn-fg': lit ? colors.text : colors.textDim,
+    '--pa-btn-fg-hover': colors.text,
+    '--pa-btn-bg-hover': lit ? `${colors.cyan}33` : `${colors.cyan}12`,
+    '--pa-btn-bg-active': fill,
+    '--pa-btn-border': 'transparent',
+    '--pa-btn-border-hover': 'transparent',
+    '--pa-btn-pad': pad,
+    '--pa-btn-radius': `${r}px`,
+    '--pa-btn-weight': 500,
+    fontFamily: font.body,
+    fontSize: size,
+  } as CSSProperties);
+
   // Initialize scene
   useEffect(() => {
     if (!containerRef.current) return;
@@ -224,9 +254,9 @@ export function BrainView() {
   const toggleFilter = (key: keyof TypeFilters) =>
     setFilters(f => ({ ...f, [key]: !f[key] }));
 
-  // Recency label
-  const recencyLabel = (age: number) =>
-    age < 0.2 ? 'this week' : age < 0.5 ? 'this month' : age < 0.8 ? '~3 months' : '~year';
+  // Recency reads from the memory's own timestamp, not from the scene's
+  // clamped 0..1 age — that scalar tops out at 90 days, so it rendered a
+  // three-year-old memory and a three-month-old one with the same four words.
 
   return (
     <div ref={wrapperRef} style={{ position: 'relative', width: '100%', height: '100%', background: gradient.workspace, overflow: 'hidden' }}>
@@ -261,14 +291,27 @@ export function BrainView() {
           <h2 style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, color: colors.text }}>
             Can't reach the Brain
           </h2>
-          <p style={{ fontFamily: font.body, fontSize: 13, color: colors.textMuted, maxWidth: 340, textAlign: 'center', lineHeight: 1.5 }}>
+          <p style={{ fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted, maxWidth: 340, textAlign: 'center', lineHeight: 1.5 }}>
             The memory graph didn't load. It may be a brief hiccup — try again.
           </p>
-          <button onClick={() => refresh()} style={{
-            marginTop: 4, padding: '8px 18px', borderRadius: 8,
-            border: `1px solid ${colors.borderHi}`, background: colors.cyanSoft,
-            color: colors.cyan, fontSize: 13, fontWeight: 600, cursor: 'pointer',
-          }}>Try again</button>
+          <Button
+            colors={colors}
+            variant="ghostOn"
+            type="button"
+            onClick={() => refresh()}
+            style={{
+              '--pa-btn-bg': colors.cyanSoft,
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-border': colors.borderHi,
+              '--pa-btn-bg-hover': `${colors.cyan}26`,
+              '--pa-btn-border-hover': colors.cyan,
+              '--pa-btn-bg-active': colors.cyanSoft,
+              '--pa-btn-pad': '8px 18px',
+              '--pa-btn-radius': `${radius.md}px`,
+              '--pa-btn-weight': 600,
+              marginTop: 4, fontSize: textSize.small, lineHeight: 1.5,
+            } as CSSProperties}
+          >Try again</Button>
         </div>
       )}
 
@@ -281,7 +324,7 @@ export function BrainView() {
           background: 'radial-gradient(ellipse 70% 50% at 50% 45%, rgba(0,213,255,0.04) 0%, transparent 70%)',
         }}>
           <Mobius size={160} state={reduceMotion ? 'idle' : 'thinking'} />
-          <p style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, letterSpacing: '0.06em' }}>
+          <p style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, letterSpacing: '0.06em' }}>
             recalling the graph…
           </p>
         </div>
@@ -297,7 +340,7 @@ export function BrainView() {
           <h2 style={{ fontFamily: font.display, fontSize: 22, fontWeight: 700, color: colors.text, marginTop: 24 }}>
             Your agent's memory grows here.
           </h2>
-          <p style={{ fontFamily: font.body, fontSize: 14, color: colors.textMuted, marginTop: 8 }}>
+          <p style={{ fontFamily: font.body, fontSize: textSize.body, color: colors.textMuted, marginTop: 8 }}>
             Begin a conversation.
           </p>
         </div>
@@ -312,10 +355,10 @@ export function BrainView() {
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px',
           background: glass.bg, backdropFilter: 'blur(16px)',
-          border: `1px solid ${theme === 'silver' ? colors.cyan + '20' : 'rgba(0,213,255,0.12)'}`, borderRadius: 999,
+          border: `1px solid ${theme === 'silver' ? colors.cyan + '20' : 'rgba(0,213,255,0.12)'}`, borderRadius: radius.pill,
         }}>
           <Mobius size={28} state="idle" logoMode />
-          <span style={{ fontFamily: font.display, fontSize: 13, fontWeight: 700, color: colors.text }}>
+          <span style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 700, color: colors.text }}>
             {data?.self.name || 'Agent'}'s mind
           </span>
         </div>
@@ -332,9 +375,9 @@ export function BrainView() {
             }}
             placeholder="try a name or project…"
             style={{
-              width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
+              width: '100%', fontFamily: font.body, fontSize: textSize.small, color: colors.text,
               background: theme === 'silver' ? 'rgba(255,255,255,0.92)' : 'rgba(20,28,48,0.65)', backdropFilter: 'blur(12px)',
-              border: `1px solid ${glass.border}`, borderRadius: 999,
+              border: `1px solid ${glass.border}`, borderRadius: radius.pill,
               padding: '9px 16px', outline: 'none',
             }}
           />
@@ -348,15 +391,19 @@ export function BrainView() {
         }}>
           <span style={{ fontFamily: font.body, fontSize: 10, color: colors.textDim, marginRight: 4 }}>show</span>
           {TOP_FILTERS.map(f => (
-            <button key={f.key} onClick={() => toggleFilter(f.key)} style={{
-              fontFamily: font.body, fontSize: 11, fontWeight: 500,
-              color: filters[f.key] ? colors.text : colors.textDim,
-              background: filters[f.key] ? colors.cyanSoft : 'transparent',
-              border: 'none', borderRadius: 6, padding: '4px 8px', cursor: 'pointer',
-              transition: `all 160ms ${ease.out}`,
-            }}>
+            <Button
+              key={f.key}
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => toggleFilter(f.key)}
+              style={chipVars(
+                filters[f.key] ? colors.cyanSoft : 'transparent',
+                filters[f.key], '4px 8px', radius.sm, 11,
+              )}
+            >
               <span style={{ marginRight: 4 }}>{f.shape}</span>{f.label}
-            </button>
+            </Button>
           ))}
 
           {/* Topics group with drilldown */}
@@ -364,51 +411,82 @@ export function BrainView() {
             display: 'inline-flex', alignItems: 'center', gap: 2,
             borderLeft: `1px solid ${glass.border}`, paddingLeft: 6,
           }}>
-            <button onClick={() => {
-              const allOn = TOPIC_KEYS.every(k => filters[k]);
-              setFilters(f => {
-                const next = { ...f };
-                for (const k of TOPIC_KEYS) next[k] = !allOn;
-                return next;
-              });
-            }} style={{
-              fontFamily: font.body, fontSize: 11, fontWeight: 500,
-              color: TOPIC_KEYS.some(k => filters[k]) ? colors.text : colors.textDim,
-              background: TOPIC_KEYS.every(k => filters[k]) ? colors.cyanSoft : TOPIC_KEYS.some(k => filters[k]) ? `${colors.cyanSoft}88` : 'transparent',
-              border: 'none', borderRadius: 6, padding: '4px 8px', cursor: 'pointer',
-              transition: `all 160ms ${ease.out}`,
-            }}>
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => {
+                const allOn = TOPIC_KEYS.every(k => filters[k]);
+                setFilters(f => {
+                  const next = { ...f };
+                  for (const k of TOPIC_KEYS) next[k] = !allOn;
+                  return next;
+                });
+              }}
+              style={chipVars(
+                TOPIC_KEYS.every(k => filters[k])
+                  ? colors.cyanSoft
+                  : TOPIC_KEYS.some(k => filters[k]) ? `${colors.cyanSoft}88` : 'transparent',
+                TOPIC_KEYS.some(k => filters[k]), '4px 8px', radius.sm, 11,
+              )}
+            >
               <span style={{ marginRight: 4 }}>◆</span>topics
-            </button>
-            <button onClick={() => setTopicsExpanded(e => !e)} style={{
-              fontFamily: font.mono, fontSize: 10, color: colors.textDim,
-              background: 'transparent', border: 'none', cursor: 'pointer', padding: '2px 4px',
-              transition: `transform 160ms ${ease.out}`,
-              transform: topicsExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-            }}>▸</button>
+            </Button>
+            {/* A disclosure toggle for the sub-filters beside it: nothing to
+                await, so the pending floor and the success tick are both wrong
+                for it, and it keeps being a plain element so `aria-expanded`
+                describes what it does. It takes the shared `.pa-btn` rules —
+                which it had none of — but not the primitive. */}
+            <button
+              type="button"
+              className="pa-btn"
+              aria-expanded={topicsExpanded}
+              aria-label="Topic types"
+              onClick={() => setTopicsExpanded(e => !e)}
+              style={{
+                '--pa-btn-fg': colors.textDim,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': `${colors.cyan}12`,
+                '--pa-btn-pad': '2px 4px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                fontFamily: font.mono, fontSize: 10,
+                // The rotation is this control's whole read-out, so it stays an
+                // inline transform — which does mean `.pa-btn`'s press scale
+                // cannot apply to this one button.
+                transition: `transform 160ms ${ease.out}`,
+                transform: topicsExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+              } as CSSProperties}
+            >▸</button>
             {topicsExpanded && TOPIC_SUB_FILTERS.map(f => (
-              <button key={f.key} onClick={() => toggleFilter(f.key)} style={{
-                fontFamily: font.body, fontSize: 10, fontWeight: 500,
-                color: filters[f.key] ? colors.text : colors.textDim,
-                background: filters[f.key] ? colors.cyanSoft : 'transparent',
-                border: 'none', borderRadius: 5, padding: '3px 6px', cursor: 'pointer',
-                transition: `all 160ms ${ease.out}`,
-              }}>
+              <Button
+                key={f.key}
+                colors={colors}
+                variant="bare"
+                type="button"
+                onClick={() => toggleFilter(f.key)}
+                style={chipVars(
+                  filters[f.key] ? colors.cyanSoft : 'transparent',
+                  filters[f.key], '3px 6px', 5, 10,
+                )}
+              >
                 <span style={{ marginRight: 3 }}>{f.shape}</span>{f.label}
-              </button>
+              </Button>
             ))}
           </span>
 
           <span style={{ borderLeft: `1px solid ${glass.border}`, paddingLeft: 6 }}>
-            <button onClick={() => toggleFilter('memory')} style={{
-              fontFamily: font.body, fontSize: 11, fontWeight: 500,
-              color: filters.memory ? colors.text : colors.textDim,
-              background: filters.memory ? colors.cyanSoft : 'transparent',
-              border: 'none', borderRadius: 6, padding: '4px 8px', cursor: 'pointer',
-              transition: `all 160ms ${ease.out}`,
-            }}>
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => toggleFilter('memory')}
+              style={chipVars(
+                filters.memory ? colors.cyanSoft : 'transparent',
+                filters.memory, '4px 8px', radius.sm, 11,
+              )}
+            >
               <span style={{ marginRight: 4 }}>·</span>memories
-            </button>
+            </Button>
           </span>
         </div>
 
@@ -416,19 +494,35 @@ export function BrainView() {
         <div style={{
           display: 'flex', alignItems: 'center', gap: 2, padding: '4px 6px',
           background: glass.bg, backdropFilter: 'blur(16px)',
-          border: `1px solid ${glass.border}`, borderRadius: 8,
+          border: `1px solid ${glass.border}`, borderRadius: radius.md,
         }}>
           {(['graph', 'list'] as const).map(mode => (
-            <button key={mode} onClick={() => setViewMode(mode)} style={{
-              fontFamily: font.mono, fontSize: 10, fontWeight: 600,
-              color: viewMode === mode ? colors.text : colors.textDim,
-              background: viewMode === mode ? colors.cyanSoft : 'transparent',
-              border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
-              textTransform: 'uppercase', letterSpacing: '0.05em',
-              transition: `all 160ms ${ease.out}`,
-            }}>
+            <Button
+              key={mode}
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => {
+                // A deliberate choice, so it is the one that gets remembered —
+                // unlike the search auto-switch below, which is the app
+                // changing the view on the user's behalf.
+                setViewMode(mode);
+                setModeBeforeSearch(mode);
+                rememberViewMode(mode);
+              }}
+              style={{
+                ...chipVars(
+                  viewMode === mode ? colors.cyanSoft : 'transparent',
+                  viewMode === mode, '4px 10px', radius.sm, 10,
+                ),
+                '--pa-btn-weight': 600,
+                fontFamily: font.mono,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+              } as CSSProperties}
+            >
               {mode}
-            </button>
+            </Button>
           ))}
         </div>
       </div>
@@ -439,14 +533,14 @@ export function BrainView() {
           position: 'fixed', left: hover.x + 14, top: hover.y + 14, zIndex: 20,
           maxWidth: 280, padding: '8px 12px',
           background: theme === 'silver' ? 'rgba(255,255,255,0.95)' : 'rgba(20,28,48,0.9)', backdropFilter: 'blur(12px)',
-          border: `1px solid ${colors.borderHi}`, borderRadius: 8,
+          border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
           boxShadow: theme === 'silver' ? '0 2px 12px rgba(30,37,48,0.10)' : 'none',
-          fontFamily: font.body, fontSize: 12, color: colors.text,
+          fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
           pointerEvents: 'none',
         }}>
           <div style={{ fontWeight: 600 }}>{hover.label}</div>
           {hover.note && hover.note !== hover.label && (
-            <div style={{ color: colors.textMuted, marginTop: 2, fontSize: 11 }}>{hover.note.slice(0, 120)}</div>
+            <div style={{ color: colors.textMuted, marginTop: 2, fontSize: textSize.micro }}>{hover.note.slice(0, 120)}</div>
           )}
         </div>
       )}
@@ -464,7 +558,7 @@ export function BrainView() {
           backdropFilter: 'blur(24px) saturate(140%)',
           WebkitBackdropFilter: 'blur(24px) saturate(140%)',
           border: `1px solid ${theme === 'silver' ? 'rgba(167,176,190,0.35)' : 'rgba(0,213,255,0.16)'}`,
-          borderRadius: 16, padding: 24,
+          borderRadius: radius.xl, padding: 24,
           boxShadow: theme === 'silver'
             ? '0 24px 60px rgba(30,37,48,0.12), inset 0 1px 0 rgba(255,255,255,0.8)'
             : '0 24px 60px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)',
@@ -472,11 +566,23 @@ export function BrainView() {
         }}>
           {selected && (<>
             {/* Close */}
-            <button onClick={() => setSelected(null)} style={{
-              position: 'absolute', top: 28, right: 28,
-              background: 'transparent', border: 'none', color: colors.textMuted,
-              fontSize: 18, cursor: 'pointer',
-            }}>×</button>
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => setSelected(null)}
+              aria-label="Close details"
+              style={{
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-bg-active': 'transparent',
+                '--pa-btn-pad': '0',
+                '--pa-btn-radius': '0',
+                position: 'absolute', top: 28, right: 28, zIndex: 1,
+                fontSize: 18, lineHeight: 1,
+              } as CSSProperties}
+            >×</Button>
 
             {/* Type label (+ P4 honesty badge: a preview-resolved memory is the
                 caller's snapshot — possibly a truncated content_summary — not
@@ -491,7 +597,7 @@ export function BrainView() {
                   <span style={{
                     fontFamily: font.mono, fontSize: 10, fontWeight: 500,
                     color: colors.textMuted, letterSpacing: '0.06em',
-                    border: `1px solid ${colors.border}`, borderRadius: 999, padding: '1px 7px',
+                    border: `1px solid ${colors.border}`, borderRadius: radius.pill, padding: '1px 7px',
                     textTransform: 'uppercase',
                   }}>{(selected.data as GraphMemory).layer}</span>
                 )}
@@ -509,7 +615,7 @@ export function BrainView() {
             </span>
 
             {/* Name / title */}
-            <h3 style={{ fontFamily: font.display, fontSize: 20, fontWeight: 700, color: colors.text, margin: '8px 0 12px' }}>
+            <h3 style={{ fontFamily: font.display, fontSize: textSize.title, fontWeight: 700, color: colors.text, margin: '8px 0 12px' }}>
               {selected.label}
             </h3>
 
@@ -521,7 +627,7 @@ export function BrainView() {
               const degree = data?.edges?.filter(e => e.from === selected.id || e.to === selected.id).length ?? 0;
               const memLinks = data?.memories?.filter(m => m.ent.includes(selected.id)).length ?? 0;
               return (<>
-                <p style={{ fontFamily: font.body, fontSize: 13, color: colors.textMuted, lineHeight: 1.6, margin: '0 0 16px' }}>
+                <p style={{ fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, margin: '0 0 16px' }}>
                   {selected.note || 'No description yet — the Librarian writes one on its next run.'}
                 </p>
 
@@ -532,7 +638,7 @@ export function BrainView() {
                         <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.06em', minWidth: 84 }}>
                           {f.field_name.replace(/_/g, ' ')}
                         </span>
-                        <span style={{ fontFamily: font.body, fontSize: 12, color: colors.text, flex: 1, overflowWrap: 'anywhere' }}>
+                        <span style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.text, flex: 1, overflowWrap: 'anywhere' }}>
                           {f.source_url ? (
                             <a href={f.source_url} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>{f.value}</a>
                           ) : f.value}
@@ -549,24 +655,28 @@ export function BrainView() {
                 )}
 
                 {selected.kind === 'project' && projectMatch && (
-                  <button
+                  <Button
+                    colors={colors}
+                    variant="ghostOn"
                     type="button"
                     onClick={openProjectWorkspace}
                     title={`Open ${projectMatch.name} in Projects`}
                     style={{
+                      '--pa-btn-bg': colors.cyanSoft,
+                      '--pa-btn-fg': colors.cyan,
+                      '--pa-btn-border': colors.borderHi,
+                      '--pa-btn-bg-hover': colors.cyanGlow,
+                      '--pa-btn-border-hover': colors.borderHi,
+                      '--pa-btn-bg-active': colors.cyanSoft,
+                      '--pa-btn-pad': '6px 12px',
+                      '--pa-btn-radius': `${radius.md}px`,
+                      '--pa-btn-weight': 600,
                       alignSelf: 'flex-start', marginBottom: 16,
-                      fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan,
-                      background: colors.cyanSoft, cursor: 'pointer',
-                      border: `1px solid ${colors.borderHi}`, borderRadius: 8, padding: '6px 12px',
-                      transition: chipTransition,
-                    }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = colors.cyanGlow; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = colors.cyanSoft; }}
-                    onFocus={e => { (e.currentTarget as HTMLButtonElement).style.outline = `2px solid ${colors.cyan}`; }}
-                    onBlur={e => { (e.currentTarget as HTMLButtonElement).style.outline = 'none'; }}
+                      fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5,
+                    } as CSSProperties}
                   >
                     Open project →
-                  </button>
+                  </Button>
                 )}
 
                 <div style={{ display: 'flex', gap: 18, marginTop: 'auto', paddingTop: 12, borderTop: `1px solid ${colors.border}` }}>
@@ -591,7 +701,7 @@ export function BrainView() {
                         title={interactive ? `Show memories that mention ${selected.label}` : undefined}
                         style={{
                           textAlign: 'left', background: 'transparent', border: 'none', padding: 0,
-                          cursor: interactive ? 'pointer' : 'default', borderRadius: 6,
+                          cursor: interactive ? 'pointer' : 'default', borderRadius: radius.sm,
                           transition: chipTransition,
                         }}
                         onMouseEnter={e => { if (interactive) (e.currentTarget as HTMLButtonElement).style.opacity = '0.7'; }}
@@ -616,13 +726,13 @@ export function BrainView() {
                   {/* Scrollable content area */}
                   <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 14 }}>
                     {mem.description && (
-                      <p style={{ fontFamily: font.body, fontSize: 13, color: colors.text, lineHeight: 1.7, margin: 0 }}>
+                      <p style={{ fontFamily: font.body, fontSize: textSize.small, color: colors.text, lineHeight: 1.7, margin: 0 }}>
                         {mem.description}
                       </p>
                     )}
                     <p style={{
-                      fontFamily: font.mono, fontSize: 11, color: colors.textMuted, lineHeight: 1.6, margin: 0,
-                      padding: '10px 12px', background: theme === 'silver' ? 'rgba(30,37,48,0.04)' : 'rgba(0,0,0,0.2)', borderRadius: 8,
+                      fontFamily: font.mono, fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.6, margin: 0,
+                      padding: '10px 12px', background: theme === 'silver' ? 'rgba(30,37,48,0.04)' : 'rgba(0,0,0,0.2)', borderRadius: radius.md,
                       whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                     }}>
                       {mem.text}
@@ -630,9 +740,9 @@ export function BrainView() {
                     {mem.why && (
                       <details>
                         <summary style={{
-                          fontFamily: font.body, fontSize: 11, color: colors.textDim, cursor: 'pointer',
+                          fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, cursor: 'pointer',
                         }}>Why this?</summary>
-                        <p style={{ fontFamily: font.mono, fontSize: 11, color: colors.textMuted, margin: '6px 0 0' }}>
+                        <p style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textMuted, margin: '6px 0 0' }}>
                           {mem.why}
                         </p>
                       </details>
@@ -645,30 +755,43 @@ export function BrainView() {
                           // dead link. Resolved entities become clickable and
                           // select the entity via the shared mechanism.
                           if (!ent) {
+                            // Static, and shaped like it: this id is a
+                            // reference the graph can no longer resolve, so
+                            // there is nothing to open. Sitting among live,
+                            // clickable siblings in the same pill shape, it
+                            // used to read as a link that simply ignored you.
                             return (
-                              <span key={id} title="Unknown entity" style={{
-                                fontFamily: font.mono, fontSize: 10, color: colors.textDim,
-                                border: `1px solid ${colors.border}`, borderRadius: 999, padding: '4px 10px',
-                              }}>{id}</span>
+                              <Chip
+                                key={id}
+                                kind="static"
+                                title="This memory references an entity that is not in the graph — nothing to open"
+                                style={{ fontFamily: font.mono, fontSize: 10, letterSpacing: 0, padding: '4px 10px' }}
+                              >
+                                {id}
+                              </Chip>
                             );
                           }
                           return (
-                            <button
+                            <Button
                               key={id}
+                              colors={colors}
+                              variant="ghostOn"
                               type="button"
                               onClick={() => selectEntity(ent)}
                               title={`View ${ent.name}`}
                               style={{
-                                fontFamily: font.body, fontSize: 11, fontWeight: 500, color: colors.cyan,
-                                background: colors.cyanSoft, cursor: 'pointer',
-                                border: `1px solid ${colors.borderHi}`, borderRadius: 999, padding: '4px 10px',
-                                transition: chipTransition,
-                              }}
-                              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = colors.cyanGlow; }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = colors.cyanSoft; }}
-                              onFocus={e => { (e.currentTarget as HTMLButtonElement).style.outline = `2px solid ${colors.cyan}`; }}
-                              onBlur={e => { (e.currentTarget as HTMLButtonElement).style.outline = 'none'; }}
-                            >{ent.name}</button>
+                                '--pa-btn-bg': colors.cyanSoft,
+                                '--pa-btn-fg': colors.cyan,
+                                '--pa-btn-border': colors.borderHi,
+                                '--pa-btn-bg-hover': colors.cyanGlow,
+                                '--pa-btn-border-hover': colors.borderHi,
+                                '--pa-btn-bg-active': colors.cyanSoft,
+                                '--pa-btn-pad': '4px 10px',
+                                '--pa-btn-radius': `${radius.pill}px`,
+                                '--pa-btn-weight': 500,
+                                fontFamily: font.body, fontSize: textSize.micro,
+                              } as CSSProperties}
+                            >{ent.name}</Button>
                           );
                         })}
                       </div>
@@ -679,8 +802,29 @@ export function BrainView() {
                       ("3 days ago") from the same age bucket recency already
                       shows — the backend tracks no recall timestamp. */}
                   <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, borderTop: `1px solid ${colors.borderHi}`, paddingTop: 12 }}>
-                    <Stat label="reinforcement" value={`${Math.round(mem.weight * 100)}%`} />
-                    <Stat label="recency" value={recencyLabel(mem.age)} />
+                    {/* One number, one word. This said "reinforcement" while
+                        the List view called the same field "signal" — same
+                        memory, same tab, two vocabularies and neither defined.
+                        The word and the gloss both come from the shared
+                        vocabulary now, so the two surfaces cannot drift. */}
+                    <Stat
+                      label={MEMORY_STRENGTH.one}
+                      value={`${Math.round(mem.weight * 100)}%`}
+                      title={MEMORY_STRENGTH.gloss}
+                    />
+                    {(() => {
+                      const age = formatMemoryAge(mem.timestamp);
+                      return (
+                        <Stat
+                          label="recency"
+                          value={age.label}
+                          // Past the staleness threshold the age is the point:
+                          // it must not sit at the same quiet weight as "today".
+                          tone={age.stale ? 'stale' : undefined}
+                          title={mem.timestamp || undefined}
+                        />
+                      );
+                    })()}
                   </div>
                 </div>
               );
@@ -688,6 +832,19 @@ export function BrainView() {
           </>)}
         </div>
       </div>
+
+      {/* The graph's key. Only in graph mode, and not over an empty or broken
+          one: a vocabulary for shapes that are not on screen is noise. It sits
+          above the time slider, on the side the side-panel never covers. */}
+      {viewMode === 'graph' && !error && !isEmpty && (
+        <CanvasLegend
+          canvasId="brain-graph"
+          gestures={BRAIN_GESTURES}
+          vocabulary={BRAIN_VOCABULARY}
+          palette={{ bg: glass.bg, border: glass.border }}
+          style={{ bottom: 72 }}
+        />
+      )}
 
       {/* Time slider */}
       <div style={{
@@ -711,12 +868,21 @@ export function BrainView() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, tone, title }: {
+  label: string; value: string;
+  /** `stale` colours the figure as a caution rather than a plain fact — for a
+   *  number whose age is the thing worth noticing. */
+  tone?: 'stale';
+  title?: string;
+}) {
   const { colors } = useTheme();
   return (
-    <div style={{ textAlign: 'center' }}>
+    <div style={{ textAlign: 'center' }} title={title}>
       <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginBottom: 2, textTransform: 'uppercase' }}>{label}</div>
-      <div style={{ fontFamily: font.body, fontSize: 13, fontWeight: 600, color: colors.text }}>{value}</div>
+      <div style={{
+        fontFamily: font.body, fontSize: textSize.small, fontWeight: 600,
+        color: tone === 'stale' ? colors.stale : colors.text,
+      }}>{value}</div>
     </div>
   );
 }

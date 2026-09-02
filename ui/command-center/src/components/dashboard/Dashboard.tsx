@@ -1,6 +1,6 @@
-import { FiEdit2, FiCheck, FiX, FiPlus, FiRotateCcw } from 'react-icons/fi';
+import { FiEdit2, FiX, FiPlus, FiRotateCcw } from 'react-icons/fi';
 
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from './useDashboard';
@@ -10,11 +10,15 @@ import { useLayout, reflow, DEFAULT_LAYOUT, type DashboardLayoutData, type Dashb
 import { useCardRegistry } from './cards/useCardRegistry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
-import { ResetConfirmModal } from './ResetConfirmModal';
+import { CustomizeButton } from './CustomizeButton';
+import { MissingCard } from './MissingCard';
 import { Echo } from './Echo';
 import { LearnNext } from './LearnNext';
 import { ViewHeader } from '../common/ViewHeader';
-import { useState, useCallback, useRef, useMemo } from 'react';
+import { ConfirmDialog } from '../common/ConfirmDialog';
+import { Button } from '../common/Button';
+import { AsOf } from '../common/AsOf';
+import { useState, useCallback, useRef, useMemo, type CSSProperties } from 'react';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -35,7 +39,7 @@ const GAP = 16;
 
 export function Dashboard() {
   const { gradient, colors } = useTheme();
-  const { data, loading, error, retry } = useDashboard();
+  const { data, loading, error, lastOkAt, failing, retry, refresh } = useDashboard();
   // One shared live-goal subscription for every "in flight" surface (count,
   // list, header, status) so they always agree. Sessions are a separate stat.
   const { goals: activeGoals, activeCount } = useLiveGoals();
@@ -48,7 +52,7 @@ export function Dashboard() {
   const todosProps = useMemo(() => ({ todos: dueTodos }), [dueTodos]);
   const { layout, persistLayout } = useLayout();
   // Rendered registry = first-party code cards + daemon-served manifest cards.
-  const registry = useCardRegistry();
+  const { registry, status: registryStatus } = useCardRegistry();
   const [isEditMode, setIsEditMode] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [showPicker, setShowPicker] = useState(false);
@@ -176,20 +180,30 @@ export function Dashboard() {
           // Initial load failed with nothing to show — an explicit, recoverable
           // dead-end instead of a spinner that never resolves.
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, textAlign: 'center', fontFamily: font.body }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: colors.danger }}>Couldn't load the dashboard</div>
-            <div style={{ fontSize: 11, color: colors.textDim, maxWidth: 320, lineHeight: 1.5 }}>
+            <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.danger }}>Couldn't load the dashboard</div>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim, maxWidth: 320, lineHeight: 1.5 }}>
               The daemon didn't respond. Check that it's running, then try again.
             </div>
-            <button
+            <Button
+              colors={colors}
+              type="button"
               onClick={retry}
               style={{
-                marginTop: 6, padding: '5px 14px', borderRadius: 6, cursor: 'pointer',
-                background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-                color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
-              }}
+                '--pa-btn-bg': colors.cyanSoft,
+                '--pa-btn-fg': colors.cyan,
+                '--pa-btn-border': colors.borderHi,
+                '--pa-btn-bg-hover': colors.cyanSoft,
+                '--pa-btn-fg-hover': colors.cyan,
+                '--pa-btn-border-hover': colors.cyan,
+                '--pa-btn-bg-active': colors.cyanGlow,
+                '--pa-btn-pad': '5px 14px',
+                '--pa-btn-radius': `${radius.sm}px`,
+                '--pa-btn-weight': 600,
+                marginTop: 6, fontSize: textSize.micro, fontFamily: font.body,
+              } as CSSProperties}
             >
               Try again
-            </button>
+            </Button>
           </div>
         ) : (
           <Mobius size={120} state="thinking" />
@@ -223,29 +237,48 @@ export function Dashboard() {
           match every other view. */}
       <ViewHeader
         title="Home"
+        // A failed poll keeps the last good payload, which is right — and
+        // silent, which is not. Once the figures below stop being refreshed the
+        // header says how old they are and offers the way back. Said in the
+        // app's one staleness rendering, so it reads the same here as it does
+        // on a three-month-old memory in the Brain.
+        subtitle={failing ? (
+          <AsOf
+            data-testid="dashboard-freshness"
+            asOf={lastOkAt}
+            prefix="Updated"
+            suffix="reconnecting"
+            unknownLabel="Can't reach the daemon"
+            // Failing is stale at any age: the figures stopped being confirmed
+            // the moment the poll did.
+            staleAfterMs={0}
+            dot
+          />
+        ) : undefined}
         actions={<>
+        {failing && (
+          // No success tick: the caption above is the confirmation — it goes
+          // away when the poll lands, and stays when it doesn't.
+          <Button
+            colors={colors}
+            type="button"
+            flashSuccess={false}
+            onClick={() => refresh()}
+          >
+            Retry
+          </Button>
+        )}
         <SaveIndicator state={saveState} />
         {isEditMode && (
           <DashboardOverflowMenu items={[
             { label: 'Reset to default', icon: <FiRotateCcw size={14} />, onClick: () => setShowResetConfirm(true) },
           ]} />
         )}
-        <button
-          onClick={() => setIsEditMode(!isEditMode)}
-          title={isEditMode ? 'Done editing' : 'Customize dashboard'}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            padding: isEditMode ? '5px 14px' : '5px 8px',
-            borderRadius: radius.md,
-            border: `1px solid ${isEditMode ? colors.cyan : colors.border}`,
-            background: isEditMode ? colors.cyanSoft : colors.surface,
-            color: isEditMode ? colors.cyan : colors.textMuted,
-            fontFamily: font.body, fontSize: 12, fontWeight: 500,
-            cursor: 'pointer', transition: 'all 150ms ease',
-          }}
-        >
-          {isEditMode ? <><FiCheck size={14} /> Done</> : <FiEdit2 size={14} />}
-        </button>
+        <CustomizeButton
+          editing={isEditMode}
+          onToggle={() => setIsEditMode(!isEditMode)}
+          colors={colors}
+        />
         </>}
       />
 
@@ -257,7 +290,7 @@ export function Dashboard() {
         <div style={{
           flexShrink: 0, padding: '8px 32px',
           background: colors.cyanSoft, borderBottom: `1px solid ${colors.border}`,
-          fontFamily: font.body, fontSize: 12, color: colors.cyan,
+          fontFamily: font.body, fontSize: textSize.caption, color: colors.cyan,
           display: 'flex', alignItems: 'center', gap: 8,
         }}>
           <FiEdit2 size={12} />
@@ -270,15 +303,14 @@ export function Dashboard() {
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 40px' }}>
 
-      {/* Echo — a forgotten thread from your Brain, resurfaced unprompted.
-          Renders itself only when there's a genuinely dormant thread and it
-          hasn't shown recently; otherwise nothing. Hidden while arranging cards. */}
-      {!isEditMode && <Echo />}
-
-      {/* Learn next — the onboarding coach surfaces one capability the user
-          hasn't tried yet and offers to have the agent teach it. Renders only
-          when there's a genuinely unused feature; hidden while arranging cards. */}
+      {/* The banner slot (C8): ONE of these is on screen at a time, never both.
+          Echo resurfaces a dormant Brain thread; Learn next coaches an untried
+          capability. They are unrelated features that were rendering
+          simultaneously in identical shells, which read as one banner split in
+          two — `bannerSlot` now hands the slot to whichever has something to
+          say, Learn next first. Both are hidden while arranging cards. */}
       {!isEditMode && <LearnNext />}
+      {!isEditMode && <Echo />}
 
       {/* CSS Grid — reflows natively with the container, no JS width measurement */}
       <div
@@ -296,11 +328,15 @@ export function Dashboard() {
       >
         {visibleCards.map(card => {
           const entry = registry[card.type];
-          if (!entry) return null;
-          const Component = entry.component;
+          // A card in the layout with no registry entry used to `return null`:
+          // it left a hole in the grid and no explanation. Two of the default
+          // layout's own cards (Calendar, Council) are manifest-served, so this
+          // fired every time the manifest fetch was slow or down — and Reset to
+          // default put both of them back, where they rendered as nothing.
+          const Component = entry?.component;
           // Manifest cards self-fetch and only need their manifest; first-party
           // code cards read pre-fetched data from cardDataMap.
-          const props = entry.manifest ? { manifest: entry.manifest } : (cardDataMap[card.type] || {});
+          const props = entry?.manifest ? { manifest: entry.manifest } : (cardDataMap[card.type] || {});
           const { x, y } = card.position;
           const isResizing = resizeId === card.id;
           const w = isResizing && resizePreview ? resizePreview.w : card.size.w;
@@ -331,7 +367,9 @@ export function Dashboard() {
                 userSelect: isEditMode ? 'none' : 'auto',
               }}
             >
-              <Component {...props} />
+              {Component
+                ? <Component {...props} />
+                : <MissingCard type={card.type} status={registryStatus} />}
               {isEditMode && (
                 <RemoveButton
                   disabled={!canRemove}
@@ -368,7 +406,7 @@ export function Dashboard() {
             pointerEvents: 'none',
             zIndex: 100,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontFamily: font.body, fontSize: 12, fontWeight: 600,
+            fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600,
             color: colors.cyan,
             boxShadow: colors.elevationOverlay,
           }}>
@@ -400,7 +438,7 @@ export function Dashboard() {
           }}
         >
           <FiPlus size={16} style={{ color: colors.textMuted }} />
-          <span style={{ fontFamily: font.body, fontSize: 13, color: colors.textMuted }}>
+          <span style={{ fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted }}>
             Add card
           </span>
         </div>
@@ -419,7 +457,14 @@ export function Dashboard() {
       )}
 
       {showResetConfirm && (
-        <ResetConfirmModal
+        /* Losing a hand-arranged dashboard has no undo, which is the tier that
+           earns a modal. It had its own chrome — and with it no focus trap, no
+           dialog role, and no focus returned to the button that opened it. */
+        <ConfirmDialog
+          title="Reset dashboard?"
+          consequence="This restores the default layout. The arrangement you built — which cards are on the board, and where — is lost."
+          confirmLabel="Reset"
+          failureLabel="Couldn't reset the dashboard"
           onConfirm={resetToDefault}
           onCancel={() => setShowResetConfirm(false)}
         />
@@ -431,32 +476,35 @@ export function Dashboard() {
 function RemoveButton({ disabled, onClick }: { disabled: boolean; onClick: () => void }) {
   const { colors } = useTheme();
   return (
-    <button
+    // `disabled` is deliberately NOT passed to the primitive: this control has
+    // always stayed enabled and explained itself through its title, and the
+    // guard lives in the click handler. What the pair of mouse handlers used to
+    // do by hand — redden on hover, and only when removable — is now the
+    // primitive's `--pa-btn-*-hover` pair, held at the resting values when the
+    // last card can't be removed.
+    <Button
+      colors={colors}
+      variant="bare"
+      type="button"
       onClick={e => { e.stopPropagation(); if (!disabled) onClick(); }}
       title={disabled ? 'Dashboard needs at least one card' : 'Remove this card'}
+      aria-label="Remove this card"
       style={{
+        '--pa-btn-bg': disabled ? colors.cyanSoft : colors.surface,
+        '--pa-btn-fg': disabled ? colors.textDim : colors.textMuted,
+        '--pa-btn-border': 'transparent',
+        '--pa-btn-bg-hover': disabled ? colors.cyanSoft : colors.danger + '26',
+        '--pa-btn-fg-hover': disabled ? colors.textDim : colors.danger,
+        '--pa-btn-bg-active': disabled ? colors.cyanSoft : colors.danger + '26',
+        '--pa-btn-pad': '0',
+        '--pa-btn-radius': '50%',
         position: 'absolute', top: 8, right: 8, zIndex: 5,
-        width: 24, height: 24, borderRadius: '50%',
-        border: 'none',
-        background: disabled ? colors.cyanSoft : colors.surface,
-        color: disabled ? colors.textDim : colors.textMuted,
+        width: 24, height: 24,
         cursor: disabled ? 'not-allowed' : 'pointer',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        transition: 'background 100ms ease, color 100ms ease',
-      }}
-      onMouseEnter={e => {
-        if (!disabled) {
-          e.currentTarget.style.background = colors.danger + '26';
-          e.currentTarget.style.color = colors.danger;
-        }
-      }}
-      onMouseLeave={e => {
-        e.currentTarget.style.background = disabled ? colors.cyanSoft : colors.surface;
-        e.currentTarget.style.color = disabled ? colors.textDim : colors.textMuted;
-      }}
+      } as CSSProperties}
     >
       <FiX size={14} />
-    </button>
+    </Button>
   );
 }
 
@@ -468,7 +516,7 @@ function ResizeHandle({ onPointerDown }: { onPointerDown: (e: React.PointerEvent
       title="Drag to resize — wider for a row, taller for a column"
       style={{
         position: 'absolute', bottom: 4, right: 4, width: 22, height: 22,
-        cursor: 'nwse-resize', zIndex: 5, borderRadius: 6,
+        cursor: 'nwse-resize', zIndex: 5, borderRadius: radius.sm,
         background: colors.cyanSoft, border: `1px solid ${colors.cyan}`,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}
@@ -491,7 +539,7 @@ function SaveIndicator({ state }: { state: SaveState }) {
   const c = config[state];
   return (
     <span style={{
-      fontFamily: font.body, fontSize: 11, fontWeight: 500,
+      fontFamily: font.body, fontSize: textSize.micro, fontWeight: 500,
       color: c.color, transition: 'opacity 200ms ease',
     }}>
       {c.label}

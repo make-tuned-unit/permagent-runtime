@@ -18,6 +18,7 @@ import type {
 import { ndJsonStream } from "@agentclientprotocol/sdk";
 import { GooseClient } from "@aaif/goose-sdk";
 import { resolveGooseBinary } from "@aaif/goose-sdk/node";
+import { brandCopy } from "./brand.js";
 import Onboarding from "./onboarding.js";
 import ConfigureScreen, { ConfigureIntent } from "./configure.js";
 import ExtensionsManager from "./extensions.js";
@@ -246,7 +247,7 @@ const InputBar = React.memo(function InputBar({
   useInput(
     (ch, key) => {
       if (key.return) {
-        if (key.alt) handleFollowUp(input);
+        if (key.meta) handleFollowUp(input);
         else handleSubmit(input);
         return;
       }
@@ -349,7 +350,7 @@ const InputBar = React.memo(function InputBar({
               focus={focused}
               keyBindings={{
                 submit: (key) =>
-                  key.return && !key.ctrl && !key.alt && !key.shift,
+                  key.return && !key.ctrl && !key.meta && !key.shift,
                 newline: (key) =>
                   (key.return && key.ctrl) || (key.return && key.shift),
               }}
@@ -357,9 +358,9 @@ const InputBar = React.memo(function InputBar({
                 useInput(
                   (ch, key) => {
                     if (key.shift && (key.upArrow || key.downArrow)) return;
-                    if (key.alt && (key.upArrow || key.downArrow)) return;
+                    if (key.meta && (key.upArrow || key.downArrow)) return;
                     if (key.tab && (key.shift || key.meta || key.ctrl)) return;
-                    if (key.return && key.alt && !key.ctrl) {
+                    if (key.return && key.meta && !key.ctrl) {
                       handleFollowUp(input);
                       return;
                     }
@@ -1738,7 +1739,7 @@ function App({
         return;
       }
 
-      if (key.alt && key.upArrow) {
+      if (key.meta && key.upArrow) {
         const last = queueRef.current.pop();
         if (last) {
           setQueuedMessages([...queueRef.current]);
@@ -1777,7 +1778,7 @@ function App({
         }
         if (
           (key.tab && !key.shift && !key.meta && !key.ctrl) ||
-          (key.return && !key.alt && !key.ctrl)
+          (key.return && !key.meta && !key.ctrl)
         ) {
           const file =
             atMatches[Math.min(atIdx, Math.max(atMatches.length - 1, 0))];

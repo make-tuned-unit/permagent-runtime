@@ -154,6 +154,12 @@ export const realDecisionsClient: DecisionsClient = {
     }
   },
 
+  async discardStaged(id: string): Promise<void> {
+    // D29: drops the spoken proposal and leaves the decision open to answer.
+    // No body, no answer — this route cannot resolve anything.
+    await decisionsFetch(`/api/decisions/${encodeURIComponent(id)}/staged`, { method: 'DELETE' });
+  },
+
   async cancelGoal(projectId: string, goalId: string): Promise<void> {
     // #490: kills the worker if running and moves the goal to Cancelled. The
     // backend supersedes this (and any other) open decision for the goal.

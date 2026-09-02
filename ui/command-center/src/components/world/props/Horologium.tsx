@@ -25,7 +25,7 @@ import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { ENV } from '../shared/palette';
-import { getReduceMotion } from '../../../styles/tokens';
+import { getReduceMotion, radius } from '../../../styles/tokens';
 import { navigateToTool } from '../../../lib/store';
 import { InstancedProp, type InstanceTransform } from '../shared/instancing';
 import { unitBox } from './geometries';
@@ -157,7 +157,7 @@ export function Horologium() {
           <div
             style={{
               padding: '4px 10px',
-              borderRadius: 4,
+              borderRadius: radius.xs,
               background: 'rgba(10, 14, 26, 0.82)',
               border: `1px solid ${model.runningName ? ENV.neonAmber : ENV.bronze}55`,
               boxShadow: model.runningName ? `0 0 12px ${ENV.neonAmber}33` : 'none',

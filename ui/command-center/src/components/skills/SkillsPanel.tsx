@@ -1,8 +1,9 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, type CSSProperties } from 'react';
 import { FiLoader, FiZap, FiSearch, FiGrid, FiList, FiX } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { SkillCard } from './SkillCard';
 import { SkillDetailPanel } from './SkillDetailPanel';
 
@@ -17,6 +18,7 @@ export function SkillsPanel({ onClose }: { onClose?: () => void } = {}) {
   const { colors } = useTheme();
   const skills = useCommandCenter(s => s.skills);
   const skillsLoading = useCommandCenter(s => s.skillsLoading);
+  const skillsError = useCommandCenter(s => s.skillsError);
   const loadSkills = useCommandCenter(s => s.loadSkills);
   const selectedSkillId = useCommandCenter(s => s.selectedSkillId);
   const setSelectedSkillId = useCommandCenter(s => s.setSelectedSkillId);
@@ -50,6 +52,17 @@ export function SkillsPanel({ onClose }: { onClose?: () => void } = {}) {
     ? skills.find(s => s.id === selectedSkillId) ?? null
     : null;
 
+  // Both header affordances rest muted and come up to full on hover — what the
+  // pair of mouse handlers here used to do by hand, expressed so `:active` and
+  // the focus ring come with it. `p-1` / `rounded` become pad + radius.
+  const headerIconVars = {
+    '--pa-btn-fg': colors.textMuted,
+    '--pa-btn-fg-hover': colors.text,
+    '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+    '--pa-btn-pad': '4px',
+    '--pa-btn-radius': `${radius.xs}px`,
+  } as CSSProperties;
+
   return (
     <div className="flex h-full" style={{ backgroundColor: colors.bg }}>
       {/* Left: Skills list */}
@@ -75,28 +88,29 @@ export function SkillsPanel({ onClose }: { onClose?: () => void } = {}) {
             >
               {filtered.length}
             </span>
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
               onClick={() => setViewMode(viewMode === 'list' ? 'grid' : 'list')}
-              className="rounded p-1 hover:bg-white/5 transition"
-              style={{ color: colors.textMuted }}
-              onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
-              onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
               title={viewMode === 'list' ? 'Grid view' : 'List view'}
+              aria-label={viewMode === 'list' ? 'Grid view' : 'List view'}
+              style={headerIconVars}
             >
               {viewMode === 'list' ? <FiGrid size={13} /> : <FiList size={13} />}
-            </button>
+            </Button>
             {onClose && (
-              <button
+              <Button
+                colors={colors}
+                variant="bare"
+                type="button"
                 onClick={onClose}
-                className="rounded p-1 hover:bg-white/5 transition"
-                style={{ color: colors.textMuted }}
-                onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
-                onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
                 title="Close (Esc)"
                 aria-label="Close skills library"
+                style={headerIconVars}
               >
                 <FiX size={14} />
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -126,8 +140,49 @@ export function SkillsPanel({ onClose }: { onClose?: () => void } = {}) {
               <FiLoader size={16} className="animate-spin mr-2" />
               <span className="text-xs" style={{ fontFamily: font.mono }}>Loading skills...</span>
             </div>
+          ) : skillsError ? (
+            // A failed load is not an empty library. The copy below is a good
+            // invitation and a false statement when the fetch never landed.
+            <div
+              data-testid="skills-load-error"
+              className="flex flex-col items-center justify-center h-full text-xs text-center gap-2"
+              style={{ fontFamily: font.mono, color: colors.textMuted }}
+            >
+              <div style={{ color: colors.danger, fontWeight: 600 }}>Couldn't load your skills</div>
+              <div className="text-[10px]">{skillsError}</div>
+              <Button
+                colors={colors}
+                variant="ghostOn"
+                type="button"
+                onClick={async () => {
+                  await loadSkills();
+                  // `loadSkills` swallows its own failure into `skillsError`, so
+                  // without this the retry would tick "done" over an error that
+                  // is still on screen. `false` is the primitive's "it failed".
+                  return !useCommandCenter.getState().skillsError;
+                }}
+                style={{
+                  '--pa-btn-bg': colors.cyanSoft,
+                  '--pa-btn-fg': colors.cyan,
+                  '--pa-btn-border': colors.borderHi,
+                  '--pa-btn-bg-hover': `${colors.cyan}26`,
+                  '--pa-btn-border-hover': colors.cyan,
+                  '--pa-btn-bg-active': colors.cyanSoft,
+                  '--pa-btn-pad': '4px 12px',
+                  '--pa-btn-radius': `${radius.sm}px`,
+                  '--pa-btn-weight': 600,
+                  marginTop: 4,
+                  fontFamily: font.body,
+                  fontSize: 10,
+                  lineHeight: '15px',
+                } as CSSProperties}
+              >
+                Try again
+              </Button>
+            </div>
           ) : filtered.length === 0 ? (
             <div
+              data-testid="skills-empty"
               className="flex flex-col items-center justify-center h-full text-xs text-center gap-2"
               style={{ fontFamily: font.mono, color: colors.textMuted }}
             >

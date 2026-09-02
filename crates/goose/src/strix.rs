@@ -139,7 +139,7 @@ pub fn check_scope(target: &str, roots: &[PathBuf]) -> Result<PathBuf, ScopeRefu
 
 /// Directories rsync skips and the empty-tree preflight skips. Keep the two
 /// lists the same: a path that never reaches the scanner must not count as
-/// scannable, or Kinrows-style trees look populated locally and empty to Strix.
+/// scannable, or a tree looks populated locally and empty to Strix.
 pub const SCAN_EXCLUDES: &[&str] = &[
     ".git",
     "target",
@@ -150,16 +150,36 @@ pub const SCAN_EXCLUDES: &[&str] = &[
     "__pycache__",
 ];
 
-/// True when the scanner (or our preflight) found nothing it can send to the
-/// model. Kinrows hit this as `RuntimeError: Prepared model input is empty`
-/// (health-watch 2026-08-27); treat it as a skip, not a crash.
+/// The scanner's last-gasp error when the Agents SDK has rewound a conversation
+/// so many times that nothing is left to send.
+pub const EMPTY_MODEL_INPUT_MARKER: &str = "Prepared model input is empty";
+
+/// True when the sweep found nothing it can send to the model — i.e. our OWN
+/// pre-spawn `has_scannable_files` check refused the tree.
+///
+/// This deliberately does NOT include the scanner's `Prepared model input is
+/// empty`. That reading was a guess made from a log line (health-watch
+/// 2026-08-27, Kinrows) and it was wrong: m1's own `strix.log` for those runs
+/// shows the agent enumerating real source files, then dozens of
+/// `Rate limit reached for … tokens per min (TPM): Limit 200000` errors, then
+/// `Unable to fully rewind session`, and only then the empty input. Treating an
+/// upstream rate-limit failure as "this project has nothing to scan" logged it
+/// at INFO, skipped the error announce, and is the single reason the Guard
+/// could attempt a scan every day for twenty days, complete none, and look
+/// healthy the whole time.
 pub fn is_empty_input_skip(err: &str) -> bool {
-    err.contains("no scannable files") || err.contains("Prepared model input is empty")
+    err.contains("no scannable files")
 }
 
 pub fn classify_scanner_failure(status: std::process::ExitStatus, detail: &str) -> String {
-    if detail.contains("Prepared model input is empty") {
-        "no scannable files: scanner produced empty model input".to_string()
+    if detail.contains(EMPTY_MODEL_INPUT_MARKER) {
+        // Named, not blamed on the project: the tree already passed
+        // `has_scannable_files` before the scanner was spawned, so an empty
+        // model input can only have come from the model side.
+        "scanner aborted with an empty model input — the model API rate-limited the scan and \
+         the retry/rewind left nothing to send. Lower the scan cadence or raise the \
+         tokens-per-minute limit for the `strix_llm` model"
+            .to_string()
     } else {
         format!("scanner exited {status}: {detail}")
     }
@@ -335,18 +355,31 @@ mod tests {
     }
 
     #[test]
-    fn empty_model_input_is_a_skip_not_a_crash() {
-        let kinrows = "scanner exited exit status: 1: RuntimeError: Prepared model input is empty";
-        assert!(is_empty_input_skip(kinrows));
+    fn empty_model_input_is_a_scanner_failure_not_an_empty_project() {
+        // 2026-08-31, live from m1's own `strix.log`: this error is the Agents
+        // SDK giving up after a storm of `Rate limit reached ... tokens per min
+        // (TPM): Limit 200000` rewinds — the tree was full of source. Calling
+        // it a skip is what hid twenty days of zero completed scans.
+        let rate_limited =
+            "scanner exited exit status: 1: RuntimeError: Prepared model input is empty";
+        assert!(
+            !is_empty_input_skip(rate_limited),
+            "an empty model input is an upstream API failure, never an empty project"
+        );
         assert!(is_empty_input_skip("no scannable files"));
         assert!(!is_empty_input_skip(
             "scanner exited exit status: 2: Authentication Error, Model not found"
         ));
 
         let status = std::os::unix::process::ExitStatusExt::from_raw(1 << 8);
-        assert_eq!(
-            classify_scanner_failure(status, "RuntimeError: Prepared model input is empty"),
-            "no scannable files: scanner produced empty model input"
+        let classified = classify_scanner_failure(status, EMPTY_MODEL_INPUT_MARKER);
+        assert!(
+            classified.contains("rate-limit"),
+            "the message must name the real cause, not blame the project: {classified}"
+        );
+        assert!(
+            !is_empty_input_skip(&classified),
+            "the classified message must not round-trip back into the skip arm"
         );
         assert_eq!(
             classify_scanner_failure(status, "Authentication Error, Model not found"),

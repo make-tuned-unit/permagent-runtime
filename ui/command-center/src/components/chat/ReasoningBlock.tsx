@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
-import { font } from '../../styles/tokens';
+import { useEffect, useState, type CSSProperties } from 'react';
+import { FiChevronRight } from 'react-icons/fi';
+import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 /**
@@ -25,33 +26,35 @@ export function ReasoningBlock({ thinking, hasAnswer }: { thinking: string; hasA
 
   return (
     <div style={{ marginBottom: 8 }}>
+      {/* Disclosure toggle, not an action: there is nothing to await, so the
+          pending floor and success tick of the Button primitive are wrong for
+          it and `Button` would displace the aria-expanded/aria-controls pairing
+          that actually describes what this does. It still opts into the shared
+          `.pa-btn` interaction rules — hover, press give — which an inline
+          `style` object cannot express at all. (Precedent: the pick-row
+          toggles in FinanceView.) */}
       <button
+        type="button"
+        className="pa-btn"
         onClick={() => { setUserToggled(true); setOpen(o => !o); }}
         aria-expanded={open}
         style={{
-          display: 'flex',
-          alignItems: 'center',
+          '--pa-btn-fg': colors.textDim,
+          '--pa-btn-fg-hover': colors.textMuted,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '2px 0',
           gap: 6,
-          background: 'transparent',
-          border: 'none',
-          cursor: 'pointer',
-          padding: '2px 0',
           fontFamily: font.mono,
-          fontSize: 11,
+          fontSize: textSize.micro,
           letterSpacing: '0.04em',
-          color: colors.textDim,
-        }}
+        } as CSSProperties}
       >
         <span style={{ color: colors.cyan, opacity: hasAnswer ? 0.65 : 1 }}>✦</span>
         <span>{label}</span>
-        <svg
-          width="9"
-          height="9"
-          viewBox="0 0 10 10"
+        <FiChevronRight
+          size={9}
           style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 160ms ease', opacity: 0.55 }}
-        >
-          <path d="M3 2l4 3-4 3" stroke="currentColor" strokeWidth="1.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        />
       </button>
 
       {open && (

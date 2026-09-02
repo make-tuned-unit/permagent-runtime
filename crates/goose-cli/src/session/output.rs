@@ -636,6 +636,14 @@ pub fn render_error(message: &str) {
     println!("\n  {} {}\n", style("error:").red().bold(), message);
 }
 
+/// Something changed that the user did not ask for and must know about, and
+/// nothing failed — a startup failover onto a different model, for instance.
+/// Deliberately not `render_error`: calling a successful recovery an error
+/// teaches people to ignore the word.
+pub fn render_notice(message: &str) {
+    println!("\n  {} {}\n", style("note:").yellow().bold(), message);
+}
+
 pub fn render_prompts(prompts: &HashMap<String, Vec<String>>) {
     println!();
     for (extension, prompts) in prompts {
@@ -1344,11 +1352,52 @@ fn shorten_path(path: &str, debug: bool) -> String {
     shortened.join("/")
 }
 
+/// The banner's identity line, built as a value so it can be asserted on.
+///
+/// `initial model:` is load-bearing rather than decoration: `/model` switches
+/// the live harness session afterwards, so this pair is only where the session
+/// started. Without the label the banner reads as the current model and goes
+/// quietly stale the first time someone switches.
+fn session_info_line(status: &str, provider: &str, model: &str) -> String {
+    format!(
+        "  {} {} {} {} {} {}",
+        style("●").green(),
+        style(status).dim(),
+        style("·").dim(),
+        style("initial model:").dim(),
+        style(provider).dim(),
+        style(model).cyan(),
+    )
+}
+
+/// Who the user is talking to, as a line.
+///
+/// The banner used to end on a fixed `"Permagent is ready"` — the product
+/// name, never the persona's. A session that has just installed the identity
+/// Chat saved should say whose session it is. Falls back to the product name
+/// when no persona name is known, rather than rendering `" is ready"`.
+fn ready_line(persona_name: &str) -> String {
+    let name = persona_name.trim();
+    if name.is_empty() {
+        "Permagent is ready".to_string()
+    } else {
+        format!("{name} is ready")
+    }
+}
+
+// The CLI deliberately has no opening-greeting renderer. `290468e5` added one
+// mirroring Chat's; it was removed the same day (ruling 2026-08-31, the user:
+// "I don't need it to say Hello sir."). The banner's `ready_line` is the whole
+// introduction a terminal session gets. The persona's `opening_greeting` field
+// is untouched and remains Chat's — that client opens on an empty thread and
+// has a blank space to fill.
+
 pub fn display_session_info(
     resume: bool,
     provider: &str,
     model: &str,
     session_id: &Option<String>,
+    persona_name: &str,
 ) {
     set_terminal_title();
 
@@ -1371,14 +1420,7 @@ pub fn display_session_info(
     // glowing in the brand gradient, and the session info settles beneath it.
     println!();
     play_infinity_intro(provider);
-    println!(
-        "  {} {} {} {} {}",
-        style("●").green(),
-        style(status).dim(),
-        style("·").dim(),
-        style(provider).dim(),
-        style(&model_display).cyan(),
-    );
+    println!("{}", session_info_line(status, provider, &model_display));
     if let Some(id) = session_id {
         println!(
             "    {} {}",
@@ -1388,7 +1430,7 @@ pub fn display_session_info(
     } else {
         println!("    {}", style(cwd_display).dim());
     }
-    println!("    {}", style("Permagent is ready").white());
+    println!("    {}", style(ready_line(persona_name)).white());
 }
 
 // ── Permagent infinity banner ───────────────────────────────────────────────
@@ -1773,6 +1815,18 @@ mod tests {
     use serde_json::json;
     use std::env;
 
+    /// The banner never named the persona — it ended on the product name, so a
+    /// session running as the identity Chat saved introduced itself as nobody.
+    #[test]
+    fn the_banner_says_who_is_ready_by_name() {
+        assert_eq!(ready_line("Henry"), "Henry is ready");
+        assert_eq!(
+            ready_line("  "),
+            "Permagent is ready",
+            "no name known: fall back to the product, never render \" is ready\""
+        );
+    }
+
     /// The seam `render_message`/`render_message_streaming` match on: a
     /// `ReviewerMandate` `Park` reason (always `REVIEW_PARK_PREFIX` + reason)
     /// strips cleanly to the reason text; anything else does not match, and
@@ -1946,5 +2000,22 @@ mod tests {
             json!({"top_up_url": "https://router.tetrate.ai/billing"}),
         );
         assert_eq!(get_credits_top_up_url(&message), None);
+    }
+
+    /// The startup banner must say the model it prints is the *initial* one.
+    /// `/model` can move the session off it mid-run, and an unlabelled pair
+    /// silently becomes a lie the moment that happens.
+    #[test]
+    fn startup_banner_labels_its_model_as_the_initial_one() {
+        let line = console::strip_ansi_codes(&session_info_line(
+            "new session",
+            "anthropic",
+            "claude-sonnet-5",
+        ))
+        .into_owned();
+        assert_eq!(
+            line,
+            "  ● new session · initial model: anthropic claude-sonnet-5"
+        );
     }
 }

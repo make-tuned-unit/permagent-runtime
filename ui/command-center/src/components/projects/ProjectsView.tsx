@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { font } from '../../styles/tokens';
+import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
+import { font, radius, textSize } from '../../styles/tokens';
+import { Button } from '../common/Button';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
 import { insertRoadmapGoal } from '../../lib/roadmapClient';
@@ -10,8 +11,8 @@ import { ProjectWorkspace } from './ProjectWorkspace';
 import { CardDetailModal } from './CardDetailModal';
 import { PERSONAL_ID, CANCELLABLE_STATES, type Project, type BoardColumn, type Card } from './types';
 import { ViewHeader } from '../common/ViewHeader';
+import { StateBlock } from '../common/StateBlock';
 
-const LS_KEY = 'permagent-projects-last-opened';
 
 function isProject(value: unknown): value is Project {
   if (!value || typeof value !== 'object') return false;
@@ -51,7 +52,10 @@ function emitProjectSelected(project: Project, sessionId: string | null = null) 
 export function ProjectsView() {
   const { gradient, colors } = useTheme();
   const [projects, setProjects] = useState<Project[]>([]);
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  // The selection is shared with Grow and Build now (J7), and remembered
+  // across launches by the store rather than by this view.
+  const activeProjectId = useCommandCenter(s => s.currentProjectId);
+  const setActiveProjectId = useCommandCenter(s => s.setCurrentProject);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const pendingProjectNavigation = useCommandCenter(s => s.pendingProjectNavigation);
@@ -104,14 +108,13 @@ export function ProjectsView() {
     if (projectsRev > 0) loadProjects();
   }, [projectsRev, loadProjects]);
 
-  // On first load, restore last-opened project.
+  // The restore is the store's (it reads the remembered id at creation); this
+  // only drops a remembered id the list no longer contains, so a deleted
+  // project cannot leave every surface pointed at nothing.
   useEffect(() => {
-    if (loading || projects.length === 0) return;
-    const saved = localStorage.getItem(LS_KEY);
-    if (saved && projects.some(p => p.id === saved)) {
-      setActiveProjectId(saved);
-    }
-  }, [loading, projects]);
+    if (loading || projects.length === 0 || !activeProjectId) return;
+    if (!projects.some(p => p.id === activeProjectId)) setActiveProjectId(null);
+  }, [loading, projects, activeProjectId, setActiveProjectId]);
 
   // Agent/voice navigation: open a specific project when pendingProjectNavigation
   // is set. The id is resolved daemon-side against the LIVE project list
@@ -130,7 +133,6 @@ export function ProjectsView() {
     const target = projects.find(p => p.id === pendingProjectNavigation);
     if (target) {
       setActiveProjectId(target.id);
-      localStorage.setItem(LS_KEY, target.id);
       emitProjectSelected(target);
       refreshedForPendingRef.current = null;
       setPendingProjectNavigation(null);
@@ -153,16 +155,14 @@ export function ProjectsView() {
 
   const openProject = useCallback((id: string) => {
     setActiveProjectId(id);
-    localStorage.setItem(LS_KEY, id);
     // Emit activity so agent knows which project is now active
     const project = projects.find(p => p.id === id);
     if (project) emitProjectSelected(project);
-  }, [projects]);
+  }, [projects, setActiveProjectId]);
 
   const backToAll = useCallback(() => {
     setActiveProjectId(null);
-    localStorage.removeItem(LS_KEY);
-  }, []);
+  }, [setActiveProjectId]);
 
   const handleStatusChange = useCallback(async (projectId: string, newStatus: string) => {
     try {
@@ -180,7 +180,7 @@ export function ProjectsView() {
 
   if (loading) {
     return (
-      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, color: colors.textMuted, fontFamily: font.body, fontSize: 13 }}>
+      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, color: colors.textMuted, fontFamily: font.body, fontSize: textSize.small }}>
         Loading projects...
       </div>
     );
@@ -203,10 +203,9 @@ export function ProjectsView() {
 
   if (activeProjectId) {
     const project = projects.find(p => p.id === activeProjectId);
-    if (!project) {
-      setActiveProjectId(null);
-      return null;
-    }
+    // The effect above drops an id the list has lost; until it runs, show the
+    // board rather than setting state during render.
+    if (!project) return null;
     return (
       <ProjectWorkspace
         project={project}
@@ -228,44 +227,6 @@ export function ProjectsView() {
 // One shape for every "nothing to show" moment on the Projects surface, so an
 // empty board and a failed fetch never read the same (blank) way. `error` tone
 // gets a danger accent + a Retry affordance; `empty` tone is calm/dim.
-
-function StateBlock({ tone, title, detail, onRetry, compact }: {
-  tone: 'empty' | 'error';
-  title: string;
-  detail?: string;
-  onRetry?: () => void;
-  compact?: boolean;
-}) {
-  const { colors } = useTheme();
-  const isError = tone === 'error';
-  const accent = isError ? colors.danger : colors.textMuted;
-  return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
-      textAlign: 'center', padding: compact ? '20px 16px' : '40px 24px',
-      color: colors.textMuted, fontFamily: font.body,
-    }}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: accent }}>{title}</div>
-      {detail && (
-        <div style={{ fontSize: 11, color: colors.textDim, maxWidth: 320, lineHeight: 1.5 }}>
-          {detail}
-        </div>
-      )}
-      {onRetry && (
-        <button
-          onClick={onRetry}
-          style={{
-            marginTop: 6, padding: '5px 14px', borderRadius: 6, cursor: 'pointer',
-            background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-            color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
-          }}
-        >
-          Try again
-        </button>
-      )}
-    </div>
-  );
-}
 
 // ── All Projects View — Active-dominant landing (ruling 2026-07-10) ──
 //
@@ -343,7 +304,7 @@ projects, onOpenProject, onStatusChange }: {
             display: 'grid',
             gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
             gap: 12,
-            borderRadius: 12,
+            borderRadius: radius.lg,
             padding: 4,
             border: dragOverCol === 'active' ? `1px solid ${colors.borderHi}` : '1px solid transparent',
             background: dragOverCol === 'active' ? colors.cyanSoft : 'transparent',
@@ -376,6 +337,7 @@ projects, onOpenProject, onStatusChange }: {
           const colProjects = projects.filter(p => p.status === col.key).sort(byRecency);
           const isOver = dragOverCol === col.key;
           const isOpen = expanded[col.key] ?? false;
+          const shelfId = `projects-shelf-${col.key}`;
           return (
             <div
               key={col.key}
@@ -389,22 +351,32 @@ projects, onOpenProject, onStatusChange }: {
                 transition: 'all 150ms',
               }}
             >
+              {/* Disclosure toggle for the shelf below it, so it keeps its own
+                  element (a `Button` would wrap this row of chips in one inline
+                  label span and collapse the layout) and takes the shared
+                  `.pa-btn` interaction rules instead. */}
               <button
+                className="pa-btn"
+                aria-expanded={isOpen}
+                aria-controls={shelfId}
                 onClick={() => setExpanded(prev => ({ ...prev, [col.key]: !isOpen }))}
                 style={{
-                  width: '100%', display: 'flex', alignItems: 'center', gap: 8,
-                  padding: '9px 14px', background: 'transparent', border: 'none',
-                  color: colors.textMuted, cursor: 'pointer', fontFamily: font.body,
-                }}
+                  '--pa-btn-fg': colors.textMuted,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-pad': '9px 14px',
+                  width: '100%', gap: 8, justifyContent: 'flex-start',
+                  fontFamily: font.body,
+                } as CSSProperties}
               >
                 <span style={{
                   fontSize: 10, transform: isOpen ? 'rotate(90deg)' : 'none',
                   transition: 'transform 150ms', display: 'inline-block',
                 }}>▶</span>
-                <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                <span style={{ fontSize: textSize.micro, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                   {col.label}
                 </span>
-                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: 8 }}>
+                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: radius.md }}>
                   {colProjects.length}
                 </span>
                 {!isOpen && colProjects.length > 0 && (
@@ -415,7 +387,7 @@ projects, onOpenProject, onStatusChange }: {
                 {isOver && <span style={{ fontSize: 10, color: colors.cyan, marginLeft: 'auto' }}>drop to {col.label.toLowerCase()}</span>}
               </button>
               {isOpen && colProjects.length > 0 && (
-                <div style={{
+                <div id={shelfId} style={{
                   display: 'grid',
                   gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
                   gap: 10, padding: '4px 12px 12px',
@@ -431,7 +403,7 @@ projects, onOpenProject, onStatusChange }: {
                 </div>
               )}
               {isOpen && colProjects.length === 0 && (
-                <div style={{ padding: '4px 14px 12px', fontSize: 11, color: colors.textDim }}>Empty.</div>
+                <div id={shelfId} style={{ padding: '4px 14px 12px', fontSize: textSize.micro, color: colors.textDim }}>Empty.</div>
               )}
             </div>
           );
@@ -461,7 +433,7 @@ project, onOpen, onDragStart }: {
       onClick={onOpen}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
       style={{
-        padding: '10px 12px', borderRadius: 8,
+        padding: '10px 12px', borderRadius: radius.md,
         background: colors.surface,
         border: `1px solid ${colors.border}`,
         cursor: 'pointer',
@@ -474,23 +446,23 @@ project, onOpen, onDragStart }: {
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         {isPersonal && (
-          <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, background: colors.cyanSoft, color: colors.cyan, fontWeight: 600 }}>
+          <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: radius.xs, background: colors.cyanSoft, color: colors.cyan, fontWeight: 600 }}>
             DEFAULT
           </span>
         )}
-        <span style={{ fontSize: 13, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span style={{ fontSize: textSize.small, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {project.name}
         </span>
       </div>
       {project.description && (
-        <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {project.description}
         </div>
       )}
       {project.tags.length > 0 && (
         <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
           {project.tags.slice(0, 3).map((tag, ti) => (
-            <span key={`${tag}-${ti}`} style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, background: tagVeil, color: colors.textDim }}>
+            <span key={`${tag}-${ti}`} style={{ fontSize: 10, padding: '1px 5px', borderRadius: radius.xs, background: tagVeil, color: colors.textDim }}>
               {tag}
             </span>
           ))}
@@ -682,8 +654,11 @@ export function ProjectKanban({ project }: { project: Project }) {
     setGhostLabel(title);
   };
 
-  const handleAddCard = async (columnId: string) => {
-    if (!newCardTitle.trim()) return;
+  // Resolves `true`/`false` rather than void: the Add button reads the result to
+  // decide whether it may tick, and this helper swallows its own failure into a
+  // toast, so a silent `undefined` would confirm an add that never happened.
+  const handleAddCard = async (columnId: string): Promise<boolean> => {
+    if (!newCardTitle.trim()) return false;
     try {
       const column = columns.find(c => c.id === columnId);
       if (column?.stateBinding === 'triage') {
@@ -699,8 +674,10 @@ export function ProjectKanban({ project }: { project: Project }) {
       setNewCardTitle('');
       setAddingCardCol(null);
       loadBoard();
+      return true;
     } catch (err) {
       toast('Couldn\'t add card', err instanceof Error ? err.message : String(err));
+      return false;
     }
   };
 
@@ -728,7 +705,7 @@ export function ProjectKanban({ project }: { project: Project }) {
 
   if (loading) {
     return (
-      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, color: colors.textMuted, fontFamily: font.body, fontSize: 13 }}>
+      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, color: colors.textMuted, fontFamily: font.body, fontSize: textSize.small }}>
         Loading board...
       </div>
     );
@@ -783,10 +760,10 @@ export function ProjectKanban({ project }: { project: Project }) {
             >
               {/* Column header */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 4px 10px', borderBottom: `1px solid ${colors.border}` }}>
-                <span style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', flex: 1 }}>
+                <span style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', flex: 1 }}>
                   {col.name}
                 </span>
-                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: 8 }}>
+                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: radius.md }}>
                   {colCards.length}
                 </span>
               </div>
@@ -836,50 +813,69 @@ export function ProjectKanban({ project }: { project: Project }) {
                     }}
                     placeholder="Card title..."
                     style={{
-                      padding: '6px 8px', borderRadius: 6,
+                      padding: '6px 8px', borderRadius: radius.sm,
                       background: colors.inputBg,
                       border: `1px solid ${colors.border}`,
-                      color: colors.text, fontFamily: font.body, fontSize: 12,
+                      color: colors.text, fontFamily: font.body, fontSize: textSize.caption,
                       outline: 'none',
                     }}
                   />
                   <div style={{ display: 'flex', gap: 4 }}>
-                    <button
+                    <Button
+                      colors={colors}
+                      variant="ghostOn"
                       onClick={() => handleAddCard(col.id)}
                       style={{
-                        flex: 1, padding: '4px 0', borderRadius: 5,
-                        background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-                        color: colors.cyan, fontSize: 11, fontFamily: font.body, fontWeight: 600, cursor: 'pointer',
-                      }}
+                        '--pa-btn-bg': colors.cyanSoft,
+                        '--pa-btn-bg-hover': colors.cyanSoft,
+                        '--pa-btn-border': colors.borderHi,
+                        '--pa-btn-border-hover': colors.cyan,
+                        '--pa-btn-pad': '4px 0',
+                        '--pa-btn-radius': '5px',
+                        '--pa-btn-weight': 600,
+                        flex: 1, fontSize: textSize.micro, fontFamily: font.body,
+                      } as CSSProperties}
                     >
                       Add
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      colors={colors}
                       onClick={() => { setAddingCardCol(null); setNewCardTitle(''); }}
                       style={{
-                        padding: '4px 8px', borderRadius: 5,
-                        background: 'transparent', border: `1px solid ${colors.border}`,
-                        color: colors.textMuted, fontSize: 11, fontFamily: font.body, cursor: 'pointer',
-                      }}
+                        '--pa-btn-fg': colors.textMuted,
+                        '--pa-btn-fg-hover': colors.text,
+                        '--pa-btn-border': colors.border,
+                        '--pa-btn-border-hover': colors.borderHi,
+                        '--pa-btn-pad': '4px 8px',
+                        '--pa-btn-radius': '5px',
+                        fontSize: textSize.micro, fontFamily: font.body,
+                      } as CSSProperties}
                     >
                       Cancel
-                    </button>
+                    </Button>
                   </div>
                 </div>
               ) : (
-                <button
+                <Button
+                  colors={colors}
                   onClick={() => setAddingCardCol(col.id)}
                   style={{
-                    marginTop: 8, padding: '6px 0', borderRadius: 6,
-                    background: 'transparent', border: `1px dashed ${colors.border}`,
-                    color: colors.textDim, fontSize: 11, fontFamily: font.body,
-                    cursor: 'pointer', transition: 'all 150ms',
-                  }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; (e.currentTarget as HTMLElement).style.color = colors.textMuted; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; (e.currentTarget as HTMLElement).style.color = colors.textDim; }}
+                    '--pa-btn-fg': colors.textDim,
+                    '--pa-btn-fg-hover': colors.textMuted,
+                    '--pa-btn-border': colors.border,
+                    '--pa-btn-border-hover': colors.borderHi,
+                    '--pa-btn-bg-hover': 'transparent',
+                    '--pa-btn-pad': '6px 0',
+                    '--pa-btn-radius': `${radius.sm}px`,
+                    // The dashed rule is what says "not a card yet". `.pa-btn`
+                    // owns the 1px width and the (hoverable) color, so only the
+                    // style is overridden here.
+                    borderStyle: 'dashed',
+                    marginTop: 8, fontSize: textSize.micro, fontFamily: font.body,
+                  } as CSSProperties}
                 >
                   + Add card
-                </button>
+                </Button>
               )}
             </div>
           );
@@ -901,10 +897,10 @@ export function ProjectKanban({ project }: { project: Project }) {
       {draggingCard && ghostPos && (
         <div style={{
           position: 'fixed', left: ghostPos.x + 8, top: ghostPos.y - 12,
-          padding: '6px 10px', borderRadius: 6,
+          padding: '6px 10px', borderRadius: radius.sm,
           background: colors.surface, border: `1px solid ${colors.cyan}`,
           boxShadow: colors.elevationRaised,
-          fontSize: 12, fontWeight: 500, color: colors.text,
+          fontSize: textSize.caption, fontWeight: 500, color: colors.text,
           pointerEvents: 'none', zIndex: 9999, maxWidth: 200,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>
@@ -968,24 +964,40 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
       onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = highlighted ? colors.cyan : colors.border; }}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-        <div style={{ fontSize: 12, fontWeight: 500, flex: 1, minWidth: 0 }}>{card.title}</div>
+        <div style={{ fontSize: textSize.caption, fontWeight: 500, flex: 1, minWidth: 0 }}>{card.title}</div>
         {/* Visible, keyboard-reachable menu trigger — right-click still works too.
-            stopPropagation on pointer-down so opening the menu never starts a drag. */}
+            stopPropagation on pointer-down so opening the menu never starts a drag.
+
+            It was already labelled and already focusable; what it lacked was
+            looking like a control. At 18×18 with no chrome at any state it read
+            as a stray character that happened to sit in the corner, and it was
+            below any reasonable pointer target — on a card you are also
+            expected to drag, so a near-miss starts a drag instead of opening a
+            menu. It is now a 28px target with resting chrome and a `title`, so
+            it is both hittable and identifiable before it is hovered. */}
         <button
+          className="pa-btn"
+          data-testid={`card-menu-${card.id}`}
           aria-label={`Card actions for ${card.title}`}
           aria-haspopup="menu"
           aria-expanded={showMenu}
+          title="Card actions"
           onPointerDown={e => e.stopPropagation()}
           onClick={e => { e.stopPropagation(); setShowMenu(m => !m); }}
           style={{
-            flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 18, height: 18, marginTop: -1, marginRight: -2, padding: 0, borderRadius: 4,
-            background: 'transparent', border: 'none', cursor: 'pointer',
-            color: showMenu ? colors.text : colors.textDim, lineHeight: 1, fontSize: 14,
-            transition: reduceMotion ? 'none' : 'color 150ms',
-          }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.text; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = showMenu ? colors.text : colors.textDim; }}
+            '--pa-btn-bg': showMenu ? colors.surfaceHi : 'transparent',
+            '--pa-btn-fg': showMenu ? colors.text : colors.textDim,
+            '--pa-btn-border': showMenu ? colors.borderHi : colors.border,
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-border-hover': colors.borderHi,
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': `${radius.sm}px`,
+            flexShrink: 0,
+            width: 28, height: 28, marginTop: -4, marginRight: -6,
+            lineHeight: 1, fontSize: textSize.body,
+            transition: reduceMotion ? 'none' : undefined,
+          } as CSSProperties}
         >
           ⋯
         </button>
@@ -1010,28 +1022,37 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
           }}
           style={{
             marginTop: 5, fontSize: 10, padding: '2px 4px', width: '100%', boxSizing: 'border-box',
-            borderRadius: 4, border: `1px solid ${colors.border}`,
+            borderRadius: radius.xs, border: `1px solid ${colors.border}`,
             background: colors.surface, color: colors.text,
           }}
         />
       ) : dueDate ? (
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           onPointerDown={e => e.stopPropagation()}
           onClick={e => { e.stopPropagation(); if (onSetDueDate) setEditingDue(true); }}
           title={onSetDueDate ? 'Change the due date' : undefined}
           style={{
-            fontSize: 10, padding: '1px 5px', borderRadius: 4, marginTop: 4,
-            display: 'inline-block', border: 'none',
+            '--pa-btn-bg': colors.cyanSoft,
+            '--pa-btn-fg': colors.cyan,
+            // Without a handler this chip is a label, not an affordance: it must
+            // not light up under the mouse as if it did something.
+            '--pa-btn-bg-hover': colors.cyanSoft,
+            '--pa-btn-bg-active': colors.cyanSoft,
+            '--pa-btn-border-hover': onSetDueDate ? colors.cyan : 'transparent',
+            '--pa-btn-pad': '1px 5px',
+            '--pa-btn-radius': `${radius.xs}px`,
+            fontSize: 10, marginTop: 4, fontFamily: font.body,
             cursor: onSetDueDate ? 'pointer' : 'default',
-            background: colors.cyanSoft, color: colors.cyan, fontFamily: font.body,
-          }}
+          } as CSSProperties}
         >
           Due {dueDate}
-        </button>
+        </Button>
       ) : null}
       {card.cardType !== 'standard' && (
         <span style={{
-          fontSize: 10, padding: '1px 5px', borderRadius: 4, marginTop: 4, display: 'inline-block',
+          fontSize: 10, padding: '1px 5px', borderRadius: radius.xs, marginTop: 4, display: 'inline-block',
           background: isGoal ? colors.purpleSoft : colors.cyanSoft,
           color: isGoal ? colors.purpleBright : colors.cyan,
         }}>
@@ -1044,68 +1065,81 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
           onPointerDown={e => e.stopPropagation()}
           style={{
             position: 'absolute', top: '100%', right: 0, marginTop: 2, zIndex: 10,
-            background: gradient.dropdown, border: `1px solid ${colors.border}`, borderRadius: 6,
+            background: gradient.dropdown, border: `1px solid ${colors.border}`, borderRadius: radius.sm,
             boxShadow: colors.elevationRaised, padding: 2, minWidth: 100,
           }}>
+          {/* The menu rows keep their own elements: `role="menuitem"` is what
+              makes this a menu, and `Button` would flatten it. They take the
+              shared `.pa-btn` interaction rules instead. */}
           {onCancel && (
             <button
+              className="pa-btn"
               role="menuitem"
               onClick={(e) => { e.stopPropagation(); setShowMenu(false); onCancel(); }}
               style={{
-                width: '100%', padding: '5px 8px', borderRadius: 4,
-                background: 'transparent', border: 'none',
-                color: colors.warning, fontSize: 11, fontFamily: font.body,
-                cursor: 'pointer', textAlign: 'left',
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.warning + '1A'; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                '--pa-btn-fg': colors.warning,
+                '--pa-btn-bg-hover': colors.warning + '1A',
+                '--pa-btn-bg-active': colors.warning + '2E',
+                '--pa-btn-pad': '5px 8px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                width: '100%', justifyContent: 'flex-start', textAlign: 'left',
+                fontSize: textSize.micro, fontFamily: font.body,
+              } as CSSProperties}
             >
               Cancel goal
             </button>
           )}
           {onSetDueDate && (
             <button
+              className="pa-btn"
               role="menuitem"
               onClick={(e) => { e.stopPropagation(); setShowMenu(false); setEditingDue(true); }}
               style={{
-                width: '100%', padding: '5px 8px', borderRadius: 4,
-                background: 'transparent', border: 'none',
-                color: colors.textMuted, fontSize: 11, fontFamily: font.body,
-                cursor: 'pointer', textAlign: 'left',
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.borderHi; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': colors.borderHi,
+                '--pa-btn-bg-active': colors.cyanSoft,
+                '--pa-btn-pad': '5px 8px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                width: '100%', justifyContent: 'flex-start', textAlign: 'left',
+                fontSize: textSize.micro, fontFamily: font.body,
+              } as CSSProperties}
             >
               {dueDate ? 'Change due date' : 'Set due date'}
             </button>
           )}
           {onSetDueDate && dueDate && (
             <button
+              className="pa-btn"
               role="menuitem"
               onClick={(e) => { e.stopPropagation(); setShowMenu(false); onSetDueDate(null); }}
               style={{
-                width: '100%', padding: '5px 8px', borderRadius: 4,
-                background: 'transparent', border: 'none',
-                color: colors.textMuted, fontSize: 11, fontFamily: font.body,
-                cursor: 'pointer', textAlign: 'left',
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.borderHi; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': colors.borderHi,
+                '--pa-btn-bg-active': colors.cyanSoft,
+                '--pa-btn-pad': '5px 8px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                width: '100%', justifyContent: 'flex-start', textAlign: 'left',
+                fontSize: textSize.micro, fontFamily: font.body,
+              } as CSSProperties}
             >
               Clear due date
             </button>
           )}
           <button
+            className="pa-btn"
             role="menuitem"
             onClick={(e) => { e.stopPropagation(); setShowMenu(false); onDelete(); }}
             style={{
-              width: '100%', padding: '5px 8px', borderRadius: 4,
-              background: 'transparent', border: 'none',
-              color: colors.danger, fontSize: 11, fontFamily: font.body,
-              cursor: 'pointer', textAlign: 'left',
-            }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.danger + '1A'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+              '--pa-btn-fg': colors.danger,
+              '--pa-btn-bg-hover': colors.danger + '1A',
+              '--pa-btn-bg-active': colors.danger + '2E',
+              '--pa-btn-pad': '5px 8px',
+              '--pa-btn-radius': `${radius.xs}px`,
+              width: '100%', justifyContent: 'flex-start', textAlign: 'left',
+              fontSize: textSize.micro, fontFamily: font.body,
+            } as CSSProperties}
           >
             Delete card
           </button>

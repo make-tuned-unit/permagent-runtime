@@ -407,6 +407,118 @@ select:focus-visible {
   animation: pa-spin 0.8s linear infinite;
 }
 
+/* Indeterminate job bar (components/common/JobProgress.tsx). Used ONLY when
+   the backend reported no size for the work — the band sweeps to say "still
+   running" without claiming a fraction the daemon never gave. Honors
+   prefers-reduced-motion via the block above, where it settles to a static
+   band rather than a fake fill. */
+@keyframes pa-job-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(320%); }
+}
+.pa-job-sweep {
+  animation: pa-job-sweep 1.4s ease-in-out infinite;
+}
+
+/* ── Button primitive (components/common/Button.tsx) ─────────────────────────
+   Inline `style` objects cannot express :hover or :active, so every button
+   styled that way was pressable with no acknowledgement and disable-able with
+   no visible difference. Colors arrive per-instance as custom properties from
+   the theme, so this one rule set covers every variant without hard-coding a
+   palette here. Durations follow the motion tokens (fast = 160ms hover/focus)
+   and inherit the prefers-reduced-motion guard above. */
+.pa-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: var(--pa-btn-weight, 500);
+  padding: var(--pa-btn-pad, 6px 10px);
+  border-radius: var(--pa-btn-radius, 6px);
+  background: var(--pa-btn-bg, transparent);
+  color: var(--pa-btn-fg, inherit);
+  border: 1px solid var(--pa-btn-border, transparent);
+  cursor: pointer;
+  box-shadow: 0 0 0 0 transparent;
+  transition:
+    background-color 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    color 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 80ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* Text color is part of hover, not just fill: the commonest resting pattern in
+   this app is a muted icon that comes up to full on hover, and expressing that
+   with a pair of JS mouse handlers is exactly what this primitive replaces.
+   Defaulted to the resting color, so nothing that does not name it changes. */
+.pa-btn:hover:not(:disabled) {
+  background: var(--pa-btn-bg-hover, var(--pa-btn-bg, transparent));
+  border-color: var(--pa-btn-border-hover, var(--pa-btn-border, transparent));
+  color: var(--pa-btn-fg-hover, var(--pa-btn-fg, inherit));
+}
+.pa-btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+/* Pressed: a small give, not a bounce. 80ms so it reads as mechanical. */
+.pa-btn:active:not(:disabled) {
+  transform: scale(0.97);
+  background: var(--pa-btn-bg-active, var(--pa-btn-bg-hover, var(--pa-btn-bg, transparent)));
+}
+.pa-btn--primary:active:not(:disabled) {
+  filter: brightness(0.94);
+}
+.pa-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* In-flight beats plain-disabled: the button is disabled while it works, but
+   it should read as busy, not as unavailable. */
+.pa-btn[data-pending='true'],
+.pa-btn[data-pending='true']:disabled {
+  opacity: 0.8;
+  cursor: progress;
+}
+.pa-btn[data-state='success']:not(.pa-btn--primary) {
+  border-color: var(--pa-btn-success, #34d399);
+  color: var(--pa-btn-success, #34d399);
+}
+.pa-btn--primary[data-state='success'] {
+  box-shadow: 0 0 0 2px var(--pa-btn-success, #34d399);
+}
+/* The label span exists so the spinner and the tick can sit beside the label
+   rather than inside it. It must not become a layout of its own: Tailwind's
+   reset makes every `svg` a block, and a block inside an inline span breaks the
+   line — so `<FiPlus /> New` renders the icon ABOVE the word. `display:
+   contents` removes the span from layout entirely, which puts the children back
+   where they were before the migration: flex children of the button, centred,
+   separated by its gap, able to `flex: 1` and to truncate. */
+.pa-btn__label {
+  display: contents;
+}
+/* Kept as a name a call site can state when its children being the button's own
+   flex children is load-bearing — a `flex: 1` label that truncates with meta
+   pushed right. The adoption gate reads it on a `<button>` that stayed
+   hand-rolled for that reason: a declaration of the reason, not a way out. */
+.pa-btn--composite > .pa-btn__label {
+  display: contents;
+}
+.pa-btn__spinner {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+}
+.pa-btn__tick {
+  flex: none;
+  font-weight: 700;
+}
+
 /* Sidebar hover tooltip — a short rise-and-fade so the label reads as attached
    to the row being pointed at rather than appearing from nowhere. Paired with
    a portal (see SidebarTooltip.tsx): the rail clips its own overflow. */

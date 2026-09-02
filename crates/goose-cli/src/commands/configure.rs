@@ -1852,7 +1852,9 @@ pub async fn handle_openrouter_auth() -> anyhow::Result<()> {
                 .complete(
                     &provider_model_config,
                     "",
-                    "You are Permagent, an AI assistant.",
+                    // A one-shot reachability check, not a session. Naming an
+                    // identity here is noise that greps as a persona bug.
+                    "Reply exactly as asked. This is a connectivity check.",
                     &[Message::user().with_text("Say 'Configuration test successful!'")],
                     &[],
                 )

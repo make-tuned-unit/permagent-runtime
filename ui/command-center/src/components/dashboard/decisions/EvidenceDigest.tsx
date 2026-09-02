@@ -11,8 +11,8 @@
  * **markdown** stays literal; URLs stay plain text; nothing is auto-linked.
  */
 
-import { useEffect, useState } from 'react';
-import { font, radius, ease } from '../../../styles/tokens';
+import { useEffect, useId, useState, type CSSProperties } from 'react';
+import { font, radius, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { decisionsClient } from './client';
 import type { DispatchEvidenceData, EvidenceDigestData, IndependentReviewDetail } from './types';
@@ -46,14 +46,14 @@ export function EvidenceDigest({ projectId, goalId }: { projectId: string; goalI
 
   if (state.kind === 'loading') {
     return (
-      <div style={{ marginTop: 12, fontSize: 12, color: colors.textDim, fontFamily: font.body }}>
+      <div style={{ marginTop: 12, fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body }}>
         Loading evidence…
       </div>
     );
   }
   if (state.kind === 'none') {
     return (
-      <div style={{ marginTop: 12, fontSize: 12, color: colors.textDim, fontFamily: font.body }}>
+      <div style={{ marginTop: 12, fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body }}>
         No verification evidence has been recorded for this item yet.
       </div>
     );
@@ -69,8 +69,9 @@ export function EvidenceDigest({ projectId, goalId }: { projectId: string; goalI
 // ── Dispatch evidence (deterministic proof-of-work) ─────────────────────────
 
 function DispatchEvidenceView({ ev }: { ev: DispatchEvidenceData }) {
-  const { colors, reduceMotion } = useTheme();
+  const { colors } = useTheme();
   const [showDetails, setShowDetails] = useState(false);
+  const detailsId = useId();
 
   const pushed = !!ev.push_target;
   const head = ev.head_commit ?? '(unknown)';
@@ -84,29 +85,43 @@ function DispatchEvidenceView({ ev }: { ev: DispatchEvidenceData }) {
     <div style={{ marginTop: 12 }}>
       <div style={{
         borderRadius: radius.sm, border: `1px solid ${colors.border}`,
-        padding: '10px 14px', fontFamily: font.body, fontSize: 12,
+        padding: '10px 14px', fontFamily: font.body, fontSize: textSize.caption,
         color: colors.textMuted, display: 'flex', flexDirection: 'column', gap: 6,
       }}>
         <SummaryRow ok={ev.commits.length > 0} text={headline} />
         <div style={{ color: colors.text, fontWeight: 500 }}>{diffLine}</div>
+        {/* Disclosure toggle for the raw layer below: nothing to await, so it
+            keeps the element and takes the shared `.pa-btn` interaction rules
+            rather than the Button primitive's pending/success machinery. */}
         <button
+          type="button"
+          className="pa-btn"
+          aria-expanded={showDetails}
+          aria-controls={detailsId}
           onClick={() => setShowDetails(o => !o)}
           style={{
-            alignSelf: 'flex-start', background: 'none', border: 'none',
-            color: showDetails ? colors.cyan : colors.textDim,
-            fontSize: 11, fontFamily: font.body, cursor: 'pointer', padding: 0,
-            transition: reduceMotion ? 'none' : `color 150ms ${ease.out}`,
-          }}
+            '--pa-btn-bg': 'transparent',
+            '--pa-btn-fg': showDetails ? colors.cyan : colors.textDim,
+            '--pa-btn-border': 'transparent',
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-fg-hover': showDetails ? colors.cyan : colors.textMuted,
+            '--pa-btn-bg-active': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': '0',
+            '--pa-btn-weight': 400,
+            alignSelf: 'flex-start',
+            fontSize: textSize.micro, fontFamily: font.body,
+          } as CSSProperties}
         >
           {showDetails ? 'Hide proof of work ▾' : 'Show proof of work ▸'}
         </button>
       </div>
 
       {showDetails && (
-        <pre style={{
+        <pre id={detailsId} style={{
           margin: '8px 0 0', borderRadius: radius.sm,
           background: colors.codeBg, padding: '12px 14px',
-          fontFamily: font.mono, fontSize: 11, lineHeight: 1.6,
+          fontFamily: font.mono, fontSize: textSize.micro, lineHeight: 1.6,
           color: colors.textMuted,
           whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
         }}>
@@ -132,8 +147,9 @@ function DispatchEvidenceView({ ev }: { ev: DispatchEvidenceData }) {
 }
 
 function DigestView({ digest }: { digest: EvidenceDigestData }) {
-  const { colors, reduceMotion } = useTheme();
+  const { colors } = useTheme();
   const [showDetails, setShowDetails] = useState(false);
+  const detailsId = useId();
 
   const cs = digest.checks_summary;
   const checksOk = cs.total_count > 0 && cs.passed_count === cs.total_count;
@@ -156,7 +172,7 @@ function DigestView({ digest }: { digest: EvidenceDigestData }) {
       {/* Plain-language summary layer — server-built one-liners, verbatim */}
       <div style={{
         borderRadius: radius.sm, border: `1px solid ${colors.border}`,
-        padding: '10px 14px', fontFamily: font.body, fontSize: 12,
+        padding: '10px 14px', fontFamily: font.body, fontSize: textSize.caption,
         color: colors.textMuted, display: 'flex', flexDirection: 'column', gap: 6,
       }}>
         <SummaryRow ok={checksOk} text={cs.one_line} />
@@ -165,14 +181,28 @@ function DigestView({ digest }: { digest: EvidenceDigestData }) {
         <div style={{ color: colors.text, fontWeight: 500 }}>
           {costLine}
         </div>
+        {/* Disclosure toggle for the raw layer below: nothing to await, so it
+            keeps the element and takes the shared `.pa-btn` interaction rules
+            rather than the Button primitive's pending/success machinery. */}
         <button
+          type="button"
+          className="pa-btn"
+          aria-expanded={showDetails}
+          aria-controls={detailsId}
           onClick={() => setShowDetails(o => !o)}
           style={{
-            alignSelf: 'flex-start', background: 'none', border: 'none',
-            color: showDetails ? colors.cyan : colors.textDim,
-            fontSize: 11, fontFamily: font.body, cursor: 'pointer', padding: 0,
-            transition: reduceMotion ? 'none' : `color 150ms ${ease.out}`,
-          }}
+            '--pa-btn-bg': 'transparent',
+            '--pa-btn-fg': showDetails ? colors.cyan : colors.textDim,
+            '--pa-btn-border': 'transparent',
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-fg-hover': showDetails ? colors.cyan : colors.textMuted,
+            '--pa-btn-bg-active': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': '0',
+            '--pa-btn-weight': 400,
+            alignSelf: 'flex-start',
+            fontSize: textSize.micro, fontFamily: font.body,
+          } as CSSProperties}
         >
           {showDetails ? 'Hide details ▾' : 'Show details ▸'}
         </button>
@@ -180,10 +210,10 @@ function DigestView({ digest }: { digest: EvidenceDigestData }) {
 
       {/* Raw layer — plain text only */}
       {showDetails && (
-        <pre style={{
+        <pre id={detailsId} style={{
           margin: '8px 0 0', borderRadius: radius.sm,
           background: colors.codeBg, padding: '12px 14px',
-          fontFamily: font.mono, fontSize: 11, lineHeight: 1.6,
+          fontFamily: font.mono, fontSize: textSize.micro, lineHeight: 1.6,
           color: colors.textMuted,
           whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
         }}>

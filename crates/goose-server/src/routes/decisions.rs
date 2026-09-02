@@ -17,7 +17,7 @@ use crate::state::AppState;
 use axum::{
     extract::{Extension, Path, Query, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use permagent::decisions::{self, AnswerError, DecisionAnswer};
@@ -100,6 +100,7 @@ fn status_for_answer_error(err: &AnswerError) -> StatusCode {
         AnswerError::NotFound => StatusCode::NOT_FOUND,
         AnswerError::AlreadyResolved(_) => StatusCode::CONFLICT,
         AnswerError::Forbidden(_) => StatusCode::FORBIDDEN,
+        AnswerError::SelfReference(_) => StatusCode::FORBIDDEN,
         AnswerError::Invalid(_) => StatusCode::BAD_REQUEST,
         AnswerError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -117,6 +118,15 @@ async fn list_decisions_handler(
     // error never blocks the inbox.
     if let Err(e) = permagent::decision_inbox::curation::rerank_open_decisions(&pool).await {
         tracing::warn!("Decision rerank failed (non-fatal): {}", e);
+    }
+    // D29 TTL sweep: a spoken verdict older than 30 minutes stops being
+    // offerable. The read path already refuses to surface one, so this is the
+    // hygiene half — it keeps a stale "yes" from sitting in the row at all.
+    // Failure-tolerant, exactly like the rerank above.
+    match decisions::expire_stale_staged_answers(&pool).await {
+        Ok(n) if n > 0 => tracing::info!("expired {n} stale staged verdict(s)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("Staged-verdict expiry failed (non-fatal): {}", e),
     }
     let mut items = decisions::list_open_decisions(&pool)
         .await
@@ -159,11 +169,37 @@ async fn answer_decision_handler(
     Ok(Json(outcome))
 }
 
+/// Throw away a staged (spoken, uncommitted) verdict — D29's discard.
+///
+/// Cannot resolve anything: it clears the proposal and leaves the decision open
+/// to be answered, ignored, or spoken about again. Idempotent — a second tap
+/// (or one racing the commit) is a 204, never a 404.
+async fn discard_staged_answer_handler(
+    State(state): State<Arc<AppState>>,
+    Path(decision_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let pool = pool_of(&state).await?;
+    let cleared = decisions::clear_staged_answer(&pool, &decision_id)
+        .await
+        .map_err(internal)?;
+    tracing::info!(
+        decision_id = %decision_id,
+        cleared,
+        "discarded a staged verdict"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Answer an open decision as the user and run its gated effect.
 ///
-/// Shared by the HTTP inbox path and the voice spoken-yes path: both are the
-/// user's own channel (authenticated UI / authenticated voice socket), not a
-/// model tool call.
+/// Reached from the authenticated HTTP inbox path ONLY. It used to be shared
+/// with the voice socket's spoken yes/no, on the reasoning that both were "the
+/// user's own channel" — but a microphone cannot say whose mouth it is, and
+/// NIST SP 800-63B-4 §3.2.3.2 forbids treating voice as a biometric comparison
+/// at all. The spoken path now stages a proposal
+/// (`voice::spoken_verdict::stage_spoken_verdict`) and the tap that lands here
+/// is what authenticates it. Keep it that way: a test in `spoken_verdict.rs`
+/// fails if `routes/voice.rs` mentions this function again.
 pub(crate) async fn apply_jesse_answer(
     state: &Arc<AppState>,
     decision_id: &str,
@@ -316,107 +352,6 @@ async fn history_handler(
 /// a follow-on step (dependent promotion) that failed AFTER the effect itself
 /// committed. The warning surfaces in the response's `effect_error` and is
 /// audit-recorded — the decision-spine rule is that nothing here may discard
-/// Fast-forward an approved goal's work onto the project trunk.
-///
-/// The first member is `None` when there is nothing to land at all (no
-/// evidence, no commits, or a project with no `root_path` — a project we
-/// cannot locate on disk has no trunk to land onto, and the daemon's cwd is
-/// emphatically not it). Otherwise it is `(resolved_project_id, outcome)`:
-/// the project id comes back because the post-landing code-map refresh needs
-/// the id this fn RESOLVED (decision.project_id may be absent; the card's is
-/// the fallback). The outcome is reported on the approval in every case,
-/// including refusals — a dirty tree or diverged trunk must be visible, not
-/// silent. The second member surfaces a failure to persist the durable
-/// NeedsMerge follow-up after the approval itself has already committed.
-async fn land_approved_goal(
-    pool: &Pool<Sqlite>,
-    goal_id: &str,
-    project_id: Option<&str>,
-) -> (
-    Option<(String, permagent::goal_landing::LandOutcome)>,
-    Option<String>,
-) {
-    let Some(card) = permagent::cards::get_card(pool, goal_id)
-        .await
-        .ok()
-        .flatten()
-    else {
-        return (None, None);
-    };
-    let project_id = project_id.unwrap_or(card.project_id.as_str()).to_string();
-    let Some(root) = permagent::projects::get_project_by_id_or_slug(pool, &project_id)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|project| project.root_path)
-    else {
-        return (None, None);
-    };
-
-    let Some(req) =
-        permagent::goal_landing::land_request_from_metadata(&card.metadata_json, Some(&root))
-    else {
-        return (None, None);
-    };
-    let outcome = permagent::goal_landing::land(&req).await;
-    let warning =
-        if let permagent::goal_landing::LandOutcome::NeedsMerge { branch, trunk } = &outcome {
-            ensure_needs_merge_decision(pool, goal_id, &card.title, &card.project_id, branch, trunk)
-                .await
-                .err()
-                .map(|error| format!("could not create manual-merge inbox item: {}", error))
-        } else {
-            None
-        };
-
-    (Some((project_id, outcome)), warning)
-}
-
-/// Leave one durable, copy-pasteable recovery item when automatic landing
-/// cannot fast-forward. An existing open unblock for the goal wins: two open
-/// requests for the same goal would compete for the human's answer.
-async fn ensure_needs_merge_decision(
-    pool: &Pool<Sqlite>,
-    goal_id: &str,
-    goal_title: &str,
-    project_id: &str,
-    branch: &str,
-    trunk: &str,
-) -> Result<(), String> {
-    if decisions::find_open_decision_for_goal(pool, goal_id, "unblock")
-        .await?
-        .is_some()
-    {
-        return Ok(());
-    }
-
-    let detail = format!(
-        "Goal \"{}\" ({}) finished on branch `{}`, but it could not be fast-forwarded onto trunk `{}`.\n\nMerge it:\n```sh\ngit switch {}\ngit merge {}\n```\n\nOr rebase it:\n```sh\ngit switch {}\ngit rebase {}\ngit switch {}\ngit merge --ff-only {}\n```",
-        goal_title, goal_id, branch, trunk, trunk, branch, branch, trunk, trunk, branch
-    );
-    decisions::create_decision(
-        pool,
-        decisions::NewDecision {
-            kind: "unblock".to_string(),
-            goal_id: Some(goal_id.to_string()),
-            project_id: Some(project_id.to_string()),
-            headline: Some(
-                "Goal work could not land and needs a manual merge or rebase".to_string(),
-            ),
-            detail: Some(detail),
-            payload: serde_json::to_value(decisions::UnblockPayload {
-                reason: decisions::UnblockReason::Stuck,
-                spent: None,
-                cap: None,
-            })
-            .map_err(|error| error.to_string())?,
-            ..Default::default()
-        },
-    )
-    .await?;
-    Ok(())
-}
-
 /// a `Result` (bug-sweep wave 1).
 async fn execute_effect(
     pool: &Pool<Sqlite>,
@@ -430,73 +365,13 @@ async fn execute_effect(
     }
     let acted_by = proof.acted_by().to_string();
     match (decision.kind.as_str(), decision.answer.as_deref()) {
-        // Review approved → goal completes; dependents become eligible.
-        ("approve_review", Some("approve")) => {
-            let goal_id = match decision.goal_id.as_deref() {
-                Some(g) => g,
-                None => return Ok((None, None)),
-            };
-            goal_transition::advance_goal_checked(
-                pool,
-                goal_id,
-                GoalAction::Approve,
-                &acted_by,
-                Some(proof),
-                TransitionEffects {
-                    review_notes: decision.answer_note.clone(),
-                    ..Default::default()
-                },
-            )
-            .await?;
-            let promotion_warning = match decision.project_id.as_deref() {
-                Some(project_id) => {
-                    goal_transition::promote_eligible_dependents_or_warn(pool, project_id, goal_id)
-                        .await
-                }
-                None => None,
-            };
-            // Recognition write-back (SECONDARY proxy): approval is a positive
-            // outcome. 2-hop join goal_id → worker_session_id → recognition events.
-            permagent::recognition::write_back_decision_outcome(pool, goal_id, true).await;
-
-            // Approving used to move the card and merge NOTHING, so the work
-            // stayed on `goal/<run_id>` and the trunk never saw it — measured
-            // 2026-08-09. Land it now. Fast-forward only, and the outcome is
-            // ALWAYS reported: a landing that silently declined is exactly the
-            // failure this replaces.
-            let (landing, landing_warning) =
-                land_approved_goal(pool, goal_id, decision.project_id.as_deref()).await;
-            let effect = match &landing {
-                Some((_, outcome)) => {
-                    format!("goal approved: Review → Complete; {}", outcome.describe())
-                }
-                None => "goal approved: Review → Complete".to_string(),
-            };
-
-            // The trunk just moved: an existing code map now describes the
-            // pre-landing tree. Refresh it DETACHED and best-effort — the
-            // approval response never waits on (and can never fail because of)
-            // a tree-sitter pass. Fast-forward only: refusals and no-op
-            // landings changed nothing, so there is nothing to re-index. A
-            // never-indexed project is skipped inside the task — landing must
-            // not create indexes nobody asked for.
-            if let Some((project_id, permagent::goal_landing::LandOutcome::FastForwarded { .. })) =
-                &landing
-            {
-                let pool = pool.clone();
-                let project_id = project_id.clone();
-                tokio::spawn(async move {
-                    crate::routes::projects::refresh_code_map_after_landing(&pool, &project_id)
-                        .await;
-                });
-            }
-            let warning = match (promotion_warning, landing_warning) {
-                (Some(promotion), Some(landing)) => Some(format!("{}; {}", promotion, landing)),
-                (Some(warning), None) | (None, Some(warning)) => Some(warning),
-                (None, None) => None,
-            };
-            Ok((Some(effect), warning))
-        }
+        // `approve_review` is outbox-eligible, so the delegation above always
+        // takes it and these inline arms are unreachable. The approve arm used
+        // to hold the ONLY `goal_landing::land` call site in the tree — which
+        // is why approved work never reached trunk (L7). It now lives in
+        // `decisions_effects::apply_decision_effect`, the path an approval
+        // actually takes, and the dead copy is gone rather than left to drift
+        // out of step with the live one.
         // Review rejected → bounce back for rework, or park on attempt exhaustion.
         ("approve_review", Some("reject")) => {
             let goal_id = match decision.goal_id.as_deref() {
@@ -1166,6 +1041,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/decisions", get(list_decisions_handler))
         .route("/api/decisions/history", get(history_handler))
         .route("/api/decisions/{id}/answer", post(answer_decision_handler))
+        .route(
+            "/api/decisions/{id}/staged",
+            delete(discard_staged_answer_handler),
+        )
         .with_state(state)
 }
 
@@ -1392,103 +1271,6 @@ mod tests {
             .unwrap();
         init_spectral_db(&pool).await.unwrap();
         pool
-    }
-
-    async fn needs_merge_test_goal(pool: &Pool<Sqlite>) -> permagent::cards::Card {
-        use permagent::projects::PERSONAL_PROJECT_ID;
-
-        permagent::cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
-            .await
-            .unwrap();
-        let review_col = permagent::cards::get_goal_column(pool, PERSONAL_PROJECT_ID, "review")
-            .await
-            .unwrap()
-            .unwrap();
-        permagent::cards::create_card(
-            pool,
-            permagent::cards::CreateCard {
-                project_id: PERSONAL_PROJECT_ID.to_string(),
-                title: "Ship durable landing recovery".to_string(),
-                description: None,
-                card_type: Some("goal".to_string()),
-                column_id: Some(review_col.id),
-                created_by: None,
-                metadata_json: Some(serde_json::json!({})),
-            },
-        )
-        .await
-        .unwrap()
-    }
-
-    #[tokio::test]
-    async fn a_second_needs_merge_landing_does_not_create_another_open_decision() {
-        use permagent::projects::PERSONAL_PROJECT_ID;
-
-        let pool = memory_pool().await;
-        let goal = needs_merge_test_goal(&pool).await;
-        for _ in 0..2 {
-            ensure_needs_merge_decision(
-                &pool,
-                &goal.id,
-                &goal.title,
-                PERSONAL_PROJECT_ID,
-                "goal/run-123",
-                "main",
-            )
-            .await
-            .unwrap();
-        }
-
-        let count: i64 = permagent::sqlx::query_scalar(
-            "SELECT COUNT(*) FROM decisions \
-             WHERE goal_id = ? AND kind = 'unblock' AND status = 'open'",
-        )
-        .bind(&goal.id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(count, 1);
-    }
-
-    #[tokio::test]
-    async fn needs_merge_decision_names_refs_and_copy_pasteable_git_commands() {
-        use permagent::projects::PERSONAL_PROJECT_ID;
-
-        let pool = memory_pool().await;
-        let goal = needs_merge_test_goal(&pool).await;
-        ensure_needs_merge_decision(
-            &pool,
-            &goal.id,
-            &goal.title,
-            PERSONAL_PROJECT_ID,
-            "goal/run-123",
-            "main",
-        )
-        .await
-        .unwrap();
-
-        let decision = decisions::find_open_decision_for_goal(&pool, &goal.id, "unblock")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(decision.kind, "unblock");
-        assert_eq!(decision.goal_id.as_deref(), Some(goal.id.as_str()));
-        assert_eq!(decision.project_id.as_deref(), Some(PERSONAL_PROJECT_ID));
-        assert!(decision.headline.contains("could not land"));
-        for expected in [
-            goal.id.as_str(),
-            goal.title.as_str(),
-            "goal/run-123",
-            "main",
-            "git switch main\ngit merge goal/run-123",
-            "git switch goal/run-123\ngit rebase main\ngit switch main\ngit merge --ff-only goal/run-123",
-        ] {
-            assert!(
-                decision.detail.contains(expected),
-                "decision detail must contain {expected:?}: {}",
-                decision.detail
-            );
-        }
     }
 
     #[tokio::test]

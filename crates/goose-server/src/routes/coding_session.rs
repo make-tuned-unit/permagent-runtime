@@ -33,6 +33,70 @@ pub struct CodingSessionResp {
     pub summary: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodingTurnReq {
+    pub session_id: String,
+    pub turn_idx: usize,
+    pub user_text: String,
+    pub assistant_text: String,
+    pub working_dir: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CodingTurnResp {
+    pub accepted: bool,
+}
+
+const MAX_TURN_CHARS: usize = 48_000;
+
+fn bounded_text(value: String) -> String {
+    value.chars().take(MAX_TURN_CHARS).collect()
+}
+
+/// Accept a completed Harness turn and let the daemon-owned Brain persist it.
+///
+/// The harness runs in its own process and never mounts a Brain — two writers
+/// of one Spectral database is a corruption story — so it posts the turn to the
+/// owner instead. This is deliberately the SAME `spawn_persist_chat_turn` a
+/// Chat turn takes: same key shape, same wing decision, same metadata, so a
+/// coding turn and a chat turn are the same kind of memory and recall does not
+/// have to know which surface produced it.
+///
+/// The key is `(session_id, turn_idx)`, so client retries are idempotent.
+async fn remember_coding_turn(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CodingTurnReq>,
+) -> Result<Json<CodingTurnResp>, StatusCode> {
+    if req.session_id.trim().is_empty()
+        || req.user_text.trim().is_empty()
+        || req.assistant_text.trim().is_empty()
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let brain = state
+        .brain
+        .as_ref()
+        .cloned()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let pool = state.session_manager().pool_clone().await.ok();
+    let cwd_evidence = req
+        .working_dir
+        .as_deref()
+        .map(|cwd| format!("Harness working directory: {cwd}"))
+        .unwrap_or_default();
+    crate::brain_ops::spawn_persist_chat_turn(
+        brain,
+        pool,
+        req.session_id,
+        req.turn_idx,
+        bounded_text(req.user_text),
+        bounded_text(req.assistant_text),
+        bounded_text(cwd_evidence),
+    );
+    Ok(Json(CodingTurnResp { accepted: true }))
+}
+
 /// Keep prompts bounded: the tail is what matters — it holds the final state,
 /// the last test run, the wrap-up.
 const MAX_TRANSCRIPT_CHARS: usize = 24_000;
@@ -281,6 +345,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/coding-sessions/summary", post(coding_session_summary))
         .route("/api/coding-sessions/spend", post(announce_spend))
+        .route("/api/coding-sessions/turn", post(remember_coding_turn))
         .with_state(state)
 }
 
@@ -295,5 +360,13 @@ mod tests {
         // Multi-byte safety: no mid-char slice panic.
         assert_eq!(tail_chars("héllo", 3), "llo");
         assert_eq!(tail_chars("naïve✻", 2), "e✻");
+    }
+
+    #[test]
+    fn turn_payload_is_unicode_safe_and_bounded() {
+        let long = "✻".repeat(MAX_TURN_CHARS + 10);
+        let bounded = bounded_text(long);
+        assert_eq!(bounded.chars().count(), MAX_TURN_CHARS);
+        assert!(bounded.is_char_boundary(bounded.len()));
     }
 }

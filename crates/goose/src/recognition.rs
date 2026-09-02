@@ -390,22 +390,46 @@ pub async fn write_back_decision_outcome(pool: &Pool<Sqlite>, goal_id: &str, app
 /// observation. Called when a user declines an automation proposal on the
 /// Decision Inbox. Best-effort — failures are logged, never propagated.
 pub async fn mark_observation_bounced(pool: &Pool<Sqlite>, normalized: &str) {
+    mark_observation_bounced_in_lane(pool, INITIATIVE_LANE, normalized).await
+}
+
+/// The lane the Initiative layer's declines are recorded under — the original
+/// (and still the only pre-existing) caller of [`mark_observation_bounced`].
+pub const INITIATIVE_LANE: &str = "initiative";
+
+/// The same bounce, recorded under a named `lane`.
+///
+/// One decline mechanism, several surfaces: the Initiative layer bounces a
+/// normalized command, the Council bounces a namespaced action key. The lane
+/// becomes the row's synthetic `session_id`, its `strategy`, and its
+/// `retrieval_id` prefix, so per-lane rows stay separable in the recognition
+/// tables instead of every surface masquerading as the initiative loop.
+/// `mark_observation_bounced` is `lane = "initiative"` and is byte-identical to
+/// what it wrote before. Best-effort — failures are logged, never propagated.
+pub async fn mark_observation_bounced_in_lane(pool: &Pool<Sqlite>, lane: &str, normalized: &str) {
     if normalized.is_empty() {
         return;
     }
+    let lane = if lane.is_empty() {
+        INITIATIVE_LANE
+    } else {
+        lane
+    };
     let now = now_iso();
-    let retrieval_id = format!("initiative-decline:{}", Uuid::now_v7());
+    let retrieval_id = format!("{lane}-decline:{}", Uuid::now_v7());
     let result = sqlx::query(
         "INSERT INTO recognition_events
             (retrieval_id, session_id, query, retrieved_at, rc_persona, strategy,
              outcome_kind, outcome_polarity, outcome_source, outcome_observed_at,
              outcome_label)
-         VALUES (?, 'initiative', ?, ?, 'henry', 'initiative',
+         VALUES (?, ?, ?, ?, 'henry', ?,
                  'DecisionBounced', 'Negative', 'Decision', ?, 'wrong')",
     )
     .bind(&retrieval_id)
+    .bind(lane)
     .bind(normalized)
     .bind(&now)
+    .bind(lane)
     .bind(&now)
     .execute(pool)
     .await;
@@ -413,7 +437,7 @@ pub async fn mark_observation_bounced(pool: &Pool<Sqlite>, normalized: &str) {
     match result {
         Ok(_) => debug!(
             target: "permagent::recognition",
-            "Marked observation bounced (initiative decline): {}", normalized
+            "Marked observation bounced ({} decline): {}", lane, normalized
         ),
         Err(e) => warn!(
             target: "permagent::recognition",

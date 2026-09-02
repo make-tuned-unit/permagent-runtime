@@ -673,8 +673,14 @@ async fn set_goal_dependencies_handler(
     .map_err(guard_err)?;
 
     // Auto-dispatch respects the change: a goal whose (new) deps are all
-    // Complete is promoted Triage → Ready now, not on the next approval.
-    goal_transition::promote_eligible_dependents_or_warn(&pool, &project_id, &card_id).await;
+    // Complete is promoted Triage → Ready now, not on the next approval —
+    // and started, rather than waiting for a manual resume_roadmap (D10).
+    permagent::agents::platform_extensions::orchestrator::promote_and_dispatch_dependents(
+        &pool,
+        &project_id,
+        &card_id,
+    )
+    .await;
 
     let updated = cards::get_card(&pool, &card_id)
         .await
@@ -736,8 +742,14 @@ async fn remove_roadmap_goal_handler(
         true
     };
 
-    // Dependents whose remaining deps are all Complete become dispatchable now.
-    goal_transition::promote_eligible_dependents_or_warn(&pool, &project_id, &card_id).await;
+    // Dependents whose remaining deps are all Complete become dispatchable
+    // now — and are dispatched, not left waiting for a human (D10).
+    permagent::agents::platform_extensions::orchestrator::promote_and_dispatch_dependents(
+        &pool,
+        &project_id,
+        &card_id,
+    )
+    .await;
 
     Ok(Json(RemoveRoadmapGoalResponse {
         removed: true,

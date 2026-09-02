@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useMemo, type CSSProperties, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { font, ease, duration, radius } from '../../styles/tokens';
+import { FiArrowLeft, FiChevronDown } from 'react-icons/fi';
+import { font, ease, duration, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 // ── WizardHeading / WizardSubhead ──────────────────────────────────────
 // One heading scale for every moment (audit #603: sizes drifted 32/28/22 and
@@ -21,7 +23,7 @@ export function WizardSubhead({ children, style = {} }: { children: ReactNode; s
   const { colors } = useTheme();
   return (
     <p style={{
-      fontFamily: font.body, fontSize: 14, lineHeight: 1.5, color: colors.textMuted,
+      fontFamily: font.body, fontSize: textSize.body, lineHeight: 1.5, color: colors.textMuted,
       margin: '8px 0 0', textAlign: 'center', maxWidth: 400,
       ...style,
     }}>{children}</p>
@@ -34,23 +36,39 @@ children, disabled, onClick, full, style = {} }: {
   children: ReactNode; disabled?: boolean; onClick?: () => void; full?: boolean; style?: CSSProperties;
 }) {
   const { colors } = useTheme();
+  // The fill and the text colour move onto the primitive's custom properties so
+  // this button finally has a press give and a focus ring. The glow does not:
+  // there is no `--pa-btn-shadow`, and a `box-shadow` written inline cannot be
+  // changed by a `:hover` rule — so the hover flag stays, driving only the glow.
+  // (Rule: mouse handlers that set React state are kept.)
   const [hover, setHover] = useState(false);
   return (
-    <button onClick={onClick} disabled={disabled}
-      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+    <Button
+      colors={colors}
+      variant="primary"
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       style={{
-        fontFamily: font.body, fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em',
-        color: disabled ? colors.textDim : colors.textOnAccent,
-        background: disabled ? colors.purpleSoft : hover ? colors.purpleBright : colors.purple,
-        border: 'none', borderRadius: radius.md, padding: '12px 20px', height: 44,
-        minWidth: 140, width: full ? '100%' : 'auto',
-        cursor: disabled ? 'not-allowed' : 'pointer',
+        '--pa-btn-fg': disabled ? colors.textDim : colors.textOnAccent,
+        '--pa-btn-bg': disabled ? colors.purpleSoft : colors.purple,
+        '--pa-btn-bg-hover': colors.purpleBright,
+        '--pa-btn-bg-active': colors.purple,
+        '--pa-btn-border': 'transparent',
+        '--pa-btn-border-hover': 'transparent',
+        '--pa-btn-pad': '12px 20px',
+        '--pa-btn-radius': `${radius.md}px`,
+        '--pa-btn-weight': 600,
+        fontFamily: font.body, fontSize: textSize.body, letterSpacing: '-0.01em',
+        height: 44, minWidth: 140, width: full ? '100%' : 'auto',
         boxShadow: disabled ? 'none' : hover
           ? `0 0 0 4px ${colors.purpleSoft}, 0 8px 24px ${colors.purpleGlow}`
           : `0 4px 14px ${colors.purpleGlow}`,
-        transition: `all ${duration.base}ms ${ease.out}`, ...style,
-      }}
-    >{children}</button>
+        ...style,
+      } as CSSProperties}
+    >{children}</Button>
   );
 }
 
@@ -60,17 +78,26 @@ children, onClick, style = {} }: {
   children: ReactNode; onClick?: () => void; style?: CSSProperties;
 }) {
   const { colors } = useTheme();
-  const [hover, setHover] = useState(false);
+  // The muted-to-full hover this kept a `hover` state for is exactly what
+  // `--pa-btn-fg-hover` expresses, so the state and its two handlers go.
   return (
-    <button onClick={onClick}
-      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+    <Button
+      colors={colors}
+      variant="bare"
+      type="button"
+      onClick={onClick}
       style={{
-        fontFamily: font.body, fontSize: 13, fontWeight: 500,
-        color: hover ? colors.text : colors.textMuted,
-        background: 'transparent', border: 'none', padding: '6px 2px',
-        cursor: 'pointer', transition: `color ${duration.fast}ms ${ease.out}`, ...style,
-      }}
-    >{children}</button>
+        '--pa-btn-fg': colors.textMuted,
+        '--pa-btn-fg-hover': colors.text,
+        '--pa-btn-bg-hover': 'transparent',
+        '--pa-btn-bg-active': 'transparent',
+        '--pa-btn-pad': '6px 2px',
+        '--pa-btn-radius': '0',
+        '--pa-btn-weight': 500,
+        fontFamily: font.body, fontSize: textSize.small, lineHeight: 1.5,
+        ...style,
+      } as CSSProperties}
+    >{children}</Button>
   );
 }
 
@@ -89,7 +116,7 @@ value, onChange, placeholder, type = 'text', onKeyDown, onBlur, autoFocus, ariaL
       aria-label={ariaLabel} onKeyDown={onKeyDown}
       onFocus={() => setFocus(true)} onBlur={() => { setFocus(false); onBlur?.(); }}
       style={{
-        width: '100%', fontFamily: font.body, fontSize: 14, fontWeight: 400,
+        width: '100%', fontFamily: font.body, fontSize: textSize.body, fontWeight: 400,
         color: colors.text,
         background: colors.inputBg,
         border: focus ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
@@ -117,7 +144,7 @@ export function Textarea({
       placeholder={placeholder} rows={rows} spellCheck={false}
       onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
       style={{
-        width: '100%', fontFamily: font.body, fontSize: 14, fontWeight: 400,
+        width: '100%', fontFamily: font.body, fontSize: textSize.body, fontWeight: 400,
         color: colors.text, background: colors.inputBg, resize: 'none', lineHeight: 1.6,
         border: focus ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
         borderRadius: radius.md, padding: '13px 14px', outline: 'none',
@@ -165,22 +192,30 @@ value, onChange, options, style = {} }: {
       style={{ position: 'relative', ...style }}
       onKeyDown={e => { if (e.key === 'Escape' && open) setOpen(false); }}
     >
-      <button type="button" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(x => !x)} style={{
-        width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        fontFamily: font.body, fontSize: 14, fontWeight: 500, color: colors.text,
-        background: colors.inputBg,
-        border: open ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
-        borderRadius: radius.md, padding: '13px 14px', cursor: 'pointer',
+      {/* A listbox trigger, not an action: `Button` would flatten the
+          aria-haspopup / aria-expanded pairing that says what it does, and fold
+          the label and the chevron into one span. It keeps the element and
+          takes the shared `.pa-btn` interaction rules — it had no hover or
+          pressed state at all, so it read as inert next to the inputs. */}
+      <button type="button" aria-haspopup="listbox" aria-expanded={open} className="pa-btn" onClick={() => setOpen(x => !x)} style={{
+        '--pa-btn-bg': colors.inputBg,
+        '--pa-btn-fg': colors.text,
+        '--pa-btn-border': open ? colors.cyan : colors.border,
+        '--pa-btn-bg-hover': colors.inputBg,
+        '--pa-btn-border-hover': open ? colors.cyan : colors.borderHi,
+        '--pa-btn-bg-active': colors.inputBg,
+        '--pa-btn-pad': '13px 14px',
+        '--pa-btn-radius': `${radius.md}px`,
+        '--pa-btn-weight': 500,
+        width: '100%', justifyContent: 'space-between',
+        fontFamily: font.body, fontSize: textSize.body, lineHeight: 1.5,
         boxShadow: open ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
-        transition: `all ${duration.fast}ms ${ease.out}`,
-      }}>
+      } as CSSProperties}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {current.dot && <span style={{ width: 8, height: 8, borderRadius: '50%', background: current.dot }} />}
           {current.label}
         </span>
-        <svg width="10" height="6" viewBox="0 0 10 6" fill="none" style={{ opacity: 0.55, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 180ms' }}>
-          <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        </svg>
+        <FiChevronDown size={10} style={{ opacity: 0.55, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 180ms' }} />
       </button>
       {open && (
         <div role="listbox" style={{
@@ -202,8 +237,8 @@ value, onChange, options, style = {} }: {
               // Escape closes (handled on the container). Focus mirrors hover.
               onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); } }}
               style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 10px', borderRadius: 6,
-                fontFamily: font.body, fontSize: 13, color: colors.text,
+                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 10px', borderRadius: radius.sm,
+                fontFamily: font.body, fontSize: textSize.small, color: colors.text,
                 background: selected ? colors.cyanSoft : 'transparent', cursor: 'pointer',
               }}
               onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLElement).style.background = colors.surfaceHi; }}
@@ -213,7 +248,7 @@ value, onChange, options, style = {} }: {
             >
               {o.dot && <span style={{ width: 8, height: 8, borderRadius: '50%', background: o.dot }} />}
               <span style={{ flex: 1 }}>{o.label}</span>
-              {o.note && <span style={{ fontSize: 11, color: colors.textMuted }}>{o.note}</span>}
+              {o.note && <span style={{ fontSize: textSize.micro, color: colors.textMuted }}>{o.note}</span>}
             </div>
             );
           })}
@@ -232,7 +267,7 @@ export function ProgressDots({ count = 4, current = 0, style = {} }: {
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', ...style }}>
       {Array.from({ length: count }).map((_, i) => (
         <div key={i} style={{
-          width: i === current ? 18 : 6, height: 6, borderRadius: 999,
+          width: i === current ? 18 : 6, height: 6, borderRadius: radius.pill,
           background: i === current ? colors.cyan : colors.textDim,
           boxShadow: i === current ? `0 0 12px ${colors.cyanGlow}` : 'none',
           transition: `all ${duration.slow}ms ${ease.out}`,
@@ -246,22 +281,31 @@ export function ProgressDots({ count = 4, current = 0, style = {} }: {
 export function BackChevron({
 onClick }: { onClick: () => void }) {
   const { colors } = useTheme();
-  const [hover, setHover] = useState(false);
   return (
-    <button onClick={onClick}
-      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+    <Button
+      colors={colors}
+      variant="bare"
+      type="button"
+      onClick={onClick}
       style={{
-        background: 'transparent', border: 'none', padding: '6px 10px 6px 6px',
-        color: hover ? colors.text : colors.textMuted,
-        fontFamily: font.body, fontSize: 13, fontWeight: 500,
-        cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-        borderRadius: 8, transition: `color ${duration.fast}ms ${ease.out}`,
-      }}>
-      <svg width="14" height="10" viewBox="0 0 14 10" fill="none">
-        <path d="M5 1L1 5l4 4M1 5h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-      Back
-    </button>
+        '--pa-btn-fg': colors.textMuted,
+        '--pa-btn-fg-hover': colors.text,
+        '--pa-btn-bg-hover': 'transparent',
+        '--pa-btn-bg-active': 'transparent',
+        '--pa-btn-pad': '6px 10px 6px 6px',
+        '--pa-btn-radius': `${radius.md}px`,
+        '--pa-btn-weight': 500,
+        fontFamily: font.body, fontSize: textSize.small, lineHeight: 1.5,
+      } as CSSProperties}
+    >
+      {/* `Button` folds its children into one label span, so the arrow and the
+          word need their own row to keep the 6px that used to come from the
+          button's own `display:flex`. */}
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <FiArrowLeft size={14} />
+        Back
+      </span>
+    </Button>
   );
 }
 

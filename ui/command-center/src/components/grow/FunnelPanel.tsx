@@ -14,9 +14,10 @@
 // out loud what the numbers are made of — which identity is the denominator,
 // that bots are excluded, and how many rows could not be sequenced.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { font, radius, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
+import { Button } from '../common/Button';
 import { apiFetch } from '../../lib/api';
 
 interface FunnelStep {
@@ -226,11 +227,20 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
   const controlStyle: React.CSSProperties = {
     background: colors.bgDeeper, color: colors.text,
     border: `1px solid ${colors.border}`, borderRadius: radius.md,
-    padding: '5px 8px', fontSize: 11, fontFamily: font.mono,
+    padding: '5px 8px', fontSize: textSize.micro, fontFamily: font.mono,
   };
-  const buttonStyle: React.CSSProperties = {
-    ...controlStyle, cursor: 'pointer', fontFamily: font.body, padding: '5px 10px',
-  };
+  // The builder's controls sit on the same chrome as its selects, so the look
+  // is expressed as `--pa-btn-*` rather than inline `background`/`color`: an
+  // inline declaration outranks `.pa-btn:hover` and would kill the hover and
+  // press states these buttons never had.
+  const buttonVars: CSSProperties = {
+    '--pa-btn-bg': colors.bgDeeper,
+    '--pa-btn-fg': colors.text,
+    '--pa-btn-border': colors.border,
+    '--pa-btn-pad': '5px 10px',
+    '--pa-btn-radius': `${radius.md}px`,
+    fontFamily: font.body,
+  } as CSSProperties;
 
   return (
     <section style={{
@@ -238,11 +248,11 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
       borderRadius: radius.lg, padding: 16, display: 'flex', flexDirection: 'column', gap: 10,
     }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-        <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
+        <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
           Conversion funnel
         </h3>
         {state === 'ready' && data && entered > 0 && (
-          <span style={{ fontSize: 11, color: colors.textMuted, fontFamily: font.mono }}>
+          <span style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono }}>
             {Math.round(data.conversionRate * 100)}% of {unit} convert
             {data.value > 0 && <> · {data.value.toLocaleString()} value</>}
             {' '}· last {DAYS}d
@@ -281,15 +291,15 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
                 ? <option value={step.value}>{step.value} (no events in {DAYS}d)</option>
                 : null}
             </select>
-            <button aria-label={`Move step ${i + 1} up`} disabled={i === 0} onClick={() => moveStep(i, -1)} style={buttonStyle}>↑</button>
-            <button aria-label={`Move step ${i + 1} down`} disabled={i === steps.length - 1} onClick={() => moveStep(i, 1)} style={buttonStyle}>↓</button>
-            <button aria-label={`Remove step ${i + 1}`} onClick={() => removeStep(i)} style={buttonStyle}>✕</button>
+            <Button colors={colors} aria-label={`Move step ${i + 1} up`} disabled={i === 0} onClick={() => moveStep(i, -1)} style={buttonVars}>↑</Button>
+            <Button colors={colors} aria-label={`Move step ${i + 1} down`} disabled={i === steps.length - 1} onClick={() => moveStep(i, 1)} style={buttonVars}>↓</Button>
+            <Button colors={colors} aria-label={`Remove step ${i + 1}`} onClick={() => removeStep(i)} style={buttonVars}>✕</Button>
           </div>
         ))}
       </div>
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button onClick={addStep} disabled={steps.length >= MAX_STEPS} style={buttonStyle}>+ Add step</button>
+        <Button colors={colors} onClick={addStep} disabled={steps.length >= MAX_STEPS} style={buttonVars}>+ Add step</Button>
         <select
           aria-label="Count each step by"
           value={identity}
@@ -299,28 +309,35 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
           <option value="session">count sessions</option>
           <option value="visitor">count visitors</option>
         </select>
-        <button
+        {/* `run` fires and forgets into state, so the in-flight phase comes from
+            that state rather than from an awaited click. No pending floor: this
+            is also the button you press to re-run, and holding it disabled after
+            the funnel has already landed would be a lie about the fetch. */}
+        <Button
+          colors={colors}
+          pending={state === 'loading'}
+          minPendingMs={0}
           onClick={() => run(steps, identity)}
           disabled={state === 'loading' || serializeSteps(steps) === ''}
-          style={{ ...buttonStyle, opacity: state === 'loading' ? 0.6 : 1 }}
-        >{state === 'loading' ? 'Computing…' : 'Run'}</button>
+          style={buttonVars}
+        >{state === 'loading' ? 'Computing…' : 'Run'}</Button>
       </div>
 
       {options && !hasOptions && (
-        <div style={{ fontSize: 11, color: colors.textDim }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
           No events or pageviews recorded for this project in the last {DAYS} days — there is
           nothing to build a funnel from yet.
         </div>
       )}
       {state === 'idle' && hasOptions && (
-        <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
           Pick an ordered sequence of steps. A {identityLabel(identity).slice(0, -1)} counts at a step
           only after passing every earlier one <em>in order</em> — a bookmark landing on /thanks
           never “converts”. Bots are excluded.
         </div>
       )}
       {state === 'error' && (
-        <div style={{ fontSize: 11, color: colors.danger }}>
+        <div style={{ fontSize: textSize.micro, color: colors.danger }}>
           Couldn’t compute the funnel — check the steps (1–{MAX_STEPS}) and try again.
         </div>
       )}
@@ -328,7 +345,7 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
       {state === 'ready' && data && (
         <>
           {entered === 0 ? (
-            <div style={{ fontSize: 11, color: colors.textDim }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
               No {unit} entered this funnel in the last {DAYS} days.
             </div>
           ) : (
@@ -339,7 +356,7 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
                 return (
                   <div key={`${s.label}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <div style={{
-                      width: 140, fontSize: 11, color: colors.textMuted, textAlign: 'right',
+                      width: 140, fontSize: textSize.micro, color: colors.textMuted, textAlign: 'right',
                       flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                       fontFamily: font.mono,
                     }} title={s.label}>{s.label}</div>
@@ -356,7 +373,7 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
                     </div>
                     <div style={{
                       minWidth: 44, textAlign: 'right', flexShrink: 0, fontFamily: font.mono,
-                      fontSize: 12, color: colors.text, fontVariantNumeric: 'tabular-nums',
+                      fontSize: textSize.caption, color: colors.text, fontVariantNumeric: 'tabular-nums',
                     }}>{s.sessions.toLocaleString()}</div>
                     <div style={{
                       minWidth: 190, flexShrink: 0, fontSize: 10, fontFamily: font.mono,

@@ -19,6 +19,7 @@ vi.mock('../../settings/useSettings', () => ({ usePersona: () => ({ data: null }
 vi.mock('./client', () => ({ decisionsClient: {} }));
 
 import { pushedRejectWarning, toolArgumentsText, effectTextFor } from './DecisionItem';
+import { stagedSummary } from './types';
 import type { Decision } from './types';
 
 function decision(overrides: Partial<Decision>): Decision {
@@ -153,5 +154,21 @@ describe('effectTextFor council_action', () => {
   it('says approve files a board card and reject dismisses', () => {
     expect(effectTextFor('council_action', 'approve', 'Henry')).toContain('board card');
     expect(effectTextFor('council_action', 'reject', 'Henry')).toMatch(/dismiss/i);
+  });
+});
+
+describe('stagedSummary', () => {
+  it('names the channel and the verdict in the user\'s words', () => {
+    expect(stagedSummary({ answer: 'approve', note: null, staged_at: '', staged_via: 'voice' }))
+      .toBe('Voice staged: Approve');
+    expect(stagedSummary({ answer: 'reject', note: null, staged_at: '', staged_via: 'voice' }))
+      .toBe('Voice staged: Reject');
+  });
+
+  it('shows an unknown channel or verdict verbatim rather than guessing', () => {
+    // A future channel must not be silently relabelled "Voice" — the whole
+    // point of the row is saying which unauthenticated channel proposed this.
+    expect(stagedSummary({ answer: 'approve', note: null, staged_at: '', staged_via: 'watch' }))
+      .toBe('watch staged: Approve');
   });
 });

@@ -6,7 +6,17 @@
 import { useSyncExternalStore } from 'react';
 import type { AgentHudState } from './palette';
 
-export type StateSource = 'daemon' | 'sim';
+/**
+ * Where a reading came from.
+ *
+ *   daemon — a real event or poll said so.
+ *   sim    — the ambient toggler; nothing reports this agent.
+ *   static — a fixed, honest resting pose for a seat whose emitter has not
+ *            shipped yet (J11's Council / Polybot / Picker). It never moves on
+ *            its own, which is what separates it from `sim`: a simulated agent
+ *            at least claims to be a plausible one, and these claim nothing.
+ */
+export type StateSource = 'daemon' | 'sim' | 'static';
 
 export interface AgentRuntimeState {
   id: string;
@@ -17,13 +27,14 @@ export interface AgentRuntimeState {
 }
 
 /**
- * SIM-STATE RULE (bible §4, LAW): simulated agents may only display idle or
- * available. Amber working and red error are claims that real work is happening
- * or really failing — a sim never makes that claim. When daemon AgentStateChanged
- * events ship, sources flip to 'daemon' and the full range opens automatically.
+ * SIM-STATE RULE (bible §4, LAW): anything not backed by the daemon may only
+ * display idle or available. Amber working and red error are claims that real
+ * work is happening or really failing — only a real report makes that claim.
+ * When an emitter ships, the source flips to 'daemon' and the full range opens
+ * automatically.
  */
 function clamp(state: AgentHudState, source: StateSource): AgentHudState {
-  if (source === 'sim' && (state === 'working' || state === 'error')) return 'available';
+  if (source !== 'daemon' && (state === 'working' || state === 'error')) return 'available';
   return state;
 }
 

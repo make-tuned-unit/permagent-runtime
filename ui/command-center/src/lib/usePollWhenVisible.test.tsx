@@ -23,8 +23,8 @@ function setVisibility(state: DocumentVisibilityState) {
   document.dispatchEvent(new Event('visibilitychange'));
 }
 
-function Harness({ onTick, intervalMs }: { onTick: () => void; intervalMs: number }) {
-  usePollWhenVisible(onTick, intervalMs);
+function Harness({ onTick, intervalMs, enabled }: { onTick: () => void; intervalMs: number; enabled?: boolean }) {
+  usePollWhenVisible(onTick, intervalMs, enabled);
   return null;
 }
 
@@ -120,5 +120,45 @@ describe('usePollWhenVisible', () => {
 
     act(() => { vi.advanceTimersByTime(60_000); });
     expect(onTick).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('the `enabled` gate', () => {
+  it('polls nothing while disabled, however visible the window is', () => {
+    const onTick = vi.fn();
+    act(() => { root.render(<Harness onTick={onTick} intervalMs={1000} enabled={false} />); });
+    act(() => { vi.advanceTimersByTime(10_000); });
+    expect(onTick).not.toHaveBeenCalled();
+  });
+
+  it('mounting enabled does NOT fire immediately — the caller owns its first load', () => {
+    const onTick = vi.fn();
+    act(() => { root.render(<Harness onTick={onTick} intervalMs={1000} enabled />); });
+    expect(onTick).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(onTick).toHaveBeenCalledTimes(1);
+  });
+
+  it('coming back on screen catches up once, then resumes the interval', () => {
+    const onTick = vi.fn();
+    act(() => { root.render(<Harness onTick={onTick} intervalMs={1000} enabled={false} />); });
+    act(() => { vi.advanceTimersByTime(10_000); });
+    expect(onTick).not.toHaveBeenCalled();
+
+    act(() => { root.render(<Harness onTick={onTick} intervalMs={1000} enabled />); });
+    expect(onTick).toHaveBeenCalledTimes(1); // the catch-up, not a burst
+
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(onTick).toHaveBeenCalledTimes(2);
+  });
+
+  it('a hidden window still wins over `enabled`', () => {
+    const onTick = vi.fn();
+    act(() => { root.render(<Harness onTick={onTick} intervalMs={1000} enabled={false} />); });
+    act(() => setVisibility('hidden'));
+    act(() => { root.render(<Harness onTick={onTick} intervalMs={1000} enabled />); });
+    act(() => { vi.advanceTimersByTime(10_000); });
+    expect(onTick).not.toHaveBeenCalled();
+    act(() => setVisibility('visible'));
   });
 });

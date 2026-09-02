@@ -62,6 +62,27 @@ export const AGENT_TRIM = {
   // least of all for an agent whose whole job is to be honest about
   // uncertainty. Distinct from watcher's #9FB8D8 at a glance.
   forecaster: '#8E7CC3',
+  // The Council of LLMs — many models, one chamber. Muted orchid: the
+  // magenta band (~300°) is the last unoccupied one on the identity wheel,
+  // clear of the Forecaster's dusk violet (258°) and of Strix's oxblood
+  // (345°), and clear of every STATE color (idle grey, working amber,
+  // available cyan, error red). Identity trim only.
+  council: '#A87BA8',
+  // Polybot — the autonomous trading PROCESS behind the Finance tab. Steel
+  // indigo: deliberately colder and darker than the Financier's antique gold,
+  // because Polybot is machinery next to the desk rather than the desk. Darker
+  // and more saturated than the Watcher's pale vigil blue at a glance.
+  polybot: '#5F7FA8',
+  // The Picker — the close-scan desk that ranks tomorrow's candidates. Moss
+  // olive: the ~78° band no other character uses, and a long way from working
+  // amber, which a scanner's own status must never be confused with.
+  picker: '#8FA85F',
+  // Growth measurement — the nightly pass that judges verified actions
+  // against their own before-window. A genuine growth green (~115°), the one
+  // clear gap between the Steward's verdigris (~145°) and the Picker's moss
+  // (~80°) — thematically apt for a worker whose whole job is deciding
+  // whether something grew, and still far from every STATE color.
+  growthMeasurement: '#6BB464',
 } as const;
 
 export type AgentHudState = keyof typeof STATE;

@@ -24,13 +24,22 @@ const projects = vi.hoisted(() => ({
   ],
 }));
 
+const hooks = vi.hoisted(() => ({
+  useProjects: null as null | (() => Record<string, unknown>),
+  navigateToTool: vi.fn(),
+}));
+
 vi.mock('./useProjects', () => ({
-  useProjects: () => ({
-    projects: projects.list,
-    loading: false,
-    refresh: vi.fn(),
-    touch: vi.fn(),
-  }),
+  useProjects: () => (hooks.useProjects
+    ? hooks.useProjects()
+    : {
+        projects: projects.list,
+        loading: false,
+        error: false,
+        refresh: vi.fn(),
+        retry: vi.fn(),
+        touch: vi.fn(),
+      }),
 }));
 
 vi.mock('../../lib/store', () => {
@@ -42,7 +51,7 @@ vi.mock('../../lib/store', () => {
     (selector: (value: typeof state) => unknown) => selector(state),
     { getState: () => state },
   );
-  return { useCommandCenter };
+  return { useCommandCenter, navigateToTool: hooks.navigateToTool };
 });
 
 import { ProjectChip } from './ProjectChip';
@@ -53,6 +62,8 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  hooks.useProjects = null;
+  hooks.navigateToTool.mockReset();
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -87,5 +98,63 @@ describe('ProjectChip', () => {
     expect(claude?.getAttribute('title') ?? '').toContain('subscription');
     const permagent = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Permagent');
     expect(permagent?.getAttribute('title') ?? '').toMatch(/not cheaper than Claude\/Codex/i);
+  });
+});
+
+// ── Empty ≠ Error ≠ Loading ─────────────────────────────────────────────────
+//
+// The chip is the only way to launch a coding agent against a project. It used
+// to `return null` on a daemon failure and on an empty list alike, so the entry
+// point to the feature simply wasn't there and nothing said why.
+
+function chip(): HTMLButtonElement {
+  return container.querySelector('[data-testid="project-chip"]') as HTMLButtonElement;
+}
+
+function render() {
+  return act(async () => {
+    root.render(<ProjectChip onLaunch={vi.fn()} onVisitSite={vi.fn()} />);
+  });
+}
+
+describe('ProjectChip states', () => {
+  it('stays on screen and names the failure when the daemon is unreachable', async () => {
+    const retry = vi.fn();
+    hooks.useProjects = () => ({ projects: [], loading: false, error: true, refresh: vi.fn(), retry, touch: vi.fn() });
+    await render();
+
+    expect(chip()).toBeTruthy();
+    await act(async () => { chip().click(); });
+    expect(container.textContent).toMatch(/Couldn't load your projects/i);
+
+    const retryBtn = Array.from(container.querySelectorAll('button')).find(b => /Retry/i.test(b.textContent ?? ''))!;
+    expect(retryBtn).toBeTruthy();
+    await act(async () => { retryBtn.click(); });
+    expect(retry).toHaveBeenCalled();
+  });
+
+  it('an empty list names the action that fills it, and is not an error', async () => {
+    hooks.useProjects = () => ({ projects: [], loading: false, error: false, refresh: vi.fn(), retry: vi.fn(), touch: vi.fn() });
+    await render();
+
+    expect(chip()).toBeTruthy();
+    await act(async () => { chip().click(); });
+    expect(container.textContent).toMatch(/No active projects yet/i);
+    expect(container.textContent).not.toMatch(/Couldn't load/i);
+
+    const open = Array.from(container.querySelectorAll('button')).find(b => /Open Projects/i.test(b.textContent ?? ''))!;
+    await act(async () => { open.click(); });
+    expect(hooks.navigateToTool).toHaveBeenCalledWith('projects');
+  });
+
+  it('says it is still loading rather than showing nothing', async () => {
+    hooks.useProjects = () => ({ projects: [], loading: true, error: false, refresh: vi.fn(), retry: vi.fn(), touch: vi.fn() });
+    await render();
+
+    expect(chip()).toBeTruthy();
+    await act(async () => { chip().click(); });
+    expect(container.textContent).toMatch(/Loading your projects/i);
+    expect(container.textContent).not.toMatch(/No active projects yet/i);
+    expect(container.textContent).not.toMatch(/Couldn't load/i);
   });
 });

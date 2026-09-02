@@ -63,8 +63,6 @@ vi.stubGlobal('localStorage', {
   clear: () => { storage = {}; },
 });
 
-const LS_KEY = 'permagent-projects-last-opened';
-
 const project = (id: string, name: string) => ({
   id, slug: id, name, description: '', status: 'active',
   rootPath: null, siteUrl: null, repoUrl: null, tags: [],
@@ -95,7 +93,10 @@ beforeEach(() => {
   storage = {};
   apiFetchMock.mockReset();
   serveProjects(() => [project('p1', 'First'), project('p42', 'Target')]);
-  useCommandCenter.setState({ pendingProjectNavigation: null, workspaces: [] });
+  // The last-opened project now lives in the store (one selection shared with
+  // Grow and Build, J7), which reads localStorage once at creation — so a test
+  // seeds the selection through the store rather than through storage.
+  useCommandCenter.setState({ pendingProjectNavigation: null, workspaces: [], currentProjectId: null });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -126,7 +127,7 @@ describe('#266 voice drill-into-specific-project', () => {
   });
 
   it('switches boards when a drill-in arrives while another project is open', async () => {
-    storage[LS_KEY] = 'p1'; // restored as the last-opened project on mount
+    useCommandCenter.setState({ currentProjectId: 'p1' }); // the app's current project
     await renderView();
     expect(openedProject('p1')).toBe(true);
 

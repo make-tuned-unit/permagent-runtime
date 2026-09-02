@@ -12,6 +12,7 @@ import {
   previewToGraphMemory,
   projectMemoryPreview,
   ageFromTimestamp,
+  formatMemoryAge,
   parseBrainTimestamp,
   deriveMemoryTitle,
   humanizeMemoryKey,
@@ -93,6 +94,57 @@ describe('ageFromTimestamp', () => {
   it('reads a naive SQLite "YYYY-MM-DD HH:MM:SS" timestamp as UTC (45d → ~half)', () => {
     const now = Date.parse('2026-07-10T00:00:00Z');
     expect(ageFromTimestamp('2026-05-26 00:00:00', now)).toBeCloseTo(0.5, 2);
+  });
+});
+
+describe('formatMemoryAge', () => {
+  const now = Date.parse('2026-07-10T00:00:00Z');
+  const daysAgo = (d: number) => new Date(now - d * 86_400_000).toISOString();
+
+  // The reason this function exists. Recency was rendered from the same 0..1
+  // scalar the 3D scene uses for colour, normalized over 90 days and clamped —
+  // so a memory from last quarter and a memory from three years ago both read
+  // "~year", and the older one looked no less current than the newer.
+  it('separates ages the 90-day window used to collapse into one label', () => {
+    const justPast = formatMemoryAge(daysAgo(91), now);
+    const ancient = formatMemoryAge(daysAgo(3 * 365), now);
+    expect(justPast.label).not.toBe(ancient.label);
+    expect(justPast.label).toBe('3 months ago');
+    expect(ancient.label).toBe('3 years ago');
+  });
+
+  it('reads honestly at every magnitude', () => {
+    expect(formatMemoryAge(daysAgo(0), now).label).toBe('today');
+    expect(formatMemoryAge(daysAgo(1), now).label).toBe('yesterday');
+    expect(formatMemoryAge(daysAgo(4), now).label).toBe('4 days ago');
+    expect(formatMemoryAge(daysAgo(9), now).label).toBe('last week');
+    expect(formatMemoryAge(daysAgo(21), now).label).toBe('3 weeks ago');
+    expect(formatMemoryAge(daysAgo(45), now).label).toBe('last month');
+    expect(formatMemoryAge(daysAgo(240), now).label).toBe('8 months ago');
+    expect(formatMemoryAge(daysAgo(400), now).label).toBe('last year');
+    expect(formatMemoryAge(daysAgo(20 * 365), now).label).toBe('20 years ago');
+  });
+
+  it('marks anything past the staleness threshold, and nothing inside it', () => {
+    expect(formatMemoryAge(daysAgo(10), now).stale).toBe(false);
+    expect(formatMemoryAge(daysAgo(89), now).stale).toBe(false);
+    expect(formatMemoryAge(daysAgo(120), now).stale).toBe(true);
+    expect(formatMemoryAge(daysAgo(3 * 365), now).stale).toBe(true);
+  });
+
+  it('never guesses when there is no usable date', () => {
+    expect(formatMemoryAge(null, now)).toEqual({ label: 'date unknown', stale: true });
+    expect(formatMemoryAge('not-a-date', now)).toEqual({ label: 'date unknown', stale: true });
+  });
+
+  it('reads a naive SQLite timestamp as UTC, like every other Brain surface', () => {
+    expect(formatMemoryAge('2026-05-26 00:00:00', now).label).toBe('last month');
+  });
+
+  // A clock skew (or an import dated in the future) must not render as a
+  // negative age or a fabricated "in 3 days".
+  it('treats a future timestamp as now', () => {
+    expect(formatMemoryAge(new Date(now + 86_400_000).toISOString(), now).label).toBe('today');
   });
 });
 

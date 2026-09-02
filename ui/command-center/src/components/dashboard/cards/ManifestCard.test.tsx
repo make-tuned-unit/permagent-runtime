@@ -194,3 +194,28 @@ describe('ManifestCard — configure flow', () => {
     expect(container.textContent).toContain('18° Clear');
   });
 });
+
+describe('a card that fetches once and never polls', () => {
+  it('dates its reading', async () => {
+    // `refreshSeconds: 0` (or absent) means one fetch on mount, forever. Those
+    // figures sit beside cards refreshing every thirty seconds, in the same
+    // type, with nothing distinguishing them — so a number frozen since the tab
+    // was opened reads exactly like one confirmed a moment ago.
+    apiFetch.mockResolvedValue({ cells: [{ label: 'Uptime', value: '3d' }] });
+    await act(async () => root.render(<ManifestCard manifest={statManifest} />));
+    await flush();
+    const asOf = container.querySelector('[data-testid="manifest-card-as-of"]');
+    expect(asOf).not.toBeNull();
+    expect(asOf!.textContent).toContain('not refreshing');
+  });
+
+  it('leaves a polling card alone', async () => {
+    apiFetch.mockResolvedValue({ cells: [{ label: 'Uptime', value: '3d' }] });
+    const polling: CardManifest = { ...statManifest, refreshSeconds: 30 };
+    await act(async () => root.render(<ManifestCard manifest={polling} />));
+    await flush();
+    // A card that is current by construction does not need to say so, and a
+    // timestamp on every card would be noise that teaches nobody anything.
+    expect(container.querySelector('[data-testid="manifest-card-as-of"]')).toBeNull();
+  });
+});

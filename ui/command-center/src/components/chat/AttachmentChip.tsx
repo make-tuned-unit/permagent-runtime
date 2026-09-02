@@ -1,6 +1,8 @@
+import { type CSSProperties } from 'react';
 import { FiX, FiFile } from 'react-icons/fi';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 interface AttachmentChipProps {
   filename: string;
@@ -16,15 +18,22 @@ export function AttachmentChip({ filename, onRemove }: AttachmentChipProps) {
     >
       <FiFile size={12} className="shrink-0" style={{ color: colors.textMuted }} />
       <span className="truncate">{filename}</span>
-      <button
+      <Button
+        colors={colors}
+        variant="bare"
         onClick={onRemove}
-        className="transition shrink-0 ml-0.5"
-        style={{ color: colors.textMuted }}
-        onMouseEnter={e => (e.currentTarget.style.color = colors.danger)}
-        onMouseLeave={e => (e.currentTarget.style.color = colors.textMuted)}
+        aria-label={`Remove ${filename}`}
+        title="Remove attachment"
+        className="shrink-0 ml-0.5"
+        style={{
+          '--pa-btn-fg': colors.textMuted,
+          '--pa-btn-fg-hover': colors.danger,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '0',
+        } as CSSProperties}
       >
         <FiX size={12} />
-      </button>
+      </Button>
     </div>
   );
 }

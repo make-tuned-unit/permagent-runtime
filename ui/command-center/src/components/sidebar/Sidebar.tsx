@@ -1,16 +1,16 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
-import { font, ease } from '../../styles/tokens';
+import { ease, font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { FiBell, FiChevronLeft, FiChevronRight, FiSettings } from 'react-icons/fi';
+import type { IconType } from 'react-icons';
+import { Button } from '../common/Button';
 import { Mobius } from '../mobius/Mobius';
 import { markAllRead, toggleTray, useNotifications, useTrayOpen } from '../../lib/notifications';
-import { resolveIconPath } from './icons';
+import { resolveIconPath } from '../common/icons';
 import { SidebarTooltip, useSidebarTooltip } from './SidebarTooltip';
 import { MeetingRecorder } from '../voice/MeetingRecorder';
 
-const SETTINGS_ICON = 'M12 9a3 3 0 100 6 3 3 0 000-6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 008 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9c.16.55.62.96 1.18 1H21a2 2 0 110 4h-.09c-.6.04-1.06.45-1.51 1z';
-
-const BELL_ICON = 'M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0';
 
 /** Notifications row — a standard sidebar row (above Settings) that toggles
  *  the tray rendered by NotificationHost; open state is shared through the
@@ -27,7 +27,7 @@ function NotificationBellRow({ open, onHover, onLeave }: {
   return (
     <div data-notifications-ui style={{ position: 'relative' }}>
       <SidebarRow
-        icon={BELL_ICON}
+        icon={FiBell}
         label={unread > 0 ? `Notifications (${unread > 9 ? '9+' : unread})` : 'Notifications'}
         active={trayOpen}
         open={open}
@@ -43,7 +43,7 @@ function NotificationBellRow({ open, onHover, onLeave }: {
         <span style={{
           position: 'absolute', top: 7,
           left: open ? 24 : 'calc(50% + 5px)',
-          width: 8, height: 8, borderRadius: 4,
+          width: 8, height: 8, borderRadius: radius.xs,
           background: colors.cyan, pointerEvents: 'none',
         }} />
       )}
@@ -51,8 +51,29 @@ function NotificationBellRow({ open, onHover, onLeave }: {
   );
 }
 
+/** A rail glyph: a Feather component for every row except the workspaces,
+ *  whose glyphs come from the ratified local set as path data. Both wear the
+ *  same 18px box, the same 1.6 stroke and the same hover nudge. */
+function RowGlyph({ icon, style }: { icon: string | IconType; style: CSSProperties }) {
+  if (typeof icon !== 'string') {
+    const Glyph = icon;
+    return <Glyph size={18} style={style} />;
+  }
+  return (
+    <svg
+      width="18" height="18" viewBox="0 0 24 24" fill="none"
+      style={style}
+      stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"
+    >
+      <path d={icon} />
+    </svg>
+  );
+}
+
 interface SidebarRowProps {
-  icon: string;
+  /** A `Fi*` component, or a path string from the ratified set in
+   *  `components/common/icons` (workspace rows resolve to one of those). */
+  icon: string | IconType;
   label: string;
   active: boolean;
   open: boolean;
@@ -67,24 +88,26 @@ function SidebarRow({
   icon, label, active, open, onClick, shortcut, onHover, onLeave,
 }: SidebarRowProps) {
   const { colors, reduceMotion } = useTheme();
+  // Still local state, but only for what CSS cannot do from here: the icon's
+  // hover nudge and the portalled tooltip. The row's own hover colours moved
+  // to `--pa-btn-bg-hover` / `--pa-btn-fg-hover`, where a stylesheet can
+  // express them. The tooltip anchors on the event's own element, which is
+  // the same node the ref used to hold.
   const [hovered, setHovered] = useState(false);
-  const ref = useRef<HTMLButtonElement>(null);
-
-  // Hover reads as a lift toward the active state rather than a separate
-  // colour: the row you are pointing at should look like a preview of what
-  // selecting it gives you.
-  const background = active
-    ? colors.cyanSoft
-    : hovered ? colors.borderHi : 'transparent';
-  const color = active || hovered ? colors.cyan : colors.textMuted;
+  const iconStyle: CSSProperties = {
+    flexShrink: 0,
+    transform: hovered && !reduceMotion ? 'scale(1.09)' : 'scale(1)',
+    transition: reduceMotion ? 'none' : `transform 160ms ${ease.out}`,
+  };
 
   return (
-    <button
-      ref={ref}
+    <Button
+      colors={colors}
+      variant="bare"
       onClick={onClick}
-      onMouseEnter={() => { setHovered(true); onHover?.(ref.current, label, shortcut); }}
+      onMouseEnter={e => { setHovered(true); onHover?.(e.currentTarget, label, shortcut); }}
       onMouseLeave={() => { setHovered(false); onLeave?.(); }}
-      onFocus={() => { setHovered(true); onHover?.(ref.current, label, shortcut); }}
+      onFocus={e => { setHovered(true); onHover?.(e.currentTarget, label, shortcut); }}
       onBlur={() => { setHovered(false); onLeave?.(); }}
       // The accessible name must survive the collapsed rail, where the text
       // label is not rendered at all. The visual tooltip is decoration; this
@@ -92,21 +115,28 @@ function SidebarRow({
       aria-label={shortcut ? `${label} (${shortcut})` : label}
       aria-current={active ? 'page' : undefined}
       style={{
+        // Hover reads as a lift toward the active state rather than a separate
+        // colour: the row you are pointing at should look like a preview of
+        // what selecting it gives you.
+        '--pa-btn-bg': active ? colors.cyanSoft : 'transparent',
+        '--pa-btn-fg': active ? colors.cyan : colors.textMuted,
+        '--pa-btn-border': active ? colors.borderHi : 'transparent',
+        '--pa-btn-bg-hover': active ? colors.cyanSoft : colors.borderHi,
+        '--pa-btn-fg-hover': colors.cyan,
+        '--pa-btn-border-hover': active ? colors.borderHi : 'transparent',
+        '--pa-btn-bg-active': active ? colors.cyanSoft : colors.borderHi,
+        '--pa-btn-pad': open ? '0 12px' : '0',
+        '--pa-btn-radius': '10px',
+        '--pa-btn-weight': active ? 600 : 500,
         position: 'relative',
         width: open ? 'calc(100% - 16px)' : 40,
-        height: 40, borderRadius: 10,
-        display: 'flex', alignItems: 'center', gap: 12,
-        padding: open ? '0 12px' : 0,
+        height: 40,
+        display: 'flex', gap: 12,
         justifyContent: open ? 'flex-start' : 'center',
         margin: open ? '0 8px' : '0 auto',
-        background,
-        border: `1px solid ${active ? colors.borderHi : 'transparent'}`,
-        color,
-        cursor: 'pointer',
-        transition: reduceMotion ? 'none' : `background 160ms ${ease.out}, color 160ms ${ease.out}, border-color 160ms ${ease.out}`,
-        fontFamily: font.body, fontSize: 13, fontWeight: active ? 600 : 500,
+        fontFamily: font.body, fontSize: textSize.small,
         textAlign: 'left',
-      }}
+      } as CSSProperties}
     >
       {/* Active rail marker. In the collapsed rail the background tint alone is
           easy to miss at a glance, so selection also gets an edge indicator. */}
@@ -121,21 +151,11 @@ function SidebarRow({
           transition: reduceMotion ? 'none' : `height 180ms ${ease.out}, opacity 180ms ${ease.out}, margin-top 180ms ${ease.out}`,
         }}
       />
-      <svg
-        width="18" height="18" viewBox="0 0 24 24" fill="none"
-        style={{
-          flexShrink: 0,
-          transform: hovered && !reduceMotion ? 'scale(1.09)' : 'scale(1)',
-          transition: reduceMotion ? 'none' : `transform 160ms ${ease.out}`,
-        }}
-        stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"
-      >
-        <path d={icon} />
-      </svg>
+      <RowGlyph icon={icon} style={iconStyle} />
       {open && <span style={{
         opacity: 1, transition: 'opacity 160ms', whiteSpace: 'nowrap',
       }}>{label}</span>}
-    </button>
+    </Button>
   );
 }
 
@@ -251,7 +271,7 @@ export function Sidebar() {
 
       {/* Settings */}
       <SidebarRow
-        icon={SETTINGS_ICON}
+        icon={FiSettings}
         label="Settings"
         active={isSettingsOpen}
         open={open}
@@ -262,32 +282,44 @@ export function Sidebar() {
 
       {/* Collapse / Expand toggle */}
       {open ? (
-        <button onClick={() => setOpen(false)} title="Collapse" style={{
-          width: 'calc(100% - 16px)', height: 32, borderRadius: 8,
-          margin: '4px 8px 0', background: 'transparent',
-          border: 'none', color: colors.textDim, cursor: 'pointer',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-          fontFamily: font.body, fontSize: 11, fontWeight: 500,
-          transition: `all 200ms ${ease.out}`,
-        }}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-            <path d="M15 6l-6 6 6 6" />
-            <path d="M21 4v16" opacity={0.4} />
-          </svg>
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={() => setOpen(false)}
+          title="Collapse"
+                    style={{
+            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': `${radius.md}px`,
+            width: 'calc(100% - 16px)', height: 32,
+            margin: '4px 8px 0',
+            gap: 8,
+            fontFamily: font.body, fontSize: textSize.micro,
+          } as CSSProperties}
+        >
+          <FiChevronLeft size={12} />
           Collapse
-        </button>
+        </Button>
       ) : (
-        <button onClick={() => setOpen(true)} title="Expand" style={{
-          width: 40, height: 32, margin: '4px auto 0',
-          borderRadius: 8, background: 'transparent',
-          border: 'none', color: colors.textDim, cursor: 'pointer',
-          display: 'grid', placeItems: 'center',
-        }}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-            <path d="M9 6l6 6-6 6" />
-            <path d="M3 4v16" opacity={0.4} />
-          </svg>
-        </button>
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={() => setOpen(true)}
+          title="Expand"
+          aria-label="Expand"
+          style={{
+            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': `${radius.md}px`,
+            width: 40, height: 32, margin: '4px auto 0',
+          } as CSSProperties}
+        >
+          <FiChevronRight size={12} />
+        </Button>
       )}
 
       {/* Portalled to document.body — the rail sets overflow:hidden to animate

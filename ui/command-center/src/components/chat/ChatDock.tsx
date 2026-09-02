@@ -7,7 +7,9 @@
 // Reuses ChatView (the same component the detached window renders), so the two
 // modes are the same chat, not two implementations.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
+import { FiExternalLink, FiVolume2, FiVolumeX, FiX } from 'react-icons/fi';
+import { Button } from '../common/Button';
 import { ChatView } from './ChatView';
 import { useCommandCenter } from '../../lib/store';
 import { createChatWindow } from '../../lib/chatWindow';
@@ -54,8 +56,10 @@ export function ChatDock() {
         await createChatWindow(theme);
       } catch {
         /* fall back to keeping the dock closed; user can reopen */
+        return false;
       }
     }
+    return true;
   };
 
   return (
@@ -97,22 +101,26 @@ export function ChatDock() {
             the mute. Voice-first onboarding flips it on; the pref persists. */}
         <SpeakToggle />
         {isTauri && (
-          <button
+          <Button
+            colors={colors}
             onClick={detach}
             title="Open chat in its own window"
+            aria-label="Open chat in its own window"
             style={iconBtn(colors)}
           >
             {/* detach / pop-out glyph */}
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-              <path d="M15 3h6v6M10 14L21 3M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" />
-            </svg>
-          </button>
+            <FiExternalLink size={14} />
+          </Button>
         )}
-        <button onClick={closeChat} title="Close chat" style={iconBtn(colors)}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-            <path d="M18 6L6 18M6 6l12 12" />
-          </svg>
-        </button>
+        <Button
+          colors={colors}
+          onClick={closeChat}
+          title="Close chat"
+          aria-label="Close chat"
+          style={iconBtn(colors)}
+        >
+          <FiX size={14} />
+        </Button>
       </div>
 
       {/* The chat itself — same component as the detached window */}
@@ -126,36 +134,37 @@ export function ChatDock() {
 function SpeakToggle() {
   const { colors } = useTheme();
   const speaking = useSpeakReplies();
+  const label = speaking ? 'Mute — replies go back to text only' : 'Speak replies aloud';
   return (
-    <button
+    <Button
+      colors={colors}
       onClick={() => setSpeakReplies(!speaking)}
-      title={speaking ? 'Mute — replies go back to text only' : 'Speak replies aloud'}
-      style={{ ...iconBtn(colors), color: speaking ? colors.cyan : colors.textMuted }}
+      title={label}
+      aria-label={label}
+      style={{ ...iconBtn(colors), '--pa-btn-fg': speaking ? colors.cyan : colors.textMuted } as CSSProperties}
     >
       {speaking ? (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-          <path d="M11 5L6 9H2v6h4l5 4V5zM15.5 8.5a5 5 0 010 7M19 5a9 9 0 010 14" />
-        </svg>
+        <FiVolume2 size={14} />
       ) : (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-          <path d="M11 5L6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6" />
-        </svg>
+        <FiVolumeX size={14} />
       )}
-    </button>
+    </Button>
   );
 }
 
-function iconBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+/** The dock header's square icon affordances. The look rides the `--pa-btn-*`
+ *  custom properties rather than inline `color`/`background`/`border`, because
+ *  an inline declaration outranks `.pa-btn:hover` and would silently kill the
+ *  hover/press states the primitive exists to provide. */
+function iconBtn(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
   return {
+    '--pa-btn-bg': 'transparent',
+    '--pa-btn-fg': colors.textMuted,
+    '--pa-btn-border': colors.border,
+    '--pa-btn-fg-hover': colors.text,
+    '--pa-btn-pad': '0',
+    '--pa-btn-radius': '7px',
     width: 28,
     height: 28,
-    borderRadius: 7,
-    background: 'transparent',
-    border: `1px solid ${colors.border}`,
-    color: colors.textMuted,
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  };
+  } as CSSProperties;
 }

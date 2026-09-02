@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { font, radius, ease } from '../../styles/tokens';
+import { font, radius, ease, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
 
@@ -132,7 +132,7 @@ export function SidebarTooltip({ target }: { target: TooltipTarget | null }) {
         background: colors.surface,
         border: `1px solid ${colors.border}`,
         boxShadow: colors.elevationRaised ?? colors.cardShadow,
-        fontFamily: font.body, fontSize: 12, fontWeight: 500,
+        fontFamily: font.body, fontSize: textSize.caption, fontWeight: 500,
         color: colors.text, whiteSpace: 'nowrap',
         animation: reduceMotion ? undefined : `sidebarTooltipIn 120ms ${ease.out}`,
       }}
@@ -143,7 +143,7 @@ export function SidebarTooltip({ target }: { target: TooltipTarget | null }) {
           fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
           color: colors.textDim,
           border: `1px solid ${colors.border}`,
-          borderRadius: 4, padding: '1px 4px',
+          borderRadius: radius.xs, padding: '1px 4px',
         }}>{target.shortcut}</span>
       )}
     </div>,

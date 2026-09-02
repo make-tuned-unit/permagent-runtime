@@ -17,7 +17,7 @@ import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { ENV, AGENT_TRIM } from '../shared/palette';
-import { getReduceMotion } from '../../../styles/tokens';
+import { getReduceMotion, radius } from '../../../styles/tokens';
 import {
   NUDGE_PRESENT_MS,
   getNudge,
@@ -83,7 +83,7 @@ function NudgePlaque() {
       <div
         style={{
           padding: '5px 12px',
-          borderRadius: 4,
+          borderRadius: radius.xs,
           background: 'rgba(10, 14, 26, 0.85)',
           border: `1px solid ${AGENT_TRIM.watcher}66`,
           boxShadow: `0 0 14px ${AGENT_TRIM.watcher}44`,

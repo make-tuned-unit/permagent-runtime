@@ -1,6 +1,8 @@
+import { type CSSProperties } from 'react';
 import { FiPlus, FiX, FiGlobe, FiExternalLink } from 'react-icons/fi';
-import { font } from '../../styles/tokens';
+import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { CycleTabsButton } from '../build/CycleTabsButton';
 
 export interface BrowserTab {
@@ -33,24 +35,47 @@ export function BrowserTabs({
   onPopOut,
 }: BrowserTabsProps) {
   const { colors } = useTheme();
+  /** The two trailing glyphs: no chrome, ink only, exactly as before — the
+   *  hover that was a pair of mouse handlers on "new tab" is now the class's. */
+  const railIcon = (hover: string): CSSProperties => ({
+    '--pa-btn-fg': colors.textMuted,
+    '--pa-btn-fg-hover': hover,
+    '--pa-btn-bg-hover': 'transparent',
+    '--pa-btn-bg-active': 'transparent',
+    '--pa-btn-radius': '0',
+  } as CSSProperties);
   return (
     <div className="flex items-center" style={{ backgroundColor: colors.bg, borderBottom: `1px solid ${colors.border}` }}>
       <div className="flex flex-1 items-center overflow-x-auto">
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
           return (
-            <button
+            // The tab keeps its own flex distribution — globe, truncating
+            // title, close affordance — so the primitive's label wrapper is
+            // dissolved with `display: contents`. `borderRight` stays inline:
+            // it is the strip's divider, not the button's own outline, and
+            // `--pa-btn-border` is transparent so the other three edges paint
+            // nothing.
+            <Button
               key={tab.id}
+              colors={colors}
+              variant="bare"
               onClick={() => onSelectTab(tab.id)}
-              className={`group flex items-center gap-1.5 px-3 py-1.5 text-[11px] transition-colors shrink-0 ${isActive ? '' : 'hover:bg-white/5'}`}
+              className="group shrink-0"
               style={{
+                '--pa-btn-bg': isActive ? colors.surface : 'transparent',
+                '--pa-btn-fg': isActive ? colors.cyan : colors.textMuted,
+                '--pa-btn-border': 'transparent',
+                '--pa-btn-bg-hover': isActive ? colors.surface : 'rgba(255,255,255,0.05)',
+                '--pa-btn-fg-hover': isActive ? colors.cyan : colors.text,
+                '--pa-btn-bg-active': isActive ? colors.surface : 'rgba(255,255,255,0.09)',
+                '--pa-btn-pad': '6px 12px',
+                '--pa-btn-radius': '0',
                 fontFamily: font.mono,
+                fontSize: textSize.micro,
+                gap: 6,
                 borderRight: `1px solid ${colors.border}`,
-                color: isActive ? colors.cyan : colors.textMuted,
-                backgroundColor: isActive ? colors.surface : undefined,
-              }}
-              onMouseEnter={e => { if (!isActive) e.currentTarget.style.color = colors.text; }}
-              onMouseLeave={e => { if (!isActive) e.currentTarget.style.color = colors.textMuted; }}
+              } as CSSProperties}
             >
               <FiGlobe size={11} className={tab.loading ? 'animate-spin' : ''} />
               <span className="truncate max-w-[120px]">
@@ -69,22 +94,33 @@ export function BrowserTabs({
                   <FiX size={10} />
                 </span>
               )}
-            </button>
+            </Button>
           );
         })}
       </div>
       <CycleTabsButton pane="browser" onCycle={onCycleTab} />
-      {onPopOut && <button onClick={onPopOut} className="px-2 py-1.5 transition-colors" style={{ color: colors.textMuted }} title="Pop out active browser"><FiExternalLink size={13} /></button>}
-      <button
+      {onPopOut && (
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={onPopOut}
+          aria-label="Pop out active browser"
+          title="Pop out active browser"
+          style={{ ...railIcon(colors.text), '--pa-btn-pad': '6px 8px' } as CSSProperties}
+        >
+          <FiExternalLink size={13} />
+        </Button>
+      )}
+      <Button
+        colors={colors}
+        variant="bare"
         onClick={onNewTab}
-        className="px-2.5 py-1.5 transition-colors"
-        style={{ color: colors.textMuted }}
-        onMouseEnter={e => { e.currentTarget.style.color = colors.cyan; }}
-        onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
+        aria-label="New tab"
         title="New tab (Cmd+T)"
+        style={{ ...railIcon(colors.cyan), '--pa-btn-pad': '6px 10px' } as CSSProperties}
       >
         <FiPlus size={13} />
-      </button>
+      </Button>
     </div>
   );
 }

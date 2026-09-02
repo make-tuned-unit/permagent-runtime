@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { ease, duration } from '../../styles/tokens';
+import { useState, type CSSProperties } from 'react';
+import { duration, ease, radius, textSize } from '../../styles/tokens';
+import { Button } from '../common/Button';
 import { ProgressDots, BackChevron } from './atoms';
 import { MomentWelcome } from './MomentWelcome';
 import { MomentHardware } from './MomentHardware';
@@ -106,12 +107,15 @@ export function WizardShell({ onComplete }: Props) {
       console.error('Failed to save persona:', e);
       setSaveError(e instanceof Error ? e.message : String(e));
       setSaving(false);
-      return;
+      // `false` is the Button primitive's "it failed": the retry must not tick
+      // success over the error banner it is standing in.
+      return false;
     }
     // Hand the stated intent to the first chat composer (one-shot).
     stashWizardIntent(intent);
     setSaving(false);
     onComplete();
+    return true;
   };
 
   const moments = [
@@ -166,29 +170,47 @@ export function WizardShell({ onComplete }: Props) {
           display: 'flex', alignItems: 'center', gap: 12, maxWidth: 560,
           padding: '10px 16px', borderRadius: 10, zIndex: 10,
           background: colors.bgDeeper, border: `1px solid ${colors.danger}66`,
-          fontFamily: font.body, fontSize: 12, color: colors.text,
+          fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
         }}>
           <span style={{ color: colors.danger }}>
             Couldn't save your setup ({saveError}).
           </span>
-          <button
+          <Button
+            colors={colors}
+            variant="ghostOn"
+            type="button"
             onClick={handleComplete}
             disabled={saving}
             style={{
-              fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan,
-              background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: 8,
-              padding: '4px 12px', cursor: saving ? 'default' : 'pointer', flexShrink: 0,
-            }}
-          >{saving ? 'Retrying…' : 'Retry'}</button>
-          <button
+              '--pa-btn-bg': 'transparent',
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-border': colors.borderHi,
+              '--pa-btn-bg-hover': colors.cyanSoft,
+              '--pa-btn-border-hover': colors.cyan,
+              '--pa-btn-pad': '4px 12px',
+              '--pa-btn-radius': `${radius.md}px`,
+              '--pa-btn-weight': 600,
+              fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5, flexShrink: 0,
+            } as CSSProperties}
+          >{saving ? 'Retrying…' : 'Retry'}</Button>
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
             onClick={() => { stashWizardIntent(intent); onComplete(); }}
             title="Enter the app anyway — your persona choices may not be saved and setup may reappear next launch"
             style={{
-              fontFamily: font.body, fontSize: 12, color: colors.textMuted,
-              background: 'none', border: 'none', cursor: 'pointer',
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-bg-active': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': '0',
+              '--pa-btn-weight': 400,
+              fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5,
               textDecoration: 'underline', flexShrink: 0,
-            }}
-          >Continue anyway</button>
+            } as CSSProperties}
+          >Continue anyway</Button>
         </div>
       )}
     </div>

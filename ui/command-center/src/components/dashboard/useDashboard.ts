@@ -11,6 +11,8 @@ export function useDashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  /** When the figures currently on screen were last confirmed true. */
+  const [lastOkAt, setLastOkAt] = useState<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
   const requestGeneration = useRef(0);
 
@@ -21,6 +23,7 @@ export function useDashboard() {
       if (generation !== requestGeneration.current) return;
       setData(result);
       setError(false);
+      setLastOkAt(Date.now());
     } catch {
       if (generation !== requestGeneration.current) return;
       // Surface the failure instead of spinning forever — a failed poll while
@@ -42,5 +45,10 @@ export function useDashboard() {
 
   const retry = () => { setLoading(true); fetchDashboard(); };
 
-  return { data, loading, error, retry, refresh: fetchDashboard };
+  return {
+    data, loading, error, lastOkAt, retry, refresh: fetchDashboard,
+    /** Polling is failing while figures are still on screen — the case where
+     *  the page looks fine and is not. */
+    failing: error && data !== null,
+  };
 }

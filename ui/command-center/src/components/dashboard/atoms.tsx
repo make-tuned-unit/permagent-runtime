@@ -1,4 +1,4 @@
-import { font, tabularNums } from '../../styles/tokens';
+import { font, tabularNums, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 export function SectionTitle({ title, right }: { title: string; right?: string }) {
@@ -8,7 +8,7 @@ export function SectionTitle({ title, right }: { title: string; right?: string }
   // is chrome competing with data. Sized down to a quiet label.
   return (
     <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 10 }}>
-      <h3 style={{ fontFamily: font.display, fontSize: 13, fontWeight: 600, letterSpacing: '-0.005em', color: colors.text, margin: 0 }}>{title}</h3>
+      <h3 style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 600, letterSpacing: '-0.005em', color: colors.text, margin: 0 }}>{title}</h3>
       {right && <span style={{ fontFamily: font.body, fontSize: 10.5, color: colors.textDim, marginLeft: 'auto' }}>{right}</span>}
     </div>
   );
@@ -28,7 +28,7 @@ export function EmptyNote({ children, hint }: { children: React.ReactNode; hint?
   const { colors } = useTheme();
   return (
     <div style={{ paddingTop: 2 }}>
-      <div style={{ fontFamily: font.body, fontSize: 12, color: colors.textMuted, lineHeight: 1.4 }}>
+      <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.4 }}>
         {children}
       </div>
       {hint && (
@@ -74,16 +74,16 @@ export function Stat({ label, value, suffix, delta, cyan }: {
   const { colors } = useTheme();
   return (
     <div>
-      <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.10em',
+      <div style={{ fontSize: textSize.micro, fontWeight: 600, letterSpacing: '0.10em',
         textTransform: 'uppercase', color: colors.textDim, marginBottom: 6 }}>{label}</div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <div style={{ fontFamily: font.display, fontSize: 32, fontWeight: 600,
+        <div style={{ fontFamily: font.display, fontSize: textSize.display, fontWeight: 600,
           letterSpacing: '-0.02em', ...tabularNums,
           color: cyan ? colors.cyan : colors.text }}>
           {value}<span style={{ fontSize: 18, color: colors.textMuted, marginLeft: 2 }}>{suffix || ''}</span>
         </div>
         {delta && (
-          <div style={{ fontSize: 11, fontWeight: 600, color: colors.success }}>{delta}</div>
+          <div style={{ fontSize: textSize.micro, fontWeight: 600, color: colors.success }}>{delta}</div>
         )}
       </div>
     </div>
@@ -104,7 +104,7 @@ export function StatusIcon({ state }: { state: string }) {
     <div style={{
       width: 24, height: 24, borderRadius: '50%', background: c.bg,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontFamily: font.body, fontSize: 12, color: c.color, flexShrink: 0,
+      fontFamily: font.body, fontSize: textSize.caption, color: c.color, flexShrink: 0,
     }}>{c.icon}</div>
   );
 }

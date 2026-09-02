@@ -5,9 +5,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::membership::Member;
+use super::verdict;
 
 pub const MEMBER_TIMEOUT_SECS: u64 = 90;
 pub const MAX_ACTIONS: usize = 5;
+
+/// How many trailing report lines the verdict re-ask quotes back. Enough for
+/// the chair to recognize its own ruling, short enough that the nag stays a
+/// cheap call rather than a second synthesis.
+const NAG_TAIL_LINES: usize = 24;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Round1Take {
@@ -45,6 +51,13 @@ pub struct ChairReport {
     pub dissent: Vec<Value>,
     #[serde(default)]
     pub actions: Vec<ChairAction>,
+    /// True when the chair never produced a parseable `VERDICT:` line, even
+    /// after one re-ask. The report's markdown then carries
+    /// [`verdict::NO_VERDICT_FLAG`] in place of a ruling, so the gap is durable
+    /// in the record rather than inferred later. Not a stored column: the
+    /// markdown itself is the record, and `verdict::parse` reads it back.
+    #[serde(default)]
+    pub verdict_missing: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -135,6 +148,7 @@ pub fn parse_chair(text: &str) -> ChairReport {
         consensus: Vec::new(),
         dissent: Vec::new(),
         actions: Vec::new(),
+        verdict_missing: false,
     }
 }
 
@@ -157,16 +171,25 @@ pub fn round2_system() -> &'static str {
      revised: a short restatement of your position after hearing the others."
 }
 
-pub fn chair_system() -> &'static str {
-    "You chair a Council of LLMs. You have the same factual brief the members saw, \
-     plus their round-1 takes and round-2 rebuttals. Write a weekly report the builder \
-     can digest and act on. Reply with ONLY JSON: \
-     {\"headline\":string,\"markdown\":string,\"consensus\":[string],\
-      \"dissent\":[{\"model\":string,\"claim\":string}],\
-      \"actions\":[{\"project_id\":string,\"project_name\":string,\"title\":string,\"description\":string}]}. \
-     headline: <= 80 characters. markdown: the full report in markdown, with named dissent. \
-     actions: at most 5, each a concrete next step tied to a real project_id from the brief. \
-     You MAY advise. Prefer fewer, sharper actions."
+pub fn chair_system() -> String {
+    format!(
+        "You chair a Council of LLMs. You have the same factual brief the members saw, \
+         plus their round-1 takes and round-2 rebuttals. Write a weekly report the builder \
+         can digest and act on. Reply with ONLY JSON: \
+         {{\"headline\":string,\"markdown\":string,\"consensus\":[string],\
+          \"dissent\":[{{\"model\":string,\"claim\":string}}],\
+          \"actions\":[{{\"project_id\":string,\"project_name\":string,\"title\":string,\"description\":string}}]}}. \
+         headline: <= 80 characters. markdown: the full report in markdown, with named dissent. \
+         actions: at most 5, each a concrete next step tied to a real project_id from the brief. \
+         You MAY advise. Prefer fewer, sharper actions. {}",
+        verdict::prompt_clause()
+    )
+}
+
+/// The re-ask system prompt. Deliberately narrow: one line, nothing else.
+pub fn verdict_nag_system() -> &'static str {
+    "You chaired a council report that did not end with its required ruling. Reply with \
+     exactly one line and nothing else — no preamble, no JSON, no markdown fences."
 }
 
 pub fn summarize_round1(member: &Member, take: &Round1Take) -> String {
@@ -340,9 +363,54 @@ pub async fn run_chair(
         }
     }
     let raw = caller
-        .complete(&chair.provider, &chair.model, chair_system(), &user)
+        .complete(&chair.provider, &chair.model, &chair_system(), &user)
         .await?;
-    Ok(parse_chair(&raw))
+    let mut report = parse_chair(&raw);
+    apply_verdict_gate(caller, chair, &mut report).await;
+    Ok(report)
+}
+
+/// The nag. A chair report whose ruling is absent or unparseable is never
+/// silently accepted: it costs one narrow re-ask, and if that also fails the
+/// gap is written into the report itself as [`verdict::NO_VERDICT_FLAG`] and
+/// flagged on [`ChairReport::verdict_missing`], so the briefing and the
+/// rendered report both say the chair did not rule.
+async fn apply_verdict_gate(caller: &dyn MemberCaller, chair: &Member, report: &mut ChairReport) {
+    let problem = match verdict::parse(&report.markdown) {
+        Ok(_) => return,
+        Err(problem) => problem,
+    };
+    tracing::warn!(
+        target: "permagent::council",
+        "chair verdict unusable ({}); re-asking once", problem.describe()
+    );
+    let appended = match ask_for_verdict_line(caller, chair, &report.markdown, &problem).await {
+        Some(v) => v.render(),
+        None => {
+            report.verdict_missing = true;
+            verdict::NO_VERDICT_FLAG.to_string()
+        }
+    };
+    report.markdown = format!("{}\n\n{}", report.markdown.trim_end(), appended);
+}
+
+/// One bounded re-ask for the verdict line alone. Returns `None` when the chair
+/// errors, times out, or answers with something the strict parser still
+/// rejects — the caller then flags rather than retrying again.
+async fn ask_for_verdict_line(
+    caller: &dyn MemberCaller,
+    chair: &Member,
+    markdown: &str,
+    problem: &verdict::VerdictProblem,
+) -> Option<verdict::ChairVerdict> {
+    let lines: Vec<&str> = markdown.lines().collect();
+    let tail = lines[lines.len().saturating_sub(NAG_TAIL_LINES)..].join("\n");
+    let user = format!("{}\n\nYour report ended:\n\n{tail}", problem.nag());
+    let result = call_one(caller, chair, verdict_nag_system(), &user).await;
+    if result.status != "ok" {
+        return None;
+    }
+    verdict::parse(result.raw.as_deref()?).ok()
 }
 
 /// True when at least one member answered round 1.
@@ -421,6 +489,104 @@ mod tests {
         let report = parse_chair(&json);
         assert_eq!(report.actions.len(), MAX_ACTIONS);
         assert_eq!(report.headline, "H");
+    }
+
+    /// RED-FIRST (a): an unparseable / absent verdict must NOT be silently
+    /// accepted. Before the nag path existed, `run_chair` returned the report
+    /// verbatim and nothing anywhere noticed the chair never ruled.
+    #[tokio::test]
+    async fn chair_without_a_verdict_line_is_flagged_not_silently_accepted() {
+        let caller = Scripted {
+            replies: Mutex::new(vec![
+                "{\"headline\":\"H\",\"markdown\":\"# Report\\n\\nEverything looks fine.\",\
+                  \"consensus\":[],\"dissent\":[],\"actions\":[]}"
+                    .into(),
+                // The re-ask is answered with prose, not a verdict line.
+                "I would rather not commit.".into(),
+            ]),
+        };
+        let report = run_chair(&caller, &member("chair"), "brief", &[], &[])
+            .await
+            .unwrap();
+        assert!(
+            report.markdown.contains("NO VERDICT LINE"),
+            "an absent verdict must surface, got: {}",
+            report.markdown
+        );
+        assert!(report.verdict_missing);
+        // The flag must not read back as a ruling.
+        assert!(verdict::parse(&report.markdown).is_err());
+        // The original report is preserved, not replaced by the complaint.
+        assert!(report.markdown.contains("Everything looks fine."));
+    }
+
+    /// The nag recovers: one narrow re-ask, and the canonical line is appended.
+    #[tokio::test]
+    async fn a_missing_verdict_is_re_asked_once_and_recovered() {
+        let caller = Scripted {
+            replies: Mutex::new(vec![
+                "{\"headline\":\"H\",\"markdown\":\"# Report\\n\\nBody.\",\
+                  \"consensus\":[],\"dissent\":[],\"actions\":[]}"
+                    .into(),
+                "VERDICT: HOLD — do less this week and finish the migration".into(),
+            ]),
+        };
+        let report = run_chair(&caller, &member("chair"), "brief", &[], &[])
+            .await
+            .unwrap();
+        assert!(!report.verdict_missing);
+        assert!(!report.markdown.contains("NO VERDICT LINE"));
+        let v = verdict::parse(&report.markdown).unwrap();
+        assert_eq!(v.verdict, verdict::Verdict::Hold);
+        assert_eq!(v.rationale, "do less this week and finish the migration");
+    }
+
+    /// A compliant chair costs exactly one call — the nag never fires.
+    #[tokio::test]
+    async fn a_ruled_report_is_not_re_asked() {
+        let caller = Scripted {
+            replies: Mutex::new(vec![
+                "{\"headline\":\"H\",\"markdown\":\"# Report\\n\\nBody.\\n\\nVERDICT: ACT — \
+                  file the two homepage cards\",\"consensus\":[],\"dissent\":[],\"actions\":[]}"
+                    .into(),
+                // Deliberately poisoned: if this is ever consumed, the assert
+                // below fails.
+                "VERDICT: HOLD — the nag fired when it should not have".into(),
+            ]),
+        };
+        let report = run_chair(&caller, &member("chair"), "brief", &[], &[])
+            .await
+            .unwrap();
+        assert!(!report.verdict_missing);
+        let v = verdict::parse(&report.markdown).unwrap();
+        assert_eq!(v.verdict, verdict::Verdict::Act);
+        assert_eq!(v.rationale, "file the two homepage cards");
+    }
+
+    /// A malformed value is treated exactly like an absent one — the strict
+    /// parser is what makes the field queryable.
+    #[tokio::test]
+    async fn a_malformed_verdict_value_takes_the_nag_path() {
+        let caller = Scripted {
+            replies: Mutex::new(vec![
+                "{\"headline\":\"H\",\"markdown\":\"# Report\\n\\nVERDICT: MAYBE — it depends\",\
+                  \"consensus\":[],\"dissent\":[],\"actions\":[]}"
+                    .into(),
+                "VERDICT: WATCH — nothing to start, keep an eye on churn".into(),
+            ]),
+        };
+        let report = run_chair(&caller, &member("chair"), "brief", &[], &[])
+            .await
+            .unwrap();
+        let v = verdict::parse(&report.markdown).unwrap();
+        assert_eq!(v.verdict, verdict::Verdict::Watch);
+    }
+
+    #[test]
+    fn the_chair_prompt_states_the_marker_convention() {
+        let system = chair_system();
+        assert!(system.contains(verdict::VERDICT_MARKER));
+        assert!(system.contains("ACT|WATCH|HOLD"));
     }
 
     #[tokio::test]

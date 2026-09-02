@@ -1,4 +1,4 @@
-import { Suspense, useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { Suspense, useState, useCallback, useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { AdaptiveEvents, PerformanceMonitor, usePerformanceMonitor } from '@react-three/drei';
 import * as THREE from 'three';
@@ -20,11 +20,17 @@ import { WatcherHUD } from './WatcherHUD';
 import { StewardHUD } from './StewardHUD';
 import { StrixHUD } from './StrixHUD';
 import { FinancierHUD } from './FinancierHUD';
+import { CouncilHUD } from './CouncilHUD';
+import { PolybotHUD } from './PolybotHUD';
+import { PickerHUD } from './PickerHUD';
+import { GrowthMeasurementHUD } from './GrowthMeasurementHUD';
 import { AgentPicker } from './AgentPicker';
 import { PerfProbe, perfProbeEnabled, devDprOverride } from './shared/PerfProbe';
 import { useWorldVisibility } from './atmosphere/useWorldVisibility';
 import { installDevHarness } from './atmosphere/devHarness';
-import { getReduceMotion } from '../../styles/tokens';
+import { getReduceMotion, radius, textSize } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { TourMode } from './camera/TourMode';
 import { createFrameClock, stepFrameClock, type FrameClock } from './frameClock';
 
@@ -67,7 +73,7 @@ function LoadingShimmer() {
         background: COLORS.deepVoid,
         fontFamily: 'monospace',
         color: COLORS.neonCyan,
-        fontSize: 14,
+        fontSize: textSize.body,
       }}
     >
       <div style={{ textAlign: 'center' }}>
@@ -302,13 +308,22 @@ function SceneContent({
 }
 
 export function WorldView({ visible = true }: { visible?: boolean }) {
+  // The world's chrome paints from its own palette; the theme is here only to
+  // feed the button primitive's variant defaults.
+  const { colors: themeColors } = useTheme();
   const [cameraMode, setCameraMode] = useState<CameraMode>('orbit');
   const [hoveredAgent, setHoveredAgent] = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [hoveredStation, setHoveredStation] = useState<string | null>(null);
   const [showFps, setShowFps] = useState(false);
   const [activeHud, setActiveHud] = useState<
-    'henry' | 'librarian' | 'reader' | 'watcher' | 'steward' | 'strix' | 'financier' | null
+    | 'henry' | 'librarian' | 'reader' | 'watcher' | 'steward' | 'strix' | 'financier'
+    // J11's three: a seat with no emitter still gets a panel, because a
+    // character you can walk up to and learn nothing from is worse than none.
+    | 'council' | 'polybot' | 'picker'
+    // D18: Growth measurement's render target.
+    | 'growth_measurement'
+    | null
   >(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // Perf (bible §8 item 2): pause the render loop whenever this view has no
@@ -340,6 +355,14 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       setActiveHud('strix');
     } else if (id === 'financier') {
       setActiveHud('financier');
+    } else if (id === 'council') {
+      setActiveHud('council');
+    } else if (id === 'polybot') {
+      setActiveHud('polybot');
+    } else if (id === 'picker') {
+      setActiveHud('picker');
+    } else if (id === 'growth_measurement') {
+      setActiveHud('growth_measurement');
     } else {
       setActiveHud(null);
     }
@@ -562,29 +585,36 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       {/* Agora return affordance (#306 arc beat 5) — visible once you cross into
           the mesh; returns you home through the portal (also bound to ESC). */}
       {agoraPhase !== 'home' && (
-        <button
+        <Button
+          colors={themeColors}
+          variant="ghostOn"
           type="button"
           onClick={handleExitAgora}
+          flashSuccess={false}
           style={{
+            '--pa-btn-bg': 'rgba(10, 14, 26, 0.82)',
+            '--pa-btn-fg': COLORS.neonCyan,
+            '--pa-btn-border': `${COLORS.neonCyan}66`,
+            '--pa-btn-bg-hover': 'rgba(16, 24, 44, 0.9)',
+            '--pa-btn-border-hover': COLORS.neonCyan,
+            '--pa-btn-bg-active': 'rgba(10, 14, 26, 0.82)',
+            '--pa-btn-pad': '9px 20px',
+            '--pa-btn-radius': `${radius.sm}px`,
             position: 'absolute',
             bottom: 28,
             left: '50%',
+            // The centring transform has to stay inline, which does mean
+            // `.pa-btn`'s press scale cannot apply to this one button.
             transform: 'translateX(-50%)',
-            padding: '9px 20px',
-            background: 'rgba(10, 14, 26, 0.82)',
-            border: `1px solid ${COLORS.neonCyan}66`,
-            borderRadius: 6,
-            color: COLORS.neonCyan,
             fontFamily: 'JetBrains Mono, monospace',
-            fontSize: 11,
+            fontSize: textSize.micro,
             letterSpacing: '0.18em',
-            cursor: 'pointer',
             boxShadow: `0 0 18px ${COLORS.neonCyan}33`,
             backdropFilter: 'blur(4px)',
-          }}
+          } as CSSProperties}
         >
           ↩ RETURN TO THE ROTUNDA · ESC
-        </button>
+        </Button>
       )}
       <HenryHUD
         visible={activeHud === 'henry'}
@@ -612,6 +642,22 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       />
       <FinancierHUD
         visible={activeHud === 'financier'}
+        onClose={() => setActiveHud(null)}
+      />
+      <CouncilHUD
+        visible={activeHud === 'council'}
+        onClose={() => setActiveHud(null)}
+      />
+      <PolybotHUD
+        visible={activeHud === 'polybot'}
+        onClose={() => setActiveHud(null)}
+      />
+      <PickerHUD
+        visible={activeHud === 'picker'}
+        onClose={() => setActiveHud(null)}
+      />
+      <GrowthMeasurementHUD
+        visible={activeHud === 'growth_measurement'}
         onClose={() => setActiveHud(null)}
       />
       <AgentPicker

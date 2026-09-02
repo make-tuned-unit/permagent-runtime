@@ -3,7 +3,9 @@ import { COLORS } from './constants';
 import { AGENT_TRIM } from './shared/palette';
 import { useAgentRuntimeStates } from './shared/agentStatus';
 import { HudShell, Section } from './HudShell';
+import { Chip } from '../common/Chip';
 import { api } from '../../lib/api';
+import { textSize } from '../../styles/tokens';
 
 // The Guard — the security agent, born of the Strix pentest engine
 // (crate::strix + the daemon sweep loop; ids/config keys keep the `strix`
@@ -53,26 +55,20 @@ export function StrixHUD({ visible, onClose }: StrixHUDProps) {
           : 'ON WATCH';
   const pillColor = enabled !== false && isDaemon && live?.hudState === 'error' ? '#FF5D5D' : STRIX_TRIM;
 
-  const statusPill = (
-    <div style={{
-      display: 'inline-block',
-      padding: '2px 8px',
-      borderRadius: 3,
-      fontSize: 10,
-      fontWeight: 700,
-      letterSpacing: '0.08em',
-      background: 'rgba(140, 74, 92, 0.12)',
-      color: pillColor,
-      border: `1px solid ${pillColor}44`,
-    }}>
-      {label}
-    </div>
-  );
+  // A daemon-backed reading is a live one and is drawn as such — filled, with
+  // a liveness dot, pulsing only while work is genuinely in flight. Without a
+  // daemon behind it the label is a standing fact, not a status, so it takes
+  // the outline form that says so.
+  // "OFF" is a setting, not a status, so a disabled Guard reads as static even
+  // when the daemon is otherwise there.
+  const statusPill = enabled !== false && isDaemon
+    ? <Chip kind="state" color={pillColor} pulse={live?.hudState === 'working'}>{label}</Chip>
+    : <Chip kind="static" color={pillColor}>{label}</Chip>;
 
   return (
     <HudShell visible={visible} onClose={onClose} title="THE GUARD" statusPill={statusPill}>
       <div style={{ padding: '4px 14px 8px' }}>
-        <span style={{ fontSize: 11, color: '#9CA3AF', lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5 }}>
           {enabled === false
             ? 'Standing by — sweeps disabled; enable in Settings → Models. When on, the Guard probes your own projects the way an attacker would, on its own cadence. Born of the Strix pentest engine.'
             : 'Your own projects, probed the way an attacker would — on its own cadence, so security review happens without anyone remembering to ask. It reports; it never fixes. Born of the Strix pentest engine.'}
@@ -87,7 +83,7 @@ export function StrixHUD({ visible, onClose }: StrixHUDProps) {
       </Section>
 
       <Section title="WHAT YOU GET" trimColor={STRIX_TRIM}>
-        <div style={{ fontSize: 11, color: '#D1D5DB', lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
           Each finding lands on its project's Overview as a checklist item
           carrying severity, CWE, where it lives, and how to fix it — the
           standing answer to "what's wrong with this project".
@@ -95,7 +91,7 @@ export function StrixHUD({ visible, onClose }: StrixHUDProps) {
       </Section>
 
       <Section title="THE LEASH" trimColor={COLORS.neonAmber}>
-        <div style={{ fontSize: 11, color: '#D1D5DB', lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
           Scope is enforced in code, not prompt: only your own project roots
           are scannable — URLs, foreign paths and directory traversal are
           refused before the scanner runs. Sweeps are instructed static-only
@@ -109,7 +105,7 @@ export function StrixHUD({ visible, onClose }: StrixHUDProps) {
 
 function Bullet({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ fontSize: 11, color: '#D1D5DB', lineHeight: 1.7, display: 'flex', gap: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.7, display: 'flex', gap: 8 }}>
       <span style={{ color: STRIX_TRIM }}>·</span>
       <span>{children}</span>
     </div>

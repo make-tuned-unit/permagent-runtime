@@ -99,6 +99,10 @@ fn tool_kind(name: &str) -> &'static str {
 pub struct ToolTurn<'a> {
     pub name: &'a str,
     pub result: &'a str,
+    /// Wire-level tool outcome when available. Text is only a fallback for
+    /// synthetic/direct callers: successful test output commonly contains
+    /// `0 failed`, which must never be classified as a failure.
+    pub is_error: Option<bool>,
 }
 
 /// Extract signals from a short run of goose tool turns. Pure.
@@ -110,30 +114,54 @@ pub fn extract(turns: &[ToolTurn<'_>]) -> ToolTranscriptSignals {
     let mut severity: f32 = 0.0;
     let mut edits = 0u32;
     let mut reads = 0u32;
-    let mut failing_shells = 0u32;
-    let mut last_shell: Option<&str> = None;
+    let mut last_failure: Option<String> = None;
     let mut repeat_fail = 0u32;
 
     for t in turns {
         let kind = tool_kind(t.name);
-        if contains_any(t.result, CRITICAL) {
+        // The wire is the truth. Text sniffing survives only for synthetic
+        // callers that have no `is_error` to give us — a passing suite prints
+        // `0 failed`, and reading that as a failure is what made the harness
+        // answer a green run with "verify is still failing the same way".
+        let failed = t
+            .is_error
+            .unwrap_or_else(|| contains_any(t.result, HARD) || contains_any(t.result, CRITICAL));
+
+        // A successful mutation starts a new diagnostic epoch, and a successful
+        // verify closes it. Failures before either seam are resolved evidence,
+        // not proof that the current tail is spinning.
+        if (kind == "edit" || kind == "verify") && t.is_error == Some(false) {
+            severity = 0.0;
+            last_failure = None;
+            repeat_fail = 0;
+        }
+
+        if failed && contains_any(t.result, CRITICAL) {
             severity = severity.max(1.0);
-        } else if contains_any(t.result, HARD) {
+        } else if failed && contains_any(t.result, HARD) {
             severity = severity.max(0.7);
         }
         match kind {
             "edit" => edits += 1,
             "read" => reads += 1,
             "shell" | "verify" => {
-                let failed = contains_any(t.result, HARD) || contains_any(t.result, CRITICAL);
                 if failed {
-                    failing_shells += 1;
-                    if last_shell == Some(t.result) {
+                    // Normalised, so "timed out after 120 seconds" and "after
+                    // 300 seconds" are one spin — but two genuinely different
+                    // errors are not.
+                    let fingerprint = failure_fingerprint(t.result);
+                    if last_failure.as_deref() == Some(fingerprint.as_str()) {
                         repeat_fail += 1;
+                    } else {
+                        repeat_fail = 0;
                     }
-                    last_shell = Some(t.result);
+                    last_failure = Some(fingerprint);
                 } else {
-                    last_shell = None;
+                    // A passing unrelated shell breaks consecutiveness but does
+                    // not erase unresolved severity; only an edit or a
+                    // successful verify closes that diagnostic epoch.
+                    last_failure = None;
+                    repeat_fail = 0;
                 }
             }
             _ => {}
@@ -141,13 +169,7 @@ pub fn extract(turns: &[ToolTurn<'_>]) -> ToolTranscriptSignals {
     }
 
     let n = turns.len() as f32;
-    let spinning = if repeat_fail >= 1 {
-        0.7
-    } else if failing_shells >= 2 {
-        0.5
-    } else {
-        0.0
-    };
+    let spinning = if repeat_fail >= 1 { 0.7 } else { 0.0 };
     let exploring = if reads > edits && edits == 0 {
         (reads as f32 / n).min(1.0)
     } else {
@@ -165,6 +187,37 @@ pub fn extract(turns: &[ToolTurn<'_>]) -> ToolTranscriptSignals {
         exploring,
         production,
     }
+}
+
+/// Stable enough to recognize the same command failure across elapsed-time,
+/// port, PID, and count changes without collapsing different error text.
+fn failure_fingerprint(result: &str) -> String {
+    let mut out = String::with_capacity(result.len().min(1024));
+    let mut in_digits = false;
+    let mut in_space = false;
+    for ch in result.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_digit() {
+            if !in_digits {
+                out.push('#');
+            }
+            in_digits = true;
+            in_space = false;
+        } else if ch.is_whitespace() {
+            if !in_space {
+                out.push(' ');
+            }
+            in_digits = false;
+            in_space = true;
+        } else {
+            out.push(ch);
+            in_digits = false;
+            in_space = false;
+        }
+        if out.len() >= 1024 {
+            break;
+        }
+    }
+    out.trim().to_string()
 }
 
 /// Signals may corroborate a verify climb. They never authorize one alone.
@@ -201,7 +254,7 @@ pub fn extract_from_messages(
     use std::collections::HashMap;
 
     let mut pending: HashMap<String, String> = HashMap::new();
-    let mut owned: Vec<(String, String)> = Vec::new();
+    let mut owned: Vec<(String, String, bool)> = Vec::new();
     for msg in messages {
         for content in &msg.content {
             match content {
@@ -214,11 +267,14 @@ pub fn extract_from_messages(
                     let Some(name) = pending.remove(&resp.id) else {
                         continue;
                     };
-                    let body = match &resp.tool_result {
-                        Ok(r) => serde_json::to_string(&r.content).unwrap_or_default(),
-                        Err(e) => e.to_string(),
+                    let (body, is_error) = match &resp.tool_result {
+                        Ok(r) => (
+                            serde_json::to_string(&r.content).unwrap_or_default(),
+                            r.is_error == Some(true),
+                        ),
+                        Err(e) => (e.to_string(), true),
                     };
-                    owned.push((name, body));
+                    owned.push((name, body, is_error));
                 }
                 _ => {}
             }
@@ -226,7 +282,11 @@ pub fn extract_from_messages(
     }
     let turns: Vec<ToolTurn<'_>> = owned
         .iter()
-        .map(|(n, r)| ToolTurn { name: n, result: r })
+        .map(|(n, r, is_error)| ToolTurn {
+            name: n,
+            result: r,
+            is_error: Some(*is_error),
+        })
         .collect();
     extract(&turns)
 }
@@ -234,6 +294,8 @@ pub fn extract_from_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::message::{Message, MessageContent};
+    use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Role};
 
     #[test]
     fn empty_is_quiet() {
@@ -246,6 +308,7 @@ mod tests {
         let s = extract(&[ToolTurn {
             name: "shell",
             result: "out of memory while linking",
+            is_error: Some(true),
         }]);
         assert_eq!(s.severity, 1.0);
         assert!(corroborates_verify_climb(&s));
@@ -259,10 +322,12 @@ mod tests {
             ToolTurn {
                 name: "developer__shell",
                 result: fail,
+                is_error: Some(true),
             },
             ToolTurn {
                 name: "shell",
                 result: fail,
+                is_error: Some(true),
             },
         ]);
         assert!(s.spinning >= 0.5);
@@ -275,10 +340,12 @@ mod tests {
             ToolTurn {
                 name: "search",
                 result: "3 matches",
+                is_error: Some(false),
             },
             ToolTurn {
                 name: "analyze",
                 result: "fn foo",
+                is_error: Some(false),
             },
         ]);
         assert!(s.exploring > 0.0);
@@ -291,10 +358,12 @@ mod tests {
             ToolTurn {
                 name: "search",
                 result: "found",
+                is_error: Some(false),
             },
             ToolTurn {
                 name: "text_editor",
                 result: "ok",
+                is_error: Some(false),
             },
         ]);
         assert!(s.production > 0.0);
@@ -307,8 +376,181 @@ mod tests {
         let s = extract(&[ToolTurn {
             name: "mcp__docs__lookup",
             result: "ok",
+            is_error: Some(false),
         }]);
         assert!(s.is_quiet());
+    }
+
+    #[test]
+    fn different_failures_are_not_the_same_spin() {
+        let s = extract(&[
+            ToolTurn {
+                name: "verify",
+                result: "error: TypeScript is not installed",
+                is_error: Some(true),
+            },
+            ToolTurn {
+                name: "verify",
+                result: "error: production build timed out",
+                is_error: Some(true),
+            },
+        ]);
+        assert_eq!(s.spinning, 0.0);
+    }
+
+    /// The fingerprint normalises digits, so a timeout that grew from 120s to
+    /// 300s is still the same command failing the same way.
+    #[test]
+    fn the_same_failure_with_different_numbers_is_one_spin() {
+        let s = extract(&[
+            ToolTurn {
+                name: "verify",
+                result: "error: build timed out after 120 seconds",
+                is_error: Some(true),
+            },
+            ToolTurn {
+                name: "verify",
+                result: "error: build timed out after 300 seconds",
+                is_error: Some(true),
+            },
+        ]);
+        assert_eq!(s.spinning, 0.7);
+    }
+
+    #[test]
+    fn successful_verify_clears_old_failure_signals_even_with_zero_failed_text() {
+        let s = extract(&[
+            ToolTurn {
+                name: "verify",
+                result: "error: build timed out after 120 seconds",
+                is_error: Some(true),
+            },
+            ToolTurn {
+                name: "verify",
+                result: "error: build timed out after 300 seconds",
+                is_error: Some(true),
+            },
+            ToolTurn {
+                name: "verify",
+                result: "test result: ok. 42 passed; 0 failed",
+                is_error: Some(false),
+            },
+        ]);
+        assert_eq!(s.spinning, 0.0);
+        assert_eq!(s.severity, 0.0);
+    }
+
+    #[test]
+    fn successful_unrelated_shell_breaks_failure_consecutiveness() {
+        let fail = "error: build timed out";
+        let s = extract(&[
+            ToolTurn {
+                name: "verify",
+                result: fail,
+                is_error: Some(true),
+            },
+            ToolTurn {
+                name: "shell",
+                result: "working tree clean",
+                is_error: Some(false),
+            },
+            ToolTurn {
+                name: "verify",
+                result: fail,
+                is_error: Some(true),
+            },
+        ]);
+        assert_eq!(s.spinning, 0.0);
+        assert!(
+            s.severity >= 0.7,
+            "an unrelated pass breaks the run but does not resolve the failure"
+        );
+    }
+
+    /// Build one assistant message carrying a tool request and its result,
+    /// the way a live conversation does — the only input `extract_from_messages`
+    /// trusts.
+    fn tool_exchange(name: &str, id: &str, text: &str, ok: bool) -> Message {
+        let result = if ok {
+            CallToolResult::success(vec![Content::text(text)])
+        } else {
+            CallToolResult::error(vec![Content::text(text)])
+        };
+        Message::new(
+            Role::Assistant,
+            0,
+            vec![
+                MessageContent::tool_request(id, Ok(CallToolRequestParams::new(name.to_string()))),
+                MessageContent::tool_response(id, Ok(result)),
+            ],
+        )
+    }
+
+    /// The live bug. A PASSING cargo suite prints `0 failed`; `"failed"` is in
+    /// `HARD`, so text sniffing scored two green runs as a repeat failure and
+    /// `decide_hold` injected "Verify is still failing the same way" *after a
+    /// pass*. The wire already carried `is_error: false` — read it.
+    #[test]
+    fn a_passing_suite_that_prints_zero_failed_is_not_a_failure() {
+        let pass = "test result: ok. 42 passed; 0 failed; 0 ignored";
+        let s = extract_from_messages(&[
+            tool_exchange("developer__verify", "v1", pass, true),
+            tool_exchange("developer__verify", "v2", pass, true),
+        ]);
+
+        assert_eq!(s.severity, 0.0, "a successful verify is not severe");
+        assert_eq!(s.spinning, 0.0, "two green runs are not a spin");
+        assert_eq!(
+            crate::cost_router::decide_hold(
+                crate::cost_router::WorkflowRole::Mechanical,
+                true,
+                &s,
+                0
+            ),
+            crate::cost_router::HoldOutcome::Allow,
+            "a green verify must never be answered with 'still failing'"
+        );
+    }
+
+    /// The other half of the same claim: dropping text sniffing must not blind
+    /// the detectors that were doing real work. A genuinely failing command,
+    /// repeated, still scores as a spin, still corroborates a verify climb, and
+    /// still holds — because a *failing* verify leaves `verify_ran` false.
+    #[test]
+    fn a_genuinely_failing_repeated_run_is_still_caught() {
+        let fail = "error: linker exited with code 1";
+        let s = extract_from_messages(&[
+            tool_exchange("developer__verify", "v1", fail, false),
+            tool_exchange("developer__verify", "v2", fail, false),
+        ]);
+
+        assert!(s.spinning >= 0.5, "the same failure twice is a spin");
+        assert!(corroborates_verify_climb(&s));
+        assert!(matches!(
+            crate::cost_router::decide_hold(
+                crate::cost_router::WorkflowRole::Mechanical,
+                false,
+                &s,
+                0
+            ),
+            crate::cost_router::HoldOutcome::Hold { .. }
+        ));
+    }
+
+    /// Two *different* failures deliberately stop scoring as a spin (see the
+    /// `failing_shells >= 2` deletion), so severity is the axis that has to
+    /// keep carrying them into the escalation path.
+    #[test]
+    fn two_different_failures_still_reach_the_escalation_path() {
+        let s = extract_from_messages(&[
+            tool_exchange("developer__verify", "v1", "error: type mismatch", false),
+            tool_exchange("developer__verify", "v2", "error: no such file", false),
+        ]);
+
+        assert_eq!(s.spinning, 0.0, "different errors are not the same spin");
+        assert!(s.severity >= 0.7, "but they are still hard failures");
+        assert!(corroborates_verify_climb(&s));
+        assert_eq!(corroborating_consecutive(1, &s, 3), 3);
     }
 
     #[test]

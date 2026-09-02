@@ -285,6 +285,111 @@ pub struct RepoTarget {
     pub evidence: Vec<String>,
 }
 
+/// `risk_gate` action classes for the Financier's exit notices. Advisory is
+/// Tier 1 (agent policy or the user may answer); urgent escalates to Tier 2,
+/// user-only — a 55-day breakdown or a 25% drawdown is not something a policy
+/// should be able to wave through on the user's behalf. Seeded in
+/// `spectral_schema` and reconciled by `migrate_v52_to_v53`.
+pub const SELL_NOTICE_ADVISORY: &str = "finance_sell_notice";
+pub const SELL_NOTICE_URGENT: &str = "finance_sell_notice_urgent";
+
+/// The indicator readings behind an exit notice, F0 §5.4's `evidence` block.
+///
+/// Every field is `Option` for the same reason the buy-side block is: absent
+/// means "not computable from the history that came back", never zero and
+/// never a shortened window.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct SellNoticeEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dch_lo20: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dch_hi20: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dch_lo55: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sma50: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sma100: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sma200: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atr20: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atr_pct: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chandelier: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chan_pos_252: Option<f64>,
+    /// Reported as CONTEXT only. Volume plays no part in any exit trigger
+    /// (F0 §5.3) — there is no credible evidence for volume-divergence exits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rvol: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dollar_volume_20d: Option<f64>,
+}
+
+/// Payload sub-type for a Financier exit notice, carried on `kind='risk_gate'`.
+///
+/// A sub-typed payload on an existing kind rather than a new `decisions.kind`:
+/// a new top-level kind costs a templated SQLite table rebuild (the `kind`
+/// CHECK constraint) plus registrations in the validator allowlist, the
+/// payload-match arm, `answer_allowed_for_kind` and `OUTBOX_ELIGIBLE_KINDS`,
+/// where a discriminant field on `RiskGatePayload` costs one optional field
+/// and keeps every pre-existing payload byte-identical on the wire.
+/// [`RepoTarget`] set that precedent; this follows it.
+///
+/// **It proposes. It never trades.** No code path connects the decision
+/// effect-apply layer to Picker's trade journal or to any order placement, and
+/// nothing here adds one. An approve records that the user agreed with the
+/// rule; the selling, if any, is theirs to do.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SellNoticePayload {
+    pub symbol: String,
+    /// Stable key for the rule that fired — the dedupe axis, so one holding
+    /// can carry a chandelier notice and a 55-day-breakdown notice at once
+    /// without either re-filing itself daily.
+    pub trigger: String,
+    /// `"advisory"` or `"urgent"`.
+    pub urgency: String,
+    pub trigger_date: String,
+    pub trigger_close: f64,
+    /// The exact inequality with BOTH numbers substituted, e.g.
+    /// `"close 3.41 < dch_lo(20) 3.55 AND close 3.41 < sma(100) 3.88, 2nd
+    /// consecutive close"`. A rule is auditable only if its own numbers are in
+    /// it.
+    pub rule_fired: String,
+    /// The price at which this signal would be void.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalidation_level: Option<f64>,
+    /// What that level IS, in words — the levels differ per trigger.
+    pub invalidation_note: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance_to_invalidation_pct: Option<f64>,
+    pub entry_date: String,
+    pub entry_price: f64,
+    pub shares: i64,
+    pub unrealized_pnl_pct: f64,
+    pub unrealized_pnl_usd: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub days_held: Option<i64>,
+    #[serde(default)]
+    pub evidence: SellNoticeEvidence,
+    /// The case AGAINST acting, always present. Without it the reader only
+    /// ever sees the case for selling, which is not a decision aid.
+    #[serde(default)]
+    pub counter_evidence: Vec<String>,
+    /// Why no probability is attached.
+    pub caveat: String,
+}
+
+/// The standing caveat on every exit notice. One constant so it cannot drift
+/// into a softer phrasing on some path.
+pub const SELL_NOTICE_CAVEAT: &str = "This is a rule firing, not a forecast. No probability is \
+     attached because the engine is not calibrated. It is a proposal, never an order — nothing \
+     in Permagent can place a trade.";
+
 /// Payload for `kind='risk_gate'` — permission to perform a risky action class.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -297,6 +402,10 @@ pub struct RiskGatePayload {
     /// risk_gate payload parsing and byte-identical on the wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_target: Option<RepoTarget>,
+    /// The Financier's exit notice (`finance_sell_notice*`). Same
+    /// default-and-skip discipline as `repo_target`, for the same reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sell_notice: Option<SellNoticePayload>,
 }
 
 /// Payload for `kind='automation_proposal'` — the Initiative layer (#360) noticed
@@ -1023,10 +1132,25 @@ pub struct Decision {
     pub acted_by: Option<String>,
     pub created_at: String,
     pub resolved_at: Option<String>,
+    /// A verdict a channel that cannot authenticate has PROPOSED (D29).
+    /// The decision is still `open` and still unanswered; this only says what
+    /// the user said out loud, so the confirm surface can offer it in one tap.
+    /// Expired stagings never surface — this is `None` past the TTL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub staged_answer: Option<StagedAnswer>,
 }
 
 fn row_to_decision(r: &sqlx::sqlite::SqliteRow) -> Decision {
     let payload_str: String = r.get("payload_json");
+    // `try_get`, not `get`: several joins select an explicit column list that
+    // predates this field, and a missing column must read as "nothing staged"
+    // rather than panic.
+    let staged_answer = r
+        .try_get::<Option<String>, _>("staged_answer_json")
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str::<StagedAnswer>(&s).ok())
+        .filter(|s| !s.is_expired());
     Decision {
         id: r.get("id"),
         kind: r.get("kind"),
@@ -1045,12 +1169,179 @@ fn row_to_decision(r: &sqlx::sqlite::SqliteRow) -> Decision {
         acted_by: r.get("acted_by"),
         created_at: r.get("created_at"),
         resolved_at: r.get("resolved_at"),
+        staged_answer,
     }
 }
 
 const DECISION_COLUMNS: &str = "id, kind, goal_id, project_id, tier, headline, detail, \
      payload_json, rank, status, answer, answer_note, answer_choice_id, answer_input, \
-     acted_by, created_at, resolved_at";
+     acted_by, created_at, resolved_at, staged_answer_json";
+
+// ── Staged answers: voice proposes, a tap commits (D29) ─────────────────────
+//
+// NIST SP 800-63B-4 §3.2.3.2: "Biometric comparison based on voice SHALL NOT
+// be used", and §3.2.3: a biometric may never stand alone as an authenticator.
+// A spoken verdict therefore cannot BE an answer at any tier — not even the
+// lowest, and not even with a voiceprint enrolled. What it can be is a
+// proposal: the utterance is staged against the still-open decision, and the
+// answer happens only when someone taps Commit on an unlocked device (the
+// possession factor the standard does endorse).
+//
+// This is enforcement, not prompt guidance: the voice route calls
+// [`stage_answer`], which cannot resolve a decision, instead of the answer
+// path, which is the only thing that can.
+
+/// How long a staged verdict stays offerable. Stale staging must not lie in
+/// wait: a "yes" said half an hour ago is no longer evidence of present
+/// intent, so it stops being one-tap committable and the row is swept.
+pub const STAGED_ANSWER_TTL_SECS: i64 = 30 * 60;
+
+/// A verdict proposed on a channel that cannot authenticate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StagedAnswer {
+    /// `approve` or `reject` — the verdict the user said.
+    pub answer: String,
+    /// Anything said alongside the verdict, verbatim.
+    pub note: Option<String>,
+    /// When it was said (RFC3339, UTC), for the TTL and the "2m ago" label.
+    pub staged_at: String,
+    /// The channel that carried the proposal, e.g. `"voice"`. Never an
+    /// authority claim — it names who could not authenticate.
+    pub staged_via: String,
+}
+
+impl StagedAnswer {
+    /// Seconds since the verdict was spoken. `None` when `staged_at` is
+    /// unparseable — an unreadable timestamp is treated as expired below
+    /// rather than as freshly staged.
+    pub fn age_secs(&self) -> Option<i64> {
+        chrono::DateTime::parse_from_rfc3339(&self.staged_at)
+            .ok()
+            .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds())
+    }
+
+    /// Past the TTL (or unreadable) — must not be offered for commit.
+    pub fn is_expired(&self) -> bool {
+        match self.age_secs() {
+            Some(age) => age >= STAGED_ANSWER_TTL_SECS,
+            None => true,
+        }
+    }
+}
+
+/// Stage a proposed verdict against an OPEN decision, leaving it open.
+///
+/// Deliberately does no tier gating, because it grants no authority: nothing
+/// here can resolve a decision, run an effect, or append an audit row. The
+/// checks that remain are the ones that stop a proposal being un-committable
+/// later — the decision must exist, be open, and accept this verdict.
+pub async fn stage_answer(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+    answer: &str,
+    note: Option<String>,
+    staged_via: &str,
+) -> Result<StagedAnswer, AnswerError> {
+    if !matches!(answer, "approve" | "reject") {
+        return Err(AnswerError::Invalid(format!(
+            "only a bare approve/reject verdict can be staged, got '{}'",
+            answer
+        )));
+    }
+    let decision = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+    if decision.status != "open" {
+        return Err(AnswerError::AlreadyResolved(decision.status));
+    }
+    if !answer_allowed_for_kind(&decision.kind, answer) {
+        return Err(AnswerError::Invalid(format!(
+            "answer '{}' is not supported for decision kind '{}'",
+            answer, decision.kind
+        )));
+    }
+
+    let staged = StagedAnswer {
+        answer: answer.to_string(),
+        note,
+        staged_at: now_timestamp(),
+        staged_via: staged_via.to_string(),
+    };
+    let json = serde_json::to_string(&staged)
+        .map_err(|e| AnswerError::Db(format!("staged answer unserializable: {e}")))?;
+
+    // `WHERE status = 'open'` so a decision answered between the read above and
+    // this write keeps its resolution and gains no ghost staging.
+    let result =
+        sqlx::query("UPDATE decisions SET staged_answer_json = ? WHERE id = ? AND status = 'open'")
+            .bind(&json)
+            .bind(decision_id)
+            .execute(pool)
+            .await
+            .map_err(|e| AnswerError::Db(e.to_string()))?;
+    if result.rows_affected() == 0 {
+        return Err(AnswerError::AlreadyResolved("answered".to_string()));
+    }
+
+    crate::events::emit(crate::events::decision_staged(
+        decision_id,
+        &decision.kind,
+        answer,
+        staged_via,
+        decision.tier,
+    ));
+
+    Ok(staged)
+}
+
+/// Read the live staged verdict for a decision, if one is still offerable.
+/// Expired stagings read as `None` (and are swept by
+/// [`expire_stale_staged_answers`]).
+pub async fn staged_answer(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+) -> Result<Option<StagedAnswer>, String> {
+    Ok(get_decision(pool, decision_id)
+        .await?
+        .and_then(|d| d.staged_answer))
+}
+
+/// Discard a staged verdict. The user's "no, I didn't mean that" — and the
+/// same call the commit path uses to clear staging it has consumed.
+pub async fn clear_staged_answer(pool: &Pool<Sqlite>, decision_id: &str) -> Result<bool, String> {
+    let result = sqlx::query(
+        "UPDATE decisions SET staged_answer_json = NULL \
+         WHERE id = ? AND staged_answer_json IS NOT NULL",
+    )
+    .bind(decision_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Sweep staged verdicts past the TTL. Returns how many were dropped.
+///
+/// The read path already refuses to surface an expired staging, so this is
+/// hygiene rather than the guarantee — but it is what keeps a month-old "yes"
+/// from sitting in the row at all.
+pub async fn expire_stale_staged_answers(pool: &Pool<Sqlite>) -> Result<u64, String> {
+    let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(STAGED_ANSWER_TTL_SECS))
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+    let result = sqlx::query(
+        "UPDATE decisions SET staged_answer_json = NULL \
+         WHERE staged_answer_json IS NOT NULL \
+           AND (json_extract(staged_answer_json, '$.staged_at') IS NULL \
+                OR json_extract(staged_answer_json, '$.staged_at') <= ?)",
+    )
+    .bind(&cutoff)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(result.rows_affected())
+}
 
 /// Request to create a decision. `headline` and `detail` are both REQUIRED
 /// (amendment A1): `headline` is a plain-language outcome statement
@@ -1531,6 +1822,36 @@ pub async fn find_open_session_gate(
     Ok(row.as_ref().map(row_to_decision))
 }
 
+/// Find the open Financier exit notice for one holding and one rule, if any.
+///
+/// The dedupe axis is the PAIR. Keying on the symbol alone would mean a lot
+/// that broke its 20-day channel on Monday could never also raise a 55-day
+/// breakdown on Thursday; keying on the rule alone would collapse two
+/// different holdings into one card. Both cadences that can file — the 15:30
+/// close scan and the 6-hour sweep — check this first, so the sweep is a
+/// silent no-op on anything the close scan already raised rather than a second
+/// opinion arriving hours later.
+pub async fn find_open_sell_notice(
+    pool: &Pool<Sqlite>,
+    symbol: &str,
+    trigger: &str,
+) -> Result<Option<Decision>, String> {
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM decisions \
+         WHERE kind = 'risk_gate' AND status = 'open' \
+           AND json_extract(payload_json, '$.sell_notice.symbol') = ? \
+           AND json_extract(payload_json, '$.sell_notice.trigger') = ? \
+         ORDER BY created_at DESC LIMIT 1",
+        DECISION_COLUMNS
+    )))
+    .bind(symbol)
+    .bind(trigger)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.as_ref().map(row_to_decision))
+}
+
 // ── Inbox queries (Lane L4 contract) ────────────────────────────────────────
 
 /// Summary envelope returned beside the open-decision list.
@@ -1604,7 +1925,7 @@ pub async fn list_open_decisions(pool: &Pool<Sqlite>) -> Result<Vec<OpenDecision
         "SELECT d.id, d.kind, d.goal_id, d.project_id, d.tier, d.headline, d.detail, \
                 d.payload_json, d.rank, d.status, d.answer, d.answer_note, \
                 d.answer_choice_id, d.answer_input, d.acted_by, d.created_at, d.resolved_at, \
-                c.title AS goal_title \
+                d.staged_answer_json, c.title AS goal_title \
          FROM decisions d LEFT JOIN cards c ON d.goal_id = c.id \
          WHERE d.status = 'open' \
          ORDER BY d.rank DESC NULLS LAST, d.created_at ASC",
@@ -1800,6 +2121,10 @@ pub enum AnswerError {
     AlreadyResolved(String),
     /// Actor is not authorized for this tier (403).
     Forbidden(String),
+    /// The answering session is the subject of the decision — it did, or is
+    /// doing, the very work this decision judges (403). Separation of duties
+    /// (D30): no session approves its own work, whatever tier it holds.
+    SelfReference(String),
     /// Request is invalid (400).
     Invalid(String),
     /// Database failure (500).
@@ -1837,6 +2162,7 @@ impl std::fmt::Display for AnswerError {
             Self::NotFound => write!(f, "Decision not found"),
             Self::AlreadyResolved(s) => write!(f, "Decision already resolved (status: {})", s),
             Self::Forbidden(s) => write!(f, "Forbidden: {}", s),
+            Self::SelfReference(s) => write!(f, "Forbidden (self-reference): {}", s),
             Self::Invalid(s) => write!(f, "Invalid: {}", s),
             Self::Db(s) => write!(f, "Database error: {}", s),
         }
@@ -1855,7 +2181,7 @@ pub async fn answer_decision(
     answer: &DecisionAnswer,
     acted_by: &str,
 ) -> Result<(Decision, DecisionProof), AnswerError> {
-    answer_decision_inner(pool, decision_id, answer, acted_by, None).await
+    answer_decision_inner(pool, decision_id, answer, acted_by, None, None).await
 }
 
 /// Answer a decision while durably recording the authenticated HTTP principal.
@@ -1869,7 +2195,124 @@ pub async fn answer_decision_with_principal(
     acted_by: &str,
     principal: &str,
 ) -> Result<(Decision, DecisionProof), AnswerError> {
-    answer_decision_inner(pool, decision_id, answer, acted_by, Some(principal)).await
+    answer_decision_inner(pool, decision_id, answer, acted_by, Some(principal), None).await
+}
+
+/// Answer a decision on behalf of a named in-process session.
+///
+/// Identical to [`answer_decision_with_principal`] except that the answering
+/// session is declared, which arms the separation-of-duties check: a session
+/// may not answer a decision that judges its own work (D30). Every in-process
+/// caller — the chat `answer_decisions` tool above all — should use this rather
+/// than the anonymous variants, so the block has something to compare against.
+pub async fn answer_decision_as_session(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+    answer: &DecisionAnswer,
+    acted_by: &str,
+    principal: &str,
+    answering_session_id: &str,
+) -> Result<(Decision, DecisionProof), AnswerError> {
+    answer_decision_inner(
+        pool,
+        decision_id,
+        answer,
+        acted_by,
+        Some(principal),
+        Some(answering_session_id),
+    )
+    .await
+}
+
+/// Does `haystack` mention `needle` anywhere as a string, key, or substring of
+/// a string? Decision payloads are free-form JSON — a session id can appear as
+/// `worker_session_id`, inside a `run_id`, or embedded in a rendered evidence
+/// blob — so the scan is deliberately structural rather than key-specific.
+fn json_mentions(haystack: &serde_json::Value, needle: &str) -> bool {
+    match haystack {
+        serde_json::Value::String(s) => s.contains(needle),
+        serde_json::Value::Array(items) => items.iter().any(|v| json_mentions(v, needle)),
+        serde_json::Value::Object(map) => map
+            .iter()
+            .any(|(k, v)| k.contains(needle) || json_mentions(v, needle)),
+        _ => false,
+    }
+}
+
+/// Session ids that have done the work on a goal card — the current
+/// `worker_session_id` plus every past attempt in `worker_session_ids`.
+///
+/// Read from `cards.metadata_json`, the same linkage `recognition.rs` and
+/// `goal_transition::goal_spent_tokens` use.
+async fn goal_worker_session_ids(pool: &Pool<Sqlite>, goal_id: &str) -> Vec<String> {
+    let Ok(Some(meta_json)) =
+        sqlx::query_scalar::<_, String>("SELECT metadata_json FROM cards WHERE id = ?")
+            .bind(goal_id)
+            .fetch_optional(pool)
+            .await
+    else {
+        return Vec::new();
+    };
+    let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_json) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = meta
+        .get("worker_session_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(sid) = meta.get("worker_session_id").and_then(|v| v.as_str()) {
+        if !ids.iter().any(|i| i == sid) {
+            ids.push(sid.to_string());
+        }
+    }
+    ids
+}
+
+/// Separation of duties: may `answering_session_id` answer `decision`?
+///
+/// Returns the reason it may not, or `None` when the answer is clean. Two
+/// independent tests, either of which disqualifies:
+///
+/// 1. The decision hangs off a goal card whose worker session — now or on any
+///    past attempt — IS the answering session. This is the literal
+///    self-approval case: a goal worker approving the review of its own goal.
+/// 2. The decision's stored payload mentions the answering session id at all.
+///    Anything the payload names as the subject of the decision is work the
+///    answering session has a stake in.
+///
+/// The capability gate in `inbox_tools` should already have kept every worker
+/// session away from this function; this is the second, unconditional layer,
+/// and it applies to sessions that DO hold the capability.
+pub async fn self_reference_conflict(
+    pool: &Pool<Sqlite>,
+    decision: &Decision,
+    answering_session_id: &str,
+) -> Option<String> {
+    if answering_session_id.is_empty() {
+        return None;
+    }
+    if let Some(goal_id) = decision.goal_id.as_deref() {
+        let workers = goal_worker_session_ids(pool, goal_id).await;
+        if workers.iter().any(|w| w == answering_session_id) {
+            return Some(format!(
+                "session {answering_session_id} did the work on goal {goal_id}; \
+                 it cannot answer a decision that judges that work"
+            ));
+        }
+    }
+    if json_mentions(&decision.payload, answering_session_id) {
+        return Some(format!(
+            "decision {} names session {answering_session_id} as its subject; \
+             a session cannot answer a decision about itself",
+            decision.id
+        ));
+    }
+    None
 }
 
 async fn answer_decision_inner(
@@ -1878,6 +2321,7 @@ async fn answer_decision_inner(
     answer: &DecisionAnswer,
     acted_by: &str,
     principal: Option<&str>,
+    answering_session_id: Option<&str>,
 ) -> Result<(Decision, DecisionProof), AnswerError> {
     if !VALID_ACTORS.contains(&acted_by) {
         return Err(AnswerError::Invalid(format!(
@@ -1916,6 +2360,21 @@ async fn answer_decision_inner(
             )));
         }
         _ => {}
+    }
+
+    // Separation of duties (D30). Runs for every declared answering session,
+    // whatever its tier authority: the reviewer is never the reviewed.
+    if let Some(session_id) = answering_session_id {
+        if let Some(reason) = self_reference_conflict(pool, &decision, session_id).await {
+            tracing::warn!(
+                decision_id,
+                answering_session_id = session_id,
+                acted_by,
+                reason = %reason,
+                "refused a self-referential decision answer"
+            );
+            return Err(AnswerError::SelfReference(reason));
+        }
     }
 
     // Kind/answer compatibility. Keep this before opening the write
@@ -1964,9 +2423,12 @@ async fn answer_decision_inner(
         .map_err(|e| AnswerError::Db(e.to_string()))?;
 
     // Atomic open → answered: zero rows affected means we lost a race.
+    // `staged_answer_json = NULL`: a proposal is consumed by the commit, and a
+    // resolved decision must never carry one (nothing would ever clear it).
     let result = sqlx::query(
         "UPDATE decisions SET status = 'answered', answer = ?, answer_note = ?, \
-         answer_choice_id = ?, answer_input = ?, acted_by = ?, resolved_at = ? \
+         answer_choice_id = ?, answer_input = ?, acted_by = ?, resolved_at = ?, \
+         staged_answer_json = NULL \
          WHERE id = ? AND status = 'open'",
     )
     .bind(&answer.answer)
@@ -2047,14 +2509,58 @@ async fn answer_decision_inner(
 
 // ── Audit hash chain (S3) ───────────────────────────────────────────────────
 
-/// Compute the hash of one audit row. Pure; shared with `permagent doctor`'s
-/// chain-integrity check. NULLs hash as empty strings; the genesis row's
+/// Compute the hash of one audit row. Pure, and the only public entry point to
+/// the chain hash: the writer (`append_audit_tx_with_principal`), the verifier
+/// (`verify_audit_chain`) and every fixture go through here so the algorithm
+/// cannot drift between them.
+///
+/// Two variants are live forever, because the log is append-only and rows
+/// written before principal attribution landed can never be rewritten: rows with
+/// no principal hash 8 fields, rows carrying one hash 9 (the principal folded in
+/// after `evidence_digest`). NULLs hash as empty strings; the genesis row's
 /// prev_hash is the empty string.
 ///
 /// One positional argument per hashed audit column, in chain order — a struct
 /// would obscure the field order the hash depends on.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_audit_row_hash(
+    prev_hash: &str,
+    decision_id: &str,
+    goal_id: &str,
+    acted_by: &str,
+    tier: i64,
+    outcome: &str,
+    evidence_digest: &str,
+    principal: Option<&str>,
+    created_at: &str,
+) -> String {
+    match principal {
+        Some(principal) => compute_attributed_audit_row_hash(
+            prev_hash,
+            decision_id,
+            goal_id,
+            acted_by,
+            tier,
+            outcome,
+            evidence_digest,
+            principal,
+            created_at,
+        ),
+        None => compute_unattributed_audit_row_hash(
+            prev_hash,
+            decision_id,
+            goal_id,
+            acted_by,
+            tier,
+            outcome,
+            evidence_digest,
+            created_at,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_unattributed_audit_row_hash(
     prev_hash: &str,
     decision_id: &str,
     goal_id: &str,
@@ -2166,29 +2672,17 @@ async fn append_audit_tx_with_principal(
             .map_err(|e| e.to_string())?;
 
     let created_at = now_timestamp();
-    let row_hash = match principal {
-        Some(principal) => compute_attributed_audit_row_hash(
-            prev_hash.as_deref().unwrap_or(""),
-            decision_id,
-            goal_id.unwrap_or(""),
-            acted_by,
-            tier,
-            outcome,
-            evidence_digest.unwrap_or(""),
-            principal,
-            &created_at,
-        ),
-        None => compute_audit_row_hash(
-            prev_hash.as_deref().unwrap_or(""),
-            decision_id,
-            goal_id.unwrap_or(""),
-            acted_by,
-            tier,
-            outcome,
-            evidence_digest.unwrap_or(""),
-            &created_at,
-        ),
-    };
+    let row_hash = compute_audit_row_hash(
+        prev_hash.as_deref().unwrap_or(""),
+        decision_id,
+        goal_id.unwrap_or(""),
+        acted_by,
+        tier,
+        outcome,
+        evidence_digest.unwrap_or(""),
+        principal,
+        &created_at,
+    );
 
     sqlx::query(
         "INSERT INTO decision_audit (decision_id, goal_id, acted_by, tier, outcome, \
@@ -2283,29 +2777,17 @@ pub async fn verify_audit_chain(pool: &Pool<Sqlite>) -> Result<AuditChainReport,
             });
         }
 
-        let recomputed = match principal {
-            Some(principal) => compute_attributed_audit_row_hash(
-                &stored_prev,
-                r.get::<String, _>("decision_id").as_str(),
-                goal_id.as_deref().unwrap_or(""),
-                r.get::<String, _>("acted_by").as_str(),
-                r.get::<i64, _>("tier"),
-                r.get::<String, _>("outcome").as_str(),
-                evidence.as_deref().unwrap_or(""),
-                &principal,
-                r.get::<String, _>("created_at").as_str(),
-            ),
-            None => compute_audit_row_hash(
-                &stored_prev,
-                r.get::<String, _>("decision_id").as_str(),
-                goal_id.as_deref().unwrap_or(""),
-                r.get::<String, _>("acted_by").as_str(),
-                r.get::<i64, _>("tier"),
-                r.get::<String, _>("outcome").as_str(),
-                evidence.as_deref().unwrap_or(""),
-                r.get::<String, _>("created_at").as_str(),
-            ),
-        };
+        let recomputed = compute_audit_row_hash(
+            &stored_prev,
+            r.get::<String, _>("decision_id").as_str(),
+            goal_id.as_deref().unwrap_or(""),
+            r.get::<String, _>("acted_by").as_str(),
+            r.get::<i64, _>("tier"),
+            r.get::<String, _>("outcome").as_str(),
+            evidence.as_deref().unwrap_or(""),
+            principal.as_deref(),
+            r.get::<String, _>("created_at").as_str(),
+        );
         if recomputed != row_hash {
             return Ok(AuditChainReport {
                 total_rows: rows.len() as u64,
@@ -3783,5 +4265,380 @@ mod tests {
         let allow_odd: serde_json::Value =
             serde_json::from_str(&session_gate_relay_line(&odd, true)).unwrap();
         assert!(allow_odd["response"]["response"]["updatedInput"].is_object());
+    }
+
+    // ── D30: separation of duties — the reviewer is never the reviewed ──
+
+    /// A goal card in `review`, with `worker_session_id` naming the session
+    /// that did the work — the linkage `recognition.rs` reads.
+    async fn goal_worked_by(pool: &Pool<Sqlite>, worker_session_id: &str) -> crate::cards::Card {
+        crate::cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let col = crate::cards::get_goal_column(pool, PERSONAL_PROJECT_ID, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        crate::cards::create_card(
+            pool,
+            crate::cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Self-approval test goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "goal_state": "review",
+                    "attempt_count": 1,
+                    "worker_session_id": worker_session_id,
+                    "worker_session_ids": ["an-earlier-attempt", worker_session_id],
+                })),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn review_of(pool: &Pool<Sqlite>, goal_id: &str) -> Decision {
+        create_decision(
+            pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal_id.to_string()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Goal finished — approve the work?".to_string()),
+                detail: Some("The worker reports done.".to_string()),
+                payload: serde_json::json!({"diff_paths": ["src/lib.rs"]}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    fn approve() -> DecisionAnswer {
+        DecisionAnswer {
+            answer: "approve".to_string(),
+            note: None,
+            choice_id: None,
+            input_text: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn goal_worker_cannot_approve_the_review_of_its_own_goal() {
+        let pool = test_pool().await;
+        let card = goal_worked_by(&pool, "sess-worker").await;
+        let d = review_of(&pool, &card.id).await;
+        assert_eq!(d.tier, 1, "goal_approve_standard seeds at tier 1");
+
+        let err = answer_decision_as_session(
+            &pool,
+            &d.id,
+            &approve(),
+            ACTOR_HENRY,
+            "henry-chat",
+            "sess-worker",
+        )
+        .await
+        .expect_err("a goal worker must not approve its own goal's review");
+        assert!(
+            matches!(err, AnswerError::SelfReference(_)),
+            "expected SelfReference, got {err:?}"
+        );
+
+        let still = get_decision(&pool, &d.id).await.unwrap().unwrap();
+        assert_eq!(still.status, "open", "a refused answer leaves it open");
+    }
+
+    #[tokio::test]
+    async fn a_past_attempts_worker_session_is_also_blocked() {
+        let pool = test_pool().await;
+        let card = goal_worked_by(&pool, "sess-worker").await;
+        let d = review_of(&pool, &card.id).await;
+
+        let err = answer_decision_as_session(
+            &pool,
+            &d.id,
+            &approve(),
+            ACTOR_HENRY,
+            "henry-chat",
+            "an-earlier-attempt",
+        )
+        .await
+        .expect_err("an earlier attempt's worker judged the same work");
+        assert!(matches!(err, AnswerError::SelfReference(_)));
+    }
+
+    #[tokio::test]
+    async fn a_session_that_did_not_do_the_work_may_answer() {
+        let pool = test_pool().await;
+        let card = goal_worked_by(&pool, "sess-worker").await;
+        let d = review_of(&pool, &card.id).await;
+
+        let (answered, _proof) = answer_decision_as_session(
+            &pool,
+            &d.id,
+            &approve(),
+            ACTOR_HENRY,
+            "henry-chat",
+            "sess-chat-with-jesse",
+        )
+        .await
+        .expect("an uninvolved session still holds its normal tier authority");
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.acted_by.as_deref(), Some(ACTOR_HENRY));
+    }
+
+    #[tokio::test]
+    async fn a_payload_naming_the_answering_session_is_refused() {
+        let pool = test_pool().await;
+        // The goal card names a DIFFERENT worker, so only the payload scan can
+        // catch this one.
+        let card = goal_worked_by(&pool, "someone-else").await;
+        let d = create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(card.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Goal finished — approve the work?".to_string()),
+                detail: Some("The worker reports done.".to_string()),
+                payload: serde_json::json!({
+                    "completion_check": "proof of work from session sess-subject",
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(d.tier, 1, "sanity: still the tier the chat ceiling allows");
+
+        let err = answer_decision_as_session(
+            &pool,
+            &d.id,
+            &approve(),
+            ACTOR_HENRY,
+            "henry-chat",
+            "sess-subject",
+        )
+        .await
+        .expect_err("the payload names the answering session as the subject");
+        assert!(matches!(err, AnswerError::SelfReference(_)));
+    }
+
+    #[tokio::test]
+    async fn the_anonymous_answer_paths_are_untouched() {
+        // The HTTP/voice routes answer as jesse with no in-process session.
+        // The self-reference block must not change them: it arms only when a
+        // caller declares which session is answering.
+        let pool = test_pool().await;
+        let card = goal_worked_by(&pool, "sess-worker").await;
+        let d = review_of(&pool, &card.id).await;
+
+        let (answered, _proof) = answer_decision(&pool, &d.id, &approve(), ACTOR_JESSE)
+            .await
+            .expect("jesse's own hand is never self-referential");
+        assert_eq!(answered.status, "answered");
+    }
+
+    // ── D29: voice proposes, a tap commits ──
+
+    /// A Tier-2 decision, i.e. the tier the spoken path used to be able to
+    /// clear outright.
+    async fn tier2_risk_gate(pool: &Pool<Sqlite>) -> Decision {
+        create_decision(
+            pool,
+            NewDecision {
+                kind: "risk_gate".to_string(),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Allow a shell command to run".to_string()),
+                detail: Some("cc_shell: rm -rf ./build".to_string()),
+                payload: serde_json::json!({
+                    "action_class": "cc_shell",
+                    "summary": "remove the build directory",
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn staging_leaves_the_decision_open_and_unanswered() {
+        let pool = test_pool().await;
+        let d = tier2_risk_gate(&pool).await;
+        assert_eq!(
+            d.tier, 2,
+            "sanity: cc_shell is the tier voice must not clear"
+        );
+
+        let staged = stage_answer(&pool, &d.id, "approve", None, "voice")
+            .await
+            .expect("a proposal is always allowed — it grants nothing");
+        assert_eq!(staged.answer, "approve");
+        assert_eq!(staged.staged_via, "voice");
+
+        let after = get_decision(&pool, &d.id).await.unwrap().unwrap();
+        assert_eq!(after.status, "open", "staging must not resolve anything");
+        assert!(after.answer.is_none());
+        assert!(after.acted_by.is_none());
+        assert_eq!(
+            after.staged_answer.as_ref().map(|s| s.answer.as_str()),
+            Some("approve")
+        );
+
+        // And nothing was written to the authority record.
+        let audit_answers: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decision_audit WHERE decision_id = ? AND outcome != 'created'",
+        )
+        .bind(&d.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(audit_answers, 0, "a proposal is not an audited act");
+
+        // No effect was queued either.
+        let outbox: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM effect_outbox WHERE decision_id = ?")
+                .bind(&d.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(outbox, 0);
+    }
+
+    #[tokio::test]
+    async fn the_tap_commits_the_staged_verdict_as_jesse_not_as_voice() {
+        let pool = test_pool().await;
+        let d = tier2_risk_gate(&pool).await;
+        stage_answer(&pool, &d.id, "approve", None, "voice")
+            .await
+            .unwrap();
+
+        // The confirm surface answers through the ordinary path, under the
+        // tapping device's own credential.
+        let (answered, _proof) = answer_decision_with_principal(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+            "master",
+        )
+        .await
+        .expect("the tap is the authentication");
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.acted_by.as_deref(), Some("jesse"));
+        assert!(
+            answered.staged_answer.is_none(),
+            "the commit consumes the proposal"
+        );
+
+        let (acted_by, principal): (String, Option<String>) = sqlx::query_as(
+            "SELECT acted_by, principal FROM decision_audit \
+             WHERE decision_id = ? AND outcome = 'approve'",
+        )
+        .bind(&d.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(acted_by, "jesse");
+        assert_eq!(
+            principal.as_deref(),
+            Some("master"),
+            "the audit names the credential that committed, never 'voice'"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_staged_verdict_expires_and_stops_being_offered() {
+        let pool = test_pool().await;
+        let d = tier2_risk_gate(&pool).await;
+        stage_answer(&pool, &d.id, "reject", None, "voice")
+            .await
+            .unwrap();
+
+        // Age it past the TTL in place — the same row the sweep and the read
+        // path both see.
+        let stale = serde_json::json!({
+            "answer": "reject",
+            "note": null,
+            "staged_at": (chrono::Utc::now()
+                - chrono::Duration::seconds(STAGED_ANSWER_TTL_SECS + 60))
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string(),
+            "staged_via": "voice",
+        })
+        .to_string();
+        sqlx::query("UPDATE decisions SET staged_answer_json = ? WHERE id = ?")
+            .bind(&stale)
+            .bind(&d.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert!(
+            staged_answer(&pool, &d.id).await.unwrap().is_none(),
+            "an expired proposal is never offered for commit"
+        );
+        assert_eq!(expire_stale_staged_answers(&pool).await.unwrap(), 1);
+        assert!(
+            staged_answer(&pool, &d.id).await.unwrap().is_none(),
+            "and the sweep clears the row"
+        );
+
+        // A fresh one survives the same sweep.
+        stage_answer(&pool, &d.id, "reject", None, "voice")
+            .await
+            .unwrap();
+        assert_eq!(expire_stale_staged_answers(&pool).await.unwrap(), 0);
+        assert!(staged_answer(&pool, &d.id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn discarding_a_staged_verdict_clears_it() {
+        let pool = test_pool().await;
+        let d = tier2_risk_gate(&pool).await;
+        stage_answer(&pool, &d.id, "approve", None, "voice")
+            .await
+            .unwrap();
+        assert!(clear_staged_answer(&pool, &d.id).await.unwrap());
+        assert!(staged_answer(&pool, &d.id).await.unwrap().is_none());
+        assert!(
+            !clear_staged_answer(&pool, &d.id).await.unwrap(),
+            "discarding twice is a no-op, not an error"
+        );
+        let after = get_decision(&pool, &d.id).await.unwrap().unwrap();
+        assert_eq!(
+            after.status, "open",
+            "discard leaves the decision to answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn staging_refuses_a_resolved_decision_and_a_non_verdict() {
+        let pool = test_pool().await;
+        let d = tier2_risk_gate(&pool).await;
+        assert!(matches!(
+            stage_answer(&pool, &d.id, "choice", None, "voice")
+                .await
+                .expect_err("only a bare verdict can be staged"),
+            AnswerError::Invalid(_)
+        ));
+
+        answer_decision(&pool, &d.id, &approve(), ACTOR_JESSE)
+            .await
+            .unwrap();
+        assert!(matches!(
+            stage_answer(&pool, &d.id, "approve", None, "voice")
+                .await
+                .expect_err("an answered decision takes no proposals"),
+            AnswerError::AlreadyResolved(_)
+        ));
     }
 }

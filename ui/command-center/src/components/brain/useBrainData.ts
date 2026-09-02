@@ -38,27 +38,33 @@ export function useBrainData(searchQuery = '') {
   // started since, so a slow stale reply can never clobber a fresher graph.
   const seqRef = useRef(0);
 
+  // Resolves `true` only when this call actually landed a graph, so the
+  // "Try again" button that awaits it cannot flash a success tick over an
+  // error message that is still on screen.
   const fetchGraph = useCallback(async () => {
     const seq = ++seqRef.current;
+    let ok = false;
     try {
       const q = queryRef.current.trim();
       const endpoint = q
         ? `/api/brain/graph?q=${encodeURIComponent(q)}`
         : '/api/brain/graph';
       const result = await apiFetch<BrainGraph>(endpoint);
-      if (seq !== seqRef.current) return;
+      if (seq !== seqRef.current) return false;
       if (!result || !Array.isArray(result.entities) || !Array.isArray(result.memories)) {
         throw new Error('Invalid Brain graph response');
       }
       setData(result);
       setError(null);
+      ok = true;
     } catch (e) {
-      if (seq !== seqRef.current) return;
+      if (seq !== seqRef.current) return false;
       // Only surface the error when we have nothing to show — a failed poll
       // while data is already on screen keeps the stale graph, not an alarm.
       setError(e instanceof Error ? e.message : 'Could not reach the Brain');
     }
     setLoading(false);
+    return ok;
   }, []);
 
   // Single query-keyed effect: fetch immediately on mount and whenever the

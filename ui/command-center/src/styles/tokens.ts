@@ -54,6 +54,36 @@ export const type = {
   label:   { fontSize: 11, lineHeight: '14px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' },
 } as const;
 
+/**
+ * The ramp's sizes on their own — the same eight roles, nothing added.
+ *
+ * `type` bundles size with line-height, weight and tracking, and spreading it
+ * is the right call when the element is that whole role. But the app also
+ * writes a thousand-odd sizes into style objects that already own their weight
+ * and their leading (`{ fontSize: 11, color: …, lineHeight: 1.5 }`), and for
+ * those, spreading `...type.micro` would change the rendering — it carries
+ * `fontWeight: 500` and a 14px leading with it. So they used to re-type the
+ * number instead, and the ramp had 1,372 hand-written competitors.
+ *
+ * `textSize` is the size half, so a caller who needs only the size can still
+ * name the role. It is derived from `type` and cannot drift from it. There is
+ * no `label` entry: `label` is a role you spread whole, for its tracking and
+ * its uppercase; its size is `micro`.
+ *
+ * Off-ramp sizes (9, 10, 18, 22, 26, 28, 36, and the half-pixels) are NOT here
+ * and are not getting an entry. Eight roles is the number; see
+ * `textScale.test.ts`, which freezes the ones already written.
+ */
+export const textSize = {
+  display: type.display.fontSize,
+  title: type.title.fontSize,
+  heading: type.heading.fontSize,
+  body: type.body.fontSize,
+  small: type.small.fontSize,
+  caption: type.caption.fontSize,
+  micro: type.micro.fontSize,
+} as const;
+
 /** Tabular figures — aligned numerals for metrics/counts/timers (never prose),
  *  so digits don't reflow as values change. Spread onto any numeric display. */
 export const tabularNums = { fontVariantNumeric: 'tabular-nums' } as const;
@@ -72,7 +102,24 @@ export const ease = {
  */
 export const duration = { fast: 160, base: 200, slow: 320 } as const;
 
-export const radius = { sm: 6, md: 10, lg: 14, xl: 20, pill: 999 } as const;
+/**
+ * Corner radii, rebased to what this codebase actually reaches for.
+ *
+ * The old scale was 6/10/14/20, and the app's single most-used radius — 8px,
+ * by a wide margin — was not in it. Two hundred and sixty-three hand-written
+ * values were not written by people ignoring the scale; they were written by
+ * people who needed a step it did not have. So the scale moved to meet them:
+ * 4/6/8/12/16 is what Linear and Raycast ship, and it is what the developers
+ * here converged on by hand.
+ *
+ * `sm` stays 6, so buttons are untouched. `md`, `lg` and `xl` each tighten by
+ * a couple of pixels at their existing call sites — a uniform, deliberate
+ * step toward the values the app already preferred, not a per-surface retune.
+ *
+ * `pill` is for chips. Not for buttons: a pill-shaped CTA is a different
+ * product's voice.
+ */
+export const radius = { xs: 4, sm: 6, md: 8, lg: 12, xl: 16, pill: 999 } as const;
 
 export const shadow = {
   glow: '0 0 40px rgba(0,213,255,0.25)',
@@ -80,7 +127,7 @@ export const shadow = {
   card: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
 } as const;
 
-export const tokens = { color, font, type, tabularNums, ease, duration, radius, shadow } as const;
+export const tokens = { color, font, type, textSize, tabularNums, ease, duration, radius, shadow } as const;
 export type DesignTokens = typeof tokens;
 
 // ── Theme gradients + colors ────────────────────────────────────────
@@ -124,6 +171,14 @@ export interface ThemeColors {
   success: string;
   /** Warning semantic */
   warning: string;
+  /** Staleness semantic — a figure whose AGE is the thing worth noticing.
+   *  Deliberately not `warning`: nothing is wrong with a three-month-old
+   *  memory or a dashboard that lost its poll, they are just no longer current,
+   *  and a console that shouts about age has nothing left for a real fault.
+   *  Aged amber: clearly out of the quiet range, clearly not an alarm. */
+  stale: string;
+  /** Tint of `stale` for the surface behind it (a chip fill, a caption's dot). */
+  staleSoft: string;
   /** Inline code background */
   codeBg: string;
   /** Inline code text */
@@ -151,6 +206,9 @@ const DARK_COLORS: ThemeColors = {
   textOnCyan: '#04141B',
   success: '#34D399',
   warning: '#FBBF24',
+  // 8.6:1 on the dark ground, and a hue nobody mistakes for the amber alarm.
+  stale: '#D0A45C',
+  staleSoft: 'rgba(208,164,92,0.16)',
   codeBg: 'rgba(0,0,0,0.30)',
   codeText: '#00D5FF',
 };
@@ -197,6 +255,10 @@ const SILVER_COLORS: ThemeColors = {
   textOnCyan: '#04141B',    // Deep ink — ~12:1 on #00BFEF (white would be ~1.9:1)
   success: '#059669',
   warning: '#D97706',
+  // Amber-700 — 4.9:1 on white (AA), a step deeper than the warning amber so
+  // age still reads as age on the light theme.
+  stale: '#A16207',
+  staleSoft: 'rgba(161,98,7,0.10)',
   codeBg: '#EEF2F7',          // Chrome Mist — 1.1:1 vs white (subtle tint)
   codeText: '#0369A1',        // Sky-700 — 5.5:1 on Chrome Mist (AA)
 };

@@ -388,6 +388,129 @@ fn emit_person_updated(payload: &decisions::EnrichmentProposalPayload) {
     }
 }
 
+/// Future returned by an installed [`PostLandingHook`].
+pub type PostLandingFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+/// Runs after an approval fast-forwards trunk, by project id. The daemon
+/// installs one that refreshes the project's code map — an existing map now
+/// describes the pre-landing tree.
+///
+/// Detached and best-effort by contract: the approval has already committed,
+/// and must never fail or wait on a tree-sitter pass. Uninstalled, landing is
+/// unaffected.
+pub type PostLandingHook = Box<dyn Fn(Pool<Sqlite>, String) -> PostLandingFuture + Send + Sync>;
+
+/// Process-global post-landing hook. Same shape and contract as
+/// `orchestrator::GOAL_DISPATCH_HOOK`.
+pub static POST_LANDING_HOOK: std::sync::OnceLock<PostLandingHook> = std::sync::OnceLock::new();
+
+/// Install the post-landing hook. Idempotent (OnceLock) — a second call is a
+/// no-op.
+pub fn install_post_landing_hook(hook: PostLandingHook) {
+    let _ = POST_LANDING_HOOK.set(hook);
+}
+
+/// Fast-forward an approved goal's work onto the project trunk.
+///
+/// The first member is `None` when there is nothing to land at all (no
+/// evidence, no commits, or a project with no `root_path` — a project we
+/// cannot locate on disk has no trunk to land onto, and the daemon's cwd is
+/// emphatically not it). Otherwise it is `(resolved_project_id, outcome)`:
+/// the project id comes back because the post-landing code-map refresh needs
+/// the id this fn RESOLVED (`decision.project_id` may be absent; the card's is
+/// the fallback). The outcome is reported on the approval in every case,
+/// including refusals — a dirty tree or diverged trunk must be visible, not
+/// silent. The second member surfaces a failure to persist the durable
+/// NeedsMerge follow-up after the approval itself has already committed.
+///
+/// Lives here, in the OUTBOX effect path, because that is the only path an
+/// approval actually takes: `approve_review` is outbox-eligible, so
+/// `execute_effect` delegates before reaching its own inline arm. This code
+/// spent its whole life in that unreachable arm (L7, 2026-08-31).
+async fn land_approved_goal(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+    project_id: Option<&str>,
+) -> (
+    Option<(String, crate::goal_landing::LandOutcome)>,
+    Option<String>,
+) {
+    let Some(card) = crate::cards::get_card(pool, goal_id).await.ok().flatten() else {
+        return (None, None);
+    };
+    let project_id = project_id.unwrap_or(card.project_id.as_str()).to_string();
+    let Some(root) = crate::projects::get_project_by_id_or_slug(pool, &project_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|project| project.root_path)
+    else {
+        return (None, None);
+    };
+
+    let Some(req) =
+        crate::goal_landing::land_request_from_metadata(&card.metadata_json, Some(&root))
+    else {
+        return (None, None);
+    };
+    let outcome = crate::goal_landing::land(&req).await;
+    let warning = if let crate::goal_landing::LandOutcome::NeedsMerge { branch, trunk } = &outcome {
+        ensure_needs_merge_decision(pool, goal_id, &card.title, &card.project_id, branch, trunk)
+            .await
+            .err()
+            .map(|error| format!("could not create manual-merge inbox item: {}", error))
+    } else {
+        None
+    };
+
+    (Some((project_id, outcome)), warning)
+}
+
+/// Leave one durable, copy-pasteable recovery item when automatic landing
+/// cannot fast-forward. An existing open unblock for the goal wins: two open
+/// requests for the same goal would compete for the human's answer.
+async fn ensure_needs_merge_decision(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+    goal_title: &str,
+    project_id: &str,
+    branch: &str,
+    trunk: &str,
+) -> Result<(), String> {
+    if decisions::find_open_decision_for_goal(pool, goal_id, "unblock")
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let detail = format!(
+        "Goal \"{}\" ({}) finished on branch `{}`, but it could not be fast-forwarded onto trunk `{}`.\n\nMerge it:\n```sh\ngit switch {}\ngit merge {}\n```\n\nOr rebase it:\n```sh\ngit switch {}\ngit rebase {}\ngit switch {}\ngit merge --ff-only {}\n```",
+        goal_title, goal_id, branch, trunk, trunk, branch, branch, trunk, trunk, branch
+    );
+    decisions::create_decision(
+        pool,
+        decisions::NewDecision {
+            kind: "unblock".to_string(),
+            goal_id: Some(goal_id.to_string()),
+            project_id: Some(project_id.to_string()),
+            headline: Some(
+                "Goal work could not land and needs a manual merge or rebase".to_string(),
+            ),
+            detail: Some(detail),
+            payload: serde_json::to_value(decisions::UnblockPayload {
+                reason: decisions::UnblockReason::Stuck,
+                spent: None,
+                cap: None,
+            })
+            .map_err(|error| error.to_string())?,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok(())
+}
+
 /// Apply an outbox-eligible decision effect without daemon `AppState`.
 ///
 /// `tool_approval` and `session_gate` deliberately are not handled here.
@@ -445,18 +568,57 @@ pub async fn apply_decision_effect(
                 },
             )
             .await?;
-            let warning = match decision.project_id.as_deref() {
+            // Approving used to move the card and merge NOTHING, so the work
+            // stayed on `goal/<run_id>` and the trunk never saw it — measured
+            // 2026-08-09, fixed in the inline arm, and that fix never ran
+            // because this path short-circuits it (L7). Land it here, where an
+            // approval actually arrives. Fast-forward only, and the outcome is
+            // ALWAYS reported: a landing that silently declined is exactly the
+            // failure this replaces.
+            let (landing, landing_warning) =
+                land_approved_goal(pool, goal_id, decision.project_id.as_deref()).await;
+            let effect = match &landing {
+                Some((_, outcome)) => {
+                    format!("goal approved: Review → Complete; {}", outcome.describe())
+                }
+                None => "goal approved: Review → Complete".to_string(),
+            };
+
+            // The trunk just moved: an existing code map now describes the
+            // pre-landing tree. Refresh it DETACHED and best-effort — the
+            // approval response never waits on (and can never fail because of)
+            // a tree-sitter pass. Fast-forward only: refusals and no-op
+            // landings changed nothing, so there is nothing to re-index.
+            if let Some((project_id, crate::goal_landing::LandOutcome::FastForwarded { .. })) =
+                &landing
+            {
+                if let Some(hook) = POST_LANDING_HOOK.get() {
+                    tokio::spawn(hook(pool.clone(), project_id.clone()));
+                }
+            }
+
+            // D10: promote the dependents this goal was blocking AND start
+            // them. Promotion alone left them in Ready with no worker until a
+            // human called resume_roadmap by hand.
+            //
+            // AFTER landing, deliberately: a dependent starts against the
+            // trunk, so it must not begin before its parent's work is on it.
+            let promotion_warning = match decision.project_id.as_deref() {
                 Some(project_id) => {
-                    goal_transition::promote_eligible_dependents_or_warn(pool, project_id, goal_id)
-                        .await
+                    crate::agents::platform_extensions::orchestrator::promote_and_dispatch_dependents(
+                        pool, project_id, goal_id,
+                    )
+                    .await
                 }
                 None => None,
             };
             crate::recognition::write_back_decision_outcome(pool, goal_id, true).await;
-            Ok((
-                Some("goal approved: Review → Complete".to_string()),
-                warning,
-            ))
+            let warning = match (promotion_warning, landing_warning) {
+                (Some(promotion), Some(landing)) => Some(format!("{}; {}", promotion, landing)),
+                (Some(warning), None) | (None, Some(warning)) => Some(warning),
+                (None, None) => None,
+            };
+            Ok((Some(effect), warning))
         }
         ("approve_review", Some("reject")) => {
             let Some(goal_id) = decision.goal_id.as_deref() else {
@@ -781,6 +943,20 @@ pub async fn apply_decision_effect(
         }
         ("council_action", Some("approve")) => apply_council_action(pool, decision).await,
         ("council_action", Some("reject")) => {
+            // Retained negative: the same extension point the Initiative layer
+            // uses for a declined automation, so a dismissed council
+            // recommendation is never re-pitched next Sunday. Keyed on the
+            // payload title (what `council::deliver` files from), falling back
+            // to the headline. The user's reason stays on the decision row,
+            // which is what the next brief assembly reads.
+            let subject = decision
+                .payload
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&decision.headline);
+            crate::decision_inbox::negatives::record_decline(pool, "council_action", subject).await;
             already_applied("council action dismissed; nothing was filed on the board")
         }
         ("file_to_project", Some("approve")) => apply_file_to_project(pool, decision).await,
@@ -1252,8 +1428,88 @@ async fn apply_file_to_project(
     Ok((Some(effect), warning))
 }
 
+/// How many dead effects are sitting in the outbox, and how old the oldest is.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct DeadEffect {
+    pub id: String,
+    pub kind: String,
+    pub headline: String,
+    pub last_error: String,
+    pub updated_at: String,
+}
+
+/// Every effect that has exhausted its retries: an approved, audited,
+/// user-authorised action that never happened. Joined to the decision so the
+/// surface can say WHICH decision, not just a count — Azure's dead-letter
+/// guidance is explicit that a bare number is not a decision.
+pub async fn dead_effects(pool: &Pool<Sqlite>) -> Result<Vec<DeadEffect>, String> {
+    let rows = sqlx::query(
+        "SELECT o.id AS id, o.kind AS kind,
+                COALESCE(d.headline, '(the decision has been deleted)') AS headline,
+                COALESCE(o.last_error, '') AS last_error, o.updated_at AS updated_at
+         FROM effect_outbox o
+         LEFT JOIN decisions d ON d.id = o.decision_id
+         WHERE o.status = 'dead'
+         ORDER BY o.updated_at ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .map(|r| DeadEffect {
+            id: r.get("id"),
+            kind: r.get("kind"),
+            headline: r.get("headline"),
+            last_error: r.get("last_error"),
+            updated_at: r.get("updated_at"),
+        })
+        .collect())
+}
+
+async fn dead_effect_count(pool: &Pool<Sqlite>) -> Result<i64, String> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM effect_outbox WHERE status = 'dead'")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Retire outbox rows whose decision no longer exists.
+///
+/// `effect_outbox.decision_id` has no foreign key while
+/// `decisions.project_id REFERENCES projects(id) ON DELETE CASCADE`, so
+/// deleting a project cascades the decision away and leaves the outbox row
+/// pointing at nothing (two such rows were found live on 2026-08-31). A
+/// non-terminal dangling row is not retryable — it would burn all five
+/// attempts on `decision '…' no longer exists` and land as `dead` with an
+/// error that reads like a bug. Retire it once, with an honest reason.
+async fn retire_dangling_effects(pool: &Pool<Sqlite>) -> Result<u64, String> {
+    let result = sqlx::query(
+        "UPDATE effect_outbox
+         SET status = 'dead', attempts = max_attempts,
+             last_error = 'the decision was deleted (its project was removed) — \
+                           this effect can never be applied',
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE status IN ('pending', 'running')
+           AND (decision_id IS NULL
+                OR NOT EXISTS (SELECT 1 FROM decisions d WHERE d.id = decision_id))",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(result.rows_affected())
+}
+
 /// Claim and apply a bounded batch of due effects.
 pub async fn drain_effect_outbox(pool: &Pool<Sqlite>) -> Result<(), String> {
+    // Depth BEFORE this pass. A dead effect used to produce a `tracing::warn`
+    // and nothing else — no inbox card, no HUD, no doctor check — so an
+    // approved action could simply never happen and no surface said so. The
+    // rule is the CloudWatch dead-letter-queue one: alert on the transition
+    // INTO a non-empty queue, not per entry and not per tick.
+    let dead_before = dead_effect_count(pool).await?;
+    retire_dangling_effects(pool).await?;
+
     sqlx::query(
         "UPDATE effect_outbox
          SET status = CASE WHEN attempts + 1 >= max_attempts THEN 'dead' ELSE 'pending' END,
@@ -1345,7 +1601,51 @@ pub async fn drain_effect_outbox(pool: &Pool<Sqlite>) -> Result<(), String> {
             }
         }
     }
+
+    if dead_before == 0 {
+        let dead_now = dead_effects(pool).await?;
+        if !dead_now.is_empty() {
+            brief_dead_effects(pool, &dead_now).await;
+        }
+    }
     Ok(())
+}
+
+/// One briefing on the 0→nonzero transition, never one per entry. The standing
+/// state is re-asserted by the daily job digest (`job_health`), which is what
+/// stops a badge from being the only surface for something that has been
+/// broken for a week.
+async fn brief_dead_effects(pool: &Pool<Sqlite>, dead: &[DeadEffect]) {
+    let mut detail = String::from(
+        "These were approved and audited, and then failed every retry. Nothing will \
+         re-attempt them.\n\n",
+    );
+    for d in dead.iter().take(10) {
+        detail.push_str(&format!(
+            "- {} — {}: {}\n",
+            d.kind, d.headline, d.last_error
+        ));
+    }
+    if dead.len() > 10 {
+        detail.push_str(&format!("- …and {} more\n", dead.len() - 10));
+    }
+    crate::briefings::file_briefing(
+        pool,
+        crate::briefings::NewBriefing {
+            from_agent: "decisions".to_string(),
+            kind: "effect_dead_letter".to_string(),
+            severity: crate::briefings::Severity::ActionRequired,
+            summary: format!(
+                "{} approved decision{} did not take effect",
+                dead.len(),
+                if dead.len() == 1 { "" } else { "s" }
+            ),
+            detail: Some(detail),
+            ref_kind: Some("decision".to_string()),
+            ref_id: None,
+        },
+    )
+    .await;
 }
 
 #[cfg(test)]
@@ -1444,6 +1744,317 @@ mod tests {
         .await
         .unwrap();
         decisions::get_decision(pool, &d.id).await.unwrap().unwrap()
+    }
+
+    /// D10, completion/land path: approving a goal's review promotes its
+    /// dependents Triage→Ready — and, since the nudge, actually starts them.
+    /// Before the nudge the dependent sat in Ready with no worker until a
+    /// human called `resume_roadmap` by hand.
+    #[tokio::test]
+    async fn approving_a_review_dispatches_the_promoted_dependent() {
+        use crate::agents::platform_extensions::orchestrator::test_dispatch_recorder;
+        test_dispatch_recorder::install();
+
+        let pool = test_pool().await;
+        let parent = goal_in_review(&pool).await;
+        let triage = crate::cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "triage")
+            .await
+            .unwrap()
+            .unwrap();
+        let dependent = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Dependent of the approved goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(triage.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "depends_on": [parent.id],
+                    "attempt_count": 0,
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(parent.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+
+        apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        assert_eq!(goal_state_of(&pool, &parent.id).await, "complete");
+        assert_eq!(
+            goal_state_of(&pool, &dependent.id).await,
+            "ready",
+            "the dependent is promoted out of Triage"
+        );
+        assert!(
+            test_dispatch_recorder::saw(&dependent.id),
+            "approving a goal must ask the dispatcher to start the dependent it \
+             just unblocked — not leave it waiting for a manual resume_roadmap"
+        );
+    }
+
+    fn git_in(root: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .expect("git must be on PATH for this test");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A trunk on `main` and a `goal/run-1` branch one commit ahead of it.
+    /// Returns (repo root, the branch's head commit).
+    fn repo_with_finished_goal_branch() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_in(root, &["init", "-b", "main"]);
+        git_in(root, &["config", "user.email", "test@example.com"]);
+        git_in(root, &["config", "user.name", "Test"]);
+        std::fs::write(root.join("README.md"), "base\n").unwrap();
+        git_in(root, &["add", "-A"]);
+        git_in(root, &["commit", "-m", "base"]);
+        git_in(root, &["checkout", "-b", "goal/run-1"]);
+        std::fs::write(root.join("work.txt"), "the goal's work\n").unwrap();
+        git_in(root, &["add", "-A"]);
+        git_in(root, &["commit", "-m", "the work"]);
+        let head = git_in(root, &["rev-parse", "HEAD"]);
+        git_in(root, &["checkout", "main"]);
+        (dir, head)
+    }
+
+    /// L7: approving a review is supposed to fast-forward the work onto trunk.
+    /// It did not. `land_approved_goal` lived in `routes/decisions.rs`'s INLINE
+    /// approve arm, and `execute_effect` short-circuits every outbox-eligible
+    /// kind — `approve_review` among them — into `apply_decision_effect`
+    /// before reaching it. The only call site of `goal_landing::land` was
+    /// unreachable, so approved work sat on `goal/<run_id>` forever and the
+    /// D10 nudge then started dependents against a trunk missing their parent.
+    #[tokio::test]
+    async fn approving_a_review_through_the_outbox_lands_the_branch_on_trunk() {
+        let (repo, head) = repo_with_finished_goal_branch();
+        let root = repo.path().to_string_lossy().into_owned();
+
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Landing test".to_string(),
+                root_path: Some(root.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let goal = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Finished goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 0,
+                    "goal_state": "review",
+                    "dispatch_evidence": {
+                        "worktree_path": "/tmp/.permagent-goal-worktrees/run-1",
+                        "head_commit": head,
+                        "commits": ["abc123 the work"],
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(project.id.clone()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+
+        let (effect, _warning) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git_in(repo.path(), &["rev-parse", "HEAD"]),
+            head,
+            "approval did not fast-forward trunk onto the approved work"
+        );
+        let effect = effect.unwrap_or_default();
+        assert!(
+            effect.contains("main"),
+            "the landing outcome must be reported on the approval, not left silent: {effect}"
+        );
+    }
+
+    // ── manual-merge recovery (moved with `ensure_needs_merge_decision` from
+    // routes/decisions.rs, whose copy of it was unreachable) ───────────────
+
+    async fn needs_merge_test_goal(pool: &Pool<Sqlite>) -> crate::cards::Card {
+        crate::cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let review_col = crate::cards::get_goal_column(pool, PERSONAL_PROJECT_ID, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        crate::cards::create_card(
+            pool,
+            crate::cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Ship durable landing recovery".to_string(),
+                description: None,
+                card_type: Some("goal".to_string()),
+                column_id: Some(review_col.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({})),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_second_needs_merge_landing_does_not_create_another_open_decision() {
+        let pool = test_pool().await;
+        let goal = needs_merge_test_goal(&pool).await;
+        for _ in 0..2 {
+            ensure_needs_merge_decision(
+                &pool,
+                &goal.id,
+                &goal.title,
+                PERSONAL_PROJECT_ID,
+                "goal/run-123",
+                "main",
+            )
+            .await
+            .unwrap();
+        }
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions \
+             WHERE goal_id = ? AND kind = 'unblock' AND status = 'open'",
+        )
+        .bind(&goal.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn needs_merge_decision_names_refs_and_copy_pasteable_git_commands() {
+        let pool = test_pool().await;
+        let goal = needs_merge_test_goal(&pool).await;
+        ensure_needs_merge_decision(
+            &pool,
+            &goal.id,
+            &goal.title,
+            PERSONAL_PROJECT_ID,
+            "goal/run-123",
+            "main",
+        )
+        .await
+        .unwrap();
+
+        let decision = decisions::find_open_decision_for_goal(&pool, &goal.id, "unblock")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(decision.kind, "unblock");
+        assert_eq!(decision.goal_id.as_deref(), Some(goal.id.as_str()));
+        assert_eq!(decision.project_id.as_deref(), Some(PERSONAL_PROJECT_ID));
+        assert!(decision.headline.contains("could not land"));
+        for expected in [
+            goal.id.as_str(),
+            goal.title.as_str(),
+            "goal/run-123",
+            "main",
+            "git switch main\ngit merge goal/run-123",
+            "git switch goal/run-123\ngit rebase main\ngit switch main\ngit merge --ff-only goal/run-123",
+        ] {
+            assert!(
+                decision.detail.contains(expected),
+                "decision detail must contain {expected:?}: {}",
+                decision.detail
+            );
+        }
     }
 
     #[tokio::test]
@@ -1578,6 +2189,107 @@ mod tests {
         .await
         .unwrap()
         .0
+    }
+
+    async fn briefing_count(pool: &Pool<Sqlite>, kind: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_briefings WHERE kind = ?")
+            .bind(kind)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// D32: a dead effect is an approved, audited, user-authorised action that
+    /// never happened, and it had zero surface — no briefing, no card, no
+    /// doctor check, only a `tracing::warn`. It must reach a surface, ONCE, on
+    /// the 0→nonzero transition.
+    #[tokio::test]
+    async fn a_dead_effect_briefs_once_on_the_transition_not_every_drain() {
+        let pool = test_pool().await;
+        crate::session::spectral_schema::apply_briefings_schema(&pool)
+            .await
+            .unwrap();
+        let decision = answered_file_decision(&pool).await;
+        // Bury the effect: one more failure than it has attempts left.
+        sqlx::query(
+            "UPDATE effect_outbox SET status = 'pending', attempts = max_attempts,
+                 last_error = 'filesystem is read-only',
+                 next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour')
+             WHERE decision_id = ?",
+        )
+        .bind(&decision.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM decisions WHERE id = ?")
+            .bind(&decision.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(briefing_count(&pool, "effect_dead_letter").await, 0);
+        drain_effect_outbox(&pool).await.unwrap();
+
+        let dead = dead_effects(&pool).await.unwrap();
+        assert_eq!(dead.len(), 1, "the effect must be retired, not retried");
+        assert_eq!(dead[0].kind, "file_to_project");
+        assert!(
+            dead[0].last_error.contains("deleted"),
+            "a dangling row must say the decision is gone, not a generic retry error: {}",
+            dead[0].last_error
+        );
+        assert_eq!(
+            briefing_count(&pool, "effect_dead_letter").await,
+            1,
+            "the transition into a non-empty dead-letter queue must be briefed"
+        );
+
+        // Depth is already non-zero: further drains must go quiet. A push per
+        // tick is what teaches the reader to ignore the channel.
+        for _ in 0..3 {
+            drain_effect_outbox(&pool).await.unwrap();
+        }
+        assert_eq!(
+            briefing_count(&pool, "effect_dead_letter").await,
+            1,
+            "a standing dead-letter depth belongs in the digest, not in a push per minute"
+        );
+    }
+
+    /// D31: `effect_outbox.decision_id` has no foreign key, so removing a
+    /// project cascades the decision away and strands the row. A PENDING
+    /// stranded row must not burn five retries on "no longer exists".
+    #[tokio::test]
+    async fn a_dangling_effect_is_retired_once_not_retried_five_times() {
+        let pool = test_pool().await;
+        let decision = answered_file_decision(&pool).await;
+        sqlx::query(
+            "UPDATE effect_outbox SET status = 'pending', attempts = 0,
+                 next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour')
+             WHERE decision_id = ?",
+        )
+        .bind(&decision.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM decisions WHERE id = ?")
+            .bind(&decision.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        drain_effect_outbox(&pool).await.unwrap();
+        let (status, attempts): (String, i64) =
+            sqlx::query_as("SELECT status, attempts FROM effect_outbox WHERE decision_id = ?")
+                .bind(&decision.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "dead");
+        assert_eq!(
+            attempts, 5,
+            "retirement should consume the budget at once, not one tick at a time"
+        );
     }
 
     #[tokio::test]

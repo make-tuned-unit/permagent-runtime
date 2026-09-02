@@ -10,10 +10,12 @@
 // (the backend computes inventory − used), it shows real progress, and "Not now"
 // quiets it for a few days. When the user has tried everything, it disappears.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
-import { font } from '../../styles/tokens';
+import { Button } from '../common/Button';
+import { HomeBanner, bannerGhostBtn, bannerPrimaryBtn } from './HomeBanner';
+import { useBannerSlot } from './bannerSlot';
 import { useCommandCenter } from '../../lib/store';
 import { setSpeakReplies } from '../../lib/speakReplies';
 
@@ -106,7 +108,11 @@ export function LearnNext() {
   }, []);
 
   const item = items[idx] ?? null;
-  if (!item || !visible) return null;
+  // One banner at a time on Home (C8). Learn next has first claim: a user who
+  // has not tried a capability needs it more than a memory they can find
+  // again, and this retires itself once there is nothing left to teach.
+  const holdsSlot = useBannerSlot('learn-next', Boolean(item) && visible);
+  if (!holdsSlot || !item) return null;
 
   const dismiss = () => {
     const st = readState();
@@ -146,103 +152,36 @@ export function LearnNext() {
   const progress = totals ? `${totals.used}/${totals.teachable} explored` : '';
 
   return (
-    <div
-      role="note"
-      aria-label={`Learn next: ${item.display_name}`}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 18,
-        marginBottom: 20,
-        padding: '14px 16px',
-        borderRadius: 14,
-        background: colors.surface,
-        border: `1px solid ${colors.borderHi}`,
-        boxShadow: colors.cardShadow,
-        overflow: 'hidden',
-      }}
+    <HomeBanner
+      kicker="LEARN NEXT"
+      meta={progress}
+      ariaLabel={`Learn next: ${item.display_name}`}
+      data-testid="home-banner-learn-next"
+      onDismiss={dismiss}
+      dismissLabel="Dismiss this suggestion"
+      actions={
+        <>
+          {items.length > 1 && (
+            <Button
+              colors={colors}
+              type="button"
+              onClick={nextTip}
+              aria-label="Show a different capability"
+              title="Next tip"
+              style={{ ...bannerGhostBtn(colors), '--pa-btn-pad': '7px 10px', '--pa-btn-weight': 400 } as CSSProperties}
+            >
+              ›
+            </Button>
+          )}
+          <Button colors={colors} type="button" onClick={showMe} style={bannerPrimaryBtn(colors)}>
+            Show me
+          </Button>
+        </>
+      }
     >
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div
-          style={{
-            fontFamily: font.mono,
-            fontSize: 10,
-            letterSpacing: '0.14em',
-            color: colors.textDim,
-            marginBottom: 4,
-            display: 'flex',
-            gap: 10,
-            alignItems: 'center',
-          }}
-        >
-          <span>✦ LEARN NEXT</span>
-          {progress && <span style={{ color: colors.textMuted }}>{progress}</span>}
-        </div>
-        <div style={{ fontFamily: font.body, fontSize: 14, color: colors.text, lineHeight: 1.4 }}>
-          You haven&apos;t tried{' '}
-          <span style={{ fontWeight: 700, color: colors.cyan }}>{item.display_name}</span> yet —{' '}
-          <span style={{ color: colors.textMuted }}>{summarize(item.what_it_does)}.</span>
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-        {items.length > 1 && (
-          <button
-            onClick={nextTip}
-            aria-label="Show a different capability"
-            title="Next tip"
-            style={{
-              padding: '7px 10px',
-              borderRadius: 9,
-              border: `1px solid ${colors.border}`,
-              background: 'transparent',
-              color: colors.textMuted,
-              fontFamily: font.body,
-              fontSize: 12,
-              cursor: 'pointer',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            ›
-          </button>
-        )}
-        <button
-          onClick={showMe}
-          style={{
-            padding: '7px 14px',
-            borderRadius: 9,
-            border: `1px solid ${colors.cyan}`,
-            background: colors.cyanSoft,
-            color: colors.cyan,
-            fontFamily: font.body,
-            fontSize: 12,
-            fontWeight: 600,
-            cursor: 'pointer',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          Show me
-        </button>
-        <button
-          onClick={dismiss}
-          aria-label="Dismiss this suggestion"
-          title="Not now"
-          style={{
-            width: 26,
-            height: 26,
-            display: 'grid',
-            placeItems: 'center',
-            borderRadius: 8,
-            border: 'none',
-            background: 'transparent',
-            color: colors.textDim,
-            fontSize: 12,
-            cursor: 'pointer',
-          }}
-        >
-          ✕
-        </button>
-      </div>
-    </div>
+      You haven&apos;t tried{' '}
+      <span style={{ fontWeight: 700, color: colors.cyan }}>{item.display_name}</span> yet —{' '}
+      <span style={{ color: colors.textMuted }}>{summarize(item.what_it_does)}.</span>
+    </HomeBanner>
   );
 }

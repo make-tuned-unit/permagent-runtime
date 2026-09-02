@@ -15,11 +15,13 @@
  * row states the precondition plainly.
  */
 
-import { useEffect, useState } from 'react';
-import { H1, Row, Section, Toggle } from '../atoms';
+import { useEffect, useState, type CSSProperties } from 'react';
+import { H1, Row, Section } from '../atoms';
+import { Button } from '../../common/Button';
+import { Toggle } from '../../common/Toggle';
 import { api, type CouncilMembers, type CouncilSeat } from '../../../lib/api';
 import { useCommandCenter } from '../../../lib/store';
-import { font } from '../../../styles/tokens';
+import { font, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import {
   conciergePreconditionCopy,
@@ -43,11 +45,15 @@ const UNLOADED = Object.fromEntries(FEATURE_ROWS.map(r => [r.key, null])) as Fla
 
 export function FeaturesPanel({ goto }: PanelProps) {
   const { colors } = useTheme();
+  // Lands ON the agent's page, not near it — the one place its switch is
+  // written (J8/C7).
+  const openAgentSettings = useCommandCenter(s => s.openAgentSettings);
   const [flags, setFlags] = useState<FlagState>(UNLOADED);
-  const [errors, setErrors] = useState<Partial<Record<FeatureKey, string>>>({});
   const [integrations, setIntegrations] = useState<IntegrationStatus[] | null>(null);
   const [members, setMembers] = useState<CouncilMembers | null>(null);
   const [membersError, setMembersError] = useState<string | null>(null);
+  /** The integrations read failed — see `conciergePreconditionCopy`. */
+  const [integrationsError, setIntegrationsError] = useState(false);
 
   const configRev = useCommandCenter(s => s.configRev);
 
@@ -59,8 +65,8 @@ export function FeaturesPanel({ goto }: PanelProps) {
         .catch(() => { if (active) setFlags(f => ({ ...f, [row.key]: false })); });
     }
     api.getIntegrations()
-      .then(list => { if (active) setIntegrations(list); })
-      .catch(() => { if (active) setIntegrations([]); });
+      .then(list => { if (active) { setIntegrations(list); setIntegrationsError(false); } })
+      .catch(() => { if (active) setIntegrationsError(true); });
     return () => { active = false; };
     // `configRev` = the daemon's `config_changed` frame. These toggles write
     // config keys, and so does the agent; without this the panel showed the
@@ -84,17 +90,12 @@ export function FeaturesPanel({ goto }: PanelProps) {
     return () => { active = false; };
   }, [flags.council_enabled]);
 
-  const save = (key: FeatureKey, v: boolean) => {
-    const prev = flags[key];
+  // The optimistic flip, the revert and the message are the switch's job now
+  // (components/common/Toggle) — this only has to do the write and let a throw
+  // be the failure.
+  const save = async (key: FeatureKey, v: boolean) => {
+    await api.upsertConfig(key, v);
     setFlags(f => ({ ...f, [key]: v }));
-    setErrors(e => ({ ...e, [key]: undefined }));
-    api.upsertConfig(key, v).catch(err => {
-      setFlags(f => ({ ...f, [key]: prev }));
-      setErrors(e => ({
-        ...e,
-        [key]: `Couldn't save: ${err instanceof Error ? err.message : String(err)}`,
-      }));
-    });
   };
 
   const gmailToken = gmailTokenPresent(integrations);
@@ -111,28 +112,57 @@ export function FeaturesPanel({ goto }: PanelProps) {
       >
         {FEATURE_ROWS.map(row => {
           const value = flags[row.key];
-          const error = errors[row.key];
           const isConcierge = row.key === 'concierge_enabled';
           return (
             <Row key={row.key} label={row.label} hint={row.what}>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
                 {value === null ? (
-                  <span style={{ fontSize: 12, color: colors.textDim, paddingTop: 4 }}>Loading…</span>
+                  <span style={{ fontSize: textSize.caption, color: colors.textDim, paddingTop: 4 }}>Loading…</span>
+                ) : row.switchedAt ? (
+                  // Read-only here on purpose: the row stays so the board still
+                  // lists every worker, but the flag has exactly one writer.
+                  <span
+                    data-testid={`feature-readonly-${row.key}`}
+                    style={{
+                      fontSize: textSize.caption, color: value ? colors.cyan : colors.textMuted,
+                      paddingTop: 4, whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {value ? 'On' : 'Off'}
+                  </span>
                 ) : (
                   <Toggle on={value} onChange={v => save(row.key, v)} />
                 )}
-                <div style={{ flex: 1, fontSize: 11, color: colors.textMuted, lineHeight: 1.5, paddingTop: 3 }}>
+                <div style={{ flex: 1, fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, paddingTop: 3 }}>
                   <div>{row.effect}</div>
+                  {row.switchedAt && (
+                    <div style={{ marginTop: 4 }}>
+                      {row.switchedAt.why}{' '}
+                      <Button
+                        colors={colors}
+                        variant="bare"
+                        data-testid={`feature-open-agent-${row.key}`}
+                        onClick={() => openAgentSettings(row.switchedAt!.agentId)}
+                        style={{
+                          '--pa-btn-fg': colors.cyan,
+                          '--pa-btn-bg-hover': 'transparent',
+                          '--pa-btn-pad': '0',
+                          fontFamily: font.body,
+                          fontSize: textSize.micro,
+                          textDecoration: 'underline',
+                        } as CSSProperties}
+                      >
+                        Open {row.label.replace(/\s*\(.*\)$/, '')} →
+                      </Button>
+                    </div>
+                  )}
                   {isConcierge && (
                     <div
                       data-testid="concierge-precondition"
-                      style={{ marginTop: 4, color: gmailToken === false ? colors.text : colors.textMuted, fontFamily: font.body }}
+                      style={{ marginTop: 4, color: integrationsError ? colors.danger : gmailToken === false ? colors.text : colors.textMuted, fontFamily: font.body }}
                     >
-                      {conciergePreconditionCopy(gmailToken)}
+                      {conciergePreconditionCopy(gmailToken, integrationsError)}
                     </div>
-                  )}
-                  {error && (
-                    <div style={{ marginTop: 4, color: colors.danger }}>{error}</div>
                   )}
                 </div>
               </div>
@@ -158,17 +188,23 @@ export function FeaturesPanel({ goto }: PanelProps) {
         />
       )}
 
-      <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+      <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>
         Each worker is listed under{' '}
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           onClick={() => goto('agents')}
           style={{
-            background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
-            color: colors.cyan, fontFamily: font.body, fontSize: 12, textDecoration: 'underline',
-          }}
+            '--pa-btn-fg': colors.cyan,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            fontFamily: font.body,
+            fontSize: textSize.caption,
+            textDecoration: 'underline',
+          } as CSSProperties}
         >
           Settings → Agents
-        </button>
+        </Button>
         {' '}whether or not it is switched on — with the same switch on its own page, and
         its live state once it is on.
       </div>
@@ -213,13 +249,13 @@ function CouncilSeats({
       sub="Every connected chat-completion provider sits on the Council unless you drop it here. Coding CLIs (Claude Code, Cursor, Codex) are workers, not debate seats. Unchecking a toy local model keeps it from spending a seat next to Claude."
     >
       {!members && !error && (
-        <div style={{ fontSize: 12, color: colors.textDim }}>Loading seats…</div>
+        <div style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading seats…</div>
       )}
       {error && (
-        <div style={{ fontSize: 12, color: colors.danger }}>{error}</div>
+        <div style={{ fontSize: textSize.caption, color: colors.danger }}>{error}</div>
       )}
       {members && seats.length === 0 && (
-        <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>
           No connected chat providers. Connect a key under Settings → Models, then they will appear here.
         </div>
       )}
@@ -232,7 +268,7 @@ function CouncilSeats({
             style={{
               display: 'flex', alignItems: 'center', gap: 10,
               padding: '8px 0', borderTop: `1px solid ${colors.border}`,
-              fontSize: 13, color: colors.text, cursor: 'pointer',
+              fontSize: textSize.small, color: colors.text, cursor: 'pointer',
             }}
           >
             <input
@@ -242,7 +278,7 @@ function CouncilSeats({
             />
             <span style={{ flex: 1 }}>
               {seat.display_name}
-              <span style={{ color: colors.textDim, marginLeft: 8, fontFamily: font.body, fontSize: 11 }}>
+              <span style={{ color: colors.textDim, marginLeft: 8, fontFamily: font.body, fontSize: textSize.micro }}>
                 {seat.model}
               </span>
             </span>

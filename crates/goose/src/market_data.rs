@@ -402,6 +402,192 @@ pub fn parse_closes(body: &serde_json::Value) -> Result<Vec<f64>, String> {
     Ok(out)
 }
 
+/// One split- and dividend-adjusted daily bar, oldest → newest in a series.
+///
+/// `close` is Yahoo's `adjclose`; `open`/`high`/`low` are the raw quote values
+/// scaled by the same `adjclose/close` factor, so the four prices sit on ONE
+/// consistent basis. Mixing bases turns a 2-for-1 split into a spurious
+/// Donchian breakdown and a spurious death cross on the same day.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DailyBar {
+    /// Exchange timestamp for the bar, epoch seconds.
+    pub epoch_seconds: i64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    /// Split-adjusted share volume. Zero is a real reading (a halted or
+    /// untraded day) and is preserved here; volume *statistics* skip it
+    /// rather than averaging a zero in.
+    pub volume: u64,
+}
+
+/// Why a bar series could not be built. Typed, because the callers must be
+/// able to tell "this symbol has no high/low" from "this symbol is too young"
+/// from "the network was down" — every one of those has a different fix, and
+/// collapsing them into a string invites a silent close-only substitution.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BarsError {
+    /// Could not reach or read the source.
+    Fetch(String),
+    /// The envelope had no result for the symbol.
+    NoResult,
+    /// A required series was absent from the payload — `"high"`, `"volume"`, …
+    MissingSeries(&'static str),
+    /// A series came back a different length from the timestamp axis, so the
+    /// bars cannot be aligned. Guessing the alignment would silently shift
+    /// every window by an unknown offset.
+    LengthMismatch {
+        field: &'static str,
+        got: usize,
+        want: usize,
+    },
+    /// No `adjclose` series. Raw prices are not usable for these indicators.
+    MissingAdjustedClose,
+    /// A bar claimed a high below its own low: the payload is corrupt, not thin.
+    InconsistentBar { index: usize },
+    /// Every bar was unreadable (all-null arrays, e.g. a close-only feed).
+    NoUsableBars,
+}
+
+impl std::fmt::Display for BarsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fetch(e) => write!(f, "could not fetch daily bars: {e}"),
+            Self::NoResult => write!(
+                f,
+                "the market data source returned no result for that symbol"
+            ),
+            Self::MissingSeries(field) => write!(
+                f,
+                "the market data source returned no daily {field} series — true high/low are \
+                 required and must not be substituted with closes"
+            ),
+            Self::LengthMismatch { field, got, want } => write!(
+                f,
+                "the daily {field} series had {got} points against {want} timestamps, so the \
+                 bars cannot be aligned"
+            ),
+            Self::MissingAdjustedClose => write!(
+                f,
+                "the market data source returned no adjusted closes — raw prices would turn a \
+                 split into a false breakdown"
+            ),
+            Self::InconsistentBar { index } => {
+                write!(f, "daily bar {index} has a high below its own low")
+            }
+            Self::NoUsableBars => write!(f, "no readable daily bars came back"),
+        }
+    }
+}
+
+impl std::error::Error for BarsError {}
+
+/// The default history window for indicator work.
+///
+/// `chan_pos_252` needs 252 bars *before* the current one, i.e. 253; `"1y"`
+/// returns about 252 total and would fail on the first holiday. Yahoo accepts
+/// an explicit day count, so ask for 300 — F0 §6's "fetch 300 to survive
+/// holidays, halts and gaps".
+pub const DEFAULT_BARS_RANGE: &str = "300d";
+
+/// Adjusted daily OHLCV, oldest → newest.
+///
+/// This is the input the indicator engine requires; [`daily_closes`] remains
+/// the close-only path for the loop gate and RSI, unchanged.
+pub async fn daily_bars(symbol: &str, range: &str) -> Result<Vec<DailyBar>, BarsError> {
+    let symbol = normalize_symbol(symbol).map_err(BarsError::Fetch)?;
+    let body = chart(&symbol, range).await.map_err(BarsError::Fetch)?;
+    parse_bars(&body)
+}
+
+/// Pull an adjusted OHLCV series out of a chart response. Testable without
+/// the network.
+///
+/// Bars with any null price, a null volume, or a zero/absent close (which
+/// would make the adjustment factor undefined) are dropped — Yahoo emits
+/// those for days the symbol did not trade. A bar is never *repaired*: no
+/// forward fill, no zero fill, no close-for-high.
+pub fn parse_bars(body: &serde_json::Value) -> Result<Vec<DailyBar>, BarsError> {
+    let result = body.pointer("/chart/result/0").ok_or(BarsError::NoResult)?;
+    let stamps = result
+        .get("timestamp")
+        .and_then(|v| v.as_array())
+        .ok_or(BarsError::MissingSeries("timestamp"))?;
+    let quote = result
+        .pointer("/indicators/quote/0")
+        .ok_or(BarsError::NoResult)?;
+
+    let series = |field: &'static str| -> Result<&Vec<serde_json::Value>, BarsError> {
+        let arr = quote
+            .get(field)
+            .and_then(|v| v.as_array())
+            .ok_or(BarsError::MissingSeries(field))?;
+        if arr.len() != stamps.len() {
+            return Err(BarsError::LengthMismatch {
+                field,
+                got: arr.len(),
+                want: stamps.len(),
+            });
+        }
+        Ok(arr)
+    };
+
+    let opens = series("open")?;
+    let highs = series("high")?;
+    let lows = series("low")?;
+    let closes = series("close")?;
+    let volumes = series("volume")?;
+
+    let adj = result
+        .pointer("/indicators/adjclose/0/adjclose")
+        .and_then(|v| v.as_array())
+        .ok_or(BarsError::MissingAdjustedClose)?;
+    if adj.len() != stamps.len() {
+        return Err(BarsError::LengthMismatch {
+            field: "adjclose",
+            got: adj.len(),
+            want: stamps.len(),
+        });
+    }
+
+    let mut out = Vec::with_capacity(stamps.len());
+    for i in 0..stamps.len() {
+        let (Some(t), Some(o), Some(h), Some(l), Some(c), Some(a), Some(v)) = (
+            stamps[i].as_i64(),
+            opens[i].as_f64(),
+            highs[i].as_f64(),
+            lows[i].as_f64(),
+            closes[i].as_f64(),
+            adj[i].as_f64(),
+            volumes[i].as_u64(),
+        ) else {
+            continue;
+        };
+        if c == 0.0 || !c.is_finite() || !a.is_finite() {
+            continue;
+        }
+        // One factor for the whole bar: adjusted close over raw close.
+        let factor = a / c;
+        let bar = DailyBar {
+            epoch_seconds: t,
+            open: o * factor,
+            high: h * factor,
+            low: l * factor,
+            close: a,
+            volume: v,
+        };
+        if bar.high < bar.low {
+            return Err(BarsError::InconsistentBar { index: i });
+        }
+        out.push(bar);
+    }
+    if out.is_empty() {
+        return Err(BarsError::NoUsableBars);
+    }
+    Ok(out)
+}
+
 /// Pull a [`Quote`] out of a chart response. Separated from the request so the
 /// shape handling is testable against captured payloads.
 pub fn parse_quote(body: &serde_json::Value, symbol: &str) -> Result<Quote, String> {
@@ -789,6 +975,196 @@ mod tests {
             "chart": { "result": [{ "indicators": { "quote": [{ "close": closes }]}}]}
         });
         assert_eq!(parse_closes(&fat).unwrap().len(), 20);
+    }
+
+    /// A chart envelope carrying the full OHLCV + adjclose shape Yahoo sends.
+    fn ohlcv(
+        stamps: Vec<i64>,
+        open: Vec<serde_json::Value>,
+        high: Vec<serde_json::Value>,
+        low: Vec<serde_json::Value>,
+        close: Vec<serde_json::Value>,
+        volume: Vec<serde_json::Value>,
+        adj: Vec<serde_json::Value>,
+    ) -> serde_json::Value {
+        serde_json::json!({ "chart": { "result": [{
+            "timestamp": stamps,
+            "indicators": {
+                "quote": [{ "open": open, "high": high, "low": low,
+                            "close": close, "volume": volume }],
+                "adjclose": [{ "adjclose": adj }]
+            }
+        }], "error": null }})
+    }
+
+    #[test]
+    fn bars_carry_the_high_low_and_volume_parse_closes_throws_away() {
+        let body = ohlcv(
+            vec![1_700_000_000, 1_700_086_400],
+            vec![10.0.into(), 11.0.into()],
+            vec![12.0.into(), 13.0.into()],
+            vec![9.0.into(), 10.5.into()],
+            vec![11.0.into(), 12.0.into()],
+            vec![1_000.into(), 2_500.into()],
+            vec![11.0.into(), 12.0.into()], // no adjustment: adjclose == close
+        );
+        let bars = parse_bars(&body).unwrap();
+        assert_eq!(bars.len(), 2);
+        assert_eq!(bars[0].epoch_seconds, 1_700_000_000);
+        assert_eq!(bars[0].high, 12.0);
+        assert_eq!(bars[0].low, 9.0);
+        assert_eq!(bars[1].volume, 2_500);
+        // And the close-only path is untouched by any of this.
+        assert_eq!(
+            parse_closes(&ohlcv(
+                (0..20).collect(),
+                (0..20).map(|i| (i as f64).into()).collect(),
+                (0..20).map(|i| (i as f64 + 1.0).into()).collect(),
+                (0..20).map(|i| (i as f64 - 1.0).into()).collect(),
+                (0..20).map(|i| (i as f64).into()).collect(),
+                (0..20).map(|_| 100.into()).collect(),
+                (0..20).map(|i| (i as f64).into()).collect(),
+            ))
+            .unwrap()
+            .len(),
+            20
+        );
+    }
+
+    #[test]
+    fn every_price_in_a_bar_sits_on_the_adjusted_basis() {
+        // A 10% dividend adjustment: adjclose 90 against a raw close of 100
+        // scales the whole bar by 0.9. Mixing an adjusted close with a raw
+        // high would invent a range the stock never traded.
+        let body = ohlcv(
+            vec![1_700_000_000],
+            vec![95.0.into()],
+            vec![110.0.into()],
+            vec![90.0.into()],
+            vec![100.0.into()],
+            vec![1_000.into()],
+            vec![90.0.into()],
+        );
+        let b = parse_bars(&body).unwrap()[0];
+        assert_eq!(b.close, 90.0);
+        assert!((b.high - 99.0).abs() < 1e-12, "110 * 0.9 = 99");
+        assert!((b.low - 81.0).abs() < 1e-12, "90 * 0.9 = 81");
+        assert!((b.open - 85.5).abs() < 1e-12, "95 * 0.9 = 85.5");
+        // The adjusted bar still brackets its own close.
+        assert!(b.high >= b.close && b.low <= b.close);
+    }
+
+    #[test]
+    fn a_close_only_payload_fails_loudly_instead_of_substituting_closes() {
+        // Exactly the shape `parse_closes` is happy with: no high, no low, no
+        // volume. The indicator path must refuse it rather than pour closes
+        // into the high and low fields.
+        let closes: Vec<f64> = (0..300).map(|i| 10.0 + i as f64).collect();
+        let close_only = serde_json::json!({
+            "chart": { "result": [{
+                "timestamp": (0..300).collect::<Vec<i64>>(),
+                "indicators": { "quote": [{ "close": closes }] }
+            }]}
+        });
+        assert_eq!(
+            parse_bars(&close_only).unwrap_err(),
+            BarsError::MissingSeries("open")
+        );
+        assert!(
+            parse_closes(&close_only).is_ok(),
+            "unchanged for its callers"
+        );
+
+        // Present-but-all-null highs are the same failure wearing a hat.
+        let nulled = ohlcv(
+            vec![1, 2],
+            vec![1.0.into(), 2.0.into()],
+            vec![serde_json::Value::Null, serde_json::Value::Null],
+            vec![1.0.into(), 2.0.into()],
+            vec![1.0.into(), 2.0.into()],
+            vec![10.into(), 10.into()],
+            vec![1.0.into(), 2.0.into()],
+        );
+        assert_eq!(parse_bars(&nulled).unwrap_err(), BarsError::NoUsableBars);
+    }
+
+    #[test]
+    fn unadjusted_prices_are_refused_rather_than_used_raw() {
+        let body = serde_json::json!({
+            "chart": { "result": [{
+                "timestamp": [1, 2],
+                "indicators": { "quote": [{
+                    "open": [1.0, 2.0], "high": [2.0, 3.0], "low": [0.5, 1.5],
+                    "close": [1.0, 2.0], "volume": [10, 20]
+                }]}
+            }]}
+        });
+        assert_eq!(
+            parse_bars(&body).unwrap_err(),
+            BarsError::MissingAdjustedClose
+        );
+    }
+
+    #[test]
+    fn misaligned_series_are_refused_rather_than_guessed_into_place() {
+        let body = ohlcv(
+            vec![1, 2, 3],
+            vec![1.0.into(), 2.0.into(), 3.0.into()],
+            vec![2.0.into(), 3.0.into()], // one short
+            vec![0.5.into(), 1.5.into(), 2.5.into()],
+            vec![1.0.into(), 2.0.into(), 3.0.into()],
+            vec![10.into(), 20.into(), 30.into()],
+            vec![1.0.into(), 2.0.into(), 3.0.into()],
+        );
+        assert_eq!(
+            parse_bars(&body).unwrap_err(),
+            BarsError::LengthMismatch {
+                field: "high",
+                got: 2,
+                want: 3
+            }
+        );
+    }
+
+    #[test]
+    fn a_no_trade_day_is_dropped_not_zero_filled() {
+        let n = serde_json::Value::Null;
+        let body = ohlcv(
+            vec![1, 2, 3],
+            vec![1.0.into(), n.clone(), 3.0.into()],
+            vec![2.0.into(), n.clone(), 4.0.into()],
+            vec![0.5.into(), n.clone(), 2.5.into()],
+            vec![1.0.into(), n.clone(), 3.0.into()],
+            vec![10.into(), n.clone(), 30.into()],
+            vec![1.0.into(), n, 3.0.into()],
+        );
+        let bars = parse_bars(&body).unwrap();
+        assert_eq!(bars.len(), 2, "the null bar is absent, not a row of zeros");
+        assert_eq!(bars[1].epoch_seconds, 3);
+    }
+
+    #[test]
+    fn a_bar_whose_high_is_below_its_low_is_corrupt_not_thin() {
+        let body = ohlcv(
+            vec![1],
+            vec![10.0.into()],
+            vec![5.0.into()], // high < low
+            vec![9.0.into()],
+            vec![10.0.into()],
+            vec![100.into()],
+            vec![10.0.into()],
+        );
+        assert_eq!(
+            parse_bars(&body).unwrap_err(),
+            BarsError::InconsistentBar { index: 0 }
+        );
+    }
+
+    #[test]
+    fn the_default_range_leaves_room_above_the_252_bar_floor() {
+        // "1y" comes back at roughly 252 bars, and chan_pos_252 needs 253 —
+        // one holiday short of the floor. The default must not be "1y".
+        assert_eq!(DEFAULT_BARS_RANGE, "300d");
     }
 
     #[test]

@@ -10,17 +10,20 @@
  * rework. That is the leverage: capabilities surface through one renderer.
  *
  * The bytes are fetched once (authed) into an object URL; `<img>`/`<iframe>`
- * render that URL directly, text renderers read `blob.text()`. The overlay
- * mirrors the DetailModal scrim/Escape convention but is sized wide for
- * documents (a deck needs room a 560px modal can't give).
+ * render that URL directly, text renderers read `blob.text()`. The overlay IS
+ * `DetailModal` now, sized wide for documents — it used to only "mirror the
+ * DetailModal convention", which in practice meant a copy of the scrim and the
+ * Escape key without the focus trap, the dialog role or the focus return.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { FiDownload, FiX } from 'react-icons/fi';
+import { FiDownload } from 'react-icons/fi';
 import { api } from '../../lib/api';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
+import { DetailModal } from '../common/DetailModal';
 import type { ProjectDocument } from './types';
 
 // ── The single dispatch point ────────────────────────────────────────────────
@@ -57,13 +60,6 @@ export function DocumentViewer({ projectId, doc, onClose }: {
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Escape closes.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
   // Fetch the bytes once. 'fallback' does not preview, so it skips the fetch.
   useEffect(() => {
     if (kind === 'fallback') return;
@@ -95,57 +91,41 @@ export function DocumentViewer({ projectId, doc, onClose }: {
       a.download = doc.filename;
       a.click();
       URL.revokeObjectURL(url);
+      return true;
     } catch (e) {
+      // Resolves false rather than throwing: the failure is already on screen
+      // as a notice, and a button that ticked here would contradict it.
       setError((e as Error).message || 'Download failed');
+      return false;
     }
   };
 
   return (
-    <div
-      onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 130, background: 'rgba(0,0,0,0.6)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
+    // The shell is `DetailModal`'s, sized wide: a deck needs room a 560px modal
+    // cannot give, which is why this used to carry its own scrim — and with it
+    // its own Escape and no focus trap, no dialog role and no focus return.
+    // The body draws its own surface (an image sits on a dark mat) and its own
+    // padding, since each renderer pads differently.
+    <DetailModal
+      title={doc.filename}
+      onClose={onClose}
+      width="min(1000px, 94vw)"
+      height="88vh"
+      headerRight={<>
+        <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, flexShrink: 0 }}>
+          {doc.mime_type} · {formatSize(doc.size_bytes)}
+        </span>
+        <IconButton title="Download" onClick={download} colors={colors}><FiDownload size={15} /></IconButton>
+      </>}
+      bodyStyle={{
+        padding: 0, minHeight: 0,
+        background: kind === 'image' ? '#0b0b0f' : colors.surface,
       }}
     >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          width: 'min(1000px, 94vw)', height: '88vh',
-          borderRadius: radius.lg, background: colors.surface,
-          border: `1px solid ${colors.border}`,
-          display: 'flex', flexDirection: 'column', overflow: 'hidden',
-        }}
-      >
-        {/* Header */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px',
-          borderBottom: `1px solid ${colors.border}`,
-        }}>
-          <span style={{
-            fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text,
-            flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>
-            {doc.filename}
-          </span>
-          <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, flexShrink: 0 }}>
-            {doc.mime_type} · {formatSize(doc.size_bytes)}
-          </span>
-          <IconButton title="Download" onClick={download} colors={colors}><FiDownload size={15} /></IconButton>
-          <IconButton title="Close" onClick={onClose} colors={colors}><FiX size={16} /></IconButton>
-        </div>
-
-        {/* Body — the renderer dispatch */}
-        <div style={{
-          flex: 1, overflow: 'auto', minHeight: 0,
-          background: kind === 'image' ? '#0b0b0f' : colors.surface,
-        }}>
-          {error
-            ? <Notice colors={colors}>Couldn’t load this document: {error}</Notice>
-            : renderContent(kind, { objectUrl, text, doc, colors, onDownload: download })}
-        </div>
-      </div>
-    </div>
+      {error
+        ? <Notice colors={colors}>Couldn’t load this document: {error}</Notice>
+        : renderContent(kind, { objectUrl, text, doc, colors, onDownload: download })}
+    </DetailModal>
   );
 }
 
@@ -158,7 +138,9 @@ function renderContent(
     text: string | null;
     doc: ProjectDocument;
     colors: ReturnType<typeof useTheme>['colors'];
-    onDownload: () => void;
+    /** Resolves true/false — the fallback's Download button reads it to decide
+     *  whether it may confirm. */
+    onDownload: () => Promise<boolean>;
   },
 ) {
   const { objectUrl, text, doc, colors, onDownload } = ctx;
@@ -178,7 +160,7 @@ function renderContent(
 
     case 'markdown':
       return text !== null
-        ? <div className="markdown-body" style={{ padding: '18px 22px', fontSize: 13, lineHeight: 1.6, color: colors.text }}>
+        ? <div className="markdown-body" style={{ padding: '18px 22px', fontSize: textSize.small, lineHeight: 1.6, color: colors.text }}>
             <ReactMarkdown>{text}</ReactMarkdown>
           </div>
         : <Loading colors={colors} />;
@@ -189,7 +171,7 @@ function renderContent(
     case 'text':
       return text !== null
         ? <pre style={{
-            margin: 0, padding: '18px 22px', fontFamily: font.mono, fontSize: 12,
+            margin: 0, padding: '18px 22px', fontFamily: font.mono, fontSize: textSize.caption,
             lineHeight: 1.55, color: colors.text, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
           }}>{text}</pre>
         : <Loading colors={colors} />;
@@ -201,19 +183,26 @@ function renderContent(
           height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center',
           justifyContent: 'center', gap: 14, padding: 24, textAlign: 'center',
         }}>
-          <div style={{ fontSize: 13, color: colors.textMuted }}>
+          <div style={{ fontSize: textSize.small, color: colors.textMuted }}>
             No inline preview for <span style={{ fontFamily: font.mono }}>{doc.mime_type || 'this type'}</span>.
           </div>
-          <button
+          <Button
+            colors={colors}
             onClick={onDownload}
             style={{
-              display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer',
-              padding: '8px 14px', borderRadius: radius.md, color: colors.text,
-              background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
-            }}
+              '--pa-btn-bg': 'rgba(255,255,255,0.04)',
+              '--pa-btn-bg-hover': 'rgba(255,255,255,0.08)',
+              '--pa-btn-border': colors.border,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-pad': '8px 14px',
+              '--pa-btn-radius': `${radius.md}px`,
+              fontSize: textSize.caption,
+              gap: 8,
+            } as CSSProperties}
           >
-            <FiDownload size={14} /> Download {doc.filename}
-          </button>
+            <FiDownload size={14} />
+            Download {doc.filename}
+          </Button>
         </div>
       );
   }
@@ -227,7 +216,7 @@ function CsvTable({ text, colors }: { text: string; colors: ReturnType<typeof us
   const [head, ...body] = rows;
   return (
     <div style={{ padding: 16, overflow: 'auto' }}>
-      <table style={{ borderCollapse: 'collapse', fontSize: 12, fontFamily: font.mono, color: colors.text }}>
+      <table style={{ borderCollapse: 'collapse', fontSize: textSize.caption, fontFamily: font.mono, color: colors.text }}>
         <thead>
           <tr>
             {head.map((cell, i) => (
@@ -282,25 +271,41 @@ function parseCsv(text: string): string[][] {
 // ── Small shared bits ────────────────────────────────────────────────────────
 
 function IconButton({ title, onClick, colors, children }: {
-  title: string; onClick: () => void; colors: ReturnType<typeof useTheme>['colors']; children: React.ReactNode;
+  title: string;
+  /** Returning a promise opts the control into the primitive's pending/success
+   *  states — the download does, the close does not. */
+  onClick: () => unknown;
+  colors: ReturnType<typeof useTheme>['colors'];
+  children: React.ReactNode;
 }) {
   return (
-    <button
+    <Button
+      colors={colors}
+      variant="bare"
       title={title}
+      // The only child is a glyph, so the title has to be said out loud too.
+      aria-label={title}
       onClick={onClick}
-      style={{ background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer', padding: 4, display: 'flex', flexShrink: 0 }}
+      style={{
+        '--pa-btn-fg': colors.textMuted,
+        '--pa-btn-fg-hover': colors.text,
+        '--pa-btn-bg-hover': 'transparent',
+        '--pa-btn-bg-active': 'transparent',
+        '--pa-btn-pad': '4px',
+        flexShrink: 0,
+      } as CSSProperties}
     >
       {children}
-    </button>
+    </Button>
   );
 }
 
 function Loading({ colors }: { colors: ReturnType<typeof useTheme>['colors'] }) {
-  return <div style={{ padding: 24, fontSize: 12, color: colors.textDim }}>Loading…</div>;
+  return <div style={{ padding: 24, fontSize: textSize.caption, color: colors.textDim }}>Loading…</div>;
 }
 
 function Notice({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: React.ReactNode }) {
-  return <div style={{ padding: 24, fontSize: 12, color: colors.textDim }}>{children}</div>;
+  return <div style={{ padding: 24, fontSize: textSize.caption, color: colors.textDim }}>{children}</div>;
 }
 
 export function formatSize(bytes: number): string {

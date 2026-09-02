@@ -178,6 +178,12 @@ pub struct SweepReport {
     pub windows_judged: usize,
     pub actions_completed: usize,
     pub errors: Vec<String>,
+    /// Every project this pass actually wrote a verdict for, deduplicated and
+    /// in first-judged order. The caller announces one `project_changed` per
+    /// entry; an empty list is the common case and means there is nothing to
+    /// tell anyone. Kept here rather than emitted from `run` on purpose — this
+    /// module is pure arithmetic over the database and stays that way (D18).
+    pub projects_judged: Vec<String>,
 }
 
 /// Judge every due window for every verified, pre-registered action.
@@ -208,6 +214,9 @@ pub async fn run(pool: &Pool<Sqlite>, now: DateTime<Utc>) -> anyhow::Result<Swee
                 Ok(Ok(_)) => {
                     judged += 1;
                     report.windows_judged += 1;
+                    if !report.projects_judged.contains(&action.project_id) {
+                        report.projects_judged.push(action.project_id.clone());
+                    }
                 }
                 Ok(Err(_)) => {}
                 Err(e) => report
@@ -613,6 +622,44 @@ mod tests {
         assert_eq!(
             store::outcomes_for(&pool, &action.id).await.unwrap().len(),
             3
+        );
+    }
+
+    /// D18: the pass wrote verdicts and told nobody, so the Grow lens sat on a
+    /// 120-second backstop poll waiting for a fact that had already landed. The
+    /// report has to name the projects it actually judged something for — an
+    /// announcement per project, not per action, and none at all for a pass
+    /// that judged nothing (a `project_changed` on every 6-hourly tick would
+    /// make every open client refetch four times a day for no change).
+    #[tokio::test]
+    async fn the_report_names_the_projects_it_judged() {
+        let pool = pool().await;
+        traffic_over(&pool, "p1", day("2026-05-01"), 103, 100).await;
+        traffic_over(&pool, "p1", day("2026-08-12"), 28, 160).await;
+        verified_action(
+            &pool,
+            "p1",
+            "t",
+            "2026-08-11T14:00:00Z",
+            TargetMetric::Pageviews,
+            TargetDir::Up,
+        )
+        .await;
+
+        // Nothing due yet: no judgement, so nothing to announce.
+        let early = run(&pool, at("2026-08-14T03:00:00Z")).await.unwrap();
+        assert_eq!(early.windows_judged, 0);
+        assert!(
+            early.projects_judged.is_empty(),
+            "a pass that judged nothing must announce nothing"
+        );
+
+        let judged = run(&pool, at("2026-09-10T03:00:00Z")).await.unwrap();
+        assert_eq!(judged.windows_judged, 3);
+        assert_eq!(
+            judged.projects_judged,
+            vec!["p1".to_string()],
+            "three windows on one project is ONE refetch, not three"
         );
     }
 

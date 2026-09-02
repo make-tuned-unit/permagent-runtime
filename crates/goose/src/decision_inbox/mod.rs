@@ -10,6 +10,7 @@
 pub mod curation;
 pub mod escalate;
 pub mod learn;
+pub mod negatives;
 pub mod policy;
 pub mod sink;
 

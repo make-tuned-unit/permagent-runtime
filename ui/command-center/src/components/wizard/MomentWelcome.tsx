@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { font } from '../../styles/tokens';
+import { font, textSize } from '../../styles/tokens';
 import { useCommandCenter } from '../../lib/store';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, GhostLink, Input, Select, Glass, Particles, type SelectOption } from './atoms';
@@ -169,7 +169,7 @@ export function MomentWelcome({ onAdvance }: Props) {
       <h1 style={{ fontFamily: font.display, fontSize: 28, fontWeight: 700, color: colors.text, margin: '32px 0 10px', letterSpacing: '-0.02em' }}>
         Welcome to Permagent
       </h1>
-      <p style={{ fontFamily: font.body, fontSize: 14, color: colors.textMuted, marginBottom: 32, textAlign: 'center', maxWidth: 380 }}>
+      <p style={{ fontFamily: font.body, fontSize: textSize.body, color: colors.textMuted, marginBottom: 32, textAlign: 'center', maxWidth: 380 }}>
         Connect a model provider to power your agent. You can change this later in Settings.
       </p>
 
@@ -201,16 +201,16 @@ export function MomentWelcome({ onAdvance }: Props) {
           </GhostLink>
         )}
         {!isLocal && useReference && (
-          <p style={{ fontFamily: font.body, fontSize: 12, color: colors.textMuted, margin: 0 }}>
+          <p style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, margin: 0 }}>
             {REFERENCE_HINTS[managerKind as SourceKind].help} The key stays in {manager?.displayName} — nothing is written to the keychain.
           </p>
         )}
         {!isLocal && alreadyConfigured && (
-          <p style={{ fontFamily: font.body, fontSize: 12, color: colors.success, margin: 0 }}>
+          <p style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.success, margin: 0 }}>
             ✓ This provider is already connected — continue, or paste a new key to replace it.
           </p>
         )}
-        {error && <p style={{ fontFamily: font.body, fontSize: 12, color: colors.danger, margin: 0 }}>{error}</p>}
+        {error && <p style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.danger, margin: 0 }}>{error}</p>}
         <PrimaryButton onClick={handleSubmit} disabled={!canContinue || validating} full>
           {validating ? 'Saving...' : 'Continue'}
         </PrimaryButton>
@@ -221,23 +221,23 @@ export function MomentWelcome({ onAdvance }: Props) {
         )}
         {!isLocal && showHelp && KEY_HELP[provider] && (
           <Glass r={12} padding={14}>
-            <div style={{ fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.text, marginBottom: 8 }}>
+            <div style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600, color: colors.text, marginBottom: 8 }}>
               Getting a {KEY_HELP[provider].label} key
             </div>
             <PrimaryButton
               onClick={() => window.open(KEY_HELP[provider].url, '_blank', 'noopener,noreferrer')}
               full
-              style={{ height: 36, fontSize: 13, marginBottom: 10 }}
+              style={{ height: 36, fontSize: textSize.small, marginBottom: 10 }}
             >
               Open {KEY_HELP[provider].label} ↗
             </PrimaryButton>
             {KEY_HELP[provider].steps.map((s, i) => (
-              <div key={i} style={{ display: 'flex', gap: 8, fontFamily: font.body, fontSize: 12, color: colors.textMuted, lineHeight: 1.7 }}>
+              <div key={i} style={{ display: 'flex', gap: 8, fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.7 }}>
                 <span style={{ color: colors.cyan, fontWeight: 600, flexShrink: 0 }}>{i + 1}.</span>
                 <span>{s}</span>
               </div>
             ))}
-            <GhostLink onClick={() => setShowHelp(false)} style={{ marginTop: 8, fontSize: 12 }}>Hide steps</GhostLink>
+            <GhostLink onClick={() => setShowHelp(false)} style={{ marginTop: 8, fontSize: textSize.caption }}>Hide steps</GhostLink>
           </Glass>
         )}
       </div>

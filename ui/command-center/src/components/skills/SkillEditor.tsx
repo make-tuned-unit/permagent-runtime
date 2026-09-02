@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { FiCheck, FiX } from 'react-icons/fi';
 import { useCommandCenter, type SkillState } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 interface SkillEditorProps {
   skill: SkillState;
@@ -19,8 +20,10 @@ export function SkillEditor({ skill, onClose }: SkillEditorProps) {
 
   const hasChanges = name !== skill.name || description !== (skill.description || '');
 
+  // Returns the outcome so the Button primitive never ticks over a save that
+  // did not land — `updateSkill` swallows its own error into `ok`.
   const handleSave = async () => {
-    if (!hasChanges || !name.trim()) return;
+    if (!hasChanges || !name.trim()) return false;
     setSaving(true);
     setError(null);
     const ok = await updateSkill(skill.id, { name: name.trim(), description: description.trim() });
@@ -31,6 +34,7 @@ export function SkillEditor({ skill, onClose }: SkillEditorProps) {
     } else {
       setError('Could not save. Please try again.');
     }
+    return ok;
   };
 
   const inputStyle: React.CSSProperties = {
@@ -85,27 +89,50 @@ export function SkillEditor({ skill, onClose }: SkillEditorProps) {
         />
       </div>
       <div className="flex items-center gap-2">
-        <button
+        <Button
+          colors={colors}
+          variant="ghostOn"
+          type="button"
           onClick={handleSave}
           disabled={!hasChanges || !name.trim() || saving}
-          className="flex items-center gap-1 rounded-md px-3 py-1 text-[11px] transition disabled:opacity-40 disabled:cursor-not-allowed"
-          style={{ fontFamily: font.mono, backgroundColor: colors.cyanSoft, color: colors.cyan }}
-          onMouseEnter={e => { e.currentTarget.style.backgroundColor = `${colors.cyan}4D`; }}
-          onMouseLeave={e => { e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
+          style={{
+            '--pa-btn-bg': colors.cyanSoft,
+            '--pa-btn-fg': colors.cyan,
+            '--pa-btn-border': 'transparent',
+            '--pa-btn-bg-hover': `${colors.cyan}4D`,
+            '--pa-btn-border-hover': 'transparent',
+            '--pa-btn-bg-active': colors.cyanSoft,
+            '--pa-btn-pad': '4px 12px',
+            '--pa-btn-radius': `${radius.sm}px`,
+            fontFamily: font.mono,
+          } as CSSProperties}
         >
-          <FiCheck size={12} />
-          {saving ? 'Saving...' : 'Save'}
-        </button>
-        <button
+          {/* `Button` folds its children into one label span, so the icon and
+              the word keep their own row to hold the `gap-1` they had. */}
+          <span className="inline-flex items-center gap-1">
+            <FiCheck size={12} />
+            {saving ? 'Saving...' : 'Save'}
+          </span>
+        </Button>
+        <Button
+          colors={colors}
+          variant="bare"
+          type="button"
           onClick={onClose}
-          className="flex items-center gap-1 rounded-md px-3 py-1 text-[11px] hover:bg-white/5 transition"
-          style={{ fontFamily: font.mono, color: colors.textMuted }}
-          onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
-          onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
+          style={{
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+            '--pa-btn-pad': '4px 12px',
+            '--pa-btn-radius': `${radius.sm}px`,
+            fontFamily: font.mono,
+          } as CSSProperties}
         >
-          <FiX size={12} />
-          Cancel
-        </button>
+          <span className="inline-flex items-center gap-1">
+            <FiX size={12} />
+            Cancel
+          </span>
+        </Button>
       </div>
       {error && (
         <p className="text-[10px] text-red-400" style={{ fontFamily: font.mono }}>{error}</p>

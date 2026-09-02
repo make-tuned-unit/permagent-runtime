@@ -69,7 +69,11 @@ pub(super) fn load_tiny_model_prompt() -> String {
 
     crate::prompt_template::render_template("tiny_model_system.md", &context).unwrap_or_else(|e| {
         tracing::warn!("Failed to load tiny_model_system.md: {:?}", e);
-        "You are Goose, an AI assistant. You can execute shell commands by starting lines with $."
+        // Persona-neutral on purpose: this fires only when the template fails
+        // to render, and naming a persona here would be a guess. It used to
+        // say "Goose", which is neither the product nor anyone's identity.
+        "You are an AI agent running on the Permagent platform. You can execute shell commands \
+         by starting lines with $."
             .to_string()
     })
 }

@@ -233,7 +233,10 @@ describe('Brain search guards', () => {
 
     await clearSearch();
     expect(container.textContent).not.toContain('matching "caroline"');
-    expect(viewToggle('graph').style.background).not.toBe('');
+    // "Selected" is still the lit fill, but it is now carried on the button
+    // primitive's `--pa-btn-bg` custom property rather than an inline
+    // `background` an inline style could never give a hover or pressed state.
+    expect(viewToggle('graph').style.getPropertyValue('--pa-btn-bg')).not.toBe('transparent');
   });
 
   it('5 — results assertion fails on an empty result set (non-vacuous floor)', async () => {

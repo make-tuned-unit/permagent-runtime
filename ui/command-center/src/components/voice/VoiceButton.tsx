@@ -5,7 +5,8 @@
  * Connection: persistent socket, auto-connects on first use.
  * State: idle → click to activate → ready → hold to talk → recording → processing → playing → ready.
  */
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, type CSSProperties } from 'react';
+import { FiMic } from 'react-icons/fi';
 import { VoiceState, isInterruptibleState } from '../../hooks/useVoice';
 import { useCommandCenter } from '../../lib/store';
 import {
@@ -23,6 +24,8 @@ import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
 import { VoiceVisualizer } from './VoiceVisualizer';
 import { handsFreeStatusLabel } from './voiceStatus';
+import { radius } from '../../styles/tokens';
+import { Button } from '../common/Button';
 
 const STATE_LABELS: Record<VoiceState, string> = {
   idle: '',
@@ -175,18 +178,26 @@ export function VoiceButton() {
   const showLabel = error || state === 'recording' || state === 'processing' || state === 'playing' || state === 'connecting';
 
   const isBusy = state === 'processing' || state === 'playing';
-  const btnColors: React.CSSProperties =
+  // The mic's four resting faces, unchanged — now expressed as `.pa-btn` custom
+  // properties so the state that was only reachable through a pair of mouse
+  // handlers (the muted glyph coming up to full while idle) is CSS, and the
+  // press give arrives with it. `bgHover`/`borderHover` deliberately repeat the
+  // resting values: this control already signals its state through its fill, so
+  // a hover fill on top of "recording" would be a second, competing signal.
+  const face =
     state === 'recording'
-      ? { border: `1px solid ${colors.danger}`, backgroundColor: `${colors.danger}33`, color: colors.danger }
+      ? { bg: `${colors.danger}33`, fg: colors.danger, border: colors.danger, fgHover: colors.danger }
       : isBusy
-        ? { border: `1px solid ${colors.border}`, backgroundColor: colors.surfaceHi, color: colors.textMuted }
+        ? { bg: colors.surfaceHi, fg: colors.textMuted, border: colors.border, fgHover: colors.textMuted }
         : isActive
-          ? { border: `1px solid ${colors.cyan}80`, backgroundColor: colors.cyanSoft, color: colors.cyan }
-          : { border: `1px solid ${colors.border}`, backgroundColor: colors.surfaceHi, color: colors.textMuted };
+          ? { bg: colors.cyanSoft, fg: colors.cyan, border: `${colors.cyan}80`, fgHover: colors.cyan }
+          : { bg: colors.surfaceHi, fg: colors.textMuted, border: colors.border, fgHover: colors.text };
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-      <button
+      <Button
+        colors={colors}
+        variant="bare"
         onClick={handleClick}
         onPointerDown={state === 'ready' ? handlePointerDown : undefined}
         onPointerUp={state === 'recording' ? handlePointerUp : undefined}
@@ -197,28 +208,28 @@ export function VoiceButton() {
           : isInterruptibleState(state) ? `Stop ${agentName} — click or press space to interrupt`
           : STATE_LABELS[state]
         }
-        className={`transition ${isBusy ? 'cursor-pointer' : ''}`}
-        style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, display: 'grid', placeItems: 'center', ...btnColors }}
-        onMouseEnter={e => { if (!isActive) e.currentTarget.style.color = colors.text; }}
-        onMouseLeave={e => { if (!isActive) e.currentTarget.style.color = colors.textMuted; }}
+        aria-label="Voice"
+        style={{
+          '--pa-btn-bg': face.bg,
+          '--pa-btn-fg': face.fg,
+          '--pa-btn-border': face.border,
+          '--pa-btn-bg-hover': face.bg,
+          '--pa-btn-border-hover': face.border,
+          '--pa-btn-fg-hover': face.fgHover,
+          '--pa-btn-bg-active': face.bg,
+          '--pa-btn-pad': '0',
+          '--pa-btn-radius': `${radius.sm}px`,
+          width: 28,
+          height: 28,
+          flexShrink: 0,
+        } as CSSProperties}
       >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke={isActive ? stateColor : 'currentColor'}
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
+        <FiMic
+          size={12}
+          color={isActive ? stateColor : 'currentColor'}
           style={{ display: 'block' }}
-        >
-          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-          <line x1="12" y1="19" x2="12" y2="23" />
-          <line x1="8" y1="23" x2="16" y2="23" />
-        </svg>
-      </button>
+        />
+      </Button>
 
       {/* While the agent speaks, the waveform IS the label — a live frequency
           visualization instead of static "Speaking..." text. Clicking it
@@ -226,17 +237,24 @@ export function VoiceButton() {
           voice-activity detection (silence ends your turn, loud speech barges
           in), no spacebar needed. Click again to leave. */}
       {handsFree ? (
-        <button
+        <Button
+          colors={colors}
           onClick={() => {
             void setHandsFree(false);
             deactivate();
           }}
           title="Hands-free conversation is ON — click to stop listening"
           style={{
-            display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
-            border: `1px solid ${colors.cyan}80`, backgroundColor: colors.cyanSoft,
-            borderRadius: 6, padding: '3px 8px',
-          }}
+            '--pa-btn-bg': colors.cyanSoft,
+            '--pa-btn-fg': 'inherit',
+            '--pa-btn-border': `${colors.cyan}80`,
+            '--pa-btn-bg-hover': colors.cyanSoft,
+            '--pa-btn-border-hover': colors.cyan,
+            '--pa-btn-bg-active': colors.cyanSoft,
+            '--pa-btn-pad': '3px 8px',
+            '--pa-btn-radius': `${radius.sm}px`,
+            gap: 6,
+          } as CSSProperties}
         >
           {state === 'playing' ? (
             <VoiceVisualizer getAnalyser={getAnalyser} active />
@@ -245,15 +263,28 @@ export function VoiceButton() {
               {handsFreeStatusLabel(state, gatedWakePhrase)}
             </span>
           )}
-        </button>
+        </Button>
       ) : state === 'playing' && !error ? (
-        <button
+        // The waveform IS the control here: it has no padding of its own, so a
+        // hover fill would sit flush against the bars and read as a glitch.
+        // Press give and focus still arrive from `.pa-btn`.
+        <Button
+          colors={colors}
+          variant="bare"
           onClick={() => void setHandsFree(true)}
           title="Click to go hands-free — always listening, talk naturally"
-          style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
+          aria-label="Go hands-free"
+          style={{
+            '--pa-btn-bg': 'transparent',
+            '--pa-btn-border': 'transparent',
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-border-hover': 'transparent',
+            '--pa-btn-bg-active': 'transparent',
+            '--pa-btn-pad': '0',
+          } as CSSProperties}
         >
           <VoiceVisualizer getAnalyser={getAnalyser} active />
-        </button>
+        </Button>
       ) : showLabel ? (
         <span style={{
           fontSize: 10,

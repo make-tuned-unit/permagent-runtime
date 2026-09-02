@@ -5,11 +5,12 @@
  * callable immediately (suggested agents + the Orchestrator).
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
-import { font, radius, type } from '../../styles/tokens';
+import { font, radius, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import { Toggle } from './atoms';
+import { Button } from '../common/Button';
+import { Toggle } from '../common/Toggle';
 
 interface CategoryView {
   name: string;
@@ -105,8 +106,12 @@ export function DataSourcesSection() {
       });
       setKeyDraft((d) => ({ ...d, [slug]: '' }));
       await load(category);
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save the key');
+      // The catch already swallows the throw into a message, so without this
+      // `false` the Button contract would tick on a key that never saved.
+      return false;
     } finally {
       setBusy(null);
     }
@@ -130,22 +135,30 @@ export function DataSourcesSection() {
         {categories.map((c) => {
           const on = c.name === category;
           return (
+            // A `role="tab"` in a tablist, not an action: `Button` would flatten
+            // the semantics that make the row a tablist at all. So it keeps the
+            // element and takes the shared interaction rules through `.pa-btn`
+            // instead — pressing a category used to look exactly like not
+            // pressing it until the list below finished reloading.
             <button
               key={c.name}
               type="button"
               role="tab"
+              className="pa-btn"
               aria-selected={on}
               onClick={() => setCategory(c.name)}
               style={{
                 ...type.micro,
-                padding: '6px 10px',
-                borderRadius: radius.sm,
-                border: `1px solid ${on ? colors.cyan : colors.border}`,
-                background: 'transparent',
-                color: on ? colors.cyan : colors.text,
-                cursor: 'pointer',
+                '--pa-btn-bg': 'transparent',
+                '--pa-btn-fg': on ? colors.cyan : colors.text,
+                '--pa-btn-border': on ? colors.cyan : colors.border,
+                '--pa-btn-bg-hover': on ? colors.cyanSoft : colors.surfaceHi,
+                '--pa-btn-border-hover': on ? colors.cyan : colors.borderHi,
+                '--pa-btn-bg-active': on ? colors.cyanGlow : colors.surface,
+                '--pa-btn-pad': '6px 10px',
+                '--pa-btn-radius': `${radius.sm}px`,
                 fontFamily: font.body,
-              }}
+              } as CSSProperties}
             >
               {c.name} · {c.count}
             </button>
@@ -175,7 +188,7 @@ export function DataSourcesSection() {
           >
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{e.name}</div>
+                <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{e.name}</div>
                 <div style={{ ...type.caption, color: colors.textMuted, marginTop: 2 }}>{e.description}</div>
                 <div style={{ ...type.caption, color: colors.textDim, marginTop: 4 }}>
                   Auth {e.auth || 'No'}
@@ -187,7 +200,8 @@ export function DataSourcesSection() {
               <Toggle
                 on={e.enabled}
                 disabled={busy === e.slug}
-                onChange={(v) => void toggle(e.slug, v)}
+                onChange={(v) => toggle(e.slug, v)}
+                label={`Enable ${e.name}`}
               />
             </div>
             {e.enabled && e.auth.toLowerCase() === 'apikey' && (
@@ -199,28 +213,26 @@ export function DataSourcesSection() {
                   value={keyDraft[e.slug] ?? ''}
                   onChange={(ev) => setKeyDraft((d) => ({ ...d, [e.slug]: ev.target.value }))}
                   style={{
-                    flex: 1, fontFamily: font.mono, fontSize: 11, color: colors.text,
+                    flex: 1, fontFamily: font.mono, fontSize: textSize.micro, color: colors.text,
                     background: colors.inputBg, border: `1px solid ${colors.border}`,
                     borderRadius: radius.sm, padding: '6px 8px', outline: 'none', minWidth: 0,
                   }}
                 />
-                <button
+                <Button
+                  colors={colors}
+                  variant="ghostOn"
                   type="button"
                   disabled={busy === e.slug || !(keyDraft[e.slug] ?? '').trim()}
-                  onClick={() => void saveKey(e.slug)}
+                  onClick={() => saveKey(e.slug)}
                   style={{
                     ...type.micro,
-                    padding: '6px 10px',
-                    borderRadius: radius.sm,
-                    border: `1px solid ${colors.cyan}`,
-                    color: colors.cyan,
-                    background: 'transparent',
-                    cursor: 'pointer',
+                    '--pa-btn-pad': '6px 10px',
+                    '--pa-btn-radius': `${radius.sm}px`,
                     fontFamily: font.body,
-                  }}
+                  } as CSSProperties}
                 >
                   Save key
-                </button>
+                </Button>
               </div>
             )}
           </article>

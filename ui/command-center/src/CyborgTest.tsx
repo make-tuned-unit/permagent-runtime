@@ -1,9 +1,12 @@
-import { Suspense, useState } from 'react';
+import { Suspense, useState, type CSSProperties } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { CyborgCharacterModel } from './components/world/agents/CyborgCharacter';
 import { AGENT_TRIM } from './components/world/shared/palette';
+import { Button } from './components/common/Button';
+import { radius, textSize } from './styles/tokens';
+import { useTheme } from './styles/useTheme';
 
 // Trim colors come from the world palette SOT (Henry's old neon-cyan preset
 // was stale — his trim is warm white-gold since issue #87 resolved).
@@ -22,6 +25,10 @@ const CAM_BACK: [number, number, number] = [-3, 2.5, -4];
 const initialCam = camParam === 'back' ? CAM_BACK : CAM_FRONT;
 
 export default function CyborgTest() {
+  // This harness paints against a fixed studio backdrop, not the app theme, so
+  // every visible colour below stays hard-coded; `colors` is here only because
+  // the button primitive's contract asks for it.
+  const { colors } = useTheme();
   const [preset, setPreset] = useState(0);
   const current = PRESETS[preset];
 
@@ -78,29 +85,33 @@ export default function CyborgTest() {
         display: 'flex', gap: 8, flexWrap: 'wrap',
       }}>
         {PRESETS.map((p, i) => (
-          <button
+          <Button
             key={p.label}
+            colors={colors}
             onClick={() => setPreset(i)}
             style={{
-              padding: '6px 14px',
-              borderRadius: 6,
-              border: `1px solid ${i === preset ? p.trimColor : '#444'}`,
-              background: i === preset ? `${p.trimColor}22` : '#222',
-              color: i === preset ? p.trimColor : '#888',
+              '--pa-btn-bg': i === preset ? `${p.trimColor}22` : '#222',
+              '--pa-btn-fg': i === preset ? p.trimColor : '#888',
+              '--pa-btn-border': i === preset ? p.trimColor : '#444',
+              '--pa-btn-bg-hover': `${p.trimColor}22`,
+              '--pa-btn-fg-hover': p.trimColor,
+              '--pa-btn-border-hover': p.trimColor,
+              '--pa-btn-bg-active': `${p.trimColor}33`,
+              '--pa-btn-pad': '6px 14px',
+              '--pa-btn-radius': `${radius.sm}px`,
               fontFamily: 'monospace',
-              fontSize: 13,
-              cursor: 'pointer',
-            }}
+              fontSize: textSize.small,
+            } as CSSProperties}
           >
             {p.label}
-          </button>
+          </Button>
         ))}
       </div>
 
       {/* Info */}
       <div style={{
         position: 'absolute', bottom: 16, left: 16,
-        color: '#666', fontFamily: 'monospace', fontSize: 12,
+        color: '#666', fontFamily: 'monospace', fontSize: textSize.caption,
       }}>
         B1 Cyborg Character Test — orbit with mouse, switch presets above
       </div>

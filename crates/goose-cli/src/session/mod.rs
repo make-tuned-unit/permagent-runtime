@@ -1,3 +1,4 @@
+mod brain_sync;
 mod builder;
 mod completion;
 mod composer;
@@ -57,6 +58,109 @@ use std::time::Instant;
 use tokio;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
+
+/// How long a reachability probe may take before we call the endpoint dead.
+///
+/// Short on purpose: this runs in front of `/model`, a command the user is
+/// waiting on. A local server that cannot answer a `GET` in this long is not
+/// going to serve a coding turn either.
+const REACHABILITY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// The `/v1/models` URL to probe for a provider's chat-completions endpoint,
+/// or `None` when it is not ours to probe.
+///
+/// Only endpoints the user hosts themselves — loopback, or their own LAN.
+/// Cloud providers are deliberately excluded: a round trip per row would put
+/// real latency in front of a command that is mostly used to read a list, and
+/// their `is_provider_configured` answer already means "a key is stored",
+/// which is the honest claim. A self-hosted provider is different in kind:
+/// `qwen38_split` declares `requires_auth: false`, so it reads as configured
+/// unconditionally — including the ~18 hours a day the split is not running.
+fn local_probe_url(base_url: &str) -> Option<String> {
+    let mut url = url::Url::parse(base_url).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    if !is_self_hosted_host(url.host_str()?) {
+        return None;
+    }
+    let path = url.path().trim_end_matches('/').to_string();
+    let probe = match path.strip_suffix("/chat/completions") {
+        Some(stem) if !stem.is_empty() => format!("{stem}/models"),
+        _ => "/v1/models".to_string(),
+    };
+    url.set_path(&probe);
+    url.set_query(None);
+    Some(url.to_string())
+}
+
+fn is_self_hosted_host(host: &str) -> bool {
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            v4.is_loopback() || v4.is_private() || v4.is_unspecified() || v4.is_link_local()
+        }
+        Ok(std::net::IpAddr::V6(v6)) => v6.is_loopback() || v6.is_unspecified(),
+        Err(_) => false,
+    }
+}
+
+/// The probe URL for a named provider, resolving `${VAR}` in its `base_url`
+/// the same way provider instantiation does. `None` for anything not
+/// declarative or not self-hosted.
+fn provider_probe_url(provider_name: &str) -> Option<String> {
+    let loaded = permagent::config::declarative_providers::load_provider(provider_name).ok()?;
+    let base_url = match loaded.config.env_vars.as_ref() {
+        Some(env_vars) => permagent::config::declarative_providers::expand_env_vars(
+            &loaded.config.base_url,
+            env_vars,
+        )
+        .ok()?,
+        None => loaded.config.base_url.clone(),
+    };
+    local_probe_url(&base_url)
+}
+
+/// Is anything listening? ANY HTTP answer counts — a 404 or a 401 still means
+/// a server is up, and this is a reachability check, not a contract check.
+/// Only a transport failure (connection refused, timeout) reads as dead.
+async fn endpoint_is_reachable(url: &str) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(REACHABILITY_TIMEOUT)
+        .build()
+    else {
+        return true;
+    };
+    client.get(url).send().await.is_ok()
+}
+
+/// Says the endpoint is dead AND what to do about it. The old behaviour was to
+/// switch anyway and let the next turn fail with a raw connection error.
+fn unreachable_notice(url: &str) -> String {
+    format!("configured but not reachable at {url} — is the server running?")
+}
+
+/// Split a `/model` argument into `(provider, model)`.
+///
+/// `None` means the request is unactionable — no separator, or a blank half —
+/// and the caller renders one error for every such shape rather than guessing
+/// at an intent. Both halves are trimmed, so `/model anthropic / opus` is the
+/// same request as `/model anthropic/opus`. Only the first separator splits:
+/// a model name can itself contain slashes (`openrouter/anthropic/claude-3`).
+fn parse_model_selection(selection: &str) -> Option<(&str, &str)> {
+    let (provider, model) = selection.split_once('/')?;
+    let (provider, model) = (provider.trim(), model.trim());
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+    Some((provider, model))
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 struct JsonOutput {
@@ -175,6 +279,12 @@ pub struct CliSession {
     retry_config: Option<RetryConfig>,
     output_format: String,
     composer: Option<composer::Composer>,
+    /// Whether last turn left a Brain-recall block installed under
+    /// [`brain_sync::RECALL_PROMPT_KEY`]. The system-prompt extras map is keyed
+    /// and survives the turn, so this is what lets a turn that recalls nothing
+    /// CLEAR the previous turn's memories instead of leaving them standing as
+    /// background for an unrelated question.
+    recall_installed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,6 +415,7 @@ impl CliSession {
             retry_config,
             output_format,
             composer: None,
+            recall_installed: false,
         }
     }
 
@@ -524,6 +635,13 @@ impl CliSession {
 
         self.update_completion_cache().await?;
 
+        // Tab in the composer: the same `GooseCompleter` the fallback editor
+        // below gets. Attached after the cache is populated so the first Tab
+        // already knows the session's prompts.
+        if let Some(c) = self.composer.as_mut() {
+            c.set_completions(Arc::new(GooseCompleter::new(self.completion_cache.clone())));
+        }
+
         let mut editor = self.create_editor()?;
         let history_manager = HistoryManager::new();
         history_manager.load(&mut editor);
@@ -650,26 +768,37 @@ impl CliSession {
             return Ok(());
         }
         let theme = output::get_theme();
-        let model = self
+        // One provider read serves both the model name and the window it is
+        // measured against; `display_context_usage` reads the same pair, so
+        // the footer chip and the legacy line can never disagree.
+        let model_config = self
             .agent
             .provider()
             .await
             .ok()
-            .map(|p| p.get_model_config().model_name.clone())
+            .map(|p| p.get_model_config());
+        let model = model_config
+            .as_ref()
+            .map(|c| c.model_name.clone())
             .unwrap_or_default();
+        let context_limit = model_config.map(|c| c.context_limit()).unwrap_or(0);
         let cwd = std::env::current_dir()
             .ok()
             .map(|p| composer::abbreviate_home(&p.display().to_string()))
             .unwrap_or_default();
-        let (tokens, cost) = match self.get_session().await {
-            Ok(metadata) => (
-                composer::format_tokens(metadata.total_tokens.unwrap_or(0) as usize),
-                composer::format_cost(
-                    metadata.accumulated_cost_usd,
-                    metadata.accumulated_total_tokens.unwrap_or(0),
-                ),
-            ),
-            Err(_) => (String::new(), String::new()),
+        let (tokens, cost, context) = match self.get_session().await {
+            Ok(metadata) => {
+                let total_tokens = metadata.total_tokens.unwrap_or(0) as usize;
+                (
+                    composer::format_tokens(total_tokens),
+                    composer::format_cost(
+                        metadata.accumulated_cost_usd,
+                        metadata.accumulated_total_tokens.unwrap_or(0),
+                    ),
+                    composer::format_context_fill(total_tokens, context_limit),
+                )
+            }
+            Err(_) => (String::new(), String::new(), String::new()),
         };
         if let Some(c) = self.composer.as_mut() {
             c.state.set_theme(theme);
@@ -677,6 +806,7 @@ impl CliSession {
             c.state.cwd = cwd;
             c.state.tokens = tokens;
             c.state.cost = cost;
+            c.state.context = context;
             c.paint();
         }
         Ok(())
@@ -810,7 +940,148 @@ impl CliSession {
                     }
                 }
             }
+            InputResult::Model(selection) => {
+                history.save(editor);
+                self.handle_model_command(selection).await?;
+            }
         }
+        Ok(())
+    }
+
+    async fn handle_model_command(&mut self, selection: Option<String>) -> Result<()> {
+        let current = self.agent.provider().await?;
+        if selection.is_none() {
+            println!(
+                "Current harness model: {}/{}",
+                current.get_name(),
+                current.get_model_config().model_name
+            );
+            drop(current);
+            println!("Connected provider models (use /model provider/model):");
+
+            let configured = permagent::providers::providers()
+                .await
+                .into_iter()
+                .filter(|(metadata, provider_type)| {
+                    permagent::providers::configured::is_provider_configured(
+                        metadata,
+                        *provider_type,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let inventories =
+                futures::future::join_all(configured.into_iter().map(|(metadata, _)| async move {
+                    // A self-hosted provider that reads as "configured" may
+                    // still be a dead port. Probe before listing it as usable;
+                    // cloud rows skip this entirely (see `local_probe_url`).
+                    let unreachable = match provider_probe_url(&metadata.name) {
+                        Some(url) if !endpoint_is_reachable(&url).await => Some(url),
+                        _ => None,
+                    };
+                    let fallback = metadata
+                        .known_models
+                        .iter()
+                        .map(|model| model.name.clone())
+                        .collect::<Vec<_>>();
+                    let model_config = permagent::model::ModelConfig::new(&metadata.default_model)
+                        .map(|config| config.with_canonical_limits(&metadata.name));
+                    let models = match model_config {
+                        Ok(config) => {
+                            match permagent::providers::create(&metadata.name, config, Vec::new())
+                                .await
+                            {
+                                Ok(provider) => provider
+                                    .fetch_recommended_models()
+                                    .await
+                                    .ok()
+                                    .filter(|models| !models.is_empty())
+                                    .unwrap_or(fallback),
+                                Err(_) => fallback,
+                            }
+                        }
+                        Err(_) => fallback,
+                    };
+                    (metadata.name, metadata.display_name, models, unreachable)
+                }))
+                .await;
+            for (provider, display, mut models, unreachable) in inventories {
+                if let Some(url) = unreachable {
+                    println!("  {display} ({provider}): {}", unreachable_notice(&url));
+                    continue;
+                }
+                models.sort();
+                models.dedup();
+                if models.is_empty() {
+                    println!("  {display} ({provider}): model is selected by the provider");
+                } else {
+                    println!("  {display} ({provider}): {}", models.join(", "));
+                }
+            }
+            return Ok(());
+        }
+
+        let selection = selection.unwrap_or_default();
+        let Some((provider_name, model_name)) = parse_model_selection(&selection) else {
+            output::render_error(
+                "Expected /model provider/model. Run /model to list connected providers.",
+            );
+            return Ok(());
+        };
+        let configured = permagent::providers::providers().await.into_iter().find(
+            |(metadata, provider_type)| {
+                metadata.name == provider_name
+                    && permagent::providers::configured::is_provider_configured(
+                        metadata,
+                        *provider_type,
+                    )
+            },
+        );
+        if configured.is_none() {
+            output::render_error(&format!(
+                "Provider `{provider_name}` is not connected. Configure it in Settings, then run /model again."
+            ));
+            return Ok(());
+        }
+        // "Connected" and "answering" are different claims. A self-hosted
+        // endpoint that requires no auth reads as connected around the clock,
+        // so switching onto it blind buys a raw connection error on the next
+        // turn instead of a sentence anyone can act on.
+        if let Some(url) = provider_probe_url(provider_name) {
+            if !endpoint_is_reachable(&url).await {
+                output::render_error(&format!(
+                    "`{provider_name}` is {} Staying on the current model — \
+                     switching now would only fail on the next turn.",
+                    unreachable_notice(&url)
+                ));
+                return Ok(());
+            }
+        }
+
+        let model_config = match permagent::model::ModelConfig::new(model_name) {
+            Ok(config) => config.with_canonical_limits(provider_name),
+            Err(error) => {
+                output::render_error(&format!("Invalid model `{model_name}`: {error}"));
+                return Ok(());
+            }
+        };
+        let extensions = self.agent.get_extension_configs().await;
+        let provider =
+            match permagent::providers::create(provider_name, model_config, extensions).await {
+                Ok(provider) => provider,
+                Err(error) => {
+                    output::render_error(&format!(
+                    "Could not switch this harness session to {provider_name}/{model_name}: {error}"
+                ));
+                    return Ok(());
+                }
+            };
+        self.agent
+            .update_provider(provider, &self.session_id)
+            .await?;
+        println!(
+            "Harness model switched for this session only: {provider_name}/{model_name}. Chat settings were not changed."
+        );
+        self.sync_composer_meta().await?;
         Ok(())
     }
 
@@ -1169,6 +1440,33 @@ impl CliSession {
             max_turns: self.max_turns,
             retry_config: self.retry_config.clone(),
         };
+        let user_text = self
+            .messages
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("No user message"))?
+            .as_concat_text();
+
+        // Ask the daemon what it already knows about this.
+        //
+        // Chat has had this since Phase 3b of `session_reply`; the harness has
+        // not, because `GLOBAL_BRAIN` is a per-process singleton the CLI never
+        // populates, so even the `search_memory` tool is structurally absent
+        // here. This is the harness's half of the shared Brain, and it is
+        // deliberately the SAME seam Chat uses — a system-prompt extra under
+        // `memory_recall`, not an edit to the user's message. The transcript on
+        // disk, the terminal echo, and anything `/export` writes therefore stay
+        // exactly what the user typed; only the outgoing prompt carries the
+        // background, clearly labelled as historical.
+        //
+        // Bounded and silent: a wedged daemon costs this turn 750ms once, and a
+        // missing one costs nothing at all (no token file ⇒ no network attempt).
+        let turn_idx = self.messages.len();
+        if let Some(block) = brain_sync::recall_block(&user_text, self.recall_installed).await {
+            self.recall_installed = !block.is_empty();
+            self.agent
+                .extend_system_prompt(brain_sync::RECALL_PROMPT_KEY.to_string(), block)
+                .await;
+        }
         let user_message = self
             .messages
             .last()
@@ -1520,6 +1818,42 @@ impl CliSession {
             output::flush_markdown_buffer_current_theme(&mut markdown_buffer);
         }
         self.restore_composer(composer);
+
+        // Give the turn back to the shared Brain.
+        //
+        // The daemon has written a memory per CHAT turn for a long time; the
+        // harness wrote one summary at exit and nothing else, so a coding
+        // session was invisible to Chat until the terminal tab closed. This is
+        // the same `spawn_persist_chat_turn` path, reached over the same
+        // authenticated loopback the spend meter already uses, keyed
+        // `(session_id, turn_idx)` so a retry cannot duplicate a memory.
+        //
+        // Detached by construction: a memory write must never be something a
+        // turn waits on, and a daemon that is not running must cost nothing.
+        // Placed here rather than beside `spend_announce::announce` because
+        // that call sits at the TOP of the interactive loop — before the turn —
+        // where the assistant's answer does not exist yet. This is the first
+        // point where both halves of the turn are known, and it is on the path
+        // every mode takes (interactive, `-t`, json, stream-json).
+        let assistant_text = self
+            .messages
+            .messages()
+            .iter()
+            .skip(turn_idx)
+            .filter(|m| m.role == rmcp::model::Role::Assistant)
+            .map(|m| m.as_concat_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        brain_sync::persist_turn(
+            self.session_id.clone(),
+            turn_idx,
+            user_text,
+            assistant_text,
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.display().to_string()),
+        );
+
         if let Some(e) = fatal {
             return Err(e);
         }
@@ -2337,6 +2671,91 @@ mod tests {
     use permagent::config::ExtensionConfig;
     use std::time::Duration;
     use test_case::test_case;
+
+    // ── /model: only a provider/model pair reaches the switch ──────────────
+
+    #[test]
+    fn a_model_selection_splits_on_the_first_slash_only() {
+        assert_eq!(
+            parse_model_selection("anthropic/claude-sonnet-5"),
+            Some(("anthropic", "claude-sonnet-5"))
+        );
+        // Routed providers namespace the model with more slashes; the provider
+        // is still only the first segment.
+        assert_eq!(
+            parse_model_selection("openrouter/anthropic/claude-3.7-sonnet"),
+            Some(("openrouter", "anthropic/claude-3.7-sonnet"))
+        );
+        assert_eq!(
+            parse_model_selection("  anthropic / claude-opus-5 "),
+            Some(("anthropic", "claude-opus-5"))
+        );
+    }
+
+    #[test]
+    fn an_unactionable_model_selection_is_rejected_rather_than_guessed_at() {
+        // No separator: this is a provider name, not a switch request.
+        assert_eq!(parse_model_selection("anthropic"), None);
+        assert_eq!(parse_model_selection(""), None);
+        // A blank half would build a ModelConfig for nothing.
+        assert_eq!(parse_model_selection("/claude-sonnet-5"), None);
+        assert_eq!(parse_model_selection("anthropic/"), None);
+        assert_eq!(parse_model_selection("   /   "), None);
+    }
+
+    // ── /model reachability (a4-local-qwen.md §4) ──────────────────────────
+
+    /// `qwen38_split` requires no auth, so `is_provider_configured` returns
+    /// true for it around the clock — including the ~18 hours the split is
+    /// down. Only endpoints the user hosts get probed; cloud rows must not pay
+    /// a network round trip to be listed.
+    #[test]
+    fn only_self_hosted_endpoints_are_probed() {
+        assert_eq!(
+            local_probe_url("http://127.0.0.1:8081/v1/chat/completions").as_deref(),
+            Some("http://127.0.0.1:8081/v1/models")
+        );
+        assert_eq!(
+            local_probe_url("http://localhost:1234/v1/chat/completions").as_deref(),
+            Some("http://localhost:1234/v1/models")
+        );
+        assert_eq!(
+            local_probe_url("http://192.168.1.40:8081/v1/chat/completions").as_deref(),
+            Some("http://192.168.1.40:8081/v1/models"),
+            "the user's own LAN counts as self-hosted"
+        );
+
+        assert!(local_probe_url("https://api.deepseek.com").is_none());
+        assert!(local_probe_url("https://api.groq.com/openai/v1/chat/completions").is_none());
+        assert!(local_probe_url("https://ollama.com/v1/chat/completions").is_none());
+        assert!(
+            local_probe_url("${QWEN38_SPLIT_HOST}/v1/chat/completions").is_none(),
+            "an unexpanded template is not an address; probing it would be a guess"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_live_endpoint_reads_as_reachable_and_a_closed_port_does_not() {
+        let server = wiremock::MockServer::start().await;
+        assert!(
+            endpoint_is_reachable(&format!("{}/v1/models", server.uri())).await,
+            "a server that answers at all is up — even with a 404"
+        );
+
+        // Bind, read the port, drop: a port nothing is listening on.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        drop(listener);
+        assert!(!endpoint_is_reachable(&format!("http://127.0.0.1:{port}/v1/models")).await);
+    }
+
+    #[test]
+    fn the_dead_endpoint_message_names_the_endpoint_and_the_way_out() {
+        let notice = unreachable_notice("http://127.0.0.1:8081/v1/models");
+        assert!(notice.contains("configured but not reachable"), "{notice}");
+        assert!(notice.contains("is the server running?"), "{notice}");
+        assert!(notice.contains("127.0.0.1:8081"), "{notice}");
+    }
 
     // ── F4.4: the cost line defaults on for recipe runs; env is an off-switch ──
 

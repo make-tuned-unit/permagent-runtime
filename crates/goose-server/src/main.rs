@@ -95,6 +95,19 @@ enum Commands {
         #[arg(value_parser = clap::value_parser!(McpCommand))]
         server: McpCommand,
     },
+    /// Serve the read-only goal-context bridge over stdio (dispatch-internal).
+    ///
+    /// Spawned by the goal dispatcher, never by a user: the external-CLI worker
+    /// launches this through its `--mcp-config`, and it answers board / project
+    /// / notes / session reads for exactly the one project named here. Read-only
+    /// — nothing it exposes can change Permagent state.
+    #[command(name = "goal-context-mcp")]
+    GoalContextMcp {
+        /// The dispatched goal's project id. The bridge refuses to start
+        /// without a project that exists, and serves no other.
+        #[arg(long)]
+        project: String,
+    },
     /// Validate a bundled-extensions JSON file
     #[command(name = "validate-extensions")]
     ValidateExtensions {
@@ -123,6 +136,12 @@ async fn main() -> anyhow::Result<()> {
                 McpCommand::Memory => serve(MemoryServer::new()).await?,
                 McpCommand::Tutorial => serve(TutorialServer::new()).await?,
             }
+        }
+        Commands::GoalContextMcp { project } => {
+            // stdout IS the JSON-RPC channel here, so logging goes to a file
+            // like the other MCP servers rather than corrupting the stream.
+            logging::setup_logging(Some("mcp-goal-context"))?;
+            permagent::agents::platform_extensions::goal_context_mcp::serve_stdio(&project).await?;
         }
         Commands::ValidateExtensions { path } => {
             match validate_extensions::validate_bundled_extensions(&path) {
