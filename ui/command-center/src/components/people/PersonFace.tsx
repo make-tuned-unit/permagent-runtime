@@ -5,6 +5,7 @@
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import { font } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 import { faceVisuals, personInitials, safePhotoUrl } from './peopleFace';
 
 export function PersonFace({
@@ -30,6 +31,7 @@ export function PersonFace({
   active?: boolean;
   reducedMotion?: boolean;
 }) {
+  const { colors } = useTheme();
   const src = safePhotoUrl(photoUrl);
   const [broken, setBroken] = useState(false);
   useEffect(() => { setBroken(false); }, [src]);
@@ -48,13 +50,18 @@ export function PersonFace({
     border: `2px solid ${accent}`,
     overflow: 'hidden',
     cursor: onClick ? 'pointer' : 'default',
-    background: 'rgba(8,10,16,0.88)',
+    // Themed panel fill, not a fixed near-black: `accent` is the identity
+    // ring (already theme-aware — callers pass `colors.cyan`/`colors.textMuted`),
+    // but the disc BEHIND the initials needs to be the theme's own surface so
+    // it reads as a card on silver instead of a dark blob (#1179). `colors.text`
+    // is the ink that surface is designed to carry, in every theme.
+    background: colors.surfaceHi,
     display: 'grid',
     placeItems: 'center',
     fontFamily: font.body,
     fontSize: Math.max(11, Math.round(size * 0.36)),
     fontWeight: 600,
-    color: accent,
+    color: colors.text,
     flexShrink: 0,
     opacity: visuals.opacity,
     boxShadow: visuals.boxShadow,
