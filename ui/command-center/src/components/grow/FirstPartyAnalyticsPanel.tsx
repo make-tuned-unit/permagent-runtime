@@ -430,9 +430,10 @@ export function FirstPartyAnalyticsPanel({
                       // A zero day is a hairline, not a bar — visibly empty
                       // rather than a misleading minimum-height stub.
                       height: d.pageviews > 0 ? `${Math.max(8, (d.pageviews / max) * 100)}%` : '1px',
-                      background: d.pageviews > 0
-                        ? `linear-gradient(180deg, ${colors.cyan}, ${colors.purple})`
-                        : colors.border,
+                      // Solid, like every other bar on this screen. A vertical
+                      // gradient down a 2px column encodes nothing and is the
+                      // "rainbow tinting" the anti-slop list names.
+                      background: d.pageviews > 0 ? colors.cyan : colors.border,
                       // No radius. These bars are 2px wide at thirty days in a
                       // 320px panel: a 1px rounding is invisible at that scale
                       // and is not a step on the scale either — decoration

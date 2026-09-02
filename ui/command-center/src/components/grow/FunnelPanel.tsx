@@ -369,9 +369,12 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
                       <div style={{
                         width: `${Math.max(s.sessions > 0 ? 4 : 0, (s.sessions / entered) * 100)}%`,
                         height: '100%',
-                        background: isBiggestDrop
-                          ? colors.warning
-                          : `linear-gradient(90deg, ${colors.cyan}, ${colors.purple})`,
+                        // One tint. The bar was a cyan-to-purple gradient,
+                        // which reads as a second dimension a magnitude bar
+                        // does not have — the warning fill on the biggest drop
+                        // is the one colour here that MEANS something, and a
+                        // decorative gradient beside it dilutes exactly that.
+                        background: isBiggestDrop ? colors.warning : colors.cyan,
                         borderRadius: radius.sm,
                         opacity: isBiggestDrop ? 0.75 : 0.9,
                       }} />
