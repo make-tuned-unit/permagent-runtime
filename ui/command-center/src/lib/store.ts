@@ -564,14 +564,23 @@ interface CommandCenterStore {
   chatLauncherSize: { width: number; height: number } | null;
   setChatLauncherSize: (size: { width: number; height: number } | null) => void;
 
-  // --- Sidebar hover-label reservation (reported 2026-08-19) ---
-  // Viewport rect of the sidebar tooltip while one is showing, else null. Same
-  // reason as the launcher corner: the tooltip is DOM inside the shell's own
-  // webview and the browser is a NATIVE child surface composited above it, so
-  // no z-index can lift it. The Browser subtracts this rect from the native
-  // bounds instead (WEBVIEW_LIFECYCLE.md ruling D2, bounds-subtract).
-  sidebarTooltipRect: { x: number; y: number; width: number; height: number } | null;
-  setSidebarTooltipRect: (
+  // --- Browser pane rect, published for the sidebar tooltip (2026-09-01) ---
+  //
+  // The INVERSE of the 2026-08-19 "sidebar hover-label reservation" this
+  // replaced. That version had `SidebarTooltip` publish its rect and had the
+  // Browser subtract it from the native webview bounds on every hover — which
+  // worked, but left the browser's geometry hostage to whether a tooltip
+  // happened to be up, and #1068's own dormant-machinery warning was exactly
+  // this shape of thing inviting a rewire of the bug it fixed.
+  //
+  // Now the Browser publishes ITS OWN rect (read-only for everyone else) and
+  // never reacts to the sidebar at all — `update_browser_bounds` is called
+  // for the same reasons it always was, and zero additional times for a
+  // tooltip. `SidebarTooltip` reads this to keep its own portal out of the
+  // native surface instead: DOM-owned space, chosen by ITS placement
+  // function, never by moving the page (ui/.../sidebar/tooltipPlacement.ts).
+  browserPaneRect: { x: number; y: number; width: number; height: number } | null;
+  setBrowserPaneRect: (
     rect: { x: number; y: number; width: number; height: number } | null,
   ) => void;
 
@@ -1965,17 +1974,17 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       buildTerminalHidden: s.buildTerminalHidden && !s.buildBrowserHidden ? false : s.buildTerminalHidden,
     })),
 
-  // Sidebar hover-label reservation (reported 2026-08-19)
-  sidebarTooltipRect: null,
-  setSidebarTooltipRect: (rect) => set(s => {
-    // Identity matters: this is written on every hover and read by the
-    // Browser's bounds effect. Re-setting an equal rect would push a native
-    // `update_browser_bounds` call for no change.
-    const prev = s.sidebarTooltipRect;
+  // Browser pane rect, published for the sidebar tooltip (2026-09-01)
+  browserPaneRect: null,
+  setBrowserPaneRect: (rect) => set(s => {
+    // Identity matters: written on every bounds sync (every resize, every
+    // tab switch). Re-setting an equal rect would re-render every consumer
+    // (the tooltip, if one happens to be up) for no change.
+    const prev = s.browserPaneRect;
     if (prev === rect) return {};
     if (prev && rect && prev.x === rect.x && prev.y === rect.y
         && prev.width === rect.width && prev.height === rect.height) return {};
-    return { sidebarTooltipRect: rect };
+    return { browserPaneRect: rect };
   }),
 
   // Collapsed chat launcher corner reservation (#553)

@@ -59,6 +59,15 @@ pub struct AfterTurnContext<'a> {
     /// How many times a hook has already held THIS reply. Bounds the loop: a
     /// hook that keeps saying `Continue` must eventually be told to stop.
     pub prior_holds: u8,
+    /// Is the `delegate` tool (any extension prefix — `summon__delegate` or
+    /// unprefixed `delegate`) actually loaded in this session's resolved tool
+    /// list right now? [`ReviewerMandate`] injects an instruction to call
+    /// `delegate`; without this, a recipe that dropped the `summon` extension
+    /// (e.g. `extensions: [developer]`) would have the mandate ask for a tool
+    /// that can never be called, then fail open through the one-ask backstop.
+    /// Computed by the caller (`Agent::reply`), which already holds the
+    /// resolved `Vec<Tool>` for this turn — see [`delegate_tool_loaded`].
+    pub delegate_tool_available: bool,
 }
 
 /// A hook consulted when the model believes the turn is over.
@@ -560,6 +569,20 @@ fn is_reviewer_delegation(call: &rmcp::model::CallToolRequestParams) -> bool {
         .is_some_and(|p| p.eq_ignore_ascii_case("reviewer"))
 }
 
+/// Is a `delegate` tool present in this turn's resolved tool list? Same
+/// prefix-stripping as [`is_reviewer_delegation`] (`extension_manager.rs`'s
+/// `{extension}__{tool}` convention; `summon` itself registers `delegate`
+/// unprefixed via `unprefixed_tools: true`, so both forms must match). This is
+/// the live half of the `delegate_available` gate `decide` enforces: a recipe
+/// that dropped the `summon` extension (only `developer`, say) has no
+/// `delegate` tool at all, and the mandate cannot inject an instruction to
+/// call a tool that isn't there.
+pub fn delegate_tool_loaded(tools: &[rmcp::model::Tool]) -> bool {
+    tools
+        .iter()
+        .any(|t| t.name.rsplit("__").next() == Some("delegate"))
+}
+
 /// True when this hook's own ask has already been injected after
 /// `after_position` — one ask per changed-files turn, whether or not the model
 /// obliged. Without this the hook would re-ask every time the model finished
@@ -609,20 +632,44 @@ fn reviewer_inject_text(pick: &crate::cost_router::ReviewerPick) -> String {
     )
 }
 
-/// Pure: what the mandate does once mutation/delegation/hold state and reviewer
-/// availability are already known. See [`ReviewerMandate::after_turn`] for the
-/// live gating order this mirrors — `mutated`, then `delegation_already_ran`,
-/// then `already_asked`, and ONLY THEN `availability`, so a turn that never
-/// needed a reviewer (or already got one, or was already asked once) never has
-/// to have `availability` computed at all.
+/// Reason text for a Park raised because the `delegate` tool itself is not
+/// loaded — distinct from `ReviewerAvailability::Unavailable` (which means "no
+/// reviewer model could be picked"): this means the mandate cannot even ask,
+/// because the recipe/session never loaded the tool it would call.
+fn delegate_not_loaded_reason() -> String {
+    format!(
+        "{REVIEW_PARK_PREFIX}the `delegate` tool is not loaded in this session, so the reviewer \
+         mandate cannot be enforced — add the `summon` extension to this recipe or session"
+    )
+}
+
+/// Pure: what the mandate does once mutation/delegation/hold state, tool
+/// availability, and reviewer availability are already known. See
+/// [`ReviewerMandate::after_turn`] for the live gating order this mirrors —
+/// `mutated`, then `delegation_already_ran`, then `already_asked`, then
+/// `delegate_available`, and ONLY THEN `availability`, so a turn that never
+/// needed a reviewer (or already got one, was already asked once, or has no
+/// `delegate` tool to call at all) never has to have `availability` computed.
+///
+/// `delegate_available` gates BEFORE `availability` is even consulted: asking
+/// the model to call a tool that is not loaded is not a weaker version of the
+/// mandate, it is the mandate silently failing open (the bug this exists to
+/// fix) — so a missing tool is always a `Park`, never a `Continue`, regardless
+/// of what `availability` says.
 fn decide(
     mutated: bool,
     delegation_already_ran: bool,
     already_asked: bool,
+    delegate_available: bool,
     availability: &ReviewerAvailability,
 ) -> AfterTurnAction {
     if !mutated || delegation_already_ran || already_asked {
         return AfterTurnAction::Allow;
+    }
+    if !delegate_available {
+        return AfterTurnAction::Park {
+            reason: delegate_not_loaded_reason(),
+        };
     }
     match availability {
         ReviewerAvailability::Ready(pick) => AfterTurnAction::Continue {
@@ -679,8 +726,25 @@ impl AfterTurn for ReviewerMandate {
             return AfterTurnAction::Allow;
         }
 
+        // Gate on tool availability BEFORE paying for `assess` (a session
+        // read plus a `git diff --shortstat` and cost-router selection): if
+        // `delegate` was never loaded, no amount of reviewer-picking changes
+        // the answer, and asking anyway is exactly the fail-open bug this
+        // gate exists to close.
+        if !ctx.delegate_tool_available {
+            return AfterTurnAction::Park {
+                reason: delegate_not_loaded_reason(),
+            };
+        }
+
         let availability = Self::assess(ctx.session_id).await;
-        decide(true, delegation_already_ran, already_asked, &availability)
+        decide(
+            true,
+            delegation_already_ran,
+            already_asked,
+            ctx.delegate_tool_available,
+            &availability,
+        )
     }
 }
 
@@ -717,6 +781,12 @@ mod tests {
             session_id: "sess-1",
             messages,
             prior_holds,
+            // Every existing test in this module predates the delegate-tool
+            // gate and assumes the tool IS loaded; the dedicated case below
+            // (`delegate_not_loaded_...`) builds its own context with this
+            // false instead of adding a parameter every one of ~20 call sites
+            // above would have to thread through unchanged.
+            delegate_tool_available: true,
         }
     }
 
@@ -1096,7 +1166,7 @@ mod tests {
             other => panic!("expected a reviewer, got {other:?}"),
         };
         let availability = ReviewerAvailability::Ready(pick);
-        match decide(true, false, false, &availability) {
+        match decide(true, false, false, true, &availability) {
             AfterTurnAction::Continue { inject } => {
                 assert!(inject.contains("delegate"), "inject was {inject:?}");
                 let lower = inject.to_ascii_lowercase();
@@ -1208,7 +1278,7 @@ mod tests {
             other => panic!("expected Unavailable, got {other:?}"),
         };
         let availability = ReviewerAvailability::Unavailable { reason };
-        match decide(true, false, false, &availability) {
+        match decide(true, false, false, true, &availability) {
             AfterTurnAction::Park { reason } => {
                 assert!(
                     reason.starts_with(REVIEW_PARK_PREFIX),
@@ -1249,13 +1319,109 @@ mod tests {
         let availability = ReviewerAvailability::SpendRefused {
             reason: spend_reason,
         };
-        match decide(true, false, false, &availability) {
+        match decide(true, false, false, true, &availability) {
             AfterTurnAction::Park { reason } => {
                 assert!(reason.starts_with(REVIEW_PARK_PREFIX), "{reason:?}");
                 assert!(reason.contains("no published price"), "{reason:?}");
             }
             other => panic!("expected Park, got {other:?}"),
         }
+    }
+
+    /// CASE B fix #1: a reviewer WAS chosen and priced (`Ready`) but the
+    /// `delegate` tool itself is not loaded — the recipe dropped `summon`.
+    /// Before the fix, `decide` never asked this question at all and the
+    /// mandate would `Continue`, injecting an instruction to call a tool that
+    /// cannot be called; the one-ask backstop then `Allow`s and the turn ends
+    /// "normal" with an unreviewed report. `delegate_available` must gate
+    /// BEFORE `availability`, so a `Ready` pick never overrides it.
+    #[test]
+    fn missing_delegate_tool_parks_even_with_a_ready_reviewer() {
+        let (worker, _) = two_families();
+        let available: Vec<crate::cost_router::AvailableModel> = crate::cost_router::KNOWN_MODELS
+            .iter()
+            .map(|m| crate::cost_router::AvailableModel::new(m.provider, m.model))
+            .collect();
+        let selection = crate::cost_router::select_reviewer(
+            Some((worker.provider, worker.model)),
+            None,
+            None,
+            &available,
+            10,
+        );
+        let pick = match selection {
+            crate::cost_router::ReviewerSelection::Reviewer(p) => p,
+            other => panic!("expected a reviewer, got {other:?}"),
+        };
+        let availability = ReviewerAvailability::Ready(pick);
+        match decide(true, false, false, false, &availability) {
+            AfterTurnAction::Park { reason } => {
+                assert!(
+                    reason.starts_with(REVIEW_PARK_PREFIX),
+                    "reason was {reason:?}"
+                );
+                assert!(
+                    reason.contains("delegate") && reason.contains("not loaded"),
+                    "reason must say WHY: {reason:?}"
+                );
+            }
+            other => panic!(
+                "expected Park (today's bug: Continue with 'Call the `delegate` tool now'), got \
+                 {other:?}"
+            ),
+        }
+    }
+
+    /// Same case through the live `after_turn` path: a turn that mutated
+    /// files, with `delegate_tool_available: false` on the context, must Park
+    /// without ever reaching `assess` (no session need be readable for this
+    /// to hold — the gate fires before the database is touched).
+    #[tokio::test]
+    async fn live_after_turn_parks_when_delegate_tool_is_not_loaded() {
+        // Edit THEN a verify — otherwise `unverified_edits()` would return
+        // Allow before this hook's delegate-availability check ever runs
+        // (that ordering is deliberate: PrematureDoneGuard's turn first).
+        let edited = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange("developer__verify", "v1", true),
+        ];
+        let live_ctx = AfterTurnContext {
+            session_id: "sess-nonexistent",
+            messages: &edited,
+            prior_holds: 0,
+            delegate_tool_available: false,
+        };
+        match ReviewerMandate::new().after_turn(&live_ctx).await {
+            AfterTurnAction::Park { reason } => {
+                assert!(reason.starts_with(REVIEW_PARK_PREFIX), "{reason:?}");
+                assert!(reason.contains("not loaded"), "{reason:?}");
+            }
+            other => panic!("expected Park, got {other:?}"),
+        }
+    }
+
+    /// CASE B fix #2 (Rust side of the gate): `delegate_tool_loaded` reads the
+    /// resolved tool list the same way `is_reviewer_delegation` reads a tool
+    /// call name — prefix-stripped on `__`, so both `summon__delegate` and the
+    /// unprefixed `delegate` (summon registers it with `unprefixed_tools:
+    /// true`) count, and an unrelated tool does not.
+    #[test]
+    fn delegate_tool_loaded_matches_prefixed_and_unprefixed_names() {
+        use rmcp::model::Tool;
+        fn tool(name: &str) -> Tool {
+            Tool::new(
+                name.to_string(),
+                String::new(),
+                serde_json::json!({"type": "object", "properties": {}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+        }
+        assert!(delegate_tool_loaded(&[tool("summon__delegate")]));
+        assert!(delegate_tool_loaded(&[tool("delegate")]));
+        assert!(!delegate_tool_loaded(&[tool("developer__text_editor")]));
+        assert!(!delegate_tool_loaded(&[]));
     }
 
     /// Case 6 — The config knob, honoured via the `REVIEWER_MANDATE` env var — the

@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest';
 import {
   applyEvent,
   bufferEvent,
+  downloadCapturedDecision,
   extractTitle,
   isPlaceholderUrl,
   pageLoadUpdate,
@@ -543,5 +544,91 @@ describe('browser history controls', () => {
     const titles = BROWSER_TSX.match(/title="(Back|Forward)"/g) ?? [];
     expect(titles.length).toBe(2);
     expect(BROWSER_TSX).not.toMatch(/title="Back \(Cmd|title="Forward \(Cmd/);
+  });
+});
+
+// ── 11. A download-converted navigation does not leave a dead tab ──────────
+//
+// Reported 2026-09-01: clicking a Gmail `.docx` chip opens a tab via the
+// popup path, WebKit converts the navigation straight to a WKDownload (it
+// cannot render `.docx`), the tab never commits a page, and — before this
+// fix — nothing told the shell. The tab sat blank forever with only a
+// println in browser.rs as a trace. `on_download`'s Requested arm now emits
+// `browser_download_captured`; `downloadCapturedDecision` is the pure rule
+// for what the shell does with it.
+describe('download-converted navigation closes its dead tab', () => {
+  const uncommittedTab: BrowserTab = {
+    id: 't-download', label: 'New Tab', webviewId: 'browser-7', url: 'https://mail.example.com/att/report.docx', loading: true,
+  };
+  const committedTab: BrowserTab = {
+    id: 't-page', label: 'docs.example.com', webviewId: 'browser-8', url: 'https://docs.example.com', loading: false,
+  };
+
+  it('closes the tab whose main frame never committed — the blank-to-download case', () => {
+    const committed = new Set<string>(); // browser-7 never fired a commit
+    const decision = downloadCapturedDecision([uncommittedTab], committed, 'browser-7');
+    expect(decision).toEqual({ tabId: 't-download', shouldClose: true });
+  });
+
+  it('leaves a tab alone once its main frame has committed real content', () => {
+    const committed = new Set<string>(['browser-8']);
+    const decision = downloadCapturedDecision([committedTab], committed, 'browser-8');
+    expect(decision).toEqual({ tabId: 't-page', shouldClose: false });
+  });
+
+  it('does nothing for a webview this Browser instance does not own', () => {
+    const committed = new Set<string>();
+    const decision = downloadCapturedDecision([uncommittedTab, committedTab], committed, 'browser-99');
+    expect(decision).toEqual({ tabId: null, shouldClose: false });
+  });
+
+  it('is keyed on webviewId, not on which tabs happen to be committed elsewhere', () => {
+    // Two tabs open; only the download's OWN webview being uncommitted
+    // matters — a committed sibling tab must not save it.
+    const committed = new Set<string>(['browser-8']);
+    const decision = downloadCapturedDecision([uncommittedTab, committedTab], committed, 'browser-7');
+    expect(decision).toEqual({ tabId: 't-download', shouldClose: true });
+  });
+
+  // Source guards: the rule above is only real if Browser.tsx is actually
+  // wired to it, records commits from the event that is supposed to feed it,
+  // and reuses the existing inbox affordance rather than a second one.
+  const DOWNLOAD_CAPTURED_EVENT = 'browser_' + 'download_captured';
+
+  it('listens for the exact event name browser.rs emits', () => {
+    expect(BROWSER_TSX).toContain(`api.listen('${DOWNLOAD_CAPTURED_EVENT}'`);
+  });
+
+  it('decides with the pure rule instead of re-deriving it inline', () => {
+    expect(BROWSER_TSX).toContain('downloadCapturedDecision(');
+  });
+
+  it('records a commit from browser_page_load, the field the decision relies on', () => {
+    const listener = BROWSER_TSX.slice(
+      BROWSER_TSX.indexOf(`api.listen('browser_page_load'`),
+      BROWSER_TSX.indexOf(`api.listen('browser_title_changed'`),
+    );
+    expect(listener).toContain('committedWebviewsRef.current.add(');
+  });
+
+  it('closes the native webview only on the shouldClose branch, not unconditionally', () => {
+    const listener = BROWSER_TSX.slice(
+      BROWSER_TSX.indexOf(`api.listen('${DOWNLOAD_CAPTURED_EVENT}'`),
+      BROWSER_TSX.indexOf('return () => {', BROWSER_TSX.indexOf(`api.listen('${DOWNLOAD_CAPTURED_EVENT}'`)),
+    );
+    expect(listener).toMatch(/if \(decision\.shouldClose[^)]*\)\s*\{[^]*close_browser/);
+  });
+
+  it('surfaces the filename through the SAME affordance the manual save button uses', () => {
+    // One "Saved to your inbox" concept, not a second toast/banner for the
+    // auto-captured path — the manual button and the auto-capture handler
+    // must share `savingToInbox` / `lastSavedFilename`.
+    const listener = BROWSER_TSX.slice(
+      BROWSER_TSX.indexOf(`api.listen('${DOWNLOAD_CAPTURED_EVENT}'`),
+      BROWSER_TSX.indexOf('return () => {', BROWSER_TSX.indexOf(`api.listen('${DOWNLOAD_CAPTURED_EVENT}'`)),
+    );
+    expect(listener).toContain('setLastSavedFilename(');
+    expect(listener).toContain("setSavingToInbox('done')");
+    expect(BROWSER_TSX).toContain('lastSavedFilename');
   });
 });

@@ -2859,6 +2859,15 @@ impl Agent {
                             session_id: &session_config.id,
                             messages: conversation.messages(),
                             prior_holds: after_turn_holds,
+                            // `tools` is this turn's resolved tool list (same
+                            // one sent to the provider) — CASE B: a recipe
+                            // that never loaded `summon` has no `delegate`
+                            // tool at all, and `ReviewerMandate` must know
+                            // that instead of asking for a tool that can't be
+                            // called.
+                            delegate_tool_available: crate::after_turn::delegate_tool_loaded(
+                                &tools,
+                            ),
                         })
                         .await;
                     match action {
