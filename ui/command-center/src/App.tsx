@@ -9,6 +9,7 @@ import { WorkspaceSaveErrorChip } from './components/workspaces/WorkspaceSaveErr
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { WizardShell } from './components/wizard/WizardShell';
 import { Splash } from './components/splash/Splash';
+import { BootScreen } from './components/splash/BootScreen';
 import { ChatLauncher } from './components/chat/ChatLauncher';
 import { ChatDock } from './components/chat/ChatDock';
 import { VoiceHost } from './components/voice/VoiceHost';
@@ -188,34 +189,6 @@ function App() {
   const versionSkew = useVersionSkew(phase === 'app');
 
   useEffect(() => {
-    if (phase !== 'loading') return;
-    let cancelled = false;
-    // Retry getConfig — the daemon may still be starting after a reinstall.
-    // Without retry, a transient connection failure sends us to the wizard
-    // even though wizard_complete=true in ~/.permagent/config.yaml.
-    (async () => {
-      const maxAttempts = 10;
-      const delayMs = 1000;
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        if (cancelled) return;
-        try {
-          const config: any = await api.getConfig();
-          if (cancelled) return;
-          const wizardDone = config?.config?.wizard_complete === true;
-          setPhase(wizardDone ? 'app' : 'wizard');
-          return;
-        } catch {
-          if (attempt < maxAttempts) {
-            await new Promise(r => setTimeout(r, delayMs));
-          }
-        }
-      }
-      if (!cancelled) setPhase('wizard');
-    })();
-    return () => { cancelled = true; };
-  }, [phase]);
-
-  useEffect(() => {
     if (phase === 'app') {
       loadWorkspaces();
       loadSkills();
@@ -306,7 +279,7 @@ function App() {
   }
 
   if (phase === 'loading') {
-    return <div style={{ background: gradient.shell, width: '100vw', height: '100vh', paddingTop: TITLEBAR_HEIGHT }} />;
+    return <BootScreen onReady={(wizardDone) => setPhase(wizardDone ? 'app' : 'wizard')} />;
   }
 
   if (phase === 'wizard') {
