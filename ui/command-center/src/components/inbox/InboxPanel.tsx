@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, type CSSProperties } from 'react';
+import { useEffect, useState, useCallback, useRef, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
 import { api, type InboxFile } from '../../lib/api';
@@ -13,9 +13,20 @@ import {
   statusLabel,
   type RouteDestination,
 } from './inboxRouting';
-import { font, radius, textSize } from '../../styles/tokens';
+import {
+  concentric,
+  duration,
+  ease,
+  font,
+  radius,
+  space,
+  textSize,
+  type,
+} from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { Tooltip } from '../common/Tooltip';
+import { useGlass } from '../common/Glass';
 
 function formatBytes(b: number | null): string {
   if (b == null) return '—';
@@ -37,6 +48,11 @@ function receivedLabel(iso: string): string {
 }
 
 const COLS = '1fr 120px 64px 118px 118px 76px';
+
+/** Outer radius of a file row card; inner controls nest via `concentric()`. */
+const ROW_RADIUS = radius.lg;
+/** Horizontal padding of a file row — also the concentric inset for nested corners. */
+const ROW_PAD_X = space.xl;
 
 interface PendingPick {
   fileId: string;
@@ -68,9 +84,17 @@ const DESTINATION_LABEL: Record<RouteDestination, string> = {
  * Hosted embedded inside Settings → Inbox (2026-08 Console consolidation:
  * `embedded` strips the header/Close chrome and the Escape handler, both of
  * which Settings provides). navigate_app("Inbox") deep-links to that pane.
+ *
+ * Glass (R17): content stays opaque (D1); the non-embedded header is the one
+ * floating control plane and takes `useGlass`. Rows and route buttons use
+ * `fillHover`/`fillActive`. Column headers pin with a hard scroll edge (D11).
  */
 export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
-  const { gradient, colors } = useThemeHook();
+  const { gradient, colors, reduceMotion } = useThemeHook();
+  // Floating toolbar material — only painted when `!embedded`. Calling the
+  // hook unconditionally keeps the Reduce-Transparency bridge warm and
+  // satisfies the rules of hooks.
+  const glassToolbar = useGlass('glass');
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const focusBrainMemory = useCommandCenter(s => s.focusBrainMemory);
   const [files, setFiles] = useState<InboxFile[] | null>(null);
@@ -85,6 +109,11 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
   const [pick, setPick] = useState<PendingPick | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, RowResult>>({});
+  // Hard scroll edge (D11/§1.8): column headers pin above the file list; an
+  // opaque hairline appears under them only once something has scrolled
+  // beneath — never decorative, off at rest.
+  const [listScrolled, setListScrolled] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const dismiss = useCallback(() => setActivePanel('chat'), [setActivePanel]);
 
@@ -168,69 +197,140 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
     );
   }, [ensureProjects]);
 
+  const handleListScroll = useCallback(() => {
+    const el = scrollRef.current;
+    setListScrolled(!!el && el.scrollTop > 2);
+  }, []);
+
+  const spring = reduceMotion ? 'none' : `background ${duration.snappy}ms ${ease.snappy}, border-color ${duration.snappy}ms ${ease.snappy}`;
+  const edgeTransition = reduceMotion ? 'none' : `border-color ${duration.fast}ms ${ease.smooth}`;
+
+  // Toolbar inset (non-embedded): glass floats inside the shell with a pad that
+  // also drives the Close button's concentric radius (D4).
+  // space.sm (6) → concentric(radius.glass=9, 6) = 3 — a real nested corner,
+  // not arithmetic theater on a pad that would clamp to square.
+  const toolbarPad = space.sm;
+  const closeRadius = concentric(radius.glass, toolbarPad);
+
+  // Row cards pad by ROW_PAD_X (= radius.lg), so concentric(radius.lg, space.xl) = 0.
+  // Route buttons are not corner-flush to the card corner anyway — they keep
+  // radius.sm as independent siblings (same call Automate made for non-nested pairs).
+
   // `onClick` is `unknown`-returning on purpose: the routing handlers are
   // async, and handing their promise to the primitive is what makes the round
   // trip visible.
-  const actionBtn = (label: string, title: string, onClick: () => unknown, disabled: boolean, active = false) => (
-    <Button
-      colors={colors}
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      style={{
-        '--pa-btn-bg': active ? colors.surface : 'transparent',
-        '--pa-btn-fg': disabled ? colors.textDim : colors.text,
-        '--pa-btn-border': colors.border,
-        '--pa-btn-bg-hover': active ? colors.surface : colors.surfaceHi,
-        '--pa-btn-border-hover': colors.borderHi,
-        '--pa-btn-bg-active': colors.surface,
-        '--pa-btn-pad': '0 10px',
-        '--pa-btn-radius': `${radius.sm}px`,
-        height: 24,
-        fontFamily: font.body,
-        fontSize: textSize.micro,
-        whiteSpace: 'nowrap',
-      } as CSSProperties}
-    >{label}</Button>
+  const actionBtn = (label: string, tip: string, onClick: () => unknown, disabled: boolean, active = false) => (
+    <Tooltip content={tip}>
+      <Button
+        colors={colors}
+        onClick={onClick}
+        disabled={disabled}
+        style={{
+          '--pa-btn-bg': active ? colors.fillSubtle : 'transparent',
+          '--pa-btn-fg': disabled ? colors.textDim : colors.text,
+          '--pa-btn-border': colors.border,
+          '--pa-btn-bg-hover': active ? colors.fillSubtle : colors.fillHover,
+          '--pa-btn-border-hover': colors.borderHi,
+          '--pa-btn-bg-active': colors.fillActive,
+          '--pa-btn-pad': `0 ${space.lg}px`,
+          '--pa-btn-radius': `${radius.sm}px`,
+          height: 24,
+          fontFamily: font.body,
+          fontSize: textSize.micro,
+          whiteSpace: 'nowrap',
+        } as CSSProperties}
+      >{label}</Button>
+    </Tooltip>
   );
 
+  const contentPadX = embedded ? space.xxxl : space.huge + space.md;
+  const contentPadY = embedded ? space.xxl : space.xxxl;
+
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.shell, color: colors.text, fontFamily: font.body }}>
+    <div style={{
+      width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+      background: gradient.shell, color: colors.text, fontFamily: font.body,
+    }}>
       {!embedded && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '20px 32px', borderBottom: `1px solid ${colors.border}` }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, letterSpacing: '-0.01em' }}>Downloads inbox</div>
-            <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 2 }}>
+        // Floating control layer (D1/D3): one glass plane for the panel chrome.
+        // Content below stays opaque. Reduce Transparency collapses via useGlass.
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: space.xl,
+          margin: `${space.xxl}px ${contentPadX}px 0`,
+          padding: `${toolbarPad}px ${space.huge}px`,
+          borderRadius: radius.glass,
+          border: `1px solid ${colors.borderHi}`,
+          ...glassToolbar,
+        }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: font.display, ...type.title }}>{'Downloads inbox'}</div>
+            <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: space.xxs }}>
               Files you download in the in-app browser land here — send them to the Brain, a project, or the post scheduler. You choose; nothing is routed for you.
             </div>
           </div>
-          <Button
-            colors={colors}
-            onClick={dismiss}
-            style={{
-              '--pa-btn-fg': colors.textMuted,
-              '--pa-btn-fg-hover': colors.text,
-              '--pa-btn-pad': '0 12px',
-              '--pa-btn-radius': `${radius.md}px`,
-              height: 30,
-              fontFamily: font.body,
-              fontSize: textSize.caption,
-            } as CSSProperties}
-          >Close</Button>
+          <Tooltip content="Close the inbox">
+            <Button
+              colors={colors}
+              onClick={dismiss}
+              style={{
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': colors.fillHover,
+                '--pa-btn-bg-active': colors.fillActive,
+                '--pa-btn-pad': `0 ${space.xl}px`,
+                '--pa-btn-radius': `${closeRadius}px`,
+                height: 30,
+                fontFamily: font.body,
+                fontSize: textSize.caption,
+              } as CSSProperties}
+            >Close</Button>
+          </Tooltip>
         </div>
       )}
-      <div style={{ flex: 1, overflow: 'auto', padding: embedded ? '16px 20px' : '20px 32px' }}>
+
+      {files !== null && files.length > 0 && (
+        // Pinned column headers — hard scroll edge under them (D11).
+        <div style={{
+          display: 'grid', gridTemplateColumns: COLS, gap: space.xl,
+          padding: `${space.md}px ${contentPadX + ROW_PAD_X}px`,
+          marginTop: embedded ? contentPadY : space.xl,
+          ...type.label,
+          color: colors.textDim,
+          borderBottom: `1px solid ${listScrolled ? colors.borderHi : 'transparent'}`,
+          transition: edgeTransition,
+          flexShrink: 0,
+        }}>
+          <div>Filename</div><div>Source</div><div>Size</div><div>Received</div><div>Project</div><div>Status</div>
+        </div>
+      )}
+
+      <div
+        ref={scrollRef}
+        onScroll={handleListScroll}
+        style={{
+          flex: 1, overflow: 'auto', minHeight: 0,
+          padding: files !== null && files.length > 0
+            ? `${space.md}px ${contentPadX}px ${contentPadY}px`
+            : `${contentPadY}px ${contentPadX}px`,
+        }}
+      >
         {files === null ? (
-          <div style={{ color: colors.textDim, fontSize: textSize.small }}>Loading inbox…</div>
+          <div style={{
+            color: colors.textDim, fontSize: textSize.small,
+            padding: space.xxl, borderRadius: radius.lg,
+            background: colors.cyanWash,
+          }}>Loading inbox…</div>
         ) : files.length === 0 ? (
-          <div style={{ color: colors.textMuted, fontSize: textSize.small, padding: '24px 0' }}>
+          <div style={{
+            color: colors.textMuted, fontSize: textSize.small,
+            padding: `${space.huge}px ${space.xxl}px`,
+            borderRadius: radius.lg,
+            background: colors.cyanWash,
+          }}>
             {error ?? 'Your inbox is empty. Download a file in the in-app browser — send it to Brain and it becomes searchable memory.'}
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: COLS, gap: 12, padding: '0 12px', fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.textDim }}>
-              <div>Filename</div><div>Source</div><div>Size</div><div>Received</div><div>Project</div><div>Status</div>
-            </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
             {files.map(f => {
               const busy = busyId === f.id;
               const routable = canRoute(f.status) && !busy;
@@ -241,25 +341,58 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
               const rowResults = (['brain', 'project', 'scheduler'] as const)
                 .map(dest => ({ dest, result: results[resultKey(f.id, dest)] }))
                 .filter((r): r is { dest: RouteDestination; result: RowResult } => Boolean(r.result));
+              const projectTip = projectLabel(f.project_id, projects) ?? 'Not filed to a project yet';
               return (
-                <div key={f.id} style={{ borderRadius: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: COLS, gap: 12, alignItems: 'center', padding: '12px 12px 4px' }}>
-                    <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: textSize.small, fontWeight: 600 }} title={f.filename}>{f.filename}</div>
-                    <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: textSize.caption, color: colors.textMuted }} title={f.original_url ?? undefined}>{sourceLabel(f.original_url)}</div>
+                <div
+                  key={f.id}
+                  style={{
+                    borderRadius: ROW_RADIUS,
+                    background: colors.surface,
+                    border: `1px solid ${colors.border}`,
+                    transition: spring,
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = colors.fillHover; e.currentTarget.style.borderColor = colors.borderHi; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = colors.surface; e.currentTarget.style.borderColor = colors.border; }}
+                  onMouseDown={e => { e.currentTarget.style.background = colors.fillActive; }}
+                  onMouseUp={e => { e.currentTarget.style.background = colors.fillHover; }}
+                >
+                  <div style={{
+                    display: 'grid', gridTemplateColumns: COLS, gap: space.xl, alignItems: 'center',
+                    padding: `${space.xl}px ${ROW_PAD_X}px ${space.xs}px`,
+                  }}>
+                    <Tooltip content={f.filename}>
+                      <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: textSize.small, fontWeight: 600 }}>{f.filename}</div>
+                    </Tooltip>
+                    <Tooltip content={f.original_url}>
+                      <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: textSize.caption, color: colors.textMuted }}>{sourceLabel(f.original_url)}</div>
+                    </Tooltip>
                     <div style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: font.mono }}>{formatBytes(f.size_bytes)}</div>
                     <div style={{ fontSize: textSize.caption, color: colors.textMuted }}>{receivedLabel(f.created_at)}</div>
-                    <div
-                      style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: textSize.caption, color: f.project_id ? colors.text : colors.textDim }}
-                      title={projectLabel(f.project_id, projects) ?? 'Not filed to a project yet'}
-                    >{projectLabel(f.project_id, projects) ?? '—'}</div>
+                    <Tooltip content={projectTip}>
+                      <div
+                        style={{
+                          minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          fontSize: textSize.caption, color: f.project_id ? colors.text : colors.textDim,
+                        }}
+                      >{projectLabel(f.project_id, projects) ?? '—'}</div>
+                    </Tooltip>
                     <div>
-                      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', padding: '2px 8px', borderRadius: radius.pill, border: `1px solid ${colors.border}`, color: f.status === 'received' ? colors.text : colors.textMuted }}>
+                      <span style={{
+                        fontSize: textSize.micro, fontWeight: 600, letterSpacing: '0.04em',
+                        padding: `${space.xxs}px ${space.md}px`,
+                        borderRadius: radius.pill,
+                        border: `1px solid ${colors.border}`,
+                        color: f.status === 'received' ? colors.text : colors.textMuted,
+                      }}>
                         {statusLabel(f.status)}
                       </span>
                     </div>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px 10px', flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 10, color: colors.textDim, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Send to</span>
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: space.sm,
+                    padding: `${space.sm}px ${ROW_PAD_X}px ${space.lg}px`, flexWrap: 'wrap',
+                  }}>
+                    <span style={{ ...type.label, color: colors.textDim }}>Send to</span>
                     {actionBtn(busy ? 'Sending…' : 'Brain', 'The Reader reads it and stores the text in your Brain', () => sendTo(f, 'brain'), !routable)}
                     {actionBtn('Project…', 'File it as a document on a project', () => openPicker(f, 'project'), !routable, rowPick?.destination === 'project')}
                     {actionBtn('Post…', 'Draft it as a social post card on a project board', () => openPicker(f, 'scheduler'), !routable, rowPick?.destination === 'scheduler')}
@@ -268,7 +401,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                     // One line per destination this file was sent to (#3) — a
                     // Brain failure must not hide an earlier Project success,
                     // and every line names the destination it is about.
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '0 12px 10px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxs, padding: `0 ${ROW_PAD_X}px ${space.lg}px` }}>
                       {rowResults.map(({ dest, result }) => (
                         <span key={dest} style={{ fontSize: textSize.micro, color: result.ok ? colors.textMuted : colors.danger }}>
                           {result.text}
@@ -277,11 +410,26 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                     </div>
                   )}
                   {rowPick && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px 12px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: space.md, padding: `0 ${ROW_PAD_X}px ${space.xl}px` }}>
                       <select
                         value={rowPick.projectId}
                         onChange={e => setPick({ ...rowPick, projectId: e.target.value })}
-                        style={{ height: 26, borderRadius: radius.sm, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.text, fontFamily: font.body, fontSize: textSize.caption, maxWidth: 280 }}
+                        onMouseEnter={e => { e.currentTarget.style.background = colors.fillHover; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = colors.inputBg; }}
+                        onMouseDown={e => { e.currentTarget.style.background = colors.fillActive; }}
+                        onMouseUp={e => { e.currentTarget.style.background = colors.fillHover; }}
+                        style={{
+                          height: 26,
+                          borderRadius: radius.sm,
+                          background: colors.inputBg,
+                          border: `1px solid ${colors.border}`,
+                          color: colors.text,
+                          fontFamily: font.body,
+                          fontSize: textSize.caption,
+                          maxWidth: 280,
+                          transition: spring,
+                          padding: `0 ${space.md}px`,
+                        }}
                       >
                         <option value="" disabled>
                           {projectsError
