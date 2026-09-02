@@ -1,7 +1,61 @@
+import { Children, Fragment, isValidElement } from 'react';
 import type { CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { concentric, font, radius, space, textSize, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+
+/**
+ * The Settings visual language, in one file.
+ *
+ * Every pane is built from `H1`, `Section` and `Row`, so this is where the
+ * calm Apple settings feel is either present or absent. It used to be absent
+ * in a specific, nameable way: each `Section` was a bordered, filled CARD, and
+ * every `Row` — including the first one in a group — drew a full-width rule
+ * above itself, which put a hairline directly under the section title. That is
+ * three pieces of decoration (card fill, card border, leading rule) doing the
+ * job one piece of layout does, and WWDC25/356 is explicit about it:
+ * *"Instead of relying on decoration, hierarchy should be expressed through
+ * layout and grouping."*
+ *
+ * So the shape is Apple's grouped inset list:
+ *   - a small uppercase section header OUTSIDE the group, inset to the row text;
+ *   - one opaque rounded group holding the rows;
+ *   - separators BETWEEN rows only, inset past the label column;
+ *   - no shadow, no glass.
+ *
+ * Opaque is not an aesthetic preference here. Settings content is the content
+ * layer, and Apple's rule for the content layer has no exceptions: *"Don't use
+ * Liquid Glass in the content layer."* Glass belongs to the floating control
+ * layer — toolbars, popovers, the sidebar — and the Settings body is none of
+ * those. There is deliberately no `backdropFilter` anywhere in this file.
+ */
+
+/**
+ * The two things inline styles cannot say: a separator on every row but the
+ * first, and a hover fill on a row that is actually a target.
+ *
+ * Injected once, from the module, rather than added to `index.css` — this is
+ * the Settings surface's own vocabulary and it should travel with the file that
+ * defines it. The custom properties are set per-group inline, so the rules
+ * carry the live theme without the stylesheet knowing anything about themes.
+ */
+const SETTINGS_CSS = `
+.pa-set-group > * + * { border-top: 1px solid var(--pa-set-sep); }
+.pa-set-row-tap { cursor: pointer; transition: background var(--pa-set-dur) var(--pa-set-ease); }
+.pa-set-row-tap:hover { background: var(--pa-set-hover); }
+.pa-set-row-tap:active { background: var(--pa-set-active); }
+@media (prefers-reduced-motion: reduce) { .pa-set-row-tap { transition: none; } }
+`;
+
+function ensureSettingsStyles(): void {
+  if (typeof document === 'undefined') return;
+  if (document.getElementById('pa-settings-atoms')) return;
+  const el = document.createElement('style');
+  el.id = 'pa-settings-atoms';
+  el.textContent = SETTINGS_CSS;
+  document.head.appendChild(el);
+}
+ensureSettingsStyles();
 
 /**
  * The Settings select/input look. Lived in `SettingsView` until the Guard,
@@ -10,7 +64,7 @@ import { Button } from '../common/Button';
  */
 export function selectStyle(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
   return {
-    height: 34, padding: '0 12px', borderRadius: radius.md,
+    height: 30, padding: `0 ${space.lg}px`, borderRadius: radius.sm,
     background: colors.inputBg, border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, fontSize: textSize.small,
     minWidth: 240, cursor: 'pointer',
@@ -23,8 +77,8 @@ export function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'm
   const { colors } = useTheme();
   const styles: Record<string, { bg: string; text: string; label: string }> = {
     running: { bg: colors.cyanSoft, text: colors.cyan, label: 'Loaded' },
-    installed: { bg: colors.surfaceHi, text: colors.textMuted, label: 'Installed' },
-    missing: { bg: `${colors.danger}1A`, text: colors.danger, label: 'Not installed' },
+    installed: { bg: colors.fillSubtle, text: colors.textMuted, label: 'Installed' },
+    missing: { bg: colors.fillSubtle, text: colors.danger, label: 'Not installed' },
   };
   const s = styles[state];
   return (
@@ -34,38 +88,133 @@ export function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'm
   );
 }
 
+/**
+ * The pane title. `type.title` rather than a hand-typed 24px: the ramp's
+ * `title` is 20/26/600 at -0.01em, which is the macOS large-title proportion
+ * for a dense window, and the 24 it replaced was an off-ramp size that existed
+ * only here.
+ *
+ * Left-aligned, and the subtitle sits at a readable measure — Tahoe's
+ * typography is *"bolder and left-aligned"*, and centered body copy is now the
+ * un-Apple choice (WWDC25/356).
+ */
 export function H1({ children, sub }: { children: React.ReactNode; sub?: string }) {
   const { colors } = useTheme();
   return (
-    <div style={{ marginBottom: 28 }}>
-      <div style={{ fontFamily: font.display, fontSize: 24, fontWeight: 600, letterSpacing: '-0.02em', color: colors.text }}>{children}</div>
-      {sub && <div style={{ fontSize: textSize.small, color: colors.textMuted, marginTop: 6, maxWidth: 580, lineHeight: 1.55 }}>{sub}</div>}
+    <div style={{ marginBottom: space.huge }}>
+      <div style={{ ...type.title, fontFamily: font.display, color: colors.text }}>{children}</div>
+      {sub && (
+        <div style={{
+          fontSize: textSize.small, color: colors.textMuted,
+          marginTop: space.sm, maxWidth: 620, lineHeight: 1.45,
+        }}>{sub}</div>
+      )}
     </div>
   );
 }
 
+/**
+ * Give every direct child of a group the group's own padding.
+ *
+ * The group is edge-to-edge so that separators and hover fills run its full
+ * width, which means the padding has to live on the rows. `Row` and `Block`
+ * carry it; anything else a caller drops in — a paragraph, a button strip, a
+ * grid of theme swatches — is wrapped in a `Block` so it cannot end up flush
+ * against the border. Fragments are flattened first, because a fragment of
+ * `Row`s is one of the commonest shapes here and wrapping it whole would pad
+ * the rows twice.
+ *
+ * The alternative was making forty-odd call sites each say `<Block>`, and
+ * being one `<Block>` short is invisible until someone looks at that pane.
+ */
+function padGroupChildren(children: React.ReactNode): React.ReactNode {
+  return Children.map(children, child => {
+    if (child == null || typeof child === 'boolean') return child;
+    if (isValidElement(child)) {
+      if (child.type === Fragment) {
+        return padGroupChildren((child.props as { children?: React.ReactNode }).children);
+      }
+      if (child.type === Row || child.type === Block) return child;
+    }
+    return <Block>{child}</Block>;
+  });
+}
+
+/**
+ * A grouped inset list: header above, opaque group below.
+ *
+ * `sub` is the group's description and stays with the header rather than
+ * moving into a footer, because several of these say something you need before
+ * you touch the control ("Set both boxes together, or neither").
+ */
 export function Section({ title, sub, children }: { title: string; sub?: string; children: React.ReactNode }) {
   const { colors } = useTheme();
   return (
-    <div style={{ marginBottom: 28, padding: 24, borderRadius: radius.md, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
-      <div style={{ fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: sub ? 4 : 16 }}>{title}</div>
-      {sub && <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: 18, lineHeight: 1.5 }}>{sub}</div>}
-      {children}
+    <div style={{ marginBottom: space.huge }}>
+      <div style={{ ...type.label, color: colors.textDim, padding: `0 ${space.xl}px ${space.md}px` }}>{title}</div>
+      {sub && (
+        <div style={{
+          fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5,
+          padding: `0 ${space.xl}px ${space.lg}px`, maxWidth: 620,
+        }}>{sub}</div>
+      )}
+      <div
+        className="pa-set-group"
+        style={{
+          '--pa-set-sep': colors.border,
+          borderRadius: radius.lg,
+          background: colors.surface,
+          border: `1px solid ${colors.border}`,
+          overflow: 'hidden',
+        } as CSSProperties}
+      >
+        {padGroupChildren(children)}
+      </div>
     </div>
   );
 }
 
-export function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+/**
+ * One row of a group.
+ *
+ * `onClick` makes the whole row the target, and only then does it get the
+ * pointer ladder — a hover fill on a row that cannot be pressed is a lie about
+ * what is clickable, and Mac users read a hover highlight as "this is a
+ * button". Rows that merely HOLD a control leave the feedback to the control.
+ */
+export function Row({ label, hint, children, onClick }: {
+  label: string; hint?: string; children?: React.ReactNode; onClick?: () => void;
+}) {
   const { colors } = useTheme();
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 24, padding: '14px 0', borderTop: `1px solid ${colors.border}` }}>
-      <div style={{ width: 200, flexShrink: 0, paddingTop: 6 }}>
+    <div
+      className={onClick ? 'pa-set-row-tap' : undefined}
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
+      style={{
+        display: 'flex', alignItems: 'flex-start', gap: space.huge,
+        padding: `${space.xl}px ${space.xxl}px`,
+        '--pa-set-hover': colors.fillHover,
+        '--pa-set-active': colors.fillActive,
+        '--pa-set-dur': '160ms',
+        '--pa-set-ease': 'var(--pa-ease-smooth, cubic-bezier(0.22, 1, 0.36, 1))',
+      } as CSSProperties}
+    >
+      <div style={{ width: 196, flexShrink: 0, paddingTop: space.xs }}>
         <div style={{ fontSize: textSize.small, fontWeight: 500, color: colors.text }}>{label}</div>
-        {hint && <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>{hint}</div>}
+        {hint && <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xs, lineHeight: 1.45 }}>{hint}</div>}
       </div>
-      <div style={{ flex: 1 }}>{children}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
     </div>
   );
+}
+
+/** Free-form content inside a group — prose, a button strip, a table. Carries
+ *  the group's own padding so a caller never has to guess it. */
+export function Block({ children }: { children: React.ReactNode }) {
+  return <div style={{ padding: `${space.xl}px ${space.xxl}px` }}>{children}</div>;
 }
 
 export function TextInput({ value, onChange, placeholder, mono, multi, disabled = false }: {
@@ -78,11 +227,11 @@ export function TextInput({ value, onChange, placeholder, mono, multi, disabled 
       value={value} placeholder={placeholder} disabled={disabled}
       onChange={e => onChange?.(e.target.value)}
       style={{
-        width: '100%', padding: multi ? 12 : '8px 12px',
+        width: '100%', padding: multi ? space.lg : `${space.md}px ${space.lg}px`,
         background: colors.inputBg, border: `1px solid ${colors.border}`,
-        borderRadius: radius.md, color: colors.text,
+        borderRadius: radius.sm, color: colors.text,
         fontFamily: mono ? font.mono : font.body,
-        fontSize: mono ? 12 : 13, outline: 'none',
+        fontSize: mono ? textSize.caption : textSize.small, outline: 'none',
         minHeight: multi ? 80 : 'auto', resize: multi ? 'vertical' : 'none',
         cursor: disabled ? 'not-allowed' : 'text', opacity: disabled ? 0.55 : 1,
       } as React.CSSProperties}
@@ -106,7 +255,7 @@ export function Chip({ on, onClick, children }: { on: boolean; onClick?: () => v
         '--pa-btn-bg': on ? colors.cyanSoft : 'transparent',
         '--pa-btn-fg': on ? colors.cyan : colors.textMuted,
         '--pa-btn-border': on ? colors.borderHi : colors.border,
-        '--pa-btn-bg-hover': on ? colors.cyanSoft : colors.surfaceHi,
+        '--pa-btn-bg-hover': on ? colors.cyanSoft : colors.fillHover,
         '--pa-btn-fg-hover': on ? colors.cyan : colors.text,
         '--pa-btn-border-hover': on ? colors.cyan : colors.borderHi,
         '--pa-btn-pad': '6px 12px',
@@ -131,7 +280,7 @@ export function Slider({ value, onChange, min = 0, max = 100, suffix, disabled =
 }) {
   const { colors } = useTheme();
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: space.xl }}>
       <input type="range" min={min} max={max} value={value} disabled={disabled}
         onChange={e => onChange?.(Number(e.target.value))}
         style={{ flex: 1, accentColor: colors.cyan, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.55 : 1 }} />
@@ -146,9 +295,9 @@ export function Kbd({ children }: { children: React.ReactNode }) {
     <span style={{
       display: 'inline-block', padding: '2px 7px',
       fontFamily: font.mono, fontSize: textSize.micro, color: colors.text,
-      background: colors.border,
+      background: colors.fillSubtle,
       border: `1px solid ${colors.border}`,
-      borderRadius: 5, minWidth: 22, textAlign: 'center',
+      borderRadius: radius.xs, minWidth: 22, textAlign: 'center',
     }}>{children}</span>
   );
 }
@@ -157,6 +306,10 @@ export function Kbd({ children }: { children: React.ReactNode }) {
 //    were folded into Settings) — shared by the Spend / Sovereignty / Models
 //    panes so their data-dense views read as one surface. ─────────────────
 
+/** Outer padding of a `Card`. Named because `StatRow` derives its own corner
+ *  from it: `r_inner = r_outer - padding` (WWDC25/356). */
+const CARD_PAD = space.xxl;
+
 export function Card({ children }: { children: React.ReactNode }) {
   const { colors } = useTheme();
   return (
@@ -164,7 +317,7 @@ export function Card({ children }: { children: React.ReactNode }) {
       borderRadius: radius.lg,
       background: colors.surface,
       border: `1px solid ${colors.border}`,
-      padding: '18px 20px',
+      padding: CARD_PAD,
     }}>
       {children}
     </div>
@@ -173,25 +326,19 @@ export function Card({ children }: { children: React.ReactNode }) {
 
 export function SectionLabel({ children }: { children: React.ReactNode }) {
   const { colors } = useTheme();
-  return (
-    <div style={{
-      fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600,
-      letterSpacing: '0.10em', textTransform: 'uppercase', color: colors.textDim,
-    }}>
-      {children}
-    </div>
-  );
+  return <div style={{ ...type.label, fontFamily: font.body, color: colors.textDim }}>{children}</div>;
 }
 
 /** A labeled row: primary text + optional sub-line on the left, a value node on
- *  the right. */
+ *  the right. Its corner is concentric with the `Card` it sits in. */
 export function StatRow({ left, sub, right }: { left: React.ReactNode; sub?: React.ReactNode; right: React.ReactNode }) {
   const { colors } = useTheme();
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', gap: 12,
-      padding: '10px 12px', borderRadius: radius.md,
-      background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+      display: 'flex', alignItems: 'center', gap: space.xl,
+      padding: `${space.lg}px ${space.xl}px`,
+      borderRadius: concentric(radius.lg, CARD_PAD),
+      background: colors.fillSubtle,
     }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

@@ -8,17 +8,27 @@
 // so every deep-link landed on the default).
 
 export const SETTINGS_SECTION_KEYS = [
-  'agent', 'preferences', 'memory', 'autonomy', 'tools',
-  'models', 'keys', 'devices', 'search', 'sources', 'appearance', 'shortcuts', 'data',
-  'sovereignty',
-  // Console pages folded into Settings (2026-08 ruling): Sessions history,
-  // Downloads inbox, the Execution trace ('activity'), and Spend.
+  // ── Panes ──
+  'agent', 'preferences', 'memory', 'autonomy', 'agents',
+  'tools', 'models', 'keys', 'devices', 'services',
+  'appearance', 'shortcuts', 'privacy',
+  'history',
+  // ── Legacy keys, still accepted ──
+  // Deep links are written by the daemon (app_conductor.rs), by the agent's own
+  // phrasing, and by this app's internal `goto()` calls, and none of them are
+  // versioned. A pane consolidation must not make a live caller land on the
+  // wrong page, so the OLD key still resolves — `SECTION_HOME` in SettingsView
+  // maps it to the pane that owns it now, and History reads the key itself to
+  // open on the segment that was asked for.
+  //   sessions/inbox/activity/spend → History (four segments)
+  //   features                      → Agents (its six toggles were a second
+  //                                   writer of the roster's gate keys)
+  //   search/sources                → Services
+  //   data/sovereignty              → Privacy & data
   'sessions', 'inbox', 'activity', 'spend',
-  // Settings → Agents (Phase 2 UI over the merged /api/agents surface).
-  'agents',
-  // Settings → Features: the switches for the off-by-default workers
-  // (Initiative, Decision Playbook, Concierge, Steward git-health).
   'features',
+  'search', 'sources',
+  'data', 'sovereignty',
 ] as const;
 
 export type SettingsSectionKey = (typeof SETTINGS_SECTION_KEYS)[number];

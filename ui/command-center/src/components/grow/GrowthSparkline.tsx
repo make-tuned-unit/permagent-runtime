@@ -1,4 +1,4 @@
-import { font } from '../../styles/tokens';
+import { font, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import type { GrowthTrendPoint } from './growthResults';
 import {
@@ -63,7 +63,7 @@ export function GrowthSparkline({
       {showAxis && first && last && (
         <div style={{
           display: 'flex', justifyContent: 'space-between',
-          fontFamily: font.mono, fontSize: 9, color: colors.textDim, marginTop: 2,
+          fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs / 2,
         }}>
           <span>{formatWeekLabel(first)}</span>
           <span>net {netLabel}</span>

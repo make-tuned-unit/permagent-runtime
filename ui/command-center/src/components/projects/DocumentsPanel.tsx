@@ -24,9 +24,13 @@ import { DocumentViewer, formatSize } from './DocumentViewer';
 import type { Project, ProjectDocument } from './types';
 
 export function DocumentsPanel({ project }: { project: Project }) {
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   // White veils vanish on silver — flip to a faint graphite tint there.
-  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const rowVeil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
   const [docs, setDocs] = useState<ProjectDocument[]>([]);
   const [viewing, setViewing] = useState<ProjectDocument | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -206,7 +210,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
                 key={doc.id}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px',
-                  borderRadius: 7, background: rowVeil, border: `1px solid ${colors.border}`,
+                  borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}`,
                   transition: 'border-color 150ms',
                 }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
