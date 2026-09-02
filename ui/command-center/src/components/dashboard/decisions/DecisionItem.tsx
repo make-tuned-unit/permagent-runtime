@@ -41,7 +41,7 @@ import {
 import type { AnswerResult } from './useDecisions';
 import { EvidenceDigest } from './EvidenceDigest';
 import { decisionsClient } from './client';
-import { formatAge } from './format';
+import { formatAge, withAlpha } from './format';
 import { usePersona } from '../../settings/useSettings';
 import { useCommandCenter } from '../../../lib/store';
 import { toast } from '../../../lib/notifications';
@@ -608,7 +608,7 @@ export function DecisionItem({
         <div style={{
           display: 'flex', alignItems: 'center', gap: 8, marginTop: 10,
           borderRadius: radius.md, border: `1px solid ${colors.warning}`,
-          background: colors.warning + '14', padding: '8px 12px',
+          background: withAlpha(colors.warning, 0.08), padding: '8px 12px',
           fontSize: textSize.caption, color: colors.text,
         }}>
           Someone already answered this — refreshing…
@@ -818,8 +818,8 @@ export function DecisionItem({
               style={{
                 '--pa-btn-fg': colors.warning,
                 '--pa-btn-fg-hover': colors.warning,
-                '--pa-btn-bg-hover': colors.warning + '1F',
-                '--pa-btn-bg-active': colors.warning + '2E',
+                '--pa-btn-bg-hover': withAlpha(colors.warning, 0.12),
+                '--pa-btn-bg-active': withAlpha(colors.warning, 0.18),
                 '--pa-btn-pad': '4px',
                 '--pa-btn-radius': `${radius.xs}px`,
                 '--pa-btn-weight': 400,
@@ -864,7 +864,7 @@ export function DecisionItem({
         <div style={{
           marginTop: 8, fontSize: textSize.caption, color: colors.danger,
           borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-          background: colors.danger + '14', padding: '6px 10px',
+          background: withAlpha(colors.danger, 0.08), padding: '6px 10px',
         }}>
           {cancelErr}
         </div>
@@ -896,18 +896,18 @@ export function DecisionItem({
 
 function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
   switch (d.kind) {
-    case 'unblock': return { label: 'unblock', color: colors.warning, bg: colors.warning + '24' };
+    case 'unblock': return { label: 'unblock', color: colors.warning, bg: withAlpha(colors.warning, 0.14) };
     case 'choice':
       return checkApprovalOf(d)
-        ? { label: 'command approval', color: colors.danger, bg: colors.danger + '24' }
+        ? { label: 'command approval', color: colors.danger, bg: withAlpha(colors.danger, 0.14) }
         : { label: 'choice', color: colors.purpleBright, bg: colors.purpleSoft };
-    case 'risk_gate': return { label: 'permission', color: colors.danger, bg: colors.danger + '24' };
-    case 'session_gate': return { label: 'terminal gate', color: colors.danger, bg: colors.danger + '24' };
+    case 'risk_gate': return { label: 'permission', color: colors.danger, bg: withAlpha(colors.danger, 0.14) };
+    case 'session_gate': return { label: 'terminal gate', color: colors.danger, bg: withAlpha(colors.danger, 0.14) };
     case 'enrichment_proposal': return { label: 'enrichment', color: colors.purpleBright, bg: colors.purpleSoft };
     case 'project_intel_proposal': return { label: 'project intel', color: colors.purpleBright, bg: colors.purpleSoft };
     case 'file_to_project': return { label: 'file note', color: colors.cyan, bg: colors.cyanSoft };
     case 'council_action': return { label: 'council', color: colors.purpleBright, bg: colors.purpleSoft };
-    case 'malformed': return { label: 'review', color: colors.warning, bg: colors.warning + '24' };
+    case 'malformed': return { label: 'review', color: colors.warning, bg: withAlpha(colors.warning, 0.14) };
     default: return { label: 'approval', color: colors.cyan, bg: colors.cyanSoft };
   }
 }
@@ -923,6 +923,18 @@ function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
  * `--pa-btn-*` custom properties so the shared `:hover`/`:active`/disabled
  * rules can reach it, and an `onClick` that returns a promise gets the pending
  * and success contract for free.
+ *
+ * R7 (D10): the ghost/danger hover and press states used to repeat the resting
+ * `colors.surface` fill verbatim — a color swap on the border and label, but
+ * no fill at all, on a button that sits on that exact same surface (this row
+ * lives inside `DetailModal`, whose panel background IS `colors.surface`), so
+ * hovering or pressing one produced no visible lift whatsoever. `fillHover` /
+ * `fillActive` are the tokens built for precisely this (dashboard cards'
+ * `InFlightCard`/`GrowthResultsCard` use the identical
+ * `pressed ? fillActive : hover ? fillHover : colors.surface` ladder over the
+ * same surface). Primary is unaffected — its lift is `.pa-btn--primary`'s
+ * global `filter: brightness()`, already applied through CSS regardless of
+ * this token.
  */
 function Btn({ variant = 'ghost', danger = false, disabled = false, onClick, children }: {
   variant?: 'primary' | 'ghost';
@@ -948,13 +960,13 @@ function Btn({ variant = 'ghost', danger = false, disabled = false, onClick, chi
           ? colors.textOnAccent
           : danger ? colors.danger : colors.textMuted,
         '--pa-btn-border': primary ? 'transparent' : colors.border,
-        '--pa-btn-bg-hover': primary ? colors.ribbonGradient : colors.surface,
+        '--pa-btn-bg-hover': primary ? colors.ribbonGradient : colors.fillHover,
         // Danger keeps its colour through hover, exactly as it did before.
         '--pa-btn-fg-hover': primary
           ? colors.textOnAccent
           : danger ? colors.danger : colors.text,
         '--pa-btn-border-hover': primary ? 'transparent' : colors.borderHi,
-        '--pa-btn-bg-active': primary ? colors.ribbonGradient : colors.surface,
+        '--pa-btn-bg-active': primary ? colors.ribbonGradient : colors.fillActive,
         '--pa-btn-pad': '5px 14px',
         '--pa-btn-radius': `${radius.md}px`,
         '--pa-btn-weight': primary ? 600 : 500,
