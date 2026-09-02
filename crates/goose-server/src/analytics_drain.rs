@@ -24,10 +24,23 @@ use crate::state::AppState;
 use permagent::projects;
 use serde::Deserialize;
 use sqlx::{Pool, Sqlite};
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use tokio::time::Instant;
 
+/// How often the loop wakes, and the fastest any one project is polled.
 const TICK: Duration = Duration::from_secs(120);
+/// Slowest a quiet project is polled. Each poll is a real request into the
+/// site's database, and a database that scales to zero (Neon suspends after
+/// five idle minutes) never gets to sleep under a two-minute poller: three
+/// quiet sites cost ~860 compute-hours in Aug 2026 for a handful of events.
+/// A site that produced nothing on the last poll waits twice as long before
+/// the next one, up to this cap; the first event that does arrive snaps it
+/// straight back to TICK. Freshness is only ever traded away on sites with no
+/// traffic to be fresh about, and daemon downtime still costs nothing because
+/// the site keeps accumulating until the next poll.
+const IDLE_INTERVAL_MAX: Duration = Duration::from_secs(60 * 60);
 /// Let boot settle before the first pass (same courtesy as watcher_insights).
 const BOOT_DELAY: Duration = Duration::from_secs(45);
 const PAGE_LIMIT: u32 = 500;
@@ -149,8 +162,9 @@ struct DrainResponse {
 pub fn spawn(state: Arc<AppState>) {
     tokio::spawn(async move {
         tokio::time::sleep(BOOT_DELAY).await;
+        let mut pacing = Pacing::default();
         loop {
-            if let Err(e) = run_once(&state).await {
+            if let Err(e) = run_once(&state, &mut pacing).await {
                 tracing::debug!(target: "analytics_drain", "drain pass skipped: {e}");
             }
             tokio::time::sleep(TICK).await;
@@ -158,7 +172,45 @@ pub fn spawn(state: Arc<AppState>) {
     });
 }
 
-async fn run_once(state: &AppState) -> Result<(), String> {
+/// Per-project poll pacing (see [`IDLE_INTERVAL_MAX`]). In memory only: a
+/// restart simply polls everything on the first pass and backs off again.
+#[derive(Default)]
+struct Pacing {
+    /// project id → (don't poll before, interval that produced that deadline)
+    next_due: HashMap<String, (Instant, Duration)>,
+}
+
+impl Pacing {
+    fn is_due(&self, project_id: &str, now: Instant) -> bool {
+        self.next_due
+            .get(project_id)
+            .map_or(true, |(due, _)| now >= *due)
+    }
+
+    fn current_interval(&self, project_id: &str) -> Duration {
+        self.next_due
+            .get(project_id)
+            .map_or(TICK, |(_, interval)| *interval)
+    }
+
+    fn schedule(&mut self, project_id: &str, now: Instant, interval: Duration) {
+        self.next_due
+            .insert(project_id.to_string(), (now + interval, interval));
+    }
+}
+
+/// The interval to wait after a pass that ingested `ingested` events (`None`
+/// when the pass failed). Anything landed means the site is live: poll at
+/// TICK. Nothing landed, or a failure, doubles the wait up to the idle cap so
+/// a quiet or broken site is not hit 720 times a day.
+fn next_interval(previous: Duration, ingested: Option<usize>) -> Duration {
+    match ingested {
+        Some(n) if n > 0 => TICK,
+        _ => previous.saturating_mul(2).min(IDLE_INTERVAL_MAX),
+    }
+}
+
+async fn run_once(state: &AppState, pacing: &mut Pacing) -> Result<(), String> {
     // The global off-switch stays a plain early return: this loop wakes every
     // TICK, so auditing it here would write ~720 blocked rows a day per project
     // for requests that were never built. The per-project guard below is the
@@ -173,10 +225,14 @@ async fn run_once(state: &AppState) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     prune_old_events(&pool).await;
     let projects = projects::list_projects(&pool, Some("active")).await?;
+    let now = Instant::now();
     for project in &projects {
         let Some(mut config) = crate::routes::first_party_analytics::drain_config(project) else {
             continue;
         };
+        if !pacing.is_due(&project.id, now) {
+            continue;
+        }
         let Some(drain_url) = config.drain_url.clone() else {
             continue;
         };
@@ -200,6 +256,17 @@ async fn run_once(state: &AppState) -> Result<(), String> {
         }
 
         let outcome = drain_project(&pool, &project.id, &drain_url, &secret, &mut config).await;
+        let interval = next_interval(
+            pacing.current_interval(&project.id),
+            outcome.as_ref().ok().copied(),
+        );
+        pacing.schedule(&project.id, now, interval);
+        if interval > TICK {
+            tracing::debug!(
+                target: "analytics_drain",
+                project = %project.name, next_poll_secs = interval.as_secs(), "backing off"
+            );
+        }
         // Persist the cursor/status regardless of outcome: a partial catch-up
         // must keep its progress, and a failure must be visible in the UI
         // rather than looking like a quiet traffic day.
@@ -496,6 +563,49 @@ async fn insert_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quiet_site_backs_off_to_the_idle_cap_and_a_live_one_snaps_back() {
+        let mut interval = TICK;
+        let mut steps = 0;
+        while interval < IDLE_INTERVAL_MAX {
+            interval = next_interval(interval, Some(0));
+            steps += 1;
+        }
+        assert_eq!(interval, IDLE_INTERVAL_MAX);
+        assert!(
+            steps <= 6,
+            "2 min doubles to an hour in five steps, took {steps}"
+        );
+        assert_eq!(
+            next_interval(interval, Some(0)),
+            IDLE_INTERVAL_MAX,
+            "capped"
+        );
+        assert_eq!(
+            next_interval(interval, None),
+            IDLE_INTERVAL_MAX,
+            "failures stay capped"
+        );
+        assert_eq!(
+            next_interval(interval, Some(1)),
+            TICK,
+            "one event restores TICK"
+        );
+    }
+
+    #[test]
+    fn pacing_skips_a_project_until_its_deadline() {
+        let mut pacing = Pacing::default();
+        let t0 = Instant::now();
+        assert!(pacing.is_due("p", t0), "never polled → due");
+        assert_eq!(pacing.current_interval("p"), TICK);
+        pacing.schedule("p", t0, Duration::from_secs(600));
+        assert!(!pacing.is_due("p", t0 + Duration::from_secs(599)));
+        assert!(pacing.is_due("p", t0 + Duration::from_secs(600)));
+        assert_eq!(pacing.current_interval("p"), Duration::from_secs(600));
+        assert!(pacing.is_due("other", t0), "pacing is per project");
+    }
 
     async fn mem_pool() -> Pool<Sqlite> {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
