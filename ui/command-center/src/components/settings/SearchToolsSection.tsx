@@ -220,7 +220,7 @@ export function SearchToolsSection() {
                 style={{
                   '--pa-btn-fg': colors.textMuted,
                   '--pa-btn-fg-hover': colors.text,
-                  '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+                  '--pa-btn-bg-hover': colors.fillHover,
                   '--pa-btn-pad': '6px 12px',
                   '--pa-btn-radius': `${radius.xs}px`,
                 } as CSSProperties}

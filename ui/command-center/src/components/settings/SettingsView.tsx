@@ -1,19 +1,18 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import {
-  FiActivity, FiClock, FiCommand, FiCpu, FiDatabase, FiDollarSign, FiEdit3,
-  FiEyeOff, FiInbox, FiKey, FiList, FiLock, FiSearch, FiServer, FiShield,
-  FiSliders, FiSmartphone, FiSun, FiUser, FiUsers,
+  FiClock, FiCommand, FiCpu, FiDatabase, FiEdit3, FiKey, FiLock, FiServer,
+  FiShield, FiSliders, FiSmartphone, FiSun, FiUser, FiUsers,
 } from 'react-icons/fi';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
-import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse, type IncidentView } from '../../lib/api';
+import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
-import { font, radius, setDensity as setDensityFn, setIdleAnim, setMobiusGlow, setReduceMotion as setReduceMotionFn, setShowHeroMobius, setTheme as setThemeFn, type IdleAnim, type ThemePref, type UIDensity, textSize } from '../../styles/tokens';
+import { concentric, font, radius, setDensity as setDensityFn, setIdleAnim, setMobiusGlow, setReduceMotion as setReduceMotionFn, setShowHeroMobius, setTheme as setThemeFn, space, type IdleAnim, type ThemePref, type UIDensity, textSize, type } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import {
   getNotificationPrefs, setNotificationPref, getOsNotificationsEnabled,
-  setOsNotificationsEnabled, KIND_LABELS, useNotifications, type NotificationKind,
+  setOsNotificationsEnabled, KIND_LABELS, type NotificationKind,
 } from '../../lib/notifications';
 import { ProvidersSection } from './ProvidersSection';
 import { DevRootsSection } from './DevRootsSection';
@@ -26,17 +25,13 @@ import { resolveSettingsSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
 import { PronunciationSection } from '../voice/PronunciationSection';
-import { H1, Section, Row, TextInput, Chip, Slider, Kbd, SaveButton, ModelStateBadge, selectStyle } from './atoms';
+import { H1, Section, Row, Block, TextInput, Chip, Slider, Kbd, SaveButton, ModelStateBadge, selectStyle } from './atoms';
 import { Button } from '../common/Button';
 import { StateBlock } from '../common/StateBlock';
 import { Toggle } from '../common/Toggle';
 import { makeQrMatrix } from '../../lib/qrMatrix';
-import { SessionsList } from '../sessions/SessionsList';
-import { InboxPanel } from '../inbox/InboxPanel';
-import { ExecutionTrace } from '../trace/ExecutionTrace';
-import { SpendPanel } from './SpendPanel';
+import { HistoryView, isHistoryTab } from '../history/HistoryView';
 import { AgentsPanel } from './agents/AgentsPanel';
-import { FeaturesPanel } from './features/FeaturesPanel';
 import { timeAgo } from './format';
 import { useDecisions } from '../dashboard/decisions/useDecisions';
 import { DecisionInbox } from '../dashboard/decisions/DecisionInbox';
@@ -119,22 +114,21 @@ const CATEGORIES = [
   ]},
   { group: 'Agent', items: [
     { key: 'agent',       label: 'Persona',          icon: FiUser },
+    // Agents absorbed the retired Features board: every worker's switch is the
+    // `gate.config_key` the daemon serialises on its roster row, and Features
+    // was a SECOND surface writing those same six keys. One switch, on the
+    // agent it switches on.
     { key: 'agents',      label: 'Agents',           icon: FiUsers },
     { key: 'memory',      label: 'Memory',           icon: FiDatabase },
     { key: 'autonomy',    label: 'Autonomy & guardrails', icon: FiShield },
   ]},
-  // The former Console overlay (Sessions / Inbox / Trace / Governance) folded
-  // into Settings — 2026-08 ruling. Governance's panels merged into Spend,
-  // Sovereignty, Models, and Autonomy.
-  // "Console" named the retired overlay, not what the group holds: Sessions,
-  // Downloads, Activity and Spend are all records of what already happened.
+  // Sessions, Downloads, Activity and Spend are RECORDS, not settings, and are
+  // one destination now (components/history/HistoryView). They are still
+  // reached from here only because the sidebar rail and the destination switch
+  // belong to lane A1c this wave — see HistoryView's header for the two lines
+  // that finish the promotion and delete this group.
   { group: 'History', items: [
-    { key: 'sessions',    label: 'Sessions',         icon: FiClock },
-    // "Inbox" is the decision queue's word everywhere else in the app; this
-    // pane is where in-app browser downloads land. Say which it is.
-    { key: 'inbox',       label: 'Downloads',        icon: FiInbox },
-    { key: 'activity',    label: 'Activity',         icon: FiActivity },
-    { key: 'spend',       label: 'Spend',            icon: FiDollarSign },
+    { key: 'history',     label: 'History',          icon: FiClock },
   ]},
   { group: 'Connections', items: [
     // MCP is defined once, in the pane's own subtitle — a nav label is not the
@@ -142,23 +136,49 @@ const CATEGORIES = [
     { key: 'tools',       label: 'Tools',            icon: FiEdit3 },
     { key: 'models',      label: 'Models',           icon: FiCpu },
     { key: 'keys',        label: 'API keys',         icon: FiKey },
-    { key: 'devices',    label: 'Devices',          icon: FiSmartphone },
-    { key: 'search',      label: 'Search & tools',   icon: FiSearch },
-    { key: 'sources',     label: 'Data sources',     icon: FiServer },
+    { key: 'devices',     label: 'Devices',          icon: FiSmartphone },
+    // "Search & tools" (credentials for services the agent calls) and "Data
+    // sources" (which of those services are switched on) were two panes about
+    // one thing: the outside services this agent may reach.
+    { key: 'services',    label: 'Services',         icon: FiServer },
   ]},
   { group: 'System', items: [
     { key: 'appearance',  label: 'Appearance',       icon: FiSun },
     { key: 'shortcuts',   label: 'Shortcuts',        icon: FiCommand },
-    { key: 'data',        label: 'Data & privacy',   icon: FiEyeOff },
-    { key: 'sovereignty', label: 'Sovereignty',      icon: FiLock },
-    { key: 'features',    label: 'Features',         icon: FiList },
+    // "Data & privacy" and "Sovereignty" were two panes answering one question
+    // — what leaves this machine — and the first one's entire body was a link
+    // to the second.
+    { key: 'privacy',     label: 'Privacy & data',   icon: FiLock },
   ]},
 ];
 
+/**
+ * Where a legacy deep-link section now lives.
+ *
+ * `app_navigate` deep links (app_conductor.rs), the agent's own "Settings →
+ * <pane>" phrasing, and this app's four internal `goto('spend')`-style calls
+ * all carry the OLD keys. Consolidating panes must not break a live caller, so
+ * the old key still resolves — it just lands on the pane that now owns it, and
+ * History uses the key itself to preselect its segment.
+ */
+const SECTION_HOME: Record<string, string> = {
+  sessions: 'history', inbox: 'history', activity: 'history', spend: 'history',
+  features: 'agents',
+  search: 'services', sources: 'services',
+  data: 'privacy', sovereignty: 'privacy',
+};
+
+/** The pane that owns a section key. */
+export function paneForSection(section: string): string {
+  return SECTION_HOME[section] ?? section;
+}
+
 // ── Panels ───────────────────────────────────────────────────────────
 
-// Panels may navigate between settings sections (e.g. Models → API keys).
-type PanelProps = { goto: (key: string) => void };
+// Panels may navigate between settings sections (e.g. Models → API keys), and
+// receive the raw section key so an aliased pane (History) can open on the
+// segment the deep link asked for.
+type PanelProps = { goto: (key: string) => void; section: string };
 
 function PersonaPanel() {
   const { colors } = useThemeHook();
@@ -364,10 +384,10 @@ export function MemoryPanel({ goto: _goto }: { goto?: (key: string) => void }) {
               button with no handler is worse than no button. They return
               with real endpoints behind them. */}
         </div>
-        <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 12, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: space.xl, lineHeight: 1.5 }}>
           Browse and audit everything remembered in the Brain view. Retirement
-          of stale, low-signal memories is handled by the Librarian's nightly
-          pruning — configure it under Models.
+          of stale, low-signal memories is handled by the Librarian&apos;s nightly
+          pruning, on the Librarian&apos;s own page — the button above lands on it.
         </div>
       </Section>
     </div>
@@ -411,8 +431,8 @@ export function ApprovalsStrip() {
     <>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-        padding: '9px 12px', marginBottom: 12, borderRadius: radius.md,
-        background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+        padding: `${space.lg}px ${space.xxl}px`, marginBottom: space.xl, borderRadius: radius.md,
+        background: colors.surface, border: `1px solid ${colors.border}`,
       }}>
         <span style={{ fontSize: textSize.caption, color: s.count > 0 ? colors.text : colors.textMuted }}>
           {s.loading ? s.headline : s.allClear ? s.allClearLabel : s.headline}
@@ -497,13 +517,17 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
           // daemon isn't running.
           const envNotice = trustEnvOverrideNotice(effectiveTrust, trust);
           return envNotice ? (
-            <div style={{ marginBottom: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: textSize.caption, lineHeight: 1.5 }}>
+            <div style={{ marginBottom: space.lg, padding: `${space.lg}px ${space.xxl}px`, borderRadius: radius.md, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: textSize.caption, lineHeight: 1.5 }}>
               {envNotice}
             </div>
           ) : null;
         })()}
         <Row label="Trust level" hint="How tool calls are approved.">
-          <div style={{ display: 'flex', gap: 6 }}>
+          {/* Wraps rather than crushes: four tiles in the ~770px left of a
+              1280px window squeezed "Ask every time" onto four lines. Two rows
+              of two is the honest fit, and the grid finds it on its own at any
+              width. */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(168px, 1fr))', gap: space.sm }}>
             {trustLevels.map(opt => {
               const current = trust === opt.v;
               const locked = !SELECTABLE_TRUST_MODES.has(opt.v);
@@ -511,16 +535,18 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
                 <button key={opt.v} disabled={locked} onClick={() => saveTrust(opt.v)}
                   title={locked ? 'Locked while the approval pipeline is hardened — approval prompts route to the Decision Inbox' : undefined}
                   style={{
-                    padding: 12, borderRadius: 10, cursor: locked ? 'not-allowed' : 'pointer',
-                    background: current ? colors.cyanSoft : colors.bgDeeper,
+                    // The group is radius.lg with `Row`'s 16px of horizontal
+                    // padding; a tile inside it takes what is left of the curve.
+                    padding: space.xl, borderRadius: concentric(radius.lg, space.xs), cursor: locked ? 'not-allowed' : 'pointer',
+                    background: current ? colors.cyanSoft : colors.fillSubtle,
                     border: current ? `1px solid ${colors.borderHi}` : `1px solid ${colors.border}`,
                     color: colors.text, textAlign: 'left', flex: 1, fontFamily: font.body,
                     opacity: trust === null ? 0.5 : locked && !current ? 0.55 : 1,
                   }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.sm, marginBottom: space.xs }}>
                     <span style={{ fontSize: textSize.small, fontWeight: 600, color: current ? colors.cyan : colors.text }}>{opt.l}</span>
                     {locked && (
-                      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: colors.textMuted, border: `1px solid ${colors.border}`, borderRadius: radius.pill, padding: '1px 6px' }}>Soon</span>
+                      <span style={{ ...type.label, color: colors.textMuted, border: `1px solid ${colors.border}`, borderRadius: radius.pill, padding: '1px 6px' }}>Soon</span>
                     )}
                   </div>
                   <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>{opt.d}</div>
@@ -536,7 +562,7 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
           these modes become selectable once the re-enable gate ships.
         </div>
         {trust !== null && !SELECTABLE_TRUST_MODES.has(trust) && (
-          <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: textSize.caption, lineHeight: 1.5 }}>
+          <div style={{ marginTop: space.lg, padding: `${space.lg}px ${space.xxl}px`, borderRadius: radius.md, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: textSize.caption, lineHeight: 1.5 }}>
             You're on a per-tool-approval mode: tool calls pause until you
             approve them in the <strong>Decision Inbox</strong> on your
             Dashboard. If a turn seems stuck, answer the pending approval
@@ -548,8 +574,10 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
       {/* Spend caps moved to Settings → Spend (which supersedes the old
           sliders here with the full soft/gate/hard ceilings for both scopes),
           so there is exactly one writer of the budget. */}
-      <Section title="Spend caps" sub="The session and per-task ceilings the cost router enforces now live on the Spend page, alongside everything you have spent.">
-        <Button colors={colors} style={ghost(colors)} onClick={() => goto?.('spend')}>Set spend caps in Spend →</Button>
+      <Section title="Spend caps" sub="The session and per-task ceilings the cost router enforces live on History → Spend, alongside everything you have spent — one page, one writer of the budget.">
+        <Row label="Session and per-task ceilings" hint="The soft, gate and hard limits the cost router enforces.">
+          <Button colors={colors} style={ghost(colors)} onClick={() => goto?.('spend')}>Open Spend →</Button>
+        </Row>
       </Section>
     </div>
   );
@@ -611,8 +639,8 @@ function ToolsPanel({ goto }: PanelProps) {
         // on this tab looking for their Brave key.
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-          padding: '9px 12px', marginBottom: 14, borderRadius: radius.md,
-          background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+          padding: `${space.lg}px ${space.xxl}px`, marginBottom: space.xxl, borderRadius: radius.md,
+          background: colors.surface, border: `1px solid ${colors.border}`,
         }}>
           <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>
             {needKeys.map(extensionLabel).join(' and ')} need API keys.
@@ -629,7 +657,7 @@ function ToolsPanel({ goto }: PanelProps) {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
           {extensions.map((ext, i) => (
-            <div key={ext.name || `ext-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
+            <div key={ext.name || `ext-${i}`} style={{ display: 'flex', alignItems: 'center', gap: space.xxl, padding: space.xxl, borderRadius: radius.lg, background: colors.surface, border: `1px solid ${colors.border}` }}>
               <div style={{ width: 32, height: 32, borderRadius: radius.md, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: textSize.small, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{extensionLabel(ext).charAt(0).toUpperCase() || '?'}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: textSize.small, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{extensionLabel(ext)}</div>
@@ -1017,15 +1045,6 @@ export function ModelsPanel({ goto }: PanelProps) {
         />
       </Section>
 
-      {/* ── Roster pointer ───────────────────────────────────────── */}
-      {/* The per-role roster used to be duplicated here off GET /api/agent/workers
-          with less fidelity than the Agents page (no probe-failed state, no
-          grants or secrets). One surface now: Settings → Agents over
-          /api/agents/roster. */}
-      <Section title="Worker roster" sub="Which model each role dispatches to, with live availability, grants and required secrets.">
-        <Button colors={colors} data-testid="models-open-agents" style={ghost(colors)} onClick={() => goto('agents')}>Open Agents</Button>
-      </Section>
-
       {/* ── Ollama Status ────────────────────────────────────────── */}
       <Section title="Local models (Ollama)">
         {!ollama ? (
@@ -1051,7 +1070,7 @@ export function ModelsPanel({ goto }: PanelProps) {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <ModelStateBadge state={running ? 'running' : 'installed'} />
                       {running?.expires_at && (
-                        <span style={{ fontSize: 10, color: colors.textDim }}>
+                        <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
                           unloads {new Date(running.expires_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </span>
                       )}
@@ -1064,18 +1083,20 @@ export function ModelsPanel({ goto }: PanelProps) {
         )}
       </Section>
 
-      {/* ── Where the agents' own settings went ──────────────────
-          The Guard's switch and cadence, the Watcher's teaching keys and the
-          Librarian's schedule used to live here, because each of them names a
-          model — which is true of nearly everything in this app. They are the
-          agents' settings, so they live on the agents' page now (J8/C7), and
-          this pane keeps only its stated purpose: which brain answers which
-          job. One entry point per concept; this is the pointer to it. */}
+      {/* ── The one pointer to Agents ────────────────────────────
+          There used to be TWO sections here — "Worker roster" and "Agent
+          settings" — with the same button, the same destination and, because
+          nobody noticed, the same `data-testid`, which a query-all-and-take-one
+          test silently picked the first of. They said the same thing: the
+          agents' own settings, and the roster of which model each dispatches
+          to, live on the agents' page (J8/C7). One section, one button.
+          This pane keeps only its stated purpose: which brain answers which
+          job. */}
       <Section
-        title="Agent settings"
-        sub="How the Guard sweeps, what the Watcher follows, and when the Librarian runs are settings of those agents, not of the model table. They live on each agent's own page."
+        title="Agents"
+        sub="How the Guard sweeps, what the Watcher follows and when the Librarian runs are settings of those agents, not of the model table — and the roster of which model each role dispatches to, with live availability, grants and required secrets, is there too."
       >
-        <Row label="The Guard, the Watcher, the Librarian" hint="Switches, cadences and schedules — one page per agent.">
+        <Row label="The Guard, the Watcher, the Librarian" hint="Switches, cadences, schedules and the worker roster — one page per agent.">
           <Button
             colors={colors}
             style={ghost(colors)}
@@ -1101,18 +1122,34 @@ function KeysPanel() {
   );
 }
 
-function SearchPanel() {
+/**
+ * Services — the outside world this agent may reach, and the credentials that
+ * let it.
+ *
+ * Two panes before this: "Search & tools" (keys) and "Data sources" (which
+ * public APIs are on). Splitting them meant switching a source on and adding
+ * the key it needs were in different places, with nothing in either pane
+ * saying so. They are one concept — what the agent can call — so they are one
+ * pane, keys first because a switched-on source with no key does nothing.
+ */
+function ServicesPanel() {
   return (
     <div>
-      <H1 sub="Web search, Polybot, and other service tools. Add a key, and it is encrypted in your system keychain — it never leaves your device.">Search &amp; tools</H1>
+      <H1 sub="The outside services your agent may reach. Add a key and it is encrypted in your system keychain — it never leaves your device. Switch a public data source on and it is callable immediately.">Services</H1>
       <Section title="Search providers">
-        <SearchToolsSection />
+        <Block><SearchToolsSection /></Block>
       </Section>
       <Section title="Polybot" sub="Polymarket credentials. Off until you turn Polybot on from the Finance tab (risk disclaimer). Start reads these from the keychain.">
-        <PolybotKeys />
+        <Block><PolybotKeys /></Block>
       </Section>
       <Section title="Fundamentals" sub="Optional financialdatasets.ai key. Quotes still work without it. Same field as the Finance tab.">
-        <FundamentalsKey />
+        <Block><FundamentalsKey /></Block>
+      </Section>
+      <Section
+        title="Data sources"
+        sub="Public APIs you can turn on for agents. Browse a category at a time. Enabling a source makes it callable immediately — suggested agents get it, and the Orchestrator can call every enabled source."
+      >
+        <Block><DataSourcesSection /></Block>
       </Section>
     </div>
   );
@@ -1229,7 +1266,16 @@ function ShortcutsPanel() {
   );
 }
 
-export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
+/**
+ * The diagnostics half of Privacy & data. Exported on its own because it is a
+ * consent gate with its own test; it no longer owns a page.
+ *
+ * Its old "Local-first" section was a paragraph and a button that opened the
+ * Sovereignty pane. Now that the two panes are one, that pointer has nothing
+ * left to point at and is gone — the boundary control is three inches up the
+ * same page.
+ */
+export function DataPanel() {
   const { colors } = useThemeHook();
 
   // Product-analytics consent is a REAL backend gate (#327 split; #845 fix).
@@ -1302,17 +1348,7 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
   }, []);
 
   return (
-    <div>
-      <H1 sub="Your data is yours. Everything is local-first today.">Data &amp; privacy</H1>
-      <Section title="Local-first">
-        <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <span>
-            Memory and traces live on this machine. To make the boundary
-            enforced — blocking every cloud inference call — use Sovereignty.
-          </span>
-          <Button colors={colors} style={ghost(colors)} onClick={() => goto?.('sovereignty')}>Open Sovereignty →</Button>
-        </div>
-      </Section>
+    <>
       <Section title="Diagnostics" sub="Live — an off-by-default opt-in written to the daemon's consent gate.">
         <Row label="Share product analytics" hint="Anonymous usage and timing. Never your prompts."><Toggle on={!!analytics} onChange={saveAnalytics} /></Row>
         {consentError && (
@@ -1342,7 +1378,7 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
           <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '6px 0' }}>{exportError}</div>
         )}
         {exportResult && (
-          <div style={{ padding: '8px 0' }}>
+          <div style={{ padding: `${space.md}px 0` }}>
             <div style={{ fontSize: textSize.caption, color: colors.textDim }}>
               {exportResult.reportCount === 0
                 ? 'No crash reports captured. Saved an empty redacted bundle to:'
@@ -1358,7 +1394,7 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
           </div>
         )}
       </Section>
-    </div>
+    </>
   );
 }
 
@@ -1374,7 +1410,7 @@ const EGRESS_COLS = '150px 1fr 90px 80px';
  *  blocked. Live end-to-end (2026-07 sovereignty-router build). Absorbed the
  *  Governance → Sovereignty panel (same endpoints): its "Pull the cable"
  *  button and its egress TABLE layout now live here. */
-function SovereigntyPanel() {
+function SovereigntyBlock() {
   const { colors } = useThemeHook();
   const [status, setStatus] = useState<SovereigntyStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1412,9 +1448,7 @@ function SovereigntyPanel() {
   };
 
   return (
-    <div>
-      <H1 sub="Make the data boundary real. With sovereign mode on, every model call stays on this machine — cloud providers are refused (fail-closed), not just deprioritized.">Sovereignty</H1>
-
+    <>
       {error && (
         <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{error}</div>
       )}
@@ -1497,12 +1531,12 @@ function SovereigntyPanel() {
         ) : (
           <div style={{ marginTop: 12, overflowX: 'auto' }}>
             <div style={{ minWidth: 460 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: 12, padding: '0 10px 8px', fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.textDim }}>
+              <div style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: space.xl, padding: `0 ${space.lg}px ${space.md}px`, ...type.label, color: colors.textDim }}>
                 <div>When</div><div>Provider · Model</div><div>Kind</div><div>Result</div>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {log.map(e => (
-                  <div key={e.id} style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: 12, alignItems: 'center', padding: '8px 10px', borderRadius: radius.md, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
+                  <div key={e.id} style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: space.xl, alignItems: 'center', padding: `${space.md}px ${space.lg}px`, borderRadius: concentric(radius.lg, space.xs), background: colors.fillSubtle }}>
                     <div style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: font.mono }} title={`${new Date(e.ts).toLocaleString()}${e.sessionId ? ' · ' + e.sessionId : ''} · ${e.contentHash.slice(0, 12)}…`}>
                       {timeAgo(e.ts) || e.ts}
                     </div>
@@ -1512,7 +1546,7 @@ function SovereigntyPanel() {
                     <div style={{ fontSize: textSize.caption, color: colors.textMuted }}>{e.kind}</div>
                     <div>
                       <span style={{
-                        fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase',
+                        ...type.label, fontWeight: 700,
                         padding: '2px 8px', borderRadius: radius.pill, border: `1px solid ${colors.border}`,
                         color: e.blocked ? colors.warning : colors.success,
                       }}>
@@ -1526,142 +1560,52 @@ function SovereigntyPanel() {
           </div>
         )}
       </Section>
-    </div>
+    </>
   );
 }
 
-// ── Console pages folded into Settings (2026-08 ruling) ─────────────
-// Each pane embeds the SAME component the Console overlay hosted — only the
-// chrome changed. Selecting a session (or any action that navigates to chat)
-// closes Settings, because those components call setActivePanel('chat').
-
-function SessionsPane() {
-  const { colors } = useThemeHook();
-  return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <H1 sub="Your past conversations — reopen one to pick up where you left off, or rename and delete old ones. Picking a session opens it in the chat.">Sessions</H1>
-      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: radius.lg, overflow: 'hidden' }}>
-        <SessionsList />
-      </div>
-    </div>
-  );
-}
-
-function InboxPane() {
-  const { colors } = useThemeHook();
-  return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <H1 sub="Files you download in the in-app browser land here — send them to the Brain, a project, or the post scheduler. You choose; nothing is routed for you.">Downloads</H1>
-      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: radius.lg, overflow: 'hidden' }}>
-        <InboxPanel embedded />
-      </div>
-    </div>
-  );
-}
-
-/** Open-incident triage (wave-1 item 2): the failure-learning loop files
- *  incidents, workers read them into every plan — this is the missing half
- *  where a human closes them out. Honest quiet state: renders nothing when
- *  there are none. */
-function IncidentsStrip() {
-  const { colors } = useThemeHook();
-  const [incidents, setIncidents] = useState<IncidentView[] | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    api.getIncidents().then(i => { if (live) setIncidents(i); }).catch(() => { if (live) setIncidents([]); });
-    return () => { live = false; };
-  }, []);
-
-  const resolve = async (id: string) => {
-    setBusy(id);
-    let resolved = true;
-    try {
-      await api.resolveIncident(id);
-      setIncidents(prev => (prev ?? []).filter(i => i.id !== id));
-    } catch {
-      // Leave the row; the next load retells the truth. `false` is what keeps
-      // the button from ticking over an incident that is still open.
-      resolved = false;
-    }
-    setBusy(null);
-    return resolved;
-  };
-
-  if (!incidents || incidents.length === 0) return null;
-  return (
-    <div style={{ marginBottom: 12, border: `1px solid ${colors.border}`, borderRadius: radius.lg, padding: '10px 14px' }}>
-      <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#e8a33d', marginBottom: 6 }}>
-        Open incidents — feeding every worker plan until resolved
-      </div>
-      {incidents.map(i => (
-        <div key={i.id} style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '5px 0', borderBottom: `1px solid ${colors.border}` }}>
-          <span style={{ fontSize: textSize.caption, color: colors.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${i.user_goal} — ${i.observation}`}>
-            [{i.surface}] {i.observation}
-          </span>
-          <span style={{ fontSize: 10, color: colors.textDim, fontFamily: 'monospace' }}>{i.mechanism}</span>
-          <Button
-            colors={colors}
-            variant="ghostOn"
-            onClick={() => resolve(i.id)}
-            disabled={busy === i.id}
-            style={{
-              '--pa-btn-border': colors.borderHi,
-              '--pa-btn-border-hover': colors.cyan,
-              '--pa-btn-pad': '2px 10px',
-              '--pa-btn-radius': `${radius.sm}px`,
-            } as CSSProperties}
-          >
-            {busy === i.id ? '…' : 'Resolve'}
-          </Button>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ActivityPane() {
-  const { colors } = useThemeHook();
-  return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <H1 sub="The runtime's most recent events, live off the running system's event streams — tool calls, worker activity, navigations, and lifecycle signals as they happen.">Activity</H1>
-      <IncidentsStrip />
-      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: radius.lg, overflow: 'hidden' }}>
-        <ExecutionTrace />
-      </div>
-    </div>
-  );
-}
-
-function SpendPane() {
+/**
+ * Privacy & data — one pane, one question: what leaves this machine.
+ *
+ * It was two. "Data & privacy" held a paragraph saying memory is local, a
+ * button to the OTHER pane, an analytics consent toggle and a crash export;
+ * "Sovereignty" held the switch that actually enforces the boundary and the
+ * egress log that proves it. A user looking for "is my data leaving" had to
+ * find the second pane through a link on the first, which is the shape of a
+ * split that should never have existed. The enforcement comes first now,
+ * because it is the answer; diagnostics follow, because they are the exception.
+ */
+function PrivacyPanel() {
   return (
     <div>
-      <H1 sub="What you run costs money — everything you have spent, per project and per session, plus the caps the cost router enforces. Enforced locally, not by a cloud admin.">Spend</H1>
-      <SpendPanel />
+      <H1 sub="What leaves this machine, and what stops it. Memory and traces are local; sovereign mode makes that boundary enforced rather than merely true today.">Privacy &amp; data</H1>
+      <SovereigntyBlock />
+      <DataPanel />
     </div>
   );
 }
 
-function DataSourcesPanel() {
-  return (
-    <div>
-      <H1 sub="Public APIs you can turn on for agents. Browse a category at a time. Enabling a source makes it callable immediately — suggested agents get it, and the Orchestrator can call every enabled source.">Data sources</H1>
-      <DataSourcesSection />
-    </div>
-  );
+// ── History (Sessions / Downloads / Activity / Spend) ───────────────
+// The four are one destination now and live in components/history. This pane
+// is the temporary host: it renders the SAME component the sidebar rail will,
+// so promoting it is a branch in App.tsx and a row in Sidebar.tsx, not a move.
+
+function HistoryPane({ section }: { section: string }) {
+  return <HistoryView initialTab={isHistoryTab(section) ? section : 'sessions'} />;
 }
 
-const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
+/** One entry per PANE. Legacy section keys reach these through `SECTION_HOME`;
+ *  there is deliberately no second entry for an alias, so a pane cannot come
+ *  back into existence by being added to this map. */
+export const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
   agent: PersonaPanel, preferences: PreferencesPanel,
   memory: MemoryPanel, autonomy: AutonomyPanel, tools: ToolsPanel,
-  models: ModelsPanel, keys: KeysPanel, devices: DevicesPanel, search: SearchPanel,
-  sources: DataSourcesPanel,
-  appearance: AppearancePanel, shortcuts: ShortcutsPanel, data: DataPanel,
-  sovereignty: SovereigntyPanel,
-  sessions: SessionsPane, inbox: InboxPane, activity: ActivityPane, spend: SpendPane,
+  models: ModelsPanel, keys: KeysPanel, devices: DevicesPanel,
+  services: ServicesPanel,
+  appearance: AppearancePanel, shortcuts: ShortcutsPanel,
+  privacy: PrivacyPanel,
+  history: HistoryPane,
   agents: AgentsPanel,
-  features: FeaturesPanel,
 };
 
 
@@ -1684,6 +1628,9 @@ function PairingQrCode({ value, size = 112 }: { value: string; size?: number }) 
       viewBox={`0 0 ${extent} ${extent}`}
       width={size}
       height={size}
+      // Literal black on literal white, in every theme: a QR symbol is read by
+      // a camera looking for maximum luminance contrast, and themed inks fail to
+      // scan. This is the one place in Settings where a colour is not a token.
       style={{ display: 'block', background: '#fff', borderRadius: radius.md }}
       shapeRendering="crispEdges"
     >
@@ -2001,7 +1948,7 @@ function DevicesPanel() {
                   Open Permagent on the phone and scan this. No typing.
                 </span>
                 <code style={{
-                  fontFamily: font.mono, fontSize: 10, color: colors.cyan,
+                  fontFamily: font.mono, fontSize: textSize.micro, color: colors.cyan,
                   background: colors.bgDeeper, padding: '6px 8px', borderRadius: radius.sm,
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320,
                 }}>{pairingUrl}</code>
@@ -2049,13 +1996,9 @@ export function SettingsView() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const pendingSettingsSection = useCommandCenter(s => s.pendingSettingsSection);
   const setPendingSettingsSection = useCommandCenter(s => s.setPendingSettingsSection);
+  // The raw SECTION, not the pane: History reads it to pick its segment, so
+  // "Settings → Spend" still lands on Spend and not on Sessions.
   const [section, setSection] = useState<string>(() => resolveSettingsSection(pendingSettingsSection));
-
-  // #6 download feedback: the Inbox nav entry carries an unread count of
-  // 'download' notifications (files landed via `inbox_file_received`), fed by
-  // the same notification stream the toast/tray read — not a second poll.
-  const { items: notificationItems } = useNotifications();
-  const downloadUnread = notificationItems.filter(n => n.kind === 'download' && !n.read).length;
 
   // Honor an agent/voice deep-link (Settings → <pane>): when the store carries a
   // pending section, jump to that pane and consume it so it only fires once.
@@ -2073,18 +2016,19 @@ export function SettingsView() {
     return () => window.removeEventListener('keydown', h);
   }, [dismiss]);
 
-  const Panel = PANELS[section];
+  const pane = paneForSection(section);
+  const Panel = PANELS[pane];
   const { gradient, colors } = useThemeHook();
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', background: gradient.shell, color: colors.text, fontFamily: font.body }}>
       <div style={{ width: 240, borderRight: `1px solid ${colors.border}`, background: gradient.navRail, padding: '24px 14px', overflow: 'auto', flexShrink: 0 }}>
-        <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, letterSpacing: '-0.01em', padding: '0 10px 18px' }}>Settings</div>
+        <div style={{ ...type.heading, fontFamily: font.display, padding: `0 ${space.lg}px ${space.xxxl}px` }}>Settings</div>
         {CATEGORIES.map(cat => (
           <div key={cat.group} style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.10em', textTransform: 'uppercase', color: colors.textDim, padding: '0 10px 6px' }}>{cat.group}</div>
+            <div style={{ ...type.label, color: colors.textDim, padding: `0 ${space.lg}px ${space.sm}px` }}>{cat.group}</div>
             {cat.items.map(it => {
-              const on = section === it.key;
+              const on = pane === it.key;
               return (
                 // A nav rail with no hover and no press was the last surface in
                 // Settings where pointing at a row and pressing it looked the
@@ -2110,16 +2054,9 @@ export function SettingsView() {
                     fontFamily: font.body, fontSize: textSize.small,
                   } as CSSProperties}
                 >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, width: '100%' }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: space.lg, width: '100%' }}>
                     <it.icon size={14} />
                     {it.label}
-                    {it.key === 'inbox' && downloadUnread > 0 && (
-                      <span style={{
-                        marginLeft: 'auto', minWidth: 16, height: 16, padding: '0 4px', borderRadius: radius.pill,
-                        background: colors.cyan, color: colors.textOnCyan, fontSize: 10, fontWeight: 700,
-                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                      }}>{downloadUnread > 9 ? '9+' : downloadUnread}</span>
-                    )}
                   </span>
                 </Button>
 
@@ -2129,7 +2066,9 @@ export function SettingsView() {
         ))}
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: '32px 40px 60px' }}>
-        {Panel && <Panel goto={setSection} />}
+        {/* `section`, not `pane` — History needs the segment the caller asked
+            for, and every other panel ignores it. */}
+        {Panel && <Panel goto={setSection} section={section} />}
       </div>
     </div>
   );

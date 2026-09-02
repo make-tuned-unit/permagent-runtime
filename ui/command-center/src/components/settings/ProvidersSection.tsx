@@ -297,7 +297,7 @@ export function ProvidersSection() {
                 '--pa-btn-fg-hover': colors.text,
                 '--pa-btn-border': colors.border,
                 '--pa-btn-border-hover': colors.border,
-                '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+                '--pa-btn-bg-hover': colors.fillHover,
                 '--pa-btn-pad': '6px 12px',
                 '--pa-btn-radius': `${radius.xs}px`,
               } as CSSProperties}
