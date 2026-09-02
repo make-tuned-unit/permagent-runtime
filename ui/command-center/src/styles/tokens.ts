@@ -233,13 +233,55 @@ export function concentric(outer: number, padding: number): number {
   return Math.max(0, Math.round(outer - padding));
 }
 
+/**
+ * Window-shell geometry — the numbers the CSS shares with AppKit.
+ *
+ * The macOS window runs `titleBarStyle: "Overlay"` + `hiddenTitle` with
+ * `decorations: true`, so the system titlebar is transparent, our HTML runs
+ * edge-to-edge underneath it, and macOS still draws the window's corner and
+ * shadow for free. That makes the top-left corner of the page a shared space:
+ * the traffic lights are native and always composite above everything the
+ * webview draws, so the shell has to leave room for them rather than negotiate.
+ *
+ * These four numbers are that room, and they are load-bearing in both
+ * directions — `ui/desktop/src-tauri/src/chrome.rs` holds the same values as
+ * Rust constants, `tauri.conf.json` holds them again as the only path that
+ * actually applies them (A1a's binding verdict), and `shell.test.ts` fails if
+ * the three copies ever disagree.
+ *
+ * `trafficLights.y` is NOT the distance from the top of the window. AppKit
+ * sizes the titlebar container `buttonSize + y` tall and pins it to the top
+ * edge, while the button keeps its own 9pt origin inside it — so the visible
+ * inset is `y - 9`. y = 22 puts a 14pt button 13pt down, centred in the 40pt
+ * `titlebar` band.
+ *
+ * `rail.collapsed` is 76 rather than the 64 it was before the rail went
+ * full-height: the three window buttons span `x + 60 = 72pt` and now sit
+ * INSIDE the rail, so anything narrower hangs the zoom button over the rail's
+ * edge onto the content pane. That constraint is what fixed x at 12.
+ */
+export const shell = {
+  /** Height of the titlebar band, in the sidebar and over the content alike. */
+  titlebar: 40,
+  /** Native window-control geometry. Mirrors `chrome.rs` / `tauri.conf.json`. */
+  trafficLights: { x: 12, y: 22, buttonSize: 14, spacing: 23 },
+  /** Sidebar rail width, open and collapsed. */
+  rail: { open: 208, collapsed: 76 },
+} as const;
+
+/** Window-left edge to the right edge of the zoom button, in px. */
+export function trafficLightSpan(x: number = shell.trafficLights.x): number {
+  const { spacing, buttonSize } = shell.trafficLights;
+  return x + 2 * spacing + buttonSize;
+}
+
 export const shadow = {
   glow: '0 0 40px rgba(0,213,255,0.25)',
   glowStrong: '0 0 80px rgba(0,213,255,0.4)',
   card: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
 } as const;
 
-export const tokens = { color, font, type, textSize, tabularNums, ease, duration, space, radius, shadow } as const;
+export const tokens = { color, font, type, textSize, tabularNums, ease, duration, space, radius, shadow, shell } as const;
 export type DesignTokens = typeof tokens;
 
 // ── Theme gradients + colors ────────────────────────────────────────
