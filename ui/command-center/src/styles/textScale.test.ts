@@ -76,7 +76,6 @@ const OFF_RAMP_BUDGET: Record<string, number> = {
   'components/projects': 51,
   'components/sessions': 1,
   'components/settings': 18,
-  'components/sidebar': 1,
   'components/skills': 2,
   'components/tool-results': 2,
   // 6, down from 7: the Orb's 28px teach-word is now `type.display`. The six

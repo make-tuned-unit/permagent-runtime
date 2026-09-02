@@ -36,6 +36,7 @@ import { useTheme } from '../../styles/useTheme';
 import { useMeetingDictation, formatElapsed } from '../../hooks/useMeetingDictation';
 import { FiChevronDown, FiMic } from 'react-icons/fi';
 import { Button } from '../common/Button';
+import { Tooltip } from '../common/Tooltip';
 import { useGlass } from '../common/Glass';
 import type { Project } from '../projects/types';
 
@@ -261,61 +262,62 @@ export function MeetingRecorder({ open }: { open: boolean }) {
           the row, exactly as before. `transition` stays inline and stays
           `all`: the rail's collapse animates width, padding and margin, which
           `.pa-btn`'s own transition list does not cover. */}
-      <Button
-        colors={colors}
-        variant="bare"
-        onClick={onButton}
-        title={
-          state === 'recording' ? 'Stop recording and save the note'
-            : state === 'finishing' ? 'Transcribing & saving…'
-            : 'Record a meeting to a project note'
-        }
-        aria-label="Record meeting"
-                style={{
-          '--pa-btn-bg': state === 'recording' ? colors.danger + '24' : active ? colors.cyanSoft : 'transparent',
-          '--pa-btn-fg': state === 'recording' ? colors.danger : active ? colors.cyan : colors.textMuted,
-          '--pa-btn-border': state === 'recording' ? colors.danger : active ? colors.borderHi : 'transparent',
-          '--pa-btn-bg-hover': state === 'recording' ? colors.danger + '24' : active ? colors.cyanSoft : colors.borderHi,
-          '--pa-btn-border-hover': state === 'recording' ? colors.danger : active ? colors.borderHi : 'transparent',
-          '--pa-btn-fg-hover': state === 'recording' ? colors.danger : colors.cyan,
-          '--pa-btn-bg-active': state === 'recording' ? colors.danger + '24' : active ? colors.cyanSoft : colors.borderHi,
-          '--pa-btn-pad': open ? `0 ${space.xl}px` : '0',
-          // 10px, deliberately not `radius.md`: this row IS a SidebarRow
-          // visually, and that radius is written at Sidebar.tsx:129. It moves
-          // when the rail moves, not before.
-          '--pa-btn-radius': '10px',
-          '--pa-btn-weight': active ? 600 : 500,
-          width: open ? `calc(100% - ${space.xxl}px)` : 40,
-          height: 40,
-          gap: space.xl,
-          justifyContent: open ? 'flex-start' : 'center',
-          margin: open ? `0 ${space.md}px` : '0 auto',
-          cursor: state === 'finishing' ? 'default' : 'pointer',
-          // The rail's collapse animates width, padding and margin at once, so
-          // this one stays `all` — but on the spring, not the old bezier.
-          transition: reduceMotion ? 'none' : `all ${duration.smooth}ms ${ease.smooth}`,
-          fontFamily: font.body, fontSize: textSize.small,
-          textAlign: 'left',
-        } as CSSProperties}
-      >
-        <FiMic size={18} style={{ flexShrink: 0 }} />
-        {open && (
-          <span style={{ whiteSpace: 'nowrap' }}>
-            {state === 'recording' ? `Recording ${formatElapsed(elapsedSeconds)}`
-              : state === 'finishing' ? 'Saving…'
-              : 'Record'}
-          </span>
-        )}
-        {/* Collapsed-rail REC beacon: the rail is real DOM outside <main>, so
-            unlike a floating chip it can never be buried by the browser. */}
-        {!open && state === 'recording' && (
-          <span className="pa-rec-dot" style={{
-            position: 'absolute', top: space.xs, right: space.xs, width: 7, height: 7,
-            borderRadius: radius.pill, background: colors.danger,
-            animation: 'pa-rec-pulse 1.4s ease-in-out infinite',
-          }} />
-        )}
-      </Button>
+      <Tooltip content={
+        state === 'recording' ? 'Stop recording and save the note'
+          : state === 'finishing' ? 'Transcribing & saving…'
+          : 'Record a meeting to a project note'
+      } placement="right">
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={onButton}
+          aria-label="Record meeting"
+          style={{
+            '--pa-btn-bg': state === 'recording' ? colors.danger + '24' : active ? colors.cyanSoft : 'transparent',
+            '--pa-btn-fg': state === 'recording' ? colors.danger : active ? colors.cyan : colors.textMuted,
+            '--pa-btn-border': state === 'recording' ? colors.danger : active ? colors.borderHi : 'transparent',
+            '--pa-btn-bg-hover': state === 'recording' ? colors.danger + '24' : active ? colors.cyanSoft : colors.borderHi,
+            '--pa-btn-border-hover': state === 'recording' ? colors.danger : active ? colors.borderHi : 'transparent',
+            '--pa-btn-fg-hover': state === 'recording' ? colors.danger : colors.cyan,
+            '--pa-btn-bg-active': state === 'recording' ? colors.danger + '24' : active ? colors.cyanSoft : colors.borderHi,
+            '--pa-btn-pad': open ? `0 ${space.xl}px` : '0',
+            // 10px, deliberately not `radius.md`: this row IS a SidebarRow
+            // visually, and that radius is written at Sidebar.tsx:129. It moves
+            // when the rail moves, not before.
+            '--pa-btn-radius': '10px',
+            '--pa-btn-weight': active ? 600 : 500,
+            width: open ? `calc(100% - ${space.xxl}px)` : 40,
+            height: 40,
+            gap: space.xl,
+            justifyContent: open ? 'flex-start' : 'center',
+            margin: open ? `0 ${space.md}px` : '0 auto',
+            cursor: state === 'finishing' ? 'default' : 'pointer',
+            // The rail's collapse animates width, padding and margin at once, so
+            // this one stays `all` — but on the spring, not the old bezier.
+            transition: reduceMotion ? 'none' : `all ${duration.smooth}ms ${ease.smooth}`,
+            fontFamily: font.body, fontSize: textSize.small,
+            textAlign: 'left',
+          } as CSSProperties}
+        >
+          <FiMic size={18} style={{ flexShrink: 0 }} />
+          {open && (
+            <span style={{ whiteSpace: 'nowrap' }}>
+              {state === 'recording' ? `Recording ${formatElapsed(elapsedSeconds)}`
+                : state === 'finishing' ? 'Saving…'
+                : 'Record'}
+            </span>
+          )}
+          {/* Collapsed-rail REC beacon: the rail is real DOM outside <main>, so
+              unlike a floating chip it can never be buried by the browser. */}
+          {!open && state === 'recording' && (
+            <span className="pa-rec-dot" style={{
+              position: 'absolute', top: space.xs, right: space.xs, width: 7, height: 7,
+              borderRadius: radius.pill, background: colors.danger,
+              animation: 'pa-rec-pulse 1.4s ease-in-out infinite',
+            }} />
+          )}
+        </Button>
+      </Tooltip>
 
       {/* Confirm-first project picker. */}
       {pickerOpen && createPortal(
@@ -614,23 +616,24 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               </span>
             )}
             {state === 'recording' && !docked && (
-              <Button
-                colors={colors}
-                variant="bare"
-                onClick={() => setExpanded(v => !v)}
-                aria-label={expanded ? 'Collapse the notepad' : 'Expand the notepad'}
-                title={expanded ? 'Collapse the notepad' : 'Give the notepad more room'}
-                style={{
-                  '--pa-btn-fg': colors.textMuted,
-                  '--pa-btn-fg-hover': colors.text,
-                  '--pa-btn-pad': `${space.xs / 2}px`,
-                  '--pa-btn-radius': `${radius.xs}px`,
-                  marginLeft: 'auto',
-                } as CSSProperties}
-              >
-                <FiChevronDown size={14}
-                  style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: reduceMotion ? 'none' : `transform ${duration.snappy}ms ${ease.snappy}` }} />
-              </Button>
+              <Tooltip content={expanded ? 'Collapse the notepad' : 'Give the notepad more room'}>
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  onClick={() => setExpanded(v => !v)}
+                  aria-label={expanded ? 'Collapse the notepad' : 'Expand the notepad'}
+                  style={{
+                    '--pa-btn-fg': colors.textMuted,
+                    '--pa-btn-fg-hover': colors.text,
+                    '--pa-btn-pad': `${space.xs / 2}px`,
+                    '--pa-btn-radius': `${radius.xs}px`,
+                    marginLeft: 'auto',
+                  } as CSSProperties}
+                >
+                  <FiChevronDown size={14}
+                    style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: reduceMotion ? 'none' : `transform ${duration.snappy}ms ${ease.snappy}` }} />
+                </Button>
+              </Tooltip>
             )}
           </div>
 

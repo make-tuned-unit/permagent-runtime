@@ -213,7 +213,6 @@ export function Dashboard() {
   }
 
   const cardDataMap: Record<string, any> = {
-    hero: { agent: data.agent, activeCount },
     stats: { stats: data.stats },
     in_flight: inFlightProps,
     decisions: { activeCount },
