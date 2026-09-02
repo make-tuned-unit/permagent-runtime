@@ -21,11 +21,9 @@
  *    (proposal:85) and a verdict whose reasoning hides in a tooltip cannot be
  *    argued with.
  */
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const SOURCE = readFileSync(join(__dirname, 'GrowView.tsx'), 'utf8');
+import { GROW_SOURCE as SOURCE } from './growSource';
 
 /** The body of a named top-level function in GrowView.tsx. */
 function fn(name: string): string {
