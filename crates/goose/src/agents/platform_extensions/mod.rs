@@ -8,6 +8,7 @@ pub mod chatrecall;
 #[cfg(feature = "code-mode")]
 pub mod code_execution;
 pub(crate) mod code_map;
+pub mod configure_app;
 pub mod council;
 pub mod dashboard;
 pub mod desktop;
@@ -708,6 +709,28 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 client_factory: |ctx| {
                     Box::new(recipe_author::RecipeAuthorClient::new(ctx).unwrap())
                 },
+            },
+        );
+
+        map.insert(
+            configure_app::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: configure_app::EXTENSION_NAME,
+                display_name: "Configure",
+                description:
+                    "Set up the user's home: read what a setting is now, secrets by presence only (configure_read); change the low-risk ones yourself, durably, through the same writer the Settings pane uses — initiative_enabled, playbook_enabled, concierge_enabled, steward_scan_enabled, strix_enabled, council_enabled, dev_roots, watcher_topics, watcher_muted_subjects, and the nightly librarian_schedule (configure_set); and PROPOSE a sensitive one as a Decision Inbox card that changes nothing until the user approves it (configure_propose), for the four proposal-only classes: autonomy (how much you may do without asking — you never loosen your own leash), sovereignty, budget, and provider_or_model (to switch the active local inference model, propose_model_upgrade is still the path). Credentials are never written and never read by value, and a key outside those lists is refused by name with the Settings pane it actually lives on",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "The app is your home, and until now you could describe every switch in it \
+                     and flip none of them. Now you can set the low-risk ones up yourself when \
+                     the user asks — and, for the ones that decide how much you may do, what may \
+                     leave this machine, and what may be spent, you ask instead of acting. \
+                     Loosening your own leash is the one change you never make for yourself.",
+                required_secrets: &[],
+                teaching: &[],
+                client_factory: |ctx| Box::new(configure_app::ConfigureClient::new(ctx).unwrap()),
             },
         );
 

@@ -977,6 +977,13 @@ enum ClientMessage {
     EnrollSkip,
     #[serde(rename = "enroll_clear")]
     EnrollClear,
+    /// Client gave up on a parked teach word (zero-sample listen cap hit —
+    /// see useVoice.ts's MAX_TEACH_ZERO_SAMPLE_LISTENS) without ever
+    /// capturing usable audio to send as a transcript. Reuses the spoken
+    /// "skip" path so the server-side SKIPPED + resume flow is the same
+    /// whichever side gave up first.
+    #[serde(rename = "teach_skip")]
+    TeachSkip,
 }
 
 #[derive(Serialize)]
@@ -1167,6 +1174,17 @@ fn pending_teach_msg(session_id: &str) -> Option<ServerMessage> {
     Some(ServerMessage::Teach {
         word: permagent::events::voice_pronounce::display_word(&pending.word),
     })
+}
+
+/// FIX 4 (2026-09-01 incident): the user explicitly ending a session (a
+/// client-sent Close frame — "click anywhere to end") must forget any word
+/// parked for it. Before this, nothing in the socket lifecycle ever called
+/// `voice_pronounce::clear()` outside of tests, so `pending_teach_msg` would
+/// replay the pill to the very next connect on the same session id.
+/// Extracted to a named seam so the contract is testable without a live
+/// socket.
+fn handle_client_initiated_close(session_id: &str) {
+    permagent::events::voice_pronounce::clear(session_id);
 }
 
 /// Push any captured clipboard bodies down this socket NOW. The caller
@@ -1870,6 +1888,55 @@ async fn handle_voice_socket(
                         let _ = socket.send(send_json(&ServerMessage::EnrollCleared)).await;
                         let _ = socket.send(send_json(&voice_print_msg(&state).await)).await;
                     }
+                    Ok(ClientMessage::TeachSkip) => {
+                        // The client hit its own zero-sample-listen cap
+                        // without ever capturing audio to run STT on — there
+                        // is no transcript to send. Reuse the exact spoken
+                        // "skip" path (is_skip_cue) so the outcome — Taught
+                        // pill clear, SKIPPED, resume leftover/held — is
+                        // identical whichever side gives up first.
+                        if permagent::events::voice_pronounce::peek(remainder_key).is_some() {
+                            let resume = handle_pronunciation_listen(
+                                &state,
+                                tts.clone(),
+                                &mut socket,
+                                remainder_key,
+                                "skip",
+                                cancelled.clone(),
+                                origin.client,
+                            )
+                            .await;
+                            if let Some(held) = resume {
+                                if socket
+                                    .send(send_json(&ServerMessage::ReplyStart))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                let reply_ctx = VoiceReplyCtx {
+                                    state: &state,
+                                    transcript: &held,
+                                    session_id: session_id.as_deref(),
+                                    tts: &tts,
+                                    pipeline_start: std::time::Instant::now(),
+                                    stt_ms: 0,
+                                    cancelled: cancelled.clone(),
+                                    wake: wake.as_ref(),
+                                    sample_rate: client_sample_rate,
+                                    origin: &origin,
+                                };
+                                if let Err(e) = stream_reply_with_tts(&reply_ctx, &mut socket).await
+                                {
+                                    let _ = socket
+                                        .send(send_json(&ServerMessage::Error {
+                                            message: format!("Voice reply failed: {}", e),
+                                        }))
+                                        .await;
+                                }
+                            }
+                        }
+                    }
                     Err(e) => {
                         tracing::warn!(target: "permagentd::voice", "Invalid voice message: {}", e);
                     }
@@ -1967,6 +2034,14 @@ async fn handle_voice_socket(
             }
             Message::Close(frame) => {
                 tracing::info!(target: "permagentd::voice", "Client sent Close frame: {:?}", frame);
+                // FIX 4 (2026-09-01 incident): a client-initiated close is
+                // the user explicitly ending the session ("click anywhere to
+                // end") — the process-lifetime registry must not outlive it,
+                // or the next connect on this session replays a stale pill
+                // (pending_teach_msg above). A dropped connection (recv
+                // error, below) is NOT treated the same way: that may be a
+                // network blip mid-drill we want a reconnect to resume.
+                handle_client_initiated_close(remainder_key);
                 break;
             }
             Message::Ping(_) => {
@@ -2713,20 +2788,48 @@ async fn handle_pronunciation_listen(
         return None;
     }
 
-    let shown = permagent::events::voice_pronounce::display_word(&pending.word);
-    permagent::events::voice_pronounce::begin(session_id, &pending.word, pending.held_transcript);
-    let _ = socket
-        .send(send_json(&ServerMessage::Teach { word: shown }))
-        .await;
-    let _ = speak_canned_reply(
-        state,
-        tts,
-        socket,
-        permagent::events::voice_pronounce::ASK_AGAIN,
-        cancelled,
-    )
-    .await;
-    None
+    // Nothing savable came out of this listen. Cap how many more times we
+    // ask before giving up — an unbounded ASK_AGAIN loop (2026-09-01
+    // incident) was the server-side half of the runaway-restart bug.
+    match permagent::events::voice_pronounce::record_retry(session_id, pending) {
+        permagent::events::voice_pronounce::RetryOutcome::AskAgain(p) => {
+            let shown = permagent::events::voice_pronounce::display_word(&p.word);
+            let _ = socket
+                .send(send_json(&ServerMessage::Teach { word: shown }))
+                .await;
+            let _ = speak_canned_reply(
+                state,
+                tts,
+                socket,
+                permagent::events::voice_pronounce::ASK_AGAIN,
+                cancelled,
+            )
+            .await;
+            None
+        }
+        permagent::events::voice_pronounce::RetryOutcome::GiveUp(p) => {
+            // Attempts exhausted — identical outcome to a spoken "skip":
+            // clear the pill, say SKIPPED, resume whatever was held.
+            let _ = socket
+                .send(send_json(&ServerMessage::Taught {
+                    word: permagent::events::voice_pronounce::display_word(&p.word),
+                }))
+                .await;
+            let _ = speak_canned_reply(
+                state,
+                tts.clone(),
+                socket,
+                permagent::events::voice_pronounce::SKIPPED,
+                cancelled.clone(),
+            )
+            .await;
+            if let Some(rest) = permagent::events::voice_remainder::take(session_id) {
+                speak_remainder(state, tts, socket, session_id, &rest, cancelled, client).await;
+                return None;
+            }
+            p.held_transcript
+        }
+    }
 }
 
 async fn speak_canned_reply(
@@ -3253,6 +3356,29 @@ mod tests {
         assert_eq!(v["word"], "Elspeth");
         permagent::events::voice_pronounce::clear(sid);
         assert!(pending_teach_msg(sid).is_none());
+    }
+
+    /// FIX 4 (2026-09-01 incident): "click anywhere to end" didn't clear the
+    /// server's pending-teach registry, so the next connect on the same
+    /// session id replayed the pill. `handle_client_initiated_close` is the
+    /// exact call the `Message::Close` arm makes; this locks down that
+    /// begin → close → reconnect leaves nothing to replay.
+    #[test]
+    fn client_initiated_close_clears_a_parked_teach_word() {
+        let sid = "teach-close-clears-test";
+        permagent::events::voice_pronounce::clear(sid);
+        permagent::events::voice_pronounce::begin(sid, "Teenity", None);
+        assert!(
+            pending_teach_msg(sid).is_some(),
+            "parked before the close frame arrives"
+        );
+
+        handle_client_initiated_close(sid);
+
+        assert!(
+            pending_teach_msg(sid).is_none(),
+            "a client-initiated close must clear the parked word — reconnect must not replay it"
+        );
     }
 
     #[test]

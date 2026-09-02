@@ -189,3 +189,35 @@ export function shouldOpenPopupTab(
 ): boolean {
   return popupTabDecision(ownedWebviewIds, sourceWebviewId, url).open;
 }
+
+/**
+ * What to do with the tab a `browser_download_captured` event names.
+ *
+ * A download-converted navigation (WebKit hands us a `WKDownload` instead of
+ * rendering the response, e.g. a `.docx` — see browser.rs) never commits a
+ * page: `on_page_load` fires nothing for that webview, and the tab it opened
+ * in sits blank forever with no content and no way to close itself (reported
+ * 2026-09-01, a Gmail `.docx` chip). A REAL browser closes a `_blank` tab that
+ * turned straight into a download; this mirrors that.
+ *
+ * A tab that already committed a real page load is left alone — the click
+ * may have reused an existing tab whose page itself triggers a download
+ * (e.g. clicking a "Download" button on a page already open), and closing
+ * that would discard content the user is looking at, not a blank dead end.
+ */
+export interface DownloadCapturedDecision {
+  /** The tab this webview belongs to, or null if no tab in this Browser
+   *  instance owns it (the emit is global; other windows ignore it). */
+  tabId: string | null;
+  shouldClose: boolean;
+}
+
+export function downloadCapturedDecision(
+  tabs: ReadonlyArray<Pick<BrowserTab, 'id' | 'webviewId'>>,
+  committedWebviewIds: ReadonlySet<string>,
+  webviewId: string,
+): DownloadCapturedDecision {
+  const tab = tabs.find((t) => t.webviewId === webviewId);
+  if (!tab) return { tabId: null, shouldClose: false };
+  return { tabId: tab.id, shouldClose: !committedWebviewIds.has(webviewId) };
+}
