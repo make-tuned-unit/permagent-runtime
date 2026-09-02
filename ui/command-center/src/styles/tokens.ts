@@ -17,6 +17,14 @@ export const color = {
   border: 'rgba(255,255,255,0.07)',
   borderHi: 'rgba(0,213,255,0.18)',
   cyan: NEON_ACCENT,
+  /** The step BELOW cyanSoft: an accent presence you read as atmosphere
+   *  rather than as a fill. For the backgrounds of empty, loading and error
+   *  states — a panel that is waiting or has nothing to show, tinted enough to
+   *  belong to the app and not enough to look like a control. Added
+   *  2026-09-02 at the Brain lane's request, on the evidence that six sites
+   *  had already written it by hand (Splash, WizardShell, ErrorBoundary,
+   *  BrainView x3) at 0.04-0.06, because 0.14 reads as a filled surface. */
+  cyanWash: 'rgba(0,213,255,0.04)',
   cyanSoft: 'rgba(0,213,255,0.14)',
   cyanGlow: 'rgba(0,213,255,0.45)',
   purple: '#8D44AE',
@@ -30,6 +38,22 @@ export const color = {
   /** Strong red for ANSI output and high-emphasis destructive states. */
   dangerStrong: '#EF4444',
 } as const;
+
+/**
+ * The ink that goes on a bright, saturated fill — a flat cyan button, an amber
+ * identity badge, a green trim. Near-black, so it clears 12:1 on any of them;
+ * white on a bright fill is the recurring contrast failure this exists to stop
+ * (white on #00BFEF is ~1.9:1).
+ *
+ * One value, one definition, three names' worth of call sites: `textOnCyan`
+ * was the first name for it and is kept as an alias in every theme so the
+ * existing call sites keep working. New code should say `textOnBright`, which
+ * is what it actually means — the ink is a function of the fill's BRIGHTNESS,
+ * not of its hue. Added 2026-09-02 for the Finance lane, which had minted a
+ * local `FINANCIER_BADGE_INK` because the only token for this was named after
+ * a colour its badge is not.
+ */
+export const INK_ON_BRIGHT = '#04141B';
 
 export const font = {
   display: '"Manrope", "Satoshi", -apple-system, BlinkMacSystemFont, sans-serif',
@@ -300,7 +324,7 @@ export type ThemeId = 'dark' | 'aurora' | 'silver';
 export interface ThemeColors {
   bg: string; bgDeeper: string; surface: string; surfaceHi: string;
   border: string; borderHi: string;
-  cyan: string; cyanSoft: string; cyanGlow: string;
+  cyan: string; cyanWash: string; cyanSoft: string; cyanGlow: string;
   purple: string; purpleBright: string; purpleSoft: string; purpleGlow: string;
   text: string; textMuted: string; textDim: string;
   danger: string; dangerStrong: string;
@@ -330,6 +354,9 @@ export interface ThemeColors {
    *  be a fixed dark ink — white/`colors.bg` fails WCAG contrast (and inverts to
    *  near-white on the silver theme). Never use textOnAccent on a flat-cyan fill. */
   textOnCyan: string;
+  /** The same ink as `textOnCyan`, under the name that says what it is for:
+   *  any bright, saturated fill, whatever its hue. Prefer this. */
+  textOnBright: string;
   /** Success semantic */
   success: string;
   /** Warning semantic */
@@ -418,7 +445,7 @@ export interface ThemeGlass { glass: GlassSurface; glassHi: GlassSurface; }
 const DARK_COLORS: ThemeColors = {
   bg: color.bg, bgDeeper: color.bgDeeper, surface: color.surface, surfaceHi: color.surfaceHi,
   border: color.border, borderHi: color.borderHi,
-  cyan: color.cyan, cyanSoft: color.cyanSoft, cyanGlow: color.cyanGlow,
+  cyan: color.cyan, cyanWash: color.cyanWash, cyanSoft: color.cyanSoft, cyanGlow: color.cyanGlow,
   purple: color.purple, purpleBright: color.purpleBright, purpleSoft: color.purpleSoft, purpleGlow: color.purpleGlow,
   text: color.text, textMuted: color.textMuted, textDim: color.textDim,
   danger: color.danger,
@@ -433,7 +460,8 @@ const DARK_COLORS: ThemeColors = {
   userBubbleText: '#FFFFFF',
   inputBg: '#1E2433',
   textOnAccent: '#FFFFFF',
-  textOnCyan: '#04141B',
+  textOnCyan: INK_ON_BRIGHT,
+  textOnBright: INK_ON_BRIGHT,
   success: '#34D399',
   warning: '#FBBF24',
   // 8.6:1 on the dark ground, and a hue nobody mistakes for the amber alarm.
@@ -465,6 +493,9 @@ const SILVER_COLORS: ThemeColors = {
   borderHi: 'rgba(0,191,239,0.40)',  // Cyan focus
   // Accents — brand cyan/violet
   cyan: '#00BFEF',           // Cyan Intelligence
+  // Same step below Soft as the dark theme takes (0.04 x 0.10/0.14), because
+  // silver dials the whole cyan family down by that ratio already.
+  cyanWash: 'rgba(0,191,239,0.03)',
   cyanSoft: 'rgba(0,191,239,0.10)',
   cyanGlow: 'rgba(0,191,239,0.25)',
   purple: '#8B5CFF',         // Violet Memory
@@ -490,7 +521,8 @@ const SILVER_COLORS: ThemeColors = {
   userBubbleText: '#1E2530', // Graphite (BLACK text)
   inputBg: '#EEF2F7',       // Chrome Mist (recessed)
   textOnAccent: '#FFFFFF',
-  textOnCyan: '#04141B',    // Deep ink — ~12:1 on #00BFEF (white would be ~1.9:1)
+  textOnCyan: INK_ON_BRIGHT,  // ~12:1 on #00BFEF (white would be ~1.9:1)
+  textOnBright: INK_ON_BRIGHT,
   success: '#059669',
   warning: '#D97706',
   // Amber-700 — 4.9:1 on white (AA), a step deeper than the warning amber so
