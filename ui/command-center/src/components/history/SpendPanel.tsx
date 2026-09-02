@@ -1,6 +1,5 @@
 /**
- * Settings → Spend (moved here when the Governance surface folded into
- * Settings). Per-session and per-project token + dollar consumption with a
+ * History → Spend. Per-session and per-project token + dollar consumption with a
  * running total, from the REAL `GET /api/governance/spend` (which aggregates
  * the cost_ledger rollup). Also the full budget the cost-router enforces by
  * gating the agent through the Decision Inbox — BOTH the per-session and the
@@ -10,11 +9,12 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { api, type SpendSnapshot } from '../../lib/api';
-import { font, radius, tabularNums, textSize } from '../../styles/tokens';
+import { font, radius, space, tabularNums, textSize, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
-import { Card, SectionLabel, StatRow } from './atoms';
-import { bandColor, bandLabel, formatTokens, formatUsd, timeAgo } from './format';
+import { Tooltip } from '../common/Tooltip';
+import { Card, SectionLabel, StatRow } from '../settings/atoms';
+import { bandColor, bandLabel, formatTokens, formatUsd, timeAgo } from '../settings/format';
 
 export function SpendPanel() {
   const { colors } = useTheme();
@@ -105,7 +105,7 @@ export function SpendPanel() {
 
   const numInput = (v: string, on: (s: string) => void, label: string, scope = 'Session') => (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 90 }}>
-      <span style={{ fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: colors.textDim }}>{label}</span>
+      <span style={{ ...type.label, color: colors.textDim }}>{label}</span>
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, height: 30, padding: '0 8px', borderRadius: radius.md, background: colors.inputBg, border: `1px solid ${colors.border}` }}>
         <span style={{ color: colors.textDim, fontSize: textSize.small }}>$</span>
         <input
@@ -124,7 +124,7 @@ export function SpendPanel() {
       <Card>
         <SectionLabel>Running total — everything you have spent</SectionLabel>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 20, marginTop: 10, flexWrap: 'wrap' }}>
-          <div style={{ fontFamily: font.display, fontSize: 36, fontWeight: 600, letterSpacing: '-0.02em', color: colors.cyan, ...tabularNums }}>
+          <div style={{ ...type.display, fontFamily: font.display, color: colors.cyan, ...tabularNums }}>
             {formatUsd(snap.runningTotalUsd)}
           </div>
           <div style={{ fontSize: textSize.small, color: colors.textMuted, ...tabularNums }}>
@@ -139,13 +139,13 @@ export function SpendPanel() {
         <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 8, marginBottom: 12 }}>
           Enforced locally: at the gate ceiling the agent pauses and asks in the Decision Inbox before spending more; at the hard ceiling it stops and preserves your work. Leave high to run uncapped.
         </div>
-        <div style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.textDim, marginBottom: 6 }}>Per session</div>
+        <div style={{ ...type.label, color: colors.textDim, marginBottom: space.sm }}>Per session</div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           {numInput(soft, setSoft, 'Warn (soft)')}
           {numInput(gate, setGate, 'Ask (gate)')}
           {numInput(hard, setHard, 'Stop (hard)')}
         </div>
-        <div style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.textDim, margin: '14px 0 6px' }}>Per task</div>
+        <div style={{ ...type.label, color: colors.textDim, margin: `${space.xxl}px 0 ${space.sm}px` }}>Per task</div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           {numInput(taskSoft, setTaskSoft, 'Warn (soft)', 'Task')}
           {numInput(taskGate, setTaskGate, 'Ask (gate)', 'Task')}
@@ -211,12 +211,14 @@ export function SpendPanel() {
                 right={
                   <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     {s.band !== 'ok' && (
-                      <span
-                        title={`This session is ${bandLabel(s.band)}`}
-                        style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: bandColor(s.band, colors) }}
-                      >
-                        {s.band}
-                      </span>
+                      <Tooltip content={`This session is ${bandLabel(s.band)}`}>
+                        <span
+                          tabIndex={0}
+                          style={{ ...type.label, fontWeight: 700, color: bandColor(s.band, colors) }}
+                        >
+                          {s.band}
+                        </span>
+                      </Tooltip>
                     )}
                     <span style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, ...tabularNums }}>
                       {formatUsd(s.costUsd)}

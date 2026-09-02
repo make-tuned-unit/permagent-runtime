@@ -75,7 +75,13 @@ const OFF_RAMP_BUDGET: Record<string, number> = {
   'components/people': 4,
   'components/projects': 51,
   'components/sessions': 1,
-  'components/settings': 18,
+  // components/settings is GONE from this table, not lowered to zero: lane R8
+  // took its 18 off-ramp sizes to zero while rebuilding the pane language on
+  // the grouped inset list. The uppercase 10px micro-labels became `type.label`
+  // (11px, 600, 0.08em, uppercase) — the ramp role they were hand-rolling — and
+  // the lone 24px page title became `type.title`. `components/history`, the
+  // four record panes lifted out of Settings, arrives with none and gets no
+  // budget line for the same reason.
   'components/skills': 2,
   'components/tool-results': 2,
   // 6, down from 7: the Orb's 28px teach-word is now `type.display`. The six
