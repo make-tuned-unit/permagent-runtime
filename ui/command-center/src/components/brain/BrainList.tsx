@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
-import { ease, font, radius, textSize } from '../../styles/tokens';
+import { concentric, duration, ease, font, radius, textSize } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { Button } from '../common/Button';
 import type { GraphMemory, GraphEntity } from './useBrainData';
@@ -61,7 +61,11 @@ export function BrainList({
   onSelect, selectedId, timeValue, searchQuery, searchResults, searchLoading, searchError,
   entities = [], filters,
 }: BrainListProps) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
+  // Hard scroll edge (D11/§1.8): the stats bar is pinned above the scrolling
+  // rows. An opaque hairline appears under it only once something has
+  // actually scrolled beneath — never decorative, off at rest.
+  const [listScrolled, setListScrolled] = useState(false);
 
   // Filter entities by type
   const filteredEntities = entities.filter(ent => {
@@ -146,8 +150,9 @@ export function BrainList({
 
   // Infinite scroll
   const handleScroll = useCallback(() => {
-    if (isSearch) return;
     const el = scrollRef.current;
+    setListScrolled(!!el && el.scrollTop > 2);
+    if (isSearch) return;
     if (!el || !state.hasMore || state.loading) return;
     const threshold = 200;
     if (el.scrollHeight - el.scrollTop - el.clientHeight < threshold) {
@@ -165,10 +170,12 @@ export function BrainList({
       position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
       background: 'transparent',
     }}>
-      {/* Stats bar */}
+      {/* Stats bar — pinned above the scrolling rows; see `listScrolled`. */}
       <div style={{
         padding: '8px 16px', display: 'flex', justifyContent: 'space-between',
         fontFamily: font.mono, fontSize: 10, color: colors.textDim,
+        borderBottom: `1px solid ${listScrolled ? colors.borderHi : 'transparent'}`,
+        transition: reduceMotion ? 'none' : `border-color ${duration.fast}ms ${ease.out}`,
       }}>
         <span>
           {!isSearch && filteredEntities.length > 0 && `${filteredEntities.length} entities`}
@@ -298,7 +305,7 @@ function highlightText(text: string, terms: string[], colors: { text: string; cy
   const parts = text.split(regex);
   return parts.map((part, i) =>
     regex.test(part)
-      ? <mark key={i} style={{ background: colors.cyanGlow, color: colors.text, borderRadius: 2, padding: '0 1px' }}>{part}</mark>
+      ? <mark key={i} style={{ background: colors.cyanGlow, color: colors.text, borderRadius: concentric(radius.xs, 2), padding: '0 1px' }}>{part}</mark>
       : part
   );
 }
@@ -311,11 +318,14 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
   highlightTerms: string[];
   onClick: () => void;
 }) {
-  const { colors, theme } = useTheme();
-  const rowBg = selected
-    ? colors.cyanSoft
-    : theme === 'silver' ? 'rgba(255,255,255,0.7)' : 'rgba(20,28,48,0.4)';
-  const rowHoverBg = theme === 'silver' ? 'rgba(255,255,255,0.9)' : 'rgba(20,28,48,0.65)';
+  const { colors, reduceMotion } = useTheme();
+  // Rows are content (D1): a solid theme fill, never a translucent wash
+  // pretending to be elevation. Resting/hover are both fully opaque —
+  // `surface` then `surfaceHi`, the app's own "one step up" pair — and
+  // selection is the same accent tint every chip in this app uses.
+  const rowBg = selected ? colors.cyanSoft : colors.surface;
+  const rowHoverBg = colors.surfaceHi;
+  const rowTransition = reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}, border-color ${duration.fast}ms ${ease.out}, transform ${duration.fast}ms ${ease.out}, filter ${duration.fast}ms ${ease.out}`;
   const title = deriveMemoryTitle(memory);
   const preview = memory.text.slice(0, 100) + (memory.text.length > 100 ? '...' : '');
   const descPreview = memory.description
@@ -333,12 +343,17 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
         padding: '10px 14px', marginBottom: 2, cursor: 'pointer',
         borderRadius: radius.md,
         background: rowBg,
-        border: selected ? `1px solid ${colors.cyan}40` : '1px solid transparent',
+        border: selected ? `1px solid ${colors.borderHi}` : '1px solid transparent',
         outline: 'none',
-        transition: `all 160ms ${ease.out}`,
+        transition: rowTransition,
       }}
       onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowHoverBg; }}
-      onMouseLeave={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowBg; }}
+      onMouseLeave={e => {
+        const el = e.currentTarget as HTMLDivElement;
+        el.style.background = rowBg; el.style.filter = 'none'; el.style.transform = 'none';
+      }}
+      onPointerDown={e => { (e.currentTarget as HTMLDivElement).style.filter = 'brightness(0.95)'; (e.currentTarget as HTMLDivElement).style.transform = 'scale(0.995)'; }}
+      onPointerUp={e => { (e.currentTarget as HTMLDivElement).style.filter = 'none'; (e.currentTarget as HTMLDivElement).style.transform = 'none'; }}
       onFocus={e => { (e.currentTarget as HTMLDivElement).style.outline = `2px solid ${colors.cyan}`; }}
       onBlur={e => { (e.currentTarget as HTMLDivElement).style.outline = 'none'; }}
     >
@@ -426,11 +441,12 @@ function EntityRow({ entity, selected, onClick }: {
   selected: boolean;
   onClick: () => void;
 }) {
-  const { colors, theme } = useTheme();
-  const rowBg = selected
-    ? colors.cyanSoft
-    : theme === 'silver' ? 'rgba(255,255,255,0.7)' : 'rgba(20,28,48,0.4)';
-  const rowHoverBg = theme === 'silver' ? 'rgba(255,255,255,0.9)' : 'rgba(20,28,48,0.65)';
+  const { colors, reduceMotion } = useTheme();
+  // Same opaque-content pair as `MemoryRow` (D1): `surface` resting, the
+  // theme's own "one step up" for hover, the shared accent tint for selected.
+  const rowBg = selected ? colors.cyanSoft : colors.surface;
+  const rowHoverBg = colors.surfaceHi;
+  const rowTransition = reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}, border-color ${duration.fast}ms ${ease.out}, transform ${duration.fast}ms ${ease.out}, filter ${duration.fast}ms ${ease.out}`;
   const typeColor = typeAccent(entity.type, colors);
 
   return (
@@ -443,13 +459,18 @@ function EntityRow({ entity, selected, onClick }: {
       style={{
         padding: '8px 14px', marginBottom: 2, cursor: 'pointer',
         borderRadius: radius.md, background: rowBg,
-        border: selected ? `1px solid ${colors.cyan}40` : '1px solid transparent',
+        border: selected ? `1px solid ${colors.borderHi}` : '1px solid transparent',
         outline: 'none',
-        transition: `all 160ms ${ease.out}`,
+        transition: rowTransition,
         display: 'flex', alignItems: 'center', gap: 10,
       }}
       onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowHoverBg; }}
-      onMouseLeave={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowBg; }}
+      onMouseLeave={e => {
+        const el = e.currentTarget as HTMLDivElement;
+        el.style.background = rowBg; el.style.filter = 'none'; el.style.transform = 'none';
+      }}
+      onPointerDown={e => { (e.currentTarget as HTMLDivElement).style.filter = 'brightness(0.95)'; (e.currentTarget as HTMLDivElement).style.transform = 'scale(0.995)'; }}
+      onPointerUp={e => { (e.currentTarget as HTMLDivElement).style.filter = 'none'; (e.currentTarget as HTMLDivElement).style.transform = 'none'; }}
       onFocus={e => { (e.currentTarget as HTMLDivElement).style.outline = `2px solid ${colors.cyan}`; }}
       onBlur={e => { (e.currentTarget as HTMLDivElement).style.outline = 'none'; }}
     >
