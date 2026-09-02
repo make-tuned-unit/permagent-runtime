@@ -466,7 +466,18 @@ select:focus-visible {
    no visible difference. Colors arrive per-instance as custom properties from
    the theme, so this one rule set covers every variant without hard-coding a
    palette here. Durations follow the motion tokens (fast = 160ms hover/focus)
-   and inherit the prefers-reduced-motion guard above. */
+   and inherit the prefers-reduced-motion guard above.
+
+   D9: the curve is `var(--pa-ease-smooth)`, not a hand-copied bezier literal.
+   The two used to be numerically identical
+   (`cubic-bezier(0.22, 1, 0.36, 1)` === the bezier fallback of
+   `--pa-ease-smooth`), which is exactly the trap — hardcoding the fallback
+   value permanently opted every button in the app out of the `@supports
+   (transition-timing-function: linear(0, 1))` upgrade near the top of this
+   file that swaps it for the real sampled spring on anything current. `var()`
+   makes that upgrade apply here too. Reduce Motion still wins: the
+   `prefers-reduced-motion` block above uses `!important` on
+   `transition-duration`, so it collapses this to ~0 regardless of curve. */
 .pa-btn {
   display: inline-flex;
   align-items: center;
@@ -484,12 +495,12 @@ select:focus-visible {
   cursor: pointer;
   box-shadow: 0 0 0 0 transparent;
   transition:
-    background-color 160ms cubic-bezier(0.22, 1, 0.36, 1),
-    border-color 160ms cubic-bezier(0.22, 1, 0.36, 1),
-    color 160ms cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 160ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 160ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 80ms cubic-bezier(0.22, 1, 0.36, 1);
+    background-color 160ms var(--pa-ease-smooth),
+    border-color 160ms var(--pa-ease-smooth),
+    color 160ms var(--pa-ease-smooth),
+    box-shadow 160ms var(--pa-ease-smooth),
+    opacity 160ms var(--pa-ease-smooth),
+    transform 80ms var(--pa-ease-smooth);
 }
 /* Text color is part of hover, not just fill: the commonest resting pattern in
    this app is a muted icon that comes up to full on hover, and expressing that
