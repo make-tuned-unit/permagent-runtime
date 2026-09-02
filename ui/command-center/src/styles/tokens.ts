@@ -163,9 +163,18 @@ export const duration = {
  * something to migrate *to*. The 650 raw values are deliberately NOT migrated
  * in this change — a token nobody consumes yet is still the prerequisite for
  * migrating them, and doing both at once would bury the scale in a diff.
+ *
+ * `xxs: 2` was added 2026-09-02 on the same evidence and by the same rule, at
+ * lane R14's request (browser chrome, chip padding). It is not a preference:
+ * counting the tree first, `2` appears in 74 hand-written paddings and gaps
+ * (49 single-property, 25 as the vertical half of a `'2px Npx'` shorthand)
+ * against 40 for `4` by the same grep. Dense chrome — chips, badges, inline
+ * pills — genuinely needs a step below 4, and a scale whose floor is above
+ * what the code reaches for is a scale people step outside of. It keeps the
+ * 2pt grid the bottom of the scale already runs on (4/6/8/10/12).
  */
 export const space = {
-  xs: 4, sm: 6, md: 8, lg: 10, xl: 12, xxl: 16, xxxl: 20, huge: 24,
+  xxs: 2, xs: 4, sm: 6, md: 8, lg: 10, xl: 12, xxl: 16, xxxl: 20, huge: 24,
 } as const;
 
 /**
