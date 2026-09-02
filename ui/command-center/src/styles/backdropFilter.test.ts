@@ -50,10 +50,9 @@ const LANE_OWNED: Record<string, { max: number; lane: string }> = {
   'components/world/WorldHUD.tsx': { max: 2, lane: 'R16 world HUD chrome' },
   'components/world/AgentPicker.tsx': { max: 2, lane: 'R16 world HUD chrome' },
   'components/world/agents/AgentCharacterV2.tsx': { max: 1, lane: 'R16 world HUD chrome' },
-  // Brain is the intended proof-case for the token migration and carries the
-  // densest cluster (8), including its own local `glass` object. Converting it
-  // piecemeal from here would collide with that redesign.
-  'components/brain/BrainView.tsx': { max: 8, lane: 'R13 Brain' },
+  // Brain's cluster (was 8, including its own local `glass` object) is GONE:
+  // R13 converted BrainView.tsx and BrainList.tsx to `glassSurface()` / the
+  // theme's `glass` tokens as part of the screen's Liquid Glass pass.
   // Canvas overlay legend, shared by the world and brain canvases. It follows
   // whichever of those two lands first; it is not a screen of its own.
   'components/common/CanvasLegend.tsx': { max: 2, lane: 'R13/R16 canvas overlays' },
