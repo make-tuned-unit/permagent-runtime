@@ -4,8 +4,9 @@ import { Terminal } from './Terminal';
 import { useTheme } from '../../styles/useTheme';
 import { registerDropZone } from '../../lib/native-drag-drop';
 import { resolvePtyInjection } from './terminalDrop';
-import { font, textSize } from '../../styles/tokens';
+import { duration, ease, font, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
+import { useGlass } from '../common/Glass';
 import { CycleTabsButton } from '../build/CycleTabsButton';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
 import {
@@ -17,6 +18,13 @@ import {
   type PtySessionInfo,
 } from './terminalReattach';
 import { createClaimSet } from '../../lib/claimSet';
+import {
+  CHROME_GEOM,
+  CHROME_RADIUS,
+  DROP_RADIUS,
+  chromeBareVars,
+  dangerWash,
+} from './terminalChrome';
 
 export interface TerminalManagerHandle {
   createProjectTab: (
@@ -147,6 +155,10 @@ interface TerminalManagerProps { initialTab?: TerminalTab | null; detached?: boo
 
 export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManagerProps>(function TerminalManager({ initialTab, detached = false }, ref) {
   const { colors } = useTheme();
+  // One glass plane for the tab strip (D1/D3). Children use fillHover/fillActive,
+  // never a second backdrop-filter (D2). Material via useGlass — never a
+  // hand-rolled backdropFilter (D7).
+  const chromeGlass = useGlass('glass');
   // Read the durable record ONCE, during the render phase, the same way the
   // module cache is read — a later effect would be too late, because `Terminal`
   // spawns on its own mount.
@@ -476,14 +488,33 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
     return () => window.removeEventListener('keydown', handler);
   }, [handleNewTab, handleCloseTab]);
 
+  /** Trailing glyphs: ink only on the shared glass plane (D2/D3). */
+  const railIcon = (hover: string, padX: number): CSSProperties => ({
+    ...chromeBareVars(colors, {
+      fg: colors.textMuted,
+      fgHover: hover,
+      pad: `${CHROME_GEOM.railPadY}px ${padX}px`,
+      radiusPx: 0,
+    }),
+    '--pa-btn-bg-hover': 'transparent',
+    '--pa-btn-bg-active': 'transparent',
+  } as CSSProperties);
+
   return (
     <div ref={rootRef} onFocusCapture={selectPane} className="relative flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
       {/* Drop-to-CC-terminal overlay (#557): shown while a file is dragged over
-          the pane. pointer-events-none so it never intercepts the native drop. */}
+          the pane. pointer-events-none so it never intercepts the native drop.
+          Opaque elevated veil over content — not a second glass plane (D2). */}
       {dropActive && (
         <div
-          className="absolute inset-0 z-40 flex flex-col items-center justify-center rounded-xl m-2 pointer-events-none"
-          style={{ backgroundColor: colors.bg, opacity: 0.93, border: `2px dashed ${colors.cyan}80` }}
+          className="absolute inset-0 z-40 flex flex-col items-center justify-center pointer-events-none"
+          style={{
+            margin: CHROME_GEOM.dropMargin,
+            borderRadius: DROP_RADIUS,
+            backgroundColor: colors.bg,
+            opacity: 0.93,
+            border: `2px dashed ${colors.cyan}80`,
+          }}
         >
           <FiFilePlus size={32} className="mb-2" style={{ color: `${colors.cyan}99` }} />
           <span className="text-sm" style={{ fontFamily: font.mono, color: `${colors.cyan}CC` }}>
@@ -491,49 +522,81 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
           </span>
         </div>
       )}
-      <div className="flex items-center border-b border-dark-border" style={{ backgroundColor: colors.surface }}>
+      {/* Tab strip — ONE glass plane (D1/D3). Hard scroll edge on the overflow
+          strip (D11), not a soft mask. Geometry frozen in CHROME_GEOM so the
+          PTY leftover under this row cannot drift. */}
+      <div
+        className="flex items-center"
+        style={{
+          ...chromeGlass,
+          borderRadius: CHROME_RADIUS,
+          borderBottom: `1px solid ${colors.border}`,
+        }}
+      >
         <div className="flex flex-1 items-center overflow-x-auto">
-          {tabs.map(tab => (
-            <Button
-              key={tab.id}
-              colors={colors}
-              variant="bare"
-              onClick={() => setActiveTabId(tab.id)}
-              // `group` stays: the close affordance reveals on group-hover.
-              className="group shrink-0"
-              style={{
-                '--pa-btn-bg': tab.id === activeTabId ? colors.bg : 'transparent',
-                '--pa-btn-fg': tab.id === activeTabId ? colors.cyan : colors.textMuted,
-                '--pa-btn-border': colors.border,
-                '--pa-btn-bg-hover': tab.id === activeTabId ? colors.bg : 'rgba(255,255,255,0.05)',
-                '--pa-btn-fg-hover': tab.id === activeTabId ? colors.cyan : colors.text,
-                '--pa-btn-bg-active': tab.id === activeTabId ? colors.bg : 'rgba(255,255,255,0.05)',
-                '--pa-btn-border-hover': colors.border,
-                '--pa-btn-pad': '6px 12px',
-                '--pa-btn-radius': '0',
-                // `.pa-btn` carries a border on all four edges; a tab has one
-                // only on its right. Widths here, colour still from the vars
-                // above, so the hover rule keeps working.
-                borderWidth: '0 1px 0 0',
-                fontFamily: font.mono,
-                fontSize: textSize.micro,
-                gap: 6,
-              } as CSSProperties}
-            >
-              <FiTerminal size={11} />
-              <span className="truncate max-w-[140px]">{tab.label}</span>
-              <span
-                onClick={(e) => handleCloseTab(tab.id, e)}
-                className={`ml-1 rounded p-0.5 transition-colors ${
-                  closingTabId === tab.id
-                    ? 'bg-red-500/20 text-red-400'
-                    : 'opacity-0 group-hover:opacity-100 hover:bg-white/10 text-dark-muted'
-                }`}
+          {tabs.map(tab => {
+            const isActive = tab.id === activeTabId;
+            return (
+              <Button
+                key={tab.id}
+                colors={colors}
+                variant="bare"
+                onClick={() => setActiveTabId(tab.id)}
+                // `group` stays: the close affordance reveals on group-hover.
+                className="group shrink-0"
+                style={{
+                  ...chromeBareVars(colors, {
+                    bg: isActive ? colors.fillSubtle : 'transparent',
+                    fg: isActive ? colors.cyan : colors.textMuted,
+                    fgHover: isActive ? colors.cyan : colors.text,
+                    pad: `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.tabPadX}px`,
+                    radiusPx: 0,
+                  }),
+                  // Active tab keeps its resting fill on hover/press — the fill
+                  // ladder only lifts inactive tabs (D10 on glass).
+                  ...(isActive
+                    ? {
+                        '--pa-btn-bg-hover': colors.fillSubtle,
+                        '--pa-btn-bg-active': colors.fillSubtle,
+                      }
+                    : null),
+                  // `.pa-btn` carries a border on all four edges; a tab has one
+                  // only on its right. Widths here, colour still from the vars
+                  // above, so the hover rule keeps working.
+                  borderWidth: '0 1px 0 0',
+                  borderColor: colors.border,
+                  fontFamily: font.mono,
+                  fontSize: textSize.micro,
+                  gap: CHROME_GEOM.tabGap,
+                } as CSSProperties}
               >
-                <FiX size={10} />
-              </span>
-            </Button>
-          ))}
+                <FiTerminal size={11} />
+                <span className="truncate max-w-[140px]">{tab.label}</span>
+                <span
+                  onClick={(e) => handleCloseTab(tab.id, e)}
+                  className={`ml-1 rounded p-0.5 ${
+                    closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100'
+                  }`}
+                  style={{
+                    transition: `background-color ${duration.fast}ms ${ease.smooth}, color ${duration.fast}ms ${ease.smooth}`,
+                    ...(closingTabId === tab.id
+                      ? { background: dangerWash(colors), color: colors.danger }
+                      : { color: colors.textMuted }),
+                  }}
+                  onMouseEnter={(e) => {
+                    if (closingTabId === tab.id) return;
+                    e.currentTarget.style.background = colors.fillHover;
+                  }}
+                  onMouseLeave={(e) => {
+                    if (closingTabId === tab.id) return;
+                    e.currentTarget.style.background = 'transparent';
+                  }}
+                >
+                  <FiX size={10} />
+                </span>
+              </Button>
+            );
+          })}
         </div>
         <CycleTabsButton pane="terminal" onCycle={() => cycleTabs()} />
         {!detached && (
@@ -543,11 +606,7 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
             onClick={popOutActive}
             title="Pop out active terminal"
             aria-label="Pop out active terminal"
-            style={{
-              '--pa-btn-fg': colors.textMuted,
-              '--pa-btn-fg-hover': colors.cyan,
-              '--pa-btn-pad': '6px 8px',
-            } as CSSProperties}
+            style={railIcon(colors.cyan, CHROME_GEOM.popOutPadX)}
           >
             <FiExternalLink size={13} />
           </Button>
@@ -558,17 +617,16 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
           onClick={handleNewTab}
           title="New terminal (Cmd+T)"
           aria-label="New terminal"
-          style={{
-            '--pa-btn-fg': colors.textMuted,
-            '--pa-btn-fg-hover': colors.cyan,
-            '--pa-btn-pad': '6px 10px',
-          } as CSSProperties}
+          style={railIcon(colors.cyan, CHROME_GEOM.newTabPadX)}
         >
           <FiPlus size={13} />
         </Button>
       </div>
 
-      <div className="flex-1 min-h-0 relative">
+      {/* PTY content layer — opaque theme bg; never glass (D1). Absolute
+          children + flex-1 leftover are the rect fitVisibleTerminal measures;
+          do not pad this wrapper. */}
+      <div className="flex-1 min-h-0 relative" style={{ backgroundColor: colors.bg }}>
         {tabs.map(tab => (
           <div
             key={tab.id}

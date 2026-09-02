@@ -127,7 +127,10 @@ it('carries the reason it cannot be pressed', () => {
     root.render(<Toggle on={false} disabled disabledReason="Tailscale is not installed." onChange={onChange} />);
   });
   expect(sw().disabled).toBe(true);
-  expect(sw().title).toBe('Tailscale is not installed.');
+  const wrap = container.querySelector('span[tabindex="0"]') as HTMLElement;
+  act(() => { wrap.focus(); });
+  expect(document.querySelector('[role="tooltip"]')?.textContent)
+    .toBe('Tailscale is not installed.');
   act(() => { sw().click(); });
   expect(onChange).not.toHaveBeenCalled();
 });

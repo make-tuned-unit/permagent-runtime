@@ -82,7 +82,6 @@ const OFF_RAMP_BUDGET: Record<string, number> = {
   // the lone 24px page title became `type.title`. `components/history`, the
   // four record panes lifted out of Settings, arrives with none and gets no
   // budget line for the same reason.
-  'components/sidebar': 1,
   'components/skills': 2,
   'components/tool-results': 2,
   // 6, down from 7: the Orb's 28px teach-word is now `type.display`. The six

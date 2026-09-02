@@ -59,9 +59,15 @@ describe('Chip — the liveness distinction', () => {
   });
 
   it('says in words which kind it is, for anyone not reading the shape', () => {
-    expect(render(<Chip kind="static">LOCAL</Chip>).title)
-      .toContain('not a live status');
-    expect(render(<Chip kind="static" title="Runs on this machine">LOCAL</Chip>).title)
+    const fixed = render(<Chip kind="static">LOCAL</Chip>);
+    act(() => { fixed.focus(); });
+    const tip = document.querySelector('[role="tooltip"]');
+    expect(tip?.textContent).toContain('not a live status');
+    act(() => { fixed.blur(); });
+
+    const overridden = render(<Chip kind="static" title="Runs on this machine">LOCAL</Chip>);
+    act(() => { overridden.focus(); });
+    expect(document.querySelector('[role="tooltip"]')?.textContent)
       .toBe('Runs on this machine');
   });
 
@@ -81,7 +87,8 @@ describe('Chip — the liveness distinction', () => {
     const el = render(
       <Chip kind="state" asOf={Date.now() - 2 * 60_000}>ON WATCH</Chip>,
     );
-    expect(el.title).toContain('2m ago');
+    act(() => { el.focus(); });
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('2m ago');
   });
 });
 

@@ -8,7 +8,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
-import { duration, ease, font, radius, tabularNums, type, textSize } from '../../styles/tokens';
+import { concentric, duration, ease, font, radius, tabularNums, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { api, apiFetch, uploadFinanceStatement } from '../../lib/api';
@@ -337,6 +337,18 @@ interface DailyPick {
   model?: string | null;
   candidateCount: number;
 }
+
+/**
+ * A fixed dark ink for legibility on `AGENT_TRIM.financier`'s fixed gold
+ * badge fill. `world/shared/palette.ts` is FROZEN and theme-independent
+ * (identity trim, never repainted by state or theme), so there is no theme
+ * token this could derive from — the same situation `colors.textOnCyan`
+ * solves for the flat cyan fill, just with no generic "ink on a bright
+ * identity-trim fill" token minted yet (request: A1c/tokens). Named once
+ * here, with this comment, rather than inlined — the finance color fitness
+ * test (styles/financeColors.test.ts) allow-lists exactly this one literal.
+ */
+const FINANCIER_BADGE_INK = '#3d2e0a';
 
 const POLL_MS = 60_000;
 /** How often a running Picker scan is asked whether it is done. */
@@ -927,7 +939,7 @@ function DisclaimerDialog({
       data-testid="finance-disclaimer"
       style={{
         border: `1px solid ${colors.border}`,
-        borderRadius: 10,
+        borderRadius: radius.lg,
         padding: '12px 14px',
         background: colors.bgDeeper,
         maxWidth: 560,
@@ -1132,6 +1144,12 @@ function PickerControls({
                 aria-label={`Remove ${t}`}
                 flashSuccess={false}
                 onClick={() => saveExtras(universe.filter((x) => x !== t))}
+                // The one clean corner-offset relationship on this screen
+                // (D4): the × sits inside a radius.sm tag with 2px of
+                // vertical padding, so its own hover backer is concentric to
+                // the tag's corner rather than reusing the tag's radius
+                // outright.
+                style={{ '--pa-btn-radius': `${concentric(radius.sm, 2)}px` } as CSSProperties}
               >
                 ×
               </Button>
@@ -1550,6 +1568,7 @@ function PickRow({
   onPrefill: (draft: TradeDraft) => void;
 }) {
   const money = useMoney();
+  const { reduceMotion } = useTheme();
   const [open, setOpen] = useState(approved);
   const loop = pick.loop;
   const yahoo = pick.quote?.price ?? null;
@@ -1605,7 +1624,10 @@ function PickRow({
               color: colors.textMuted,
               display: 'inline-block',
               transform: open ? 'rotate(90deg)' : 'none',
-              transition: `transform ${duration.fast}ms ${ease.out}`,
+              // A disclosure toggle is a control-state change, not a hover
+              // ripple — D9's snappy spring (bounce ~0.15) is the one built
+              // for exactly this, not the plain ease.out curve.
+              transition: reduceMotion ? 'none' : `transform ${duration.snappy}ms ${ease.snappy}`,
             }}
           >
             ▸
@@ -1623,7 +1645,7 @@ function PickRow({
             title={GLOSSARY.financierApproved}
             style={{
               ...type.micro,
-              color: '#3d2e0a',
+              color: FINANCIER_BADGE_INK,
               background: AGENT_TRIM.financier,
               fontWeight: 700,
               letterSpacing: '0.04em',
@@ -1735,6 +1757,7 @@ function HouseholdSection({
   setError: (s: string | null) => void;
 }) {
   const money = useMoney();
+  const { reduceMotion } = useTheme();
   const fileRef = useRef<HTMLInputElement>(null);
   const [hint, setHint] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -1778,6 +1801,7 @@ function HouseholdSection({
           borderRadius: radius.sm,
           padding: '12px 14px',
           marginBottom: 14,
+          transition: reduceMotion ? 'none' : `border-color ${duration.fast}ms ${ease.out}`,
         }}
       >
         <span style={{ ...type.small, color: colors.textMuted }}>
@@ -2073,15 +2097,16 @@ function Card({
   warn?: boolean;
   testId?: string;
 }) {
-  const { theme } = useTheme();
-  const veil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
   return (
     <section
       data-testid={testId}
       style={{
-        background: veil,
+        // Resting tint, not a hand-rolled per-theme rgba ternary — the same
+        // white-alpha-idiom replacement Reduce Transparency and every hover
+        // fill in the app already read from (see fillSubtle in tokens.ts).
+        background: colors.fillSubtle,
         border: `1px solid ${warn ? warnFill(colors.warning, 0.45) : colors.border}`,
-        borderRadius: 10,
+        borderRadius: radius.lg,
         padding: '14px 16px',
         overflow: 'hidden',
         minWidth: 0,

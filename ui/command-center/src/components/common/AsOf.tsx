@@ -16,6 +16,7 @@
 import { useTheme } from '../../styles/useTheme';
 import { useFreshness, type UseFreshnessOptions } from '../../hooks/useFreshness';
 import { radius } from '../../styles/tokens';
+import { Tooltip } from './Tooltip';
 
 export interface AsOfProps extends UseFreshnessOptions {
   /** When the thing was last true. Epoch millis, a Date, or a wire timestamp. */
@@ -39,10 +40,10 @@ export function AsOf({ asOf, prefix, suffix, dot, 'data-testid': testId, ...opti
     : freshness.tone === 'stale' ? colors.stale
       : colors.textMuted;
 
-  return (
+  const node = (
     <span
       data-testid={testId}
-      title={freshness.exact ?? undefined}
+      tabIndex={freshness.exact ? 0 : undefined}
       style={{ color, display: 'inline-flex', alignItems: 'center', gap: 6 }}
     >
       {dot && freshness.stale && (
@@ -63,4 +64,7 @@ export function AsOf({ asOf, prefix, suffix, dot, 'data-testid': testId, ...opti
       </span>
     </span>
   );
+  return freshness.exact
+    ? <Tooltip content={freshness.exact}>{node}</Tooltip>
+    : node;
 }

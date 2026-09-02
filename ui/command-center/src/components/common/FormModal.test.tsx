@@ -168,7 +168,10 @@ it('clears a stale failure when the user tries again', async () => {
 it('says why the submit is disabled instead of just dimming it', () => {
   render({ submitDisabled: true, disabledReason: 'Give the automation a name first.' });
   expect(buttonLabelled('Create').disabled).toBe(true);
-  expect(buttonLabelled('Create').getAttribute('title')).toBe('Give the automation a name first.');
+  const wrap = container.querySelector('span[tabindex="0"]') as HTMLElement;
+  act(() => { wrap.focus(); });
+  expect(document.querySelector('[role="tooltip"]')?.textContent)
+    .toBe('Give the automation a name first.');
   expect(container.textContent).toContain('Give the automation a name first.');
 });
 

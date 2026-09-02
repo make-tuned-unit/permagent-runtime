@@ -4,6 +4,7 @@ import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { CycleTabsButton } from '../build/CycleTabsButton';
+import { CHROME_GEOM, chromeBareVars, dangerWash } from './browserChrome';
 
 export interface BrowserTab {
   id: string;
@@ -35,17 +36,17 @@ export function BrowserTabs({
   onPopOut,
 }: BrowserTabsProps) {
   const { colors } = useTheme();
-  /** The two trailing glyphs: no chrome, ink only, exactly as before — the
-   *  hover that was a pair of mouse handlers on "new tab" is now the class's. */
+  /** Trailing glyphs: ink only on the shared glass plane (D2/D3). */
   const railIcon = (hover: string): CSSProperties => ({
-    '--pa-btn-fg': colors.textMuted,
-    '--pa-btn-fg-hover': hover,
+    ...chromeBareVars(colors, { fg: colors.textMuted, fgHover: hover, pad: `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.chipPadX}px`, radiusPx: 0 }),
     '--pa-btn-bg-hover': 'transparent',
     '--pa-btn-bg-active': 'transparent',
-    '--pa-btn-radius': '0',
   } as CSSProperties);
+
   return (
-    <div className="flex items-center" style={{ backgroundColor: colors.bg, borderBottom: `1px solid ${colors.border}` }}>
+    // No fill of its own — sits on the parent glass stack (D1/D3). Hard edge
+    // on the scroll strip (D11), not a soft mask.
+    <div className="flex items-center" style={{ borderBottom: `1px solid ${colors.border}` }}>
       <div className="flex flex-1 items-center overflow-x-auto">
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
@@ -63,17 +64,24 @@ export function BrowserTabs({
               onClick={() => onSelectTab(tab.id)}
               className="group shrink-0"
               style={{
-                '--pa-btn-bg': isActive ? colors.surface : 'transparent',
-                '--pa-btn-fg': isActive ? colors.cyan : colors.textMuted,
-                '--pa-btn-border': 'transparent',
-                '--pa-btn-bg-hover': isActive ? colors.surface : 'rgba(255,255,255,0.05)',
-                '--pa-btn-fg-hover': isActive ? colors.cyan : colors.text,
-                '--pa-btn-bg-active': isActive ? colors.surface : 'rgba(255,255,255,0.09)',
-                '--pa-btn-pad': '6px 12px',
-                '--pa-btn-radius': '0',
+                ...chromeBareVars(colors, {
+                  bg: isActive ? colors.fillSubtle : 'transparent',
+                  fg: isActive ? colors.cyan : colors.textMuted,
+                  fgHover: isActive ? colors.cyan : colors.text,
+                  pad: `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.tabPadX}px`,
+                  radiusPx: 0,
+                }),
+                // Active tab keeps its resting fill on hover/press — the fill
+                // ladder only lifts inactive tabs (D10 on glass).
+                ...(isActive
+                  ? {
+                      '--pa-btn-bg-hover': colors.fillSubtle,
+                      '--pa-btn-bg-active': colors.fillSubtle,
+                    }
+                  : null),
                 fontFamily: font.mono,
                 fontSize: textSize.micro,
-                gap: 6,
+                gap: CHROME_GEOM.bookmarksGap,
                 borderRight: `1px solid ${colors.border}`,
               } as CSSProperties}
             >
@@ -85,11 +93,21 @@ export function BrowserTabs({
                 <span
                   onClick={(e) => onCloseTab(tab.id, e)}
                   className={`ml-1 rounded p-0.5 transition-colors ${
-                    closingTabId === tab.id
-                      ? 'bg-red-500/20 text-red-400'
-                      : 'opacity-0 group-hover:opacity-100 hover:bg-white/10'
+                    closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100'
                   }`}
-                  style={closingTabId === tab.id ? undefined : { color: colors.textMuted }}
+                  style={
+                    closingTabId === tab.id
+                      ? { background: dangerWash(colors), color: colors.danger }
+                      : { color: colors.textMuted }
+                  }
+                  onMouseEnter={(e) => {
+                    if (closingTabId === tab.id) return;
+                    e.currentTarget.style.background = colors.fillHover;
+                  }}
+                  onMouseLeave={(e) => {
+                    if (closingTabId === tab.id) return;
+                    e.currentTarget.style.background = 'transparent';
+                  }}
                 >
                   <FiX size={10} />
                 </span>
@@ -106,7 +124,7 @@ export function BrowserTabs({
           onClick={onPopOut}
           aria-label="Pop out active browser"
           title="Pop out active browser"
-          style={{ ...railIcon(colors.text), '--pa-btn-pad': '6px 8px' } as CSSProperties}
+          style={{ ...railIcon(colors.text), '--pa-btn-pad': `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.chipPadX}px` } as CSSProperties}
         >
           <FiExternalLink size={13} />
         </Button>
@@ -117,7 +135,7 @@ export function BrowserTabs({
         onClick={onNewTab}
         aria-label="New tab"
         title="New tab (Cmd+T)"
-        style={{ ...railIcon(colors.cyan), '--pa-btn-pad': '6px 10px' } as CSSProperties}
+        style={{ ...railIcon(colors.cyan), '--pa-btn-pad': `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.chipPadX + 2}px` } as CSSProperties}
       >
         <FiPlus size={13} />
       </Button>
