@@ -45,12 +45,14 @@ const OWNERS = ['styles/tokens.ts', 'components/common/Glass.tsx'];
  * those entries are gone. Remaining world/** glass belongs to other surfaces.
  */
 const LANE_OWNED: Record<string, { max: number; lane: string }> = {
-  // Brain is the intended proof-case for the token migration and carries the
-  // densest cluster (8), including its own local `glass` object. Converting it
-  // piecemeal from here would collide with that redesign. R13 is in flight.
-  'components/brain/BrainView.tsx': { max: 8, lane: 'R13 Brain' },
-  // CanvasLegend's two are GONE (R16): the shared canvas overlay legend now
-  // draws on the glass tokens, so it no longer needs a hand-rolled entry.
+  // Brain's cluster (was 8, including its own local `glass` object) is GONE:
+  // R13 converted BrainView.tsx and BrainList.tsx to `glassSurface()` / the
+  // theme's `glass` tokens as part of the screen's Liquid Glass pass.
+  // World HUD chrome (HudShell, WorldView, WorldHUD, AgentPicker,
+  // AgentCharacterV2 nameplate) is GONE: R16 put the HUD panels on the glass
+  // tokens — the one place glass over content is correct, the canvas being the
+  // content. CanvasLegend's two are GONE with it: the shared canvas overlay
+  // legend draws on the glass tokens, so it no longer needs a hand-rolled entry.
   // PersonDetailModal's two are GONE (R12): the drawer was a hand-rolled
   // second modal, and it is a `DetailModal placement="contained"` now — a
   // modal body is content by Apple's own list, so it is simply opaque.
