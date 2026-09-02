@@ -1,8 +1,9 @@
 import { useState, useCallback, useRef, useEffect, useImperativeHandle, forwardRef, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius, textSize } from '../../styles/tokens';
+import { concentric, duration, ease, font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { useGlass } from '../common/Glass';
 import { useBrowserContentBridge } from '../../hooks/useBrowserContentBridge';
 import { useBrowserActBridge } from '../../hooks/useBrowserActBridge';
 import {
@@ -17,6 +18,11 @@ import {
 } from 'react-icons/fi';
 import { BrowserTabs, type BrowserTab } from './BrowserTabs';
 import { BookmarksBar } from './BookmarksBar';
+import {
+  ADDRESS_RADIUS,
+  CHROME_GEOM,
+  chromeBareVars,
+} from './browserChrome';
 import {
   applyEvent,
   bufferEvent,
@@ -105,7 +111,11 @@ let persistedActiveTabId: string | null = null;
 interface BrowserProps { initialTab?: BrowserTab | null; ownerWindowLabel?: string; detached?: boolean }
 
 export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserProps>(function Browser({ initialTab, ownerWindowLabel = 'main', detached = false }, ref) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
+  // One glass plane for the top chrome stack + one for the status bar (D1/D3).
+  // Content between them stays opaque. Material comes from the shared token
+  // via useGlass — never a hand-rolled backdropFilter (D7).
+  const chromeGlass = useGlass('glass');
   const overlayBlocking = useCommandCenter(s => s.overlayBlockingBrowser);
   const chatLauncherSize = useCommandCenter(s => s.chatLauncherSize);
   const chatDockOpen = useCommandCenter(s => s.chatDockOpen);
@@ -1125,28 +1135,29 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
 
   const protocol = activeTab?.url ? getUrlProtocol(activeTab.url) : 'other';
 
-  /** The four toolbar glyphs, previously `p-1.5 rounded hover:bg-white/5`. The
-   *  hover fill is the same `rgba(255,255,255,0.05)` the utility class painted;
-   *  it just no longer needs a pair of mouse handlers to also move the ink. */
-  const navIconVars: CSSProperties = {
-    '--pa-btn-fg': colors.textMuted,
-    '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
-    '--pa-btn-bg-active': 'rgba(255,255,255,0.09)',
-    '--pa-btn-pad': '6px',
-    '--pa-btn-radius': `${radius.xs}px`,
-  } as CSSProperties;
+  /** Nav glyphs on the glass toolbar — fillHover/fillActive, not a second
+   *  material (D2/D10). Pad frozen at CHROME_GEOM.navIconPad so the URL row
+   *  height (and therefore the webview rect) cannot drift. */
+  const navIconVars: CSSProperties = chromeBareVars(colors);
 
-  /** The zoom steppers sit inside the status bar's own 10px mono run and took
+  /** The zoom steppers sit inside the status bar's own micro mono run and took
    *  their resting ink from it — `inherit` keeps that, rather than pinning a
    *  colour the surrounding text does not have. */
   const zoomStepVars: CSSProperties = {
-    '--pa-btn-fg': 'inherit',
-    '--pa-btn-fg-hover': colors.cyan,
+    ...chromeBareVars(colors, {
+      fg: 'inherit',
+      fgHover: colors.cyan,
+      pad: `0 ${CHROME_GEOM.chipPadY}px`,
+      radiusPx: 0,
+    }),
     '--pa-btn-bg-hover': 'transparent',
     '--pa-btn-bg-active': 'transparent',
-    '--pa-btn-pad': '0 2px',
     fontSize: 10,
   } as CSSProperties;
+
+  const addressTransition = reduceMotion
+    ? 'none'
+    : `border-color ${duration.fast}ms ${ease.smooth}`;
 
   const popOutActive = useCallback(async () => {
     const tab = tabsRef.current.find(t => t.id === activeTabIdRef.current);
@@ -1169,129 +1180,150 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
 
   return (
     <div ref={rootRef} onFocusCapture={selectPane} className="flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
-      {/* Tab bar */}
-      <BrowserTabs
-        tabs={tabs}
-        activeTabId={activeTabId}
-        closingTabId={closingTabId}
-        onSelectTab={handleSelectTab}
-        onCloseTab={handleCloseTab}
-        onNewTab={handleNewTab}
-        onCycleTab={() => cycleTabs()}
-        onPopOut={detached ? undefined : popOutActive}
-      />
+      {/* Top chrome — ONE glass plane (D1/D3). Tabs + URL + bookmarks share it;
+          children use fillHover/fillActive, never a second backdrop-filter (D2).
+          Geometry is frozen in CHROME_GEOM so containerRef's leftover (the
+          native webview rect) cannot shift. */}
+      <div style={{ ...chromeGlass, borderRadius: concentric(radius.glass, radius.glass) }}>
+        <BrowserTabs
+          tabs={tabs}
+          activeTabId={activeTabId}
+          closingTabId={closingTabId}
+          onSelectTab={handleSelectTab}
+          onCloseTab={handleCloseTab}
+          onNewTab={handleNewTab}
+          onCycleTab={() => cycleTabs()}
+          onPopOut={detached ? undefined : popOutActive}
+        />
 
-      {/* URL bar */}
-      <div className="flex items-center gap-2 px-3 py-2" style={{ backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}` }}>
-        {/* Back/Forward act on WKWebView's own history via `browser_go`, and
-            their enabled state comes from canGoBack/canGoForward rather than a
-            URL list we keep ourselves — that is the "real history" the 2026-07
-            audit was waiting for before restoring these. */}
-        <div className="flex items-center gap-1">
-          <Button
-            colors={colors}
-            variant="bare"
-            onClick={() => goHistory(false)}
-            style={navIconVars}
-            title="Back"
-            aria-label="Back"
-            disabled={!navState.canGoBack}
-          >
-            <FiChevronLeft size={16} />
-          </Button>
-          <Button
-            colors={colors}
-            variant="bare"
-            onClick={() => goHistory(true)}
-            style={navIconVars}
-            title="Forward"
-            aria-label="Forward"
-            disabled={!navState.canGoForward}
-          >
-            <FiChevronRight size={16} />
-          </Button>
-          <Button
-            colors={colors}
-            variant="bare"
-            onClick={handleReload}
-            style={{ ...navIconVars, '--pa-btn-fg-hover': colors.text } as CSSProperties}
-            title="Reload (Cmd+R)"
-            aria-label="Reload"
-            disabled={!activeTab?.webviewId}
-          >
-            <FiRefreshCw size={14} className={activeTab?.loading ? 'animate-spin' : ''} />
-          </Button>
-          <Button
-            colors={colors}
-            variant="bare"
-            onClick={saveToInbox}
-            style={{
-              ...navIconVars,
-              '--pa-btn-fg':
-                savingToInbox === 'done'
-                  ? colors.cyan
-                  : savingToInbox === 'failed'
-                    ? colors.danger
-                    : colors.textMuted,
-            } as CSSProperties}
-            title={
-              savingToInbox === 'done'
-                ? lastSavedFilename
-                  ? `Saved "${lastSavedFilename}" to your inbox`
-                  : 'Saved to your inbox'
-                : savingToInbox === 'failed'
-                  ? 'Could not save this tab — see the console for why'
-                  : 'Save this page or document to your Downloads inbox'
-            }
-            aria-label="Save to inbox"
-            disabled={!activeTab?.webviewId || savingToInbox === 'busy'}
-          >
-            <FiInbox size={14} />
-          </Button>
-        </div>
-
-        {/* Address bar */}
+        {/* URL bar */}
         <div
-          className="flex-1 flex items-center rounded-md transition-colors"
-          style={{ backgroundColor: colors.bgDeeper, border: `1px solid ${colors.border}` }}
-          onFocus={e => { e.currentTarget.style.borderColor = colors.cyan; }}
-          onBlur={e => { e.currentTarget.style.borderColor = colors.border; }}
+          className="flex items-center"
+          style={{
+            gap: CHROME_GEOM.toolbarGap,
+            padding: `${CHROME_GEOM.toolbarPadY}px ${CHROME_GEOM.toolbarPadX}px`,
+            borderBottom: `1px solid ${colors.border}`,
+          }}
         >
-          <span className="pl-2.5 pr-1">
-            {protocol === 'https' ? (
-              <FiLock size={12} style={{ color: colors.cyan }} />
-            ) : protocol === 'http' ? (
-              <FiAlertTriangle size={12} className="text-amber-400" />
-            ) : (
-              <FiShield size={12} style={{ color: colors.textMuted }} />
-            )}
-          </span>
-          <input
-            ref={urlInputRef}
-            type="text"
-            value={urlInput}
-            onChange={(e) => { urlDirtyRef.current = true; setUrlInput(e.target.value); }}
-            onKeyDown={handleUrlKeyDown}
-            onFocus={(e) => e.target.select()}
-            placeholder="Search or enter URL..."
-            className="browser-url-input flex-1 bg-transparent text-xs py-1.5 pr-3 outline-none"
-            style={{ fontFamily: font.mono, color: colors.text }}
-          />
-          <style>{`.browser-url-input::placeholder { color: ${colors.textMuted}; opacity: 0.6; }`}</style>
+          {/* Back/Forward act on WKWebView's own history via `browser_go`, and
+              their enabled state comes from canGoBack/canGoForward rather than a
+              URL list we keep ourselves — that is the "real history" the 2026-07
+              audit was waiting for before restoring these. */}
+          <div className="flex items-center" style={{ gap: CHROME_GEOM.bookmarksGap }}>
+            <Button
+              colors={colors}
+              variant="bare"
+              onClick={() => goHistory(false)}
+              style={navIconVars}
+              title="Back"
+              aria-label="Back"
+              disabled={!navState.canGoBack}
+            >
+              <FiChevronLeft size={16} />
+            </Button>
+            <Button
+              colors={colors}
+              variant="bare"
+              onClick={() => goHistory(true)}
+              style={navIconVars}
+              title="Forward"
+              aria-label="Forward"
+              disabled={!navState.canGoForward}
+            >
+              <FiChevronRight size={16} />
+            </Button>
+            <Button
+              colors={colors}
+              variant="bare"
+              onClick={handleReload}
+              style={{ ...navIconVars, '--pa-btn-fg-hover': colors.text } as CSSProperties}
+              title="Reload (Cmd+R)"
+              aria-label="Reload"
+              disabled={!activeTab?.webviewId}
+            >
+              <FiRefreshCw size={14} className={activeTab?.loading ? 'animate-spin' : ''} />
+            </Button>
+            <Button
+              colors={colors}
+              variant="bare"
+              onClick={saveToInbox}
+              style={{
+                ...navIconVars,
+                '--pa-btn-fg':
+                  savingToInbox === 'done'
+                    ? colors.cyan
+                    : savingToInbox === 'failed'
+                      ? colors.danger
+                      : colors.textMuted,
+              } as CSSProperties}
+              title={
+                savingToInbox === 'done'
+                  ? lastSavedFilename
+                    ? `Saved "${lastSavedFilename}" to your inbox`
+                    : 'Saved to your inbox'
+                  : savingToInbox === 'failed'
+                    ? 'Could not save this tab — see the console for why'
+                    : 'Save this page or document to your Downloads inbox'
+              }
+              aria-label="Save to inbox"
+              disabled={!activeTab?.webviewId || savingToInbox === 'busy'}
+            >
+              <FiInbox size={14} />
+            </Button>
+          </div>
+
+          {/* Address bar — opaque inset on glass (D2), concentric radius (D4). */}
+          <div
+            className="flex-1 flex items-center"
+            style={{
+              backgroundColor: colors.inputBg,
+              border: `1px solid ${colors.border}`,
+              borderRadius: ADDRESS_RADIUS,
+              transition: addressTransition,
+            }}
+            onFocus={e => { e.currentTarget.style.borderColor = colors.cyan; }}
+            onBlur={e => { e.currentTarget.style.borderColor = colors.border; }}
+          >
+            <span className="pl-2.5 pr-1">
+              {protocol === 'https' ? (
+                <FiLock size={12} style={{ color: colors.cyan }} />
+              ) : protocol === 'http' ? (
+                <FiAlertTriangle size={12} style={{ color: colors.warning }} />
+              ) : (
+                <FiShield size={12} style={{ color: colors.textMuted }} />
+              )}
+            </span>
+            <input
+              ref={urlInputRef}
+              type="text"
+              value={urlInput}
+              onChange={(e) => { urlDirtyRef.current = true; setUrlInput(e.target.value); }}
+              onKeyDown={handleUrlKeyDown}
+              onFocus={(e) => e.target.select()}
+              placeholder="Search or enter URL..."
+              // text-xs / py-1.5 / pr-3 kept as classes so the URL row's box
+              // (and the flex-1 webview leftover) stays pixel-identical.
+              className="browser-url-input flex-1 bg-transparent text-xs py-1.5 pr-3 outline-none"
+              style={{ fontFamily: font.mono, color: colors.text }}
+            />
+            <style>{`.browser-url-input::placeholder { color: ${colors.textMuted}; opacity: 0.6; }`}</style>
+          </div>
         </div>
+
+        {/* Bookmarks + saved tab sets row (#790) — daemon-persisted state */}
+        <BookmarksBar
+          currentUrl={activeTab?.url ?? ''}
+          currentTitle={activeTab?.label ?? ''}
+          openTabs={tabs}
+          onNavigate={handleNavigate}
+          onOpenInNewTab={handleOpenUrl}
+        />
       </div>
 
-      {/* Bookmarks + saved tab sets row (#790) — daemon-persisted state */}
-      <BookmarksBar
-        currentUrl={activeTab?.url ?? ''}
-        currentTitle={activeTab?.label ?? ''}
-        openTabs={tabs}
-        onNavigate={handleNavigate}
-        onOpenInNewTab={handleOpenUrl}
-      />
-
-      {/* Content area — the child webview overlays this div */}
-      <div ref={containerRef} className="flex-1 min-h-0 relative">
+      {/* Content area — opaque (D1). The child webview overlays this div;
+          its getBoundingClientRect is what syncBounds hands to native — do
+          not insert chrome or padding here. */}
+      <div ref={containerRef} className="flex-1 min-h-0 relative" style={{ backgroundColor: colors.bg }}>
         {!api ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center p-8">
@@ -1313,7 +1345,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
               <h3 className="text-sm mb-2" style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>Ready to Browse</h3>
               <p className="text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>
                 Enter a URL above or press{' '}
-                <kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ fontFamily: font.mono, backgroundColor: colors.border }}>Cmd+L</kbd> to
+                <kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ fontFamily: font.mono, backgroundColor: colors.fillSubtle }}>Cmd+L</kbd> to
                 focus the address bar
               </p>
               <div className="mt-6 flex flex-wrap gap-2 justify-center">
@@ -1324,14 +1356,16 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
                     variant="bare"
                     onClick={() => handleNavigate(`https://${site}`)}
                     style={{
-                      '--pa-btn-bg': 'rgba(255,255,255,0.05)',
-                      '--pa-btn-fg': colors.textMuted,
+                      ...chromeBareVars(colors, {
+                        bg: colors.fillSubtle,
+                        pad: `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.tabPadX}px`,
+                        radiusPx: radius.sm,
+                      }),
                       '--pa-btn-bg-hover': colors.cyanSoft,
                       '--pa-btn-fg-hover': colors.cyan,
                       '--pa-btn-bg-active': colors.cyanGlow,
-                      '--pa-btn-pad': '6px 12px',
-                      '--pa-btn-radius': `${radius.sm}px`,
-                      fontFamily: font.body, fontSize: textSize.caption,
+                      fontFamily: font.body,
+                      fontSize: textSize.caption,
                     } as CSSProperties}
                   >
                     {site}
@@ -1343,8 +1377,17 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
         ) : null /* Child webview renders natively over this area */}
       </div>
 
-      {/* Status bar */}
-      <div className="flex items-center gap-3 px-3 py-1" style={{ backgroundColor: colors.surface, borderTop: `1px solid ${colors.border}` }}>
+      {/* Status bar — separate glass plane below the opaque content (D1). */}
+      <div
+        className="flex items-center"
+        style={{
+          ...chromeGlass,
+          borderRadius: concentric(radius.glass, radius.glass),
+          gap: CHROME_GEOM.statusGap,
+          padding: `${CHROME_GEOM.statusPadY}px ${CHROME_GEOM.statusPadX}px`,
+          borderTop: `1px solid ${colors.border}`,
+        }}
+      >
         <span className="text-[10px] flex-1 truncate" style={{ fontFamily: font.mono, color: colors.textMuted }}>
           {activeTab?.loading
             ? 'Loading...'
