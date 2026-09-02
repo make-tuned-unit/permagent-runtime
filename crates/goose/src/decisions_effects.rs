@@ -963,6 +963,13 @@ pub async fn apply_decision_effect(
         ("file_to_project", Some("reject")) => {
             already_applied("file-to-project proposal declined; nothing was persisted")
         }
+        ("config_change_proposal", Some("approve")) => apply_config_change(decision),
+        // A rejection writes NOTHING. Said explicitly rather than falling to a
+        // catch-all, so "reject changed a setting anyway" would be a visible
+        // edit here rather than an accident of arm ordering.
+        ("config_change_proposal", Some("reject")) => {
+            already_applied("no setting was changed".to_string())
+        }
         ("model_upgrade", Some("approve")) => apply_model_upgrade(decision).await,
         ("model_upgrade", Some("reject")) => {
             already_applied("model upgrade declined; the active model is unchanged")
@@ -1076,6 +1083,36 @@ pub async fn apply_decision_effect(
 /// (`GOOSE_MODEL`) to the proposed one. The target must already be installed
 /// (download stays in Settings → Models). Idempotent: if the active model is
 /// already the target, it reads as applied.
+/// An approved `config_change_proposal` becomes the write it described.
+///
+/// This is the whole point of the proposal path: the agent files a card, the
+/// user approves, and the write happens HERE — server-side, on the same
+/// `Config::set_param` the Settings pane uses, so it announces itself with
+/// `config_changed` like any other. The agent never touched the key.
+///
+/// `apply_proposed_change` re-validates class, key and value shape before
+/// writing. The approval authorises what the CARD said; it is not a blank
+/// cheque for whatever the stored payload contains at apply time.
+fn apply_config_change(decision: &Decision) -> Result<EffectResult, GuardError> {
+    let payload: decisions::ConfigChangeProposalPayload =
+        serde_json::from_value(decision.payload.clone()).map_err(|e| {
+            GuardError::Invalid(format!(
+                "stored config_change_proposal payload unreadable: {e}"
+            ))
+        })?;
+
+    match crate::agents::platform_extensions::configure_app::apply_proposed_change(
+        &payload.key_class,
+        &payload.key,
+        &payload.value,
+    ) {
+        Ok(summary) => Ok((Some(summary), None)),
+        Err(why) => Err(GuardError::Invalid(format!(
+            "could not apply the approved setting change: {why}"
+        ))),
+    }
+}
+
 async fn apply_model_upgrade(decision: &Decision) -> Result<EffectResult, GuardError> {
     let payload: decisions::ModelUpgradePayload = serde_json::from_value(decision.payload.clone())
         .map_err(|e| {
