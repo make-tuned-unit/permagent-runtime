@@ -5,6 +5,7 @@ import { copyText } from '../lib/clipboard';
 import { wireEventType } from '../lib/wireEvent';
 import { appendTraceRecord, claimTraceEventId, globalFrameToRecord } from '../lib/traceEvents';
 import { useCommandCenter, navigateToTool } from '../lib/store';
+import { panelForSection } from '../components/settings/sections';
 import type { ActivePanel } from '../lib/store';
 import { createChatWindow } from '../lib/chatWindow';
 import { useTheme } from '../styles/useTheme';
@@ -303,15 +304,29 @@ export function useAppNavigate() {
       // map those to their Settings home instead of setting a dead panel.
       const legacySection = LEGACY_OVERLAY_SECTIONS[tool_type];
       if (legacySection) {
-        setPendingSettingsSectionRef.current(section ?? legacySection);
-        setActivePanelRef.current('settings');
+        // All four of these are History's segments now, so `panelForSection`
+        // sends them to the destination rather than through Settings — but
+        // the SECTION still rides along, because History reads it to pick the
+        // segment and "governance" landing on Sessions instead of Spend is
+        // the same dropped-deep-link bug in nicer clothes.
+        const target = section ?? legacySection;
+        setPendingSettingsSectionRef.current(target);
+        setActivePanelRef.current(panelForSection(target));
       } else {
         // Deep-link into a sub-section (e.g. Settings → Devices). The target
         // overlay reads pendingSettingsSection on mount. Without this the
         // daemon-forwarded `section` was dropped and every deep-link fell to
         // the default.
         if (section) setPendingSettingsSectionRef.current(section);
-        setActivePanelRef.current(tool_type as ActivePanel);
+        // A "Settings -> <pane>" deep link whose pane is one of History's
+        // records opens History. The daemon's catalog still says 'settings'
+        // for all of them and is not versioned, so the redirect has to happen
+        // on this side.
+        setActivePanelRef.current(
+          tool_type === 'settings' && section
+            ? panelForSection(section)
+            : (tool_type as ActivePanel),
+        );
       }
     } else if (VALID_TOOL_TYPES.has(tool_type)) {
       // Find workspace containing this tool type

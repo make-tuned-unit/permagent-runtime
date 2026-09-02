@@ -33,6 +33,40 @@ export const SETTINGS_SECTION_KEYS = [
 
 export type SettingsSectionKey = (typeof SETTINGS_SECTION_KEYS)[number];
 
+/**
+ * The sections that are NOT settings.
+ *
+ * Sessions, Downloads, Activity and Spend are records of what already
+ * happened, and since #1177 they are one component; since the sidebar grew a
+ * History row they are a top-level DESTINATION rather than a Settings pane.
+ * They still arrive as deep-link `section` keys — `app_navigate`
+ * (app_conductor.rs), the agent's own "Settings -> Spend" phrasing, and this
+ * app's own notification activations all carry them, and none of those are
+ * versioned — so the keys keep resolving. What changed is where they land.
+ *
+ * Listed here, in the module that has no React imports, because the router
+ * that needs it (`hooks/useAppNavigate`, `lib/notifications`) must not pull in
+ * a view. `sections.test.ts` pins this list against `HISTORY_TAB_KEYS` in
+ * `components/history/HistoryView`, so the two cannot drift.
+ */
+export const HISTORY_SECTIONS = ['history', 'sessions', 'inbox', 'activity', 'spend'] as const;
+
+/** Does this deep-link section belong to the History destination? */
+export function isHistorySection(section: string | null | undefined): boolean {
+  return !!section && (HISTORY_SECTIONS as readonly string[]).includes(section);
+}
+
+/**
+ * Which top-level destination a deep-link section opens.
+ *
+ * Every caller that turns a `section` into a screen goes through here, so
+ * "History is its own destination" is one fact in one place rather than an
+ * `if` repeated at each navigation site.
+ */
+export function panelForSection(section: string | null | undefined): 'history' | 'settings' {
+  return isHistorySection(section) ? 'history' : 'settings';
+}
+
 /** Default Settings pane (Persona). */
 export const DEFAULT_SETTINGS_SECTION: SettingsSectionKey = 'agent';
 

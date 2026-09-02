@@ -3,7 +3,7 @@ import { useCommandCenter } from '../../lib/store';
 import type { LayoutNode } from '../../lib/store';
 import { ease, font, radius, shell, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import { FiBell, FiChevronLeft, FiChevronRight, FiSettings } from 'react-icons/fi';
+import { FiBell, FiChevronLeft, FiChevronRight, FiClock, FiSettings } from 'react-icons/fi';
 import type { IconType } from 'react-icons';
 import { Button } from '../common/Button';
 import { Tooltip } from '../common/Tooltip';
@@ -23,6 +23,52 @@ function hasDashboardTool(node: LayoutNode): boolean {
   return node.children.some(hasDashboardTool);
 }
 
+
+/** History row — Sessions, Downloads, Activity and Spend.
+ *
+ *  A record of what your agent did is not a setting, and until this row
+ *  existed reading one cost a trip through the configuration screen: the
+ *  2026-08 ruling folded the retired Console into Settings because there was
+ *  nowhere else to put it, and #1177 made the four one component precisely so
+ *  that hoisting them out would be an import and a branch rather than a move.
+ *
+ *  It carries the same download badge the Downloads segment shows, off the
+ *  same notification stream the tray and the toasts read — a file that landed
+ *  while you were elsewhere is the one thing here worth a mark on the rail,
+ *  and it is not a second poll.
+ */
+function HistoryRow({ open, active, onOpen, onHover, onLeave }: {
+  open: boolean;
+  active: boolean;
+  onOpen: () => void;
+  onHover?: (el: HTMLElement | null, label: string, shortcut?: string) => void;
+  onLeave?: () => void;
+}) {
+  const { colors } = useTheme();
+  const { items } = useNotifications();
+  const unread = items.filter(n => n.kind === 'download' && !n.read).length;
+  return (
+    <div style={{ position: 'relative' }}>
+      <SidebarRow
+        icon={FiClock}
+        label={unread > 0 ? `History (${unread > 9 ? '9+' : unread})` : 'History'}
+        active={active}
+        open={open}
+        onHover={onHover}
+        onLeave={onLeave}
+        onClick={onOpen}
+      />
+      {unread > 0 && (
+        <span style={{
+          position: 'absolute', top: 7,
+          left: open ? 24 : 'calc(50% + 5px)',
+          width: 8, height: 8, borderRadius: radius.xs,
+          background: colors.cyan, pointerEvents: 'none',
+        }} />
+      )}
+    </div>
+  );
+}
 
 /** Notifications row — a standard sidebar row (above Settings) that toggles
  *  the tray rendered by NotificationHost; open state is shared through the
@@ -184,6 +230,7 @@ export function Sidebar() {
   const navStatus = useNavAgentStatus();
 
   const isSettingsOpen = activePanel === 'settings';
+  const isHistoryOpen = activePanel === 'history';
   // Any non-chat panel (settings, skills) is a full-screen overlay. It
   // must be dismissed when the user picks a workspace, or the overlay stays
   // stuck over the tab they just selected.
@@ -323,8 +370,17 @@ export function Sidebar() {
           was not there. */}
       <MeetingRecorder open={open} />
 
-      {/* The Console row is gone (2026-08 ruling): Sessions, Inbox, Activity
-          (Trace), and Spend live inside Settings now. */}
+      {/* History — Sessions, Downloads, Activity, Spend. This row is what the
+          2026-08 ruling could not give them: the retired Console's four pages
+          have their own destination again, rather than living behind Settings
+          because Settings was the only overlay left standing. */}
+      <HistoryRow
+        open={open}
+        active={isHistoryOpen}
+        onOpen={() => setActivePanel(isHistoryOpen ? 'chat' : 'history')}
+        onHover={showTooltip}
+        onLeave={hideTooltip}
+      />
 
       {/* Notifications — bell row with unread badge, tray anchors beside it. */}
       <NotificationBellRow open={open} onHover={showTooltip} onLeave={hideTooltip} />

@@ -18,12 +18,20 @@
 
 import { describe, expect, it } from 'vitest';
 import { PANELS, paneForSection } from './SettingsView';
-import { SETTINGS_SECTION_KEYS, resolveSettingsSection, DEFAULT_SETTINGS_SECTION } from './sections';
+import {
+  SETTINGS_SECTION_KEYS, resolveSettingsSection, DEFAULT_SETTINGS_SECTION,
+  HISTORY_SECTIONS, isHistorySection, panelForSection,
+} from './sections';
 import { HISTORY_TAB_KEYS, isHistoryTab } from '../history/HistoryView';
 
 describe('settings reachability', () => {
   it('gives every accepted section key a pane to land on', () => {
-    const orphans = SETTINGS_SECTION_KEYS.filter(k => !PANELS[paneForSection(k)]);
+    // History's keys are excluded because they never reach a Settings pane
+    // any more: `panelForSection` sends them to the destination first, and the
+    // test below is the half that proves it. Everything else must still land.
+    const orphans = SETTINGS_SECTION_KEYS
+      .filter(k => !isHistorySection(k))
+      .filter(k => !PANELS[paneForSection(k)]);
     expect(orphans, 'this key resolves to a pane that does not exist — a blank right-hand column').toEqual([]);
   });
 
@@ -38,13 +46,25 @@ describe('settings reachability', () => {
     expect(PANELS[pane]).toBeTruthy();
   });
 
-  it("sends each of History's four record keys to History, keeping the segment", () => {
+  it("sends each of History's four record keys to the History DESTINATION, keeping the segment", () => {
     for (const key of HISTORY_TAB_KEYS) {
+      // Still accepted — app_conductor.rs and the agent's own phrasing have
+      // been sending these for months and neither is versioned.
       expect(SETTINGS_SECTION_KEYS as readonly string[]).toContain(key);
-      expect(paneForSection(key)).toBe('history');
-      // The pane reads the raw section back to pick its segment; if this
+      // ...but they open the top-level destination now, not a Settings pane.
+      expect(panelForSection(key)).toBe('history');
+      // App.tsx reads the raw section back to pick the segment; if this
       // narrowing failed, every one of them would open on Sessions.
       expect(isHistoryTab(key)).toBe(true);
+    }
+  });
+
+  it('has no History pane left inside Settings', () => {
+    // One concept, one place: the rail row is the entry point, so a Settings
+    // pane rendering the same view would be the second one.
+    expect(PANELS.history).toBeUndefined();
+    for (const key of HISTORY_SECTIONS) {
+      expect(PANELS[key], `${key} must not resolve to a Settings pane`).toBeUndefined();
     }
   });
 
