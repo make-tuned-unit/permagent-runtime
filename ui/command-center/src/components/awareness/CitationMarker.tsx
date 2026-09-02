@@ -6,6 +6,7 @@ import type { BrainMemoryTarget } from '../brain/brainMemoryFocus';
 import { probedFocusTarget, recalledFocusTarget } from './citationFocus';
 import { ease, font, radius, type ThemeColors, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { useGlass } from '../common/Glass';
 
 interface Props {
   probed: ProbedMemoryRef[];
@@ -14,6 +15,9 @@ interface Props {
 
 export function CitationMarker({ probed, recalled }: Props) {
   const { colors } = useTheme();
+  // Popover chrome floating above the message it annotates — the smallest
+  // sanctioned glass surface, so the default `glass`.
+  const glass = useGlass('glass');
   const focusBrainMemory = useCommandCenter(s => s.focusBrainMemory);
   const listId = useId();
   const [expanded, setExpanded] = useState(false);
@@ -64,11 +68,13 @@ export function CitationMarker({ probed, recalled }: Props) {
         <div id={listId} style={{
           position: 'absolute', bottom: '100%', right: 0,
           marginBottom: 6, width: 320,
-          background: colors.surface, backdropFilter: 'blur(16px)',
+          ...glass,
           border: `1px solid ${colors.borderHi}`,
           borderRadius: radius.md, padding: '8px 0',
-          boxShadow: colors.cardShadow,
-          ...(colors.cardHighlight ? { boxShadow: `${colors.cardShadow}, ${colors.cardHighlight}` } : {}),
+          // The glass rim supersedes `cardHighlight`: the material carries its
+          // own specular top edge, in both polarities, so the silver-only
+          // highlight override is no longer needed here.
+          boxShadow: `${glass.boxShadow}, ${colors.cardShadow}`,
           zIndex: 100,
           maxHeight: 280, overflow: 'auto',
         }}>

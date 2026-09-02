@@ -73,9 +73,16 @@ export function ChatDock() {
           : { position: 'relative' as const, width: CHAT_DOCK_WIDTH, flexShrink: 0, height: '100%' }),
         display: 'flex',
         flexDirection: 'column',
+        // Opaque, and the blur is gone rather than made real (D1). The dock is
+        // a content pane, not floating chrome: wide, it is a flex sibling of
+        // <main> that SHRINKS the content beside it, so there is nothing
+        // behind it to refract; narrow, it is a full-width sheet, and a
+        // surface that covers the screen is the most opaque case there is.
+        // What it contains — a transcript of message bubbles — is content by
+        // Apple's own list. The filter here blurred nothing (it sat over this
+        // same opaque fill) and cost a compositing pass on the app's most
+        // persistent surface.
         background: colors.surface,
-        backdropFilter: 'blur(24px) saturate(140%)',
-        WebkitBackdropFilter: 'blur(24px) saturate(140%)',
         borderLeft: `1px solid ${colors.borderHi}`,
         // Directional left-edge lift, theme-aware: a deep shadow reads on the
         // void, a soft cool one on silver (a black glow is invisible on light).

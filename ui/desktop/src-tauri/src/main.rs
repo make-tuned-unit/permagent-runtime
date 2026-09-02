@@ -2,6 +2,7 @@
 
 use tauri::Manager;
 
+mod accessibility;
 mod activity;
 mod browser;
 mod daemon;
@@ -369,6 +370,7 @@ fn main() {
             enable_media_capture_cmd,
             haptic_success,
             raise_chat_above_main,
+            accessibility::reduce_transparency,
         ])
         .setup(|app| {
             daemon::start_daemon(app.handle())?;
@@ -379,6 +381,10 @@ fn main() {
             // Main-thread liveness heartbeat (#562) — lets the external watchdog
             // detect an idle-wedge of the AppKit main run loop.
             start_main_thread_heartbeat(app.handle());
+            // Reduce Transparency is invisible to CSS inside WKWebView, so the
+            // native value is pushed to the webview instead — once on demand,
+            // and on every accessibility-options change from here on.
+            accessibility::watch(app.handle());
             // Media capture is enabled per-window via enable_media_capture_cmd,
             // called from JS on mount. NOT done here — the WKWebView is not
             // fully initialized during did_finish_launching.

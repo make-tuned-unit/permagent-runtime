@@ -2678,6 +2678,7 @@ name = "permagent-app"
 version = "1.31.0"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "chrono",
  "libc",
  "objc2",
