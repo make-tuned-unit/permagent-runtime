@@ -46,34 +46,27 @@ impl HoldState {
 
 /// Pure: should this worker's "done" be accepted, held, or parked?
 ///
-/// - Orchestrate / Review / Edit after verify → Allow.
-/// - Mechanical / Local without verify → Hold (or Park past [`MAX_HOLDS`]).
-/// - Spinning without verify also holds.
+/// - Any role after a successful verify → Allow.
+/// - Any role without one → Hold (or Park past [`MAX_HOLDS`]).
+/// - The one exception to the receipt: a hands-on role that verified green and
+///   then went on repeating a failing command still holds.
 pub fn decide_hold(
     role: WorkflowRole,
     verify_ran: bool,
     signals: &ToolTranscriptSignals,
     prior_holds: u8,
 ) -> HoldOutcome {
-    let judgment = matches!(
-        role,
-        WorkflowRole::Orchestrate | WorkflowRole::Review | WorkflowRole::Edit
-    );
-    if judgment && verify_ran {
-        return HoldOutcome::Allow;
-    }
-    if judgment && !verify_ran {
-        // Edit/orchestrate still must verify; treat like a mechanical hold.
-    } else if role == WorkflowRole::Mechanical || role == WorkflowRole::Local {
-        if verify_ran && signals.spinning < 0.5 {
-            return HoldOutcome::Allow;
-        }
-    } else if verify_ran {
-        return HoldOutcome::Allow;
-    }
-
-    let needs_hold = !verify_ran || signals.spinning >= 0.5 || signals.severity >= 0.7;
-    if !needs_hold {
+    // `verify_ran` means a SUCCESSFUL verify AFTER the latest mutation — the
+    // caller computes positions, not mere historical presence. That receipt
+    // leads: transcript text may not talk a green run into a failure, which is
+    // exactly what used to happen when a passing suite printed `0 failed`
+    // (see `tool_signals::extract`, now keyed off the wire's `is_error`).
+    //
+    // It is still not a blank cheque. A hands-on worker that verified and then
+    // kept re-running one failing command has not finished, and that residual
+    // spin is the only thing left that can outrank the receipt.
+    let hands_on = matches!(role, WorkflowRole::Mechanical | WorkflowRole::Local);
+    if verify_ran && !(hands_on && signals.spinning >= 0.5) {
         return HoldOutcome::Allow;
     }
 
@@ -84,10 +77,11 @@ pub fn decide_hold(
         };
     }
 
-    let inject_plan = if !verify_ran {
-        "Do not declare this done. Run verify, read the errors, make one focused fix, and run verify again.".into()
+    let inject_plan = if verify_ran {
+        // Never "verify is still failing" — verify passed. Name what is.
+        "Verify passed, but you are still repeating a command that keeps failing. Stop retrying it; change the approach, then verify once.".into()
     } else {
-        "Verify is still failing the same way. Stop retrying the identical command; change the approach, then verify once.".into()
+        "Do not declare this done. Run verify, read the errors, make one focused fix, and run verify again.".into()
     };
     HoldOutcome::Hold {
         inject_plan,
@@ -154,9 +148,60 @@ mod tests {
             spinning: 0.7,
             ..Default::default()
         };
-        assert!(matches!(
-            decide_hold(WorkflowRole::Mechanical, true, &spinning, 0),
-            HoldOutcome::Hold { .. }
-        ));
+        match decide_hold(WorkflowRole::Mechanical, true, &spinning, 0) {
+            HoldOutcome::Hold { inject_plan, .. } => {
+                // The bug this replaces: a hold raised AFTER a green verify used
+                // to tell the model "verify is still failing the same way".
+                assert!(
+                    !inject_plan.contains("Verify is still failing"),
+                    "never contradict a green verify: {inject_plan}"
+                );
+                assert!(inject_plan.contains("Verify passed"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Severity alone never outranks the receipt — a hard error EARLIER in the
+    /// run that a later green verify resolved is history, not a reason to hold.
+    #[test]
+    fn severity_after_verify_does_not_hold() {
+        let severe = ToolTranscriptSignals {
+            severity: 1.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            decide_hold(WorkflowRole::Mechanical, true, &severe, 0),
+            HoldOutcome::Allow
+        );
+    }
+
+    /// The spin brake is scoped to hands-on roles, as it always was: a judgment
+    /// role's receipt is terminal.
+    #[test]
+    fn spinning_after_verify_allows_a_judgment_role() {
+        let spinning = ToolTranscriptSignals {
+            spinning: 0.7,
+            ..Default::default()
+        };
+        assert_eq!(
+            decide_hold(WorkflowRole::Review, true, &spinning, 0),
+            HoldOutcome::Allow
+        );
+    }
+
+    /// Without a verify the plan must ask for one, whatever the signals say.
+    #[test]
+    fn the_no_verify_plan_asks_for_a_verify() {
+        let spinning = ToolTranscriptSignals {
+            spinning: 0.7,
+            ..Default::default()
+        };
+        match decide_hold(WorkflowRole::Mechanical, false, &spinning, 0) {
+            HoldOutcome::Hold { inject_plan, .. } => {
+                assert!(inject_plan.starts_with("Do not declare this done."));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

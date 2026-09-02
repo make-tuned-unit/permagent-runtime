@@ -17,13 +17,14 @@
  * silent catch. Styled strictly with the shared Panel shell + theme tokens.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiExternalLink, FiRefreshCw } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { projectMemoryPreview } from '../brain/brainMemoryFocus';
-import { font } from '../../styles/tokens';
+import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { Project, ProjectMemory } from './types';
 
@@ -39,18 +40,22 @@ export function MemoriesPanel({ project }: { project: Project }) {
   // another device refetches this association list.
   const projectsRev = useCommandCenter(s => s.projectsRev);
 
+  // Resolves `false` when the load failed (or was superseded) so the refresh /
+  // retry buttons can only tick over a load that actually landed.
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
     setStatus('loading');
     try {
       const nextMemories = await api.listProjectMemories(project.id);
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       if (!Array.isArray(nextMemories)) throw new Error('Invalid memories response');
       setMemories(nextMemories);
       setStatus('ready');
+      return true;
     } catch {
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       setStatus('error');
+      return false;
     }
   }, [project.id]);
 
@@ -72,38 +77,53 @@ export function MemoriesPanel({ project }: { project: Project }) {
             <span style={{ fontSize: 10, color: colors.textDim }}>
               {memories.length} linked
             </span>
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
               onClick={load}
               title="Refresh"
               aria-label="Refresh memories"
-              style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', padding: 0, display: 'flex' }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.textMuted; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = colors.textDim; }}
+              style={{
+                '--pa-btn-fg': colors.textDim,
+                '--pa-btn-fg-hover': colors.textMuted,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '0',
+              } as CSSProperties}
             >
               <FiRefreshCw size={12} />
-            </button>
+            </Button>
           </span>
         ) : undefined
       }
     >
       {status === 'loading' && (
-        <div style={{ fontSize: 11, color: colors.textDim }}>Recalling memories…</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Recalling memories…</div>
       )}
 
       {status === 'error' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load memories.</span>
-          <button
+          <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load memories.</span>
+          <Button
+            colors={colors}
+            variant="bare"
+            className="hover:underline"
             onClick={load}
-            style={{ fontSize: 11, color: colors.cyan, background: 'none', border: 'none', cursor: 'pointer', fontFamily: font.body, padding: 0, fontWeight: 600 }}
+            style={{
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-weight': 600,
+              fontFamily: font.body,
+              fontSize: textSize.micro,
+            } as CSSProperties}
           >
             Retry
-          </button>
+          </Button>
         </div>
       )}
 
       {status === 'ready' && memories.length === 0 && (
-        <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.55 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.55 }}>
           Nothing linked yet. Notes you write, documents you drop, and this
           project's indexed code land in your Brain and surface here — each one
           clickable straight to where it lives.
@@ -130,7 +150,7 @@ export function MemoriesPanel({ project }: { project: Project }) {
                 {/* Librarian description reads best; before enrichment it's null,
                     so fall back to the raw content the Brain stored. */}
                 <div style={{
-                  fontSize: 12, color: colors.text, lineHeight: 1.5,
+                  fontSize: textSize.caption, color: colors.text, lineHeight: 1.5,
                   display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
                 }}>
                   {m.description || m.content || '(empty memory)'}

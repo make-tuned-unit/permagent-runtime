@@ -74,15 +74,18 @@ describe('AutonomyPanel guardrail wiring', () => {
     expect(upsertConfig).not.toHaveBeenCalled();
   });
 
-  it('shows the pending-approvals strip from the shared Decision-Inbox hook', async () => {
+  it('says what Home says about the count, and points there (J3)', async () => {
     useDecisionsMock.mockReturnValue({
       data: { total_pending: 3, handled_count: 0, goals_in_flight: 1, oldest_pending_at: null },
       loading: false,
       error: false,
     } as never);
     await mount();
-    expect(container.textContent).toContain('Pending approvals: 3');
-    expect(container.textContent).toContain('Open Decision Inbox');
+    // The shared sentence — not a second phrasing of one number. Settings used
+    // to say "Pending approvals: 3" while Home said "your agent needs 3
+    // answers" about the same queue.
+    expect(container.textContent).toContain('your agent needs 3 answers');
+    expect(container.textContent).toContain('Open Decisions on Home');
   });
 
   it('replaced the spend-cap sliders with a link to Settings → Spend', async () => {

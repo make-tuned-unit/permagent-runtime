@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { eventsWsUrl } from '../lib/api';
+import { textSize } from '../styles/tokens';
 import { copyText } from '../lib/clipboard';
 import { wireEventType } from '../lib/wireEvent';
 import { appendTraceRecord, claimTraceEventId, globalFrameToRecord } from '../lib/traceEvents';
@@ -470,7 +471,7 @@ function showNavigationCue(reason: string) {
     border: '1px solid #0891B2',
     borderRadius: '8px',
     padding: '8px 16px',
-    fontSize: '13px',
+    fontSize: `${textSize.small}px`,
     fontFamily: 'monospace',
     zIndex: '99999',
     transition: 'opacity 0.3s',

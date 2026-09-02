@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { useEffect, useState, type CSSProperties } from 'react';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, GhostLink, Input, Glass, Particles, WizardHeading, WizardSubhead } from './atoms';
 import { api } from '../../lib/api';
@@ -87,9 +88,11 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
       return next;
     });
 
+  // Returns the outcome so the Button primitive cannot tick success over the
+  // "there's no folder at …" notice this same call puts on screen.
   const addManual = async () => {
     const raw = manual.trim();
-    if (!raw) return;
+    if (!raw) return false;
     setChecking(true);
     setCheck(null);
     try {
@@ -102,9 +105,11 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
         setChosen(prev => new Set(prev).add(r.resolved));
         setManual('');
       }
+      return r.exists;
     } catch (e) {
       setCheck({ resolved: raw, exists: false, has_repositories: false });
       console.error('dev-root check failed:', e);
+      return false;
     } finally {
       setChecking(false);
     }
@@ -140,18 +145,18 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 22, width: '100%', maxWidth: 480 }}>
         {loading && (
-          <div style={{ fontFamily: font.body, fontSize: 12, color: colors.textMuted, textAlign: 'center' }}>
+          <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, textAlign: 'center' }}>
             Looking for repositories…
           </div>
         )}
 
         {!loading && candidates.length === 0 && (
           <Glass padding={14}>
-            <div style={{ fontFamily: font.body, fontSize: 12, color: colors.text }}>
+            <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.text }}>
               I looked under {home || 'your home folder'} and didn't find any git
               repositories.
             </div>
-            <div style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+            <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginTop: 4 }}>
               That's fine — type the folder below, or skip and tell me later in
               Settings.
             </div>
@@ -169,7 +174,7 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
                   onChange={() => toggle(p)}
                   style={{ accentColor: colors.cyan, width: 16, height: 16, flexShrink: 0 }}
                 />
-                <span style={{ fontFamily: font.mono, fontSize: 12, color: on ? colors.text : colors.textMuted, wordBreak: 'break-all' }}>
+                <span style={{ fontFamily: font.mono, fontSize: textSize.caption, color: on ? colors.text : colors.textMuted, wordBreak: 'break-all' }}>
                   {p}
                 </span>
               </label>
@@ -186,27 +191,35 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
                 placeholder="Somewhere else? e.g. ~/Documents/dev"
                 style={{ flex: 1 }}
               />
-              <button
+              <Button
+                colors={colors}
+                variant="ghostOn"
+                type="button"
                 onClick={addManual}
                 disabled={checking || !manual.trim()}
                 style={{
-                  height: 44, padding: '0 16px', borderRadius: radius.md, whiteSpace: 'nowrap',
-                  background: 'transparent', border: `1px solid ${colors.cyan}66`,
-                  color: checking || !manual.trim() ? colors.textDim : colors.cyan,
-                  fontFamily: font.body, fontSize: 13, fontWeight: 600,
-                  cursor: checking || !manual.trim() ? 'not-allowed' : 'pointer',
-                }}
-              >{checking ? 'Checking…' : 'Add'}</button>
+                  '--pa-btn-bg': 'transparent',
+                  '--pa-btn-fg': checking || !manual.trim() ? colors.textDim : colors.cyan,
+                  '--pa-btn-border': `${colors.cyan}66`,
+                  '--pa-btn-bg-hover': colors.cyanSoft,
+                  '--pa-btn-border-hover': colors.cyan,
+                  '--pa-btn-pad': '0 16px',
+                  '--pa-btn-radius': `${radius.md}px`,
+                  '--pa-btn-weight': 600,
+                  height: 44, whiteSpace: 'nowrap',
+                  fontFamily: font.body, fontSize: textSize.small,
+                } as CSSProperties}
+              >{checking ? 'Checking…' : 'Add'}</Button>
             </div>
 
             {check && !check.exists && (
-              <div role="alert" style={{ fontFamily: font.body, fontSize: 11, color: colors.danger, marginTop: 8 }}>
+              <div role="alert" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.danger, marginTop: 8 }}>
                 There's no folder at {check.resolved}. Check the spelling — I'd
                 rather tell you now than accept it and find nothing later.
               </div>
             )}
             {check?.exists && !check.has_repositories && (
-              <div role="status" style={{ fontFamily: font.body, fontSize: 11, color: colors.warning, marginTop: 8 }}>
+              <div role="status" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.warning, marginTop: 8 }}>
                 Added {check.resolved} — though I don't see any git repositories
                 in there yet.
               </div>
@@ -216,7 +229,7 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
       </div>
 
       {saveError && (
-        <div role="alert" style={{ fontFamily: font.body, fontSize: 11, color: colors.danger, marginTop: 12, maxWidth: 470, textAlign: 'center' }}>
+        <div role="alert" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.danger, marginTop: 12, maxWidth: 470, textAlign: 'center' }}>
           Couldn't save that ({saveError}). Try again, or skip and set it in
           Settings.
         </div>

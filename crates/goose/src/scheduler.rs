@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, FixedOffset, Local, Utc};
+use chrono::{DateTime, Duration, FixedOffset, Local, Utc};
 use futures::future::FutureExt as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -180,6 +180,12 @@ pub struct ScheduledJob {
     #[serde(default)]
     pub cron: String,
     pub last_run: Option<DateTime<Utc>>,
+    /// When this job last ran and SUCCEEDED. Distinct from `last_run` because
+    /// the number that matters is the age of the last success: a job can be
+    /// firing every day and not have worked in three weeks, and `last_run`
+    /// alone reads as healthy the whole time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success: Option<DateTime<Utc>>,
     #[serde(default)]
     pub currently_running: bool,
     #[serde(default)]
@@ -248,6 +254,11 @@ pub struct ScheduledJob {
     /// unpause them — only the user's unpause (Automate UI) clears the flag.
     #[serde(default)]
     pub requires_approval: bool,
+    /// True when the most recent run was a startup catch-up for a window the
+    /// daemon slept through, rather than a fire at the job's own scheduled
+    /// instant. Recorded so a catch-up is never passed off as an on-time run.
+    #[serde(default)]
+    pub last_run_was_catch_up: bool,
 }
 
 /// Reliability + kind constants. Retry backoff is exponential and capped so a
@@ -440,6 +451,73 @@ fn schedule_floor_violation(job: &ScheduledJob) -> Option<String> {
         }
     }
     None
+}
+
+/// A cron job is only caught up when its period is LONGER than a day. This
+/// preserves the original no-catch-up ruling exactly where that ruling was
+/// right: a sub-daily cron gets many chances per day, so a missed tick is a
+/// blip and firing every missed job at boot is a wake-storm. It is wrong only
+/// at long periods — a weekly job needs the daemon alive at one specific
+/// 60-second instant per week, and on a dev machine that restarts several
+/// times a day the odds of hitting it are poor. `storage-insights` (Sunday
+/// 19:00) went five days stale that way and would have stayed stale until the
+/// next Sunday.
+const CATCH_UP_MIN_PERIOD: Duration = Duration::hours(24);
+/// How late a missed fire may be and still be worth running. Past this the run
+/// is stale noise rather than a recovery, and the job's own next natural tick
+/// is close enough.
+const CATCH_UP_MAX_LATENESS: Duration = Duration::days(3);
+/// Space catch-up runs so a boot with several of them due does not start them
+/// all at once — the wake-storm the original ruling was written to avoid.
+const CATCH_UP_STAGGER_SECS: u64 = 30;
+
+/// Should this missed job be run once, late, at startup?
+///
+/// Pure so the bound is testable without a scheduler: `period` is the job's
+/// natural cron interval and `lateness` is how long ago the fire it missed was
+/// due. One-shot (`at`) and interval jobs are excluded by the caller — `at`
+/// jobs already self-catch-up, and an interval job re-fires on its own within
+/// one interval.
+fn should_catch_up(period: Duration, lateness: Duration) -> bool {
+    period > CATCH_UP_MIN_PERIOD
+        && lateness >= Duration::zero()
+        && lateness <= CATCH_UP_MAX_LATENESS
+}
+
+/// The cron's natural period, measured empirically as the SMALLEST gap over
+/// the next several occurrences — the same way `schedule_floor_violation`
+/// measures cadence.
+///
+/// Smallest, not the next gap, because a cron's spacing is not uniform: a
+/// weekday job (`* * 1-5`) has a three-day gap across every weekend, and
+/// reading that one gap would make a job with a chance to run every weekday
+/// look like a job that only runs twice a week. The question this answers is
+/// "how often does this job get an opportunity, at its most frequent" — and if
+/// that is daily or better, a missed window is a blip, not a lost week.
+fn cron_period(cron: &str, from: DateTime<Utc>) -> Option<Duration> {
+    let schedule = parse_cron_schedule(cron)?;
+    let mut cursor = from;
+    let mut prev: Option<DateTime<Utc>> = None;
+    let mut min_gap: Option<Duration> = None;
+    for _ in 0..8 {
+        let next = schedule.find_next_occurrence(&cursor, false).ok()?;
+        if let Some(p) = prev {
+            let gap = next - p;
+            min_gap = Some(min_gap.map_or(gap, |m: Duration| m.min(gap)));
+        }
+        prev = Some(next);
+        cursor = next;
+    }
+    min_gap
+}
+
+/// The fire this job missed: the first scheduled occurrence strictly after
+/// `last_run`. `None` when the job has never run or the cron will not parse.
+fn missed_fire_at(job: &ScheduledJob) -> Option<DateTime<Utc>> {
+    let last_run = job.last_run?;
+    parse_cron_schedule(&job.cron)?
+        .find_next_occurrence(&last_run, false)
+        .ok()
 }
 
 /// Pure missed-run predicate: was a scheduled fire due in the window since
@@ -646,6 +724,10 @@ impl Scheduler {
                         Some((_, job)) if !job.currently_running => {
                             let prior = job.last_status;
                             job.last_run = Some(current_time);
+                            // A fire at the job's own scheduled instant clears
+                            // the catch-up mark: the record must never keep
+                            // calling an on-time run a recovery.
+                            job.last_run_was_catch_up = false;
                             job.currently_running = true;
                             job.process_start_time = Some(current_time);
                             Some(prior)
@@ -779,6 +861,7 @@ impl Scheduler {
                         match &final_result {
                             Ok(_) => {
                                 job.last_status = Some(ScheduleRunStatus::Ok);
+                                job.last_success = job.last_run.or_else(|| Some(Utc::now()));
                                 job.last_error = None;
                                 job.retry_count = 0;
                                 job.consecutive_failures = 0;
@@ -1093,6 +1176,9 @@ impl Scheduler {
         let mut crons_normalized = false;
         // Also persist once if we reconcile any stale run-flags below.
         let mut reconciled = false;
+        // Long-cadence jobs whose window was slept through, to be run once
+        // after the job map is populated (see `should_catch_up`).
+        let mut catch_up_ids: Vec<String> = Vec::new();
 
         for mut job_to_load in list {
             // Interval floor applies to persisted jobs too: add-time validation
@@ -1172,17 +1258,44 @@ impl Scheduler {
 
             // Missed-run detection (feature B): if a scheduled fire was due while
             // the daemon was down, flag it so the Automate tab shows `Missed`
-            // (amber). Detection only — we deliberately do NOT auto-execute a
-            // catch-up for cron/interval jobs here (that would risk a wake-storm
-            // and runs before brain/persona are wired); the job runs at its next
-            // natural tick. One-shot jobs self-catch-up: they re-arm below with a
-            // zero delay and fire once immediately, then delete themselves.
-            if is_run_missed(&job_to_load, Utc::now()) {
-                tracing::warn!(
-                    target: "durability",
-                    "Job '{}' missed a scheduled run during downtime; marking Missed",
-                    job_to_load.id
-                );
+            // (amber). Detection stays the default for cron/interval jobs — a
+            // catch-up for every missed sub-daily tick is a wake-storm, and it
+            // would run before brain/persona are wired. One-shot jobs
+            // self-catch-up: they re-arm below with a zero delay and fire once
+            // immediately, then delete themselves.
+            //
+            // The one exception (D20) is a cron whose period is longer than a
+            // day. Detection alone is the wrong tool there: applying a
+            // "late for 2× its period" rule to a weekly job means a 14-day
+            // time-to-notice, which is absurd, and marking it amber does not
+            // make the run happen. A weekly job's window is a single 60-second
+            // instant per week; if the daemon was not up for it, running the
+            // job late is still worth exactly as much as running it on time.
+            // Collapse the problem instead of monitoring it — bounded by
+            // `should_catch_up`, once, and marked as a catch-up in the record.
+            let now = Utc::now();
+            if is_run_missed(&job_to_load, now) {
+                let catch_up = job_to_load.at.is_none()
+                    && job_to_load.every_seconds.is_none()
+                    && missed_fire_at(&job_to_load)
+                        .zip(cron_period(&job_to_load.cron, now))
+                        .is_some_and(|(due, period)| should_catch_up(period, now - due));
+                if catch_up {
+                    tracing::warn!(
+                        target: "durability",
+                        "Job '{}' missed its window during downtime; running it once as a \
+                         catch-up (its cadence is longer than a day, so the next natural \
+                         tick is too far away to wait for)",
+                        job_to_load.id
+                    );
+                    catch_up_ids.push(job_to_load.id.clone());
+                } else {
+                    tracing::warn!(
+                        target: "durability",
+                        "Job '{}' missed a scheduled run during downtime; marking Missed",
+                        job_to_load.id
+                    );
+                }
                 job_to_load.last_status = Some(ScheduleRunStatus::Missed);
                 reconciled = true;
             }
@@ -1222,6 +1335,47 @@ impl Scheduler {
                 tracing::warn!("Failed to persist scheduler reconciliation: {}", e);
             }
         }
+
+        if !catch_up_ids.is_empty() {
+            self.clone().spawn_catch_up_runs(catch_up_ids);
+        }
+    }
+
+    /// Run each slept-through long-cadence job exactly once, staggered, off the
+    /// load path. Deliberately after the job map is populated and persisted:
+    /// `run_now` looks the job up there, and a catch-up must not race the load
+    /// it belongs to.
+    fn spawn_catch_up_runs(self: Arc<Self>, ids: Vec<String>) {
+        tokio::spawn(async move {
+            for id in ids {
+                tokio::time::sleep(std::time::Duration::from_secs(CATCH_UP_STAGGER_SECS)).await;
+                {
+                    let mut jobs = self.jobs.lock().await;
+                    match jobs.get_mut(&id) {
+                        // Re-check under the lock: the job may have been paused,
+                        // removed, or already fired naturally in the interim.
+                        Some((_, job)) if !job.paused && !job.currently_running => {
+                            job.last_run_was_catch_up = true;
+                        }
+                        _ => continue,
+                    }
+                }
+                match self.run_now(&id).await {
+                    Ok(session) => tracing::info!(
+                        target: "durability",
+                        "Catch-up run started for '{}' (session {})",
+                        id,
+                        session
+                    ),
+                    Err(e) => tracing::warn!(
+                        target: "durability",
+                        "Catch-up run for '{}' did not start: {}",
+                        id,
+                        e
+                    ),
+                }
+            }
+        });
     }
 
     async fn sync_from_storage(&self) {
@@ -1491,6 +1645,7 @@ impl Scheduler {
                 match &result {
                     Ok(_) => {
                         job.last_status = Some(ScheduleRunStatus::Ok);
+                        job.last_success = job.last_run;
                         job.last_error = None;
                         job.consecutive_failures = 0;
                     }
@@ -1978,6 +2133,87 @@ fn new_scheduled_job_agent() -> Agent {
     agent
 }
 
+/// Resolve the complete, non-interactive parameter set for a scheduled run.
+///
+/// `recipe_dir` is a built-in template variable rather than a user-declared
+/// parameter. Interactive recipe execution injects it while parsing/building
+/// (`recipe::build_recipe::apply_values_to_parameters`); the scheduler used to
+/// omit it, which made strict rendering fail and sent the entire raw
+/// `{{ ... }}` prompt to the model.
+fn scheduled_recipe_params(
+    recipe: &Recipe,
+    recipe_path: &Path,
+    job_id: &str,
+) -> HashMap<String, String> {
+    let mut params = HashMap::new();
+    for p in recipe.parameters.as_deref().unwrap_or_default() {
+        let value = p.default.clone().unwrap_or_default();
+        if p.default.is_none() {
+            tracing::warn!(
+                "Scheduled job '{}': parameter '{}' has no default; rendering as empty",
+                job_id,
+                p.key
+            );
+        }
+        params.insert(p.key.clone(), value);
+    }
+    if let Some(recipe_dir) = recipe_path.parent() {
+        params.insert(
+            crate::recipe::BUILT_IN_RECIPE_DIR_PARAM.to_string(),
+            recipe_dir.to_string_lossy().into_owned(),
+        );
+    }
+    params
+}
+
+/// Render a scheduled recipe's prompt with `params`, or fail the run.
+///
+/// Rendering is strict, so one undefined variable fails the whole template.
+/// This used to fall back to the RAW prompt: the job then handed the model
+/// literal `{{ ... }}`, burned a model call on a confused reply, and still
+/// finished `completed` — a silent degradation nobody notices. Returning the
+/// error instead makes the caller record `Error`/`last_error` and escalate.
+fn render_scheduled_prompt(
+    raw_prompt: &str,
+    params: &HashMap<String, String>,
+    job_id: &str,
+) -> Result<String> {
+    if params.is_empty() {
+        return Ok(raw_prompt.to_string());
+    }
+    crate::recipe::template_recipe::render_recipe_content_with_params(raw_prompt, params).map_err(
+        |e| {
+            tracing::error!(
+                target: "permagentd::scheduler",
+                job = %job_id,
+                "parameter rendering failed ({e}); failing the run rather than sending the unrendered template"
+            );
+            anyhow!("scheduled job '{job_id}': recipe parameter rendering failed: {e}")
+        },
+    )
+}
+
+/// The agent a scheduled run IS, when it is one at all — `(agent_id, name)`.
+///
+/// A job earns an identity only by declaring one (`worker_persona`) that names
+/// a real worker descriptor. That is the whole mapping, and deliberately so:
+/// `workspace-snapshot`, `health-review` and `storage-insights` declare no
+/// persona because they are the scheduler's own errands, not a character's, and
+/// handing them a borrowed orb would animate an agent that is not working.
+/// `git-steward` is the one starter that IS an agent's embodiment today, and
+/// the alias map here is the same one the agents surface resolves through, so
+/// its runs land on `git_steward` — the exact id `steward_sweep.rs::announce`
+/// already uses. Before this, the weekday recipe's multi-minute fleet pass was
+/// invisible in the World while the 15-minute native sweep was not (D11).
+fn job_announce_identity(job: &ScheduledJob) -> Option<(&'static str, &'static str)> {
+    let key = job.worker_persona.as_deref()?;
+    let descriptor_id = crate::config::agent_identity::descriptor_id_for_worker_key(key);
+    crate::agents::self_knowledge::WORKER_DESCRIPTORS
+        .iter()
+        .find(|d| d.id == descriptor_id)
+        .map(|d| (d.id, d.display_name))
+}
+
 #[allow(clippy::too_many_lines)]
 async fn execute_job(
     job: ScheduledJob,
@@ -1988,7 +2224,14 @@ async fn execute_job(
     persona: Option<crate::config::agent_identity::SharedPersona>,
     agent_config: Option<crate::config::agent_identity::SharedAgentConfig>,
 ) -> Result<String> {
-    crate::providers::inflight::background(execute_job_inner(
+    // Wrapped HERE rather than in the cron tick so a manual `run_now` announces
+    // too: from the World's side there is no difference between the Steward
+    // sweeping because it is Tuesday and sweeping because someone pressed Run.
+    let announce = job_announce_identity(&job);
+    if let Some((id, name)) = announce {
+        crate::events::emit(crate::events::agent_state_changed(id, name, "working"));
+    }
+    let result = crate::providers::inflight::background(execute_job_inner(
         job,
         jobs,
         job_id,
@@ -1997,7 +2240,15 @@ async fn execute_job(
         persona,
         agent_config,
     ))
-    .await
+    .await;
+    if let Some((id, name)) = announce {
+        // A failed run is a real failure, and the Steward HUD already draws it
+        // (`SWEEP BLOCKED`). Silence on failure would leave the orb amber until
+        // the next fire — a worse lie than the red one is true.
+        let state = if result.is_ok() { "available" } else { "error" };
+        crate::events::emit(crate::events::agent_state_changed(id, name, state));
+    }
+    result
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2180,38 +2431,8 @@ async fn execute_job_inner(
     // `{{ repo_path }}` reached the model verbatim and the git-steward spent
     // eight consecutive mornings asking an empty room which repository to
     // steward — every run "ok", ~22k tokens, zero output.
-    let prompt_text: String = {
-        let mut params: HashMap<String, String> = HashMap::new();
-        for p in recipe.parameters.as_deref().unwrap_or_default() {
-            let value = p.default.clone().unwrap_or_default();
-            if p.default.is_none() {
-                tracing::warn!(
-                    "Scheduled job '{}': parameter '{}' has no default; rendering as empty",
-                    job.id,
-                    p.key
-                );
-            }
-            params.insert(p.key.clone(), value);
-        }
-        if params.is_empty() {
-            raw_prompt.to_string()
-        } else {
-            match crate::recipe::template_recipe::render_recipe_content_with_params(
-                raw_prompt, &params,
-            ) {
-                Ok(rendered) => rendered,
-                Err(e) => {
-                    // A template the renderer cannot handle must not kill the
-                    // job — fall back to the raw prompt and say so.
-                    tracing::warn!(
-                        "Scheduled job '{}': parameter rendering failed ({e}); using raw prompt",
-                        job.id
-                    );
-                    raw_prompt.to_string()
-                }
-            }
-        }
-    };
+    let params = scheduled_recipe_params(&recipe, recipe_path, &job.id);
+    let prompt_text: String = render_scheduled_prompt(raw_prompt, &params, &job.id)?;
     let prompt_text = prompt_text.as_str();
 
     let user_message = Message::user().with_text(prompt_text);
@@ -2672,10 +2893,131 @@ mod tests {
     /// with a recorded skip instead of parking the drain loop forever or
     /// filing undeliverable `tool_approval` decisions (the bare job agent is
     /// never registered in `AgentManager`, so nothing could answer them).
-    #[test]
-    fn scheduled_job_agents_are_headless() {
+    /// `#[tokio::test]`, not `#[test]`: `Agent::new()` reaches sqlx's pool
+    /// constructor, which panics ("requires a Tokio context") off a runtime.
+    #[tokio::test]
+    async fn scheduled_job_agents_are_headless() {
         let agent = new_scheduled_job_agent();
         assert!(agent.is_headless(), "scheduled-job agents must be headless");
+    }
+
+    /// D11: the weekday `git-steward` recipe is the Steward's OWN embodiment —
+    /// a multi-minute LLM pass over every repo — and it announced nothing, so
+    /// the World's Steward pill sat at STANDING BY through the whole run while
+    /// the native 15-min sweep (which announces) was the only thing that could
+    /// ever light it.
+    ///
+    /// The mapping is deliberately narrow: a job announces as an agent only
+    /// when it DECLARES one (`worker_persona`) and that persona names a real
+    /// worker descriptor. `workspace-snapshot` and `health-review` declare no
+    /// persona — they are the scheduler's own work, not a character's — so
+    /// they stay silent rather than being given a borrowed identity.
+    #[test]
+    fn only_a_worker_persona_job_announces_as_an_agent() {
+        let steward = ScheduledJob {
+            id: "git-steward".to_string(),
+            worker_persona: Some("steward".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            job_announce_identity(&steward),
+            Some((
+                crate::steward::SELF_KNOWLEDGE_FEATURE.id,
+                crate::steward::SELF_KNOWLEDGE_FEATURE.display_name
+            )),
+            "the recipe must announce on the SAME id the native sweep does \
+             (steward_sweep.rs::announce), or it lights a second, empty orb"
+        );
+
+        for id in ["workspace-snapshot", "health-review", "storage-insights"] {
+            let job = ScheduledJob {
+                id: id.to_string(),
+                ..Default::default()
+            };
+            assert_eq!(
+                job_announce_identity(&job),
+                None,
+                "{id} declares no worker persona and must not borrow one"
+            );
+        }
+
+        let unknown = ScheduledJob {
+            id: "custom".to_string(),
+            worker_persona: Some("not_a_worker".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            job_announce_identity(&unknown),
+            None,
+            "a persona key that names no worker descriptor has no orb to light"
+        );
+    }
+
+    /// `recipe_dir` is a built-in template variable, not a declared parameter.
+    /// The interactive path injects it (`build_recipe::apply_values_to_parameters`);
+    /// the scheduler must too. It did not, and because rendering is strict, one
+    /// undefined variable failed the WHOLE render — so the nightly health-review
+    /// job mailed the model `{{ hours }}`/`{{ log_dir }}`/`{{ recipe_dir }}`
+    /// verbatim every night while still reporting `completed`.
+    #[test]
+    fn scheduled_recipe_params_include_recipe_dir_and_render_all_defaults() {
+        let dir = tempdir().unwrap();
+        let recipe_path = dir.path().join("health-review.yaml");
+        let recipe: Recipe = serde_yaml::from_str(
+            r#"
+version: "1"
+title: health
+description: scheduled diagnostic
+parameters:
+  - key: hours
+    input_type: string
+    requirement: optional
+    description: evidence window
+    default: "24"
+  - key: log_dir
+    input_type: string
+    requirement: optional
+    description: daemon log directory
+    default: "$HOME/.permagent/logs"
+prompt: 'collect {{ hours }}h from {{ log_dir }} with {{ recipe_dir }}/collector.py'
+"#,
+        )
+        .unwrap();
+        let params = scheduled_recipe_params(&recipe, &recipe_path, "health-review");
+        let rendered = crate::recipe::template_recipe::render_recipe_content_with_params(
+            recipe.prompt.as_deref().unwrap(),
+            &params,
+        )
+        .unwrap();
+
+        assert!(rendered.contains("collect 24h from $HOME/.permagent/logs"));
+        assert!(rendered.contains(&format!("{}/collector.py", dir.path().display())));
+        assert!(!rendered.contains("{{"), "{rendered}");
+    }
+
+    /// A render that cannot be completed must FAIL the job, never hand the raw
+    /// `{{ ... }}` template to the model. The old fallback did exactly that:
+    /// it logged a WARN and sent the unrendered prompt, so the run still ended
+    /// `completed` — a wasted model call producing a confused reply that is
+    /// easy to miss. Failing is loud: the caller records `Error`, `last_error`,
+    /// and a consecutive-failure escalation.
+    #[test]
+    fn render_failure_fails_the_job_instead_of_sending_the_raw_template() {
+        let raw_prompt = "audit {{ undeclared_and_not_built_in }} now";
+        let mut params = HashMap::new();
+        params.insert("hours".to_string(), "24".to_string());
+
+        let result = render_scheduled_prompt(raw_prompt, &params, "health-review");
+
+        let err = match result {
+            Ok(rendered) => panic!("render failure fell back to a prompt: {rendered}"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            !err.contains("{{"),
+            "the error must describe the failure, not carry the template: {err}"
+        );
+        assert!(err.contains("health-review"), "{err}");
     }
 
     /// The approval gate must hold on the run_now path: an agent could
@@ -3001,6 +3343,80 @@ mod tests {
         assert!(!is_run_missed(&paused, ts("2026-01-01T05:00:00Z")));
     }
 
+    /// D20: a weekly starter that sleeps through its one instant per week must
+    /// run once, late — but the no-catch-up ruling for sub-daily crons stands.
+    #[test]
+    fn only_long_cadence_jobs_catch_up_and_only_while_the_run_is_still_worth_it() {
+        let weekly = chrono::Duration::days(7);
+        let daily = chrono::Duration::hours(24);
+        let hourly = chrono::Duration::hours(1);
+
+        // storage-insights: Sunday 19:00, one day late. Run it.
+        assert!(should_catch_up(weekly, chrono::Duration::days(1)));
+        assert!(should_catch_up(weekly, chrono::Duration::days(3)));
+
+        // Too stale to be a recovery — the next natural tick is nearer.
+        assert!(!should_catch_up(weekly, chrono::Duration::days(4)));
+
+        // The original ruling, preserved: a sub-daily cron gets many chances a
+        // day, and firing every missed one at boot is the wake-storm.
+        assert!(!should_catch_up(hourly, chrono::Duration::hours(2)));
+        assert!(
+            !should_catch_up(daily, chrono::Duration::hours(2)),
+            "a daily job lands in some live window on its own; catch-up is for longer cadences"
+        );
+
+        // Not yet due is never a catch-up.
+        assert!(!should_catch_up(weekly, chrono::Duration::hours(-1)));
+    }
+
+    #[test]
+    fn cron_period_and_missed_fire_read_the_real_schedule() {
+        // The live storage-insights schedule: Sunday 19:00 UTC.
+        let anchor = ts("2026-08-26T14:38:30Z");
+        assert_eq!(
+            cron_period("0 0 19 * * 0", anchor),
+            Some(chrono::Duration::days(7)),
+            "a Sunday cron's period is a week"
+        );
+        assert_eq!(
+            cron_period("0 0 8 * * 1-5", anchor),
+            Some(chrono::Duration::days(1)),
+            "a weekday-daily cron's period is a day, so it must not catch up"
+        );
+        // The reason the measurement is the SMALLEST gap: read from a Thursday,
+        // the very next gap for a weekday job is the three-day weekend, and
+        // that reading would wrongly make it look weekly enough to catch up.
+        assert_eq!(
+            cron_period("0 0 8 * * 1-5", ts("2026-09-03T09:00:00Z")),
+            Some(chrono::Duration::days(1)),
+            "the weekend gap must not be mistaken for the job's cadence"
+        );
+        // Twice a week (Mon + Thu): its smallest gap is three days, so a missed
+        // window IS worth catching up.
+        assert_eq!(
+            cron_period("0 0 10 * * 1,4", anchor),
+            Some(chrono::Duration::days(3))
+        );
+
+        let job = ScheduledJob {
+            cron: "0 0 19 * * 0".to_string(),
+            last_run: Some(anchor),
+            ..Default::default()
+        };
+        assert_eq!(
+            missed_fire_at(&job),
+            Some(ts("2026-08-30T19:00:00Z")),
+            "the missed fire is the first occurrence after the last run"
+        );
+
+        let never_run = ScheduledJob {
+            cron: "0 0 19 * * 0".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(missed_fire_at(&never_run), None);
+    }
+
     /// Escalation gate: only when retries were configured AND this is the first
     /// failure of a streak (dedup across fires); default jobs never escalate.
     #[test]
@@ -3209,6 +3625,58 @@ mod tests {
 
         let jobs = scheduler.list_scheduled_jobs().await;
         assert!(jobs[0].last_run.is_some(), "Job should have run");
+    }
+
+    /// D11, on the real cron path: a fire of a worker-persona job must put an
+    /// `agent_state_changed` frame on the bus, or the World View has nothing to
+    /// render no matter how long the run takes. The run itself fails here (no
+    /// real provider), which is the point of asserting only the FIRST frame:
+    /// `working` is emitted before the work, not derived from its outcome.
+    #[tokio::test]
+    async fn worker_persona_job_announces_working_on_the_bus() {
+        let _guard = env_lock::lock_env([
+            ("GOOSE_PROVIDER", Some("openai")),
+            ("GOOSE_MODEL", Some("gpt-4o")),
+            ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
+            ("OPENAI_CUSTOM_HEADERS", Some("")),
+            ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
+        ]);
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "git-steward");
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(storage_path, session_manager).await.unwrap();
+
+        let mut bus = crate::events::subscribe();
+
+        scheduler
+            .add_scheduled_job(
+                ScheduledJob {
+                    id: "git-steward".to_string(),
+                    source: recipe_path.to_string_lossy().to_string(),
+                    cron: "* * * * * *".to_string(),
+                    worker_persona: Some("steward".to_string()),
+                    ..Default::default()
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        sleep(Duration::from_millis(1500)).await;
+
+        let mut announced = false;
+        while let Ok(evt) = bus.try_recv() {
+            let payload = &evt.payload;
+            if payload["agent_id"] == crate::steward::SELF_KNOWLEDGE_FEATURE.id
+                && payload["state"] == "working"
+            {
+                announced = true;
+            }
+        }
+        assert!(
+            announced,
+            "a git-steward fire must announce `working` on the git_steward id"
+        );
     }
 
     #[tokio::test]

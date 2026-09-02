@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
-import { font, ease } from '../../styles/tokens';
+import { FiMessageSquare } from 'react-icons/fi';
+import { ease, font, radius, textSize } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
@@ -215,21 +216,19 @@ export function ChatLauncher() {
       style={{
       position: 'fixed', bottom: CHAT_LAUNCHER_MARGIN, right: CHAT_LAUNCHER_MARGIN, zIndex: 9999,
       display: 'flex', alignItems: 'center', gap: 10,
-      padding: '12px 20px', borderRadius: 999,
+      padding: '12px 20px', borderRadius: radius.pill,
       background: colors.surface, backdropFilter: 'blur(16px)',
       // Theme-safe elevation — a cool soft shadow on silver, deep on dark
       // (the hardcoded black glow was invisible on the light themes).
       border: `1px solid ${hovered ? colors.cyan : colors.borderHi}`,
       color: colors.cyan, cursor: 'pointer',
-      fontFamily: font.body, fontSize: 13, fontWeight: 600,
+      fontFamily: font.body, fontSize: textSize.small, fontWeight: 600,
       boxShadow: colors.cardShadow,
       // Tactile feedback: lift on hover, settle on press.
       transform: pressed ? 'scale(0.97)' : hovered ? 'translateY(-2px)' : 'translateY(0)',
       transition: `all 200ms ${ease.out}`,
     }}>
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z" />
-      </svg>
+      <FiMessageSquare size={16} />
       Chat with {agentName}
     </button>
   );

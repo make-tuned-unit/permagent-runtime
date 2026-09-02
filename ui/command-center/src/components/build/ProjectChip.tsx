@@ -1,8 +1,10 @@
-import { useState, useRef, useEffect } from 'react';
-import { font } from '../../styles/tokens';
+import { useState, useRef, useEffect, type CSSProperties } from 'react';
+import { FiChevronDown, FiFolder } from 'react-icons/fi';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useProjects, Project } from './useProjects';
 import { useTheme } from '../../styles/useTheme';
-import { useCommandCenter } from '../../lib/store';
+import { useCommandCenter, navigateToTool } from '../../lib/store';
+import { Button } from '../common/Button';
 import { launchTooltip, SUBSCRIPTION_FIRST_HINT } from '../grow/codingAgents';
 
 const PERSONAL_ID = '00000000-0000-0000-0000-000000000001';
@@ -14,12 +16,21 @@ interface Props {
 
 export function ProjectChip({ onLaunch, onVisitSite }: Props) {
   const { colors } = useTheme();
-  const { projects, loading, touch } = useProjects();
+  const { projects, loading, error, retry, touch } = useProjects();
   const [open, setOpen] = useState(false);
   const [sortMode, setSortMode] = useState<'recent' | 'az'>('recent');
   const ref = useRef<HTMLDivElement>(null);
   const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
   const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
+  // Build's half of the one shared project selection (J7). The chip now says
+  // which project the app is on rather than the generic word "Projects", and
+  // launching from it moves that selection.
+  //
+  // THE ESCAPE HATCH, stated: terminal tabs keep their own `rootPath`, fixed
+  // when the tab was created. Changing the current project changes what the
+  // NEXT launch targets — it never re-points a shell somebody is working in.
+  const currentProjectId = useCommandCenter(s => s.currentProjectId);
+  const setCurrentProject = useCommandCenter(s => s.setCurrentProject);
 
   // Hide native browser webview while dropdown is open (z-index fix)
   useEffect(() => {
@@ -46,6 +57,7 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
 
   const handleLaunch = (project: Project, agent: string) => {
     touch(project.id);
+    setCurrentProject(project.id);
     onLaunch(project, agent);
     setOpen(false);
   };
@@ -53,33 +65,44 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
   const handleVisit = (project: Project) => {
     if (!project.siteUrl) return;
     touch(project.id);
+    setCurrentProject(project.id);
     onVisitSite(project.siteUrl);
     setOpen(false);
   };
 
-  if (loading || projects.length === 0) return null;
+  const current = projects.find(p => p.id === currentProjectId) ?? null;
 
+  // This chip is the only way to launch a coding agent against a project, so
+  // it is never removed: a daemon failure, an empty list and a load in flight
+  // are three different sentences inside it, not one missing control.
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       {/* Chip button */}
-      <button
+      <Button
+        colors={colors}
+        data-testid="project-chip"
         onClick={() => setOpen(!open)}
+        title={error ? "Couldn't load your projects" : undefined}
         style={{
-          height: 28, padding: '0 10px', borderRadius: 6,
-          background: colors.cyanSoft, border: `1px solid ${colors.border}`,
-          fontFamily: font.body, fontSize: 11, fontWeight: 500,
-          color: colors.textMuted, cursor: 'pointer',
-          display: 'inline-flex', alignItems: 'center', gap: 5,
-        }}
+          '--pa-btn-bg': colors.cyanSoft,
+          '--pa-btn-fg': colors.textMuted,
+          '--pa-btn-border': error ? colors.danger : colors.border,
+          '--pa-btn-bg-hover': colors.cyanGlow,
+          '--pa-btn-fg-hover': colors.text,
+          '--pa-btn-border-hover': error ? colors.danger : colors.borderHi,
+          '--pa-btn-bg-active': colors.cyanSoft,
+          '--pa-btn-pad': '0 10px',
+          '--pa-btn-radius': `${radius.sm}px`,
+          height: 28,
+          fontFamily: font.body,
+        } as CSSProperties}
       >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-          <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
-        </svg>
-        Projects
-        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
+        <FiFolder size={10} />
+        <span style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {current ? current.name : 'Projects'}
+        </span>
+        <FiChevronDown size={8} />
+      </Button>
 
       {/* Dropdown */}
       {open && (
@@ -89,35 +112,77 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
           position: 'absolute', top: '100%', left: 0, marginTop: 4,
           minWidth: 280, maxHeight: 360, overflowY: 'auto',
           background: colors.surface, border: `1px solid ${colors.border}`,
-          borderRadius: 8, boxShadow: colors.cardShadow,
+          borderRadius: radius.md, boxShadow: colors.cardShadow,
           zIndex: 50, padding: '4px 0',
         }}>
+          {loading && (
+            <div style={{ padding: '10px 12px', fontSize: textSize.micro, color: colors.textDim, fontFamily: font.body }}>
+              Loading your projects…
+            </div>
+          )}
+
+          {!loading && error && (
+            <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+              <div style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.danger, fontFamily: font.body }}>
+                Couldn't load your projects
+              </div>
+              <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.body, lineHeight: 1.45 }}>
+                The projects service didn't respond. Check that the daemon is running.
+              </div>
+              <Button colors={colors} type="button" onClick={() => retry()}>Retry</Button>
+            </div>
+          )}
+
+          {!loading && !error && projects.length === 0 && (
+            <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+              <div style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: font.body, lineHeight: 1.45 }}>
+                No active projects yet — add one in Projects.
+              </div>
+              <Button
+                colors={colors}
+                type="button"
+                onClick={() => { setOpen(false); navigateToTool('projects'); }}
+              >
+                Open Projects
+              </Button>
+            </div>
+          )}
+
           {/* Sort toggle */}
+          {!loading && !error && projects.length > 0 && (
           <div style={{
             padding: '6px 10px', display: 'flex', gap: 8,
             borderBottom: `1px solid ${colors.border}`, marginBottom: 2,
           }}>
             {(['recent', 'az'] as const).map(mode => (
-              <button
+              <Button
                 key={mode}
+                colors={colors}
+                variant="bare"
                 onClick={() => setSortMode(mode)}
                 style={{
-                  fontSize: 10, fontFamily: font.body, fontWeight: 500,
-                  padding: '2px 6px', borderRadius: 4, cursor: 'pointer',
-                  background: sortMode === mode ? colors.cyanSoft : 'transparent',
-                  color: sortMode === mode ? colors.text : colors.textDim,
-                  border: 'none',
-                }}
+                  '--pa-btn-bg': sortMode === mode ? colors.cyanSoft : 'transparent',
+                  '--pa-btn-fg': sortMode === mode ? colors.text : colors.textDim,
+                  '--pa-btn-bg-hover': sortMode === mode ? colors.cyanSoft : colors.surfaceHi,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-bg-active': sortMode === mode ? colors.cyanSoft : colors.surfaceHi,
+                  '--pa-btn-pad': '2px 6px',
+                  '--pa-btn-radius': `${radius.xs}px`,
+                  fontFamily: font.body,
+                  fontSize: 10,
+                } as CSSProperties}
               >
                 {mode === 'recent' ? 'Recent' : 'A-Z'}
-              </button>
+              </Button>
             ))}
           </div>
+          )}
 
           {sorted.map(project => (
             <ProjectRow
               key={project.id}
               project={project}
+              isCurrent={project.id === currentProjectId}
               onLaunch={handleLaunch}
               onVisit={handleVisit}
             />
@@ -129,40 +194,62 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
 }
 
 function ProjectRow({
-project, onLaunch, onVisit }: {
+project, isCurrent, onLaunch, onVisit }: {
   project: Project;
+  /** The app's current project — opened here, in Projects, or in Grow. */
+  isCurrent: boolean;
   onLaunch: (p: Project, agent: string) => void;
   onVisit: (p: Project) => void;
 }) {
   const { colors } = useTheme();
-  const [expanded, setExpanded] = useState(false);
+  // The one the app is already on opens ready to launch: it is the row the
+  // user came here for.
+  const [expanded, setExpanded] = useState(isCurrent);
 
   return (
     <div style={{ padding: '0 4px' }}>
+      {/* A disclosure toggle, not an action: it opens the agent row below it and
+          there is nothing to await, so the pending floor and the success tick
+          would both be wrong for it. It takes the shared `.pa-btn` interaction
+          rules directly instead — same treatment as FinanceView's PickRow — so
+          its name and chevron stay its own flex children. */}
       <button
+        type="button"
+        className="pa-btn"
+        aria-expanded={expanded}
+        aria-controls={`project-agents-${project.id}`}
         onClick={() => setExpanded(!expanded)}
         style={{
-          width: '100%', padding: '7px 8px', borderRadius: 6,
-          background: expanded ? colors.cyanSoft : 'transparent',
-          border: 'none', cursor: 'pointer', textAlign: 'left',
-          display: 'flex', alignItems: 'center', gap: 8,
-          fontFamily: font.body, fontSize: 12, color: colors.text,
-        }}
+          '--pa-btn-bg': expanded ? colors.cyanSoft : 'transparent',
+          '--pa-btn-fg': colors.text,
+          '--pa-btn-bg-hover': expanded ? colors.cyanSoft : colors.surfaceHi,
+          '--pa-btn-bg-active': expanded ? colors.cyanSoft : colors.surface,
+          '--pa-btn-pad': '7px 8px',
+          '--pa-btn-radius': `${radius.sm}px`,
+          display: 'flex', width: '100%', textAlign: 'left',
+          justifyContent: 'flex-start', gap: 8,
+          fontFamily: font.body, fontSize: textSize.caption,
+        } as CSSProperties}
       >
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {project.name}
         </span>
-        <svg
-          width="8" height="8" viewBox="0 0 24 24" fill="none"
-          stroke={colors.textDim} strokeWidth={2.5}
+        {isCurrent && (
+          <span
+            data-testid="project-chip-current"
+            style={{ fontSize: textSize.micro, fontFamily: font.mono, color: colors.cyan, flexShrink: 0 }}
+          >
+            current
+          </span>
+        )}
+        <FiChevronDown
+          size={8} color={colors.textDim}
           style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
+        />
       </button>
 
       {expanded && (
-        <div style={{ padding: '4px 8px 8px 8px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <div id={`project-agents-${project.id}`} style={{ padding: '4px 8px 8px 8px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           <div
             data-testid="subscription-first-hint"
             style={{
@@ -223,21 +310,32 @@ label, disabled, tooltip, onClick }: {
   label: string; disabled?: boolean; tooltip?: string; onClick: () => void;
 }) {
   const { colors } = useTheme();
+  // `disabled` here has always been a look plus a dropped handler, never the
+  // DOM attribute — the `title` explaining WHY it can't be pressed only shows
+  // on a pointer-eventful element. Left exactly as it was; the button now
+  // simply holds its resting look on hover when it is in that state.
   return (
-    <button
+    <Button
+      colors={colors}
       onClick={disabled ? undefined : onClick}
       title={tooltip}
       style={{
-        height: 24, padding: '0 8px', borderRadius: 5,
-        background: disabled ? colors.border : colors.cyanSoft,
-        border: `1px solid ${disabled ? colors.border : colors.borderHi}`,
-        fontFamily: font.body, fontSize: 10, fontWeight: 500,
-        color: disabled ? colors.textDim : colors.cyan,
+        '--pa-btn-bg': disabled ? colors.border : colors.cyanSoft,
+        '--pa-btn-fg': disabled ? colors.textDim : colors.cyan,
+        '--pa-btn-border': disabled ? colors.border : colors.borderHi,
+        '--pa-btn-bg-hover': disabled ? colors.border : colors.cyanGlow,
+        '--pa-btn-border-hover': disabled ? colors.border : colors.cyan,
+        '--pa-btn-bg-active': disabled ? colors.border : colors.cyanSoft,
+        '--pa-btn-pad': '0 8px',
+        '--pa-btn-radius': '5px',
+        height: 24,
+        fontFamily: font.body,
+        fontSize: 10,
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.5 : 1,
-      }}
+      } as CSSProperties}
     >
       {label}
-    </button>
+    </Button>
   );
 }

@@ -69,7 +69,7 @@ and what it returned.
 - **Frontend:** `cd ui/command-center && npx tsc --noEmit && npx vite build`
 - **Daemon/Rust:** `cargo check -p <verified-crate>` then
   `cargo clippy -p <verified-crate> -- -D warnings` then `cargo fmt --all`
-- **Daemon TESTS:** `scripts/test-daemon.sh <filter>` — NOT `cargo test -p
+- **Daemon TESTS:** `scripts/test-daemon.sh [--release] <filter>` — NOT `cargo test -p
   permagent-daemon`. The raw test binary cannot start on macOS: dyld fails with
   `Library not loaded: @rpath/libsherpa-onnx-c-api.dylib … no LC_RPATH's found`,
   and once dyld can find them the unsigned dylibs get the process SIGKILLed with
@@ -77,7 +77,9 @@ and what it returned.
   matching zero tests. The script fixes rpath and re-signs; its header documents
   both causes. A dispatched lane once concluded from the raw command that daemon
   tests were unrunnable on this machine and shipped route tests compile-verified
-  only — they were runnable the whole time.
+  only — they were runnable the whole time. Pass `--release` (first argument, or
+  `TEST_DAEMON_PROFILE=release`) when the disk doctrine has the lane building
+  release-only; the script then signs and runs the release dylibs instead.
 - **Targeted test:** the unit test for the change (e.g. slice-math, lexicon
   lookup). Run it, show output.
 - Do NOT run `--workspace --all-targets` locally (slow, CI does it). But DO run

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { font } from '../../styles/tokens';
+import { font, textSize } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { Particles, PrimaryButton } from './atoms';
 import { useTheme } from '../../styles/useTheme';
@@ -53,7 +53,7 @@ export function MomentChat({ persona, onComplete }: Props) {
       }}>
         <Mobius size={29} state={isSpeaking ? 'speaking' : 'idle'} logoMode />
         <div>
-          <div style={{ fontFamily: font.display, fontSize: 16, fontWeight: 700, color: colors.text }}>
+          <div style={{ fontFamily: font.display, fontSize: textSize.heading, fontWeight: 700, color: colors.text }}>
             {persona.name}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -61,7 +61,7 @@ export function MomentChat({ persona, onComplete }: Props) {
               width: 6, height: 6, borderRadius: '50%',
               background: isSpeaking ? colors.cyan : colors.success,
             }} />
-            <span style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted }}>
+            <span style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted }}>
               {/* "Typing", not "Speaking" — this greeting is typed on screen;
                   no audio plays here (2026-07 wiring audit). */}
               {isSpeaking ? 'Typing...' : 'Online'}
@@ -73,7 +73,7 @@ export function MomentChat({ persona, onComplete }: Props) {
       {/* Conversation */}
       <div style={{ flex: 1, padding: '28px 24px', overflowY: 'auto' }}>
         <div style={{
-          fontFamily: font.body, fontSize: 14, color: colors.text, lineHeight: 1.7,
+          fontFamily: font.body, fontSize: textSize.body, color: colors.text, lineHeight: 1.7,
           maxWidth: 560,
         }}>
           {streamed}
@@ -90,7 +90,7 @@ export function MomentChat({ persona, onComplete }: Props) {
           Enter Permagent
         </PrimaryButton>
         <p style={{
-          fontFamily: font.body, fontSize: 12, color: colors.textMuted,
+          fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted,
           margin: '12px 0 0', textAlign: 'center', maxWidth: 420, lineHeight: 1.5,
         }}>
           Ask for a short tour anytime — {persona.name || 'your agent'} will walk you

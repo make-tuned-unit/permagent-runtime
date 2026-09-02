@@ -12,9 +12,11 @@ import { Canvas } from '@react-three/fiber';
 import { Html, Line, OrbitControls } from '@react-three/drei';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { DirectoryPerson } from '../projects/types';
+import { CanvasLegend } from '../common/CanvasLegend';
+import { PEOPLE_GESTURES, PEOPLE_VOCABULARY } from './peopleLegend';
 import { isBridge, isYou, layoutPeopleGraph, type GraphNode } from './peopleGraph';
 import { PersonFace } from './PersonFace';
 import { shouldShowLabel } from './peopleFace';
@@ -88,10 +90,10 @@ export function PeopleGraph() {
           left: 24,
           zIndex: 2,
           width: 240,
-          fontSize: 12,
+          fontSize: textSize.caption,
           fontFamily: font.body,
           padding: '6px 10px',
-          borderRadius: 6,
+          borderRadius: radius.sm,
           border: `1px solid ${colors.border}`,
           background: colors.inputBg,
           color: colors.text,
@@ -99,22 +101,33 @@ export function PeopleGraph() {
         }}
       />
       {status === 'loading' && (
-        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: colors.textDim, fontFamily: font.body, fontSize: 12 }}>
+        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: colors.textDim, fontFamily: font.body, fontSize: textSize.caption }}>
           Loading people…
         </div>
       )}
       {status === 'error' && (
-        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: colors.danger, fontFamily: font.body, fontSize: 12 }}>
+        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: colors.danger, fontFamily: font.body, fontSize: textSize.caption }}>
           Couldn't load people.
         </div>
       )}
       {status === 'ready' && filtered.length === 0 && query.trim() !== '' && (
         <div style={{
           position: 'absolute', top: 48, left: 24, zIndex: 2,
-          color: colors.textDim, fontFamily: font.body, fontSize: 12,
+          color: colors.textDim, fontFamily: font.body, fontSize: textSize.caption,
         }}>
           No people match that search.
         </div>
+      )}
+      {/* The key. The graph's whole premise — you at the centre, everyone else
+          grouped by a shared project, a bigger face for whoever bridges two
+          groups — lived only in the layout code until now. Not shown over a
+          failed or still-loading load: there is nothing to explain yet. */}
+      {status === 'ready' && (
+        <CanvasLegend
+          canvasId="people-graph"
+          gestures={PEOPLE_GESTURES}
+          vocabulary={PEOPLE_VOCABULARY}
+        />
       )}
       {status === 'ready' && (
         <Canvas
@@ -214,7 +227,8 @@ function PersonNode({
   const active = hovered || focused || selected;
   const color = you || bridge || active ? accent : muted;
   const pillVisible = shouldShowLabel({ isYou: you, hovered, focused, selected });
-  const radius = you ? 0.32 : bridge ? 0.22 : 0.16;
+  // Sphere size, in world units — named apart from the corner-radius token.
+  const nodeRadius = you ? 0.32 : bridge ? 0.22 : 0.16;
   if (you) {
     return (
       <group position={[node.x, node.y, node.z]}>
@@ -222,17 +236,17 @@ function PersonNode({
           onPointerOver={e => { e.stopPropagation(); onHover(node.id); }}
           onPointerOut={() => onHover(null)}
         >
-          <sphereGeometry args={[radius, 24, 24]} />
+          <sphereGeometry args={[nodeRadius, 24, 24]} />
           <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.55} />
         </mesh>
         <Html center sprite style={{ pointerEvents: 'none', transform: 'translateY(-18px)' }}>
           <div style={{
             fontFamily: font.body,
-            fontSize: 11,
+            fontSize: textSize.micro,
             fontWeight: 600,
             color: '#fff',
             background: 'rgba(8,10,16,0.78)',
-            borderRadius: 4,
+            borderRadius: radius.xs,
             padding: '2px 6px',
             whiteSpace: 'nowrap',
           }}>
@@ -268,11 +282,11 @@ function PersonNode({
             bottom: '100%',
             transform: 'translate(-50%, -8px)',
             fontFamily: font.body,
-            fontSize: 11,
+            fontSize: textSize.micro,
             fontWeight: 600,
             color: '#fff',
             background: 'rgba(8,10,16,0.78)',
-            borderRadius: 4,
+            borderRadius: radius.xs,
             padding: '2px 6px',
             whiteSpace: 'nowrap',
             pointerEvents: 'none',

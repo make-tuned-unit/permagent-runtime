@@ -1908,6 +1908,32 @@ pub async fn migrate_v51_to_v52(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// v53: reconcile the Financier's exit-notice `risk_policy` classes onto
+/// existing DBs — `finance_sell_notice` (Tier 1, advisory) and
+/// `finance_sell_notice_urgent` (Tier 2, user-only).
+///
+/// Without the seed both classes are unknown, `tier_for_action_class` resolves
+/// fail-closed to Tier 2, and every advisory exit notice would arrive as a
+/// user-only card — safe, but wrong, and indistinguishable from the urgent
+/// ones it is supposed to sit below. Same posture as the v32 and v41
+/// reconciles: `INSERT OR IGNORE`, so a tier the user has customised survives;
+/// purely additive to a free-text-PK table and base-independent.
+pub async fn migrate_v52_to_v53(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v52 -> v53 (seed Financier exit-notice risk_policy classes)");
+    sqlx::query(
+        "INSERT OR IGNORE INTO risk_policy (action_class, tier, rationale) VALUES
+            ('finance_sell_notice', 1, 'The Financier proposes an exit on a holding — advisory, executes nothing'),
+            ('finance_sell_notice_urgent', 2, 'Escalated exit notice (55-day breakdown or 25% drawdown) — user-only')",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (53)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v53 (Financier exit-notice risk_policy classes seeded)");
+    Ok(())
+}
+
 /// The Council of LLMs: one debate session, the per-member positions across
 /// two rounds, and the chair's synthesised weekly report. New tables + indexes
 /// only — additive, idempotent, and base-independent so it can run on every
@@ -3523,6 +3549,23 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .await?;
     }
 
+    // Staged (proposed-but-uncommitted) answers — D29 / NIST SP 800-63B-4.
+    // A channel that cannot authenticate (voice) writes its verdict HERE and
+    // the decision stays `open`; only a tap on the confirm surface answers it.
+    // Added AFTER the widening rebuild above so a legacy DB gets the column on
+    // the table it ends up with, not on one that is about to be replaced.
+    // Staged answers are TTL-bounded and disposable, so nothing is lost when a
+    // rebuild does drop the column's contents.
+    let decision_cols: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('decisions')")
+            .fetch_all(&mut *tx)
+            .await?;
+    if !decision_cols.iter().any(|c| c == "staged_answer_json") {
+        sqlx::query("ALTER TABLE decisions ADD COLUMN staged_answer_json TEXT")
+            .execute(&mut *tx)
+            .await?;
+    }
+
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_decisions_open
          ON decisions(status, rank DESC, created_at) WHERE status = 'open'",
@@ -3583,7 +3626,9 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     // sync with `platform_extensions::gate_classifier::SEEDED_CLASSES` and
     // reconciled onto existing DBs by `migrate_v31_to_v32`. The `repo_*`
     // classes are the Steward git-health lane (Tier 2, user-only) —
-    // reconciled onto existing DBs by `migrate_v40_to_v41`.
+    // reconciled onto existing DBs by `migrate_v40_to_v41`. The
+    // `finance_sell_notice*` classes are the Financier's exit notices —
+    // reconciled by `migrate_v52_to_v53`.
     sqlx::query(
         "INSERT OR IGNORE INTO risk_policy (action_class, tier, rationale) VALUES
             ('goal_ready', 0, 'Triage->Ready promotion is reversible'),
@@ -3607,7 +3652,9 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             ('cc_workspace_edit', 1, 'Supervised CC file edit (Write/Edit/MultiEdit/NotebookEdit) — confined, git-reversible; recorded decision'),
             ('cc_shell', 2, 'Supervised CC shell (Bash/KillBash) — arbitrary command surface; user-only'),
             ('repo_worktree_reap', 2, 'Removes a merged, clean worktree directory — user-only'),
-            ('repo_branch_delete', 2, 'Deletes a local branch merged into the trunk — user-only')",
+            ('repo_branch_delete', 2, 'Deletes a local branch merged into the trunk — user-only'),
+            ('finance_sell_notice', 1, 'The Financier proposes an exit on a holding — advisory, executes nothing'),
+            ('finance_sell_notice_urgent', 2, 'Escalated exit notice (55-day breakdown or 25% drawdown) — user-only')",
     )
     .execute(&mut *tx)
     .await?;
@@ -5549,6 +5596,93 @@ mod inbox_schema_tests {
                 .await
                 .unwrap();
         assert_eq!(count, 2, "exactly the two repo_* rows, no duplicates");
+    }
+
+    /// migrate_v52_to_v53: a pre-Financier DB has no `finance_sell_notice*`
+    /// classes, so BOTH would fail closed to Tier 2 and an advisory exit notice
+    /// would arrive indistinguishable from an urgent one. After v53 the
+    /// advisory class is Tier 1 and the urgent one Tier 2, a user customization
+    /// survives a re-run, and no duplicates appear.
+    #[tokio::test]
+    async fn migrate_v52_to_v53_seeds_financier_exit_notice_classes() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        sqlx::query("DELETE FROM risk_policy WHERE action_class LIKE 'finance_sell_notice%'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (52)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let before: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM risk_policy WHERE action_class LIKE 'finance_sell_notice%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(before, 0, "the classes are absent on a pre-lane DB");
+
+        migrate_v52_to_v53(&pool).await.unwrap();
+        assert_eq!(current_version(&pool).await, 53);
+
+        for (class, want) in [
+            ("finance_sell_notice", 1),
+            ("finance_sell_notice_urgent", 2),
+        ] {
+            let tier: i64 =
+                sqlx::query_scalar("SELECT tier FROM risk_policy WHERE action_class = ?")
+                    .bind(class)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(tier, want, "{class} must be Tier {want}");
+        }
+
+        // A user who wants every exit notice to be user-only keeps that choice.
+        sqlx::query("UPDATE risk_policy SET tier = 2 WHERE action_class = 'finance_sell_notice'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        migrate_v52_to_v53(&pool).await.unwrap();
+        let tier: i64 = sqlx::query_scalar(
+            "SELECT tier FROM risk_policy WHERE action_class = 'finance_sell_notice'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tier, 2, "user-customized tier preserved, not reset to seed");
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM risk_policy WHERE action_class LIKE 'finance_sell_notice%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 2, "exactly the two rows, no duplicates");
+    }
+
+    /// A fresh install must not need the migration to have run — the same seed
+    /// is in `init_spectral_db`, and a mismatch there is how a feature ships
+    /// working on upgraded machines and broken on new ones.
+    #[tokio::test]
+    async fn a_fresh_install_already_carries_the_exit_notice_classes() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+        let advisory: i64 = sqlx::query_scalar(
+            "SELECT tier FROM risk_policy WHERE action_class = 'finance_sell_notice'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let urgent: i64 = sqlx::query_scalar(
+            "SELECT tier FROM risk_policy WHERE action_class = 'finance_sell_notice_urgent'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((advisory, urgent), (1, 2));
     }
 
     /// v33 (#66) is additive, seeds every existing user without overwriting a

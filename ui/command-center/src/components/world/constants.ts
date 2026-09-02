@@ -22,7 +22,14 @@ export const STATIONS: StationConfig[] = [
     name: 'Lab',
     position: [0, 0, -10] as Vector3Tuple,
     iconType: 'planets',
-    tooltip: 'Lab',
+    // The Lab is the one pedestal with no product tab behind it (it is absent
+    // from WorldView's STATION_TOOL, so clicking it glides ~700ms and lands
+    // nowhere). Structurally it is identical to the three that DO navigate, so
+    // nothing distinguished a destination from a dead end until you had spent
+    // the glide finding out. The tooltip says so before the click — and
+    // WorldHUD already has the amber "coming soon" branch waiting for exactly
+    // this string, which is how we know the warning used to exist.
+    tooltip: 'Lab · coming soon',
   },
   {
     id: 'library',

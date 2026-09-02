@@ -1,17 +1,24 @@
 /**
  * Decision Inbox — home card ("decisions" registry entry, Lane L4).
  *
+ * THE canonical rendering of the pending-decision count (J3). Home is the
+ * landing page and "what needs me" is a landing-page fact; the other placements
+ * (Settings → Autonomy, the chat dock, the World's Petition Basin, the Council
+ * card) are labelled references to this one, and they take their words from the
+ * shared `summarizeDecisions` rather than writing their own.
+ *
  * Glanceable only: count + plain words; the whole card is tappable and opens
  * the inbox overlay. No actions live on the card itself.
  */
 
-import { useState } from 'react';
-import { font, radius, tabularNums } from '../../../styles/tokens';
+import { useEffect, useState } from 'react';
+import { font, radius, tabularNums, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { useDecisions } from '../decisions/useDecisions';
 import { DecisionInbox } from '../decisions/DecisionInbox';
-import { formatAge } from '../decisions/format';
+import { summarizeDecisions } from '../decisions/summary';
 import { usePersona } from '../../settings/useSettings';
+import { useCommandCenter } from '../../../lib/store';
 
 interface Props {
   /** Active-goal count from the shared useLiveGoals source, so this stat agrees
@@ -29,14 +36,20 @@ export function DecisionsCard({ activeCount }: Props = {}) {
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
 
-  const count = data?.total_pending ?? 0;
-  const handled = data?.handled_count ?? 0;
-  const goals = activeCount ?? data?.goals_in_flight ?? 0;
-  const attention = data?.goals_needing_attention ?? 0;
-  const oldest = data?.oldest_pending_at ?? null;
+  const s = summarizeDecisions(data, agentName, activeCount);
+  const { count } = s;
+  const empty = s.allClear;
 
-  // A parked goal waiting on the user is NOT "all clear" (wave-1 item 1).
-  const empty = data !== null && count === 0 && attention === 0;
+  // A reference elsewhere in the app asked to be brought here (Settings →
+  // Autonomy's strip, per J3). Open the canonical surface, then clear the
+  // request so it can never fire again later on its own.
+  const pendingOpen = useCommandCenter(st => st.pendingDecisionInbox);
+  const clearPendingDecisionInbox = useCommandCenter(st => st.clearPendingDecisionInbox);
+  useEffect(() => {
+    if (!pendingOpen) return;
+    setOpen(true);
+    clearPendingDecisionInbox();
+  }, [pendingOpen, clearPendingDecisionInbox]);
 
   return (
     <>
@@ -64,7 +77,7 @@ export function DecisionsCard({ activeCount }: Props = {}) {
       >
         {/* Kicker */}
         <div style={{
-          fontFamily: font.body, fontSize: 11, fontWeight: 600,
+          fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600,
           letterSpacing: '0.10em', textTransform: 'uppercase',
           color: colors.textDim, marginBottom: 6,
         }}>
@@ -78,43 +91,41 @@ export function DecisionsCard({ activeCount }: Props = {}) {
             <span style={{
               width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
               background: colors.success + '26', color: colors.success,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: textSize.micro,
             }}>✓</span>
-            <span style={{ fontSize: 12, color: colors.textMuted }}>
-              All clear — {goals} goal{goals === 1 ? '' : 's'} in flight
+            <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>
+              {s.allClearLabel}
             </span>
           </div>
         ) : (
           <>
             {/* Stat-style count */}
             <div style={{
-              fontFamily: font.display, fontSize: 32, fontWeight: 600,
+              fontFamily: font.display, fontSize: textSize.display, fontWeight: 600,
               letterSpacing: '-0.02em', ...tabularNums,
               color: count > 0 ? colors.cyan : colors.text,
             }}>
               {data === null ? '—' : count}
             </div>
-            <div style={{ fontFamily: font.body, fontSize: 13, fontWeight: 600, color: colors.text, marginTop: 2 }}>
-              {data === null
-                ? `Checking with ${agentName}…`
-                : `${agentName} needs ${count} answer${count === 1 ? '' : 's'}`}
+            <div style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text, marginTop: 2 }}>
+              {s.headline}
             </div>
-            {oldest && (
-              <div style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, marginTop: 6 }}>
-                oldest waiting {formatAge(oldest)}
+            {s.oldestLabel && (
+              <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, marginTop: 6 }}>
+                {s.oldestLabel}
               </div>
             )}
-            {attention > 0 && (
-              <div style={{ fontFamily: font.body, fontSize: 11, color: '#e8a33d', marginTop: 6 }}>
-                {attention} parked goal{attention === 1 ? '' : 's'} need{attention === 1 ? 's' : ''} your attention
+            {s.attentionLabel && (
+              <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: '#e8a33d', marginTop: 6 }}>
+                {s.attentionLabel}
               </div>
             )}
-            {handled > 0 && (
-              <div style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted, marginTop: 14 }}>
-                {agentName} handled {handled} routine item{handled === 1 ? '' : 's'} overnight →
+            {s.handledLabel && (
+              <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginTop: 14 }}>
+                {s.handledLabel} →
               </div>
             )}
-            <div style={{ marginTop: 'auto', fontFamily: font.body, fontSize: 12, fontWeight: 500, color: colors.cyan }}>
+            <div style={{ marginTop: 'auto', fontFamily: font.body, fontSize: textSize.caption, fontWeight: 500, color: colors.cyan }}>
               Review →
             </div>
           </>

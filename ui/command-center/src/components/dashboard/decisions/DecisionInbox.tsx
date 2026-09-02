@@ -1,17 +1,20 @@
 /**
  * Decision Inbox — overlay (Lane L4).
  *
- * Full-screen scrim overlay rendered from inside dashboard/ (AddCardPicker
- * pattern) so the workspaces/ mount point stays untouched. Ranked Tier-2 +
- * unblock items, "+M more" overflow, collapsed Tier-1 group, history view.
+ * Rendered from inside dashboard/ so the workspaces/ mount point stays
+ * untouched, on `DetailModal` — the app's one modal shell — rather than on a
+ * copy of it. Ranked Tier-2 + unblock items, "+M more" overflow, collapsed
+ * Tier-1 group, history view.
  * Zero batch/multi-select affordances anywhere — answers are one at a time.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useId, type CSSProperties } from 'react';
 import { useLiveGoals } from '../../../lib/useLiveGoals';
-import { FiX } from 'react-icons/fi';
-import { font, radius, ease } from '../../../styles/tokens';
+import { font, radius, ease, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
+import { Button } from '../../common/Button';
+import { DetailModal } from '../../common/DetailModal';
+import { StateBlock } from '../../common/StateBlock';
 import type { useDecisions } from './useDecisions';
 import type { HistoryItem } from './types';
 import { resolutionText } from './types';
@@ -32,12 +35,28 @@ export function DecisionInbox({ inbox, onClose }: Props) {
   const agentName = persona?.display_name ?? 'your agent';
   const [view, setView] = useState<'list' | 'history'>('list');
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
+  /** The history read failed. It used to be `catch { setHistory([]) }`, which
+   *  moved the failure into the empty branch by hand: a daemon that never
+   *  answered rendered as "Nothing here yet" — i.e. as an audit trail saying
+   *  nothing had ever been decided. */
+  const [historyError, setHistoryError] = useState(false);
   const [tier1Open, setTier1Open] = useState(false);
+  const tier1Id = useId();
+
+  const loadHistory = useCallback(async () => {
+    setHistoryError(false);
+    try {
+      setHistory(await inbox.loadHistory());
+    } catch { setHistoryError(true); }
+  }, [inbox]);
 
   const openHistory = useCallback(async () => {
     setView('history');
     if (history === null) {
-      try { setHistory(await inbox.loadHistory()); } catch { setHistory([]); }
+      try {
+        setHistory(await inbox.loadHistory());
+        setHistoryError(false);
+      } catch { setHistoryError(true); }
     }
   }, [history, inbox]);
 
@@ -45,7 +64,10 @@ export function DecisionInbox({ inbox, onClose }: Props) {
     const next = !tier1Open;
     setTier1Open(next);
     if (next && history === null) {
-      try { setHistory(await inbox.loadHistory()); } catch { setHistory([]); }
+      try {
+        setHistory(await inbox.loadHistory());
+        setHistoryError(false);
+      } catch { setHistoryError(true); }
     }
   }, [tier1Open, history, inbox]);
 
@@ -61,73 +83,65 @@ export function DecisionInbox({ inbox, onClose }: Props) {
   const tier1Rows = (history ?? []).filter(d => d.tier === 1);
 
   return (
-    <div
-      onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 100,
-        background: 'rgba(0,0,0,0.5)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}
+    // The chrome is `DetailModal`'s. It used to be a byte-for-byte copy of that
+    // shell — the same `radius.lg`, the same shadow pair, the same 86vh — with
+    // none of its keyboard floor: no focus trap, no Escape, no `role="dialog"`,
+    // and focus abandoned wherever it was when the inbox opened. On the surface
+    // that exists to be checked several times a day.
+    <DetailModal
+      title={view === 'history' ? 'History' : 'Decision inbox'}
+      onClose={onClose}
+      width="min(720px, 92vw)"
+      badge={view === 'list' && total > 0
+        ? { label: `${total} pending`, color: colors.cyan, bg: colors.cyanSoft }
+        : null}
+      headerLeft={view === 'history' ? (
+        <Button
+          colors={colors}
+          variant="bare"
+          type="button"
+          onClick={() => setView('list')}
+          style={{
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': colors.border,
+            '--pa-btn-pad': '2px 4px',
+            '--pa-btn-radius': `${radius.xs}px`,
+            '--pa-btn-weight': 400,
+            fontFamily: font.body, fontSize: textSize.caption,
+          } as CSSProperties}
+        >
+          ← Back
+        </Button>
+      ) : undefined}
+      bodyStyle={{ padding: '6px 0' }}
+      footer={view === 'list' ? (
+        <Button
+          colors={colors}
+          variant="bare"
+          type="button"
+          className="hover:underline"
+          onClick={openHistory}
+          style={{
+            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-bg-active': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': '0',
+            '--pa-btn-weight': 400,
+            fontSize: textSize.caption, fontFamily: font.body,
+          } as CSSProperties}
+        >
+          History →
+        </Button>
+      ) : undefined}
     >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          width: 'min(720px, 92vw)', maxHeight: '86vh',
-          borderRadius: radius.lg,
-          background: colors.surface,
-          border: `1px solid ${colors.border}`,
-          boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-          overflow: 'hidden',
-          display: 'flex', flexDirection: 'column',
-        }}
-      >
-        {/* Header */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 10,
-          padding: '14px 18px',
-          borderBottom: `1px solid ${colors.border}`,
-        }}>
-          {view === 'history' && (
-            <button
-              onClick={() => setView('list')}
-              style={{
-                background: 'none', border: 'none', cursor: 'pointer',
-                color: colors.textMuted, fontFamily: font.body, fontSize: 12,
-                padding: '2px 4px',
-              }}
-            >
-              ← Back
-            </button>
-          )}
-          <span style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text, flex: 1 }}>
-            {view === 'history' ? 'History' : 'Decision inbox'}
-          </span>
-          {view === 'list' && total > 0 && (
-            <span style={{
-              fontFamily: font.mono, fontSize: 11, color: colors.cyan,
-              background: colors.cyanSoft, borderRadius: radius.pill, padding: '2px 8px',
-            }}>
-              {total} pending
-            </span>
-          )}
-          <button
-            onClick={onClose}
-            title="Close"
-            style={{
-              background: 'none', border: 'none', color: colors.textMuted,
-              cursor: 'pointer', padding: 4, display: 'flex',
-            }}
-          >
-            <FiX size={16} />
-          </button>
-        </div>
-
-        {/* Body */}
-        <div data-testid="inbox-body" style={{ overflow: 'auto', padding: '6px 0', flex: 1 }}>
+      <div data-testid="inbox-body">
           {view === 'history' ? (
-            <HistoryList items={history} />
+            <HistoryList items={history} failed={historyError} onRetry={loadHistory} />
           ) : loading && !data ? (
-            <div style={{ padding: '48px 18px', textAlign: 'center', fontSize: 12, color: colors.textDim }}>
+            <div style={{ padding: '48px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
               Checking with {agentName}…
             </div>
           ) : error && !data ? (
@@ -135,22 +149,36 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                all-clear (2026-07 wiring audit D4): a dead daemon looked
                identical to a clear inbox. */
             <div style={{ padding: '48px 18px', textAlign: 'center' }}>
-              <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}>
+              <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: 4 }}>
                 Couldn't reach the decision inbox.
               </div>
-              <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 14 }}>
+              <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 14 }}>
                 This is a connection problem, not an empty inbox.
               </div>
-              <button
+              {/* No success tick: `refresh` swallows its own failure, so a
+                  tick would claim a load that never landed. The list replacing
+                  this dead end is the only honest confirmation. */}
+              <Button
+                colors={colors}
+                type="button"
+                flashSuccess={false}
                 onClick={() => inbox.refresh()}
                 style={{
-                  fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan,
-                  background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: 8,
-                  padding: '5px 14px', cursor: 'pointer',
-                }}
+                  '--pa-btn-bg': 'transparent',
+                  '--pa-btn-fg': colors.cyan,
+                  '--pa-btn-border': colors.borderHi,
+                  '--pa-btn-bg-hover': colors.cyanSoft,
+                  '--pa-btn-fg-hover': colors.cyan,
+                  '--pa-btn-border-hover': colors.cyan,
+                  '--pa-btn-bg-active': colors.cyanGlow,
+                  '--pa-btn-pad': '5px 14px',
+                  '--pa-btn-radius': `${radius.md}px`,
+                  '--pa-btn-weight': 600,
+                  fontFamily: font.body, fontSize: textSize.caption,
+                } as CSSProperties}
               >
                 Retry
-              </button>
+              </Button>
             </div>
           ) : total === 0 && attentionGoals.length === 0 ? (
             <div style={{ padding: '48px 18px', textAlign: 'center' }}>
@@ -158,10 +186,10 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                 width: 34, height: 34, borderRadius: '50%',
                 background: colors.success + '26', color: colors.success,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 16, margin: '0 auto 10px',
+                fontSize: textSize.heading, margin: '0 auto 10px',
               }}>✓</div>
-              <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}>No decisions needed.</div>
-              <div style={{ fontSize: 11, color: colors.textDim }}>
+              <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: 4 }}>No decisions needed.</div>
+              <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
                 {goals} goal{goals === 1 ? '' : 's'} in flight.
               </div>
             </div>
@@ -188,12 +216,12 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                         borderBottom: `1px solid ${colors.border}`,
                       }}
                     >
-                      <span style={{ fontSize: 12, color: colors.text, flex: 1 }}>{g.title}</span>
+                      <span style={{ fontSize: textSize.caption, color: colors.text, flex: 1 }}>{g.title}</span>
                       <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim }}>
                         {g.state_binding}
                       </span>
                       {g.reason && (
-                        <span style={{ fontSize: 11, color: colors.textMuted, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.reason}>
+                        <span style={{ fontSize: textSize.micro, color: colors.textMuted, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.reason}>
                           {g.reason}
                         </span>
                       )}
@@ -207,6 +235,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                   decision={d}
                   onAnswer={inbox.answer}
                   onConflictSettled={inbox.refresh}
+                  onDiscardStaged={inbox.discardStaged}
                   onCancelGoal={
                     d.goal_id && d.project_id
                       ? async () => {
@@ -219,47 +248,77 @@ export function DecisionInbox({ inbox, onClose }: Props) {
               ))}
 
               {moreCount > 0 && (
-                <button
+                /* No success tick: `showAll` swallows its own failure, and the
+                   rest of the list appearing is the confirmation. */
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  type="button"
+                  flashSuccess={false}
                   onClick={() => { inbox.showAll(); }}
                   style={{
-                    display: 'block', width: '100%', textAlign: 'center',
-                    padding: 10, background: 'none', border: 'none',
-                    color: colors.cyan, fontFamily: font.body, fontSize: 12,
-                    fontWeight: 500, cursor: 'pointer',
-                  }}
+                    '--pa-btn-fg': colors.cyan,
+                    '--pa-btn-fg-hover': colors.cyan,
+                    '--pa-btn-bg-hover': colors.cyanSoft,
+                    '--pa-btn-bg-active': colors.cyanSoft,
+                    '--pa-btn-pad': '10px',
+                    '--pa-btn-radius': '0',
+                    display: 'flex', width: '100%',
+                    fontFamily: font.body, fontSize: textSize.caption,
+                  } as CSSProperties}
                 >
                   +{moreCount} more decision{moreCount === 1 ? '' : 's'}
-                </button>
+                </Button>
               )}
 
               {handled > 0 && (
                 <>
+                  {/* Disclosure toggle for the routine-items group below, with
+                      its own three-part row (dot, label, chevron) laid out by
+                      the button itself. It keeps the element and takes the
+                      shared `.pa-btn` interaction rules instead of the Button
+                      primitive, whose single label span would collapse that
+                      row and whose pending/success machinery has nothing to
+                      say about opening a list. */}
                   <button
+                    type="button"
+                    className="pa-btn"
+                    aria-expanded={tier1Open}
+                    aria-controls={tier1Id}
                     onClick={toggleTier1}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: 10, width: '100%',
-                      padding: '12px 18px', background: 'none', border: 'none',
+                      '--pa-btn-bg': 'transparent',
+                      '--pa-btn-fg': colors.text,
+                      '--pa-btn-border': 'transparent',
+                      '--pa-btn-bg-hover': colors.cyanSoft,
+                      '--pa-btn-fg-hover': colors.text,
+                      '--pa-btn-bg-active': colors.cyanSoft,
+                      '--pa-btn-pad': '12px 18px',
+                      '--pa-btn-radius': '0',
+                      gap: 10, width: '100%',
+                      justifyContent: 'flex-start',
                       borderTop: `1px solid ${colors.border}`,
-                      cursor: 'pointer', textAlign: 'left', fontFamily: font.body,
-                    }}
+                      textAlign: 'left', fontFamily: font.body,
+                      fontSize: 'inherit', lineHeight: 'inherit',
+                    } as CSSProperties}
                   >
                     <span style={{
                       width: 8, height: 8, borderRadius: '50%',
                       background: colors.success, flexShrink: 0,
                     }} />
-                    <span style={{ fontSize: 13, fontWeight: 500, color: colors.text, flex: 1 }}>
+                    <span style={{ fontSize: textSize.small, fontWeight: 500, color: colors.text, flex: 1 }}>
                       {agentName} handled {handled} routine item{handled === 1 ? '' : 's'} overnight
                     </span>
                     <span style={{
-                      color: colors.textDim, fontSize: 11,
+                      color: colors.textDim, fontSize: textSize.micro,
                       transform: tier1Open ? 'rotate(90deg)' : 'none',
                       transition: reduceMotion ? 'none' : `transform 150ms ${ease.out}`,
                     }}>▸</span>
                   </button>
                   {tier1Open && (
-                    <div>
+                    <div id={tier1Id}>
                       {history === null ? (
-                        <div style={{ padding: '10px 18px 10px 36px', fontSize: 12, color: colors.textDim }}>
+                        <div style={{ padding: '10px 18px 10px 36px', fontSize: textSize.caption, color: colors.textDim }}>
                           Loading…
                         </div>
                       ) : (
@@ -268,7 +327,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                             key={row.id}
                             style={{
                               display: 'flex', alignItems: 'center', gap: 10,
-                              padding: '8px 18px 8px 36px', fontSize: 12,
+                              padding: '8px 18px 8px 36px', fontSize: textSize.caption,
                               color: colors.textMuted,
                               borderTop: `1px solid ${colors.border}`,
                               fontFamily: font.body,
@@ -279,19 +338,29 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                             }}>
                               {row.headline}
                             </span>
-                            <span style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, flexShrink: 0 }}>
+                            <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, flexShrink: 0 }}>
                               {formatAge(row.created_at)}
                             </span>
-                            <button
+                            <Button
+                              colors={colors}
+                              variant="bare"
+                              type="button"
+                              className="hover:underline"
                               onClick={openHistory}
                               style={{
-                                background: 'none', border: 'none', cursor: 'pointer',
-                                color: colors.cyan, fontSize: 11, fontFamily: font.body,
-                                padding: 0, flexShrink: 0,
-                              }}
+                                '--pa-btn-fg': colors.cyan,
+                                '--pa-btn-fg-hover': colors.cyan,
+                                '--pa-btn-bg-hover': 'transparent',
+                                '--pa-btn-bg-active': 'transparent',
+                                '--pa-btn-pad': '0',
+                                '--pa-btn-radius': '0',
+                                '--pa-btn-weight': 400,
+                                fontSize: textSize.micro, fontFamily: font.body,
+                                flexShrink: 0,
+                              } as CSSProperties}
                             >
                               audit →
-                            </button>
+                            </Button>
                           </div>
                         ))
                       )}
@@ -301,48 +370,40 @@ export function DecisionInbox({ inbox, onClose }: Props) {
               )}
             </>
           )}
-        </div>
-
-        {/* Footer */}
-        {view === 'list' && (
-          <div style={{
-            padding: '10px 18px', borderTop: `1px solid ${colors.border}`,
-            display: 'flex', justifyContent: 'flex-end',
-          }}>
-            <button
-              onClick={openHistory}
-              style={{
-                background: 'none', border: 'none', cursor: 'pointer',
-                color: colors.textDim, fontSize: 12, fontFamily: font.body, padding: 0,
-              }}
-            >
-              History →
-            </button>
-          </div>
-        )}
       </div>
-    </div>
+    </DetailModal>
   );
 }
 
 /** Read-only audit list: every resolved decision, incl. Tier-1 auto-handled. */
-function HistoryList({ items }: { items: HistoryItem[] | null }) {
+function HistoryList({ items, failed, onRetry }: {
+  items: HistoryItem[] | null;
+  failed: boolean;
+  onRetry: () => void;
+}) {
   const { colors } = useTheme();
   const { data: persona } = usePersona();
   const agentName = persona?.display_name ?? 'your agent';
+  if (failed) {
+    return (
+      <StateBlock
+        tone="error"
+        compact
+        title="Couldn't load the decision history."
+        detail="This is a connection problem, not an empty record — decisions you have already answered are still there."
+        onRetry={onRetry}
+      />
+    );
+  }
   if (items === null) {
     return (
-      <div style={{ padding: '32px 18px', textAlign: 'center', fontSize: 12, color: colors.textDim }}>
+      <div style={{ padding: '32px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
         Loading…
       </div>
     );
   }
   if (items.length === 0) {
-    return (
-      <div style={{ padding: '32px 18px', textAlign: 'center', fontSize: 12, color: colors.textDim }}>
-        Nothing here yet.
-      </div>
-    );
+    return <StateBlock tone="empty" compact title="Nothing here yet." />;
   }
   return (
     <div>
@@ -358,7 +419,7 @@ function HistoryList({ items }: { items: HistoryItem[] | null }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{
               fontFamily: font.mono, fontSize: 10, letterSpacing: '0.06em',
-              textTransform: 'uppercase', borderRadius: 4, padding: '2px 6px',
+              textTransform: 'uppercase', borderRadius: radius.xs, padding: '2px 6px',
               flexShrink: 0,
               color: item.tier === 1 ? colors.success : colors.cyan,
               background: item.tier === 1 ? colors.success + '26' : colors.cyanSoft,
@@ -366,16 +427,16 @@ function HistoryList({ items }: { items: HistoryItem[] | null }) {
               {item.tier === 1 ? agentName : 'you'}
             </span>
             <span style={{
-              fontSize: 13, fontWeight: 500, color: colors.text, flex: 1,
+              fontSize: textSize.small, fontWeight: 500, color: colors.text, flex: 1,
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
             }}>
               {item.headline}
             </span>
-            <span style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, flexShrink: 0 }}>
+            <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, flexShrink: 0 }}>
               {formatAge(item.created_at)}
             </span>
           </div>
-          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+          <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 4 }}>
             {resolutionText(item, agentName)}
           </div>
         </div>

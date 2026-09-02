@@ -3,13 +3,19 @@
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
-use crate::providers::base::{ConfigKey, ProviderMetadata, ProviderType};
+use crate::providers::base::{ProviderMetadata, ProviderType};
 
 pub const EXCLUDE_KEY: &str = "council_exclude";
 
 /// Coding-CLI / ACP engines are workers, not debate seats.
+///
+/// Spelled snake_case; `is_cli_or_acp` normalizes the registry's kebab-case ids
+/// before comparing. Entries must mirror a real `PROVIDER_NAME` — `"amp"` and
+/// `"testprovider"` used to sit here and matched nothing (the real ids are
+/// `amp-acp` and `test`), which is how the list drifted from the registry
+/// unnoticed. `real_registry_cli_acp_ids_are_all_recognized` now pins it.
 const CLI_ACP_NAMES: &[&str] = &[
-    "amp",
+    "amp_acp",
     "chatgpt_codex",
     "claude_acp",
     "claude_code",
@@ -20,7 +26,6 @@ const CLI_ACP_NAMES: &[&str] = &[
     "gemini_cli",
     "kimi_code",
     "pi_acp",
-    "testprovider",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,7 +52,10 @@ impl Seat {
 }
 
 pub fn is_cli_or_acp(name: &str) -> bool {
-    let n = name.trim().to_ascii_lowercase();
+    // Registry ids use both kebab-case (`claude-code`, `codex-acp`) and
+    // snake_case (`claude_code`, `codex_acp`). Normalize before checking or a
+    // coding harness can leak into the debate-seat list under one spelling.
+    let n = name.trim().to_ascii_lowercase().replace('-', "_");
     CLI_ACP_NAMES.contains(&n.as_str()) || n.ends_with("_acp") || n.contains("acp")
 }
 
@@ -77,31 +85,11 @@ pub fn set_excluded(names: &[String]) -> Result<(), String> {
 }
 
 pub fn provider_is_configured(meta: &ProviderMetadata, provider_type: ProviderType) -> bool {
-    let cfg = Config::global();
-    if meta.name == "local" {
-        return true;
-    }
-    let has_oauth = meta.config_keys.iter().any(|k| k.oauth_flow);
-    if has_oauth {
-        let marker = format!("{}_configured", meta.name);
-        if matches!(cfg.get_param::<bool>(&marker), Ok(true)) {
-            return true;
-        }
-    }
-    let required: Vec<&ConfigKey> = meta.config_keys.iter().filter(|k| k.required).collect();
-    if required.is_empty() {
-        // Host-only providers (Ollama, Apple FM) count as connected when the
-        // operator has not excluded them; they need no key.
-        return true;
-    }
-    required.iter().all(|key| {
-        if key.secret {
-            cfg.get_secret::<String>(&key.name).is_ok()
-        } else {
-            std::env::var(&key.name).is_ok() || cfg.get_param::<String>(&key.name).is_ok()
-        }
-    }) || (provider_type == ProviderType::Custom || provider_type == ProviderType::Declarative)
-        && meta.config_keys.is_empty()
+    // Keep Council, `/model`, and every other model picker on one definition
+    // of "connected". The old copy missed custom provider credentials and
+    // several defaulted/OAuth shapes, so working models disappeared here even
+    // while Chat or the harness was actively using them.
+    crate::providers::configured::is_provider_configured(meta, provider_type)
 }
 
 pub fn model_for_provider(meta: &ProviderMetadata) -> String {
@@ -210,10 +198,10 @@ mod tests {
         )
     }
 
-    fn ollama() -> ProviderMetadata {
+    fn local() -> ProviderMetadata {
         ProviderMetadata::new(
-            "ollama",
-            "Ollama",
+            "local",
+            "Local Inference",
             "local",
             "qwen2.5:7b",
             vec!["qwen2.5:7b"],
@@ -238,22 +226,140 @@ mod tests {
                 meta("cursor_agent", "Cursor", "auto"),
                 ProviderType::Builtin,
             ),
-            (ollama(), ProviderType::Builtin),
+            (local(), ProviderType::Builtin),
         ];
-        let seats = seats_from(&listed, &["ollama".into()]);
+        let seats = seats_from(&listed, &["local".into()]);
         let members = members_from_seats(&seats);
         let names: Vec<&str> = members.iter().map(|m| m.provider.as_str()).collect();
         // anthropic/openai need secrets → not configured in this test.
-        // ollama is configured (no keys) but excluded.
+        // local inference is always configured but explicitly excluded.
         // CLI skipped.
         assert!(names.is_empty(), "{names:?}");
-        let ollama_seat = seats.iter().find(|s| s.provider == "ollama").unwrap();
-        assert!(ollama_seat.configured);
-        assert!(ollama_seat.excluded);
-        assert!(!ollama_seat.eligible());
+        let local_seat = seats.iter().find(|s| s.provider == "local").unwrap();
+        assert!(local_seat.configured);
+        assert!(local_seat.excluded);
+        assert!(!local_seat.eligible());
         let cc = seats.iter().find(|s| s.provider == "claude_code").unwrap();
         assert!(cc.cli_or_acp);
         assert!(!cc.eligible());
+    }
+
+    #[test]
+    fn cli_worker_ids_are_recognized_in_both_registry_spellings() {
+        for name in [
+            "claude_code",
+            "claude-code",
+            "codex_acp",
+            "codex-acp",
+            "cursor_agent",
+            "cursor-agent",
+            "gemini_cli",
+            "gemini-cli",
+        ] {
+            assert!(is_cli_or_acp(name), "{name} must be a worker, not a seat");
+        }
+    }
+
+    /// The registry spells coding-harness ids kebab-case (`claude-code`,
+    /// `cursor-agent`) while `CLI_ACP_NAMES` is snake_case, so `is_cli_or_acp`
+    /// matched none of them and every one leaked into the debate-seat list.
+    ///
+    /// Names come from each provider's own `metadata()` — i.e. the real
+    /// `PROVIDER_NAME` constants — and are cross-checked against the live async
+    /// registry, so a rename, a new provider, or a third separator convention
+    /// fails here rather than silently at runtime. The old test hand-typed its
+    /// strings, which is precisely why it stayed green while the live path was
+    /// wrong.
+    #[tokio::test]
+    async fn real_registry_cli_acp_ids_are_all_recognized() {
+        use crate::providers::amp_acp::AmpAcpProvider;
+        use crate::providers::base::ProviderDef;
+        use crate::providers::chatgpt_codex::ChatGptCodexProvider;
+        use crate::providers::claude_acp::ClaudeAcpProvider;
+        use crate::providers::claude_code::ClaudeCodeProvider;
+        use crate::providers::codex::CodexProvider;
+        use crate::providers::codex_acp::CodexAcpProvider;
+        use crate::providers::copilot_acp::CopilotAcpProvider;
+        use crate::providers::cursor_agent::CursorAgentProvider;
+        use crate::providers::gemini_cli::GeminiCliProvider;
+        use crate::providers::kimicode::KimiCodeProvider;
+        use crate::providers::pi_acp::PiAcpProvider;
+
+        let workers = [
+            AmpAcpProvider::metadata().name,
+            ChatGptCodexProvider::metadata().name,
+            ClaudeAcpProvider::metadata().name,
+            ClaudeCodeProvider::metadata().name,
+            CodexAcpProvider::metadata().name,
+            CodexProvider::metadata().name,
+            CopilotAcpProvider::metadata().name,
+            CursorAgentProvider::metadata().name,
+            GeminiCliProvider::metadata().name,
+            KimiCodeProvider::metadata().name,
+            PiAcpProvider::metadata().name,
+        ];
+        assert!(
+            workers.iter().any(|n| n.contains('-')),
+            "fixture drift: no kebab-case worker id left, this test no longer covers the bug"
+        );
+
+        let listed = crate::providers::providers().await;
+        for name in &workers {
+            assert!(
+                listed.iter().any(|(m, _)| &m.name == name),
+                "{name} is missing from the live registry — update this test's expectations"
+            );
+            assert!(is_cli_or_acp(name), "{name} must be a worker, not a seat");
+        }
+
+        for name in [
+            crate::providers::anthropic::AnthropicProvider::metadata().name,
+            crate::providers::openai::OpenAiProvider::metadata().name,
+            crate::providers::google::GoogleProvider::metadata().name,
+        ] {
+            assert!(
+                !is_cli_or_acp(&name),
+                "{name} is a debate seat, not a coding worker"
+            );
+        }
+    }
+
+    /// Anthropic marks BOTH `ANTHROPIC_API_KEY` and `ANTHROPIC_HOST` required,
+    /// but the host carries a compiled default and is never written to config.
+    /// The old check demanded every required key be independently present, so
+    /// the provider this machine actively runs on reported "not configured".
+    ///
+    /// Written against the real `metadata()`: the module's synthetic `meta()`
+    /// helper only ever built one required key with no default, a shape that
+    /// cannot tell the old logic from the new one.
+    #[test]
+    fn real_anthropic_metadata_is_configured_with_only_the_api_key_set() {
+        use crate::providers::anthropic::AnthropicProvider;
+        use crate::providers::base::ProviderDef;
+
+        let meta = AnthropicProvider::metadata();
+        assert!(
+            meta.config_keys
+                .iter()
+                .any(|k| k.name == "ANTHROPIC_HOST" && k.required && k.default.is_some()),
+            "fixture drift: ANTHROPIC_HOST is no longer required-with-default, \
+             so this test no longer reproduces the bug"
+        );
+        assert!(
+            std::env::var("ANTHROPIC_HOST").is_err(),
+            "ANTHROPIC_HOST is set in this environment; the test cannot prove the fix"
+        );
+
+        let cfg = Config::global();
+        cfg.set_secret("ANTHROPIC_API_KEY", &"sk-test-not-a-real-key".to_string())
+            .expect("store test key");
+        let configured = provider_is_configured(&meta, ProviderType::Preferred);
+        cfg.delete_secret("ANTHROPIC_API_KEY").ok();
+
+        assert!(
+            configured,
+            "anthropic must count as connected with only its API key stored"
+        );
     }
 
     fn host_only(name: &str) -> ProviderMetadata {
@@ -276,12 +382,12 @@ mod tests {
                 meta("claude_code", "Claude Code", "opus"),
                 ProviderType::Builtin,
             ),
-            (ollama(), ProviderType::Builtin),
+            (local(), ProviderType::Builtin),
         ];
-        let seats = seats_from(&listed, &["ollama".into()]);
+        let seats = seats_from(&listed, &[]);
         let members = members_from_seats(&seats);
         let names: Vec<&str> = members.iter().map(|m| m.provider.as_str()).collect();
-        assert_eq!(names, vec!["openai"]);
+        assert_eq!(names, vec!["local"]);
     }
 
     #[test]

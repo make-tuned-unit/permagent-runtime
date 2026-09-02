@@ -3,6 +3,7 @@ import { existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import type { Turn } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -177,12 +178,7 @@ export async function copyToClipboard(text: string): Promise<void> {
 }
 
 export function lastAssistantText(
-  turns: Array<{
-    responseItems: Array<{
-      itemType: string;
-      content?: { type?: string; text?: string };
-    }>;
-  }>,
+  turns: ReadonlyArray<Pick<Turn, "responseItems">>,
 ): string {
   for (let i = turns.length - 1; i >= 0; i--) {
     const chunks: string[] = [];
@@ -202,14 +198,7 @@ export function lastAssistantText(
 }
 
 export function formatTranscript(
-  turns: Array<{
-    userText: string;
-    responseItems: Array<{
-      itemType: string;
-      content?: { type?: string; text?: string };
-      title?: string;
-    }>;
-  }>,
+  turns: ReadonlyArray<Pick<Turn, "userText" | "responseItems">>,
 ): string {
   const parts: string[] = [];
   for (const turn of turns) {

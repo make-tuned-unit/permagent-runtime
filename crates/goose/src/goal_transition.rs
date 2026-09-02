@@ -487,6 +487,26 @@ pub async fn park_goal(
     actor: &str,
     reason: &str,
 ) -> Result<(), GuardError> {
+    park_goal_with_meta(pool, card_id, actor, reason, &[]).await
+}
+
+/// [`park_goal`], additionally merging `extra_meta` into the card's metadata
+/// inside the SAME transaction.
+///
+/// Exists because the attempt that trips the cap was never written down.
+/// `requeue_goal` is the only path that persists `attempt_count`, so the final
+/// increment — computed in flight, compared against the cap, and quoted in the
+/// unblock decision as "3/3 attempts" — died with the local variable. Live
+/// cards read `attempt_count: 2` while their own decision text said 3, so
+/// anything counting attempts off the card (a reconciler, an amnesty pass, a
+/// budget report) undercounted every parked goal by exactly one.
+pub async fn park_goal_with_meta(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    actor: &str,
+    reason: &str,
+    extra_meta: &[(&str, serde_json::Value)],
+) -> Result<(), GuardError> {
     // BEGIN IMMEDIATE: this guard reads the goal row / audit-chain head before
     // upgrading to a write; taking the write lock up front avoids the un-retryable
     // BUSY lock-upgrade a concurrent writer would trigger (see advance_goal_checked).
@@ -514,6 +534,9 @@ pub async fn park_goal(
         "last_error".to_string(),
         serde_json::Value::String(reason.to_string()),
     );
+    for (key, value) in extra_meta {
+        meta.insert((*key).to_string(), value.clone());
+    }
     let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
         .map_err(|e| GuardError::Db(e.to_string()))?;
 
@@ -547,13 +570,36 @@ pub async fn park_goal(
 }
 
 /// Requeue a goal whose worker died (e.g. daemon restart): InProgress → Ready
-/// with an incremented attempt count and the abandonment reason recorded.
+/// with `new_attempt_count` recorded as the attempt count and the abandonment
+/// reason recorded as `last_error`.
+///
+/// The caller decides the count. The restart reconciler passes the CURRENT count
+/// unchanged when the interruption was a daemon-lifecycle change rather than a
+/// worker failure (R2a) — see `classify_restart_charge`.
 pub async fn requeue_goal(
     pool: &Pool<Sqlite>,
     card_id: &str,
     actor: &str,
     new_attempt_count: u64,
     reason: &str,
+) -> Result<(), GuardError> {
+    requeue_goal_with_meta(pool, card_id, actor, new_attempt_count, reason, &[]).await
+}
+
+/// [`requeue_goal`], additionally merging `extra_meta` into the card's metadata
+/// inside the SAME transaction.
+///
+/// Atomicity is the point: the restart exemption's idempotency marker
+/// (`restart_forgiven_lifecycle`) must land with the requeue it describes, or a
+/// crash between the two would hand the same goal a second free pass for the
+/// same interruption.
+pub async fn requeue_goal_with_meta(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    actor: &str,
+    new_attempt_count: u64,
+    reason: &str,
+    extra_meta: &[(&str, serde_json::Value)],
 ) -> Result<(), GuardError> {
     // BEGIN IMMEDIATE: this guard reads the goal row / audit-chain head before
     // upgrading to a write; taking the write lock up front avoids the un-retryable
@@ -597,6 +643,9 @@ pub async fn requeue_goal(
         "last_error".to_string(),
         serde_json::Value::String(reason.to_string()),
     );
+    for (key, value) in extra_meta {
+        meta.insert((*key).to_string(), value.clone());
+    }
     let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
         .map_err(|e| GuardError::Db(e.to_string()))?;
 
@@ -1164,7 +1213,17 @@ pub async fn exhaust_and_park(
         }
     };
 
-    park_goal(
+    // Write down the attempt that tripped the cap. The unblock decision above
+    // already quotes it ("3/3 attempts"); until now the card itself did not,
+    // so the two disagreed by one on every parked goal.
+    let attempt_meta: Vec<(&str, serde_json::Value)> = match &exhaustion {
+        BudgetExhaustion::AttemptCap { spent, .. } => {
+            vec![("attempt_count", serde_json::json!(*spent))]
+        }
+        _ => Vec::new(),
+    };
+
+    park_goal_with_meta(
         pool,
         card_id,
         decisions::ACTOR_SYSTEM,
@@ -1175,6 +1234,7 @@ pub async fn exhaust_and_park(
                 .map(|e| format!("; last error: {}", e))
                 .unwrap_or_default()
         ),
+        &attempt_meta,
     )
     .await
     .map_err(String::from)?;
@@ -2261,6 +2321,81 @@ mod tests {
         // park_goal of an already-failed goal is a failed->failed write; it must not error.
         let again = again.unwrap();
         assert_eq!(again, decision_id, "must not create a duplicate decision");
+    }
+
+    /// The attempt that trips the cap is computed in flight by the caller
+    /// (`new_attempt = attempt_count + 1`) and quoted in the unblock decision as
+    /// "3/3 attempts" — but nothing wrote it back, so the card kept saying 2.
+    /// Every parked goal undercounted its own attempts by exactly one, and any
+    /// reconciler reading the card believed the smaller number.
+    #[tokio::test]
+    async fn parking_records_the_attempt_that_tripped_the_cap() {
+        let pool = test_pool().await;
+        // The card as the caller finds it: two attempts persisted, the third
+        // only in the caller's local variable.
+        let goal = goal_in_state(&pool, "in_progress", 2).await;
+
+        exhaust_and_park(
+            &pool,
+            &goal.id,
+            "Guard test goal in in_progress",
+            PERSONAL_PROJECT_ID,
+            BudgetExhaustion::AttemptCap { spent: 3, cap: 3 },
+            Some("worker session ended before the goal completed"),
+        )
+        .await
+        .unwrap();
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(3),
+            "the card must agree with the decision text it was parked with"
+        );
+        // The rest of the park is unchanged.
+        assert_eq!(state_of(&pool, &goal.id).await, "failed");
+        assert_eq!(
+            card.metadata_json.get("needs_human_attention"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
+
+    /// Non-attempt exhaustion (tokens, wallclock) says nothing about attempts,
+    /// so it must not rewrite the count with a token total.
+    #[tokio::test]
+    async fn a_token_budget_park_leaves_the_attempt_count_alone() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 2).await;
+
+        exhaust_and_park(
+            &pool,
+            &goal.id,
+            "Guard test goal in in_progress",
+            PERSONAL_PROJECT_ID,
+            BudgetExhaustion::TokenBudget {
+                spent: 120_000,
+                cap: 100_000,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(2)
+        );
     }
 
     /// #250: the manual-retry path — a parked (Failed) goal advances back to

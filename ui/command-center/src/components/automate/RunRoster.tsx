@@ -12,9 +12,11 @@
  * makes it legible at a glance and stoppable in one click.
  */
 import { useCallback, useEffect, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { FiSquare } from 'react-icons/fi';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { apiFetch } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
 import { useCommandCenter } from '../../lib/store';
@@ -47,8 +49,12 @@ export function RunRoster() {
       const r = await apiFetch<{ runs: RunItem[] }>('/api/runs');
       setRuns(Array.isArray(r.runs) ? r.runs : []);
       setStatus('ready');
+      return true;
     } catch {
       setStatus('error');
+      // Swallowed on purpose (the roster shows its own error row), so it reports
+      // the failure to the Retry button as `false` — no tick on a failed reload.
+      return false;
     }
   }, []);
 
@@ -60,17 +66,21 @@ export function RunRoster() {
 
   const [stopError, setStopError] = useState<string | null>(null);
   const interrupt = useCallback(async (r: RunItem) => {
-    if (r.kind !== 'schedule') return;
+    if (r.kind !== 'schedule') return false;
     try {
       await apiFetch(`/schedule/${encodeURIComponent(r.id)}/kill`, { method: 'POST' });
       setStopError(null);
       load();
+      return true;
     } catch (err) {
       // Surface the failure — a silent no-op Stop reads as a dead button
       // (2026-07 wiring audit). The next poll still reflects reality.
       const msg = err instanceof Error ? err.message : String(err);
       setStopError(`Couldn't stop "${r.name}": ${msg}`);
       setTimeout(() => setStopError(null), 8000);
+      // This helper states its own failure rather than rejecting, so it says so
+      // to the button primitive too: `false` means "no success tick".
+      return false;
     }
   }, [load]);
 
@@ -99,41 +109,47 @@ export function RunRoster() {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-        <div style={{ fontFamily: font.display, fontSize: 13, fontWeight: 600, color: colors.text, letterSpacing: 0.2 }}>
+        <div style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 600, color: colors.text, letterSpacing: 0.2 }}>
           Agents at work
         </div>
-        <span style={{ fontSize: 11, color: colors.textDim, fontFamily: font.body }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.body }}>
           {activeCount > 0 ? `${activeCount} active` : 'all resting'}
         </span>
       </div>
 
       {status === 'loading' && (
-        <div style={{ fontSize: 12, color: colors.textDim, fontFamily: font.body }}>Loading…</div>
+        <div style={{ fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body }}>Loading…</div>
       )}
 
       {stopError && (
-        <div style={{ fontSize: 11, color: colors.danger, fontFamily: font.body, marginBottom: 8 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, fontFamily: font.body, marginBottom: 8 }}>
           {stopError}
         </div>
       )}
 
       {status === 'error' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 12, color: colors.danger, fontFamily: font.body }}>Couldn't load activity.</span>
-          <button
+          <span style={{ fontSize: textSize.caption, color: colors.danger, fontFamily: font.body }}>Couldn't load activity.</span>
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={load}
             style={{
-              fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
-              cursor: 'pointer', fontFamily: font.body, padding: 0, fontWeight: 600,
-            }}
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-weight': 600,
+              fontFamily: font.body,
+              fontSize: textSize.micro,
+            } as CSSProperties}
           >
             Retry
-          </button>
+          </Button>
         </div>
       )}
 
       {status === 'ready' && sorted.length === 0 && (
-        <div style={{ fontSize: 12, color: colors.textDim, fontFamily: font.body, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textDim, fontFamily: font.body, lineHeight: 1.5 }}>
           Nothing running — your workers rest until their next tick.
         </div>
       )}
@@ -167,7 +183,7 @@ export function RunRoster() {
                   </span>
                 </div>
                 {r.detail && (
-                  <div style={{ fontSize: 11, color: colors.textMuted, fontFamily: font.body, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  <div style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.body, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {r.detail}
                   </div>
                 )}
@@ -178,36 +194,53 @@ export function RunRoster() {
                 </span>
               )}
               {r.kind === 'worker' && (
-                <button
+                <Button
+                  colors={colors}
                   type="button"
                   onClick={() => openAgentSettings(r.id)}
                   title="Open in Settings → Agents"
                   style={{
-                    display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
-                    fontSize: 10, fontFamily: font.body, color: colors.cyan,
-                    background: 'none', border: `1px solid ${colors.border}`,
-                    borderRadius: radius.sm, padding: '3px 7px', cursor: 'pointer',
-                  }}
+                    '--pa-btn-fg': colors.cyan,
+                    '--pa-btn-border': colors.border,
+                    '--pa-btn-bg-hover': colors.surfaceHi,
+                    '--pa-btn-border-hover': colors.borderHi,
+                    '--pa-btn-pad': '3px 7px',
+                    '--pa-btn-radius': `${radius.sm}px`,
+                    fontFamily: font.body,
+                    fontSize: 10,
+                    gap: 4,
+                    flexShrink: 0,
+                  } as CSSProperties}
                 >
                   Settings
-                </button>
+                </Button>
               )}
               {/* Only schedules have a kill verb today — showing Stop on
                   worker/session rows made a button that did nothing
                   (interrupt() early-returns for those kinds). */}
               {r.interruptible && r.kind === 'schedule' && (
-                <button
+                // No tick: the row dropping out of "working" on the next poll is
+                // the confirmation that the run stopped.
+                <Button
+                  colors={colors}
                   onClick={() => interrupt(r)}
                   title="Stop this run"
+                  flashSuccess={false}
                   style={{
-                    display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
-                    fontSize: 10, fontFamily: font.body, color: colors.danger,
-                    background: 'none', border: `1px solid ${colors.border}`,
-                    borderRadius: radius.sm, padding: '3px 7px', cursor: 'pointer',
-                  }}
+                    '--pa-btn-fg': colors.danger,
+                    '--pa-btn-border': colors.border,
+                    '--pa-btn-bg-hover': colors.surfaceHi,
+                    '--pa-btn-border-hover': colors.danger,
+                    '--pa-btn-pad': '3px 7px',
+                    '--pa-btn-radius': `${radius.sm}px`,
+                    fontFamily: font.body,
+                    fontSize: 10,
+                    gap: 4,
+                    flexShrink: 0,
+                  } as CSSProperties}
                 >
                   <FiSquare size={9} /> Stop
-                </button>
+                </Button>
               )}
             </div>
           ))}

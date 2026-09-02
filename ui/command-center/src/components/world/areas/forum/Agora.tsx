@@ -35,7 +35,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { ENV, AGENT_TRIM } from '../../shared/palette';
-import { getReduceMotion } from '../../../../styles/tokens';
+import { getReduceMotion, radius } from '../../../../styles/tokens';
 import { getAgentPosition } from '../../agents/motion';
 import { GlyphField } from './GlyphField';
 import { useAgoraPopulation } from './agoraPeers';
@@ -142,7 +142,7 @@ function AgoraInscription() {
     <Html position={[0, 7, 0]} center distanceFactor={26} style={{ pointerEvents: 'none' }}>
       <div
         style={{
-          padding: '6px 16px', borderRadius: 4, background: 'rgba(10, 14, 26, 0.8)',
+          padding: '6px 16px', borderRadius: radius.xs, background: 'rgba(10, 14, 26, 0.8)',
           border: `1px solid ${accent}55`, boxShadow: pop.online ? `0 0 20px ${accent}44` : 'none',
           color: '#E8E4DD', fontFamily: 'JetBrains Mono, monospace', fontSize: 10,
           letterSpacing: '0.2em', textAlign: 'center', whiteSpace: 'nowrap',

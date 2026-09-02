@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { FiZap, FiX } from 'react-icons/fi';
 import { api, type PacksResponse } from '../../lib/api';
-import { font } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 export type RoleRoutingVariant = 'banner' | 'compact' | 'settings';
 
@@ -29,14 +30,18 @@ export function RoleRoutingPrompt({ variant = 'banner' }: { variant?: RoleRoutin
 
   if (dismissed || !data?.prompt) return null;
 
+  // Resolves false on failure so the Button primitive never ticks over an
+  // apply that did not happen — the message set here is the only other signal.
   const apply = async () => {
     setApplying(true);
     setError(null);
     try {
       await api.applyPacks();
       setDismissed(true);
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not apply routing');
+      return false;
     } finally {
       setApplying(false);
     }
@@ -46,23 +51,24 @@ export function RoleRoutingPrompt({ variant = 'banner' }: { variant?: RoleRoutin
     return (
       <span style={{ display: 'inline-flex', alignItems: 'center' }}>
         <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">·</span>
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           type="button"
           data-testid="apply-role-routing"
+          className="hover:underline"
           onClick={apply}
           disabled={applying}
           style={{
-            background: 'transparent',
-            border: 'none',
-            padding: 0,
-            cursor: applying ? 'default' : 'pointer',
+            '--pa-btn-fg': colors.cyan,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
             fontFamily: font.mono,
-            fontSize: 11,
-            color: colors.cyan,
-          }}
+            fontSize: textSize.micro,
+          } as CSSProperties}
         >
           {applying ? 'Applying…' : 'Apply recommended routing'}
-        </button>
+        </Button>
       </span>
     );
   }
@@ -102,25 +108,43 @@ export function RoleRoutingPrompt({ variant = 'banner' }: { variant?: RoleRoutin
             <div className="text-[11px] mb-2" style={{ color: colors.danger }}>{error}</div>
           )}
           <div className="flex items-center gap-2">
-            <button
+            <Button
+              colors={colors}
+              variant="ghostOn"
               type="button"
               data-testid="apply-role-routing"
               onClick={apply}
               disabled={applying}
-              className="rounded-md px-3 py-1 text-[11px] transition"
-              style={{ fontFamily: font.mono, backgroundColor: `${colors.cyan}33`, color: colors.cyan }}
+              style={{
+                '--pa-btn-bg': `${colors.cyan}33`,
+                '--pa-btn-border': 'transparent',
+                '--pa-btn-bg-hover': `${colors.cyan}4D`,
+                '--pa-btn-border-hover': 'transparent',
+                '--pa-btn-pad': '4px 12px',
+                '--pa-btn-radius': `${radius.sm}px`,
+                fontFamily: font.mono,
+                fontSize: textSize.micro,
+              } as CSSProperties}
             >
               {applying ? 'Applying…' : 'Apply recommended routing'}
-            </button>
-            <button
+            </Button>
+            <Button
+              colors={colors}
+              variant="bare"
               type="button"
               onClick={() => setDismissed(true)}
-              className="rounded-md px-2 py-1 text-[11px] transition"
-              style={{ fontFamily: font.mono, color: colors.textMuted }}
+              style={{
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-pad': '4px 8px',
+                '--pa-btn-radius': `${radius.sm}px`,
+                fontFamily: font.mono,
+                fontSize: textSize.micro,
+              } as CSSProperties}
             >
               <FiX size={12} className="inline mr-0.5" />
               Not now
-            </button>
+            </Button>
           </div>
         </div>
       </div>

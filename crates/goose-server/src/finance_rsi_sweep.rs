@@ -1,10 +1,17 @@
-//! Overbought sell-signal sweep for open holdings.
+//! Exit-signal sweep for open holdings, between close scans.
 //!
-//! The Financier computes the signs (Yahoo daily closes, RSI vs the user's
-//! threshold). The Watcher delivers the nudge. This loop is the dedicated
-//! notify path so a hot holding is not lost behind the Watcher's once-a-day
-//! taste budget. The Watcher loop calls the same [`overbought::notify_open_lots`]
-//! so either worker can fire; `finance_rsi_alerts` dedups per symbol per day.
+//! The 15:30 close scan is the primary cadence: it runs the same exit check on
+//! the same bars, once per trading day, right after the scanner finishes. This
+//! six-hour loop is the safety net for everything outside that window — a
+//! daemon that was asleep at 15:30, a weekend restart, a holiday.
+//!
+//! **It defers rather than duplicates.** Both cadences call the same
+//! [`overbought::file_sell_notices`], which refuses to file a second notice for
+//! a ticker+rule that already has one open. So a sweep following a close scan
+//! files nothing, without either side knowing about the other. The old failure
+//! mode this replaces was two surfaces disagreeing: a toast from here and a
+//! card from the close scan, on the same holding, computed from different
+//! indicators.
 //!
 //! Holdings only. Watchlist names and Picker picks are not alerted here.
 
@@ -19,7 +26,7 @@ const TICK: Duration = Duration::from_secs(6 * 3600);
 pub fn spawn(state: Arc<AppState>) {
     tracing::info!(
         target: "permagentd::finance",
-        "overbought sell-signal sweep armed — Watcher delivers, Financier scores, daily dedup"
+        "exit-signal sweep armed — files decision-inbox proposals, defers to the close scan"
     );
     tokio::spawn(async move {
         tokio::time::sleep(STARTUP_DELAY).await;
@@ -38,9 +45,8 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
         .pool_clone()
         .await
         .map_err(|e| e.to_string())?;
-    let sent = overbought::notify_open_lots(&pool).await?;
-    for message in sent {
-        tracing::info!(target: "permagentd::finance", "{message}");
+    for message in overbought::file_sell_notices(&pool).await? {
+        tracing::info!(target: "permagentd::finance", "sell notice filed: {message}");
     }
     Ok(())
 }

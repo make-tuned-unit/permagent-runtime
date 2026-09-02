@@ -4,6 +4,7 @@
 
 import type { ReactNode } from 'react';
 import { useTheme } from '../../styles/useTheme';
+import { textSize } from '../../styles/tokens';
 
 export function Panel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   const { colors, theme } = useTheme();
@@ -17,7 +18,7 @@ export function Panel({ title, action, children }: { title: string; action?: Rea
     }}>
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
         <span style={{
-          fontSize: 11, fontWeight: 600, color: colors.textMuted,
+          fontSize: textSize.micro, fontWeight: 600, color: colors.textMuted,
           textTransform: 'uppercase', letterSpacing: '0.06em', flex: 1,
         }}>
           {title}

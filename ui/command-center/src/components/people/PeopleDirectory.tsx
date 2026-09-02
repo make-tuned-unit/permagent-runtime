@@ -22,13 +22,15 @@
  * so a person created on another client (or the phone) lands here.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { contactLabel, isFollowUpDue, isQuiet } from './contactAge';
 import type { DirectoryPerson } from '../projects/types';
+import { Button } from '../common/Button';
+import { Chip } from '../common/Chip';
 
 type Status = 'loading' | 'error' | 'ready';
 
@@ -42,10 +44,16 @@ type Status = 'loading' | 'error' | 'ready';
  * people-table columns and refills only from `entity_fields`, so `email` is null
  * on the wire for every person nobody has manually edited.
  *
- * There is no merge primitive anywhere in the codebase, so this is a *label*,
- * never an action. Its job is to make a false split visible; a directory is the
- * first surface where duplicates become obvious and it must not look broken
- * when they appear.
+ * This is a *label*, never an action — but not for the reason this comment used
+ * to give. It claimed no merge primitive existed anywhere in the codebase, and
+ * that stopped being true: `MergePersonPanel` implements a full three-step
+ * merge with an undo, reachable from the person detail modal. The real reason
+ * is placement. Merging is a decision made while looking at both people, which
+ * is what the detail modal shows and a directory row does not.
+ *
+ * Its job here is to make a false split visible; a directory is the first
+ * surface where duplicates become obvious and it must not look broken when
+ * they appear.
  */
 function duplicateIds(people: DirectoryPerson[]): Set<string> {
   const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -68,6 +76,19 @@ function duplicateIds(people: DirectoryPerson[]): Set<string> {
 export function PeopleDirectory() {
   const { colors, theme } = useTheme();
   const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  /** The surface's three text affordances (+ Add person / Add / Retry). They
+   *  are ink on nothing, so hover brightens the ink rather than painting a box
+   *  the label never had. */
+  const linkVars = (): CSSProperties => ({
+    '--pa-btn-fg': colors.cyan,
+    '--pa-btn-fg-hover': colors.cyan,
+    '--pa-btn-bg-hover': 'transparent',
+    '--pa-btn-bg-active': 'transparent',
+    '--pa-btn-pad': '0',
+    '--pa-btn-weight': 400,
+    fontFamily: font.body,
+    fontSize: textSize.micro,
+  } as CSSProperties);
   const openPersonDetail = useCommandCenter(s => s.openPersonDetail);
   const bumpPeople = useCommandCenter(s => s.bumpPeople);
   const peopleRev = useCommandCenter(s => s.peopleRev);
@@ -95,14 +116,16 @@ export function PeopleDirectory() {
     return () => clearTimeout(t);
   }, [query]);
 
-  const load = useCallback(async () => {
+  /** Resolves whether this load landed. The Retry button awaits it, and this
+   *  swallows its failure into `status`, so it has to say so. */
+  const load = useCallback(async (): Promise<boolean> => {
     const generation = ++loadGeneration.current;
     try {
       const suffix = debouncedQuery.trim()
         ? `?q=${encodeURIComponent(debouncedQuery.trim())}`
         : '';
       const rows = await apiFetch<DirectoryPerson[]>(`/api/people/directory${suffix}`);
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       if (!Array.isArray(rows)) throw new Error('Invalid directory response');
       setPeople(rows);
       setAttributesBlank(
@@ -110,9 +133,11 @@ export function PeopleDirectory() {
           rows.every(p => !p.role && !p.company && !p.email && !p.phone),
       );
       setStatus('ready');
+      return true;
     } catch {
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       setStatus('error');
+      return false;
     }
   }, [debouncedQuery]);
 
@@ -147,9 +172,11 @@ export function PeopleDirectory() {
     });
   }, [people, cohort]);
 
-  const addPerson = async () => {
+  /** Resolves false when nothing was added — the failure is swallowed into
+   *  `addError` below, so the button must not tick over the top of it. */
+  const addPerson = async (): Promise<boolean> => {
     const name = newName.trim();
-    if (!name) return;
+    if (!name) return false;
     setAddBusy(true);
     setAddError(null);
     try {
@@ -170,10 +197,12 @@ export function PeopleDirectory() {
         setAddError(`"${res.person.display_name}" already exists — opening them.`);
       }
       openPersonDetail(null, { ...res.person });
+      return true;
     } catch (e) {
       const err = e as Error & { status?: number };
       const code = err.status ? `${err.status} ` : '';
       setAddError(`Couldn't add ${name}: ${code}${err.message || 'request failed'}`);
+      return false;
     } finally {
       setAddBusy(false);
     }
@@ -189,10 +218,10 @@ export function PeopleDirectory() {
           style={{
             flex: 1,
             maxWidth: 320,
-            fontSize: 12,
+            fontSize: textSize.caption,
             fontFamily: font.body,
             padding: '6px 10px',
-            borderRadius: 6,
+            borderRadius: radius.sm,
             border: `1px solid ${colors.border}`,
             background: 'transparent',
             color: colors.text,
@@ -200,23 +229,18 @@ export function PeopleDirectory() {
           }}
         />
         <span style={{ flex: 1 }} />
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           onClick={() => {
             setAddError(null);
             setAdding(v => !v);
           }}
-          style={{
-            fontSize: 11,
-            color: colors.cyan,
-            background: 'none',
-            border: 'none',
-            cursor: 'pointer',
-            fontFamily: font.body,
-            padding: 0,
-          }}
+          className="hover:underline"
+          style={linkVars()}
         >
           {adding ? 'Cancel' : '+ Add person'}
-        </button>
+        </Button>
       </div>
 
       {adding && (
@@ -230,144 +254,134 @@ export function PeopleDirectory() {
             }}
             placeholder="Full name"
             style={{
-              fontSize: 12,
+              fontSize: textSize.caption,
               fontFamily: font.body,
               padding: '6px 10px',
-              borderRadius: 6,
+              borderRadius: radius.sm,
               border: `1px solid ${colors.border}`,
               background: 'transparent',
               color: colors.text,
               outline: 'none',
             }}
           />
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={addPerson}
             disabled={addBusy || !newName.trim()}
-            style={{
-              fontSize: 11,
-              color: colors.cyan,
-              background: 'none',
-              border: 'none',
-              cursor: addBusy || !newName.trim() ? 'default' : 'pointer',
-              opacity: addBusy || !newName.trim() ? 0.5 : 1,
-              fontFamily: font.body,
-              padding: 0,
-              fontWeight: 600,
-            }}
+            className="hover:underline"
+            style={{ ...linkVars(), '--pa-btn-weight': 600 } as CSSProperties}
           >
             {addBusy ? 'Adding…' : 'Add'}
-          </button>
+          </Button>
         </div>
       )}
 
-      {addError && <div style={{ fontSize: 11, color: colors.textDim }}>{addError}</div>}
+      {addError && <div style={{ fontSize: textSize.micro, color: colors.textDim }}>{addError}</div>}
 
       {attributesBlank && status === 'ready' && (
-        <div style={{ fontSize: 11, color: colors.textDim }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
           Showing names only — the Brain isn't available, so roles, companies and
           contact details can't be read right now.
         </div>
       )}
 
       {status === 'loading' ? (
-        <div style={{ fontSize: 11, color: colors.textDim }}>Loading people…</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading people…</div>
       ) : status === 'error' ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load people.</span>
-          <button
+          <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load people.</span>
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={load}
-            style={{
-              fontSize: 11,
-              color: colors.cyan,
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              fontFamily: font.body,
-              padding: 0,
-              fontWeight: 600,
-            }}
+            className="hover:underline"
+            style={{ ...linkVars(), '--pa-btn-weight': 600 } as CSSProperties}
           >
             Retry
-          </button>
+          </Button>
         </div>
       ) : people.length === 0 ? (
-        <div style={{ fontSize: 11, color: colors.textDim }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
           {debouncedQuery.trim() ? 'No people match that search.' : 'No people yet.'}
         </div>
       ) : (
         <>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono }}>
               {visible.length} {visible.length === 1 ? 'person' : 'people'}
               {unassignedCount > 0 && ` · ${unassignedCount} in no project`}
             </div>
             <span style={{ flex: 1 }} />
+            {/* Filters, and now typed as filters: `kind="filter"` renders a
+                button that reports `aria-pressed`, which these carried no way
+                of announcing when they were hand-rolled. */}
             {([
               ['all', 'All'],
               ['quiet', `Quiet${quietCount ? ` ${quietCount}` : ''}`],
               ['followup', `Follow-up${followUpCount ? ` ${followUpCount}` : ''}`],
             ] as const).map(([key, label]) => (
-              <button
+              <Chip
                 key={key}
+                kind="filter"
+                tone="accent"
+                pressed={cohort === key}
                 onClick={() => setCohort(key)}
-                style={{
-                  fontSize: 11,
-                  fontFamily: font.body,
-                  padding: '2px 8px',
-                  borderRadius: 4,
-                  cursor: 'pointer',
-                  border: `1px solid ${cohort === key ? colors.cyan : colors.border}`,
-                  background: cohort === key ? colors.cyanSoft : 'transparent',
-                  color: cohort === key ? colors.cyan : colors.textMuted,
-                }}
+                data-testid={`people-cohort-${key}`}
               >
                 {label}
-              </button>
+              </Chip>
             ))}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {visible.map(p => (
-              <button
+              // The row IS the button, and it distributes its own children
+              // against a `flex: 1` spacer — so the primitive's label wrapper
+              // is dissolved with `display: contents` and the children stay
+              // direct flex children, laid out exactly as before. What is new
+              // is that a clickable row finally acknowledges the pointer.
+              <Button
                 key={p.entity_uuid}
+                colors={colors}
                 onClick={() => openPersonDetail(null, p)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
+                                style={{
+                  '--pa-btn-bg': rowVeil,
+                  '--pa-btn-fg': colors.text,
+                  '--pa-btn-border': colors.border,
+                  '--pa-btn-bg-hover': colors.surfaceHi,
+                  '--pa-btn-border-hover': colors.borderHi,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-bg-active': colors.surface,
+                  '--pa-btn-pad': '8px 10px',
+                  '--pa-btn-radius': `${radius.sm}px`,
+                  '--pa-btn-weight': 400,
                   gap: 10,
                   textAlign: 'left',
-                  background: rowVeil,
-                  border: `1px solid ${colors.border}`,
-                  borderRadius: 6,
-                  padding: '8px 10px',
-                  cursor: 'pointer',
                   fontFamily: font.body,
-                  color: colors.text,
-                }}
+                } as CSSProperties}
               >
-                <span style={{ fontSize: 12, fontWeight: 600 }}>{p.display_name}</span>
+                <span style={{ fontSize: textSize.caption, fontWeight: 600 }}>{p.display_name}</span>
                 {(p.role || p.company) && (
-                  <span style={{ fontSize: 11, color: colors.textDim }}>
+                  <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
                     {[p.role, p.company].filter(Boolean).join(' · ')}
                   </span>
                 )}
+                {/* A flag, not a status: nothing is watching for this to change
+                    and it will say the same thing tomorrow. `kind="static"`
+                    draws it as the outline it is, so it cannot be mistaken for
+                    something live sitting in the same row. */}
                 {duplicates.has(p.entity_uuid) && (
-                  <span
+                  <Chip
+                    kind="static"
                     title="Another person has a very similar name. Nothing has been merged."
-                    style={{
-                      fontSize: 10,
-                      color: colors.textDim,
-                      border: `1px solid ${colors.border}`,
-                      borderRadius: 4,
-                      padding: '1px 5px',
-                    }}
                   >
                     possible duplicate
-                  </span>
+                  </Chip>
                 )}
                 {isFollowUpDue(p.next_follow_up_at) && (
-                  <span style={{ fontSize: 10, color: colors.cyan, border: `1px solid ${colors.cyan}`, borderRadius: 4, padding: '1px 5px' }}>
+                  <Chip kind="static" tone="accent" title="A follow-up on this person is due">
                     follow up
-                  </span>
+                  </Chip>
                 )}
                 <span style={{ flex: 1 }} />
                 <span style={{ fontSize: 10, color: isQuiet(p.last_contact_at) ? colors.textDim : colors.textMuted, fontFamily: font.mono }}>
@@ -380,22 +394,15 @@ export function PeopleDirectory() {
                 ) : (
                   <span style={{ display: 'flex', gap: 4 }}>
                     {p.projects.map(pr => (
-                      <span
-                        key={pr.project_id}
-                        style={{
-                          fontSize: 10,
-                          color: colors.cyan,
-                          background: colors.cyanSoft,
-                          borderRadius: 4,
-                          padding: '1px 6px',
-                        }}
-                      >
+                      // A label on a row that is itself the button — the chip
+                      // does not navigate, the row does.
+                      <Chip key={pr.project_id} kind="static" tone="accent">
                         {pr.project_name}
-                      </span>
+                      </Chip>
                     ))}
                   </span>
                 )}
-              </button>
+              </Button>
             ))}
           </div>
         </>

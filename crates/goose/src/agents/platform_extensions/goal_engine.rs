@@ -189,6 +189,12 @@ pub struct GoalTask {
     /// cost rolls up to the parent. `None` for headless / auto-dispatch with
     /// no parent session in scope.
     pub parent_session_id: Option<String>,
+    /// The dispatching goal's project. External-CLI workers get a read-only MCP
+    /// bridge ([`super::goal_context_mcp`]) scoped to exactly this id — it is
+    /// the whole enforcement boundary, so it is carried explicitly rather than
+    /// re-derived inside the engine from a working dir that may be a worktree.
+    /// `None` leaves the worker with no bridge, as before.
+    pub project_id: Option<String>,
 }
 
 /// Timestamped evidence that an external worker produced stdout. The timestamp
@@ -491,7 +497,7 @@ impl GoalEngine for InternalSubagentEngine {
         let kill = GoalKill::Cancel(cancel_token.clone());
         let run_session_id = session_id.clone();
         let join = tokio::spawn(async move {
-            match run_subagent_task(SubagentRunParams {
+            let run = run_subagent_task(SubagentRunParams {
                 config: agent_config,
                 recipe,
                 task_config,
@@ -503,26 +509,9 @@ impl GoalEngine for InternalSubagentEngine {
                 persona_override,
             })
             .await
-            {
-                // Credential scan first (#508 — a secret must never survive to
-                // review), then deterministic evidence from the worktree so
-                // verification diffs THE WORKER'S commits.
-                Ok(_) => {
-                    if let Some(reason) = scan_committed_changes(&worktree, &baseline).await {
-                        GoalOutcome::Blocked { reason }
-                    } else {
-                        GoalOutcome::Success(Some(
-                            collect_evidence(
-                                &worktree,
-                                &baseline,
-                                "in-process subagent run".to_string(),
-                            )
-                            .await,
-                        ))
-                    }
-                }
-                Err(e) => GoalOutcome::Failed(e.to_string()),
-            }
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+            finalize_internal_run(&worktree, &baseline, run).await
         });
 
         Ok(DispatchedWork {
@@ -533,6 +522,55 @@ impl GoalEngine for InternalSubagentEngine {
             // different seam (session message), not built yet.
             steer: None,
         })
+    }
+}
+
+/// Terminal-outcome handling for an in-process subagent run — the internal
+/// engine's counterpart to [`await_external_child`]'s completion arms, and the
+/// single place its durability net lives.
+///
+/// Extracted from `InternalSubagentEngine::spawn` so the safe points are
+/// testable without a live provider, session manager or agent runner.
+///
+/// D13: until this existed, an internal-engine run's commits lived ONLY in the
+/// local worktree — no remote copy, no durability net — while every
+/// external-CLI and supervised-CLI run pushed unconditionally on success,
+/// failure and timeout alike. A worktree reaped (or a disk lost) before a human
+/// approved the goal took the work with it. The safe points here mirror the
+/// external engine's exactly: scan first, push what the scan cleared, and never
+/// push work the credential guard blocked.
+async fn finalize_internal_run(
+    worktree: &Path,
+    baseline: &str,
+    run: Result<(), String>,
+) -> GoalOutcome {
+    match run {
+        // Credential scan first (#508 — a secret must never survive to review),
+        // then deterministic evidence from the worktree so verification diffs
+        // THE WORKER'S commits.
+        Ok(()) => {
+            if let Some(reason) = scan_committed_changes(worktree, baseline).await {
+                GoalOutcome::Blocked { reason }
+            } else {
+                // #522: the scan passed — Permagent owns the push. Best-effort:
+                // a push failure leaves the work reviewable-but-unpushed rather
+                // than failing the goal.
+                push_clean_work(worktree, baseline).await;
+                GoalOutcome::Success(Some(
+                    collect_evidence(worktree, baseline, "in-process subagent run".to_string())
+                        .await,
+                ))
+            }
+        }
+        // W4: failure must not destroy the work either. Whatever the subagent
+        // committed before it failed is scanned and pushed, so the retry (or a
+        // human) can build on it instead of starting from nothing.
+        Err(e) => {
+            if scan_committed_changes(worktree, baseline).await.is_none() {
+                push_clean_work(worktree, baseline).await;
+            }
+            GoalOutcome::Failed(e)
+        }
     }
 }
 
@@ -613,6 +651,34 @@ impl GoalEngine for ExternalCliEngine {
                         error = %e,
                         "worker policy hook not installed; worker runs unguarded",
                     );
+                }
+            }
+
+            // Read-only context bridge: until now an external-CLI worker had NO
+            // tool that reached back into Permagent — it could not see the board
+            // it was working from, and more injection was the only lever left.
+            // The server is this same binary re-invoked in a bridge mode
+            // (`current_exe`, so it cannot resolve to a different build on
+            // PATH), scoped to the dispatching project. Best-effort: a worker
+            // without the bridge runs exactly as it did before.
+            if let Some(project_id) = task
+                .project_id
+                .as_deref()
+                .filter(|_| super::goal_context_mcp::bridge_supported(&self.bin))
+            {
+                match write_mcp_bridge_config(&worktree, project_id).await {
+                    Ok(config_path) => {
+                        args.push("--mcp-config".to_string());
+                        args.push(config_path);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "permagentd::brain",
+                            error = %e,
+                            "goal-context bridge not installed; worker runs without live \
+                             Permagent reads",
+                        );
+                    }
                 }
             }
         }
@@ -995,11 +1061,22 @@ pub async fn reap_terminal_goal_worktree(
 }
 
 /// Boot-time sweep reclaiming orphaned goal worktrees left by crashed or prior
-/// daemon lifecycles (#504). Each `cli-*` dir under `repo`'s worktrees dir that
-/// is NOT in `active_run_ids` is reaped under the push-safety guard: a readable
-/// worktree with unpushed commits is kept; an unreadable one (its git admin ref
-/// already gone, so its commits are unreachable regardless) is safe to delete.
-/// Returns the number of dirs reclaimed.
+/// daemon lifecycles (#504). Each goal-worktree dir under `repo`'s worktrees dir
+/// that is NOT in `active_run_ids` is reaped under the push-safety guard: a
+/// readable worktree with unpushed commits is kept; an unreadable one (its git
+/// admin ref already gone, so its commits are unreachable regardless) is safe to
+/// delete. Returns the number of dirs reclaimed.
+///
+/// R1b: the match used to be `starts_with("cli-")`, which is the external-CLI
+/// engine's run-id shape only. Internal-engine worktrees are named by session id
+/// and so were never swept in either direction — never wrongly destroyed, but
+/// never cleaned up either: two of them were still on disk eleven days after
+/// their goals ended. The safety model is unchanged (the active-goal exclusion
+/// and the unpushed-commit guard below are what protect work, not the name), with
+/// one addition for the newly-included names: a dir that is not a git worktree at
+/// all is left alone, since nothing proves Permagent created it. `cli-` dirs keep
+/// their unconditional treatment — that prefix is proof enough of provenance, and
+/// #504's second leak form is a `cli-` dir git no longer tracks.
 pub async fn sweep_orphaned_worktrees(repo: &Path, active_run_ids: &[String]) -> usize {
     let dir = goal_worktrees_dir(repo);
     let mut entries = match tokio::fs::read_dir(&dir).await {
@@ -1015,6 +1092,9 @@ pub async fn sweep_orphaned_worktrees(repo: &Path, active_run_ids: &[String]) ->
         }
         let name = match path.file_name().and_then(|n| n.to_str()) {
             Some(n) if n.starts_with("cli-") => n.to_string(),
+            // Any other dir must carry a `.git` entry (every git worktree has
+            // one) before the sweep will touch it.
+            Some(n) if path.join(".git").exists() => n.to_string(),
             _ => continue,
         };
         if active_run_ids.iter().any(|id| id == &name) {
@@ -1124,6 +1204,51 @@ async fn write_worker_policy_settings(worktree: &Path) -> Result<String, String>
     .map_err(|e| format!("write {}: {e}", settings_path.display()))?;
 
     Ok(settings_path.to_string_lossy().into_owned())
+}
+
+/// The `--mcp-config` document declaring the read-only goal-context bridge, as
+/// a pure function of the server path and the project id.
+///
+/// Pure so the ONE security-relevant property — the served project is pinned in
+/// the command line, never left for the worker to choose — is testable without
+/// spawning anything.
+pub(crate) fn mcp_bridge_config(server_bin: &str, project_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "mcpServers": {
+            "permagent": {
+                "type": "stdio",
+                "command": server_bin,
+                "args": ["goal-context-mcp", "--project", project_id],
+                "env": {}
+            }
+        }
+    })
+}
+
+/// Write the bridge config into the worker's worktree and return its path.
+///
+/// The server binary is `current_exe()` — the dispatching daemon re-invoking
+/// itself — rather than a name looked up on PATH: a bridge that resolves to
+/// whatever `permagentd` a worker's PATH happens to find is a bridge into an
+/// unknown build's database.
+async fn write_mcp_bridge_config(worktree: &Path, project_id: &str) -> Result<String, String> {
+    let server_bin = std::env::current_exe()
+        .map_err(|e| format!("cannot resolve the bridge server binary: {e}"))?
+        .to_string_lossy()
+        .into_owned();
+    let dir = worktree.join(".permagent");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let path = dir.join("mcp-bridge.json");
+    tokio::fs::write(
+        &path,
+        serde_json::to_string_pretty(&mcp_bridge_config(&server_bin, project_id))
+            .unwrap_or_default(),
+    )
+    .await
+    .map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 fn build_cli_command(bin: &str, args: &[String], working_dir: &Path, steerable: bool) -> Command {
@@ -1781,6 +1906,43 @@ fn redact_secrets(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dispatched project is PINNED in the server's argv. Everything about
+    /// the bridge's isolation rests on this: the worker holds the config file
+    /// in its own worktree and can read it, so if the project were a runtime
+    /// choice rather than a launch argument, "scoped to this project" would be
+    /// a suggestion.
+    #[test]
+    fn the_bridge_config_pins_the_project_in_the_server_argv() {
+        let cfg = mcp_bridge_config("/opt/permagentd", "proj-123");
+        let server = &cfg["mcpServers"]["permagent"];
+        assert_eq!(server["type"], "stdio");
+        assert_eq!(server["command"], "/opt/permagentd");
+        let args: Vec<&str> = server["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap())
+            .collect();
+        assert_eq!(args, ["goal-context-mcp", "--project", "proj-123"]);
+    }
+
+    /// The config lands inside the worker's own worktree (beside the policy
+    /// settings), not in a shared location another worker could read or edit.
+    #[tokio::test]
+    async fn the_bridge_config_is_written_into_the_workers_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_mcp_bridge_config(tmp.path(), "proj-abc")
+            .await
+            .unwrap();
+        assert!(path.starts_with(tmp.path().to_str().unwrap()), "{path}");
+        let written: serde_json::Value =
+            serde_json::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
+        assert_eq!(
+            written["mcpServers"]["permagent"]["args"][2],
+            serde_json::json!("proj-abc")
+        );
+    }
 
     /// The worker policy hook must block exactly the incident classes it was
     /// written for — and nothing else. Exercised through a real sh, the same
@@ -2490,6 +2652,7 @@ mod tests {
             timeout: Duration::from_secs(10),
             output_tx: None,
             parent_session_id: None,
+            project_id: None,
         };
         match engine.spawn(task).await {
             Err(err) => assert!(
@@ -2887,5 +3050,164 @@ mod tests {
         assert!(wt_active.exists(), "active goal worktree must be skipped");
         assert!(wt_unpushed.exists(), "unpushed worktree must be protected");
         assert!(!wt_done.exists(), "finished pushed worktree must be reaped");
+    }
+
+    // ── R1b: the sweep's `cli-` name filter (internal-engine worktrees) ──────
+
+    /// D13/R1b: internal-engine worktrees are named by session id, with no
+    /// `cli-` prefix, so the boot sweep never saw them and they accumulated —
+    /// two 11-day-old dirs were still on disk when R0 looked. They must be
+    /// swept under the SAME safety rules as the external ones: active goals
+    /// skipped, unpushed commits protected, pushed/orphaned dirs reclaimed.
+    #[tokio::test]
+    async fn sweep_covers_internal_engine_worktrees_under_the_same_guards() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        // Session-id-shaped run ids, exactly as `InternalSubagentEngine` mints.
+        let wt_active = create_goal_worktree(&repo, &baseline, "20260901_1")
+            .await
+            .unwrap();
+        let wt_unpushed = create_goal_worktree(&repo, &baseline, "20260901_2")
+            .await
+            .unwrap();
+        commit_in_worktree(&wt_unpushed, "new.txt");
+        let wt_done = create_goal_worktree(&repo, &baseline, "20260901_3")
+            .await
+            .unwrap();
+
+        let active = vec!["20260901_1".to_string()];
+        let reclaimed = sweep_orphaned_worktrees(&repo, &active).await;
+
+        assert_eq!(reclaimed, 1, "only the finished pushed worktree is reaped");
+        assert!(
+            wt_active.exists(),
+            "an internal-engine worktree belonging to a live goal must be skipped"
+        );
+        assert!(
+            wt_unpushed.exists(),
+            "an internal-engine worktree with unpushed commits must be protected"
+        );
+        assert!(
+            !wt_done.exists(),
+            "a finished, fully-pushed internal-engine worktree must be reclaimed"
+        );
+    }
+
+    /// The widened filter must not turn the sweep into a general-purpose
+    /// `rm -rf` of its parent directory: a dir that is not a git worktree at
+    /// all (no `.git` entry) is left alone, because nothing proves Permagent
+    /// created it.
+    #[tokio::test]
+    async fn sweep_leaves_non_worktree_directories_alone() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, _baseline) = init_repo_with_remote(tmp.path());
+        let stranger = tmp.path().join(GOAL_WORKTREES_DIR).join("notes");
+        std::fs::create_dir_all(&stranger).unwrap();
+        std::fs::write(stranger.join("scratch.md"), "mine").unwrap();
+
+        let reclaimed = sweep_orphaned_worktrees(&repo, &[]).await;
+
+        assert_eq!(reclaimed, 0);
+        assert!(
+            stranger.exists(),
+            "a directory that is not a goal worktree must never be reaped"
+        );
+    }
+
+    // ── R1a/D13: the internal engine's durability net ────────────────────────
+
+    /// D13: an internal-engine run's commits used to exist ONLY in the local
+    /// worktree — no remote copy, no durability net, unlike every external-CLI
+    /// run which pushes on success, failure and timeout alike. The completion
+    /// path must publish them to the run's goal branch on origin.
+    #[tokio::test]
+    async fn internal_run_pushes_clean_work_to_the_goal_branch_on_success() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let run_id = "20260901_internal_success";
+        let wt = create_goal_worktree(&repo, &baseline, run_id)
+            .await
+            .unwrap();
+        commit_in_worktree(&wt, "work.txt");
+        let head = String::from_utf8(git(&wt, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let outcome = finalize_internal_run(&wt, &baseline, Ok(())).await;
+
+        assert!(matches!(outcome, GoalOutcome::Success(Some(_))));
+        let goal_ref = format!("refs/heads/{}", goal_branch_name(run_id));
+        let tip =
+            String::from_utf8(git(&repo, &["ls-remote", "origin", &goal_ref]).stdout).unwrap();
+        assert!(
+            tip.starts_with(&head),
+            "internal-engine work must reach origin at the completion safe point"
+        );
+        let main_tip =
+            String::from_utf8(git(&repo, &["ls-remote", "origin", "refs/heads/main"]).stdout)
+                .unwrap();
+        assert!(
+            main_tip.starts_with(&baseline),
+            "origin/main must NOT move on the completion path"
+        );
+    }
+
+    /// W4, for the internal engine: a failed run must not destroy the work
+    /// either — whatever the subagent committed before it failed is pushed, so
+    /// the retry (or a human) can build on it.
+    #[tokio::test]
+    async fn internal_run_pushes_partial_work_on_failure() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let run_id = "20260901_internal_failure";
+        let wt = create_goal_worktree(&repo, &baseline, run_id)
+            .await
+            .unwrap();
+        commit_in_worktree(&wt, "partial.txt");
+        let head = String::from_utf8(git(&wt, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let outcome = finalize_internal_run(&wt, &baseline, Err("boom".to_string())).await;
+
+        assert!(matches!(outcome, GoalOutcome::Failed(e) if e == "boom"));
+        let goal_ref = format!("refs/heads/{}", goal_branch_name(run_id));
+        let tip =
+            String::from_utf8(git(&repo, &["ls-remote", "origin", &goal_ref]).stdout).unwrap();
+        assert!(
+            tip.starts_with(&head),
+            "a failed internal run's partial commits must still reach origin (W4)"
+        );
+    }
+
+    /// The credential guard stays ahead of the push: work that trips the scan
+    /// is Blocked and NOTHING reaches the remote.
+    #[tokio::test]
+    async fn internal_run_never_pushes_credential_shaped_work() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let run_id = "20260901_internal_blocked";
+        let wt = create_goal_worktree(&repo, &baseline, run_id)
+            .await
+            .unwrap();
+        std::fs::write(wt.join(".env"), "OPENAI_API_KEY=sk-live-not-a-real-key\n").unwrap();
+        git(&wt, &["add", "-f", ".env"]);
+        git(&wt, &["commit", "-q", "-m", "oops"]);
+
+        let outcome = finalize_internal_run(&wt, &baseline, Ok(())).await;
+
+        assert!(
+            matches!(outcome, GoalOutcome::Blocked { .. }),
+            "credential-shaped work must block, not complete"
+        );
+        let goal_ref = format!("refs/heads/{}", goal_branch_name(run_id));
+        let tip =
+            String::from_utf8(git(&repo, &["ls-remote", "origin", &goal_ref]).stdout).unwrap();
+        assert!(
+            tip.trim().is_empty(),
+            "blocked work must never reach the remote"
+        );
     }
 }

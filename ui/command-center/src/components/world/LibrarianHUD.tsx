@@ -1,8 +1,11 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
 import { COLORS } from './constants';
 import { api, eventsWsUrl } from '../../lib/api';
 import { wireEventType } from '../../lib/wireEvent';
 import { HudShell, Section, StatRow } from './HudShell';
+import { radius, textSize } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -146,6 +149,9 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
   const [startingNow, setStartingNow] = useState(false);
   const [runStatus, setRunStatus] = useState<LibrarianRunStatus | null>(null);
   const [runMessage, setRunMessage] = useState<string | null>(null);
+  // Named apart from the local phase palette below; the theme is here only to
+  // feed the button primitive's variant defaults.
+  const { colors: themeColors } = useTheme();
 
   const isDescribing = status?.state === 'describing' || status?.state === 'warming';
   const stream = useLibrarianTokenStream(visible && isDescribing);
@@ -203,8 +209,10 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
     return () => { cancelled = true; clearInterval(id); };
   }, [visible, runStatus?.running]);
 
+  // Returns the outcome so the Button primitive cannot tick success over the
+  // "Unable to start…" line this same call puts on screen.
   const handleRunNow = useCallback(async () => {
-    if (startingNow || runStatus?.running) return;
+    if (startingNow || runStatus?.running) return false;
     setStartingNow(true);
     try {
       const result = await api.runLibrarianNow();
@@ -213,8 +221,10 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
       setRunMessage(result.status === 'already_running'
         ? 'Librarian is already running'
         : 'Librarian run started');
+      return true;
     } catch (error) {
       setRunMessage(error instanceof Error ? error.message : 'Unable to start Librarian run');
+      return false;
     } finally {
       setStartingNow(false);
     }
@@ -252,7 +262,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
     >
       {/* Phase task description */}
       <div style={{ padding: '4px 14px 8px' }}>
-        <span style={{ fontSize: 11, color: '#9CA3AF' }}>
+        <span style={{ fontSize: textSize.micro, color: '#9CA3AF' }}>
           {status.current_task}
         </span>
       </div>
@@ -261,7 +271,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
       {(status.current_memory || stream.tokens) && (
         <Section title="CURRENT MEMORY" trimColor={COLORS.neonAmber}>
           {status.current_memory && (
-            <div style={{ fontSize: 11, color: '#D1D5DB', marginBottom: 4 }}>
+            <div style={{ fontSize: textSize.micro, color: '#D1D5DB', marginBottom: 4 }}>
               <span style={{ color: COLORS.neonAmber, fontWeight: 600 }}>
                 {status.current_memory.key}
               </span>
@@ -282,7 +292,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
           )}
           {stream.tokens && (
             <div style={{
-              fontSize: 11,
+              fontSize: textSize.micro,
               color: COLORS.neonCyan,
               whiteSpace: 'pre-wrap',
               maxHeight: 80,
@@ -337,7 +347,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
       {/* Error */}
       {status.error_message && (
         <Section title="ERROR" trimColor="#EF4444">
-          <div style={{ fontSize: 11, color: '#EF4444', wordBreak: 'break-word' }}>
+          <div style={{ fontSize: textSize.micro, color: '#EF4444', wordBreak: 'break-word' }}>
             {status.error_message}
           </div>
         </Section>
@@ -350,17 +360,15 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
             {runMessage}
           </div>
         )}
-        <button
+        <Button
+          colors={themeColors}
+          type="button"
           onClick={handleRunNow}
           disabled={startingNow || runStatus?.running || phase === 'describing' || phase === 'warming'}
-          style={{
-            ...actionBtnStyle,
-            opacity: (startingNow || runStatus?.running || phase === 'describing' || phase === 'warming') ? 0.4 : 1,
-            cursor: (startingNow || runStatus?.running || phase === 'describing' || phase === 'warming') ? 'default' : 'pointer',
-          }}
+          style={actionBtnVars}
         >
           {startingNow ? 'Starting…' : runStatus?.running ? 'Running…' : 'Run Now'}
-        </button>
+        </Button>
       </div>
     </HudShell>
   );
@@ -368,19 +376,21 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
 
 // ── Styles ───────────────────────────────────────────────────────────
 
-const actionBtnStyle: React.CSSProperties = {
+const actionBtnVars = {
+  '--pa-btn-bg': `${COLORS.neonCyan}15`,
+  '--pa-btn-fg': COLORS.neonCyan,
+  '--pa-btn-border': `${COLORS.neonCyan}40`,
+  '--pa-btn-bg-hover': `${COLORS.neonCyan}26`,
+  '--pa-btn-border-hover': `${COLORS.neonCyan}70`,
+  '--pa-btn-bg-active': `${COLORS.neonCyan}15`,
+  '--pa-btn-pad': '6px 0',
+  '--pa-btn-radius': `${radius.xs}px`,
+  '--pa-btn-weight': 600,
   width: '100%',
-  padding: '6px 0',
-  background: `${COLORS.neonCyan}15`,
-  border: `1px solid ${COLORS.neonCyan}40`,
-  borderRadius: 4,
-  color: COLORS.neonCyan,
-  fontSize: 11,
-  fontWeight: 600,
+  fontSize: textSize.micro,
   fontFamily: 'monospace',
   letterSpacing: '0.05em',
-  cursor: 'pointer',
-};
+} as CSSProperties;
 
 const cursorStyle: React.CSSProperties = {
   animation: 'blink 1s step-end infinite',

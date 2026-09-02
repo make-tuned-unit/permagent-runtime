@@ -72,26 +72,54 @@ impl CodexProvider {
         true
     }
 
-    /// Apply permission flags based on GooseMode
+    /// Apply permission flags based on GooseMode.
+    ///
+    /// **Every mode states its sandbox posture in argv.** A `codex exec`
+    /// invocation that passes no sandbox argument does not get a safe default —
+    /// it silently reads `sandbox_mode` from `~/.codex/config.toml`, a file this
+    /// process never wrote and cannot vouch for. If that file says
+    /// `danger-full-access`, a mode Permagent presents to the user as confined
+    /// runs unconfined, with no error and nothing in the transcript to show it.
+    /// So the mapping below is exhaustive and explicit; "no flag" is never an
+    /// answer here, and `every_mode_asserts_a_sandbox_posture_in_argv` pins it.
+    ///
+    /// Related mechanic, for whoever adds session continuation here: `codex exec
+    /// resume` **rejects `-s`/`--sandbox`** (verified: codex-cli 0.151.0 exits 2
+    /// with "unexpected argument '-s' found"), while still inheriting
+    /// `config.toml`. A resume path therefore cannot reuse this function — it
+    /// must re-assert the posture through `-c sandbox_mode="…"`, which resume
+    /// does accept, or refuse to resume. Reusing these flags there would be a
+    /// silent sandbox downgrade on every resumed turn.
     fn apply_permission_flags(
         cmd: &mut Command,
         goose_mode: GooseMode,
     ) -> Result<(), ProviderError> {
         match goose_mode {
             GooseMode::Auto => {
-                // --yolo is shorthand for --dangerously-bypass-approvals-and-sandbox
-                cmd.arg("--yolo");
+                // Deliberately unsandboxed. Spelled out in full rather than as
+                // the `--yolo` shorthand: `--yolo` is an undocumented alias
+                // (absent from `codex exec --help`), and this CLI has already
+                // removed one such convenience flag from under us.
+                cmd.arg("--dangerously-bypass-approvals-and-sandbox");
             }
             GooseMode::SmartApprove => {
-                // --full-auto applies workspace-write sandbox and approvals only on failure
-                cmd.arg("--full-auto");
+                // Was `--full-auto`, which codex exec REMOVED — it now exits 2
+                // ("unexpected argument '--full-auto' found") before reaching
+                // the model, so every SmartApprove turn failed outright.
+                // `--full-auto` meant "workspace-write sandbox + approvals on
+                // failure"; under non-interactive `exec` there is nobody to
+                // approve, so the sandbox half is the whole of it.
+                cmd.arg("--sandbox").arg("workspace-write");
             }
             GooseMode::Approve => {
-                // Default codex behavior - interactive approvals
-                // No special flags needed
+                // `exec` is non-interactive: there is no prompt to answer, so
+                // "the user approves writes" cannot be honored. Fail closed to
+                // read-only — the same mapping `codex_acp.rs::map_goose_mode`
+                // already uses for Approve — instead of inheriting config.toml
+                // and hoping. A user who wants writes picks SmartApprove/Auto.
+                cmd.arg("--sandbox").arg("read-only");
             }
             GooseMode::Chat => {
-                // Read-only sandbox mode
                 cmd.arg("--sandbox").arg("read-only");
             }
         }
@@ -1268,9 +1296,13 @@ mod tests {
         assert_eq!(CODEX_DEFAULT_MODEL, "gpt-5.2-codex");
     }
 
-    #[test_case(GooseMode::Auto, &["--yolo"] ; "auto_yolo")]
-    #[test_case(GooseMode::SmartApprove, &["--full-auto"] ; "smart_approve_full_auto")]
-    #[test_case(GooseMode::Approve, &[] as &[&str] ; "approve_no_flags")]
+    #[test_case(
+        GooseMode::Auto,
+        &["--dangerously-bypass-approvals-and-sandbox"] ;
+        "auto_bypasses_sandbox_explicitly"
+    )]
+    #[test_case(GooseMode::SmartApprove, &["--sandbox", "workspace-write"] ; "smart_approve_workspace_write")]
+    #[test_case(GooseMode::Approve, &["--sandbox", "read-only"] ; "approve_read_only")]
     #[test_case(GooseMode::Chat, &["--sandbox", "read-only"] ; "chat_read_only")]
     fn test_apply_permission_flags(mode: GooseMode, expected: &[&str]) {
         let mut cmd = tokio::process::Command::new("codex");
@@ -1281,5 +1313,50 @@ mod tests {
             .map(|a| a.to_str().unwrap())
             .collect();
         assert_eq!(args, expected);
+    }
+
+    /// The sandbox-downgrade guard. `codex exec` with no sandbox argument
+    /// silently takes `sandbox_mode` from `~/.codex/config.toml`, which may be
+    /// `danger-full-access` — so a mode Permagent presents as confined would
+    /// run unconfined on a machine we never inspected. EVERY mode must state
+    /// its sandbox posture in argv; none may inherit it.
+    #[test_case(GooseMode::Auto ; "auto")]
+    #[test_case(GooseMode::SmartApprove ; "smart_approve")]
+    #[test_case(GooseMode::Approve ; "approve")]
+    #[test_case(GooseMode::Chat ; "chat")]
+    fn every_mode_asserts_a_sandbox_posture_in_argv(mode: GooseMode) {
+        let mut cmd = tokio::process::Command::new("codex");
+        CodexProvider::apply_permission_flags(&mut cmd, mode).unwrap();
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.iter().any(|a| a == "--sandbox")
+                || args
+                    .iter()
+                    .any(|a| a == "--dangerously-bypass-approvals-and-sandbox"),
+            "{mode:?} left the sandbox to ~/.codex/config.toml; argv was {args:?}"
+        );
+    }
+
+    /// `--full-auto` was REMOVED from `codex exec` (rejected with exit 2 on
+    /// codex-cli 0.151.0; `codex exec --full-auto` → "error: unexpected
+    /// argument"). Emitting it fails the whole turn before the model is ever
+    /// reached, so no mode may reintroduce it.
+    #[test_case(GooseMode::Auto ; "auto")]
+    #[test_case(GooseMode::SmartApprove ; "smart_approve")]
+    #[test_case(GooseMode::Approve ; "approve")]
+    #[test_case(GooseMode::Chat ; "chat")]
+    fn no_mode_emits_the_removed_full_auto_flag(mode: GooseMode) {
+        let mut cmd = tokio::process::Command::new("codex");
+        CodexProvider::apply_permission_flags(&mut cmd, mode).unwrap();
+        assert!(
+            !cmd.as_std()
+                .get_args()
+                .any(|a| a.to_string_lossy() == "--full-auto"),
+            "{mode:?} emits --full-auto, which codex exec no longer accepts"
+        );
     }
 }

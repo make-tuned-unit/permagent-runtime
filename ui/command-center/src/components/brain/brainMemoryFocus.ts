@@ -17,6 +17,7 @@
  * yet resolve the id/key — the real graph memory always wins when present.
  */
 
+import { freshnessOf, parseTimestamp } from '../../hooks/useFreshness';
 import type { GraphMemory } from './useBrainData';
 import type { ProjectMemory } from '../projects/types';
 
@@ -60,16 +61,18 @@ function clamp01(n: number): number {
  * relativeTime: a bare "date time" string is treated as UTC.
  */
 export function parseBrainTimestamp(ts: string): number | null {
-  const hasZone = ts.endsWith('Z') || /[+-]\d\d:?\d\d$/.test(ts);
-  const norm = hasZone ? ts : `${ts.replace(' ', 'T')}Z`;
-  const ms = new Date(norm).getTime();
-  return Number.isNaN(ms) ? null : ms;
+  return parseTimestamp(ts);
 }
 
 /**
  * Normalized 0..1 age over a 90-day window (mirrors the brain_graph handler) so
- * a synthesized memory buckets into the same recency labels as graph ones.
+ * a synthesized memory sits in the scene where a graph one would.
  * Missing/unparseable timestamps fall back to 0.5, matching the backend.
+ *
+ * This is a SCENE COORDINATE, not a date: it drives the fresh→stale colour lerp
+ * and the time-range slider, both of which need a bounded number. It is clamped,
+ * so every memory older than 90 days shares the value 1 — never render a label
+ * from it. `formatMemoryAge` below is what a human reads.
  */
 export function ageFromTimestamp(ts: string | null | undefined, now = Date.now()): number {
   if (!ts) return 0.5;
@@ -77,6 +80,42 @@ export function ageFromTimestamp(ts: string | null | undefined, now = Date.now()
   if (then == null) return 0.5;
   const secs = Math.max(0, (now - then) / 1000);
   return clamp01(secs / NINETY_DAYS_SECS);
+}
+
+/** Past this, a memory is old enough that its age has to be visible rather than
+ *  merely present — the same threshold the scene's colour ramp tops out at. */
+export const MEMORY_STALE_AFTER_DAYS = 90;
+
+/** How a memory's age reads to a person, plus whether it is old enough that the
+ *  reading itself must carry weight. */
+export interface MemoryAge { label: string; stale: boolean }
+
+/**
+ * A memory's real age, at whatever magnitude it happens to be.
+ *
+ * Recency used to be rendered from `ageFromTimestamp`'s clamped scalar, which
+ * meant 91 days and 3 years were the same number and therefore the same words
+ * ("~year"). Anything past the window looked equally recent — the exact class of
+ * claim the liveness rule exists to forbid, on the surface whose whole subject
+ * is when something was learned. Buckets stay coarse where coarse is honest
+ * (nobody needs "17 days ago"), but they never stop counting.
+ */
+export function formatMemoryAge(ts: string | null | undefined, now = Date.now()): MemoryAge {
+  const { label, stale } = freshnessOf(
+    ts,
+    {
+      // A memory is a dated thing, not a polled one: it reads in days and
+      // coarser, so a note written this morning is "today" and not "4h ago".
+      granularity: 'calendar',
+      // Just past the window the scene's colour ramp tops out at, so the label
+      // and the scene agree about when a memory has gone quiet. `>` not `>=`,
+      // as before: day 90 is still inside the window.
+      staleAfterMs: (MEMORY_STALE_AFTER_DAYS + 1) * 86_400_000,
+      unknownLabel: 'date unknown',
+    },
+    now,
+  );
+  return { label, stale };
 }
 
 /** ProjectMemory (the `/api/projects/:id/memories` wire shape) → focus preview. */

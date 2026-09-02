@@ -203,38 +203,39 @@ describe('ModelsPanel Chat/Voice/Harness role table', () => {
  * typed as a literal, so the tripwire is against the two DISAGREEING, not
  * against either one changing.
  */
-describe('ModelsPanel Guard block', () => {
-  it('writes the same config key the Features pane writes', async () => {
+describe('ModelsPanel no longer hosts the agents\' own settings (J8/C7)', () => {
+  it('writes no agent gate key at all — the switch has one home', async () => {
     const key = FEATURE_ROWS.find(r => r.key === 'strix_enabled')?.key;
     expect(key).toBe('strix_enabled');
-    allowed.readConfig.mockImplementation(async (k: string) =>
-      (k === key ? false : null) as never,
-    );
 
     await mount(vi.fn());
-    const guard = toggles();
-    expect(guard.length).toBeGreaterThan(0);
-
-    await act(async () => { guard[0].click(); });
-    expect(allowed.upsertConfig).toHaveBeenCalledWith(key, true);
-    // No second key: a per-pane flag would be a second source of truth.
+    // No switch on this pane writes an agent flag. (Any toggle that appears
+    // here in future must not be one of these.)
+    for (const t of toggles()) {
+      await act(async () => { t.click(); });
+    }
     const keysWritten = allowed.upsertConfig.mock.calls.map(c => c[0]);
-    expect(keysWritten).toEqual([key]);
+    expect(keysWritten).not.toContain('strix_enabled');
+    expect(keysWritten).not.toContain('strix_sweep_hours');
+    expect(keysWritten).not.toContain('watcher_topics');
   });
 
-  it('points at the other two surfaces that write it', async () => {
+  it('does not read the relocated keys either — the pane is not a second reader', async () => {
+    await mount(vi.fn());
+    const keysRead = allowed.readConfig.mock.calls.map(c => c[0]);
+    expect(keysRead).not.toContain('strix_enabled');
+    expect(keysRead).not.toContain('strix_sweep_hours');
+    expect(keysRead).not.toContain('watcher_topics');
+    expect(allowed.getLibrarianSchedule).not.toHaveBeenCalled();
+  });
+
+  it('points at Agents instead, with the redirect convention Settings already uses', async () => {
     const goto = vi.fn();
     await mount(goto);
-
-    expect(container.textContent).toContain('strix_enabled');
-
-    const features = container.querySelector('[data-testid="guard-open-features"]') as HTMLButtonElement;
-    const agents = container.querySelector('[data-testid="guard-open-agents"]') as HTMLButtonElement;
-    expect(features).toBeTruthy();
-    expect(agents).toBeTruthy();
-    await act(async () => { features.click(); });
-    expect(goto).toHaveBeenCalledWith('features');
-    await act(async () => { agents.click(); });
+    const open = container.querySelector('[data-testid="models-open-agents"]') as HTMLButtonElement;
+    expect(open).toBeTruthy();
+    expect(open.textContent).toContain('Open Agents');
+    await act(async () => { open.click(); });
     expect(goto).toHaveBeenCalledWith('agents');
   });
 });

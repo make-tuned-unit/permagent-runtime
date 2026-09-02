@@ -78,6 +78,31 @@ export interface Decision {
   resolved_at: string | null;
   /** Joined goal title — present on GET /api/decisions items only. */
   goal_title?: string | null;
+  /** A verdict PROPOSED on a channel that cannot authenticate (D29). The
+   *  decision is still open; this is the one-tap offer, never a resolution.
+   *  Absent when nothing is staged or the staging expired. */
+  staged_answer?: StagedAnswer | null;
+}
+
+/**
+ * A verdict spoken but not committed (decisions.rs StagedAnswer, snake_case).
+ *
+ * NIST SP 800-63B-4 §3.2.3.2 forbids voice as a biometric comparison, so the
+ * microphone can only propose: the daemon stores what was said against the
+ * still-open decision and the answer happens when the user taps Commit here.
+ * The tap IS the authentication (possession of the unlocked device), which is
+ * why committing goes through the ordinary answer route with the ordinary
+ * actor and tier gates — nothing about this row is privileged.
+ */
+export interface StagedAnswer {
+  /** 'approve' | 'reject' — the verdict that will be committed verbatim. */
+  answer: string;
+  /** Anything said alongside it, verbatim (S2). */
+  note: string | null;
+  /** RFC3339 UTC — drives the "2m ago" label and the 30-minute expiry. */
+  staged_at: string;
+  /** The channel that proposed it, e.g. 'voice'. Not an authority claim. */
+  staged_via: string;
 }
 
 /** Summary envelope beside the open list (decisions.rs:378-384). */
@@ -373,4 +398,18 @@ export interface DecisionsClient {
   dispatchEvidence(projectId: string, goalId: string): Promise<DispatchEvidenceData | null>;
   /** Cancel the decision's goal (#490): kills the worker and marks it terminal. */
   cancelGoal(projectId: string, goalId: string): Promise<void>;
+  /** Throw away a staged (spoken, uncommitted) verdict — D29's discard. */
+  discardStaged(id: string): Promise<void>;
+}
+
+/**
+ * Plain-language label for a staged verdict, e.g.
+ * "Voice staged: Approve · 2m ago". Pure; exported for tests.
+ */
+export function stagedSummary(staged: StagedAnswer): string {
+  const verb = staged.answer === 'approve' ? 'Approve'
+    : staged.answer === 'reject' ? 'Reject'
+    : staged.answer;
+  const channel = staged.staged_via === 'voice' ? 'Voice' : staged.staged_via;
+  return `${channel} staged: ${verb}`;
 }

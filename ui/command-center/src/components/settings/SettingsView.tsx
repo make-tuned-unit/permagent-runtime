@@ -1,9 +1,14 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
+import {
+  FiActivity, FiClock, FiCommand, FiCpu, FiDatabase, FiDollarSign, FiEdit3,
+  FiEyeOff, FiInbox, FiKey, FiList, FiLock, FiSearch, FiServer, FiShield,
+  FiSliders, FiSmartphone, FiSun, FiUser, FiUsers,
+} from 'react-icons/fi';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
 import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse, type IncidentView } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
-import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemePref, type IdleAnim, type UIDensity } from '../../styles/tokens';
+import { font, radius, setDensity as setDensityFn, setIdleAnim, setMobiusGlow, setReduceMotion as setReduceMotionFn, setShowHeroMobius, setTheme as setThemeFn, type IdleAnim, type ThemePref, type UIDensity, textSize } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import {
@@ -21,7 +26,10 @@ import { resolveSettingsSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
 import { PronunciationSection } from '../voice/PronunciationSection';
-import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton } from './atoms';
+import { H1, Section, Row, TextInput, Chip, Slider, Kbd, SaveButton, ModelStateBadge, selectStyle } from './atoms';
+import { Button } from '../common/Button';
+import { StateBlock } from '../common/StateBlock';
+import { Toggle } from '../common/Toggle';
 import { makeQrMatrix } from '../../lib/qrMatrix';
 import { SessionsList } from '../sessions/SessionsList';
 import { InboxPanel } from '../inbox/InboxPanel';
@@ -32,7 +40,7 @@ import { FeaturesPanel } from './features/FeaturesPanel';
 import { timeAgo } from './format';
 import { useDecisions } from '../dashboard/decisions/useDecisions';
 import { DecisionInbox } from '../dashboard/decisions/DecisionInbox';
-import { formatAge } from '../dashboard/decisions/format';
+import { summarizeDecisions } from '../dashboard/decisions/summary';
 import { getOpenOnLaunch, setOpenOnLaunch, OPEN_ON_LAUNCH_OPTIONS, type OpenOnLaunch } from '../../lib/openOnLaunch';
 import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 
@@ -43,19 +51,30 @@ import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 // ── Shared button styles (theme-aware via colors param) ─────────────
 type C = ReturnType<typeof useThemeHook>['colors'];
 
+/**
+ * The house ghost button, now expressed as the primitive's custom properties
+ * rather than as a finished inline `style` object.
+ *
+ * Same resting look — 32px tall, hairline border, 12px body type. What it could
+ * not have before is the half of a button that only CSS can say: an inline
+ * declaration cannot express `:hover` or `:active`, so every one of these ~15
+ * controls looked identical pressed and unpressed. Setting the colours through
+ * `--pa-btn-*` is not a style preference: an inline `color`/`background` beats
+ * the `.pa-btn:hover` rule in the cascade and would silently kill it again.
+ */
 const ghost = (colors: C): React.CSSProperties => ({
-  height: 32, padding: '0 14px', borderRadius: 8,
-  background: 'transparent', border: `1px solid ${colors.border}`,
-  color: colors.text, cursor: 'pointer',
-  fontFamily: font.body, fontSize: 12, fontWeight: 500,
-  display: 'inline-flex', alignItems: 'center', gap: 6,
-});
-const selectStyle = (colors: C): React.CSSProperties => ({
-  height: 34, padding: '0 12px', borderRadius: 8,
-  background: colors.inputBg, border: `1px solid ${colors.border}`,
-  color: colors.text, fontFamily: font.body, fontSize: 13,
-  minWidth: 240, cursor: 'pointer',
-});
+  '--pa-btn-bg': 'transparent',
+  '--pa-btn-fg': colors.text,
+  '--pa-btn-border': colors.border,
+  '--pa-btn-bg-hover': colors.surfaceHi,
+  '--pa-btn-border-hover': colors.borderHi,
+  '--pa-btn-bg-active': colors.surface,
+  '--pa-btn-pad': '0 14px',
+  '--pa-btn-radius': `${radius.md}px`,
+  '--pa-btn-weight': 500,
+  height: 32,
+  fontFamily: font.body, fontSize: textSize.caption, gap: 6,
+} as React.CSSProperties);
 
 // ── Voice model route readout ────────────────────────────────────────
 // Mirrors crates/goose/src/config/voice_model.rs::resolve_voice_model — this
@@ -80,40 +99,59 @@ function describeVoiceRoute(provider: string | null, model: string | null): stri
 }
 
 // ── Nav rail categories ──────────────────────────────────────────────
+//
+// Feather components, not path data. This table used to hold twenty hand-drawn
+// `d` strings — a third icon strategy alongside `react-icons/fi` and the
+// sidebar's ratified set, with no reason on record for being hand-drawn. The
+// design-system ruling (U2 §3.4) allows one library and one named local set,
+// and this was neither. Four glyphs have no honest Feather twin and changed
+// what they depict rather than what they mean: Memory was a brain (Feather has
+// none) and is now a store; Models was a second pulse line, which would have
+// been the SAME glyph as Activity; Appearance was a contrast disc; Data &
+// privacy was a shield-with-tick, and the plain shield belongs to Autonomy.
+// `Tools & MCPs` keeps its pencil (Feather `edit-3`) — the drawing has always
+// disagreed with the label, and correcting that is a design call, not a
+// migration's.
 
 const CATEGORIES = [
   { group: 'You', items: [
-    { key: 'preferences', label: 'Preferences',      icon: 'M3 6h18M6 12h12M10 18h4' },
+    { key: 'preferences', label: 'Preferences',      icon: FiSliders },
   ]},
   { group: 'Agent', items: [
-    { key: 'agent',       label: 'Persona',          icon: 'M12 2a4 4 0 014 4v3a4 4 0 11-8 0V6a4 4 0 014-4zM4 21v-2a6 6 0 016-6h4a6 6 0 016 6v2' },
-    { key: 'agents',      label: 'Agents',           icon: 'M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75' },
-    { key: 'memory',      label: 'Memory',           icon: 'M9 4a4 4 0 00-4 4 3 3 0 00-1 5.5A3 3 0 005 18a4 4 0 004 3M15 4a4 4 0 014 4 3 3 0 011 5.5A3 3 0 0119 18a4 4 0 01-4 3' },
-    { key: 'autonomy',    label: 'Autonomy & guardrails', icon: 'M12 2l9 4v6c0 5-4 9-9 10-5-1-9-5-9-10V6l9-4z' },
+    { key: 'agent',       label: 'Persona',          icon: FiUser },
+    { key: 'agents',      label: 'Agents',           icon: FiUsers },
+    { key: 'memory',      label: 'Memory',           icon: FiDatabase },
+    { key: 'autonomy',    label: 'Autonomy & guardrails', icon: FiShield },
   ]},
   // The former Console overlay (Sessions / Inbox / Trace / Governance) folded
   // into Settings — 2026-08 ruling. Governance's panels merged into Spend,
   // Sovereignty, Models, and Autonomy.
-  { group: 'Console', items: [
-    { key: 'sessions',    label: 'Sessions',         icon: 'M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8M3 3v5h5M12 7v5l4 2' },
-    { key: 'inbox',       label: 'Inbox',            icon: 'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z' },
-    { key: 'activity',    label: 'Activity',         icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
-    { key: 'spend',       label: 'Spend',            icon: 'M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6' },
+  // "Console" named the retired overlay, not what the group holds: Sessions,
+  // Downloads, Activity and Spend are all records of what already happened.
+  { group: 'History', items: [
+    { key: 'sessions',    label: 'Sessions',         icon: FiClock },
+    // "Inbox" is the decision queue's word everywhere else in the app; this
+    // pane is where in-app browser downloads land. Say which it is.
+    { key: 'inbox',       label: 'Downloads',        icon: FiInbox },
+    { key: 'activity',    label: 'Activity',         icon: FiActivity },
+    { key: 'spend',       label: 'Spend',            icon: FiDollarSign },
   ]},
   { group: 'Connections', items: [
-    { key: 'tools',       label: 'Tools & MCPs',     icon: 'M14.7 6.3a1 1 0 011.4 0l1.6 1.6a1 1 0 010 1.4l-9 9-3 .6.6-3 9-9.6zM3 21h18' },
-    { key: 'models',      label: 'Models',           icon: 'M3 12h4l3-9 4 18 3-9h4' },
-    { key: 'keys',        label: 'API keys',         icon: 'M14 8a4 4 0 100 8 4 4 0 000-8zm0 4l-9 9m4-4l3 3' },
-    { key: 'devices',    label: 'Devices',          icon: 'M17 2H7a2 2 0 00-2 2v16a2 2 0 002 2h10a2 2 0 002-2V4a2 2 0 00-2-2zM12 18h.01' },
-    { key: 'search',      label: 'Search & tools',   icon: 'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z' },
-    { key: 'sources',     label: 'Data sources',     icon: 'M4 6h16M4 12h16M4 18h10' },
+    // MCP is defined once, in the pane's own subtitle — a nav label is not the
+    // place to teach an acronym.
+    { key: 'tools',       label: 'Tools',            icon: FiEdit3 },
+    { key: 'models',      label: 'Models',           icon: FiCpu },
+    { key: 'keys',        label: 'API keys',         icon: FiKey },
+    { key: 'devices',    label: 'Devices',          icon: FiSmartphone },
+    { key: 'search',      label: 'Search & tools',   icon: FiSearch },
+    { key: 'sources',     label: 'Data sources',     icon: FiServer },
   ]},
   { group: 'System', items: [
-    { key: 'appearance',  label: 'Appearance',       icon: 'M12 3a9 9 0 100 18 9 9 0 000-18zM12 3v18M3 12h18' },
-    { key: 'shortcuts',   label: 'Shortcuts',        icon: 'M4 6h16v12H4zM8 10h.01M12 10h.01M16 10h.01M7 14h10' },
-    { key: 'data',        label: 'Data & privacy',   icon: 'M12 2l9 4v6c0 5-4 9-9 10-5-1-9-5-9-10V6l9-4zM9 12l2 2 4-4' },
-    { key: 'sovereignty', label: 'Sovereignty',      icon: 'M7 11V7a5 5 0 0110 0v4M5 11h14v9H5zM12 15v2' },
-    { key: 'features',    label: 'Features',         icon: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01' },
+    { key: 'appearance',  label: 'Appearance',       icon: FiSun },
+    { key: 'shortcuts',   label: 'Shortcuts',        icon: FiCommand },
+    { key: 'data',        label: 'Data & privacy',   icon: FiEyeOff },
+    { key: 'sovereignty', label: 'Sovereignty',      icon: FiLock },
+    { key: 'features',    label: 'Features',         icon: FiList },
   ]},
 ];
 
@@ -156,7 +194,7 @@ function PersonaPanel() {
     if (ok) setDirty(false);
   };
 
-  if (loading) return <div style={{ color: colors.textDim, fontSize: 13 }}>Loading persona...</div>;
+  if (loading) return <div style={{ color: colors.textDim, fontSize: textSize.small }}>Loading persona...</div>;
   return (
     <div>
       <H1 sub="Shape how your agent thinks, talks, and decides. Changes take effect at the start of the next conversation.">Persona</H1>
@@ -192,29 +230,38 @@ function PersonaPanel() {
               onBlur={addTrait}
               placeholder="Add a custom trait — type and press Enter"
               style={{
-                width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
+                width: '100%', fontFamily: font.body, fontSize: textSize.small, color: colors.text,
                 background: colors.inputBg, border: `1px solid ${colors.border}`,
-                borderRadius: 8, padding: '8px 12px', outline: 'none',
+                borderRadius: radius.md, padding: '8px 12px', outline: 'none',
               }}
             />
           </div>
         </Row>
       </Section>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}>
-        {error && <span style={{ fontSize: 12, color: colors.danger }}>{error}</span>}
+        {error && <span style={{ fontSize: textSize.caption, color: colors.danger }}>{error}</span>}
         {/* Failed initial load: offer a retry instead of leaving a form that
             reads as broken (#167). Saving still works from the form's values. */}
         {error === 'Failed to load persona' && !data && (
-          <button
+          <Button
+            colors={colors}
+            // `reload` swallows its own failure into the form's `error` line and
+            // resolves either way, so the promise is deliberately not handed
+            // back: the pane's own loading state says it is retrying, and a tick
+            // here would claim a load that may have failed again.
             onClick={() => { void reload(); }}
             style={{
-              padding: '6px 14px', borderRadius: 8, cursor: 'pointer',
-              background: 'transparent', border: `1px solid ${colors.border}`,
-              color: colors.textMuted, fontSize: 12, fontFamily: font.body,
-            }}
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-border': colors.border,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-pad': '6px 14px',
+              '--pa-btn-radius': `${radius.md}px`,
+              fontSize: textSize.caption, fontFamily: font.body,
+            } as CSSProperties}
           >
             Retry
-          </button>
+          </Button>
         )}
         <SaveButton onClick={handleSave} disabled={!dirty || saving} saving={saving} />
       </div>
@@ -267,6 +314,7 @@ export function PreferencesPanel() {
 function NotificationSettings() {
   const [prefs, setPrefs] = useState(getNotificationPrefs());
   const [osOn, setOsOn] = useState(getOsNotificationsEnabled());
+  const [osDenied, setOsDenied] = useState(false);
   const kinds = Object.keys(KIND_LABELS) as NotificationKind[];
   return (
     <Section title="Notifications" sub="Live — the agent reaches out when something needs you. Each toggle silences its kind everywhere (tray, toasts, system).">
@@ -279,30 +327,44 @@ function NotificationSettings() {
         </Row>
       ))}
       <Row label="System notifications" hint="Also notify at the OS level (asks for permission).">
-        <Toggle on={osOn} onChange={async v => setOsOn(await setOsNotificationsEnabled(v))} />
+        {/* The OS can refuse, and a refusal used to be indistinguishable from a
+            grant: the switch showed whatever `setOsNotificationsEnabled`
+            returned with nothing said about the difference. */}
+        <Toggle
+          on={osOn}
+          error={osDenied ? 'The system refused notification permission — allow Permagent under System Settings → Notifications.' : null}
+          onChange={async v => {
+            const actual = await setOsNotificationsEnabled(v);
+            setOsOn(actual);
+            setOsDenied(v && !actual);
+          }}
+        />
       </Row>
     </Section>
   );
 }
 
-export function MemoryPanel({ goto }: { goto?: (key: string) => void }) {
+export function MemoryPanel({ goto: _goto }: { goto?: (key: string) => void }) {
   const { colors } = useThemeHook();
+  // Lands ON the Librarian's page rather than near it (R6): the pruning
+  // setting is one scroll into one agent, not somewhere on the Agents list.
+  const openAgentSettings = useCommandCenter(s => s.openAgentSettings);
   // The preview "memory budget" sliders and "what to remember" toggles were
   // removed (2026-08 finish-the-settings ruling): no backing subsystem reads
   // them. What remains is real: the Brain view, and the Librarian's nightly
-  // pruning setting (in Models), which is the live retention control.
+  // pruning setting (on the Librarian's own page), the live retention control.
   return (
     <div>
       <H1 sub="What your agent remembers about you, your projects, and the people in your world.">Memory</H1>
       <Section title="Manage">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button style={ghost(colors)} onClick={() => navigateToTool('memory')}>Open Brain view</button>
-          <button style={ghost(colors)} onClick={() => goto?.('models')}>Nightly pruning (Librarian schedule) →</button>
+          <Button colors={colors} style={ghost(colors)} onClick={() => navigateToTool('memory')}>Open Brain view</Button>
+          <Button colors={colors} style={ghost(colors)} data-testid="memory-open-librarian" onClick={() => openAgentSettings('librarian')}>Nightly pruning (the Librarian's schedule) →</Button>
           {/* Export/Forget removed (2026-07-10 audit): a destructive-styled
               button with no handler is worse than no button. They return
               with real endpoints behind them. */}
         </div>
-        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 12, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 12, lineHeight: 1.5 }}>
           Browse and audit everything remembered in the Brain view. Retirement
           of stale, low-signal memories is handled by the Librarian's nightly
           pruning — configure it under Models.
@@ -320,34 +382,52 @@ export function MemoryPanel({ goto }: { goto?: (key: string) => void }) {
 // a user is already there (e.g. via env or old YAML), so they can switch back.
 const SELECTABLE_TRUST_MODES = new Set(['auto', 'chat']);
 
-/** Compact pending-approvals strip (Settings → Autonomy). Reuses the shared
- *  Decision-Inbox data hook + overlay — never forks that surface. Replaces the
- *  old Governance → Approvals panel; its "posture" card is gone because
- *  Autonomy IS the writer of that mode. */
+/**
+ * Compact pending-approvals strip (Settings → Autonomy) — a labelled REFERENCE
+ * to the canonical rendering, which is Home's decisions card (J3).
+ *
+ * It used to build its own sentence ("Pending approvals: 3") and open its own
+ * copy of the inbox overlay. Two different sentences about one number is how a
+ * user comes to suspect there are two queues, so the words now come from the
+ * shared `summarizeDecisions` — the same ones Home says — and the action hands
+ * the user to Home rather than rendering the board a second time two clicks
+ * deep in Settings. This is the "Open X →" convention Settings already uses
+ * four times.
+ *
+ * The overlay stays as the fallback for the one case where the reference cannot
+ * be honoured: no workspace holds Home, so there is nowhere to send anyone. A
+ * control that looks like it worked and did nothing is the worse failure.
+ */
 export function ApprovalsStrip() {
   const { colors } = useThemeHook();
   const inbox = useDecisions();
   const { data } = inbox;
+  const { data: persona } = usePersona();
+  const agentName = persona?.display_name ?? 'your agent';
+  const openInbox = useCommandCenter(s => s.openDecisionInbox);
   const [open, setOpen] = useState(false);
-  const pending = data?.total_pending ?? 0;
-  const oldest = data?.oldest_pending_at ?? null;
+  const s = summarizeDecisions(data, agentName);
   return (
     <>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-        padding: '9px 12px', marginBottom: 12, borderRadius: 8,
+        padding: '9px 12px', marginBottom: 12, borderRadius: radius.md,
         background: colors.bgDeeper, border: `1px solid ${colors.border}`,
       }}>
-        <span style={{ fontSize: 12, color: pending > 0 ? colors.text : colors.textMuted }}>
-          {data === null
-            ? 'Checking the Decision Inbox…'
-            : `Pending approvals: ${pending}`}
-          {data !== null && pending > 0 && oldest && (
-            <span style={{ color: colors.textDim }}> · oldest {formatAge(oldest)}</span>
+        <span style={{ fontSize: textSize.caption, color: s.count > 0 ? colors.text : colors.textMuted }}>
+          {s.loading ? s.headline : s.allClear ? s.allClearLabel : s.headline}
+          {s.oldestLabel && (
+            <span style={{ color: colors.textDim }}> · {s.oldestLabel}</span>
           )}
         </span>
         <div style={{ flex: 1 }} />
-        <button style={ghost(colors)} onClick={() => setOpen(true)}>Open Decision Inbox →</button>
+        <Button
+          colors={colors}
+          style={ghost(colors)}
+          onClick={() => { if (!openInbox()) setOpen(true); }}
+        >
+          Open Decisions on Home →
+        </Button>
       </div>
       {open && <DecisionInbox inbox={inbox} onClose={() => setOpen(false)} />}
     </>
@@ -407,7 +487,7 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
       <H1 sub="How much your agent can do without checking in. Higher autonomy = faster, but more rope.">Autonomy &amp; guardrails</H1>
       <Section title="Default autonomy" sub="Live — this writes the daemon's tool-approval mode and applies to new turns.">
         {trustError && (
-          <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{trustError}</div>
+          <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{trustError}</div>
         )}
         <ApprovalsStrip />
         {(() => {
@@ -417,7 +497,7 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
           // daemon isn't running.
           const envNotice = trustEnvOverrideNotice(effectiveTrust, trust);
           return envNotice ? (
-            <div style={{ marginBottom: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: 12, lineHeight: 1.5 }}>
+            <div style={{ marginBottom: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: textSize.caption, lineHeight: 1.5 }}>
               {envNotice}
             </div>
           ) : null;
@@ -438,25 +518,25 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
                     opacity: trust === null ? 0.5 : locked && !current ? 0.55 : 1,
                   }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 4 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: current ? colors.cyan : colors.text }}>{opt.l}</span>
+                    <span style={{ fontSize: textSize.small, fontWeight: 600, color: current ? colors.cyan : colors.text }}>{opt.l}</span>
                     {locked && (
-                      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: colors.textMuted, border: `1px solid ${colors.border}`, borderRadius: 999, padding: '1px 6px' }}>Soon</span>
+                      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: colors.textMuted, border: `1px solid ${colors.border}`, borderRadius: radius.pill, padding: '1px 6px' }}>Soon</span>
                     )}
                   </div>
-                  <div style={{ fontSize: 11, color: colors.textMuted }}>{opt.d}</div>
+                  <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>{opt.d}</div>
                 </button>
               );
             })}
           </div>
         </Row>
-        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 10, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 10, lineHeight: 1.5 }}>
           Per-tool approval (Ask every time / Smart approve) is temporarily
           locked here while the approval pipeline is hardened. Approval prompts
           already land in the <strong>Decision Inbox</strong> on your Dashboard —
           these modes become selectable once the re-enable gate ships.
         </div>
         {trust !== null && !SELECTABLE_TRUST_MODES.has(trust) && (
-          <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: 12, lineHeight: 1.5 }}>
+          <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: textSize.caption, lineHeight: 1.5 }}>
             You're on a per-tool-approval mode: tool calls pause until you
             approve them in the <strong>Decision Inbox</strong> on your
             Dashboard. If a turn seems stuck, answer the pending approval
@@ -469,7 +549,7 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
           sliders here with the full soft/gate/hard ceilings for both scopes),
           so there is exactly one writer of the budget. */}
       <Section title="Spend caps" sub="The session and per-task ceilings the cost router enforces now live on the Spend page, alongside everything you have spent.">
-        <button style={ghost(colors)} onClick={() => goto?.('spend')}>Set spend caps in Spend →</button>
+        <Button colors={colors} style={ghost(colors)} onClick={() => goto?.('spend')}>Set spend caps in Spend →</Button>
       </Section>
     </div>
   );
@@ -518,10 +598,12 @@ function ToolsPanel({ goto }: PanelProps) {
 
   return (
     <div>
-      <H1 sub="Tools your agent can use. These follow the Model Context Protocol — connect a server and the agent can call into it.">Tools &amp; MCPs</H1>
+      {/* MCP is defined here, once — the nav label carries the user's word and
+          the pane carries the acronym. */}
+      <H1 sub="Tools your agent can use. Most arrive over MCP — the Model Context Protocol — so connecting a server is what gives the agent something new it can call.">Tools</H1>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 12, color: colors.textMuted }}>{enabledCount} of {extensions.length} enabled</span>
+        <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>{enabledCount} of {extensions.length} enabled</span>
       </div>
       {needKeys.length > 0 && (
         // API keys are managed in Search & tools, not here. Without this the
@@ -529,29 +611,29 @@ function ToolsPanel({ goto }: PanelProps) {
         // on this tab looking for their Brave key.
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-          padding: '9px 12px', marginBottom: 14, borderRadius: 8,
+          padding: '9px 12px', marginBottom: 14, borderRadius: radius.md,
           background: colors.bgDeeper, border: `1px solid ${colors.border}`,
         }}>
-          <span style={{ fontSize: 12, color: colors.textMuted }}>
+          <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>
             {needKeys.map(extensionLabel).join(' and ')} need API keys.
           </span>
-          <button style={ghost(colors)} onClick={() => goto('search')}>
+          <Button colors={colors} style={ghost(colors)} onClick={() => goto('search')}>
             Manage keys in Search &amp; tools
-          </button>
+          </Button>
         </div>
       )}
       {loading ? (
-        <div style={{ color: colors.textDim, fontSize: 13 }}>Loading extensions...</div>
+        <div style={{ color: colors.textDim, fontSize: textSize.small }}>Loading extensions...</div>
       ) : extensions.length === 0 ? (
-        <Section title="No extensions"><div style={{ color: colors.textMuted, fontSize: 13 }}>No MCP tools or extensions configured.</div></Section>
+        <Section title="No extensions"><div style={{ color: colors.textMuted, fontSize: textSize.small }}>No MCP tools or extensions configured.</div></Section>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
           {extensions.map((ext, i) => (
             <div key={ext.name || `ext-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
-              <div style={{ width: 32, height: 32, borderRadius: 8, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{extensionLabel(ext).charAt(0).toUpperCase() || '?'}</div>
+              <div style={{ width: 32, height: 32, borderRadius: radius.md, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: textSize.small, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{extensionLabel(ext).charAt(0).toUpperCase() || '?'}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{extensionLabel(ext)}</div>
-                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div style={{ fontSize: textSize.small, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{extensionLabel(ext)}</div>
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {ext.type}{ext.bundled ? ' · bundled' : ''} · {ext.available_tools?.length ?? 0} tools
                   {(ext.env_keys?.length ?? 0) > 0 && ` · needs ${ext.env_keys!.join(', ')}`}
                 </div>
@@ -568,43 +650,9 @@ function ToolsPanel({ goto }: PanelProps) {
 type OllamaModel = { name: string; size: number; digest: string; modified_at: string };
 type OllamaRunning = { name: string; size: number; size_vram: number; digest: string; expires_at: string };
 type OllamaStatus = { reachable: boolean; installed: OllamaModel[]; running: OllamaRunning[] };
-type LibSchedule = { enabled: boolean; start_time: string; duration_minutes: number; model: string; run_if_launched_in_window: boolean; pruning_enabled?: boolean };
-
 function formatBytes(b: number): string {
   if (b < 1e9) return `${(b / 1e6).toFixed(0)} MB`;
   return `${(b / 1e9).toFixed(1)} GB`;
-}
-
-function nextRunText(sched: LibSchedule): string {
-  if (!sched.enabled) return 'Disabled';
-  const [h, m] = sched.start_time.split(':').map(Number);
-  const now = new Date();
-  const next = new Date(now);
-  next.setHours(h, m, 0, 0);
-  if (next <= now) next.setDate(next.getDate() + 1);
-  const diff = next.getTime() - now.getTime();
-  const hrs = Math.floor(diff / 3600000);
-  const mins = Math.floor((diff % 3600000) / 60000);
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
-  const mStr = String(m).padStart(2, '0');
-  if (hrs < 1) return `Next run: in ${mins}m (${h12}:${mStr} ${ampm})`;
-  return `Next run: in ${hrs}h ${mins}m (${h12}:${mStr} ${ampm})`;
-}
-
-function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'missing' }) {
-  const { colors } = useThemeHook();
-  const styles: Record<string, { bg: string; text: string; label: string }> = {
-    running: { bg: colors.cyanSoft, text: colors.cyan, label: 'Loaded' },
-    installed: { bg: colors.surfaceHi, text: colors.textMuted, label: 'Installed' },
-    missing: { bg: `${colors.danger}1A`, text: colors.danger, label: 'Not installed' },
-  };
-  const s = styles[state];
-  return (
-    <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 999, background: s.bg, color: s.text }}>
-      {s.label}
-    </span>
-  );
 }
 
 // ── Chat / Voice / Harness role table ──────────────────────────────────
@@ -729,20 +777,20 @@ function RoleModelRow({
   return (
     <Row label={label} hint={hint}>
       <div data-testid={testId}>
-      <div style={{ fontFamily: font.mono, fontSize: 13, color: colors.text, marginBottom: 10 }}>
+      <div style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, marginBottom: 10 }}>
         {effective.display}
         {effective.suffix && (
-          <span style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted, marginLeft: 8 }}>
+          <span style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginLeft: 8 }}>
             · {effective.suffix}
           </span>
         )}
       </div>
       {warn && (
-        <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>
           provider and model must be set together, or neither
         </div>
       )}
-      {error && <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{error}</div>}
+      {error && <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <div style={{ width: 160 }}>
           <TextInput
@@ -768,10 +816,6 @@ function RoleModelRow({
 export function ModelsPanel({ goto }: PanelProps) {
   const { colors } = useThemeHook();
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
-  const [schedule, setSchedule] = useState<LibSchedule | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [runningNow, setRunningNow] = useState(false);
-  const [libError, setLibError] = useState<string | null>(null);
 
   // Primary-model readout (merged from the retired Governance → Models panel).
   // Read-only: the model/provider switch itself lives in the provider modal on
@@ -876,137 +920,16 @@ export function ModelsPanel({ goto }: PanelProps) {
     return () => { active = false; };
   }, [configRev]);
 
-  // Strix — the security sweep loop (crate::strix). The daemon re-reads
-  // `strix_enabled` every tick, so a flip here takes effect at the next tick
-  // without a restart.
-  const [strix, setStrix] = useState<boolean | null>(null);
-  const [strixError, setStrixError] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    api.readConfig('strix_enabled')
-      .then(r => { if (active) setStrix(r === true); })
-      .catch(() => { if (active) setStrix(false); });
-    return () => { active = false; };
-  }, [configRev]);
-  const saveStrix = (v: boolean) => {
-    const prev = strix;
-    setStrix(v);
-    setStrixError(null);
-    api.upsertConfig('strix_enabled', v).catch(err => {
-      setStrix(prev);
-      setStrixError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  };
-  // Sweep cadence (strix_sweep_hours) — each sweep is a real agentic scan of
-  // every active project on the user's API credits, so the cadence is theirs
-  // to set. Daemon default is daily; changes apply within ~15 minutes.
-  const [strixHours, setStrixHours] = useState<number>(24);
-  const [strixDockerSsh, setStrixDockerSsh] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    api.readConfig('strix_sweep_hours')
-      .then(r => {
-        const v = Number(r);
-        if (active && Number.isFinite(v) && v > 0) setStrixHours(v);
-      })
-      .catch(() => { /* unset — daemon default (24h) applies */ });
-    api.readConfig('strix_docker_ssh')
-      .then(r => {
-        if (active && typeof r === 'string' && r.trim()) setStrixDockerSsh(r.trim());
-      })
-      .catch(() => { /* unset — scans locally */ });
-    return () => { active = false; };
-  }, [configRev]);
-  const saveStrixHours = (v: number) => {
-    const prev = strixHours;
-    setStrixHours(v);
-    setStrixError(null);
-    api.upsertConfig('strix_sweep_hours', v).catch(err => {
-      setStrixHours(prev);
-      setStrixError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  };
-
-  // The Watcher (daemon proactive.rs) — teachability keys. `watcher_topics` =
-  // subjects to follow (relevant by the user's say-so); `watcher_muted_subjects`
-  // = subjects never to nudge about. Comma-separated in the UI, stored as
-  // string arrays; the daemon re-reads both on every news check.
-  const [watcherTopics, setWatcherTopics] = useState<string>('');
-  const [watcherMuted, setWatcherMuted] = useState<string>('');
-  const [watcherError, setWatcherError] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    api.readConfig('watcher_topics')
-      .then(r => { if (active && Array.isArray(r)) setWatcherTopics((r as string[]).join(', ')); })
-      .catch(() => { /* unset — no topics taught yet */ });
-    api.readConfig('watcher_muted_subjects')
-      .then(r => { if (active && Array.isArray(r)) setWatcherMuted((r as string[]).join(', ')); })
-      .catch(() => { /* unset — nothing muted */ });
-    // Deliberately NOT keyed on `configRev`, unlike every other read in this
-    // panel: these two states ARE the text inputs' `value`, so a refetch
-    // triggered by an unrelated key changing would overwrite whatever the user
-    // was halfway through typing. Losing a draft to a background refresh is a
-    // worse bug than the staleness it would fix, and these fields save on blur
-    // anyway.
-    return () => { active = false; };
-  }, []);
-  const saveWatcherList = (key: 'watcher_topics' | 'watcher_muted_subjects', raw: string) => {
-    setWatcherError(null);
-    const list = raw.split(',').map(s => s.trim()).filter(Boolean);
-    api.upsertConfig(key, list).catch(err => {
-      setWatcherError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  };
-
   // Poll Ollama status while panel is visible
   useEffect(() => {
     let active = true;
     const poll = () => {
       api.getOllamaStatus().then(s => { if (active) setOllama(s); }).catch(() => {});
-      api.getLibrarianSchedule().then(s => { if (active) setSchedule(s); }).catch(() => {});
     };
     poll();
     const id = setInterval(poll, 8000);
     return () => { active = false; clearInterval(id); };
   }, []);
-
-  const modelState = (name: string): 'running' | 'installed' | 'missing' => {
-    if (!ollama) return 'missing';
-    if (ollama.running.some(m => m.name === name || m.name.startsWith(name + ':'))) return 'running';
-    if (ollama.installed.some(m => m.name === name || m.name.startsWith(name + ':'))) return 'installed';
-    return 'missing';
-  };
-
-  const handleScheduleChange = async (patch: Partial<LibSchedule>) => {
-    if (!schedule) return;
-    const prev = schedule;
-    const next = { ...schedule, ...patch };
-    setSchedule(next);
-    setSaving(true);
-    setLibError(null);
-    try {
-      await api.setLibrarianSchedule(next);
-    } catch (err) {
-      // Revert + surface (2026-07 wiring audit): the swallowed catch left the
-      // panel showing a schedule the daemon never persisted.
-      setSchedule(prev);
-      setLibError(`Couldn't save the Librarian schedule: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    setSaving(false);
-  };
-
-  const handleRunNow = async () => {
-    setRunningNow(true);
-    setLibError(null);
-    try {
-      await api.runLibrarianNow();
-    } catch (err) {
-      setLibError(`Couldn't start the Librarian: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    setRunningNow(false);
-    // Refresh status to show model as loaded
-    api.getOllamaStatus().then(setOllama).catch(() => {});
-  };
 
   return (
     <div>
@@ -1015,12 +938,12 @@ export function ModelsPanel({ goto }: PanelProps) {
       <Section title="Providers" sub="Provider credentials live in the API keys tab — add or update a key there, then route to it below.">
         {/* One-line primary readout (condensed from Governance → Models; the
             full editor is redundant with the provider modal on API keys). */}
-        <div style={{ fontSize: 13, color: colors.text, fontFamily: font.mono, marginBottom: 12 }}>
+        <div style={{ fontSize: textSize.small, color: colors.text, fontFamily: font.mono, marginBottom: 12 }}>
           {primary === null
             ? 'Loading primary model…'
             : `${primary.model ?? '—'} · provider: ${primary.provider ?? 'default'}${primary.mode ? ` · mode: ${primary.mode}` : ''}`}
         </div>
-        <button style={ghost(colors)} onClick={() => goto('keys')}>Manage API keys</button>
+        <Button colors={colors} style={ghost(colors)} onClick={() => goto('keys')}>Manage API keys</Button>
       </Section>
       {/* The old Routing/Behavior selects were decorative — hardcoded options
           wired to nothing (2026-07-10 settings audit). The real model/default
@@ -1054,10 +977,10 @@ export function ModelsPanel({ goto }: PanelProps) {
             the wrong resolver here would tell the operator the wrong thing. */}
         <Row label="Voice" hint="spoken turns">
           <div data-testid="role-row-voice">
-            <div style={{ fontFamily: font.mono, fontSize: 13, color: colors.text, marginBottom: 10 }}>
+            <div style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, marginBottom: 10 }}>
               {describeVoiceRoute(voiceProvider, voiceModel)}
             </div>
-            {voiceError && <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{voiceError}</div>}
+            {voiceError && <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{voiceError}</div>}
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <div style={{ width: 160 }}>
                 <TextInput
@@ -1076,7 +999,7 @@ export function ModelsPanel({ goto }: PanelProps) {
                 />
               </div>
               <SaveButton onClick={saveVoiceModel} disabled={voiceSaving} saving={voiceSaving} />
-              <button style={ghost(colors)} onClick={useSessionVoiceModel}>Use the session model</button>
+              <Button colors={colors} style={ghost(colors)} onClick={useSessionVoiceModel}>Use the session model</Button>
             </div>
           </div>
         </Row>
@@ -1100,25 +1023,25 @@ export function ModelsPanel({ goto }: PanelProps) {
           grants or secrets). One surface now: Settings → Agents over
           /api/agents/roster. */}
       <Section title="Worker roster" sub="Which model each role dispatches to, with live availability, grants and required secrets.">
-        <button data-testid="models-open-agents" style={ghost(colors)} onClick={() => goto('agents')}>Open Agents</button>
+        <Button colors={colors} data-testid="models-open-agents" style={ghost(colors)} onClick={() => goto('agents')}>Open Agents</Button>
       </Section>
 
       {/* ── Ollama Status ────────────────────────────────────────── */}
       <Section title="Local models (Ollama)">
         {!ollama ? (
-          <Row label="Status" hint="Checking..."><span style={{ fontSize: 12, color: colors.textDim }}>Loading...</span></Row>
+          <Row label="Status" hint="Checking..."><span style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading...</span></Row>
         ) : !ollama.reachable ? (
           <Row label="Status" hint="Ollama is not running. Install from ollama.com and run 'ollama serve'.">
-            <span style={{ fontSize: 12, color: colors.danger }}>Ollama not running</span>
+            <span style={{ fontSize: textSize.caption, color: colors.danger }}>Ollama not running</span>
           </Row>
         ) : (
           <>
             <Row label="Connection" hint="Ollama at localhost:11434">
-              <span style={{ fontSize: 12, color: colors.cyan }}>Connected</span>
+              <span style={{ fontSize: textSize.caption, color: colors.cyan }}>Connected</span>
             </Row>
             {ollama.installed.length === 0 ? (
               <Row label="Models" hint="No models installed. Run 'ollama pull qwen2.5:3b' to get started.">
-                <span style={{ fontSize: 12, color: colors.textDim }}>None</span>
+                <span style={{ fontSize: textSize.caption, color: colors.textDim }}>None</span>
               </Row>
             ) : (
               ollama.installed.map(m => {
@@ -1141,192 +1064,26 @@ export function ModelsPanel({ goto }: PanelProps) {
         )}
       </Section>
 
-      {/* ── Librarian Schedule ───────────────────────────────────── */}
-      {schedule && (
-        <Section title="Librarian schedule">
-          {libError && (
-            <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{libError}</div>
-          )}
-          <Row label="Enabled" hint="Run the Librarian on a daily schedule to describe memories.">
-            <Toggle on={schedule.enabled} onChange={v => handleScheduleChange({ enabled: v })} />
-          </Row>
-          {schedule.enabled && (
-            <>
-              <Row label="Start time" hint="Daily start time (24h). The Librarian model will warm-load at this time.">
-                <input
-                  type="time"
-                  value={schedule.start_time}
-                  onChange={e => handleScheduleChange({ start_time: e.target.value })}
-                  style={{ ...selectStyle(colors), minWidth: 120, width: 'auto' }}
-                />
-              </Row>
-              <Row label="Duration" hint="How long to keep the model loaded (minutes).">
-                <input
-                  type="number"
-                  min={15}
-                  max={720}
-                  value={schedule.duration_minutes}
-                  onChange={e => handleScheduleChange({ duration_minutes: Math.max(15, Math.min(720, parseInt(e.target.value) || 15)) })}
-                  style={{ ...selectStyle(colors), minWidth: 100, width: 'auto' }}
-                />
-                <span style={{ fontSize: 11, color: colors.textDim, marginLeft: 6 }}>min</span>
-              </Row>
-              <Row label="Model" hint="Ollama model used by the Librarian. Installed models only.">
-                <span style={{ fontSize: 13, color: colors.text, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <select
-                    style={{ ...selectStyle(colors), width: 'auto', minWidth: 160 }}
-                    value={schedule.model}
-                    onChange={e => handleScheduleChange({ model: e.target.value })}
-                  >
-                    {!(ollama?.installed ?? []).some(m => m.name === schedule.model) && (
-                      <option value={schedule.model}>{schedule.model} (not installed)</option>
-                    )}
-                    {(ollama?.installed ?? []).map(m => (
-                      <option key={m.name} value={m.name}>{m.name}</option>
-                    ))}
-                  </select>
-                  <ModelStateBadge state={modelState(schedule.model)} />
-                </span>
-              </Row>
-              <Row label="Nightly pruning" hint="Let the Librarian retire stale, low-signal memories during its window.">
-                <Toggle on={schedule.pruning_enabled ?? false} onChange={v => handleScheduleChange({ pruning_enabled: v })} />
-              </Row>
-              <Row label="Next run" hint={nextRunText(schedule)}>
-                <span style={{ fontSize: 12, color: colors.textMuted }}>{nextRunText(schedule)}</span>
-              </Row>
-            </>
-          )}
-          <Row label="Run now" hint="Manually warm-load the model and trigger a Librarian run.">
-            <button
-              onClick={handleRunNow}
-              disabled={runningNow || modelState(schedule.model) === 'missing'}
-              style={{
-                height: 30, padding: '0 14px', borderRadius: 6,
-                background: colors.cyanSoft,
-                border: `1px solid ${colors.borderHi}`,
-                color: runningNow ? colors.textDim : colors.cyan,
-                fontSize: 12, fontWeight: 600, fontFamily: font.body,
-                cursor: runningNow || modelState(schedule.model) === 'missing' ? 'not-allowed' : 'pointer',
-                transition: `all 150ms ${ease.out}`,
-              }}
-            >
-              {runningNow ? 'Warming...' : 'Run Librarian now'}
-            </button>
-          </Row>
-          {saving && <div style={{ fontSize: 10, color: colors.textDim, textAlign: 'right', padding: '4px 0' }}>Saving...</div>}
-        </Section>
-      )}
-
-      {/* ── The Guard security sweeps ────────────────────────────── */}
+      {/* ── Where the agents' own settings went ──────────────────
+          The Guard's switch and cadence, the Watcher's teaching keys and the
+          Librarian's schedule used to live here, because each of them names a
+          model — which is true of nearly everything in this app. They are the
+          agents' settings, so they live on the agents' page now (J8/C7), and
+          this pane keeps only its stated purpose: which brain answers which
+          job. One entry point per concept; this is the pointer to it. */}
       <Section
-        title="Security sweeps (The Guard)"
-        sub="The Guard — born of the Strix pentest engine — probes your own projects for security flaws. Each sweep scans ONE active project (rotating through them, least-recently-scanned first) and files a security report with a fix plan as a note on that project, plus a findings checklist on its Overview. Requires the external `strix` scanner and Docker: locally, or on the host in `strix_docker_ssh` (rsync there, scan against that machine's Docker, pull `.strix` back). A forwarded Docker socket is not enough. The cadence below is a cost dial that applies once the Guard is on: every sweep runs on your API credits. Changes apply within ~15 minutes — no restart needed."
+        title="Agent settings"
+        sub="How the Guard sweeps, what the Watcher follows, and when the Librarian runs are settings of those agents, not of the model table. They live on each agent's own page."
       >
-        {strixError && (
-          <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{strixError}</div>
-        )}
-        <Row label="Enable the Guard" hint="Off by default — a scanner that runs live exploit tooling is switched on deliberately, never by upgrade.">
-          {strix === null ? (
-            <span style={{ fontSize: 12, color: colors.textDim }}>Loading…</span>
-          ) : (
-            <Toggle on={strix} onChange={saveStrix} />
-          )}
-        </Row>
-        {/* Three surfaces write this flag and none of them can disagree: there is
-            exactly one config key and no agent-scoped write path, so every one of
-            them upserts `strix_enabled`. Saying so — and pointing at the other
-            two — is what stops the next person hunting for "the real" switch. */}
-        <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, padding: '2px 0 10px' }}>
-          This is the same switch as Settings → Features and the Guard's own page under
-          Settings → Agents — one config key (<code style={{ fontFamily: font.mono }}>strix_enabled</code>),
-          so flipping it anywhere is the same flag.
-          <span style={{ display: 'inline-flex', gap: 12, marginLeft: 10 }}>
-            <button
-              type="button"
-              data-testid="guard-open-features"
-              onClick={() => goto('features')}
-              style={{
-                background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
-                color: colors.cyan, fontFamily: font.body, fontSize: 11, textDecoration: 'underline',
-              }}
-            >
-              All worker switches
-            </button>
-            <button
-              type="button"
-              data-testid="guard-open-agents"
-              onClick={() => goto('agents')}
-              style={{
-                background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
-                color: colors.cyan, fontFamily: font.body, fontSize: 11, textDecoration: 'underline',
-              }}
-            >
-              The Guard's agent page
-            </button>
-          </span>
-        </div>
-        <Row label="Sweep every" hint="How often the Guard scans the next project in the rotation. Daily is the cost-effective default.">
-          <select
-            value={strixHours}
-            onChange={e => saveStrixHours(Number(e.target.value))}
-            style={{
-              background: colors.inputBg, color: colors.text, fontSize: 12,
-              border: `1px solid ${colors.border}`, borderRadius: 6, padding: '4px 8px',
-            }}
+        <Row label="The Guard, the Watcher, the Librarian" hint="Switches, cadences and schedules — one page per agent.">
+          <Button
+            colors={colors}
+            style={ghost(colors)}
+            data-testid="models-open-agents"
+            onClick={() => goto('agents')}
           >
-            <option value={12}>12 hours</option>
-            <option value={24}>24 hours (recommended)</option>
-            <option value={72}>3 days</option>
-            <option value={168}>Weekly</option>
-          </select>
-        </Row>
-        <Row
-          label="Scanner host"
-          hint={strixDockerSsh
-            ? 'Docker and strix run on this machine. This Mac rsyncs the project there and pulls .strix back — a forwarded Docker socket is not enough.'
-            : 'Unset: scans on this Mac, which needs local Docker and strix. Set strix_docker_ssh in ~/.permagent/config.yaml to scan on another host.'}
-        >
-          <span style={{ fontSize: 12, color: colors.text, fontFamily: font.mono }}>
-            {strixDockerSsh ?? 'this Mac'}
-          </span>
-        </Row>
-      </Section>
-
-      {/* ── The Watcher proactive nudges ─────────────────────────── */}
-      <Section
-        title="Proactive nudges (The Watcher)"
-        sub="The Watcher reaches out at most about once a day with the ONE thing genuinely worth your attention — news grounded in your active projects, or a memory thread that went quiet. Separately, it delivers the Financier's overbought sell signals on stocks you already hold (daily per symbol; does not use that taste budget). Teach it here: topics you want followed, and subjects it should never raise again. Changes apply at its next check — no restart needed."
-      >
-        {watcherError && (
-          <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{watcherError}</div>
-        )}
-        <Row label="Topics to follow" hint="Comma-separated. Treated as relevant by your say-so, alongside subjects inferred from your active projects.">
-          <input
-            value={watcherTopics}
-            onChange={e => setWatcherTopics(e.target.value)}
-            onBlur={() => saveWatcherList('watcher_topics', watcherTopics)}
-            onKeyDown={e => { if (e.key === 'Enter') saveWatcherList('watcher_topics', watcherTopics); }}
-            placeholder="e.g. local-first software, prediction markets"
-            style={{
-              width: 260, fontFamily: font.body, fontSize: 12, color: colors.text,
-              background: colors.inputBg, border: `1px solid ${colors.border}`,
-              borderRadius: 6, padding: '6px 10px', outline: 'none',
-            }}
-          />
-        </Row>
-        <Row label="Muted subjects" hint="Comma-separated. The Watcher never nudges about these again.">
-          <input
-            value={watcherMuted}
-            onChange={e => setWatcherMuted(e.target.value)}
-            onBlur={() => saveWatcherList('watcher_muted_subjects', watcherMuted)}
-            onKeyDown={e => { if (e.key === 'Enter') saveWatcherList('watcher_muted_subjects', watcherMuted); }}
-            placeholder="e.g. crypto prices"
-            style={{
-              width: 260, fontFamily: font.body, fontSize: 12, color: colors.text,
-              background: colors.inputBg, border: `1px solid ${colors.border}`,
-              borderRadius: 6, padding: '6px 10px', outline: 'none',
-            }}
-          />
+            Open Agents →
+          </Button>
         </Row>
       </Section>
     </div>
@@ -1392,15 +1149,15 @@ function AppearancePanel() {
                 onClick={() => setThemeFn(th.id)}
                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setThemeFn(th.id); } }}
                 style={{
-                  padding: 4, borderRadius: 12, cursor: 'pointer', outline: 'none',
+                  padding: 4, borderRadius: radius.lg, cursor: 'pointer', outline: 'none',
                   border: on ? `2px solid ${colors.cyan}` : '2px solid transparent',
                   boxShadow: on ? `0 0 14px ${colors.cyanGlow}` : 'none',
                 }}
                 onFocus={e => { if (!on) e.currentTarget.style.borderColor = colors.borderHi; }}
                 onBlur={e => { if (!on) e.currentTarget.style.borderColor = 'transparent'; }}
               >
-                <div style={{ height: 96, borderRadius: 8, background: th.g, border: `1px solid ${colors.border}` }} />
-                <div style={{ fontSize: 12, padding: '8px 4px', textAlign: 'center', color: on ? colors.cyan : colors.text }}>{th.l}</div>
+                <div style={{ height: 96, borderRadius: radius.md, background: th.g, border: `1px solid ${colors.border}` }} />
+                <div style={{ fontSize: textSize.caption, padding: '8px 4px', textAlign: 'center', color: on ? colors.cyan : colors.text }}>{th.l}</div>
               </div>
             );
           })}
@@ -1462,7 +1219,7 @@ function ShortcutsPanel() {
         <Section key={grp.g} title={grp.g}>
           {grp.items.map(([l, keys]) => (
             <div key={l} style={{ display: 'flex', alignItems: 'center', padding: '12px 0', borderTop: `1px solid ${colors.border}` }}>
-              <span style={{ fontSize: 13, flex: 1 }}>{l}</span>
+              <span style={{ fontSize: textSize.small, flex: 1 }}>{l}</span>
               <div style={{ display: 'flex', gap: 4 }}>{keys.map((k, i) => <Kbd key={i}>{k}</Kbd>)}</div>
             </div>
           ))}
@@ -1508,12 +1265,14 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
     };
   }, []);
 
+  // Returns the round trip so the switch is busy while it is in flight; the
+  // rollback and the message stay here, where the generation guard lives.
   const saveAnalytics = useCallback((v: boolean) => {
     const generation = ++analyticsGeneration.current;
     setConsentError(null);
     const prev = analytics;
     setAnalytics(v); // optimistic
-    api.setAnalyticsConsent(v)
+    return api.setAnalyticsConsent(v)
       .then(s => { if (generation === analyticsGeneration.current) setAnalytics(s.analyticsConsented); })
       .catch(err => {
         if (generation !== analyticsGeneration.current) return;
@@ -1533,9 +1292,12 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
     setExporting(true);
     setExportError(null);
     setExportResult(null);
-    api.exportCrashReport()
-      .then(setExportResult)
-      .catch(err => setExportError(`Export failed: ${err instanceof Error ? err.message : String(err)}`))
+    // Handing the promise back gives the export a visible in-flight phase; the
+    // `false` in the catch is what keeps a failed export — already swallowed
+    // into `exportError` — from finishing with a success tick.
+    return api.exportCrashReport()
+      .then(r => { setExportResult(r); return true; })
+      .catch(err => { setExportError(`Export failed: ${err instanceof Error ? err.message : String(err)}`); return false; })
       .finally(() => setExporting(false));
   }, []);
 
@@ -1543,47 +1305,54 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
     <div>
       <H1 sub="Your data is yours. Everything is local-first today.">Data &amp; privacy</H1>
       <Section title="Local-first">
-        <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.6, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span>
             Memory and traces live on this machine. To make the boundary
             enforced — blocking every cloud inference call — use Sovereignty.
           </span>
-          <button style={ghost(colors)} onClick={() => goto?.('sovereignty')}>Open Sovereignty →</button>
+          <Button colors={colors} style={ghost(colors)} onClick={() => goto?.('sovereignty')}>Open Sovereignty →</Button>
         </div>
       </Section>
       <Section title="Diagnostics" sub="Live — an off-by-default opt-in written to the daemon's consent gate.">
         <Row label="Share product analytics" hint="Anonymous usage and timing. Never your prompts."><Toggle on={!!analytics} onChange={saveAnalytics} /></Row>
         {consentError && (
-          <div style={{ fontSize: 12, color: colors.danger, padding: '2px 0 8px' }}>{consentError}</div>
+          <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '2px 0 8px' }}>{consentError}</div>
         )}
       </Section>
       <Section title="Crash report" sub="Export a redacted crash report to attach to a support message. Written locally — home paths, keys, tokens, emails, and UUIDs are redacted first. Nothing is uploaded.">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <button
+          <Button
+            colors={colors}
             onClick={runExport}
             disabled={exporting}
             style={{
-              fontSize: 12, padding: '6px 12px', borderRadius: 6,
-              cursor: exporting ? 'default' : 'pointer', opacity: exporting ? 0.6 : 1,
-              background: colors.surfaceHi, color: colors.text, border: `1px solid ${colors.border}`,
-            }}
-          >{exporting ? 'Exporting…' : 'Export redacted crash report'}</button>
+              '--pa-btn-bg': colors.surfaceHi,
+              '--pa-btn-fg': colors.text,
+              '--pa-btn-border': colors.border,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-bg-active': colors.surface,
+              '--pa-btn-pad': '6px 12px',
+              '--pa-btn-radius': `${radius.sm}px`,
+              fontSize: textSize.caption,
+            } as CSSProperties}
+          >{exporting ? 'Exporting…' : 'Export redacted crash report'}</Button>
         </div>
         {exportError && (
-          <div style={{ fontSize: 12, color: colors.danger, padding: '6px 0' }}>{exportError}</div>
+          <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '6px 0' }}>{exportError}</div>
         )}
         {exportResult && (
           <div style={{ padding: '8px 0' }}>
-            <div style={{ fontSize: 12, color: colors.textDim }}>
+            <div style={{ fontSize: textSize.caption, color: colors.textDim }}>
               {exportResult.reportCount === 0
                 ? 'No crash reports captured. Saved an empty redacted bundle to:'
                 : `${exportResult.reportCount} crash report(s) redacted and saved to:`}
             </div>
-            <div style={{ fontSize: 12, color: colors.text, fontFamily: font.mono, wordBreak: 'break-all', padding: '2px 0 6px' }}>{exportResult.path}</div>
-            <div style={{ fontSize: 11, color: colors.textDim, paddingBottom: 4 }}>Preview (exactly what would be shared):</div>
+            <div style={{ fontSize: textSize.caption, color: colors.text, fontFamily: font.mono, wordBreak: 'break-all', padding: '2px 0 6px' }}>{exportResult.path}</div>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim, paddingBottom: 4 }}>Preview (exactly what would be shared):</div>
             <pre style={{
-              fontSize: 11, fontFamily: font.mono, color: colors.text, background: colors.surface,
-              border: `1px solid ${colors.border}`, borderRadius: 6, padding: 8, margin: 0,
+              fontSize: textSize.micro, fontFamily: font.mono, color: colors.text, background: colors.surface,
+              border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: 8, margin: 0,
               maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             }}>{exportResult.content}</pre>
           </div>
@@ -1610,9 +1379,18 @@ function SovereigntyPanel() {
   const [status, setStatus] = useState<SovereigntyStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<EgressLogEntry[] | null>(null);
+  /** The read failed. It used to land in `setLog([])`, and the empty state
+   *  below is not an invitation — it is a PRIVACY GUARANTEE ("Nothing has left
+   *  this machine yet"). A network error was being rendered as a promise about
+   *  the user's data, on the one panel whose whole job is to be believed. */
+  const [logError, setLogError] = useState(false);
 
   const refreshLog = useCallback(() => {
-    api.getEgressLog(100).then(setLog).catch(() => setLog([]));
+    // Returns the round trip so the Refresh button can show it, and resolves
+    // `false` on a failure so it cannot tick over one.
+    return api.getEgressLog(100)
+      .then(l => { setLog(l); setLogError(false); return true; })
+      .catch(() => { setLogError(true); return false; });
   }, []);
 
   useEffect(() => {
@@ -1628,7 +1406,7 @@ function SovereigntyPanel() {
       capturePrompts: patch.capturePrompts ?? s.capturePrompts,
       localProviderAvailable: s.localProviderAvailable,
     } : s));
-    api.setSovereignty(patch)
+    return api.setSovereignty(patch)
       .then(status => { setStatus(status); refreshLog(); })
       .catch(err => setError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`));
   };
@@ -1638,7 +1416,7 @@ function SovereigntyPanel() {
       <H1 sub="Make the data boundary real. With sovereign mode on, every model call stays on this machine — cloud providers are refused (fail-closed), not just deprioritized.">Sovereignty</H1>
 
       {error && (
-        <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{error}</div>
+        <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{error}</div>
       )}
 
       <Section title="Sovereign mode" sub="Live — writes the daemon's global sovereign flag, enforced at the provider choke point for every session.">
@@ -1648,23 +1426,34 @@ function SovereigntyPanel() {
             ? 'All cloud inference is blocked before any data leaves this machine. Only local models run.'
             : 'Cloud inference is allowed. Every cloud call is still recorded in the audit log below.'}
         >
-          <button
+          <Button
+            colors={colors}
+            variant={status?.enabled ? 'ghostOn' : 'primary'}
             onClick={() => save({ enabled: !status?.enabled })}
             disabled={status === null}
+            // `save` resolves the same way whether the daemon took the write or
+            // refused it (it reports through the `error` line above), so there
+            // is nothing here that could honestly earn a tick. The label
+            // flipping to the opposite verb is the confirmation.
+            flashSuccess={false}
             style={{
-              height: 32, padding: '0 18px', borderRadius: 8,
-              background: status?.enabled ? 'transparent' : colors.cyan,
-              border: status?.enabled ? `1px solid ${colors.borderHi}` : 'none',
-              color: status?.enabled ? colors.cyan : colors.textOnCyan,
-              cursor: status === null ? 'default' : 'pointer',
-              fontFamily: font.body, fontSize: 12, fontWeight: 600,
-            }}
+              '--pa-btn-bg': status?.enabled ? 'transparent' : colors.cyan,
+              '--pa-btn-fg': status?.enabled ? colors.cyan : colors.textOnCyan,
+              '--pa-btn-border': status?.enabled ? colors.borderHi : 'transparent',
+              '--pa-btn-border-hover': status?.enabled ? colors.cyan : 'transparent',
+              '--pa-btn-bg-hover': status?.enabled ? colors.cyanSoft : colors.cyan,
+              '--pa-btn-bg-active': status?.enabled ? colors.cyanGlow : colors.cyan,
+              '--pa-btn-pad': '0 18px',
+              '--pa-btn-radius': `${radius.md}px`,
+              '--pa-btn-weight': 600,
+              height: 32, fontFamily: font.body, fontSize: textSize.caption,
+            } as CSSProperties}
           >
             {status === null ? '…' : status.enabled ? 'Allow cloud again' : 'Pull the cable'}
-          </button>
+          </Button>
         </Row>
         {status?.enabled && !status.localProviderAvailable && (
-          <div style={{ fontSize: 12, color: colors.warning, padding: '2px 0 8px' }}>
+          <div style={{ fontSize: textSize.caption, color: colors.warning, padding: '2px 0 8px' }}>
             No local provider (Ollama or local-inference) is registered — with sovereign mode on, inference will be refused until one is available.
           </div>
         )}
@@ -1675,18 +1464,34 @@ function SovereigntyPanel() {
 
       <Section title="Egress audit" sub="Every cloud call, allowed or blocked — newest first. BLOCKED means sovereign mode refused it before anything left this machine.">
         <Row label="Cloud inference calls" hint={`${log?.length ?? 0} recorded`}>
-          <button
+          <Button
+            colors={colors}
             onClick={refreshLog}
             style={{
-              fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
-              background: colors.surfaceHi, color: colors.text, border: `1px solid ${colors.border}`,
-            }}
-          >Refresh</button>
+              '--pa-btn-bg': colors.surfaceHi,
+              '--pa-btn-fg': colors.text,
+              '--pa-btn-border': colors.border,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-bg-active': colors.surface,
+              '--pa-btn-pad': '4px 10px',
+              '--pa-btn-radius': `${radius.sm}px`,
+              fontSize: textSize.caption,
+            } as CSSProperties}
+          >Refresh</Button>
         </Row>
-        {log === null ? (
-          <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>Loading audit log…</div>
+        {logError ? (
+          <StateBlock
+            tone="error"
+            compact
+            title="Couldn't read the egress log."
+            detail="This says nothing about whether calls were made — only that the record could not be read. Do not take a silent panel as a guarantee."
+            onRetry={() => { void refreshLog(); }}
+          />
+        ) : log === null ? (
+          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>Loading audit log…</div>
         ) : log.length === 0 ? (
-          <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>
+          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>
             Nothing has left this machine yet. Every cloud call will be recorded here.
           </div>
         ) : (
@@ -1697,18 +1502,18 @@ function SovereigntyPanel() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {log.map(e => (
-                  <div key={e.id} style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: 12, alignItems: 'center', padding: '8px 10px', borderRadius: 8, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
-                    <div style={{ fontSize: 12, color: colors.textMuted, fontFamily: font.mono }} title={`${new Date(e.ts).toLocaleString()}${e.sessionId ? ' · ' + e.sessionId : ''} · ${e.contentHash.slice(0, 12)}…`}>
+                  <div key={e.id} style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: 12, alignItems: 'center', padding: '8px 10px', borderRadius: radius.md, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
+                    <div style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: font.mono }} title={`${new Date(e.ts).toLocaleString()}${e.sessionId ? ' · ' + e.sessionId : ''} · ${e.contentHash.slice(0, 12)}…`}>
                       {timeAgo(e.ts) || e.ts}
                     </div>
-                    <div style={{ fontSize: 12, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${e.provider} · ${e.model}`}>
+                    <div style={{ fontSize: textSize.caption, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${e.provider} · ${e.model}`}>
                       <span style={{ color: colors.textMuted }}>{e.provider}</span> · {e.model}
                     </div>
-                    <div style={{ fontSize: 12, color: colors.textMuted }}>{e.kind}</div>
+                    <div style={{ fontSize: textSize.caption, color: colors.textMuted }}>{e.kind}</div>
                     <div>
                       <span style={{
                         fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase',
-                        padding: '2px 8px', borderRadius: 999, border: `1px solid ${colors.border}`,
+                        padding: '2px 8px', borderRadius: radius.pill, border: `1px solid ${colors.border}`,
                         color: e.blocked ? colors.warning : colors.success,
                       }}>
                         {e.blocked ? 'blocked' : 'allowed'}
@@ -1735,7 +1540,7 @@ function SessionsPane() {
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <H1 sub="Your past conversations — reopen one to pick up where you left off, or rename and delete old ones. Picking a session opens it in the chat.">Sessions</H1>
-      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: 12, overflow: 'hidden' }}>
+      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: radius.lg, overflow: 'hidden' }}>
         <SessionsList />
       </div>
     </div>
@@ -1746,8 +1551,8 @@ function InboxPane() {
   const { colors } = useThemeHook();
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <H1 sub="Files you download in the in-app browser land here — send them to the Brain, a project, or the post scheduler. You choose; nothing is routed for you.">Inbox</H1>
-      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: 12, overflow: 'hidden' }}>
+      <H1 sub="Files you download in the in-app browser land here — send them to the Brain, a project, or the post scheduler. You choose; nothing is routed for you.">Downloads</H1>
+      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: radius.lg, overflow: 'hidden' }}>
         <InboxPanel embedded />
       </div>
     </div>
@@ -1771,32 +1576,45 @@ function IncidentsStrip() {
 
   const resolve = async (id: string) => {
     setBusy(id);
+    let resolved = true;
     try {
       await api.resolveIncident(id);
       setIncidents(prev => (prev ?? []).filter(i => i.id !== id));
-    } catch { /* leave the row; the next load retells the truth */ }
+    } catch {
+      // Leave the row; the next load retells the truth. `false` is what keeps
+      // the button from ticking over an incident that is still open.
+      resolved = false;
+    }
     setBusy(null);
+    return resolved;
   };
 
   if (!incidents || incidents.length === 0) return null;
   return (
-    <div style={{ marginBottom: 12, border: `1px solid ${colors.border}`, borderRadius: 12, padding: '10px 14px' }}>
+    <div style={{ marginBottom: 12, border: `1px solid ${colors.border}`, borderRadius: radius.lg, padding: '10px 14px' }}>
       <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#e8a33d', marginBottom: 6 }}>
         Open incidents — feeding every worker plan until resolved
       </div>
       {incidents.map(i => (
         <div key={i.id} style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '5px 0', borderBottom: `1px solid ${colors.border}` }}>
-          <span style={{ fontSize: 12, color: colors.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${i.user_goal} — ${i.observation}`}>
+          <span style={{ fontSize: textSize.caption, color: colors.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${i.user_goal} — ${i.observation}`}>
             [{i.surface}] {i.observation}
           </span>
           <span style={{ fontSize: 10, color: colors.textDim, fontFamily: 'monospace' }}>{i.mechanism}</span>
-          <button
+          <Button
+            colors={colors}
+            variant="ghostOn"
             onClick={() => resolve(i.id)}
             disabled={busy === i.id}
-            style={{ fontSize: 11, color: colors.cyan, background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: 6, padding: '2px 10px', cursor: 'pointer' }}
+            style={{
+              '--pa-btn-border': colors.borderHi,
+              '--pa-btn-border-hover': colors.cyan,
+              '--pa-btn-pad': '2px 10px',
+              '--pa-btn-radius': `${radius.sm}px`,
+            } as CSSProperties}
           >
             {busy === i.id ? '…' : 'Resolve'}
-          </button>
+          </Button>
         </div>
       ))}
     </div>
@@ -1809,7 +1627,7 @@ function ActivityPane() {
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <H1 sub="The runtime's most recent events, live off the running system's event streams — tool calls, worker activity, navigations, and lifecycle signals as they happen.">Activity</H1>
       <IncidentsStrip />
-      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: 12, overflow: 'hidden' }}>
+      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: radius.lg, overflow: 'hidden' }}>
         <ExecutionTrace />
       </div>
     </div>
@@ -1852,7 +1670,7 @@ function PairingQrCode({ value, size = 112 }: { value: string; size?: number }) 
   try {
     matrix = makeQrMatrix(value);
   } catch {
-    return <span style={{ fontSize: 11 }}>QR unavailable — shorten the hub address or copy the link.</span>;
+    return <span style={{ fontSize: textSize.micro }}>QR unavailable — shorten the hub address or copy the link.</span>;
   }
   const quiet = 4;
   // Module extent of the symbol itself, in QR modules — distinct from `size`,
@@ -1866,7 +1684,7 @@ function PairingQrCode({ value, size = 112 }: { value: string; size?: number }) 
       viewBox={`0 0 ${extent} ${extent}`}
       width={size}
       height={size}
-      style={{ display: 'block', background: '#fff', borderRadius: 8 }}
+      style={{ display: 'block', background: '#fff', borderRadius: radius.md }}
       shapeRendering="crispEdges"
     >
       <rect width={extent} height={extent} fill="#fff" />
@@ -1951,7 +1769,7 @@ function DevicesPanel() {
             background: hubUp === false ? colors.danger : colors.cyan,
             boxShadow: hubUp === false ? 'none' : `0 0 8px ${colors.cyan}`,
           }} />
-          <span style={{ fontSize: 13, color: colors.text }}>
+          <span style={{ fontSize: textSize.small, color: colors.text }}>
             {isHub
               ? 'Everything lives here — your memories, projects, and models. Keep this machine on so your other devices can reach Permagent.'
               : hubUp === false
@@ -1960,12 +1778,14 @@ function DevicesPanel() {
           </span>
         </div>
         {detail < 2 && (
-          <button style={ghost(colors)} onClick={() => setDetail(d => d + 1)}>
+          // Its whole job is to reveal the paragraph below it, and the reveal
+          // is the confirmation — a tick on top would be noise.
+          <Button colors={colors} flashSuccess={false} style={ghost(colors)} onClick={() => setDetail(d => d + 1)}>
             {detail === 0 ? 'Tell me more' : 'How does it work exactly?'}
-          </button>
+          </Button>
         )}
         {detail >= 1 && (
-          <p style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.6, margin: '10px 0 0' }}>
+          <p style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.6, margin: '10px 0 0' }}>
             Permagent works like a home base with visitors: the hub is the one machine that runs
             the Permagent daemon and stores every memory, project, and model. Phones, laptops,
             and tablets are companions — they show you everything and let you act from anywhere,
@@ -1974,7 +1794,7 @@ function DevicesPanel() {
           </p>
         )}
         {detail >= 2 && (
-          <p style={{ fontSize: 12, color: colors.textDim, lineHeight: 1.6, margin: '10px 0 0' }}>
+          <p style={{ fontSize: textSize.caption, color: colors.textDim, lineHeight: 1.6, margin: '10px 0 0' }}>
             Under the hood: the hub's daemon (permagentd) serves the API and this very interface
             over your private Tailscale network; companions authenticate with the pairing token
             (a bearer secret — no accounts). There is exactly one writable Brain, so nothing
@@ -1988,12 +1808,12 @@ function DevicesPanel() {
       {/* #628: the device registry — named companions, last-seen, revocation. */}
       <Section title="Paired devices" sub="Every companion has its own key. Revoking one locks out that device only — nothing else re-pairs.">
         {devices === null && (
-          <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>
+          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>
             Device list unavailable — is the daemon reachable?
           </div>
         )}
         {devices?.length === 0 && (
-          <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>
+          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>
             No devices paired yet. Create a pairing link below.
           </div>
         )}
@@ -2010,38 +1830,56 @@ function DevicesPanel() {
             {editingId === d.id ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <TextInput value={editName} onChange={setEditName} placeholder="Device name" />
-                <button
+                <Button
+                  colors={colors}
                   style={ghost(colors)}
+                  // Handing the promise back is what buys the round trip a
+                  // visible pending phase; the `false` in the catch is what
+                  // stops a rename the daemon refused from ticking anyway.
                   onClick={() => {
                     const name = editName.trim();
-                    if (!name) return;
-                    api.renameDevice(d.id, name)
-                      .then(() => { setEditingId(null); loadDevices(); })
-                      .catch(() => setEditingId(null));
+                    if (!name) return false;
+                    return api.renameDevice(d.id, name)
+                      .then(() => { setEditingId(null); loadDevices(); return true; })
+                      .catch(() => { setEditingId(null); return false; });
                   }}
-                >Save</button>
-                <button style={ghost(colors)} onClick={() => setEditingId(null)}>Cancel</button>
+                >Save</Button>
+                <Button colors={colors} style={ghost(colors)} onClick={() => setEditingId(null)}>Cancel</Button>
               </div>
             ) : (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 {d.revoked ? (
-                  <span style={{ fontSize: 11, fontWeight: 600, color: colors.danger }}>REVOKED</span>
+                  <span style={{ fontSize: textSize.micro, fontWeight: 600, color: colors.danger }}>REVOKED</span>
                 ) : (
                   <>
-                    <button
+                    <Button
+                      colors={colors}
                       style={ghost(colors)}
                       onClick={() => { setEditingId(d.id); setEditName(d.name); setConfirmRevokeId(null); }}
-                    >Rename</button>
-                    <button
-                      style={{ ...ghost(colors), color: colors.danger, borderColor: `${colors.danger}66` }}
+                    >Rename</Button>
+                    <Button
+                      colors={colors}
+                      // The danger palette rides in as custom properties, not as
+                      // an inline `color`/`borderColor`: those would beat the
+                      // hover rule and leave this reading as unpressable.
+                      style={{
+                        ...ghost(colors),
+                        '--pa-btn-fg': colors.danger,
+                        '--pa-btn-border': `${colors.danger}66`,
+                        '--pa-btn-border-hover': colors.danger,
+                        '--pa-btn-bg-hover': `${colors.danger}1A`,
+                        '--pa-btn-bg-active': `${colors.danger}26`,
+                      } as CSSProperties}
                       title="This device stops authenticating immediately. Pair it again to restore access."
+                      // The first press only arms the confirmation — nothing is
+                      // in flight, so it returns nothing and nothing ticks.
                       onClick={() => {
                         if (confirmRevokeId !== d.id) { setConfirmRevokeId(d.id); return; }
-                        api.revokeDevice(d.id)
-                          .then(() => { setConfirmRevokeId(null); loadDevices(); })
-                          .catch(() => setConfirmRevokeId(null));
+                        return api.revokeDevice(d.id)
+                          .then(() => { setConfirmRevokeId(null); loadDevices(); return true; })
+                          .catch(() => { setConfirmRevokeId(null); return false; });
                       }}
-                    >{confirmRevokeId === d.id ? 'Confirm revoke' : 'Revoke'}</button>
+                    >{confirmRevokeId === d.id ? 'Confirm revoke' : 'Revoke'}</Button>
                   </>
                 )}
               </div>
@@ -2080,7 +1918,7 @@ function DevicesPanel() {
                   .finally(() => setAccessBusy(false));
               }}
             />
-            <span style={{ fontSize: 12, color: colors.textMuted }}>
+            <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>
               {accessBusy ? 'Applying…'
                 : access?.enabled ? `Live at ${access.serve_url}`
                 : 'This machine only'}
@@ -2089,9 +1927,10 @@ function DevicesPanel() {
         </Row>
         <Row label="Tailnet" hint={tailnet?.running ? 'Detected — address filled in automatically.' : tailnet?.installed ? 'Tailscale is installed but not connected.' : 'Tailscale not detected on this machine.'}>
           {tailnet?.running ? (
-            <span style={{ fontSize: 12, color: colors.cyan }}>● Connected{tailnet.magic_dns_name ? ` — ${tailnet.magic_dns_name}` : ''}</span>
+            <span style={{ fontSize: textSize.caption, color: colors.cyan }}>● Connected{tailnet.magic_dns_name ? ` — ${tailnet.magic_dns_name}` : ''}</span>
           ) : (
-            <button
+            <Button
+              colors={colors}
               style={ghost(colors)}
               title={`Copies a setup request and opens chat — ${agentName} runs the terminal steps for you.`}
               onClick={() => {
@@ -2103,7 +1942,7 @@ function DevicesPanel() {
                 ).catch(() => {});
                 navigateToTool('chat');
               }}
-            >Have {agentName} set it up</button>
+            >Have {agentName} set it up</Button>
           )}
         </Row>
         <Row
@@ -2125,20 +1964,21 @@ function DevicesPanel() {
         <Row label="Device name" hint="Name the device you are pairing — this is how it appears in the registry above.">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <TextInput value={pairName} onChange={setPairName} placeholder="e.g. iPhone" />
-            <button
+            <Button
+              colors={colors}
               style={ghost(colors)}
               onClick={() => {
                 const name = pairName.trim();
-                if (!name) { setPairError('Give the device a name first.'); return; }
-                api.pairDevice(name)
-                  .then(r => { setClaim({ code: r.claim_code, expiresAt: r.expires_at }); setPairError(null); })
-                  .catch(e => { setClaim(null); setPairError(e instanceof Error ? e.message : 'Pairing failed'); });
+                if (!name) { setPairError('Give the device a name first.'); return false; }
+                return api.pairDevice(name)
+                  .then(r => { setClaim({ code: r.claim_code, expiresAt: r.expires_at }); setPairError(null); return true; })
+                  .catch(e => { setClaim(null); setPairError(e instanceof Error ? e.message : 'Pairing failed'); return false; });
               }}
-            >Create pairing link</button>
+            >Create pairing link</Button>
           </div>
         </Row>
         {pairError && (
-          <div style={{ fontSize: 12, color: colors.danger, padding: '2px 0 6px' }}>{pairError}</div>
+          <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '2px 0 6px' }}>{pairError}</div>
         )}
         <Row label="Pairing URL" hint={claim
           ? `Open this on the new device's browser. One-time: it goes inert after first use, and expires ${new Date(claim.expiresAt).toLocaleTimeString()}.`
@@ -2152,20 +1992,24 @@ function DevicesPanel() {
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, minWidth: 0 }}>
               <div style={{ flexShrink: 0, textAlign: 'center' }}>
                 <PairingQrCode value={pairingUrl} size={196} />
-                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 6 }}>
                   Scan with your iPhone
                 </div>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0, paddingTop: 2 }}>
-                <span style={{ fontSize: 11, color: colors.textDim }}>
+                <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
                   Open Permagent on the phone and scan this. No typing.
                 </span>
                 <code style={{
                   fontFamily: font.mono, fontSize: 10, color: colors.cyan,
-                  background: colors.bgDeeper, padding: '6px 8px', borderRadius: 6,
+                  background: colors.bgDeeper, padding: '6px 8px', borderRadius: radius.sm,
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320,
                 }}>{pairingUrl}</code>
-                <button
+                <Button
+                  colors={colors}
+                  // The label already flips to "Copied ✓" for 1.6s and owns the
+                  // confirmation; the primitive's tick on top would say it twice.
+                  flashSuccess={false}
                   style={{ ...ghost(colors), alignSelf: 'flex-start' }}
                   onClick={() => {
                     navigator.clipboard.writeText(pairingUrl).then(() => {
@@ -2181,18 +2025,18 @@ function DevicesPanel() {
                       emitActivity('pairing_link_copied', 'settings');
                     });
                   }}
-                >{copied ? 'Copied ✓' : 'Copy link instead'}</button>
+                >{copied ? 'Copied ✓' : 'Copy link instead'}</Button>
               </div>
             </div>
           ) : (
-            <span style={{ fontSize: 12, color: colors.textDim }}>
+            <span style={{ fontSize: textSize.caption, color: colors.textDim }}>
               No active pairing link — name the device above and create one; the
               QR code to scan appears here.
             </span>
           )}
         </Row>
         <Row label="Security" hint="The URL carries a one-time claim code — the new device swaps it for its own key on first load, so the link stops being a secret after one use. Each device's key can be revoked above without touching the others.">
-          <span style={{ fontSize: 12, color: colors.textMuted }}>Links are single-use and expire in 10 minutes.</span>
+          <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>Links are single-use and expire in 10 minutes.</span>
         </Row>
       </Section>
     </div>
@@ -2242,24 +2086,43 @@ export function SettingsView() {
             {cat.items.map(it => {
               const on = section === it.key;
               return (
-                <button key={it.key} onClick={() => setSection(it.key)} style={{
-                  display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 10px', borderRadius: 8,
-                  background: on ? colors.cyanSoft : 'transparent',
-                  border: on ? `1px solid ${colors.borderHi}` : '1px solid transparent',
-                  color: on ? colors.cyan : colors.textMuted, cursor: 'pointer', textAlign: 'left',
-                  fontFamily: font.body, fontSize: 13, fontWeight: on ? 600 : 500,
-                  transition: `all 140ms ${ease.out}`,
-                }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><path d={it.icon} /></svg>
-                  {it.label}
-                  {it.key === 'inbox' && downloadUnread > 0 && (
-                    <span style={{
-                      marginLeft: 'auto', minWidth: 16, height: 16, padding: '0 4px', borderRadius: 999,
-                      background: colors.cyan, color: colors.textOnCyan, fontSize: 10, fontWeight: 700,
-                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                    }}>{downloadUnread > 9 ? '9+' : downloadUnread}</span>
-                  )}
-                </button>
+                // A nav rail with no hover and no press was the last surface in
+                // Settings where pointing at a row and pressing it looked the
+                // same. `justifyContent` and the icon's own wrapper hold the
+                // left-aligned row shape the primitive would otherwise centre.
+                <Button
+                  key={it.key}
+                  colors={colors}
+                  flashSuccess={false}
+                  onClick={() => setSection(it.key)}
+                  style={{
+                    '--pa-btn-bg': on ? colors.cyanSoft : 'transparent',
+                    '--pa-btn-fg': on ? colors.cyan : colors.textMuted,
+                    '--pa-btn-border': on ? colors.borderHi : 'transparent',
+                    '--pa-btn-border-hover': on ? colors.borderHi : 'transparent',
+                    '--pa-btn-bg-hover': on ? colors.cyanSoft : colors.surfaceHi,
+                    '--pa-btn-fg-hover': on ? colors.cyan : colors.text,
+                    '--pa-btn-bg-active': on ? colors.cyanGlow : colors.surface,
+                    '--pa-btn-pad': '8px 10px',
+                    '--pa-btn-radius': `${radius.md}px`,
+                    '--pa-btn-weight': on ? 600 : 500,
+                    width: '100%', justifyContent: 'flex-start', textAlign: 'left',
+                    fontFamily: font.body, fontSize: textSize.small,
+                  } as CSSProperties}
+                >
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, width: '100%' }}>
+                    <it.icon size={14} />
+                    {it.label}
+                    {it.key === 'inbox' && downloadUnread > 0 && (
+                      <span style={{
+                        marginLeft: 'auto', minWidth: 16, height: 16, padding: '0 4px', borderRadius: radius.pill,
+                        background: colors.cyan, color: colors.textOnCyan, fontSize: 10, fontWeight: 700,
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      }}>{downloadUnread > 9 ? '9+' : downloadUnread}</span>
+                    )}
+                  </span>
+                </Button>
+
               );
             })}
           </div>

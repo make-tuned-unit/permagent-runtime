@@ -1,12 +1,15 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { font, ease } from '../../styles/tokens';
+import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
+import { ease, font, radius, textSize } from '../../styles/tokens';
 import { api } from '../../lib/api';
+import { Button } from '../common/Button';
 import type { GraphMemory, GraphEntity } from './useBrainData';
 import type { TypeFilters } from './BrainScene';
 import { useTheme } from '../../styles/useTheme';
 // Title derivation is shared with the cross-surface "View in Brain" focus seam
 // (brainMemoryFocus) so a memory reads the same in the list and when deep-linked.
-import { deriveMemoryTitle } from './brainMemoryFocus';
+import { deriveMemoryTitle, MEMORY_STALE_AFTER_DAYS } from './brainMemoryFocus';
+import { AsOf } from '../common/AsOf';
+import { MEMORY_STRENGTH } from '../../lib/vocabulary';
 
 // ── Date formatting ──────────────────────────────────────────────────
 
@@ -85,9 +88,11 @@ export function BrainList({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchQuery, timeValue, isSearch]);
 
+  // Resolves `true` only when a page actually landed, so the Retry button that
+  // awaits it cannot tick success over the error it is standing next to.
   const loadPage = useCallback(async (reset = false) => {
-    if (isSearch) return;
-    if (loadingMore.current && !reset) return;
+    if (isSearch) return false;
+    if (loadingMore.current && !reset) return false;
     loadingMore.current = true;
     const generation = reset ? ++requestGeneration.current : requestGeneration.current;
 
@@ -111,7 +116,7 @@ export function BrainList({
       }
 
       const res = await api.getBrainMemories(params);
-      if (generation !== requestGeneration.current) return;
+      if (generation !== requestGeneration.current) return false;
       if (!res || !Array.isArray(res.memories)) throw new Error('Invalid memories response');
 
       setState(prev => {
@@ -128,9 +133,11 @@ export function BrainList({
           searchOffset: (reset ? 0 : prev.searchOffset) + res.memories.length,
         };
       });
+      return true;
     } catch {
-      if (generation !== requestGeneration.current) return;
+      if (generation !== requestGeneration.current) return false;
       setState(prev => ({ ...prev, loading: false, error: true }));
+      return false;
     } finally {
       if (generation === requestGeneration.current) loadingMore.current = false;
     }
@@ -231,33 +238,42 @@ export function BrainList({
         ))}
 
         {showMemories && displayLoading && (
-          <div style={{ padding: 20, textAlign: 'center', fontFamily: font.mono, fontSize: 11, color: colors.textDim }}>
+          <div style={{ padding: 20, textAlign: 'center', fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim }}>
             Loading...
           </div>
         )}
 
         {showMemories && !displayLoading && displayError && displayMemories.length === 0 && (
-          <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: 13 }}>
+          <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: textSize.small }}>
             <div style={{ color: colors.textMuted, marginBottom: 10 }}>
               {isSearch ? `Could not search your Brain: ${displayError}` : "Couldn't load memories."}
             </div>
             {!isSearch && (
-              <button
+              <Button
+                colors={colors}
+                variant="ghostOn"
+                type="button"
                 onClick={() => loadPage(true)}
                 style={{
-                  fontSize: 12, fontFamily: font.body, fontWeight: 600, color: colors.cyan,
-                  background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: 8,
-                  padding: '5px 14px', cursor: 'pointer',
-                }}
+                  '--pa-btn-bg': 'transparent',
+                  '--pa-btn-fg': colors.cyan,
+                  '--pa-btn-border': colors.borderHi,
+                  '--pa-btn-bg-hover': colors.cyanSoft,
+                  '--pa-btn-border-hover': colors.cyan,
+                  '--pa-btn-pad': '5px 14px',
+                  '--pa-btn-radius': `${radius.md}px`,
+                  '--pa-btn-weight': 600,
+                  fontSize: textSize.caption, lineHeight: 1.5, fontFamily: font.body,
+                } as CSSProperties}
               >
                 Retry
-              </button>
+              </Button>
             )}
           </div>
         )}
 
         {showMemories && !displayLoading && !displayError && displayMemories.length === 0 && (
-          <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: 13, color: colors.textMuted }}>
+          <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted }}>
             {isSearch ? `No memories match "${searchQuery}" — try a name or project.` : 'No memories yet.'}
           </div>
         )}
@@ -315,7 +331,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       style={{
         padding: '10px 14px', marginBottom: 2, cursor: 'pointer',
-        borderRadius: 8,
+        borderRadius: radius.md,
         background: rowBg,
         border: selected ? `1px solid ${colors.cyan}40` : '1px solid transparent',
         outline: 'none',
@@ -329,7 +345,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
       {/* Title row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
         <div style={{
-          fontFamily: font.body, fontSize: 13, fontWeight: 600, color: colors.text,
+          fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: 12,
         }}>
           {highlightText(title, highlightTerms, colors)}
@@ -348,7 +364,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
       {/* Description preview */}
       {descPreview && (
         <div style={{
-          fontFamily: font.body, fontSize: 12, color: colors.textMuted, lineHeight: 1.5,
+          fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5,
           marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis',
           display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
         }}>
@@ -369,8 +385,16 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
         display: 'flex', gap: 16, marginTop: 6,
         fontFamily: font.mono, fontSize: 10, color: colors.textDim,
       }}>
-        <span>signal {Math.round(memory.weight * 100)}%</span>
-        <span>{memory.age < 0.02 ? 'today' : memory.age < 0.11 ? 'this week' : memory.age < 0.33 ? 'this month' : memory.age < 0.67 ? '~3 months' : 'older'}</span>
+        {/* The same field the graph panel shows. It used to say "signal" here
+            and "reinforcement" there — one number, one tab, two words. */}
+        <span title={MEMORY_STRENGTH.gloss} style={{ cursor: 'help' }}>
+          {MEMORY_STRENGTH.one} {Math.round(memory.weight * 100)}%
+        </span>
+        {/* Read from the memory's own timestamp, never from `age`: that is a
+            0..1 scene coordinate, clamped at 90 days, so every memory past the
+            window shared one bucket and a three-year-old note read as merely
+            "older" — on the list whose subject is what was learned when. */}
+        <AsOf asOf={memory.timestamp} granularity="calendar" staleAfterMs={MEMORY_STALE_AFTER_DAYS * 86_400_000} />
       </div>
     </div>
   );
@@ -418,7 +442,7 @@ function EntityRow({ entity, selected, onClick }: {
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       style={{
         padding: '8px 14px', marginBottom: 2, cursor: 'pointer',
-        borderRadius: 8, background: rowBg,
+        borderRadius: radius.md, background: rowBg,
         border: selected ? `1px solid ${colors.cyan}40` : '1px solid transparent',
         outline: 'none',
         transition: `all 160ms ${ease.out}`,
@@ -434,7 +458,7 @@ function EntityRow({ entity, selected, onClick }: {
         flexShrink: 0, width: 62, justifyContent: 'flex-end',
       }}>
         <span aria-hidden style={{
-          width: 6, height: 6, borderRadius: 999, background: typeColor, flexShrink: 0,
+          width: 6, height: 6, borderRadius: radius.pill, background: typeColor, flexShrink: 0,
         }} />
         <span style={{
           fontFamily: font.mono, fontSize: 10, fontWeight: 600,
@@ -444,14 +468,14 @@ function EntityRow({ entity, selected, onClick }: {
         </span>
       </span>
       <span style={{
-        fontFamily: font.body, fontSize: 13, fontWeight: 600, color: colors.text,
+        fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text,
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
       }}>
         {entity.name}
       </span>
       {entity.note && (
         <span style={{
-          fontFamily: font.body, fontSize: 11, color: colors.textMuted,
+          fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           maxWidth: 200, flexShrink: 1,
         }}>

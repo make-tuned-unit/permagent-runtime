@@ -1,6 +1,9 @@
 import { useRef, useState, useEffect } from 'react';
 import type { CameraMode } from './types';
 import { COLORS } from './constants';
+import { radius, textSize } from '../../styles/tokens';
+import { CanvasLegend } from '../common/CanvasLegend';
+import { worldGestures, worldVocabulary } from './worldLegend';
 
 interface WorldHUDProps {
   mode: CameraMode;
@@ -48,7 +51,7 @@ export function WorldHUD({
     alignItems: 'flex-end',
     gap: 8,
     fontFamily: 'monospace',
-    fontSize: 12,
+    fontSize: textSize.caption,
     color: COLORS.neonCyan,
     pointerEvents: 'none',
     zIndex: 10,
@@ -57,13 +60,31 @@ export function WorldHUD({
   const badgeStyle: React.CSSProperties = {
     background: 'rgba(10, 14, 26, 0.8)',
     padding: '4px 10px',
-    borderRadius: 4,
+    borderRadius: radius.xs,
     border: `1px solid ${COLORS.neonCyan}30`,
     backdropFilter: 'blur(4px)',
   };
 
   return (
     <>
+      {/* The hall's key. It is here, in orbit — the mode every user starts in —
+          because the badge below only ever said "WASD to walk" once the camera
+          had already switched, which teaches the gesture to someone who has
+          already been surprised by it. The badge keeps its reminder for while
+          you are walking; the key is where you learn it first. */}
+      <CanvasLegend
+        canvasId="world"
+        gestures={worldGestures(mode)}
+        vocabulary={worldVocabulary()}
+        palette={{
+          bg: 'rgba(10, 14, 26, 0.86)',
+          border: `${COLORS.neonCyan}30`,
+          text: COLORS.primaryMarble,
+          dim: `${COLORS.primaryMarble}99`,
+          accent: COLORS.neonCyan,
+        }}
+      />
+
       <div style={hudStyle}>
         <div style={badgeStyle}>
           {mode === 'orbit' ? 'ORBIT' : 'WALKING'}
@@ -90,9 +111,9 @@ export function WorldHUD({
             background: 'rgba(10, 14, 26, 0.9)',
             color: stationTooltip.includes('coming soon') ? COLORS.neonAmber : COLORS.neonCyan,
             padding: '8px 16px',
-            borderRadius: 8,
+            borderRadius: radius.md,
             fontFamily: 'monospace',
-            fontSize: 14,
+            fontSize: textSize.body,
             border: `1px solid ${COLORS.neonCyan}40`,
             pointerEvents: 'none',
             zIndex: 10,

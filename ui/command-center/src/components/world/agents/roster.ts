@@ -1,12 +1,29 @@
 // Agent roster — identity config for the real inhabitants: Henry the
 // orchestrator, the Librarian, the Reader (local OCR/ingest), the Watcher
-// (proactive nudges), the Steward (git hygiene), the Guard, and the Financier.
+// (proactive nudges), the Steward (git hygiene), the Guard, the Financier, the
+// Forecaster, (J11) the Council, Polybot and the Picker, and (D18) Growth
+// measurement.
 // WORLD_VIEW_BIBLE.md §2, §4. Identity (trim color, crown) is fixed here; state
 // NEVER repaints identity trim. The decorative sim agents (Aria/Felix/Nova)
 // were removed — only agents that map to a real backend worker live here, so
 // the AgentPicker, camera-follow, and HUDs all key off the same set.
 
 import { AGENT_TRIM } from '../shared/palette';
+
+/**
+ * Where this character's on-screen state comes from. Declared HERE, next to the
+ * identity, because the alternative — a hand-maintained exclusion list in
+ * `stateSources` — is exactly how the Forecaster spent weeks animating off a
+ * fabricated timer while its own comment (correctly) claimed a real wire.
+ *
+ *   daemon — a real event or poll reports this agent's state.
+ *   sim    — nothing reports it; the §4 clamp holds the ambient toggler to
+ *            idle/available so it can never fake work.
+ *   static — nothing reports it YET. A fixed, honest resting pose: no toggler,
+ *            no pulse, and a HUD that says plainly what it is waiting for.
+ *            The one-line upgrade when the emitter lands is `static` → `daemon`.
+ */
+export type StateWire = 'daemon' | 'sim' | 'static';
 
 export interface AgentIdentity {
   id: string;
@@ -21,6 +38,8 @@ export interface AgentIdentity {
   home: { x: number; y: number; z: number };
   /** 0-1, increases body roughness reading via darker vertex tint. */
   weathering: number;
+  /** Where this character's state comes from. See `StateWire`. */
+  wire: StateWire;
 }
 
 export const MEZZ_RADIUS = 15.2;
@@ -42,6 +61,7 @@ export const ROSTER: AgentIdentity[] = [
     mezzanineLocked: false,
     home: { x: 0, y: 0, z: 0 },
     weathering: 0,
+    wire: 'daemon',
   },
   {
     id: 'librarian',
@@ -52,6 +72,7 @@ export const ROSTER: AgentIdentity[] = [
     mezzanineLocked: true,
     home: { x: MEZZ_RADIUS, y: MEZZ_Y, z: 0 },
     weathering: 0.4,
+    wire: 'daemon',
   },
   {
     // The Reader — local OCR/document-ingest pipeline (#336/#342). Backend worker
@@ -67,6 +88,7 @@ export const ROSTER: AgentIdentity[] = [
     mezzanineLocked: false,
     home: { x: 5, y: 0, z: -2 },
     weathering: 0,
+    wire: 'sim',
   },
   {
     // The Watcher (Echo, #672) — the daemon's proactive worker: watches the
@@ -84,6 +106,7 @@ export const ROSTER: AgentIdentity[] = [
     mezzanineLocked: false,
     home: { x: 7.9, y: 0, z: -7.2 },
     weathering: 0.25,
+    wire: 'sim',
   },
   {
     // The Steward — git repo hygiene (crate::steward + the scheduled
@@ -100,6 +123,7 @@ export const ROSTER: AgentIdentity[] = [
     mezzanineLocked: false,
     home: { x: -7.5, y: 0, z: -6.0 },
     weathering: 0.35,
+    wire: 'daemon',
   },
   {
     // The Guard — the security agent, born of the Strix engine (crate::strix +
@@ -117,6 +141,7 @@ export const ROSTER: AgentIdentity[] = [
     mezzanineLocked: false,
     home: { x: 8.6, y: 0, z: 5.4 },
     weathering: 0.3,
+    wire: 'daemon',
   },
   {
     // The Financier — owns the Finance tab (quotes, ledger, household, scanner,
@@ -133,6 +158,7 @@ export const ROSTER: AgentIdentity[] = [
     mezzanineLocked: false,
     home: { x: -8.2, y: 0, z: 5.0 },
     weathering: 0.2,
+    wire: 'daemon',
   },
   {
     // The Forecaster — where the market around each project is going, from
@@ -140,6 +166,12 @@ export const ROSTER: AgentIdentity[] = [
     // the working pose is a real wire and not sim-ambient, exactly as the
     // Financier's is. Home mirrors the Financier across +x: the two read the
     // same kind of number, one at read time and one over time.
+    //
+    // That was true of the daemon and false of the screen until 2026-08-31:
+    // this id was never added to the exclusion list in stateSources, so the
+    // ambient toggler kept flipping the avatar every 20–40 seconds and buried
+    // each real announcement. If you add an agent with a wire, exclude it
+    // there — a comment claiming a wire is not one.
     id: 'forecaster',
     name: 'The Forecaster',
     role: 'agent',
@@ -148,8 +180,111 @@ export const ROSTER: AgentIdentity[] = [
     mezzanineLocked: false,
     home: { x: 8.2, y: 0, z: 5.0 },
     weathering: 0.15,
+    wire: 'daemon',
+  },
+  // ── J11: the three the user turns on and reasons about ─────────────────
+  // The World is the surface built to show what the fleet is doing, and it was
+  // contradicting that for everything the user had actually enabled: the
+  // Council, Polybot and the Picker had no seat at all (agent-QA D-N5-1, D22).
+  // The four background drivers (initiative / onboarding_coach / playbook /
+  // concierge, D17) stay out by the same ruling — they are plumbing, not
+  // things a person switches on and asks about.
+  //
+  // All three started `wire: 'static'`: none had an emitter, and a seat with
+  // no emitter renders as a fixed pose with a HUD that says what it is
+  // waiting for — never as a plausible one. The L5 emitter lane has since
+  // landed the Council's (`convene`) and the Picker's (`picker_close_scan`);
+  // Polybot's still doesn't exist, so it is the one still `static` below.
+  {
+    // The Council of LLMs — every configured provider debates the same brief
+    // and a chair writes the report (crate::council + council_sweep.rs). Off by
+    // default, exactly like the Guard, which has had a seat here all along:
+    // that asymmetry was the whole of D-N5-1. It convenes on a real cadence
+    // (Sunday 22:00 local, Monday catch-up — council/due.rs), and `convene`
+    // now announces on the `council` id too: `working` while a session is
+    // genuinely sitting, `available` once the chair's report lands, `error`
+    // when every member failed. Home faces the Agora threshold: the
+    // collective-mind portal is the right doorway for the one worker that IS
+    // a collective.
+    id: 'council',
+    name: 'The Council',
+    role: 'agent',
+    trimColor: AGENT_TRIM.council,
+    isHenry: false,
+    mezzanineLocked: false,
+    home: { x: -8.5, y: 0, z: -8.5 },
+    weathering: 0.3,
+    wire: 'daemon',
+  },
+  {
+    // Polybot — the autonomous trading process the Finance tab drives
+    // (`/api/finance` → polybot.status()). It is a SEPARATE process, so
+    // "running" is a fact about the machine rather than about a model: the HUD
+    // reads the real board and says OFF when the board says OFF. No
+    // agent_state_changed is emitted anywhere for it (D22).
+    id: 'polybot',
+    name: 'Polybot',
+    role: 'agent',
+    trimColor: AGENT_TRIM.polybot,
+    isHenry: false,
+    mezzanineLocked: false,
+    home: { x: -10.2, y: 0, z: 3.0 },
+    weathering: 0.35,
+    wire: 'static',
+  },
+  {
+    // The Picker — the close-scan desk that ranks tomorrow's candidates
+    // (`picker_close_scan.rs`). It used to announce under the `financier` id,
+    // so its work lit the Financier's orb and nothing lit here; D22's
+    // misattribution half fixed that on the Rust side — the 15:30 ET scan now
+    // announces as `picker`, the Financier's judgement on the survivors still
+    // as `financier`. Its scanner facts (reachable, scanning, last scan and
+    // how many results) still come straight off the finance board. Home sits
+    // beside the Financier, whose desk it works.
+    id: 'picker',
+    name: 'The Picker',
+    role: 'agent',
+    trimColor: AGENT_TRIM.picker,
+    isHenry: false,
+    mezzanineLocked: false,
+    home: { x: -6.0, y: 0, z: 8.2 },
+    weathering: 0.2,
+    wire: 'daemon',
+  },
+  {
+    // Growth measurement — the nightly pass that closes the Grow loop: verify
+    // a shipped action, freeze its before-window, and as each 7/14/28-day
+    // window closes compare after with before against the project's own
+    // week-to-week swing to write a verdict (helped, hindered, no effect,
+    // inconclusive, or confounded). `growth_sweep.rs` now announces
+    // `agent_state_changed` on the `growth_measurement` id — the worker
+    // descriptor that already existed in self_knowledge — `working` only
+    // while a pass genuinely runs, every 6 hours (agent-QA D18). That is a
+    // real wire, not sim-ambient, exactly like the Steward's and the Guard's
+    // loops; there was no seat for it at all until now (D18's render target).
+    // Home takes the open slot next to the Forecaster: both read a project's
+    // own numbers over time and write a judged trend, one about the market
+    // and one about an action taken on the project itself.
+    id: 'growth_measurement',
+    name: 'Growth measurement',
+    role: 'agent',
+    trimColor: AGENT_TRIM.growthMeasurement,
+    isHenry: false,
+    mezzanineLocked: false,
+    home: { x: 6.5, y: 0, z: 9.5 },
+    weathering: 0.25,
+    wire: 'daemon',
   },
 ];
+
+/**
+ * The ids the ambient toggler may animate — every entry that admits nothing
+ * reports it. ONE list, derived, so a roster entry and the simulation can never
+ * disagree again (see `simRoster.test.ts`).
+ */
+export const SIM_AGENT_IDS: readonly string[] = ROSTER
+  .filter((a) => a.wire === 'sim')
+  .map((a) => a.id);
 
 export function getIdentity(id: string): AgentIdentity | undefined {
   return ROSTER.find((a) => a.id === id);

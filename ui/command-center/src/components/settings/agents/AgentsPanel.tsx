@@ -5,8 +5,10 @@
  * an in-world character (see lib/worldAgentIds — the two id namespaces differ).
  */
 
-import { useCallback, useEffect, useState } from 'react';
-import { Chip, H1, Row, Section, Toggle } from '../atoms';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { Chip, H1, Row, Section } from '../atoms';
+import { Button } from '../../common/Button';
+import { Toggle } from '../../common/Toggle';
 import {
   availabilityLabel,
   defaultEnabledLabel,
@@ -29,7 +31,7 @@ import {
   type AgentGate,
   type LabelTone,
 } from '../agentsPanel';
-import { font, radius } from '../../../styles/tokens';
+import { font, radius, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { api } from '../../../lib/api';
 import { useCommandCenter } from '../../../lib/store';
@@ -51,6 +53,8 @@ import {
 import { worldAgentIdForAgent } from '../../../lib/worldAgentIds';
 import { ROSTER } from '../../world/agents/roster';
 import { AgentPortrait } from './AgentPortrait';
+import { AgentSettingsBlock } from './agentSettings';
+import { SkillsSection } from './SkillsSection';
 
 type PanelProps = { goto: (key: string) => void };
 
@@ -65,7 +69,7 @@ function toneColor(tone: LabelTone, colors: ReturnType<typeof useTheme>['colors'
 function StatusText({ text, tone }: { text: string; tone: LabelTone }) {
   const { colors } = useTheme();
   return (
-    <span style={{ fontSize: 11, color: toneColor(tone, colors), fontWeight: tone === 'error' ? 600 : 400 }}>
+    <span style={{ fontSize: textSize.micro, color: toneColor(tone, colors), fontWeight: tone === 'error' ? 600 : 400 }}>
       {text}
     </span>
   );
@@ -83,25 +87,31 @@ function WorldLink({ agentId }: { agentId: string }) {
   const worldId = worldAgentIdForAgent(agentId);
   if (!worldId || !ROSTER.some(a => a.id === worldId)) {
     return (
-      <div style={{ fontSize: 12, color: colors.textDim, lineHeight: 1.5 }}>
+      <div style={{ fontSize: textSize.caption, color: colors.textDim, lineHeight: 1.5 }}>
         This agent has no in-world presence.
       </div>
     );
   }
   return (
     <div>
-      <button
+      <Button
+        colors={colors}
+        variant="bare"
         type="button"
+        className="hover:underline"
         onClick={() => setUnreachable(!useCommandCenter.getState().focusWorldAgent(worldId))}
         style={{
-          fontSize: 12, fontWeight: 600, color: colors.cyan, background: 'none',
-          border: 'none', cursor: 'pointer', padding: 0, fontFamily: font.body,
-        }}
+          '--pa-btn-fg': colors.cyan,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '0',
+          '--pa-btn-weight': 600,
+          fontSize: textSize.caption, fontFamily: font.body,
+        } as CSSProperties}
       >
         Open in World
-      </button>
+      </Button>
       {unreachable && (
-        <div style={{ fontSize: 11, color: colors.warning, marginTop: 6, lineHeight: 1.45 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.warning, marginTop: 6, lineHeight: 1.45 }}>
           No workspace has the World view open, so there is nowhere to fly to. Add it to a
           workspace first.
         </div>
@@ -139,8 +149,12 @@ function SecretsEditor({
     try {
       await saveSecret(agentId, secretName, null);
       await onRefresh();
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not remove secret');
+      // The catch swallows the throw into `error`, so `false` — the Button
+      // contract's failure signal — is what keeps it from ticking anyway.
+      return false;
     } finally {
       setBusy(false);
     }
@@ -150,7 +164,7 @@ function SecretsEditor({
   // opposite claims, and the failure one is the one the user can act on.
   if (secrets.status === 'unavailable') {
     return (
-      <div style={{ fontSize: 12, color: colors.danger }}>
+      <div style={{ fontSize: textSize.caption, color: colors.danger }}>
         Secrets could not be read — {secrets.reason}
       </div>
     );
@@ -160,7 +174,7 @@ function SecretsEditor({
     return (
       <div
         data-testid="no-agent-secrets"
-        style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}
+        style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}
       >
         {NO_AGENT_SECRETS_NOTE}
       </div>
@@ -169,7 +183,7 @@ function SecretsEditor({
 
   return (
     <div>
-      <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
+      <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
         {STORED_SECRETS_NOTE}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -181,35 +195,40 @@ function SecretsEditor({
               data-testid={`secret-row-${item.name}`}
               style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
-                fontSize: 12, fontFamily: font.body,
+                fontSize: textSize.caption, fontFamily: font.body,
               }}
             >
               <span style={{ color: colors.text, fontFamily: font.mono }}>{item.name}</span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <StatusText text={label.text} tone={label.tone} />
-                <button
+                <Button
+                  colors={colors}
                   type="button"
                   disabled={busy}
-                  onClick={() => { void remove(item.name); }}
+                  onClick={() => remove(item.name)}
                   style={{
-                    fontSize: 11, color: colors.danger, background: 'none',
-                    border: `1px solid ${colors.border}`, borderRadius: radius.sm,
-                    padding: '2px 8px', cursor: busy ? 'not-allowed' : 'pointer',
-                  }}
+                    '--pa-btn-fg': colors.danger,
+                    '--pa-btn-border': colors.border,
+                    '--pa-btn-border-hover': `${colors.danger}4D`,
+                    '--pa-btn-bg-hover': `${colors.danger}1A`,
+                    '--pa-btn-bg-active': `${colors.danger}26`,
+                    '--pa-btn-pad': '2px 8px',
+                    '--pa-btn-radius': `${radius.sm}px`,
+                  } as CSSProperties}
                 >
                   Remove
-                </button>
+                </Button>
               </span>
             </div>
           );
         })}
         {secrets.truncated && (
-          <div style={{ fontSize: 11, color: colors.textDim }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
             {truncatedNote(secrets.items.length)}
           </div>
         )}
       </div>
-      {error && <div style={{ marginTop: 8, fontSize: 12, color: colors.danger }}>{error}</div>}
+      {error && <div style={{ marginTop: 8, fontSize: textSize.caption, color: colors.danger }}>{error}</div>}
     </div>
   );
 }
@@ -249,11 +268,14 @@ function GrantsEditor({
   const save = async () => {
     if (listTruncated) {
       setError('This grant list came back truncated, so saving would drop the grants not shown. Reduce the grant count on disk first.');
-      return;
+      // Nothing was written. `false` is the Button contract's failure signal:
+      // every path here reports through `error`, so without it a refused save
+      // would still finish with a success tick.
+      return false;
     }
     if (mode === 'narrowed' && staleKeys.length > 0) {
       setError('Stale grants cannot be re-saved until those capabilities are enabled globally.');
-      return;
+      return false;
     }
     setBusy(true);
     setError(null);
@@ -264,8 +286,10 @@ function GrantsEditor({
       onUpdated(updated);
       setMode(grantsToMode(updated.grants));
       setSelected(updated.grants.mode === 'explicit' ? [...updated.grants.extensions] : []);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save grants');
+      return false;
     } finally {
       setBusy(false);
     }
@@ -277,11 +301,11 @@ function GrantsEditor({
 
   return (
     <div>
-      <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 10 }}>
+      <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: 10 }}>
         Current: {grantsSummary(persona)}
       </div>
       {listTruncated && (
-        <div style={{ fontSize: 12, color: colors.warning, marginBottom: 10, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.warning, marginBottom: 10, lineHeight: 1.5 }}>
           This grant list came back truncated, so what is shown is not the whole set. Editing is
           disabled — saving would silently revoke the grants that were cut off.
         </div>
@@ -297,7 +321,7 @@ function GrantsEditor({
       {mode === 'narrowed' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
           {enabledCaps.map(cap => (
-            <label key={cap.key} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+            <label key={cap.key} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: textSize.caption }}>
               <input
                 type="checkbox"
                 checked={selected.includes(cap.key)}
@@ -312,33 +336,40 @@ function GrantsEditor({
             <div
               key={key}
               data-testid={`stale-grant-${key}`}
-              style={{ fontSize: 12, color: colors.warning, lineHeight: 1.45, paddingLeft: 2 }}
+              style={{ fontSize: textSize.caption, color: colors.warning, lineHeight: 1.45, paddingLeft: 2 }}
             >
               Stale grant: <span style={{ fontFamily: font.mono }}>{key}</span> — cannot be re-saved
               until this capability is enabled globally.
             </div>
           ))}
           {enabledCaps.length === 0 && staleKeys.length === 0 && (
-            <div style={{ fontSize: 11, color: colors.textDim }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
               No globally enabled capabilities to grant.
             </div>
           )}
         </div>
       )}
-      <button
+      <Button
+        colors={colors}
         type="button"
         disabled={busy || listTruncated}
-        onClick={() => { void save(); }}
+        onClick={() => save()}
         style={{
-          padding: '7px 14px', borderRadius: radius.sm, border: `1px solid ${colors.border}`,
-          background: colors.surface, color: listTruncated ? colors.textDim : colors.cyan,
-          cursor: busy || listTruncated ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600,
-          fontFamily: font.body,
-        }}
+          '--pa-btn-bg': colors.surface,
+          '--pa-btn-fg': listTruncated ? colors.textDim : colors.cyan,
+          '--pa-btn-border': colors.border,
+          '--pa-btn-border-hover': colors.borderHi,
+          '--pa-btn-bg-hover': colors.surfaceHi,
+          '--pa-btn-bg-active': colors.surface,
+          '--pa-btn-pad': '7px 14px',
+          '--pa-btn-radius': `${radius.sm}px`,
+          '--pa-btn-weight': 600,
+          fontSize: textSize.caption, fontFamily: font.body,
+        } as CSSProperties}
       >
         {busy ? 'Saving…' : 'Save grants'}
-      </button>
-      {error && <div style={{ marginTop: 8, fontSize: 12, color: colors.danger }}>{error}</div>}
+      </Button>
+      {error && <div style={{ marginTop: 8, fontSize: textSize.caption, color: colors.danger }}>{error}</div>}
     </div>
   );
 }
@@ -353,7 +384,7 @@ function WorkSection({
   const { colors } = useTheme();
   return (
     <div style={{ marginBottom: 18 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: colors.text, marginBottom: 8 }}>{title}</div>
+      <div style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text, marginBottom: 8 }}>{title}</div>
       {children}
     </div>
   );
@@ -361,7 +392,7 @@ function WorkSection({
 
 function renderListUnavailable(reason: string, colors: ReturnType<typeof useTheme>['colors']) {
   return (
-    <div style={{ fontSize: 12, color: colors.danger }}>
+    <div style={{ fontSize: textSize.caption, color: colors.danger }}>
       Could not be read — {reason}
     </div>
   );
@@ -377,18 +408,18 @@ function WorkReviewBlock({ work }: { work: WorkReview }) {
         {activity.status === 'unavailable'
           ? renderListUnavailable(activity.reason, colors)
           : activity.items.length === 0
-            ? <div data-testid="empty-activity" style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{EMPTY_ACTIVITY_NOTE}</div>
+            ? <div data-testid="empty-activity" style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>{EMPTY_ACTIVITY_NOTE}</div>
             : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {activity.items.map(item => (
-                  <div key={item.id} style={{ fontSize: 12, color: colors.text, lineHeight: 1.45 }}>
+                  <div key={item.id} style={{ fontSize: textSize.caption, color: colors.text, lineHeight: 1.45 }}>
                     <span style={{ color: colors.textDim, fontFamily: font.mono, marginRight: 8 }}>{item.ts}</span>
                     <strong>{item.title}</strong>
                     {item.detail && <span style={{ color: colors.textMuted }}> — {item.detail}</span>}
                   </div>
                 ))}
                 {activity.truncated && (
-                  <div style={{ fontSize: 11, color: colors.textDim }}>{truncatedNote(activity.items.length)}</div>
+                  <div style={{ fontSize: textSize.micro, color: colors.textDim }}>{truncatedNote(activity.items.length)}</div>
                 )}
               </div>
             )}
@@ -398,7 +429,7 @@ function WorkReviewBlock({ work }: { work: WorkReview }) {
         {renderGenericSection(work.goals, colors, EMPTY_GOALS_NOTE, goal => {
           const reviews = goal.review_decisions;
           return (
-            <div key={goal.id} style={{ fontSize: 12, marginBottom: 8 }}>
+            <div key={goal.id} style={{ fontSize: textSize.caption, marginBottom: 8 }}>
               <div style={{ color: colors.text, fontWeight: 500 }}>{goal.title}</div>
               <div style={{ color: colors.textDim }}>{goal.state} · {goal.updated_at}</div>
               {reviews.status === 'unavailable'
@@ -413,7 +444,7 @@ function WorkReviewBlock({ work }: { work: WorkReview }) {
                       </span>
                     ))}
                     {reviews.truncated && (
-                      <div style={{ fontSize: 11 }}>{truncatedNote(reviews.items.length)}</div>
+                      <div style={{ fontSize: textSize.micro }}>{truncatedNote(reviews.items.length)}</div>
                     )}
                   </div>
                 )}
@@ -424,7 +455,7 @@ function WorkReviewBlock({ work }: { work: WorkReview }) {
 
       <WorkSection title="Spend">
         {renderGenericSection(work.spend, colors, EMPTY_SPEND_NOTE, item => (
-          <div key={`${item.attribution}-${item.cost_usd}`} style={{ fontSize: 12, color: colors.text }}>
+          <div key={`${item.attribution}-${item.cost_usd}`} style={{ fontSize: textSize.caption, color: colors.text }}>
             ${item.cost_usd.toFixed(4)} · {item.call_count} calls
             {item.estimated_call_count > 0 ? ` (${item.estimated_call_count} estimated)` : ''}
             {item.note && <span style={{ color: colors.textMuted }}> — {item.note}</span>}
@@ -434,7 +465,7 @@ function WorkReviewBlock({ work }: { work: WorkReview }) {
 
       <WorkSection title="Scheduled jobs">
         {renderGenericSection(work.scheduled_jobs, colors, EMPTY_JOBS_NOTE, job => (
-          <div key={job.id} style={{ fontSize: 12, color: colors.text, marginBottom: 6 }}>
+          <div key={job.id} style={{ fontSize: textSize.caption, color: colors.text, marginBottom: 6 }}>
             <span style={{ fontFamily: font.mono }}>{job.id}</span>
             {' · '}{job.cron}
             {job.paused ? ' · paused' : ''}
@@ -459,13 +490,13 @@ function renderGenericSection<T>(
 ) {
   if (section.status === 'unavailable') return renderListUnavailable(section.reason, colors);
   if (section.items.length === 0) {
-    return <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{emptyNote}</div>;
+    return <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>{emptyNote}</div>;
   }
   return (
     <div>
       {section.items.map(renderItem)}
       {section.truncated && (
-        <div style={{ fontSize: 11, color: colors.textDim, marginTop: 6 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 6 }}>
           {truncatedNote(section.items.length)}
         </div>
       )}
@@ -494,29 +525,20 @@ function AgentEnableRow({
   /** Resolves once the daemon has been re-read, so the guess can be dropped. */
   onFlipped: () => Promise<void>;
 }) {
-  const { colors } = useTheme();
-  // The optimistic value is an OVERLAY with a lifetime, not a copy of the gate.
-  // An earlier version mirrored `gate.enabled` into state and re-seeded it from
+  // The optimistic value is an OVERLAY with a lifetime, not a copy of the gate:
+  // an earlier version mirrored `gate.enabled` into state and re-seeded it from
   // a `[gate.enabled]` effect; React skips an effect whose dep did not change,
   // so the one case the re-read exists for — the write returns 200 and the flag
   // is STILL off, which `Config::get_param` produces whenever an env var shadows
-  // the config file — left the toggle stuck ON with no error. Clearing the
-  // overlay instead means the daemon's answer is what renders, equal or not.
-  const [pending, setPending] = useState<boolean | null>(null);
+  // the config file — left the toggle stuck ON with no error. That overlay is
+  // now `Toggle`'s, which was written from this component: it clears when the
+  // write settles, so the daemon's answer is what renders, equal or not.
   const [error, setError] = useState<string | null>(null);
-  const on = pending ?? gate.enabled;
 
   const save = async (v: boolean) => {
-    setPending(v);
     setError(null);
-    try {
-      await api.upsertConfig(gate.config_key, v);
-    } catch (err) {
-      // A failed write is never shown as a success.
-      setPending(null);
-      setError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
+    // A throw is the failure signal — the switch reverts and says so.
+    await api.upsertConfig(gate.config_key, v);
     try {
       await onFlipped();
     } catch (err) {
@@ -524,8 +546,6 @@ function AgentEnableRow({
       // here would be the same lie in the other direction, so the switch drops
       // back to the last value the daemon actually confirmed and says why.
       setError(`Saved, but could not re-read it: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setPending(null);
     }
   };
 
@@ -536,10 +556,7 @@ function AgentEnableRow({
         sub="One key, written here and under Settings → Features — flipping it in either place is the same flag, and the daemon picks it up at its next tick."
       >
         <Row label={`Enable ${agentName}`} hint={gateRowHint(gate)}>
-          <Toggle on={on} onChange={v => { void save(v); }} />
-          {error && (
-            <div style={{ marginTop: 8, fontSize: 12, color: colors.danger }}>{error}</div>
-          )}
+          <Toggle on={gate.enabled} error={error} onChange={save} label={`Enable ${agentName}`} />
         </Row>
       </Section>
     </div>
@@ -606,16 +623,22 @@ function AgentDetailPane({
 
   return (
     <div>
-      <button
+      <Button
+        colors={colors}
+        variant="bare"
         type="button"
+        className="hover:underline"
         onClick={onBack}
         style={{
-          fontSize: 12, color: colors.cyan, background: 'none', border: 'none',
-          cursor: 'pointer', padding: 0, marginBottom: 16, fontFamily: font.body, fontWeight: 600,
-        }}
+          '--pa-btn-fg': colors.cyan,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '0',
+          '--pa-btn-weight': 600,
+          fontSize: textSize.caption, marginBottom: 16, fontFamily: font.body,
+        } as CSSProperties}
       >
         ← Back to agents
-      </button>
+      </Button>
 
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
         <AgentPortrait agentId={id} size={56} />
@@ -626,7 +649,7 @@ function AgentDetailPane({
         </div>
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px', marginBottom: 20, fontSize: 12, color: colors.textMuted }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px', marginBottom: 20, fontSize: textSize.caption, color: colors.textMuted }}>
         <span>{detail.kind === 'worker' ? 'Background worker' : 'Dispatch persona'}</span>
         <span>
           {detail.kind === 'worker'
@@ -646,6 +669,11 @@ function AgentDetailPane({
           onFlipped={reloadAfterFlip}
         />
       )}
+
+      {/* This agent's own settings, which used to sit under Models because
+          they each name a model (J8/C7). Models keeps "which brain answers
+          which job"; how an agent behaves belongs to the agent. */}
+      <AgentSettingsBlock agentId={id} />
 
       <Section title="World">
         <WorldLink agentId={id} />
@@ -671,12 +699,12 @@ function AgentDetailPane({
               // still shows what is recorded on disk, and the sentence says why
               // it cannot be edited here.
               <div>
-                <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 10 }}>
+                <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: 10 }}>
                   Current: {grantsSummary(detail)}
                 </div>
                 <div
                   data-testid="grants-not-enforced"
-                  style={{ fontSize: 12, color: colors.warning, lineHeight: 1.5 }}
+                  style={{ fontSize: textSize.caption, color: colors.warning, lineHeight: 1.5 }}
                 >
                   {grantsNotEnforcedNote(detail.engine)}
                 </div>
@@ -694,8 +722,8 @@ function AgentDetailPane({
       )}
 
       <Section title="Work review" sub="Rows are exact attribution to this id — empty means nothing is attributed, not that the agent was idle.">
-        {workError && <div style={{ fontSize: 12, color: colors.danger }}>{workError}</div>}
-        {!workError && !work && <div style={{ fontSize: 12, color: colors.textDim }}>Loading work…</div>}
+        {workError && <div style={{ fontSize: textSize.caption, color: colors.danger }}>{workError}</div>}
+        {!workError && !work && <div style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading work…</div>}
         {work && <WorkReviewBlock work={work} />}
       </Section>
     </div>
@@ -770,10 +798,10 @@ export function AgentsPanel({ goto }: PanelProps) {
   }, [selectedId]);
 
   if (error && !roster) {
-    return <div style={{ color: colors.textMuted, fontSize: 13 }}>{error}</div>;
+    return <div style={{ color: colors.textMuted, fontSize: textSize.small }}>{error}</div>;
   }
   if (!roster) {
-    return <div style={{ color: colors.textDim, fontSize: 13 }}>Loading agents…</div>;
+    return <div style={{ color: colors.textDim, fontSize: textSize.small }}>Loading agents…</div>;
   }
 
   if (selectedId && detail) {
@@ -792,17 +820,23 @@ export function AgentsPanel({ goto }: PanelProps) {
   if (selectedId && detailError) {
     return (
       <div>
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           type="button"
+          className="hover:underline"
           onClick={() => { setSelectedId(null); setDetailError(null); }}
           style={{
-            fontSize: 12, color: colors.cyan, background: 'none', border: 'none',
-            cursor: 'pointer', padding: 0, marginBottom: 16, fontFamily: font.body, fontWeight: 600,
-          }}
+            '--pa-btn-fg': colors.cyan,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-weight': 600,
+            fontSize: textSize.caption, marginBottom: 16, fontFamily: font.body,
+          } as CSSProperties}
         >
           ← Back to agents
-        </button>
-        <div style={{ fontSize: 13, color: colors.danger }}>
+        </Button>
+        <div style={{ fontSize: textSize.small, color: colors.danger }}>
           No agent named {selectedId}. {detailError}
         </div>
       </div>
@@ -819,7 +853,7 @@ export function AgentsPanel({ goto }: PanelProps) {
         <div
           data-testid="unknown-agent"
           style={{
-            fontSize: 12, color: colors.warning, marginBottom: 16, lineHeight: 1.5,
+            fontSize: textSize.caption, color: colors.warning, marginBottom: 16, lineHeight: 1.5,
             padding: '10px 12px', borderRadius: radius.md, border: `1px solid ${colors.border}`,
           }}
         >
@@ -838,7 +872,7 @@ export function AgentsPanel({ goto }: PanelProps) {
             <WorkerRow key={worker.id} worker={worker} onOpen={() => setSelectedId(worker.id)} />
           ))}
           {roster.workers.length === 0 && (
-            <div style={{ fontSize: 12, color: colors.textDim }}>No background workers visible.</div>
+            <div style={{ fontSize: textSize.caption, color: colors.textDim }}>No background workers visible.</div>
           )}
         </div>
       </Section>
@@ -852,10 +886,16 @@ export function AgentsPanel({ goto }: PanelProps) {
             <PersonaRow key={persona.key} persona={persona} onOpen={() => setSelectedId(persona.key)} />
           ))}
           {roster.dispatch_roster.length === 0 && (
-            <div style={{ fontSize: 12, color: colors.textDim }}>No dispatch personas configured.</div>
+            <div style={{ fontSize: textSize.caption, color: colors.textDim }}>No dispatch personas configured.</div>
           )}
         </div>
       </Section>
+
+      {/* Skills sit with the agents because they are what the agents learned —
+          the ruled placement (J4). Before this the Library had no front door at
+          all: you could only arrive by accepting a proposal or by clicking a
+          skill inside another tab's condensed list. */}
+      <SkillsSection />
 
       <Section
         title="Capabilities"
@@ -866,7 +906,7 @@ export function AgentsPanel({ goto }: PanelProps) {
             <CapabilityRow key={cap.key} capability={cap} onManage={() => goto('tools')} />
           ))}
           {roster.capabilities.length === 0 && (
-            <div style={{ fontSize: 12, color: colors.textDim }}>
+            <div style={{ fontSize: textSize.caption, color: colors.textDim }}>
               The roster listed no capabilities. That is what the daemon returned, not proof none
               are installed.
             </div>
@@ -889,7 +929,7 @@ function GateChip({ id, gate }: { id: string; gate: AgentGate }) {
     <span
       data-testid={`gate-chip-${id}`}
       style={{
-        fontSize: 10, fontWeight: 600, padding: '1px 7px', borderRadius: 999,
+        fontSize: 10, fontWeight: 600, padding: '1px 7px', borderRadius: radius.pill,
         border: `1px solid ${gate.enabled ? colors.borderHi : colors.border}`,
         color: gate.enabled ? colors.cyan : colors.textDim,
         fontFamily: font.body,
@@ -922,12 +962,12 @@ function WorkerRow({ worker, onOpen }: { worker: BackgroundWorker; onOpen: () =>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{worker.display_name}</span>
+              <span style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{worker.display_name}</span>
               {gate && <GateChip id={worker.id} gate={gate} />}
             </span>
             <StatusText text={live.text} tone={live.tone} />
           </div>
-          <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.45 }}>{worker.what_it_does}</div>
+          <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.45 }}>{worker.what_it_does}</div>
         </div>
       </div>
     </button>
@@ -954,16 +994,16 @@ function PersonaRow({ persona, onOpen }: { persona: DispatchPersona; onOpen: () 
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{persona.display_name}</span>
+              <span style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{persona.display_name}</span>
               {gate && <GateChip id={persona.key} gate={gate} />}
             </span>
             <StatusText text={avail.text} tone={avail.tone} />
           </div>
-          <div style={{ fontSize: 11, color: colors.textMuted, display: 'flex', flexWrap: 'wrap', gap: '4px 12px' }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted, display: 'flex', flexWrap: 'wrap', gap: '4px 12px' }}>
             <span>{engineLabel(persona.engine)}</span>
             <span>{persona.cost_tier}</span>
           </div>
-          <div style={{ fontSize: 11, color: colors.textDim, marginTop: 6 }}>{grantsSummary(persona)}</div>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 6 }}>{grantsSummary(persona)}</div>
         </div>
       </div>
     </button>
@@ -988,30 +1028,36 @@ function CapabilityRow({
       }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{capability.display_name}</span>
-        <span style={{ fontSize: 11, color: capability.enabled ? colors.cyan : colors.textDim }}>
+        <span style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{capability.display_name}</span>
+        <span style={{ fontSize: textSize.micro, color: capability.enabled ? colors.cyan : colors.textDim }}>
           {capability.enabled ? 'enabled' : 'disabled'}
         </span>
       </div>
-      <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>
+      <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginBottom: 4 }}>
         {capability.source} · {defaultEnabledLabel(capability.default_enabled)}
       </div>
-      <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.45, marginBottom: 8 }}>
+      <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.45, marginBottom: 8 }}>
         {requiredSecretsLabel(capability.required_secrets)}
         {requiredSecretHints(capability.required_secrets).map(hint => (
           <div key={hint} data-testid="required-secret-hint" style={{ marginTop: 2 }}>{hint}</div>
         ))}
       </div>
-      <button
+      <Button
+        colors={colors}
+        variant="bare"
         type="button"
+        className="hover:underline"
         onClick={onManage}
         style={{
-          fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
-          cursor: 'pointer', padding: 0, fontFamily: font.body, fontWeight: 600,
-        }}
+          '--pa-btn-fg': colors.cyan,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '0',
+          '--pa-btn-weight': 600,
+          fontFamily: font.body,
+        } as CSSProperties}
       >
         Manage in Tools
-      </button>
+      </Button>
     </div>
   );
 }

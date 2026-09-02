@@ -10,6 +10,7 @@ import { ModelPicker } from './ModelPicker';
 import { SessionPicker } from './SessionPicker';
 import { VoiceOrb } from '../voice/VoiceOrb';
 import { ChatPendingDecisions } from './ChatPendingDecisions';
+import { DiscussNotice } from './DiscussNotice';
 import { useTheme } from '../../styles/useTheme';
 
 export function ChatView() {
@@ -79,6 +80,7 @@ export function ChatView() {
           here while the dock is open (state stays in the Sidebar mount).
           Zero-height when empty; content-sized, capped, scrollable when not. */}
       <div id="meeting-dock-slot" style={{ flexShrink: 0, maxHeight: '45%', overflowY: 'auto' }} />
+      <DiscussNotice />
       {!voiceOverlay && <ChatPendingDecisions />}
       <ChatInput ref={chatInputRef} />
 

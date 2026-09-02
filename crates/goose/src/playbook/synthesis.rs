@@ -482,6 +482,7 @@ mod tests {
             acted_by: Some(actor.to_string()),
             created_at: "2026-07-16T00:00:00.000Z".to_string(),
             resolved_at: Some("2026-07-16T00:00:01.000Z".to_string()),
+            staged_answer: None,
         }
     }
 

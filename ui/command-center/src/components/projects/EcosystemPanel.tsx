@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { relativeTimeAgo } from '../../lib/time-decay';
 import { isSafeHttpUrl } from '../../lib/url';
-import { font } from '../../styles/tokens';
+import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { Project } from './types';
 
@@ -33,6 +34,8 @@ export function EcosystemPanel({ project }: { project: Project }) {
   const agentName = useCommandCenter(s => s.agentName);
   const loadGeneration = useRef(0);
 
+  // Resolves `false` when the load failed (or was superseded) so the retry
+  // button can only tick over a load that actually landed.
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
     setStatus('loading');
@@ -40,7 +43,7 @@ export function EcosystemPanel({ project }: { project: Project }) {
       const response = await apiFetch<Partial<ProjectIntelResponse>>(
         `/api/projects/${encodeURIComponent(project.id)}/intel`,
       );
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       if (!response || typeof response !== 'object') throw new Error('Invalid intelligence response');
       setIntel({
         competitors: Array.isArray(response?.competitors) ? response.competitors : [],
@@ -49,9 +52,11 @@ export function EcosystemPanel({ project }: { project: Project }) {
       });
       setStatus('ready');
       setRequested(false); // fresh rows landed — the button is usable again
+      return true;
     } catch {
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       setStatus('error');
+      return false;
     }
   }, [project.id]);
 
@@ -68,8 +73,11 @@ export function EcosystemPanel({ project }: { project: Project }) {
         partners: current.partners.filter(item => item.id !== itemId),
         ecosystem: current.ecosystem.filter(item => item.id !== itemId),
       }));
+      return true;
     } catch {
-      // Keep the item visible when the server did not confirm deletion.
+      // Keep the item visible when the server did not confirm deletion — and
+      // resolve `false` so the dismiss button cannot tick over a failed DELETE.
+      return false;
     }
   };
 
@@ -108,23 +116,47 @@ export function EcosystemPanel({ project }: { project: Project }) {
     <Panel
       title="Ecosystem intelligence"
       action={(
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           type="button"
+          className="hover:underline"
           onClick={requestIntelligence}
-          style={{ border: 'none', background: 'none', color: colors.cyan, cursor: 'pointer', fontFamily: font.body, fontSize: 11, padding: 0 }}
+          style={{
+            '--pa-btn-fg': colors.cyan,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-weight': 'inherit',
+            fontFamily: font.body,
+            fontSize: textSize.micro,
+          } as CSSProperties}
         >
           {requested ? `${agentName} is researching…` : 'Refresh intelligence'}
-        </button>
+        </Button>
       )}
     >
-      {status === 'loading' && <div style={{ color: colors.textDim, fontSize: 11 }}>Loading intelligence…</div>}
+      {status === 'loading' && <div style={{ color: colors.textDim, fontSize: textSize.micro }}>Loading intelligence…</div>}
       {status === 'error' && (
-        <button type="button" onClick={load} style={{ border: 'none', background: 'none', color: colors.danger, cursor: 'pointer', padding: 0 }}>
+        <Button
+          colors={colors}
+          variant="bare"
+          type="button"
+          className="hover:underline"
+          onClick={load}
+          style={{
+            '--pa-btn-fg': colors.danger,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-weight': 'inherit',
+            fontSize: 'inherit',
+            lineHeight: 'inherit',
+          } as CSSProperties}
+        >
           Couldn't load intelligence. Retry
-        </button>
+        </Button>
       )}
       {status === 'ready' && groups.every(([, items]) => items.length === 0) && (
-        <div style={{ color: colors.textDim, fontSize: 11 }}>No researched intelligence yet.</div>
+        <div style={{ color: colors.textDim, fontSize: textSize.micro }}>No researched intelligence yet.</div>
       )}
       {status === 'ready' && freshness && (
         <div style={{ color: colors.textDim, fontSize: 10 }}>Last researched {freshness}</div>
@@ -138,18 +170,28 @@ export function EcosystemPanel({ project }: { project: Project }) {
             {items.map(item => (
               <div key={item.id} style={{ borderLeft: `2px solid ${colors.cyan}`, paddingLeft: 9 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                  <div style={{ color: colors.text, fontSize: 12, fontWeight: 600 }}>{item.name}</div>
-                  <button
+                  <div style={{ color: colors.text, fontSize: textSize.caption, fontWeight: 600 }}>{item.name}</div>
+                  <Button
+                    colors={colors}
+                    variant="bare"
                     type="button"
                     aria-label={`Dismiss ${item.name}`}
                     title="Dismiss"
                     onClick={() => dismiss(item.id)}
-                    style={{ border: 'none', background: 'none', color: colors.textDim, cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 2 }}
+                    style={{
+                      '--pa-btn-fg': colors.textDim,
+                      '--pa-btn-fg-hover': colors.danger,
+                      '--pa-btn-bg-hover': 'transparent',
+                      '--pa-btn-pad': '2px',
+                      '--pa-btn-weight': 'inherit',
+                      fontSize: textSize.body,
+                      lineHeight: 1,
+                    } as CSSProperties}
                   >
                     ×
-                  </button>
+                  </Button>
                 </div>
-                {item.note && <div style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>{item.note}</div>}
+                {item.note && <div style={{ color: colors.textMuted, fontSize: textSize.micro, marginTop: 2 }}>{item.note}</div>}
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 3, fontSize: 10 }}>
                   {isSafeHttpUrl(item.source_url) ? (
                     <a href={item.source_url} target="_blank" rel="noreferrer" style={{ color: colors.cyan }}>Source</a>

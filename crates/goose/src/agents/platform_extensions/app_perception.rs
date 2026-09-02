@@ -2427,14 +2427,16 @@ mod tests {
             client.observe_decision_inbox(&pool).await["status"],
             "unavailable"
         );
-        sqlx::query("CREATE TABLE decisions (id TEXT, kind TEXT, goal_id TEXT, project_id TEXT, tier INTEGER, headline TEXT, detail TEXT, payload_json TEXT, rank REAL, status TEXT, answer TEXT, answer_note TEXT, answer_choice_id TEXT, answer_input TEXT, acted_by TEXT, created_at TEXT, resolved_at TEXT)").execute(&pool).await.unwrap();
+        // `staged_answer_json` is last because the real schema adds it by
+        // ALTER TABLE (6906df17); the positional INSERT below matches.
+        sqlx::query("CREATE TABLE decisions (id TEXT, kind TEXT, goal_id TEXT, project_id TEXT, tier INTEGER, headline TEXT, detail TEXT, payload_json TEXT, rank REAL, status TEXT, answer TEXT, answer_note TEXT, answer_choice_id TEXT, answer_input TEXT, acted_by TEXT, created_at TEXT, resolved_at TEXT, staged_answer_json TEXT)").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE cards (id TEXT, title TEXT, project_id TEXT, card_type TEXT, column_id TEXT, archived_at TEXT, metadata_json TEXT)").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE board_columns (id TEXT, state_binding TEXT)")
             .execute(&pool)
             .await
             .unwrap();
         for i in 0..(LIST_LIMIT + 1) {
-            sqlx::query("INSERT INTO decisions VALUES (?, 'choice', NULL, NULL, 1, ?, 'private detail', '{}', 1, 'open', NULL, NULL, NULL, NULL, NULL, '2026-08-14T00:00:00Z', NULL)")
+            sqlx::query("INSERT INTO decisions VALUES (?, 'choice', NULL, NULL, 1, ?, 'private detail', '{}', 1, 'open', NULL, NULL, NULL, NULL, NULL, '2026-08-14T00:00:00Z', NULL, NULL)")
                 .bind(format!("d{i}")).bind(format!("Decision {i}"))
                 .execute(&pool).await.unwrap();
         }

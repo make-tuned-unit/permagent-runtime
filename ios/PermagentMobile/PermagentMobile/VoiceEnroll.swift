@@ -24,6 +24,37 @@ enum VoiceEnroll {
         guard have >= 0, have < prompts.count else { return nil }
         return prompts[have]
     }
+
+    /// Enrollment is an automatic, pause-ended capture even though the setup
+    /// screen disables ordinary hands-free conversation. Gating every VAD
+    /// step on `handsFree` left the first enrollment take recording forever:
+    /// no silence event could send Stop, so sentence two never arrived.
+    ///
+    /// `isListening` is what keeps the setup screen a control surface rather
+    /// than a conversation one: the VAD runs only INSIDE a take the hub has
+    /// asked for, never from `.ready`, so ambient speech still cannot open a
+    /// turn there.
+    static func shouldDriveVAD(
+        handsFree: Bool,
+        enrolling: Bool,
+        isListening: Bool
+    ) -> Bool {
+        handsFree || (enrolling && isListening)
+    }
+
+    /// Open an enrollment take: stamp the VAD's turn clocks for a turn begun
+    /// OUTSIDE the VAD, exactly as push-to-talk's `beginTurn()` does.
+    ///
+    /// Enrollment takes are opened by hub status (`enroll_status` / `idle`),
+    /// never by the VAD's own `.ready` onset detector — the setup screen goes
+    /// straight from `.ready` to `.listening` — so nothing else ever stamps
+    /// `turnStart`. Left unstamped it holds whatever the last turn left
+    /// behind, which on this screen is nothing at all: the max-turn cap then
+    /// measures from the 1970 epoch and ends the take on its first frame.
+    /// Every enrollment mic-reopen path must come through here.
+    static func openTake(_ vad: inout VoiceVAD, now: TimeInterval) {
+        vad.noteTurnBegan(at: now)
+    }
 }
 
 /// A rejected background talker often keeps speaking. Reopening VAD on the

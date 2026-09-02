@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { font, ease, type ThemeColors } from '../../styles/tokens';
+import { FiCheckCircle } from 'react-icons/fi';
+import { ease, font, radius, type ThemeColors, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { PrimaryButton, GhostLink, Glass, Particles, Select, type SelectOption } from './atoms';
 import { Mobius } from '../mobius/Mobius';
@@ -331,21 +332,21 @@ export function MomentHardware({ onAdvance }: Props) {
           <div style={{ width: 360, marginTop: 16 }}>
             {/* Progress bar */}
             <div style={{
-              width: '100%', height: 6, borderRadius: 999,
+              width: '100%', height: 6, borderRadius: radius.pill,
               background: trackVeil, overflow: 'hidden',
             }}>
               <div style={{
-                width: `${pullProgress}%`, height: '100%', borderRadius: 999,
+                width: `${pullProgress}%`, height: '100%', borderRadius: radius.pill,
                 background: `linear-gradient(90deg, ${colors.cyan}, ${colors.purple})`,
                 boxShadow: `0 0 12px ${colors.cyanGlow}`,
                 transition: `width 300ms ${ease.out}`,
               }} />
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
-              <span style={{ fontFamily: font.mono, fontSize: 11, color: colors.textMuted }}>
+              <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textMuted }}>
                 {pullStatus.length > 50 ? pullStatus.slice(0, 50) + '...' : pullStatus}
               </span>
-              <span style={{ fontFamily: font.mono, fontSize: 11, color: colors.cyan }}>
+              <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.cyan }}>
                 {pullProgress}%
               </span>
             </div>
@@ -372,10 +373,7 @@ export function MomentHardware({ onAdvance }: Props) {
         <>
           <Mobius size={120} state="idle" />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
-            <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-              <circle cx="11" cy="11" r="10" stroke={colors.cyan} strokeWidth="1.5" />
-              <path d="M7 11l3 3 5-5" stroke={colors.cyan} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            <FiCheckCircle size={22} color={colors.cyan} />
             <h1 style={{ ...h1Style(colors), margin: 0 }}>Ready to go</h1>
           </div>
           <p style={{ ...subtitleStyle(colors), maxWidth: 380, marginTop: 10 }}>
@@ -409,10 +407,10 @@ function HwStat({ label, value }: { label: string; value: string }) {
   const { colors } = useTheme();
   return (
     <div style={{ textAlign: 'center' }}>
-      <div style={{ fontFamily: font.mono, fontSize: 11, color: colors.textMuted, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+      <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textMuted, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
         {label}
       </div>
-      <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text }}>
+      <div style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>
         {value}
       </div>
     </div>
@@ -425,11 +423,11 @@ const h1Style = (c: ThemeColors) => ({
 } as const);
 
 const subtitleStyle = (c: ThemeColors) => ({
-  fontFamily: font.body, fontSize: 14, color: c.textMuted,
+  fontFamily: font.body, fontSize: textSize.body, color: c.textMuted,
   marginBottom: 24, textAlign: 'center' as const, lineHeight: 1.6,
 } as const);
 
 const fineprint = (c: ThemeColors) => ({
-  fontFamily: font.body, fontSize: 12, color: c.textDim,
+  fontFamily: font.body, fontSize: textSize.caption, color: c.textDim,
   lineHeight: 1.5, textAlign: 'center' as const, margin: 0,
 } as const);

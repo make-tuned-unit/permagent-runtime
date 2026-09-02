@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef, useId } from 'react';
+import { useState, useEffect, useRef, useId, type CSSProperties } from 'react';
 import { FiX, FiEye, FiEyeOff } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import {
   buildCustomProviderPayload,
   emptyCustomProviderForm,
@@ -91,7 +92,10 @@ export function AddCustomProviderModal({ onClose }: Props) {
     if (!built.ok) {
       setError(built.error);
       setResult(null);
-      return;
+      // Every failure below is swallowed into `error`/`result`, so each one
+      // hands back the Button contract's `false` — a provider that was not
+      // created, or was created and does not answer, must not tick.
+      return false;
     }
     setSubmitting(true);
     setError(null);
@@ -103,7 +107,7 @@ export function AddCustomProviderModal({ onClose }: Props) {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create provider');
       setSubmitting(false);
-      return;
+      return false;
     }
 
     // The provider now exists — surface it in the list regardless of the check.
@@ -111,17 +115,20 @@ export function AddCustomProviderModal({ onClose }: Props) {
     await loadProviders();
 
     // Immediately validate the new endpoint so a bad URL/key is caught here.
+    let reachable = true;
     try {
       await api.checkProvider(providerName);
       setResult({ ok: true, message: `"${built.payload.display_name}" was created and is ready to use.` });
     } catch (e) {
       const reason = e instanceof Error ? e.message : 'connection check failed';
+      reachable = false;
       setResult({
         ok: false,
         message: `Created, but the connection check failed: ${reason}. Fix it via Configure, or remove it.`,
       });
     }
     setSubmitting(false);
+    return reachable;
   };
 
   const inputStyle = { backgroundColor: colors.inputBg, border: `1px solid ${colors.border}`, color: colors.text };
@@ -145,18 +152,23 @@ export function AddCustomProviderModal({ onClose }: Props) {
         <style>{`.provider-modal-input::placeholder { color: ${colors.textMuted}; opacity: 0.6; }`}</style>
         <div className="flex items-center justify-between mb-4">
           <h2 id={titleId} style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>Add custom provider</h2>
-          <button
+          {/* The style-assigning mouse and focus handlers are gone: each wrote
+              an inline `color`, which beats `.pa-btn:hover` in the cascade and
+              would have cancelled the state being migrated in for. */}
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={onClose}
             aria-label="Close"
-            className="transition"
-            style={{ color: colors.textMuted }}
-            onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
-            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
-            onFocus={e => { e.currentTarget.style.color = colors.text; }}
-            onBlur={e => { e.currentTarget.style.color = colors.textMuted; }}
+            style={{
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0',
+            } as CSSProperties}
           >
             <FiX size={16} />
-          </button>
+          </Button>
         </div>
 
         <p className="text-[11px] mb-4" style={labelStyle}>
@@ -237,17 +249,22 @@ export function AddCustomProviderModal({ onClose }: Props) {
                   onFocus={e => { e.currentTarget.style.borderColor = `${colors.cyan}80`; }}
                   onBlur={e => { e.currentTarget.style.borderColor = colors.border; }}
                 />
-                <button
+                <Button
+                  colors={colors}
+                  variant="bare"
                   type="button"
                   onClick={() => setShowKey(!showKey)}
                   aria-label={showKey ? 'Hide API key' : 'Show API key'}
                   className="absolute right-2 top-1/2 -translate-y-1/2"
-                  style={{ color: colors.textMuted }}
-                  onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
-                  onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
+                  style={{
+                    '--pa-btn-fg': colors.textMuted,
+                    '--pa-btn-fg-hover': colors.text,
+                    '--pa-btn-bg-hover': 'transparent',
+                    '--pa-btn-pad': '0',
+                  } as CSSProperties}
                 >
                   {showKey ? <FiEyeOff size={14} /> : <FiEye size={14} />}
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -291,24 +308,38 @@ export function AddCustomProviderModal({ onClose }: Props) {
         )}
 
         <div className="flex items-center justify-end gap-2 mt-5 pt-4" style={{ borderTop: `1px solid ${colors.border}` }}>
-          <button
+          <Button
+            colors={colors}
             onClick={onClose}
-            className="px-4 py-1.5 text-sm rounded hover:bg-white/5 transition"
-            style={{ border: `1px solid ${colors.border}`, color: colors.textMuted }}
+            style={{
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-border': colors.border,
+              '--pa-btn-border-hover': colors.border,
+              '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+              '--pa-btn-pad': '6px 16px',
+              '--pa-btn-radius': `${radius.xs}px`,
+              fontSize: textSize.body,
+            } as CSSProperties}
           >
             {created ? 'Done' : 'Cancel'}
-          </button>
+          </Button>
           {!created && (
-            <button
+            <Button
+              colors={colors}
+              variant="primary"
               onClick={handleCreate}
               disabled={submitting}
-              className="px-4 py-1.5 text-sm rounded transition disabled:opacity-50"
-              style={{ fontFamily: font.display, fontWeight: 600, backgroundColor: colors.cyan, color: colors.textOnCyan }}
-              onMouseEnter={e => { e.currentTarget.style.backgroundColor = `${colors.cyan}CC`; }}
-              onMouseLeave={e => { e.currentTarget.style.backgroundColor = colors.cyan; }}
+              style={{
+                '--pa-btn-bg-hover': `${colors.cyan}CC`,
+                '--pa-btn-pad': '6px 16px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                fontFamily: font.display,
+                fontSize: textSize.body,
+              } as CSSProperties}
             >
               {submitting ? 'Creating…' : 'Create & test'}
-            </button>
+            </Button>
           )}
         </div>
       </div>

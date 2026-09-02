@@ -80,6 +80,17 @@ describe('features helpers', () => {
     expect(conciergePreconditionCopy(null)).toMatch(/Checking/);
   });
 
+  it('does not tell you to run a command it could not check you need', () => {
+    // The catch used to be `setIntegrations([])`, and `gmailTokenPresent([])`
+    // is `false` — so a daemon that never answered rendered as a definite
+    // "Needs a Gmail token: run <command>". An unreadable list is its own
+    // state, and it does not issue instructions.
+    const unreadable = conciergePreconditionCopy(false, true);
+    expect(unreadable).not.toContain(GMAIL_CONNECT_COMMAND);
+    expect(unreadable).toMatch(/Couldn't check/);
+    expect(conciergePreconditionCopy(true, true)).toBe(unreadable);
+  });
+
   it('only a literal true reads as on (bare-value /config/read contract)', () => {
     expect(readFlag(true)).toBe(true);
     expect(readFlag(null)).toBe(false);

@@ -103,18 +103,21 @@ pub fn spawn(state: Arc<AppState>) {
         loop {
             ticker.tick().await;
 
-            // Holdings RSI is the Financier's fact, delivered by the Watcher.
-            // It does not consume the once-a-day taste budget, ignores quiet
-            // hours, and runs even when the Brain is down.
+            // Holdings exit signals are the Financier's fact. They no longer
+            // arrive as a nudge — they file a Decision Inbox proposal — so this
+            // never consumed the taste budget and now does not compete with it
+            // for the user's attention either. The shared ticker+rule dedupe
+            // means calling it from here as well as from the close scan and the
+            // six-hour sweep cannot produce a duplicate card.
             if let Ok(pool) = state.session_manager().pool_clone().await {
-                match permagent::overbought::notify_open_lots(&pool).await {
-                    Ok(sent) => {
-                        for message in &sent {
-                            tracing::info!(target: "permagentd::echo", kind = "sell_signal", "{message}");
+                match permagent::overbought::file_sell_notices(&pool).await {
+                    Ok(filed) => {
+                        for message in &filed {
+                            tracing::info!(target: "permagentd::echo", kind = "sell_notice", "{message}");
                         }
                     }
                     Err(e) => {
-                        tracing::debug!(target: "permagentd::echo", "holdings RSI sweep skipped: {e}");
+                        tracing::debug!(target: "permagentd::echo", "holdings exit sweep skipped: {e}");
                     }
                 }
             }

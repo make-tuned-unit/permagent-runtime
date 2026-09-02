@@ -88,7 +88,14 @@ export function useDecisions() {
         const type = wireEventType(parsed);
         const ts = Date.parse(parsed.timestamp ?? '');
         if (Number.isFinite(ts) && ts < mountedAt) return; // skip replayed buffer
-        if (type === 'decision_created' || type === 'decision_resolved') {
+        // decision_staged (D29): a spoken verdict is waiting for a tap. The
+        // decision is still open — refreshing is what makes the confirm row
+        // appear while the user is still looking at the screen.
+        if (
+          type === 'decision_created' ||
+          type === 'decision_resolved' ||
+          type === 'decision_staged'
+        ) {
           fetchDecisions();
         }
       };
@@ -152,11 +159,32 @@ export function useDecisions() {
     [fetchDecisions],
   );
 
+  /**
+   * Throw away a staged (spoken, uncommitted) verdict — D29's discard. The
+   * decision stays open and answerable; only the proposal goes.
+   */
+  const discardStaged = useCallback(
+    async (id: string): Promise<void> => {
+      await decisionsClient.discardStaged(id);
+      await fetchDecisions();
+    },
+    [fetchDecisions],
+  );
+
   /** Resolved decisions + audit join for audit/history views. */
   const loadHistory = useCallback(async (): Promise<HistoryItem[]> => {
     const { items } = await decisionsClient.history();
     return items;
   }, []);
 
-  return { data, loading, error, refresh: fetchDecisions, showAll, answer, loadHistory };
+  return {
+    data,
+    loading,
+    error,
+    refresh: fetchDecisions,
+    showAll,
+    answer,
+    discardStaged,
+    loadHistory,
+  };
 }

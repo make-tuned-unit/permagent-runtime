@@ -25,12 +25,19 @@
  * no auto-links, no dangerouslySetInnerHTML.
  */
 
-import { useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
-import { font, radius, ease } from '../../../styles/tokens';
+import { useEffect, useId, useRef, useState } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
+import { font, radius, textSize } from '../../../styles/tokens';
+import { Button } from '../../common/Button';
 import { useTheme } from '../../../styles/useTheme';
 import type { AnswerBody, Decision } from './types';
-import { checkApprovalOf, choiceOptions, recommendedChoiceId, draftText } from './types';
+import {
+  checkApprovalOf,
+  choiceOptions,
+  recommendedChoiceId,
+  draftText,
+  stagedSummary,
+} from './types';
 import type { AnswerResult } from './useDecisions';
 import { EvidenceDigest } from './EvidenceDigest';
 import { decisionsClient } from './client';
@@ -48,6 +55,9 @@ interface Props {
   /** Cancel this decision's goal (#490) — kills the worker and marks it
    *  terminal; the list refreshes after. Absent for non-goal decisions. */
   onCancelGoal?: () => Promise<void>;
+  /** Throw away a staged (spoken, uncommitted) verdict — D29's discard.
+   *  Absent only where the surface cannot refresh itself afterwards. */
+  onDiscardStaged?: (id: string) => Promise<void>;
 }
 
 interface PendingAnswer {
@@ -182,8 +192,14 @@ export function pushedRejectWarning(
   );
 }
 
-export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCancelGoal }: Props) {
-  const { colors, reduceMotion } = useTheme();
+export function DecisionItem({
+  decision: d,
+  onAnswer,
+  onConflictSettled,
+  onCancelGoal,
+  onDiscardStaged,
+}: Props) {
+  const { colors } = useTheme();
   const { data: persona } = usePersona();
   const agentName = persona?.display_name ?? 'your agent';
   const discussDecision = useCommandCenter(s => s.discussDecision);
@@ -199,8 +215,10 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const [editText, setEditText] = useState('');
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [argsOpen, setArgsOpen] = useState(false);
+  const argsId = useId();
   const [cancelErr, setCancelErr] = useState<string | null>(null);
   const [answerErr, setAnswerErr] = useState<string | null>(null);
+  const [discardErr, setDiscardErr] = useState<string | null>(null);
   // Where the goal's work was pushed (dispatch_evidence.push_target), fetched
   // from the canonical evidence record for the informed-reject warning (#458).
   const [pushTarget, setPushTarget] = useState<string | null>(null);
@@ -222,16 +240,22 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
     return () => { cancelled = true; };
   }, [isReviewWithGoal, d.project_id, d.goal_id]);
 
+  // Resolves `false` on anything that is not a clean commit — a conflict or a
+  // network failure — so the Button contract never ticks on one.
   const submit = async (p: PendingAnswer) => {
     setSubmitting(true);
     setAnswerErr(null);
     try {
-      const body: AnswerBody = { ...p.body, note: note.trim() ? note.trim() : undefined };
+      // A typed note wins; otherwise whatever the answer already carried (a
+      // staged verdict brings the words that were said with it) survives.
+      const body: AnswerBody = { ...p.body, note: note.trim() ? note.trim() : p.body.note };
       const result = await onAnswer(d.id, body);
       if (!result.ok) {
         setConflict(true);
         setPending(null);
         conflictTimer.current = setTimeout(onConflictSettled, 1600);
+        setSubmitting(false);
+        return false;
       } else if (result.effect_error) {
         // Partial failure: the answer committed but the gated effect didn't
         // apply. The item leaves the list on refresh, so surface via toast
@@ -244,9 +268,10 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
       // silent revert was indistinguishable from a dead button.
       setAnswerErr(e instanceof Error ? e.message : 'The answer didn\'t send — try again.');
       setSubmitting(false);
-      return;
+      return false;
     }
     setSubmitting(false);
+    return true;
   };
 
   const badge = badgeFor(d, colors);
@@ -280,6 +305,16 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   // command/cwd/reason render as their own block — the whole point of the
   // card is that the user can see EXACTLY what they'd be authorising.
   const checkApproval = checkApprovalOf(d);
+  // D29: a verdict said out loud but not committed. Voice cannot authenticate
+  // (NIST SP 800-63B-4 §3.2.3.2), so the daemon staged it against a decision
+  // that is still open and still unanswered — this row is where it becomes an
+  // answer, and the tap is what authenticates it. Expired stagings (30-minute
+  // TTL) never arrive here, so anything present is live.
+  const staged = d.staged_answer ?? null;
+  const stagedVerdict =
+    staged && (staged.answer === 'approve' || staged.answer === 'reject')
+      ? (staged.answer as 'approve' | 'reject')
+      : null;
   const intelItems = d.kind === 'project_intel_proposal' && Array.isArray(d.payload?.items)
     ? d.payload.items.filter((item): item is Record<string, unknown> =>
         typeof item === 'object' && item !== null)
@@ -295,18 +330,18 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{
           fontFamily: font.mono, fontSize: 10, letterSpacing: '0.06em',
-          textTransform: 'uppercase', borderRadius: 4, padding: '2px 6px',
+          textTransform: 'uppercase', borderRadius: radius.xs, padding: '2px 6px',
           flexShrink: 0, color: badge.color, background: badge.bg,
         }}>
           {badge.label}
         </span>
         <span style={{
-          fontSize: 13, fontWeight: 600, color: colors.text, flex: 1,
+          fontSize: textSize.small, fontWeight: 600, color: colors.text, flex: 1,
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
         }}>
           {d.headline}
         </span>
-        <span style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, flexShrink: 0 }}>
+        <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, flexShrink: 0 }}>
           {formatAge(d.created_at)}
         </span>
       </div>
@@ -315,19 +350,29 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           shared goal-detail modal (#503) when the decision is goal-bound. */}
       {d.goal_title && (
         d.goal_id && d.project_id ? (
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
+            className="hover:underline"
             onClick={() => openGoalDetail(d.project_id!, d.goal_id!)}
             title="View goal detail"
             style={{
-              display: 'block', background: 'none', border: 'none', padding: 0,
-              marginTop: 4, textAlign: 'left', cursor: 'pointer',
-              fontSize: 11, color: colors.cyan, fontFamily: font.body,
-            }}
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-fg-hover': colors.cyan,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-bg-active': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': '0',
+              '--pa-btn-weight': 400,
+              display: 'flex', justifyContent: 'flex-start', marginTop: 4,
+              fontSize: textSize.micro, fontFamily: font.body,
+            } as CSSProperties}
           >
             Goal: {d.goal_title}
-          </button>
+          </Button>
         ) : (
-          <div style={{ fontSize: 11, color: colors.textDim, marginTop: 4 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 4 }}>
             Goal: {d.goal_title}
           </div>
         )
@@ -336,7 +381,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
       {/* Detail: technical why/attribution, verbatim (S2) */}
       {d.detail && (
         <div style={{
-          fontSize: 12, color: colors.textMuted, marginTop: 4,
+          fontSize: textSize.caption, color: colors.textMuted, marginTop: 4,
           whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
           maxHeight: 96, overflow: 'auto',
         }}>
@@ -350,24 +395,24 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           wraps/scrolls instead so the full command stays inspectable. */}
       {checkApproval && (
         <div style={{ marginTop: 8 }}>
-          <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 4 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 4 }}>
             Command
           </div>
           <pre style={{
             margin: 0, borderRadius: radius.sm, background: colors.codeBg,
-            padding: '10px 12px', fontFamily: font.mono, fontSize: 12,
+            padding: '10px 12px', fontFamily: font.mono, fontSize: textSize.caption,
             lineHeight: 1.6, color: colors.text, maxHeight: 240,
             overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             userSelect: 'text',
           }}>
             {checkApproval.command}
           </pre>
-          <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 6 }}>
             <span style={{ color: colors.textDim }}>in </span>
             <span style={{ fontFamily: font.mono, overflowWrap: 'anywhere' }}>{checkApproval.cwd}</span>
           </div>
           {checkApproval.reason && (
-            <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+            <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 4 }}>
               {checkApproval.reason}
             </div>
           )}
@@ -383,14 +428,14 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
             const source = typeof item.source_url === 'string' ? item.source_url : null;
             return (
               <div key={`${kind}-${name}-${index}`} style={{ borderLeft: `2px solid ${colors.purpleBright}`, paddingLeft: 9 }}>
-                <div style={{ color: colors.text, fontSize: 12, fontWeight: 600 }}>{kind}: {name}</div>
-                {note && <div style={{ color: colors.textMuted, fontSize: 11 }}>{note}</div>}
+                <div style={{ color: colors.text, fontSize: textSize.caption, fontWeight: 600 }}>{kind}: {name}</div>
+                {note && <div style={{ color: colors.textMuted, fontSize: textSize.micro }}>{note}</div>}
                 {source && isSafeHttpUrl(source) ? (
-                  <a href={source} target="_blank" rel="noreferrer" style={{ color: colors.cyan, fontSize: 11 }}>
+                  <a href={source} target="_blank" rel="noreferrer" style={{ color: colors.cyan, fontSize: textSize.micro }}>
                     Source
                   </a>
                 ) : source ? (
-                  <span style={{ color: colors.textMuted, fontSize: 11 }}>Source</span>
+                  <span style={{ color: colors.textMuted, fontSize: textSize.micro }}>Source</span>
                 ) : null}
               </div>
             );
@@ -403,22 +448,37 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           S2: plain text in a <pre>; nothing is interpreted or linked. */}
       {toolArgs && (
         <div>
+          {/* Disclosure toggle for the <pre> right below: nothing to await, so
+              it keeps the element and takes the shared `.pa-btn` interaction
+              rules rather than the Button primitive's pending/success
+              machinery. */}
           <button
+            type="button"
+            className="pa-btn"
+            aria-expanded={argsOpen}
+            aria-controls={argsId}
             onClick={() => setArgsOpen(o => !o)}
             style={{
-              marginTop: 6, background: 'none', border: 'none', padding: 0,
-              color: argsOpen ? colors.cyan : colors.textDim,
-              fontSize: 11, fontFamily: font.body, cursor: 'pointer',
-              transition: reduceMotion ? 'none' : `color 150ms ${ease.out}`,
-            }}
+              '--pa-btn-bg': 'transparent',
+              '--pa-btn-fg': argsOpen ? colors.cyan : colors.textDim,
+              '--pa-btn-border': 'transparent',
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-fg-hover': argsOpen ? colors.cyan : colors.textMuted,
+              '--pa-btn-bg-active': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': '0',
+              '--pa-btn-weight': 400,
+              marginTop: 6,
+              fontSize: textSize.micro, fontFamily: font.body,
+            } as CSSProperties}
           >
             {argsOpen ? 'Hide full arguments ▾' : 'Show full arguments ▸'}
           </button>
           {argsOpen && (
-            <pre style={{
+            <pre id={argsId} style={{
               margin: '6px 0 0', borderRadius: radius.sm,
               background: colors.codeBg, padding: '10px 12px',
-              fontFamily: font.mono, fontSize: 11, lineHeight: 1.6,
+              fontFamily: font.mono, fontSize: textSize.micro, lineHeight: 1.6,
               color: colors.textMuted, maxHeight: 240, overflow: 'auto',
               whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
             }}>
@@ -434,10 +494,112 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           <span style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
             borderRadius: radius.pill, background: colors.cyanSoft,
-            color: colors.cyan, fontSize: 11, fontWeight: 500, padding: '3px 10px',
+            color: colors.cyan, fontSize: textSize.micro, fontWeight: 500, padding: '3px 10px',
           }}>
             {agentName} recommends · {recommended.label}
           </span>
+        </div>
+      )}
+
+      {/* Staged verdict (D29): what was said out loud, and the tap that makes
+          it an answer. Deliberately loud — a proposal sitting unnoticed is the
+          failure mode — and the discard beside it is the same size, because
+          "I didn't mean that" must be as easy as "yes I did". */}
+      {staged && stagedVerdict && !conflict && !pending && (
+        <div
+          data-testid={`staged-${d.id}`}
+          style={{
+            marginTop: 10, borderRadius: radius.md,
+            border: `1px solid ${colors.purpleBright}`,
+            background: colors.purpleSoft, padding: '10px 12px',
+            display: 'flex', flexDirection: 'column', gap: 8,
+          }}
+        >
+          <div style={{
+            display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap',
+            fontSize: textSize.caption, fontWeight: 600, color: colors.text,
+          }}>
+            <span aria-hidden="true">🎙</span>
+            <span>{stagedSummary(staged)}</span>
+            <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, fontWeight: 400 }}>
+              {/* formatAge says "now" under a minute — "now ago" would be nonsense. */}
+              · {formatAge(staged.staged_at) === 'now' ? 'just now' : `${formatAge(staged.staged_at)} ago`}
+            </span>
+          </div>
+          {/* Honest about what has and has not happened yet. */}
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>
+            Heard, not committed — nothing has happened yet. Committing does
+            this: {effectTextFor(d.kind, stagedVerdict, agentName, riskActionClass)}
+          </div>
+          {staged.note && (
+            <div style={{
+              fontSize: textSize.micro, color: colors.textMuted,
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
+            }}>
+              Said with it: {staged.note}
+            </div>
+          )}
+          {stagedVerdict === 'reject' && pushedRejectWarning(d.kind, pushTarget) && (
+            <span role="alert" style={{
+              fontSize: textSize.caption, fontWeight: 600, color: colors.warning,
+              display: 'flex', gap: 6, alignItems: 'baseline',
+            }}>
+              <span aria-hidden="true">⚠</span>
+              {pushedRejectWarning(d.kind, pushTarget)}
+            </span>
+          )}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {/* One tap, and it travels the ordinary answer route: same actor,
+                same tier gate, attributed to this device — never to "voice". */}
+            <Btn
+              variant="primary"
+              disabled={submitting}
+              onClick={() =>
+                submit({
+                  body: {
+                    answer: stagedVerdict,
+                    note: staged.note ?? undefined,
+                  },
+                  confirmLabel: '',
+                  effectText: '',
+                })
+              }
+            >
+              {submitting
+                ? 'Sending…'
+                : stagedVerdict === 'approve' ? 'Commit approve' : 'Commit reject'}
+            </Btn>
+            {onDiscardStaged && (
+              <Btn
+                danger
+                disabled={submitting}
+                onClick={async () => {
+                  setDiscardErr(null);
+                  try {
+                    await onDiscardStaged(d.id);
+                    return true;
+                  } catch (e) {
+                    setDiscardErr(
+                      e instanceof Error ? e.message : "The discard didn't send — try again.",
+                    );
+                    return false;
+                  }
+                }}
+              >
+                Discard
+              </Btn>
+            )}
+          </div>
+          {answerErr && (
+            <span role="alert" style={{ fontSize: textSize.micro, color: colors.danger }}>
+              Couldn't send: {answerErr}
+            </span>
+          )}
+          {discardErr && (
+            <span role="alert" style={{ fontSize: textSize.micro, color: colors.danger }}>
+              Couldn't discard: {discardErr}
+            </span>
+          )}
         </div>
       )}
 
@@ -447,7 +609,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           display: 'flex', alignItems: 'center', gap: 8, marginTop: 10,
           borderRadius: radius.md, border: `1px solid ${colors.warning}`,
           background: colors.warning + '14', padding: '8px 12px',
-          fontSize: 12, color: colors.text,
+          fontSize: textSize.caption, color: colors.text,
         }}>
           Someone already answered this — refreshing…
         </div>
@@ -458,14 +620,14 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           borderRadius: radius.md, border: `1px solid ${colors.borderHi}`,
           background: colors.cyanSoft, padding: '8px 12px',
         }}>
-          <span style={{ fontSize: 12, color: colors.text, flex: 1, minWidth: 180 }}>
+          <span style={{ fontSize: textSize.caption, color: colors.text, flex: 1, minWidth: 180 }}>
             {pending.effectText}
           </span>
           {/* Informed reject (#458): the work is already pushed — say so loudly
               BEFORE the reject is confirmed. Reject stays enabled (advisory). */}
           {pending.body.answer === 'reject' && pushedRejectWarning(d.kind, pushTarget) && (
             <span role="alert" style={{
-              flexBasis: '100%', order: -1, fontSize: 12, fontWeight: 600,
+              flexBasis: '100%', order: -1, fontSize: textSize.caption, fontWeight: 600,
               color: colors.warning, display: 'flex', gap: 6, alignItems: 'baseline',
             }}>
               <span aria-hidden="true">⚠</span>
@@ -482,7 +644,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
                 flexBasis: '100%', width: '100%', boxSizing: 'border-box', resize: 'vertical',
                 borderRadius: radius.md, border: `1px solid ${colors.border}`,
                 background: colors.inputBg, color: colors.text,
-                fontFamily: font.body, fontSize: 12, padding: '8px 10px', outline: 'none',
+                fontFamily: font.body, fontSize: textSize.caption, padding: '8px 10px', outline: 'none',
               }}
             />
           )}
@@ -491,7 +653,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           </Btn>
           <Btn disabled={submitting} onClick={() => { setPending(null); setAnswerErr(null); }}>Cancel</Btn>
           {answerErr && (
-            <span role="alert" style={{ fontSize: 11, color: colors.danger, flexBasis: '100%' }}>
+            <span role="alert" style={{ fontSize: textSize.micro, color: colors.danger, flexBasis: '100%' }}>
               Couldn't send: {answerErr}
             </span>
           )}
@@ -508,7 +670,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
               width: '100%', boxSizing: 'border-box', resize: 'vertical',
               borderRadius: radius.md, border: `1px solid ${colors.border}`,
               background: colors.inputBg, color: colors.text,
-              fontFamily: font.body, fontSize: 12, padding: '8px 10px', outline: 'none',
+              fontFamily: font.body, fontSize: textSize.caption, padding: '8px 10px', outline: 'none',
             }}
           />
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
@@ -534,7 +696,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
            answer='edit': the daemon keeps the revision AND learns the
            draft→revision delta (edit-as-training, decision_inbox/learn.rs). */
         <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 6 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 6 }}>
             Revise the draft, then accept — your version becomes the answer and {agentName} learns the change.
           </div>
           <textarea
@@ -545,7 +707,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
               width: '100%', boxSizing: 'border-box', resize: 'vertical',
               borderRadius: radius.md, border: `1px solid ${colors.border}`,
               background: colors.inputBg, color: colors.text,
-              fontFamily: font.body, fontSize: 12, padding: '8px 10px', outline: 'none',
+              fontFamily: font.body, fontSize: textSize.caption, padding: '8px 10px', outline: 'none',
             }}
           />
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
@@ -632,40 +794,64 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           {/* Cancel the underlying goal (#490). User-initiated and immediate:
               kills the worker and supersedes this decision. */}
           {onCancelGoal && (
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
               onClick={async () => {
-                if (submitting) return;
+                if (submitting) return false;
                 setSubmitting(true);
                 setCancelErr(null);
                 try {
                   await onCancelGoal();
+                  return true;
                 } catch (e) {
+                  // Resolves `false` so a cancel that failed cannot tick; the
+                  // message below is what actually says what happened.
                   setCancelErr(e instanceof Error ? e.message : 'Cancel failed');
+                  return false;
                 } finally {
                   setSubmitting(false);
                 }
               }}
               disabled={submitting}
               style={{
-                background: 'none', border: 'none', color: colors.warning,
-                fontSize: 11, fontFamily: font.body,
-                cursor: submitting ? 'default' : 'pointer', padding: 4,
-                opacity: submitting ? 0.5 : 1,
-              }}
+                '--pa-btn-fg': colors.warning,
+                '--pa-btn-fg-hover': colors.warning,
+                '--pa-btn-bg-hover': colors.warning + '1F',
+                '--pa-btn-bg-active': colors.warning + '2E',
+                '--pa-btn-pad': '4px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                '--pa-btn-weight': 400,
+                fontSize: textSize.micro, fontFamily: font.body,
+              } as CSSProperties}
             >
               Cancel goal
-            </button>
+            </Button>
           )}
 
           {hasEvidence && (
+            /* Disclosure toggle for the digest below — same treatment as the
+               full-arguments toggle: the element stays, the interaction rules
+               are the shared ones. */
             <button
+              type="button"
+              className="pa-btn"
+              aria-expanded={evidenceOpen}
               onClick={() => setEvidenceOpen(o => !o)}
               style={{
-                marginLeft: 'auto', background: 'none', border: 'none',
-                color: evidenceOpen ? colors.cyan : colors.textDim,
-                fontSize: 11, fontFamily: font.body, cursor: 'pointer', padding: 4,
-                transition: reduceMotion ? 'none' : `color 150ms ${ease.out}`,
-              }}
+                '--pa-btn-bg': 'transparent',
+                '--pa-btn-fg': evidenceOpen ? colors.cyan : colors.textDim,
+                '--pa-btn-border': 'transparent',
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-fg-hover': evidenceOpen ? colors.cyan : colors.textMuted,
+                '--pa-btn-bg-active': 'transparent',
+                '--pa-btn-pad': '4px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                '--pa-btn-weight': 400,
+                marginLeft: 'auto',
+                fontSize: textSize.micro, fontFamily: font.body,
+              } as CSSProperties}
             >
               Evidence {evidenceOpen ? '▾' : '▸'}
             </button>
@@ -676,7 +862,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
       {/* Cancel failure surfaced inline — never silently swallowed (#503) */}
       {cancelErr && (
         <div style={{
-          marginTop: 8, fontSize: 12, color: colors.danger,
+          marginTop: 8, fontSize: textSize.caption, color: colors.danger,
           borderRadius: radius.md, border: `1px solid ${colors.danger}`,
           background: colors.danger + '14', padding: '6px 10px',
         }}>
@@ -695,7 +881,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
             width: '100%', boxSizing: 'border-box', resize: 'vertical', marginTop: 8,
             borderRadius: radius.md, border: `1px solid ${colors.border}`,
             background: colors.inputBg, color: colors.text,
-            fontFamily: font.body, fontSize: 12, padding: '8px 10px', outline: 'none',
+            fontFamily: font.body, fontSize: textSize.caption, padding: '8px 10px', outline: 'none',
           }}
         />
       )}
@@ -726,38 +912,56 @@ function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
   }
 }
 
-/** Inline-styled button per the post-#273 convention (no shared atom yet). */
+/**
+ * The decision row's button shape, now a thin adapter over the app's one Button
+ * primitive rather than a third button contract of its own.
+ *
+ * What it used to be: a local `hover` state driven by a pair of mouse handlers,
+ * which is the only way an inline `style` object can express a hover at all —
+ * and which still left pressing one indistinguishable from not pressing it.
+ * That machinery is gone. The look is unchanged, but it now arrives as
+ * `--pa-btn-*` custom properties so the shared `:hover`/`:active`/disabled
+ * rules can reach it, and an `onClick` that returns a promise gets the pending
+ * and success contract for free.
+ */
 function Btn({ variant = 'ghost', danger = false, disabled = false, onClick, children }: {
   variant?: 'primary' | 'ghost';
   danger?: boolean;
   disabled?: boolean;
-  onClick: () => void;
+  /** Returning a promise opts this button into pending + success; resolving
+   *  `false` means it failed, so a failure never ticks. */
+  onClick: () => unknown;
   children: ReactNode;
 }) {
-  const { colors, reduceMotion } = useTheme();
-  const [hover, setHover] = useState(false);
+  const { colors } = useTheme();
   const primary = variant === 'primary';
   return (
-    <button
+    <Button
+      colors={colors}
+      variant={primary ? 'primary' : 'ghost'}
+      type="button"
       onClick={onClick}
       disabled={disabled}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
       style={{
-        borderRadius: radius.md, fontFamily: font.body, fontSize: 12,
-        fontWeight: primary ? 600 : 500, padding: '5px 14px',
-        cursor: disabled ? 'default' : 'pointer',
-        opacity: disabled ? 0.6 : 1,
-        border: primary ? 'none' : `1px solid ${hover && !disabled ? colors.borderHi : colors.border}`,
-        background: primary ? colors.ribbonGradient : colors.surface,
-        color: primary
+        '--pa-btn-bg': primary ? colors.ribbonGradient : colors.surface,
+        '--pa-btn-fg': primary
           ? colors.textOnAccent
-          : danger ? colors.danger
-          : hover && !disabled ? colors.text : colors.textMuted,
-        transition: reduceMotion ? 'none' : `all 150ms ${ease.out}`,
-      }}
+          : danger ? colors.danger : colors.textMuted,
+        '--pa-btn-border': primary ? 'transparent' : colors.border,
+        '--pa-btn-bg-hover': primary ? colors.ribbonGradient : colors.surface,
+        // Danger keeps its colour through hover, exactly as it did before.
+        '--pa-btn-fg-hover': primary
+          ? colors.textOnAccent
+          : danger ? colors.danger : colors.text,
+        '--pa-btn-border-hover': primary ? 'transparent' : colors.borderHi,
+        '--pa-btn-bg-active': primary ? colors.ribbonGradient : colors.surface,
+        '--pa-btn-pad': '5px 14px',
+        '--pa-btn-radius': `${radius.md}px`,
+        '--pa-btn-weight': primary ? 600 : 500,
+        fontFamily: font.body, fontSize: textSize.caption,
+      } as CSSProperties}
     >
       {children}
-    </button>
+    </Button>
   );
 }

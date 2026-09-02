@@ -20,17 +20,29 @@ export interface Project {
 export function useProjects() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  // A failed fetch is not an empty project list. Swallowing it here is what
+  // let the Build header's only launch affordance disappear on a daemon
+  // outage with nothing on screen saying so.
+  const [error, setError] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
       const data = await apiFetch<Project[]>('/api/projects?status=active');
       setProjects(data);
+      setError(false);
+      return true;
     } catch {
-      // silently fail — projects feature may not be available
+      setError(true);
+      return false;
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const retry = useCallback(() => {
+    setLoading(true);
+    return refresh();
+  }, [refresh]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -42,5 +54,5 @@ export function useProjects() {
     }
   }, []);
 
-  return { projects, loading, refresh, touch };
+  return { projects, loading, error, refresh, retry, touch };
 }

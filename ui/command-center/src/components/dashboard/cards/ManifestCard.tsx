@@ -1,10 +1,20 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { radius, font } from '../../../styles/tokens';
+import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
+import { radius, font, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Stat, SectionTitle, EmptyNote } from '../atoms';
 import { apiFetch } from '../../../lib/api';
 import type { CardManifest } from './registry';
 import { CardIcon } from './cardIcons';
+import { AsOf } from '../../common/AsOf';
+import { Button } from '../../common/Button';
+
+/**
+ * How long a fetch-once card's reading stays plain before its age becomes part
+ * of what it says. Five minutes: long enough that opening the dashboard and
+ * reading it is not nagged at, short enough that a tab left open all afternoon
+ * cannot present breakfast's numbers as this moment's.
+ */
+const STATIC_CARD_STALE_AFTER_MS = 5 * 60_000;
 
 /**
  * The normalized payload every manifest-card data endpoint returns. Layout is
@@ -61,6 +71,7 @@ export function ManifestCard({ manifest }: Props) {
   const [configOpen, setConfigOpen] = useState(false);
   const [configValue, setConfigValue] = useState('');
   const [configBusy, setConfigBusy] = useState(false);
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
   const requestGeneration = useRef(0);
 
@@ -70,6 +81,7 @@ export function ManifestCard({ manifest }: Props) {
       const result = await apiFetch<CardData>(manifest.dataEndpoint);
       if (generation !== requestGeneration.current) return;
       setData(result);
+      setFetchedAt(Date.now());
       setPhase('ready');
     } catch {
       if (generation !== requestGeneration.current) return;
@@ -89,8 +101,11 @@ export function ManifestCard({ manifest }: Props) {
     };
   }, [fetchData, manifest.refreshSeconds]);
 
+  // Resolves `false` on failure so the Button contract never ticks on one: this
+  // handler swallows its own error (the input stays open for a retry), and a
+  // green tick over a location that was never saved would be a lie.
   const submitConfig = useCallback(async () => {
-    if (!manifest.configure || !configValue.trim()) return;
+    if (!manifest.configure || !configValue.trim()) return false;
     setConfigBusy(true);
     try {
       await apiFetch(manifest.configure.endpoint, {
@@ -102,14 +117,28 @@ export function ManifestCard({ manifest }: Props) {
       setConfigValue('');
       setPhase('loading');
       await fetchData();
+      return true;
     } catch {
       // Leave the input open so the user can retry.
+      return false;
     } finally {
       setConfigBusy(false);
     }
   }, [manifest.configure, configValue, fetchData]);
 
   const isCompact = manifest.layout === 'compact';
+
+  /**
+   * A card whose manifest declares `refreshSeconds: 0` fetches once when the
+   * dashboard mounts and never again. Its figures then sit next to cards that
+   * refresh every thirty seconds, in the same type, with nothing saying which
+   * is which — so a number that has been frozen since you opened the tab reads
+   * exactly like one confirmed a moment ago.
+   *
+   * Polling cards are left alone: they are current by construction, and a
+   * timestamp on every card would be noise that teaches nobody anything.
+   */
+  const polls = (manifest.refreshSeconds ?? 0) > 0;
 
   const shell = (children: React.ReactNode) => (
     <div style={{
@@ -122,6 +151,24 @@ export function ManifestCard({ manifest }: Props) {
       display: 'flex', flexDirection: 'column',
     }}>
       {children}
+      {!polls && fetchedAt != null && (
+        <div
+          data-testid="manifest-card-as-of"
+          style={{
+            marginTop: 'auto', paddingTop: 8,
+            fontFamily: font.body, fontSize: 10,
+          }}
+        >
+          <AsOf
+            asOf={fetchedAt}
+            prefix="As of"
+            suffix="not refreshing"
+            // Fetched once on mount: it starts being a reading about the past
+            // the moment the fetch lands, and how far past is the whole point.
+            staleAfterMs={STATIC_CARD_STALE_AFTER_MS}
+          />
+        </div>
+      )}
     </div>
   );
 
@@ -143,7 +190,7 @@ export function ManifestCard({ manifest }: Props) {
         <SectionTitle title={manifest.name} />
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 10 }}>
           {data?.note && (
-            <div style={{ fontFamily: font.body, fontSize: 12, color: colors.textDim, textAlign: 'center' }}>
+            <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textDim, textAlign: 'center' }}>
               {data.note}
             </div>
           )}
@@ -159,33 +206,45 @@ export function ManifestCard({ manifest }: Props) {
                 style={{
                   flex: 1, padding: '6px 10px', borderRadius: radius.sm,
                   border: `1px solid ${colors.border}`, background: colors.bg,
-                  color: colors.text, fontFamily: font.body, fontSize: 12, outline: 'none',
+                  color: colors.text, fontFamily: font.body, fontSize: textSize.caption, outline: 'none',
                 }}
               />
-              <button
+              <Button
+                colors={colors}
+                variant="primary"
+                type="button"
                 onClick={submitConfig}
                 disabled={configBusy || !configValue.trim()}
                 style={{
-                  padding: '6px 12px', borderRadius: radius.sm, border: 'none',
-                  background: colors.cyan, color: colors.textOnCyan,
-                  fontFamily: font.body, fontSize: 12, fontWeight: 600,
-                  cursor: configBusy ? 'default' : 'pointer', opacity: configBusy ? 0.6 : 1,
-                }}
+                  '--pa-btn-pad': '6px 12px',
+                  '--pa-btn-radius': `${radius.sm}px`,
+                  fontFamily: font.body, fontSize: textSize.caption,
+                } as CSSProperties}
               >
                 {configBusy ? '…' : 'Set'}
-              </button>
+              </Button>
             </div>
           ) : (
-            <button
+            <Button
+              colors={colors}
+              type="button"
               onClick={() => setConfigOpen(true)}
               style={{
-                alignSelf: 'center', padding: '6px 14px', borderRadius: radius.md,
-                border: `1px solid ${colors.borderHi}`, background: colors.cyanSoft,
-                color: colors.cyan, fontFamily: font.body, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-              }}
+                '--pa-btn-bg': colors.cyanSoft,
+                '--pa-btn-fg': colors.cyan,
+                '--pa-btn-border': colors.borderHi,
+                '--pa-btn-bg-hover': colors.cyanSoft,
+                '--pa-btn-fg-hover': colors.cyan,
+                '--pa-btn-border-hover': colors.cyan,
+                '--pa-btn-bg-active': colors.cyanGlow,
+                '--pa-btn-pad': '6px 14px',
+                '--pa-btn-radius': `${radius.md}px`,
+                '--pa-btn-weight': 600,
+                alignSelf: 'center', fontFamily: font.body, fontSize: textSize.caption,
+              } as CSSProperties}
             >
               {manifest.configure!.label}
-            </button>
+            </Button>
           )}
         </div>
       </>,
@@ -327,8 +386,8 @@ export function ManifestCard({ manifest }: Props) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {cells.map((c, i) => (
               <div key={i} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
-                <span style={{ fontFamily: font.body, fontSize: 12, color: colors.textDim }}>{c.label}</span>
-                <span style={{ fontFamily: font.body, fontSize: 13, fontWeight: 600, color: c.accent ? colors.cyan : colors.text }}>{c.value}</span>
+                <span style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textDim }}>{c.label}</span>
+                <span style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: c.accent ? colors.cyan : colors.text }}>{c.value}</span>
               </div>
             ))}
           </div>
@@ -339,11 +398,11 @@ export function ManifestCard({ manifest }: Props) {
             {cells.map((c, i) => (
               <div key={i} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, padding: '6px 0', borderBottom: i < cells.length - 1 ? `1px solid ${colors.border}` : 'none' }}>
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontFamily: font.body, fontSize: 13, fontWeight: 500, color: colors.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.label}</div>
-                  {c.sub && <div style={{ fontFamily: font.body, fontSize: 11, color: colors.textDim, marginTop: 1 }}>{c.sub}</div>}
+                  <div style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.label}</div>
+                  {c.sub && <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, marginTop: 1 }}>{c.sub}</div>}
                 </div>
                 {c.value !== '' && c.value != null && (
-                  <span style={{ fontFamily: font.body, fontSize: 12, color: c.accent ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{c.value}</span>
+                  <span style={{ fontFamily: font.body, fontSize: textSize.caption, color: c.accent ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{c.value}</span>
                 )}
               </div>
             ))}

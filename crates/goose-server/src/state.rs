@@ -190,6 +190,18 @@ impl AppState {
         crate::verification::install_review_hook();
         tracing::info!("Goal review hook installed (post-Review verification)");
 
+        // L7: an approval that fast-forwards trunk leaves any existing code map
+        // describing the pre-landing tree. The landing itself lives in
+        // `permagent`, which cannot reach the daemon's indexer, so the refresh
+        // comes back through this hook. Safe in every AppState — unlike the
+        // dispatch hook, this starts no worker: with no Brain (every unit test)
+        // it returns immediately.
+        permagent::decisions_effects::install_post_landing_hook(Box::new(|pool, project_id| {
+            Box::pin(async move {
+                crate::routes::projects::refresh_code_map_after_landing(&pool, &project_id).await;
+            })
+        }));
+
         // Per-project wing rules (spectral-recognition prep, the "double
         // lever"): wing labels are both the recognition-validation ground
         // truth and the gate on Spectral's TACT fast path. Generated from the
@@ -748,6 +760,17 @@ impl AppState {
 
         // Seed starter recipes (Workspace Snapshot, Storage Insights) on first run.
         crate::automation::starters::seed_starter_recipes(agent_manager.scheduler().as_ref()).await;
+
+        // R2b: reconcile goals interrupted by the previous daemon lifecycle,
+        // here at boot rather than waiting for the first agent session to load
+        // the orchestrator extension. A machine that restarts and then sits
+        // idle used to leave its in-flight goals stranded in `in_progress`
+        // until something happened to build an OrchestratorRouter. That late
+        // trigger is still in place and is idempotent — both claim the same
+        // process-wide guard, so only whichever fires first sweeps.
+        permagent::agents::platform_extensions::orchestrator::spawn_boot_reconcile(
+            agent_manager.session_manager_arc(),
+        );
 
         // First-run welcome memories (#298): seed once onboarding is complete.
         // Idempotent (config marker); also triggered immediately on completion via

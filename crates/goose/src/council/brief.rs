@@ -27,6 +27,7 @@ pub async fn assemble(
     sections.push(activity_section(pool).await);
     sections.push(briefings_section(pool).await);
     sections.push(decisions_section(pool).await);
+    sections.push(declined_section(pool).await);
     sections.push(watcher_section(pool).await);
     sections.push(analytics_section(pool).await);
     sections.push(forecaster_section(pool).await);
@@ -171,6 +172,32 @@ async fn decisions_section(pool: &Pool<Sqlite>) -> String {
     cap_section(lines.join("\n"))
 }
 
+/// Retained negatives: proposals the user already declined, with the reason
+/// they gave. Read straight off the answered `decisions` rows — the same store
+/// [`decisions_section`] reads one section above — so nothing is duplicated and
+/// the note the user typed is the note the chair sees. Without this section a
+/// declined recommendation is invisible at the next assembly and gets argued
+/// again from scratch every week.
+async fn declined_section(pool: &Pool<Sqlite>) -> String {
+    let negatives = crate::decision_inbox::negatives::list_recent(
+        pool,
+        crate::decision_inbox::negatives::BRIEF_NEGATIVE_KINDS,
+        crate::decision_inbox::negatives::BRIEF_NEGATIVE_LIMIT,
+    )
+    .await;
+    if negatives.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec![
+        "## Declined already — do not re-propose".to_string(),
+        "The user turned these down. The reason is the knowledge; re-proposing one \
+         without new evidence is re-litigation."
+            .to_string(),
+    ];
+    lines.extend(negatives.iter().map(|n| n.render()));
+    cap_section(lines.join("\n"))
+}
+
 async fn watcher_section(pool: &Pool<Sqlite>) -> String {
     let Ok(projects) = crate::projects::list_projects(pool, Some("active")).await else {
         return String::new();
@@ -301,6 +328,55 @@ mod tests {
             .unwrap();
         init_spectral_db(&pool).await.unwrap();
         pool
+    }
+
+    /// RED-FIRST (b): a council action the user already declined must be
+    /// visible to the chair at the next assembly, with its note, so the same
+    /// recommendation is not re-litigated week after week.
+    #[tokio::test]
+    async fn a_declined_council_action_resurfaces_in_the_next_brief() {
+        let pool = pool().await;
+        let d = crate::decisions::create_decision(
+            &pool,
+            crate::decisions::NewDecision {
+                kind: "council_action".to_string(),
+                goal_id: None,
+                project_id: None,
+                headline: Some("Rewrite the homepage".to_string()),
+                detail: Some("The council wants the homepage rewritten.".to_string()),
+                payload: serde_json::json!({
+                    "session_id": "sess-1",
+                    "title": "Rewrite the homepage",
+                    "description": "Because bounce",
+                }),
+                rank: Some(0.6),
+                action_class: Some("council_action".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+        crate::decisions::answer_decision(
+            &pool,
+            &d.id,
+            &crate::decisions::DecisionAnswer {
+                answer: "reject".to_string(),
+                note: Some("we already tried this in June".to_string()),
+                choice_id: None,
+                input_text: None,
+            },
+            crate::decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+
+        let brief = assemble(&pool, None).await.unwrap();
+        assert!(
+            brief.markdown.contains("Declined already"),
+            "brief must carry a retained-negatives section:\n{}",
+            brief.markdown
+        );
+        assert!(brief.markdown.contains("Rewrite the homepage"));
+        assert!(brief.markdown.contains("we already tried this in June"));
     }
 
     #[tokio::test]

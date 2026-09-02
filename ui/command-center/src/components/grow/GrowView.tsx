@@ -8,14 +8,20 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { ease, font, radius } from '../../styles/tokens';
+import { ease, font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { api, apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
+import { usePollWhenVisible } from '../../lib/usePollWhenVisible';
+import { useToolOnScreen } from '../../lib/useToolOnScreen';
+import { GLOSSARY } from '../../lib/vocabulary';
 import { ViewHeader } from '../common/ViewHeader';
+import { Button } from '../common/Button';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 import type { Project } from '../projects/types';
-import { FiLoader } from 'react-icons/fi';
+import { FiCalendar, FiEdit3, FiLoader, FiShare2, FiTarget, FiUsers, FiZap } from 'react-icons/fi';
+import type { IconType } from 'react-icons';
 import { FunnelPanel } from './FunnelPanel';
 import { drainFreshness } from './analyticsFormat';
 import {
@@ -49,6 +55,88 @@ const SWAP_SETTLE_MS = 600;
  *  Only ticks while `generating` is true (see `GrowActions`), so this is a
  *  progress check on a job the user started, not a background poll. */
 const GENERATION_POLL_MS = 4000;
+/** How often the Actions and Results lenses re-read while they are the surface
+ *  on screen. Deliberately slow: this is the backstop for the nightly sweep's
+ *  missing event (R1.4), not a live wire, and a judged 7-day window is not a
+ *  fact that needs to land inside a second. When `growth_sweep` learns to emit
+ *  `project_changed`, `projectsRev` becomes the fast path and this stays as the
+ *  belt — the same shape the review poll already has. */
+const VERDICT_POLL_MS = 120_000;
+
+/* Grow's two recurring button looks, as `--pa-btn-*` custom properties rather
+   than inline `background`/`color`/`border`: an inline declaration outranks
+   `.pa-btn:hover`, which is exactly the state this view was missing. `ghost`
+   already carries the hairline's resting colors, so the plain chip only has to
+   name its size. */
+const growChip = (pad = '4px 10px'): CSSProperties => ({
+  '--pa-btn-pad': pad,
+  '--pa-btn-radius': `${radius.md}px`,
+  fontFamily: font.body,
+} as CSSProperties);
+
+/** The accent action — cyan type on a cyan wash, the "do the thing" control. */
+const growAccent = (colors: ThemeColors, pad = '5px 12px'): CSSProperties => ({
+  '--pa-btn-fg': colors.cyan,
+  '--pa-btn-bg': colors.cyanSoft,
+  '--pa-btn-border': colors.borderHi,
+  '--pa-btn-bg-hover': colors.cyanGlow,
+  '--pa-btn-border-hover': colors.cyan,
+  '--pa-btn-pad': pad,
+  '--pa-btn-radius': `${radius.md}px`,
+  fontFamily: font.body,
+} as CSSProperties);
+
+/** A segmented-control tab. Stays a raw `<button role="tab">` — `Button`
+ *  would flatten the role — so it takes the shared rules through `.pa-btn`
+ *  and its look through the same custom properties. */
+const segmentedTab = (colors: ThemeColors, selected: boolean): CSSProperties => ({
+  '--pa-btn-bg': selected ? colors.cyanSoft : 'transparent',
+  '--pa-btn-fg': selected ? colors.cyan : colors.textMuted,
+  '--pa-btn-border': 'transparent',
+  '--pa-btn-bg-hover': selected ? colors.cyanSoft : colors.surfaceHi,
+  '--pa-btn-fg-hover': selected ? colors.cyan : colors.text,
+  '--pa-btn-border-hover': 'transparent',
+  '--pa-btn-bg-active': selected ? colors.cyanGlow : colors.surface,
+  '--pa-btn-pad': '5px 12px',
+  '--pa-btn-radius': `${radius.sm}px`,
+  '--pa-btn-weight': selected ? 600 : 500,
+  fontSize: textSize.caption,
+  fontFamily: font.body,
+  outline: 'none',
+} as CSSProperties);
+
+/** The small filled control the action cards and the verify rail both use. */
+const growSmall = (colors: ThemeColors): CSSProperties => ({
+  '--pa-btn-bg': colors.surface,
+  '--pa-btn-fg': colors.text,
+  '--pa-btn-border': colors.border,
+  '--pa-btn-bg-hover': colors.surfaceHi,
+  '--pa-btn-border-hover': colors.borderHi,
+  '--pa-btn-pad': '3px 10px',
+  '--pa-btn-radius': `${radius.sm}px`,
+  fontFamily: font.body,
+} as CSSProperties);
+
+/** An underlined text link. Cyan on hover: this view already spells "a link"
+ *  in cyan (site ↗ / repo ↗ / open project ↗), and these had no hover at all. */
+const growLink = (colors: ThemeColors): CSSProperties => ({
+  '--pa-btn-fg': colors.text,
+  '--pa-btn-fg-hover': colors.cyan,
+  '--pa-btn-bg-hover': 'transparent',
+  '--pa-btn-pad': '0',
+  fontFamily: font.body,
+  textDecoration: 'underline',
+} as CSSProperties);
+
+/** A text affordance with no chrome — `bare`, muted, coming up to full on
+ *  hover. Padding stays at zero because preflight gave these none. */
+const growBare = (colors: ThemeColors): CSSProperties => ({
+  '--pa-btn-fg': colors.textMuted,
+  '--pa-btn-fg-hover': colors.text,
+  '--pa-btn-bg-hover': 'transparent',
+  '--pa-btn-pad': '0',
+  fontFamily: font.body,
+} as CSSProperties);
 
 const HUMANIZE_VOICE =
   ' Write it the way a sharp person actually writes: lead with the point, stay specific and concrete, keep sentences short, and cut every AI tell (no em-dashes, no hype words like "seamless" or "leverage" or "unlock", no throat-clearing openers). Apply your "humanize" skill for the full voice spec before you hand it back.';
@@ -300,7 +388,11 @@ export function GrowView() {
   const { colors, gradient, reduceMotion } = useTheme();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsState, setProjectsState] = useState<LoadState>('loading');
-  const [activeId, setActiveId] = useState<string | null>(null);
+  // Shared with Projects and Build (J7): opening a project in one of them
+  // points this one at the same project, and vice versa. Grow used to forget
+  // its project on every mount; now it remembers the app's.
+  const activeId = useCommandCenter((st) => st.currentProjectId);
+  const setActiveId = useCommandCenter((st) => st.setCurrentProject);
   const [posts, setPosts] = useState<SocialCard[]>([]);
   const [postsState, setPostsState] = useState<LoadState>('loading');
   const [postsMutationError, setPostsMutationError] = useState<string | null>(null);
@@ -338,7 +430,6 @@ export function GrowView() {
       .then((ps) => {
         const real = ps.filter((p) => p.status !== 'archived');
         setProjects(real);
-        setActiveId((cur) => cur ?? real[0]?.id ?? null);
         setProjectsState('ready');
       })
       .catch(() => setProjectsState('error'));
@@ -434,6 +525,16 @@ export function GrowView() {
 
   const active = projects.find((p) => p.id === activeId) ?? null;
 
+  // Grow needs *a* project to show, and the shared selection starts empty on a
+  // first run. Adopt the first one only when nothing at all is selected — NOT
+  // when the selection simply isn't in this list. Grow hides archived
+  // projects; silently re-pointing the shared selection because of that would
+  // yank the Projects tab off the board the user deliberately opened.
+  useEffect(() => {
+    if (activeId || projects.length === 0) return;
+    setActiveId(projects[0].id);
+  }, [activeId, projects, setActiveId]);
+
   /** Every project change goes through here — the dropdown and the cross-tab
    *  deep link alike, so one of them can never feel different from the other. */
   const switchProject = useCallback((id: string) => {
@@ -452,7 +553,7 @@ export function GrowView() {
       // Release the pin once the new content has had time to lay out.
       swapTimer.current = setTimeout(() => setPinnedHeight(undefined), SWAP_SETTLE_MS);
     }, SWAP_FADE_MS);
-  }, [activeId, reduceMotion]);
+  }, [activeId, reduceMotion, setActiveId]);
 
   useEffect(() => () => clearTimeout(swapTimer.current), []);
 
@@ -538,15 +639,22 @@ export function GrowView() {
                 <a href={active.repoUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>repo ↗</a>
               )}
               {active && (
-                <button
+                <Button
+                  colors={colors}
+                  variant="bare"
                   type="button"
                   onClick={openInProjects}
                   title={`Open ${active.name} in Projects`}
                   style={{
-                    color: colors.cyan, background: 'none', border: 'none', padding: 0,
-                    cursor: 'pointer', font: 'inherit',
-                  }}
-                >open project ↗</button>
+                    '--pa-btn-fg': colors.cyan,
+                    '--pa-btn-fg-hover': colors.cyan,
+                    '--pa-btn-bg-hover': 'transparent',
+                    '--pa-btn-pad': '0',
+                    '--pa-btn-weight': 'inherit',
+                    fontSize: 'inherit',
+                    lineHeight: 'inherit',
+                  } as CSSProperties}
+                >open project ↗</Button>
               )}
               {/* Always rendered so the count fades in rather than popping the
                   header line around on every project change. */}
@@ -565,8 +673,13 @@ export function GrowView() {
           {LENSES.map((l) => {
             const selected = lens === l;
             return (
+              // `role="tab"` inside a tablist: keep the element and take the
+              // shared `.pa-btn` interaction rules rather than the Button
+              // component, which would flatten the tab semantics. Nothing here
+              // is awaited, so pending/success would be wrong for it anyway.
               <button
                 key={l}
+                className="pa-btn"
                 role="tab"
                 aria-selected={selected}
                 tabIndex={0}
@@ -574,14 +687,8 @@ export function GrowView() {
                 onFocus={() => setFocusLens(l)}
                 onBlur={() => setFocusLens(null)}
                 style={{
-                  fontSize: 12, fontFamily: font.body,
-                  padding: '5px 12px', borderRadius: radius.sm, cursor: 'pointer', border: 'none',
-                  background: selected ? colors.cyanSoft : 'transparent',
-                  color: selected ? colors.cyan : colors.textMuted,
-                  fontWeight: selected ? 600 : 500,
-                  outline: 'none',
+                  ...segmentedTab(colors, selected),
                   boxShadow: focusLens === l ? `0 0 0 2px ${colors.borderHi}` : 'none',
-                  transition: reduceMotion ? 'none' : 'background 150ms ease, color 150ms ease',
                 }}
               >{LENS_LABELS[l]}</button>
             );
@@ -593,9 +700,13 @@ export function GrowView() {
           aria-label="Select project"
           style={{
             background: colors.bgDeeper, color: colors.text, border: `1px solid ${colors.border}`,
-            borderRadius: radius.md, padding: '6px 10px', fontSize: 13, fontFamily: font.body,
+            borderRadius: radius.md, padding: '6px 10px', fontSize: textSize.small, fontFamily: font.body,
           }}
         >
+          {/* The shared selection can point at a project Grow doesn't track.
+              An unlisted value would render the switcher blank, which reads as
+              "no project" rather than "not this one". */}
+          {activeId && !active && <option value={activeId} disabled>Not tracked here</option>}
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
           </>}
@@ -636,17 +747,13 @@ export function GrowView() {
           {lens === 'strategy' && (
           <section>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '0 0 12px' }}>
-              <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Go-to-market strategy</h3>
-              <button
+              <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Go-to-market strategy</h3>
+              <Button
+                colors={colors}
                 onClick={() => send(runAllPrompt(active.name))}
                 title={`${agentName} researches every pillar and fills these cards with the results`}
-                style={{
-                  fontSize: 12, fontFamily: font.body, fontWeight: 600,
-                  color: colors.cyan, background: colors.cyanSoft,
-                  border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
-                  padding: '6px 14px', cursor: 'pointer',
-                }}
-              >✦ Generate</button>
+                style={{ ...growAccent(colors, '6px 14px'), '--pa-btn-weight': 600, fontSize: textSize.caption } as CSSProperties}
+              >✦ Generate</Button>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
               {PILLARS.map((pillar) => (
@@ -674,24 +781,25 @@ export function GrowView() {
           {lens === 'calendar' && (
           <section>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 12px' }}>
-              <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Content calendar</h3>
+              <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Content calendar</h3>
               <span style={{ fontSize: 10, color: colors.textDim, background: colors.bgDeeper, padding: '1px 6px', borderRadius: radius.pill, fontVariantNumeric: 'tabular-nums' }}>{posts.length}</span>
               <div style={{ flex: 1 }} />
-              <button
+              <Button
+                colors={colors}
                 onClick={() => send(draftPostPrompt(active.name))}
                 style={{
-                  fontSize: 11, fontFamily: font.body, color: colors.text,
-                  background: 'transparent', border: `1px solid ${colors.border}`,
-                  borderRadius: radius.md, padding: '5px 12px', cursor: 'pointer',
-                }}
-              >+ Draft a post with {agentName}</button>
+                  '--pa-btn-pad': '5px 12px',
+                  '--pa-btn-radius': `${radius.md}px`,
+                  fontFamily: font.body,
+                } as CSSProperties}
+              >+ Draft a post with {agentName}</Button>
             </div>
             <HiggsfieldConnect colors={colors} />
             <PostizConnect colors={colors} />
             <ProjectChannels projectId={active.id} colors={colors} />
             {postsMutationError && (
               <div role="alert" style={{
-                fontSize: 12, color: colors.danger, marginBottom: 10,
+                fontSize: textSize.caption, color: colors.danger, marginBottom: 10,
                 background: colors.bgDeeper, border: `1px solid ${colors.border}`,
                 borderRadius: radius.md, padding: '8px 10px',
               }}>
@@ -710,7 +818,7 @@ export function GrowView() {
             ) : posts.length === 0 ? (
               <div style={{
                 border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: 28,
-                textAlign: 'center', fontSize: 12, color: colors.textDim,
+                textAlign: 'center', fontSize: textSize.caption, color: colors.textDim,
               }}>
                 No posts yet. Draft one with {agentName} above — it is written in this project's voice, a still is generated, and Approve schedules it on this project's connected accounts when you are ready.
               </div>
@@ -726,9 +834,14 @@ export function GrowView() {
           </section>
           )}
         </div>
-      ) : (
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: colors.textDim, fontSize: 13 }}>
+      ) : projects.length === 0 ? (
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: colors.textDim, fontSize: textSize.small }}>
           Create a project in the Projects tab, then grow it here.
+        </div>
+      ) : (
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: colors.textDim, fontSize: textSize.small, textAlign: 'center', padding: '0 24px', lineHeight: 1.6 }}>
+          The project you have open isn't tracked here — Grow skips archived
+          projects. Pick one from the switcher above.
         </div>
       )}
     </div>
@@ -740,13 +853,16 @@ export function GrowView() {
 // keyboard-operable (Enter/Space), with hover + focus affordances. The "Ask
 // Henry" chip is a visual cue, not a nested control.
 // Feather-style icon per pillar — the card's identity at a glance.
-const PILLAR_ICONS: Record<string, string> = {
-  audience: 'M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75',
-  value: 'M13 2L3 14h9l-1 8 10-12h-9l1-8z',
-  positioning: 'M12 22a10 10 0 100-20 10 10 0 000 20zM12 18a6 6 0 100-12 6 6 0 000 12zM12 14a2 2 0 100-4 2 2 0 000 4z',
-  channels: 'M18 8a3 3 0 100-6 3 3 0 000 6zM6 15a3 3 0 100-6 3 3 0 000 6zM18 22a3 3 0 100-6 3 3 0 000 6zM8.6 13.5l6.8 3.5M15.4 6.5l-6.8 3.5',
-  content: 'M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4L16.5 3.5z',
-  workback: 'M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z',
+/** Feather components, not path data: these six were hand-drawn copies of
+ *  glyphs the library already ships (design-system ruling U2 §3.4 — one icon
+ *  library, one ratified local set, nothing else). */
+const PILLAR_ICONS: Record<string, IconType> = {
+  audience: FiUsers,
+  value: FiZap,
+  positioning: FiTarget,
+  channels: FiShare2,
+  content: FiEdit3,
+  workback: FiCalendar,
 };
 
 /** Strategy pillar card — display + edit only (#22). Generation is the single
@@ -768,15 +884,19 @@ function PillarCard({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
 
+  // Returns false on the swallowed failure so the Button contract can never
+  // tick a save that did not land.
   const commit = async () => {
     const content = draft.trim();
-    if (!content) { setEditing(false); return; }
+    if (!content) { setEditing(false); return true; }
     setSaving(true);
     try {
       await onSave(content); // project_changed → projectsRev → cards refresh
       setEditing(false);
+      return true;
     } catch {
       setSaveError(true);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -792,59 +912,54 @@ function PillarCard({
   if (editing) {
     return (
       <div style={shell}>
-        <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text }}>{label}</div>
+        <div style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>{label}</div>
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           autoFocus
           rows={6}
           style={{
-            width: '100%', resize: 'vertical', fontSize: 12, lineHeight: 1.5,
+            width: '100%', resize: 'vertical', fontSize: textSize.caption, lineHeight: 1.5,
             fontFamily: font.body, color: colors.text, background: 'transparent',
             border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: 8,
             outline: 'none',
           }}
         />
-        {saveError && <span style={{ fontSize: 11, color: colors.danger }}>Couldn't save — try again.</span>}
+        {saveError && <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't save — try again.</span>}
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => void commit()} disabled={saving} style={{
-            fontSize: 11, fontFamily: font.body, fontWeight: 600, color: colors.cyan,
-            background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-            borderRadius: radius.md, padding: '5px 12px', cursor: 'pointer', opacity: saving ? 0.6 : 1,
-          }}>{saving ? 'Saving…' : 'Save'}</button>
-          <button onClick={() => setEditing(false)} style={{
-            fontSize: 11, fontFamily: font.body, color: colors.textMuted,
-            background: 'transparent', border: 'none', cursor: 'pointer',
-          }}>Cancel</button>
+          <Button colors={colors} onClick={() => commit()} disabled={saving} style={{ ...growAccent(colors), '--pa-btn-weight': 600 } as CSSProperties}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+          <Button colors={colors} variant="bare" onClick={() => setEditing(false)} style={growBare(colors)}>
+            Cancel
+          </Button>
         </div>
       </div>
     );
   }
 
+  const PillarIcon = PILLAR_ICONS[pillarKey] ?? PILLAR_ICONS.value;
+
   return (
     <div style={shell}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}
-          stroke={saved ? colors.cyan : colors.textMuted} strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
-          <path d={PILLAR_ICONS[pillarKey] ?? PILLAR_ICONS.value} />
-        </svg>
-        <span style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text, flex: 1 }}>{label}</span>
+        <PillarIcon size={15} style={{ flexShrink: 0 }} color={saved ? colors.cyan : colors.textMuted} />
+        <span style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text, flex: 1 }}>{label}</span>
         {saved && (
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={() => { setDraft(saved.content); setSaveError(false); setEditing(true); }}
             title={saved.updated_at ? `Saved ${new Date(saved.updated_at).toLocaleString()}` : 'Edit'}
-            style={{
-              fontSize: 10, fontFamily: font.body, color: colors.textMuted,
-              background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
-            }}
-          >Edit</button>
+            style={{ ...growBare(colors), fontSize: 10 }}
+          >Edit</Button>
         )}
       </div>
 
       {saved ? (
         <>
           <div style={{
-            fontSize: 12, color: colors.text, lineHeight: 1.55,
+            fontSize: textSize.caption, color: colors.text, lineHeight: 1.55,
             whiteSpace: 'pre-wrap', overflowWrap: 'break-word',
           }}>{saved.content}</div>
 
@@ -882,8 +997,8 @@ function PillarCard({
         </>
       ) : (
         <>
-          <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, flex: 1 }}>{hint}</div>
-          <span style={{ fontSize: 11, color: colors.textDim, fontFamily: font.body }}>
+          <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, flex: 1 }}>{hint}</div>
+          <span style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.body }}>
             ✦ Generate fills this in
           </span>
         </>
@@ -910,14 +1025,14 @@ function BrandCard({
     borderRadius: radius.lg, padding: 16, display: 'flex', flexDirection: 'column', gap: 10, minHeight: 120,
   };
   const field: CSSProperties = {
-    width: '100%', fontSize: 12, fontFamily: font.body, color: colors.text,
+    width: '100%', fontSize: textSize.caption, fontFamily: font.body, color: colors.text,
     background: colors.bgDeeper, border: `1px solid ${colors.border}`, borderRadius: radius.sm,
     padding: '6px 8px', boxSizing: 'border-box',
   };
   if (editing) {
     return (
       <div style={shell}>
-        <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text }}>Brand</div>
+        <div style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>Brand</div>
         <textarea value={draft.voice} onChange={(e) => setDraft({ ...draft, voice: e.target.value })} placeholder="Voice" rows={3} style={field} />
         <textarea value={draft.origin} onChange={(e) => setDraft({ ...draft, origin: e.target.value })} placeholder="Why this was built" rows={3} style={field} />
         <div style={{ display: 'flex', gap: 6 }}>
@@ -926,16 +1041,28 @@ function BrandCard({
           <input value={draft.accent} onChange={(e) => setDraft({ ...draft, accent: e.target.value })} placeholder="#accent" aria-label="Accent hex" style={field} />
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button
+          {/* Returning the save promise instead of dropping it on the floor is
+              what buys the spinner and the tick — the round trip is the thing
+              the user is waiting on. */}
+          <Button
+            colors={colors}
             type="button"
             disabled={saving}
             onClick={() => {
               setSaving(true);
-              void onSave(draft).then(() => setEditing(false)).finally(() => setSaving(false));
+              return onSave(draft)
+                .then(() => { setEditing(false); return true; })
+                .finally(() => setSaving(false));
             }}
-            style={{ fontSize: 11, fontFamily: font.body, fontWeight: 600, color: colors.cyan, background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`, borderRadius: radius.md, padding: '5px 12px', cursor: 'pointer' }}
-          >{saving ? 'Saving…' : 'Save'}</button>
-          <button type="button" onClick={() => setEditing(false)} style={{ fontSize: 11, fontFamily: font.body, color: colors.textMuted, background: 'transparent', border: 'none', cursor: 'pointer' }}>Cancel</button>
+            style={{ ...growAccent(colors), '--pa-btn-weight': 600 } as CSSProperties}
+          >{saving ? 'Saving…' : 'Save'}</Button>
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
+            onClick={() => setEditing(false)}
+            style={growBare(colors)}
+          >Cancel</Button>
         </div>
       </div>
     );
@@ -943,15 +1070,15 @@ function BrandCard({
   return (
     <div style={shell}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text }}>Brand</div>
+        <div style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>Brand</div>
         <div style={{ flex: 1 }} />
-        <button type="button" onClick={onAsk} style={{ fontSize: 11, fontFamily: font.body, color: colors.text, background: 'transparent', border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer' }}>Ask {agentName}</button>
-        <button type="button" onClick={() => { setDraft(brand); setEditing(true); }} style={{ fontSize: 11, fontFamily: font.body, color: colors.text, background: 'transparent', border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer' }}>Edit</button>
+        <Button colors={colors} type="button" onClick={onAsk} style={growChip()}>Ask {agentName}</Button>
+        <Button colors={colors} type="button" onClick={() => { setDraft(brand); setEditing(true); }} style={growChip()}>Edit</Button>
       </div>
       {filled ? (
         <>
-          {brand.voice && <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{brand.voice}</div>}
-          {brand.origin && <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{brand.origin}</div>}
+          {brand.voice && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>{brand.voice}</div>}
+          {brand.origin && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>{brand.origin}</div>}
           <div style={{ display: 'flex', gap: 6 }}>
             {[['bg', brand.bg], ['fg', brand.fg], ['accent', brand.accent]].filter(([, v]) => v).map(([k, v]) => (
               <span key={k} style={{ fontSize: 10, fontFamily: font.mono, color: colors.textDim }}>{k} {v}</span>
@@ -959,7 +1086,7 @@ function BrandCard({
           </div>
         </>
       ) : (
-        <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>
           Voice, palette, and why this project was built. Empty until you save a kit for this project — nothing is shared across projects.
         </div>
       )}
@@ -999,7 +1126,7 @@ function PostizConnect({ colors }: { colors: ThemeColors }) {
       .catch(() => setConfigured(false));
   }, []);
   const field: CSSProperties = {
-    fontSize: 11, fontFamily: font.mono, color: colors.text, background: colors.bgDeeper,
+    fontSize: textSize.micro, fontFamily: font.mono, color: colors.text, background: colors.bgDeeper,
     border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '4px 6px',
   };
   const save = async () => {
@@ -1016,17 +1143,17 @@ function PostizConnect({ colors }: { colors: ThemeColors }) {
     } finally { setBusy(false); }
   };
   return (
-    <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 8 }}>
       Posting uses your Postiz account (Cloud by default). {configured ? 'API key saved.' : 'Not connected — Approve stays on this calendar until you save a key and log in to a network for this project.'}
       {' '}
-      <button type="button" onClick={() => setOpen((v) => !v)} style={{ fontSize: 11, fontFamily: font.body, color: colors.text, background: 'transparent', border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}>
+      <Button colors={colors} variant="bare" type="button" onClick={() => setOpen((v) => !v)} style={growLink(colors)}>
         {configured ? 'Replace key' : 'Save API key'}
-      </button>
+      </Button>
       {open && (
         <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Postiz API key" type="password" aria-label="Postiz API key" style={field} />
           <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.postiz.com/public/v1" aria-label="Postiz base URL" style={{ ...field, minWidth: 220 }} />
-          <button type="button" disabled={busy || !apiKey.trim()} onClick={() => void save()} style={{ fontSize: 11, fontFamily: font.body, color: colors.cyan, background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`, borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer' }}>Save</button>
+          <Button colors={colors} type="button" disabled={busy || !apiKey.trim()} onClick={() => save()} style={growAccent(colors, '4px 10px')}>Save</Button>
         </div>
       )}
     </div>
@@ -1069,8 +1196,10 @@ function ProjectChannels({ projectId, colors }: { projectId: string; colors: The
         window.open(start.url, '_blank', 'noopener,noreferrer');
       }
       load();
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      return false;
     } finally { setBusy(null); }
   };
   const disconnect = async (channel: string) => {
@@ -1082,8 +1211,10 @@ function ProjectChannels({ projectId, colors }: { projectId: string; colors: The
         { method: 'DELETE' },
       );
       setSnap(next);
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      return false;
     } finally { setBusy(null); }
   };
 
@@ -1093,7 +1224,7 @@ function ProjectChannels({ projectId, colors }: { projectId: string; colors: The
   const anyBound = NETWORKS.some((n) => channels[n.id]?.integrationId);
 
   return (
-    <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 12 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 12 }}>
       <div style={{ marginBottom: 8 }}>
         {anyBound
           ? 'Approve schedules this post on the connected account for that channel.'
@@ -1112,26 +1243,27 @@ function ProjectChannels({ projectId, colors }: { projectId: string; colors: The
             <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 6, border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '4px 8px' }}>
               <span style={{ color: bound ? colors.text : colors.textDim }}>{waiting ? `Waiting for ${n.label} login…` : label}</span>
               {bound ? (
-                <button type="button" disabled={busy === n.id} onClick={() => void disconnect(n.id)} style={{ fontSize: 11, fontFamily: font.body, color: colors.text, background: 'transparent', border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}>
+                <Button colors={colors} variant="bare" type="button" disabled={busy === n.id} onClick={() => disconnect(n.id)} style={growLink(colors)}>
                   Disconnect
-                </button>
+                </Button>
               ) : (
-                <button
+                <Button
+                  colors={colors}
+                  variant="bare"
                   type="button"
                   disabled={busy === n.id}
-                  onClick={() => void connect(n.id)}
+                  onClick={() => connect(n.id)}
                   title={configured ? `Connect ${n.label}` : 'Save a Postiz API key above first'}
                   style={{
-                    fontSize: 11, fontFamily: font.body,
-                    color: configured ? colors.cyan : colors.textDim,
-                    background: 'transparent', border: 'none',
-                    textDecoration: 'underline',
-                    cursor: busy === n.id ? 'wait' : 'pointer',
-                    padding: 0,
-                  }}
+                    ...growLink(colors),
+                    // Muted until a key exists, so hover must not promise the
+                    // accent this control does not yet earn.
+                    '--pa-btn-fg': configured ? colors.cyan : colors.textDim,
+                    '--pa-btn-fg-hover': configured ? colors.cyan : colors.text,
+                  } as CSSProperties}
                 >
                   {waiting ? 'Open login again' : `Connect ${n.label}`}
-                </button>
+                </Button>
               )}
             </div>
           );
@@ -1160,7 +1292,7 @@ function HiggsfieldConnect({ colors }: { colors: ThemeColors }) {
       .catch(() => setConfigured(false));
   }, []);
   const field: CSSProperties = {
-    fontSize: 11, fontFamily: font.mono, color: colors.text, background: colors.bgDeeper,
+    fontSize: textSize.micro, fontFamily: font.mono, color: colors.text, background: colors.bgDeeper,
     border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '4px 6px',
   };
   const save = async () => {
@@ -1177,17 +1309,17 @@ function HiggsfieldConnect({ colors }: { colors: ThemeColors }) {
     } finally { setBusy(false); }
   };
   return (
-    <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 12 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 12 }}>
       Reels use your Higgsfield account. {configured ? 'Connected.' : 'Not connected — stills still generate locally.'}
       {' '}
-      <button type="button" onClick={() => setOpen((v) => !v)} style={{ fontSize: 11, fontFamily: font.body, color: colors.text, background: 'transparent', border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}>
+      <Button colors={colors} variant="bare" type="button" onClick={() => setOpen((v) => !v)} style={growLink(colors)}>
         {configured ? 'Replace keys' : 'Connect'}
-      </button>
+      </Button>
       {open && (
         <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
           <input value={keyId} onChange={(e) => setKeyId(e.target.value)} placeholder="Key ID" aria-label="Higgsfield key id" style={field} />
           <input value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="Secret" type="password" aria-label="Higgsfield secret" style={field} />
-          <button type="button" disabled={busy} onClick={() => void save()} style={{ fontSize: 11, fontFamily: font.body, color: colors.cyan, background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`, borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer' }}>Save</button>
+          <Button colors={colors} type="button" disabled={busy} onClick={() => save()} style={growAccent(colors, '4px 10px')}>Save</Button>
         </div>
       )}
     </div>
@@ -1238,7 +1370,7 @@ function CalendarLens({
       {groups.map((group) => (
         <div key={group.day}>
           <div style={{
-            fontFamily: font.mono, fontSize: 11, color: colors.textDim,
+            fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim,
             textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8,
           }}>{group.label}</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1287,11 +1419,9 @@ function CalendarPostRow({
     setFeedback(media.mediaFeedback);
   }, [post.title, post.description, meta.scheduledFor, meta.status, media.mediaFeedback, editing]);
 
-  const btn: CSSProperties = {
-    fontSize: 11, fontFamily: font.body, color: colors.text,
-    background: 'transparent', border: `1px solid ${colors.border}`,
-    borderRadius: radius.md, padding: '4px 10px', cursor: busy ? 'wait' : 'pointer',
-  };
+  // `.pa-btn` owns the cursor now: `wait` while busy was the only feedback this
+  // row had, and it said nothing about hover, press or disabled.
+  const btn: CSSProperties = growChip();
   const chip: CSSProperties = {
     fontSize: 10, fontFamily: font.mono, color: colors.textDim,
     background: colors.bgDeeper, padding: '1px 6px', borderRadius: radius.pill,
@@ -1303,7 +1433,8 @@ function CalendarPostRow({
     try {
       await onMutate(projectId, post, { title, description: body });
       setEditing(false);
-    } catch { /* surfaced by parent */ }
+      return true;
+    } catch { /* surfaced by parent */ return false; }
     finally { setBusy(false); }
   };
 
@@ -1343,14 +1474,15 @@ function CalendarPostRow({
         body: JSON.stringify({ feedback: feedback.trim() || undefined }),
       });
       onReload();
-    } catch { /* parent */ }
+      return true;
+    } catch { /* parent */ return false; }
     finally { setBusy(false); }
   };
 
   const remove = async () => {
     setBusy(true);
-    try { await onMutate(projectId, post, null); }
-    catch { /* surfaced by parent */ }
+    try { await onMutate(projectId, post, null); return true; }
+    catch { /* surfaced by parent */ return false; }
     finally { setBusy(false); }
   };
 
@@ -1370,13 +1502,13 @@ function CalendarPostRow({
         <div style={{ flex: 1 }} />
         {!editing ? (
           <>
-            <button type="button" style={btn} disabled={busy} onClick={() => setEditing(true)}>Edit</button>
-            <button type="button" style={btn} disabled={busy} onClick={() => void remove()}>Delete</button>
+            <Button colors={colors} type="button" style={btn} disabled={busy} onClick={() => setEditing(true)}>Edit</Button>
+            <Button colors={colors} type="button" style={btn} disabled={busy} onClick={() => remove()}>Delete</Button>
           </>
         ) : (
           <>
-            <button type="button" style={btn} disabled={busy} onClick={() => void saveEdit()}>Save</button>
-            <button type="button" style={btn} disabled={busy} onClick={() => setEditing(false)}>Cancel</button>
+            <Button colors={colors} type="button" style={btn} disabled={busy} onClick={() => saveEdit()}>Save</Button>
+            <Button colors={colors} type="button" style={btn} disabled={busy} onClick={() => setEditing(false)}>Cancel</Button>
           </>
         )}
       </div>
@@ -1398,7 +1530,7 @@ function CalendarPostRow({
             onChange={(e) => setTitle(e.target.value)}
             aria-label="Post title"
             style={{
-              width: '100%', fontSize: 13, fontWeight: 600, fontFamily: font.body,
+              width: '100%', fontSize: textSize.small, fontWeight: 600, fontFamily: font.body,
               color: colors.text, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
               borderRadius: radius.sm, padding: '6px 8px', marginBottom: 6, boxSizing: 'border-box',
             }}
@@ -1409,7 +1541,7 @@ function CalendarPostRow({
             aria-label="Post body"
             rows={3}
             style={{
-              width: '100%', fontSize: 12, fontFamily: font.body, lineHeight: 1.5,
+              width: '100%', fontSize: textSize.caption, fontFamily: font.body, lineHeight: 1.5,
               color: colors.textMuted, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
               borderRadius: radius.sm, padding: '6px 8px', resize: 'vertical', boxSizing: 'border-box',
             }}
@@ -1417,19 +1549,19 @@ function CalendarPostRow({
         </>
       ) : (
         <>
-          <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{post.title}</div>
+          <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{post.title}</div>
           {post.description && (
-            <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>{post.description}</div>
+            <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>{post.description}</div>
           )}
         </>
       )}
         </div>
       </div>
       {media.mediaError && (
-        <div style={{ fontSize: 11, color: colors.textDim, marginTop: 8 }}>{media.mediaError}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 8 }}>{media.mediaError}</div>
       )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, alignItems: 'center' }}>
-        <label style={{ fontSize: 11, color: colors.textDim, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <label style={{ fontSize: textSize.micro, color: colors.textDim, display: 'flex', alignItems: 'center', gap: 6 }}>
           Schedule
           <input
             type="datetime-local"
@@ -1442,14 +1574,14 @@ function CalendarPostRow({
               void saveSchedule(when, status);
             }}
             style={{
-              fontSize: 11, fontFamily: font.body, color: colors.text,
+              fontSize: textSize.micro, fontFamily: font.body, color: colors.text,
               background: colors.bgDeeper, border: `1px solid ${colors.border}`,
               borderRadius: radius.sm, padding: '4px 6px',
             }}
           />
         </label>
         {status !== 'draft' && (
-        <label style={{ fontSize: 11, color: colors.textDim, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <label style={{ fontSize: textSize.micro, color: colors.textDim, display: 'flex', alignItems: 'center', gap: 6 }}>
           Status
           <select
             aria-label="Post status"
@@ -1457,7 +1589,7 @@ function CalendarPostRow({
             disabled={busy}
             onChange={(e) => void saveSchedule(when, e.target.value as PostStatus)}
             style={{
-              fontSize: 11, fontFamily: font.body, color: colors.text,
+              fontSize: textSize.micro, fontFamily: font.body, color: colors.text,
               background: colors.bgDeeper, border: `1px solid ${colors.border}`,
               borderRadius: radius.sm, padding: '4px 6px',
             }}
@@ -1468,17 +1600,19 @@ function CalendarPostRow({
         </label>
         )}
         {canApprove && (
-          <button
+          <Button
+            colors={colors}
             type="button"
             disabled={busy}
-            onClick={() => void approve()}
+            onClick={() => approve()}
             style={{
               ...btn,
-              color: colors.cyan,
-              borderColor: colors.borderHi,
-              fontWeight: 600,
-            }}
-          >Approve</button>
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-border': colors.borderHi,
+              '--pa-btn-border-hover': colors.cyan,
+              '--pa-btn-weight': 600,
+            } as CSSProperties}
+          >Approve</Button>
         )}
       </div>
       {canRetryStill && (
@@ -1491,18 +1625,19 @@ function CalendarPostRow({
             placeholder="Taste notes for a new still — copy stays"
             rows={2}
             style={{
-              flex: 1, fontSize: 11, fontFamily: font.body, color: colors.text,
+              flex: 1, fontSize: textSize.micro, fontFamily: font.body, color: colors.text,
               background: colors.bgDeeper, border: `1px solid ${colors.border}`,
               borderRadius: radius.sm, padding: '6px 8px', resize: 'vertical',
               boxSizing: 'border-box',
             }}
           />
-          <button
+          <Button
+            colors={colors}
             type="button"
             style={btn}
             disabled={busy}
-            onClick={() => void retryMedia()}
-          >Regenerate still</button>
+            onClick={() => retryMedia()}
+          >Regenerate still</Button>
         </div>
       )}
     </div>
@@ -1556,7 +1691,7 @@ function PostStill({
 
 function LoadingState({ colors, label, inline }: { colors: ThemeColors; label: string; inline?: boolean }) {
   const body = (
-    <div style={{ fontSize: 12, color: colors.textDim }}>{label}</div>
+    <div style={{ fontSize: textSize.caption, color: colors.textDim }}>{label}</div>
   );
   if (inline) {
     return (
@@ -1571,15 +1706,13 @@ function LoadingState({ colors, label, inline }: { colors: ThemeColors; label: s
 function ErrorState({ colors, message, onRetry, inline }: { colors: ThemeColors; message: string; onRetry: () => void; inline?: boolean }) {
   const body = (
     <div style={{ textAlign: 'center' }}>
-      <div style={{ fontSize: 13, color: colors.text, marginBottom: 4 }}>{message}</div>
-      <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 12 }}>Something went wrong reaching the server.</div>
-      <button
+      <div style={{ fontSize: textSize.small, color: colors.text, marginBottom: 4 }}>{message}</div>
+      <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 12 }}>Something went wrong reaching the server.</div>
+      <Button
+        colors={colors}
         onClick={onRetry}
-        style={{
-          fontSize: 12, fontFamily: font.body, color: colors.cyan, background: colors.cyanSoft,
-          border: `1px solid ${colors.borderHi}`, borderRadius: radius.md, padding: '6px 14px', cursor: 'pointer',
-        }}
-      >Retry</button>
+        style={{ ...growAccent(colors, '6px 14px'), fontSize: textSize.caption }}
+      >Retry</Button>
     </div>
   );
   if (inline) {
@@ -2011,15 +2144,14 @@ function ActionVerify({
     fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
     textTransform: 'uppercase', color: colors.textDim,
   };
-  const button: CSSProperties = {
-    background: colors.surface, border: `1px solid ${colors.border}`,
-    borderRadius: radius.sm, padding: '3px 10px', cursor: busy ? 'default' : 'pointer',
-    color: colors.text, fontFamily: font.body, fontSize: 11, opacity: busy ? 0.6 : 1,
-  };
+  // Set through `--pa-btn-*`: an inline `background`/`color` would outrank
+  // `.pa-btn:hover`, and the dimming these carried by hand is now what
+  // `.pa-btn:disabled` and `[data-pending]` say for themselves.
+  const button = growSmall(colors);
   const select: CSSProperties = {
     background: colors.bgDeeper, border: `1px solid ${colors.border}`,
     borderRadius: radius.sm, padding: '3px 6px', color: colors.text,
-    fontFamily: font.body, fontSize: 11,
+    fontFamily: font.body, fontSize: textSize.micro,
   };
 
   // On the shelf there is nothing to say unless a check actually confirmed
@@ -2033,7 +2165,7 @@ function ActionVerify({
   if (!identity) {
     return (
       <div style={rule}>
-        <span style={{ fontSize: 11, color: colors.textDim }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
           This action has no saved record yet, so it can’t be verified. Run “Review again” to
           save it.
         </span>
@@ -2082,7 +2214,7 @@ function ActionVerify({
             <span>{provenance.label}</span>
           </div>
           {target && identity.targetDir && (
-            <span style={{ fontSize: 11, color: colors.textDim }}>
+            <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
               Pre-registered before the baseline was frozen: {target} should go{' '}
               {identity.targetDir}
               {identity.verifiedAt && ` · verified ${new Date(identity.verifiedAt).toLocaleDateString()}`}
@@ -2107,7 +2239,7 @@ function ActionVerify({
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{
                     ...label, color: meta.color, border: `1px solid ${meta.color}`,
-                    borderRadius: 999, padding: '1px 7px',
+                    borderRadius: radius.pill, padding: '1px 7px',
                   }}>{meta.label}</span>
                   <span style={{ ...label }}>{o.windowDays}-day window</span>
                   {o.windowDays < FINAL_WINDOW_DAYS && (
@@ -2116,7 +2248,7 @@ function ActionVerify({
                     <span style={{ ...label, color: colors.textDim }}>provisional</span>
                   )}
                   {showsDelta && (
-                    <span style={{ fontFamily: font.mono, fontSize: 11, color: meta.color }}>
+                    <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: meta.color }}>
                       {o.deltaPct! > 0 ? '+' : ''}{(o.deltaPct! * 100).toFixed(0)}%
                     </span>
                   )}
@@ -2124,11 +2256,11 @@ function ActionVerify({
                 {/* The rationale is body text, always. It carries the numbers
                     the verdict rests on, and a verdict whose reasoning is
                     hidden in a tooltip cannot be argued with. */}
-                <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+                <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>
                   {o.rationale}
                 </div>
                 {o.confounders.length > 0 && (
-                  <div style={{ fontSize: 11, color: colors.textDim }}>
+                  <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
                     Overlapping changes: {o.confounders.map((c) => c.title).join(', ')}
                   </div>
                 )}
@@ -2142,7 +2274,7 @@ function ActionVerify({
             // looks broken.
             const due = windowDueAt(identity.verifiedAt, FIRST_WINDOW_DAYS);
             return (
-              <span style={{ fontSize: 11, color: colors.textDim }}>
+              <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
                 Measuring. The first {FIRST_WINDOW_DAYS}-day reading is due
                 {due ? ` ${due.toLocaleDateString()}` : ''}, then {14} and {FINAL_WINDOW_DAYS} days.
               </span>
@@ -2165,11 +2297,13 @@ function ActionVerify({
               action back into measurement. Do not delete one half without the
               other. */}
           {!readOnly && (
-            <button
+            <Button
+              colors={colors}
               onClick={() => verify(targetBody())}
               disabled={busy}
+              pending={busy}
               style={{ ...button, alignSelf: 'flex-start' }}
-            >{busy ? 'Re-checking…' : 'Re-check'}</button>
+            >{busy ? 'Re-checking…' : 'Re-check'}</Button>
           )}
         </>
       ) : (
@@ -2188,7 +2322,7 @@ function ActionVerify({
               suggested before predictions existed). */}
           {predicted ? (
             <>
-              <span style={{ fontSize: 11, color: colors.textDim }}>
+              <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
                 I expect this to move{' '}
                 <strong style={{ color: colors.text }}>{predictedLabel}</strong>{' '}
                 <strong style={{ color: colors.text }}>
@@ -2205,16 +2339,18 @@ function ActionVerify({
                   The selects survive only for a row that genuinely carries no
                   prediction. */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                <button
+                <Button
+                  colors={colors}
                   onClick={() => verify(targetBody())}
                   disabled={busy}
-                  style={{ ...button, opacity: busy ? 0.5 : 1 }}
-                >{busy ? 'Checking…' : 'I did this — start measuring'}</button>
+                  pending={busy}
+                  style={button}
+                >{busy ? 'Checking…' : 'I did this — start measuring'}</Button>
               </div>
             </>
           ) : (
             <>
-              <span style={{ fontSize: 11, color: colors.textDim }}>
+              <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
                 {identity.targetMetric || identity.targetDir
                   ? 'I couldn’t say what this should move, so pick the metric before checking it.'
                   : 'Say what this should move before checking it — a metric picked after the result is known can’t be wrong.'}
@@ -2241,11 +2377,13 @@ function ActionVerify({
                   <option value="up">should go up</option>
                   <option value="down">should go down</option>
                 </select>
-                <button
+                <Button
+                  colors={colors}
                   onClick={() => verify({ targetMetric: metric, targetDir: dir })}
                   disabled={busy || !metric || !dir}
-                  style={{ ...button, opacity: busy || !metric || !dir ? 0.5 : 1 }}
-                >{busy ? 'Checking…' : 'Verify change'}</button>
+                  pending={busy}
+                  style={button}
+                >{busy ? 'Checking…' : 'Verify change'}</Button>
               </div>
             </>
           )}
@@ -2270,7 +2408,7 @@ function ActionVerify({
               they can all come back empty — the action IS verified, on the
               user's word, and heading that list with "what confirmed it" would
               dress four failed checks up as corroboration. */}
-          <span style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+          <span style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>
             {result.verified
               ? ((result.checks ?? []).some((c) => c.passed)
                 ? 'What confirmed it'
@@ -2282,7 +2420,7 @@ function ActionVerify({
               `checks`. A missing list must cost the evidence line, not take the
               whole Grow tab down with a TypeError. */}
           {(result.checks ?? []).map((c) => (
-            <div key={c.id} style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+            <div key={c.id} style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
               <span style={{ color: c.passed ? colors.success : colors.textDim }}>
                 {c.passed ? '✓' : '·'}
               </span>{' '}
@@ -2290,11 +2428,13 @@ function ActionVerify({
             </div>
           ))}
           {!result.verified && (
-            <button
+            <Button
+              colors={colors}
               onClick={() => verify({ ...targetBody(), selfAttested: true })}
               disabled={busy}
+              pending={busy}
               style={{ ...button, alignSelf: 'flex-start' }}
-            >It did land — record my word</button>
+            >It did land — record my word</Button>
           )}
         </div>
       )}
@@ -2380,12 +2520,12 @@ function TrackingRail({ identity, colors }: { identity: ActionIdentity; colors: 
               padding: '1px 6px',
             }}>commit {identity.verifiedCommit.slice(0, 8)}</span>
           ) : (
-            <span style={{ fontSize: 11, color: colors.textDim }}>
+            <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
               {verifiedByMeta(identity.verifiedBy).label}
             </span>
           )}
           {identity.verifiedAt && (
-            <span style={{ fontSize: 11, color: colors.textDim }}>
+            <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
               verified {new Date(identity.verifiedAt).toLocaleDateString()}
             </span>
           )}
@@ -2393,21 +2533,21 @@ function TrackingRail({ identity, colors }: { identity: ActionIdentity; colors: 
       )}
       {/* Stored, not recomputed — see `verifiedDetail` on `ActionIdentity`. */}
       {identity.verifiedDetail && (
-        <span style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
           {identity.verifiedDetail}
         </span>
       )}
 
       <span style={label}>Measuring against</span>
       {identity.baseline ? (
-        <span style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
           Baseline frozen {new Date(identity.baseline.takenAt).toLocaleDateString()}. Windows
           start {identity.baseline.pivot} — the change day itself is in neither half.
         </span>
       ) : (
         // Never a zero. A baseline of nought would render as "there was no
         // traffic before the change", which is a claim nothing here can make.
-        <span style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
           No baseline was frozen for this action, so its windows cannot be compared.
         </span>
       )}
@@ -2418,7 +2558,7 @@ function TrackingRail({ identity, colors }: { identity: ActionIdentity; colors: 
           return (
             <div key={w.days} style={{
               display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap',
-              fontSize: 11, color: colors.textDim,
+              fontSize: textSize.micro, color: colors.textDim,
             }}>
               <span style={{ ...label, minWidth: 52 }}>{w.days}-day</span>
               <span style={{
@@ -2610,11 +2750,15 @@ function ActionCard({
    *  the 2026-08-14 funnel action. */
   const canDismiss = lane === 'actions' && !!actionId;
 
+  // `smallButton` survives only for the coding-agent <select>, which borrows
+  // the same chrome and is not a button; the buttons take the custom
+  // properties so `.pa-btn`'s hover, press and disabled rules apply.
   const smallButton: CSSProperties = {
     background: colors.surface, border: `1px solid ${colors.border}`,
     borderRadius: radius.sm, padding: '3px 10px', cursor: 'pointer',
-    color: colors.text, fontFamily: font.body, fontSize: 11,
+    color: colors.text, fontFamily: font.body, fontSize: textSize.micro,
   };
+  const smallBtn = growSmall(colors);
 
   return (
     <div style={{
@@ -2629,10 +2773,10 @@ function ActionCard({
             fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
             textTransform: 'uppercase', color: tint,
             border: `1px solid ${tint}`,
-            borderRadius: 999, padding: '1px 7px', flexShrink: 0,
+            borderRadius: radius.pill, padding: '1px 7px', flexShrink: 0,
           }}>{action.category}</span>
         )}
-        <span style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text }}>
+        <span style={{ fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>
           {action.title}
         </span>
         <div style={{ flex: 1 }} />
@@ -2641,7 +2785,15 @@ function ActionCard({
             same fabrication the backend refuses when it declines to default a
             target. */}
         {action.impact && action.confidence && (
-          <span style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, flexShrink: 0 }}>
+          // Two words the card invents and never defines. The gloss says what
+          // each measures AND that both are the model's own estimate rather
+          // than something measured — which is the part a reader would
+          // otherwise have to assume either way.
+          <span
+            data-testid="action-impact-confidence"
+            title={GLOSSARY.impactConfidence}
+            style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, flexShrink: 0, cursor: 'help' }}
+          >
             {action.impact} impact · {action.confidence} confidence
           </span>
         )}
@@ -2655,7 +2807,7 @@ function ActionCard({
           its own suggestion. */}
       {transfer && (
         <div style={{ marginBottom: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <span style={{ fontSize: 11, color: colors.textDim }}>
+          <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
             {transfer.helped > 0
               ? `Worked on ${transfer.helped} of ${transfer.projects} other project(s)`
                 + ` — on projects like this one, ${transfer.segmentHelped} of`
@@ -2672,7 +2824,7 @@ function ActionCard({
               }}>Where that comes from</summary>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 4 }}>
                 {transfer.examples.map((ex, xi) => (
-                  <div key={`${ex.projectName}-${xi}`} style={{ fontSize: 11, color: colors.textDim }}>
+                  <div key={`${ex.projectName}-${xi}`} style={{ fontSize: textSize.micro, color: colors.textDim }}>
                     &ldquo;{ex.title}&rdquo; on {ex.projectName} —{' '}
                     {verdictMeta(ex.verdict, colors).label}
                     {ex.deltaPct !== null && (
@@ -2691,18 +2843,18 @@ function ActionCard({
           no longer holds reads as a missing figure rather than as no figure. */}
       {action.evidence && (
         <div style={{
-          fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+          fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
           borderLeft: `2px solid ${colors.border}`, paddingLeft: 8, marginBottom: 6,
         }}>{action.evidence}</div>
       )}
-      <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5 }}>
+      <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.5 }}>
         {action.recommendation}
       </div>
 
       {/* Ordered steps: an action nobody knows how to start is an observation
           wearing an action's clothes. */}
       {action.steps?.length > 0 && (
-        <ol style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12, color: colors.textMuted, lineHeight: 1.6 }}>
+        <ol style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.6 }}>
           {action.steps.map((step, si) => <li key={si}>{step}</li>)}
         </ol>
       )}
@@ -2717,10 +2869,14 @@ function ActionCard({
               Prompt for your coding agent
             </span>
             <div style={{ flex: 1 }} />
-            <button
+            {/* Its own "Copied ✓" already confirms the copy, so the primitive's
+                tick would say the same thing twice. */}
+            <Button
+              colors={colors}
               onClick={() => copyArtifact(directive)}
-              style={smallButton}
-            >{copied ? 'Copied ✓' : 'Copy'}</button>
+              flashSuccess={false}
+              style={smallBtn}
+            >{copied ? 'Copied ✓' : 'Copy'}</Button>
             <select
               aria-label="Coding agent"
               value={agentId}
@@ -2736,18 +2892,19 @@ function ActionCard({
                 </option>
               ))}
             </select>
-            <button
+            <Button
+              colors={colors}
               onClick={sendToAgent}
               disabled={sending || !project.rootPath}
               title={!project.rootPath
                 ? 'Add a root path to this project to launch a coding agent here.'
                 : `Open ${codingAgentById(agentId)?.label ?? 'the agent'} in Build with this prompt`}
-              style={{ ...smallButton, opacity: (sending || !project.rootPath) ? 0.5 : 1 }}
-            >{sending ? 'Sending…' : 'Send'}</button>
+              style={smallBtn}
+            >{sending ? 'Sending…' : 'Send'}</Button>
           </div>
           <pre style={{
             margin: 0, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-            borderRadius: radius.md, padding: 10, fontSize: 11, fontFamily: font.mono,
+            borderRadius: radius.md, padding: 10, fontSize: textSize.micro, fontFamily: font.mono,
             color: colors.textMuted, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             maxHeight: 200, overflowY: 'auto',
           }}>{directive}</pre>
@@ -2779,17 +2936,21 @@ function ActionCard({
               archived action keeps being measured while it still owes a window,
               keeps feeding the agent's learning, and releases its text back for
               re-proposal. */}
-          <button
+          <Button
+            colors={colors}
             onClick={() => move('archived')}
             disabled={!!moving}
-            style={{ ...smallButton, opacity: moving ? 0.5 : 1 }}
-          >{moving === 'archived' ? 'Filing…' : 'Archive'}</button>
+            pending={moving === 'archived'}
+            style={smallBtn}
+          >{moving === 'archived' ? 'Filing…' : 'Archive'}</Button>
           {canReopen && (
-            <button
+            <Button
+              colors={colors}
               onClick={reopen}
               disabled={!!moving}
-              style={{ ...smallButton, opacity: moving ? 0.5 : 1 }}
-            >{moving === 'reopened' ? 'Reopening…' : 'Reopen'}</button>
+              pending={moving === 'reopened'}
+              style={smallBtn}
+            >{moving === 'reopened' ? 'Reopening…' : 'Reopen'}</Button>
           )}
           <span style={{ fontSize: 10, color: colors.textDim }}>
             Files it away. It keeps being measured and keeps teaching the agent.
@@ -2798,11 +2959,13 @@ function ActionCard({
       )}
       {canDismiss && (
         <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <button
+          <Button
+            colors={colors}
             onClick={() => move('dismissed')}
             disabled={!!moving}
-            style={{ ...smallButton, opacity: moving ? 0.5 : 1 }}
-          >{moving === 'dismissed' ? 'Dismissing…' : 'Not interested'}</button>
+            pending={moving === 'dismissed'}
+            style={smallBtn}
+          >{moving === 'dismissed' ? 'Dismissing…' : 'Not interested'}</Button>
           {/* The distinction matters and is the whole reason dismissal is not
               archiving: a dismissed action stays ON the board, so the generator
               still sees it and cannot propose it again. Archiving releases the
@@ -2813,7 +2976,7 @@ function ActionCard({
         </div>
       )}
       {moveError && (
-        <div style={{ marginTop: 6, fontSize: 11, color: colors.danger }}>{moveError}</div>
+        <div style={{ marginTop: 6, fontSize: textSize.micro, color: colors.danger }}>{moveError}</div>
       )}
     </div>
   );
@@ -2953,6 +3116,21 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
     loadActions(project.id, { silent: true });
   }, [projectsRev, project.id, loadActions]);
 
+  // The verdicts (R1.4). The nightly sweep that judges the 7/14/28-day windows
+  // is the one writer on this board with no event of its own: it writes
+  // `growth_action_outcomes` rows and returns, so `projectsRev` never bumps and
+  // the fast path above never fires for the single fact this whole measurement
+  // loop exists to produce. Until that emitter exists, the honest substitute is
+  // a slow poll — and it is a poll with the two gates the law asks for: only
+  // while this panel is the surface on screen, and only while nothing faster is
+  // already covering it.
+  const onScreen = useToolOnScreen('grow');
+  usePollWhenVisible(
+    () => loadActions(project.id, { silent: true }),
+    VERDICT_POLL_MS,
+    onScreen && !serverGenerating,
+  );
+
   const hasActions = (actions?.actions?.length ?? 0) > 0;
   const tracking = actions?.tracking ?? [];
   const archived = actions?.archived ?? [];
@@ -2986,11 +3164,12 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
         state={inboxState}
         inbox={inbox}
         onRetry={() => loadInbox(project.id)}
+        projectName={project.name}
       />
 
       <section style={{ marginTop: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-          <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
+          <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
             From your analytics
           </h3>
           <div style={{ flex: 1 }} />
@@ -3004,29 +3183,33 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
               refuses a second review for a project that already has one running
               (`begin_review`). The disabled attribute is the courtesy; the
               server is the rule. */}
-          <button
+          {/* `pending` is the review the SERVER says is running, not an awaited
+              click — `generate` fires and reconciles through the poll. It buys
+              the same three things this button hand-rolled: `aria-busy`, the
+              dimming, and a MOVING affordance rather than a text swap, since
+              "Reviewing…" alone is indistinguishable from a stuck button and
+              this one can be on screen for the length of a model call. The
+              spinner is now the primitive's own `.pa-spin` element. */}
+          <Button
+            colors={colors}
             onClick={() => generate(project.id)}
             disabled={busyGenerating}
-            aria-busy={busyGenerating}
+            pending={busyGenerating}
             style={{
-              background: colors.surface, border: `1px solid ${colors.border}`,
-              borderRadius: radius.md, padding: '5px 12px',
-              cursor: busyGenerating ? 'default' : 'pointer',
-              color: colors.text, fontFamily: font.body, fontSize: 12,
-              opacity: busyGenerating ? 0.7 : 1,
-              display: 'inline-flex', alignItems: 'center', gap: 6,
-            }}
+              '--pa-btn-bg': colors.surface,
+              '--pa-btn-fg': colors.text,
+              '--pa-btn-border': colors.border,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-pad': '5px 12px',
+              '--pa-btn-radius': `${radius.md}px`,
+              fontFamily: font.body, fontSize: textSize.caption, gap: 6,
+            } as CSSProperties}
           >
-            {/* A MOVING affordance, not a text swap. "Reviewing…" is
-                indistinguishable from a stuck button, and this one can be on
-                screen for the length of a model call. `pa-spin` is the app's
-                spinner utility (index.css) and honours prefers-reduced-motion
-                through the global block there. */}
-            {busyGenerating && <FiLoader size={12} className="pa-spin" aria-hidden />}
             {busyGenerating
               ? 'Reviewing your analytics…'
               : hasActions ? 'Review again' : 'Review my analytics'}
-          </button>
+          </Button>
         </div>
 
         {/* Said out loud, because the one thing the user could not tell before
@@ -3034,7 +3217,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
             daemon, so this is true whether or not this tab is open. */}
         {busyGenerating && (
           <div style={{
-            fontSize: 11, color: colors.textDim, marginBottom: 10,
+            fontSize: textSize.micro, color: colors.textDim, marginBottom: 10,
             display: 'flex', alignItems: 'center', gap: 6,
           }}>
             <FiLoader size={11} className="pa-spin" aria-hidden />
@@ -3047,14 +3230,14 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
 
         {actionsState === 'loading' && <SkeletonCards colors={colors} count={2} height={92} />}
         {actionsState === 'error' && (
-          <div style={{ fontSize: 12, color: colors.danger }}>Couldn&rsquo;t load actions.</div>
+          <div style={{ fontSize: textSize.caption, color: colors.danger }}>Couldn&rsquo;t load actions.</div>
         )}
 
         {/* An empty list ALWAYS explains itself — silence is indistinguishable
             from breakage, and this panel is allowed to have nothing to say. */}
         {actionsState === 'ready' && !hasActions && !busyGenerating && (
           <div style={{
-            fontSize: 12, color: colors.textMuted, background: colors.bgDeeper,
+            fontSize: textSize.caption, color: colors.textMuted, background: colors.bgDeeper,
             border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: 12,
           }}>
             {/* An empty Actions list with a full Tracking list is not "nothing
@@ -3080,8 +3263,11 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
             {actionGroups.map((group) => {
               const selected = selectedGroup?.key === group.key;
               return (
+                // role="tab": the element stays, the interaction rules arrive
+                // through `.pa-btn` (see the lens tabs above).
                 <button
                   key={group.key}
+                  className="pa-btn"
                   role="tab"
                   aria-selected={selected}
                   tabIndex={0}
@@ -3089,12 +3275,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
                   onFocus={() => setFocusCategory(group.key)}
                   onBlur={() => setFocusCategory(null)}
                   style={{
-                    fontSize: 12, fontFamily: font.body,
-                    padding: '5px 12px', borderRadius: radius.sm, cursor: 'pointer', border: 'none',
-                    background: selected ? colors.cyanSoft : 'transparent',
-                    color: selected ? colors.cyan : colors.textMuted,
-                    fontWeight: selected ? 600 : 500,
-                    outline: 'none',
+                    ...segmentedTab(colors, selected),
                     boxShadow: focusCategory === group.key ? `0 0 0 2px ${colors.borderHi}` : 'none',
                   }}
                 >
@@ -3139,7 +3320,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
           <section style={{ marginTop: 18 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
               <h3 style={{
-                fontFamily: font.mono, fontSize: 11, color: colors.textDim,
+                fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim,
                 textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0,
               }}>Completed ({tracking.length})</h3>
               <span style={{ fontSize: 10, color: colors.textDim }}>
@@ -3411,7 +3592,7 @@ function GrowAnalytics({
   return (
     <>
       <div style={{
-        fontSize: 11, color: colors.textDim, background: colors.bgDeeper,
+        fontSize: textSize.micro, color: colors.textDim, background: colors.bgDeeper,
         border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '8px 12px', marginBottom: 4,
       }}>
         Analytics for <strong style={{ color: colors.text }}>{project.name}</strong>, collected by
@@ -3444,16 +3625,22 @@ function GrowAnalytics({
 
       {/* Third-party connection, deliberately understated. */}
       {!providersOpen ? (
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           onClick={() => setShowProviders(true)}
           style={{
-            alignSelf: 'flex-start', background: 'transparent', border: 'none',
-            color: colors.textDim, fontFamily: font.body, fontSize: 11,
-            cursor: 'pointer', padding: '2px 0', textDecoration: 'underline',
-          }}
+            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '2px 0',
+            alignSelf: 'flex-start',
+            fontFamily: font.body,
+            textDecoration: 'underline',
+          } as CSSProperties}
         >
           Already use Plausible, Fathom or GA? Connect it read-only instead
-        </button>
+        </Button>
       ) : (
         <AnalyticsConnectionPanel
           key={project.id}
@@ -3484,11 +3671,11 @@ function GrowAnalytics({
 
       {/* Funnel */}
       <section style={{ marginTop: 8 }}>
-        <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 12px' }}>Growth funnel</h3>
+        <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 12px' }}>Growth funnel</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {funnel.map((f) => (
             <div key={f.stage} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ width: 96, fontSize: 12, color: colors.textMuted, textAlign: 'right', flexShrink: 0 }}>{f.stage}</div>
+              <div style={{ width: 96, fontSize: textSize.caption, color: colors.textMuted, textAlign: 'right', flexShrink: 0 }}>{f.stage}</div>
               <div style={{ flex: 1, height: 26, background: colors.bgDeeper, borderRadius: radius.sm, overflow: 'hidden', position: 'relative' }}>
                 {f.source ? (
                   <div style={{
@@ -3503,7 +3690,7 @@ function GrowAnalytics({
                 )}
               </div>
               <div style={{
-                minWidth: 40, textAlign: 'right', flexShrink: 0, fontFamily: font.mono, fontSize: 12,
+                minWidth: 40, textAlign: 'right', flexShrink: 0, fontFamily: font.mono, fontSize: textSize.caption,
                 color: colors.text, fontVariantNumeric: 'tabular-nums',
               }}>{f.source ? f.value?.toLocaleString() : ''}</div>
             </div>
@@ -3637,19 +3824,26 @@ function FirstPartyAnalyticsPanel({
   // rebuilding the install. Rotating 401s the deployed site until the new value
   // is set on the app service and it redeploys.
   const [rotating, setRotating] = useState(false);
-  const rotateSecret = useCallback(() => {
-    if (!window.confirm(
-      'Mint a new drain key?\n\nIngestion will fail with 401 until you set the new value on '
-      + 'your app service and redeploy. Copy the fresh brief afterwards.',
-    )) return;
+  const [confirmingRotate, setConfirmingRotate] = useState(false);
+  // The one Tier-3 action on this panel, so the one that earns a modal: it is
+  // unrecoverable (the old key stops working the instant the new one is minted)
+  // and it breaks a deployed site until someone redeploys. It used to be an OS
+  // dialog — right tier, wrong widget. A failed rotation now says so on the
+  // dialog and leaves the panel intact, rather than replacing the whole panel
+  // with a load-error state that says nothing about what was attempted.
+  const rotateSecret = useCallback(async () => {
     setRotating(true);
-    apiFetch<FirstPartySetup>(
-      `/api/projects/${encodeURIComponent(projectId)}/analytics/first_party/rotate`,
-      { method: 'POST' },
-    )
-      .then((s) => { setSetup(s); onRefresh(); })
-      .catch(() => setSetupState('error'))
-      .finally(() => setRotating(false));
+    try {
+      const s = await apiFetch<FirstPartySetup>(
+        `/api/projects/${encodeURIComponent(projectId)}/analytics/first_party/rotate`,
+        { method: 'POST' },
+      );
+      setSetup(s);
+      onRefresh();
+      setConfirmingRotate(false);
+    } finally {
+      setRotating(false);
+    }
   }, [projectId, onRefresh]);
 
   const copy = useCallback((kind: 'snippet' | 'prompt', text: string | null | undefined) => {
@@ -3664,10 +3858,20 @@ function FirstPartyAnalyticsPanel({
     background: colors.surface, border: `1px solid ${colors.border}`,
     borderRadius: radius.lg, padding: 16, display: 'flex', flexDirection: 'column', gap: 10,
   };
+  // Through `--pa-btn-*`, never inline `background`/`color`: an inline
+  // declaration outranks `.pa-btn:hover` and would kill the state this is
+  // being migrated for. The per-button `opacity` dimming is gone with it —
+  // `.pa-btn:disabled` and `[data-pending]` say that for themselves now.
   const buttonStyle: React.CSSProperties = {
-    background: colors.bgDeeper, color: colors.text, border: `1px solid ${colors.border}`,
-    borderRadius: radius.md, padding: '6px 12px', fontSize: 12, cursor: 'pointer',
-  };
+    '--pa-btn-bg': colors.bgDeeper,
+    '--pa-btn-fg': colors.text,
+    '--pa-btn-border': colors.border,
+    '--pa-btn-bg-hover': colors.surfaceHi,
+    '--pa-btn-border-hover': colors.borderHi,
+    '--pa-btn-pad': '6px 12px',
+    '--pa-btn-radius': `${radius.md}px`,
+    fontSize: textSize.caption,
+  } as React.CSSProperties;
 
   if (setupState === 'error') {
     return (
@@ -3683,16 +3887,18 @@ function FirstPartyAnalyticsPanel({
       <div style={shell}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>Self-hosted analytics</div>
-            <div style={{ fontSize: 11, color: colors.textDim, marginTop: 2 }}>
+            <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>Self-hosted analytics</div>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 2 }}>
               Your daemon collects pageviews directly — no third-party account, your data stays here.
             </div>
           </div>
-          <button
-            style={{ ...buttonStyle, opacity: setupState === 'loading' || saving ? 0.6 : 1 }}
+          <Button
+            colors={colors}
+            style={buttonStyle}
             disabled={setupState === 'loading' || saving}
+            pending={saving}
             onClick={() => enable()}
-          >{saving ? 'Enabling…' : 'Enable'}</button>
+          >{saving ? 'Enabling…' : 'Enable'}</Button>
         </div>
       </div>
     );
@@ -3703,7 +3909,7 @@ function FirstPartyAnalyticsPanel({
   return (
     <div style={shell}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>
+        <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>
           Self-hosted analytics
           {receiving && (
             <span style={{ marginLeft: 8, fontSize: 10, color: colors.cyan, fontFamily: font.mono }}>
@@ -3711,12 +3917,12 @@ function FirstPartyAnalyticsPanel({
             </span>
           )}
         </div>
-        <button style={buttonStyle} onClick={onRefresh}>Refresh</button>
+        <Button colors={colors} style={buttonStyle} onClick={onRefresh}>Refresh</Button>
       </div>
 
       {!receiving && (
         <>
-          <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
             <b style={{ color: colors.text }}>Step 1.</b> Copy the install brief below and give it to
             a coding agent inside this project's repo. It builds the relay: visitors beacon
             same-origin to your own app, which buffers events in your own database.
@@ -3726,18 +3932,22 @@ function FirstPartyAnalyticsPanel({
             the internet, and events survive while it sleeps.
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button style={buttonStyle} onClick={() => copy('prompt', setup.agentPrompt)}>
+            {/* Each already says "Copied ✓" for itself, so the primitive's tick
+                would be the same confirmation twice. */}
+            <Button colors={colors} style={buttonStyle} flashSuccess={false} onClick={() => copy('prompt', setup.agentPrompt)}>
               {copied === 'prompt' ? 'Copied ✓' : 'Copy install brief'}
-            </button>
-            <button style={buttonStyle} onClick={() => copy('snippet', setup.snippet)}>
+            </Button>
+            <Button colors={colors} style={buttonStyle} flashSuccess={false} onClick={() => copy('snippet', setup.snippet)}>
               {copied === 'snippet' ? 'Copied ✓' : 'Copy snippet only'}
-            </button>
-            <button
-              style={{ ...buttonStyle, opacity: rotating ? 0.6 : 1 }}
+            </Button>
+            <Button
+              colors={colors}
+              style={buttonStyle}
               disabled={rotating}
+              pending={rotating}
               title="Mint a new drain key — the old one stops working immediately"
-              onClick={rotateSecret}
-            >{rotating ? 'Rotating…' : 'Rotate key'}</button>
+              onClick={() => setConfirmingRotate(true)}
+            >{rotating ? 'Rotating…' : 'Rotate key'}</Button>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <input
@@ -3747,28 +3957,32 @@ function FirstPartyAnalyticsPanel({
               style={{
                 flex: '1 1 260px', background: colors.bgDeeper, color: colors.text,
                 border: `1px solid ${colors.border}`, borderRadius: radius.md,
-                padding: '6px 10px', fontSize: 12, fontFamily: font.mono,
+                padding: '6px 10px', fontSize: textSize.caption, fontFamily: font.mono,
               }}
             />
-            <button
-              style={{ ...buttonStyle, opacity: saving ? 0.6 : 1 }}
+            <Button
+              colors={colors}
+              style={buttonStyle}
               disabled={saving}
+              pending={saving}
               onClick={() => setDrain(ingestBase.trim())}
-            >{saving ? 'Saving…' : 'Start ingesting'}</button>
-            <button
-              style={{ ...buttonStyle, opacity: verifying ? 0.6 : 1 }}
+            >{saving ? 'Saving…' : 'Start ingesting'}</Button>
+            <Button
+              colors={colors}
+              style={buttonStyle}
               disabled={verifying}
+              pending={verifying}
               title="Fetch the deployed site and assert the install actually works"
               onClick={() => {
                 // Derive the origin from the drain URL the agent reported.
                 const url = ingestBase.trim() || setup.drainUrl || '';
                 try { runVerify(new URL(url).origin); } catch { /* not a URL yet */ }
               }}
-            >{verifying ? 'Verifying…' : 'Verify install'}</button>
+            >{verifying ? 'Verifying…' : 'Verify install'}</Button>
           </div>
           {verifyResult && (
             <div style={{
-              fontSize: 11, fontFamily: font.mono, whiteSpace: 'pre-wrap',
+              fontSize: textSize.micro, fontFamily: font.mono, whiteSpace: 'pre-wrap',
               background: colors.bgDeeper, borderRadius: radius.md, padding: 10,
               border: `1px solid ${verifyResult.verified ? colors.border : colors.danger}`,
               color: verifyResult.verified ? colors.textMuted : colors.text,
@@ -3875,7 +4089,7 @@ function FirstPartyAnalyticsPanel({
                 background: colors.bgDeeper, border: `1px solid ${colors.border}`,
                 borderRadius: radius.md, padding: '8px 10px',
               }}>
-                <div style={{ fontFamily: font.display, fontSize: 20, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+                <div style={{ fontFamily: font.display, fontSize: textSize.title, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
                 <div style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 2 }}>{label}</div>
                 <div style={{ fontSize: 9, color: colors.textDim, marginTop: 1 }}>{sub}</div>
               </div>
@@ -3892,7 +4106,7 @@ function FirstPartyAnalyticsPanel({
             )}
           </div>
           {(stats.aeoVisits ?? 0) > 0 && (
-            <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 8 }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginBottom: 8 }}>
               <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em', textTransform: 'uppercase' }}>AEO</span>
               {' '}{(stats.aeoVisits ?? 0).toLocaleString()} answer-engine visit{(stats.aeoVisits === 1) ? '' : 's'}
             </div>
@@ -3908,9 +4122,9 @@ function FirstPartyAnalyticsPanel({
             ] as const).map(([label, rows]) => (
               <div key={label}>
                 <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
-                {rows.length === 0 && <div style={{ fontSize: 11, color: colors.textDim }}>—</div>}
+                {rows.length === 0 && <div style={{ fontSize: textSize.micro, color: colors.textDim }}>—</div>}
                 {rows.slice(0, 5).map((r) => (
-                  <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11, color: colors.textMuted, padding: '2px 0' }}>
+                  <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: textSize.micro, color: colors.textMuted, padding: '2px 0' }}>
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
                     <span style={{ fontFamily: font.mono, color: colors.text }}>{r.count.toLocaleString()}</span>
                   </div>
@@ -3919,6 +4133,21 @@ function FirstPartyAnalyticsPanel({
             ))}
           </div>
         </>
+      )}
+
+      {confirmingRotate && (
+        <ConfirmDialog
+          title="Mint a new drain key?"
+          consequence={
+            'The current key stops working the moment the new one is minted. '
+            + 'Ingestion fails with 401 until you set the new value on your app service '
+            + 'and it redeploys — copy the fresh install brief afterwards.'
+          }
+          confirmLabel="Mint a new key"
+          failureLabel="Couldn't mint a new key"
+          onConfirm={rotateSecret}
+          onCancel={() => setConfirmingRotate(false)}
+        />
       )}
     </div>
   );
@@ -3974,11 +4203,7 @@ function AnalyticsConnectionPanel({
       .finally(() => setDisconnecting(false));
   };
 
-  const btnStyle: CSSProperties = {
-    fontSize: 11, fontFamily: font.body, color: colors.text,
-    background: 'transparent', border: `1px solid ${colors.border}`,
-    borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer',
-  };
+  const btnStyle: CSSProperties = growChip();
 
   if (connState === 'error') {
     return <ErrorState colors={colors} inline message="Couldn't load the analytics connection." onRetry={onReload} />;
@@ -4006,19 +4231,17 @@ function AnalyticsConnectionPanel({
         display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
       }}>
         <div style={{ flex: 1, minWidth: 220 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>Connect analytics</div>
-          <div style={{ fontSize: 11, color: colors.textDim, marginTop: 3, lineHeight: 1.5 }}>
+          <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>Connect analytics</div>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 3, lineHeight: 1.5 }}>
             Point the funnel at your existing Plausible or GoatCounter account — a read-only stats
             fetch, your data stays where it is.
           </div>
         </div>
-        <button
+        <Button
+          colors={colors}
           onClick={() => setShowForm(true)}
-          style={{
-            fontSize: 12, fontFamily: font.body, color: colors.cyan, background: colors.cyanSoft,
-            border: `1px solid ${colors.borderHi}`, borderRadius: radius.md, padding: '7px 14px', cursor: 'pointer',
-          }}
-        >Connect analytics</button>
+          style={{ ...growAccent(colors, '7px 14px'), fontSize: textSize.caption }}
+        >Connect analytics</Button>
       </div>
     );
   }
@@ -4049,25 +4272,27 @@ function AnalyticsConnectionPanel({
           width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
           background: statsFailed ? colors.warning : colors.success,
         }} />
-        <span style={{ fontSize: 12, fontWeight: 600, color: colors.text }}>{providerLabel}</span>
-        <span style={{ fontSize: 11, color: colors.textMuted, fontFamily: font.mono }}>
+        <span style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text }}>{providerLabel}</span>
+        <span style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono }}>
           {conn.baseUrl}{conn.siteId ? ` · ${conn.siteId}` : ''}
         </span>
         <div style={{ flex: 1 }} />
-        <button onClick={onRefreshStats} disabled={statsState === 'loading'} style={btnStyle}>Refresh</button>
-        <button onClick={runTest} disabled={testing} style={btnStyle}>{testing ? 'Testing…' : 'Test connection'}</button>
-        <button onClick={() => { setTestResult(null); setShowForm(true); }} style={btnStyle}>Edit</button>
-        <button
+        <Button colors={colors} onClick={onRefreshStats} disabled={statsState === 'loading'} pending={statsState === 'loading'} style={btnStyle}>Refresh</Button>
+        <Button colors={colors} onClick={runTest} disabled={testing} pending={testing} style={btnStyle}>{testing ? 'Testing…' : 'Test connection'}</Button>
+        <Button colors={colors} onClick={() => { setTestResult(null); setShowForm(true); }} style={btnStyle}>Edit</Button>
+        <Button
+          colors={colors}
           onClick={disconnect}
           disabled={disconnecting}
-          style={{ ...btnStyle, color: colors.warning }}
-        >{disconnecting ? 'Disconnecting…' : 'Disconnect'}</button>
+          pending={disconnecting}
+          style={{ ...btnStyle, '--pa-btn-fg': colors.warning, '--pa-btn-border-hover': colors.warning } as CSSProperties}
+        >{disconnecting ? 'Disconnecting…' : 'Disconnect'}</Button>
       </div>
       {statsLine && (
-        <div style={{ fontSize: 11, color: statsFailed ? colors.warning : colors.textMuted }}>{statsLine}</div>
+        <div style={{ fontSize: textSize.micro, color: statsFailed ? colors.warning : colors.textMuted }}>{statsLine}</div>
       )}
       {testResult && (
-        <div style={{ fontSize: 11, color: testResult.ok ? colors.success : colors.warning }}>{testResult.message}</div>
+        <div style={{ fontSize: textSize.micro, color: testResult.ok ? colors.success : colors.warning }}>{testResult.message}</div>
       )}
     </div>
   );
@@ -4124,7 +4349,7 @@ function AnalyticsConnectForm({
 
   const fieldStyle: CSSProperties = {
     background: colors.bgDeeper, color: colors.text, border: `1px solid ${colors.border}`,
-    borderRadius: radius.md, padding: '6px 10px', fontSize: 12, fontFamily: font.body, width: '100%',
+    borderRadius: radius.md, padding: '6px 10px', fontSize: textSize.caption, fontFamily: font.body, width: '100%',
     boxSizing: 'border-box',
   };
   const labelStyle: CSSProperties = {
@@ -4137,7 +4362,7 @@ function AnalyticsConnectForm({
       background: colors.surface, border: `1px solid ${colors.border}`,
       borderRadius: radius.lg, padding: 16, display: 'flex', flexDirection: 'column', gap: 12,
     }}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>
+      <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>
         {conn?.connected ? 'Edit analytics connection' : 'Connect analytics'}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
@@ -4193,27 +4418,38 @@ function AnalyticsConnectForm({
           : 'Plausible: the site id is the domain as it appears in Plausible. Create a Stats API key under Settings → API keys.'}
         {' '}Read-only — this never writes to your analytics account.
       </div>
-      {error && <div style={{ fontSize: 11, color: colors.warning }}>{error}</div>}
+      {error && <div style={{ fontSize: textSize.micro, color: colors.warning }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8 }}>
-        <button
+        {/* The unsaveable state keeps its own muted chrome — it is what says
+            "there is nothing here to save yet" before the button is pressed. */}
+        <Button
+          colors={colors}
           onClick={save}
           disabled={!canSave || saving}
+          pending={saving}
           style={{
-            fontSize: 12, fontFamily: font.body,
-            color: canSave ? colors.cyan : colors.textDim,
-            background: canSave ? colors.cyanSoft : 'transparent',
-            border: `1px solid ${canSave ? colors.borderHi : colors.border}`,
-            borderRadius: radius.md, padding: '6px 14px',
-            cursor: canSave && !saving ? 'pointer' : 'default',
-          }}
-        >{saving ? 'Saving…' : 'Save connection'}</button>
-        <button
+            '--pa-btn-fg': canSave ? colors.cyan : colors.textDim,
+            '--pa-btn-bg': canSave ? colors.cyanSoft : 'transparent',
+            '--pa-btn-border': canSave ? colors.borderHi : colors.border,
+            '--pa-btn-bg-hover': canSave ? colors.cyanGlow : 'transparent',
+            '--pa-btn-border-hover': canSave ? colors.cyan : colors.border,
+            '--pa-btn-pad': '6px 14px',
+            '--pa-btn-radius': `${radius.md}px`,
+            fontFamily: font.body, fontSize: textSize.caption,
+          } as CSSProperties}
+        >{saving ? 'Saving…' : 'Save connection'}</Button>
+        <Button
+          colors={colors}
           onClick={onCancel}
           style={{
-            fontSize: 12, fontFamily: font.body, color: colors.textMuted, background: 'transparent',
-            border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '6px 14px', cursor: 'pointer',
-          }}
-        >Cancel</button>
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-border': colors.border,
+            '--pa-btn-pad': '6px 14px',
+            '--pa-btn-radius': `${radius.md}px`,
+            fontFamily: font.body, fontSize: textSize.caption,
+          } as CSSProperties}
+        >Cancel</Button>
       </div>
     </div>
   );
@@ -4235,12 +4471,14 @@ function priorityMeta(priority: MovePriority, colors: ThemeColors): { label: str
 }
 
 function GrowthInboxSection({
-  colors, state, inbox, onRetry,
+  colors, state, inbox, onRetry, projectName,
 }: {
   colors: ThemeColors;
   state: LoadState;
   inbox: GrowthInboxData | null;
   onRetry: () => void;
+  /** Grounds the hand-off prompt each move card offers. */
+  projectName: string;
 }) {
   // Defensive against a partial payload. This section previously only rendered
   // inside the Analytics lens; it is now the top of Actions, the default tab,
@@ -4254,7 +4492,7 @@ function GrowthInboxSection({
   return (
     <section>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '0 0 12px', flexWrap: 'wrap' }}>
-        <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
+        <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
           Your growth moves this week
         </h3>
         {hasSignal && signal && (
@@ -4271,7 +4509,7 @@ function GrowthInboxSection({
       ) : !inbox ? null : empty ? (
         <div style={{
           border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: 28,
-          textAlign: 'center', fontSize: 12, color: colors.textDim, lineHeight: 1.6,
+          textAlign: 'center', fontSize: textSize.caption, color: colors.textDim, lineHeight: 1.6,
         }}>
           Not enough signal yet. Publish a post or ship a goal and I'll start surfacing your 2-3
           highest-leverage growth moves here each week — ranked, no guesswork.
@@ -4279,11 +4517,11 @@ function GrowthInboxSection({
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {moves.length > 0 ? (
-            moves.map((m) => <MoveCard key={m.title} move={m} colors={colors} />)
+            moves.map((m) => <MoveCard key={m.title} move={m} colors={colors} projectName={projectName} />)
           ) : (
             <div style={{
               border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '12px 14px',
-              fontSize: 12, color: colors.textMuted, background: colors.surface,
+              fontSize: textSize.caption, color: colors.textMuted, background: colors.surface,
             }}>
               You're on track — no urgent moves this week. Keep doing what's working below.
             </div>
@@ -4295,8 +4533,42 @@ function GrowthInboxSection({
   );
 }
 
-function MoveCard({ move, colors }: { move: GrowthMove; colors: ThemeColors }) {
+/**
+ * A growth move: the first thing on the Actions tab, and — until now — the one
+ * card type in the whole lens with nothing to click.
+ *
+ * Every other card offers a way to act on it. This one presented "your 2–3
+ * highest-leverage growth moves this week", explained why each mattered, and
+ * then stopped. A recommendation you cannot do anything with reads as a
+ * newsletter, which is exactly what the tab is not for.
+ *
+ * It gets the hand-off the rest of the surface already uses: open the chat
+ * dock and send a prompt grounded in this move and this project. Same
+ * mechanism, same wording, no new concept.
+ */
+function MoveCard({ move, colors, projectName }: {
+  move: GrowthMove;
+  colors: ThemeColors;
+  projectName: string;
+}) {
   const meta = priorityMeta(move.priority, colors);
+  const agentName = useCommandCenter((st) => st.agentName);
+  const sendMessage = useCommandCenter((st) => st.sendMessage);
+  const openChatDock = useCommandCenter((st) => st.openChatDock);
+  const setActivePanel = useCommandCenter((st) => st.setActivePanel);
+
+  const discuss = () => {
+    // setActivePanel('chat') only dismisses an overlay; since chat went
+    // dock-first the dock has to be opened explicitly or the prompt goes to a
+    // conversation nobody can see. Same two lines as every other hand-off here.
+    setActivePanel('chat');
+    openChatDock();
+    void sendMessage(
+      `Let's work on this growth move for ${projectName}: "${move.title}". `
+      + `The reason it came up: ${move.why}`,
+    );
+  };
+
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', gap: 6,
@@ -4313,8 +4585,19 @@ function MoveCard({ move, colors }: { move: GrowthMove; colors: ThemeColors }) {
           {move.evidenceCount} {move.evidenceCount === 1 ? 'signal' : 'signals'}
         </span>
       </div>
-      <div style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>{move.title}</div>
-      <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{move.why}</div>
+      <div style={{ fontSize: textSize.body, fontWeight: 600, color: colors.text }}>{move.title}</div>
+      <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>{move.why}</div>
+      <div style={{ display: 'flex', marginTop: 2 }}>
+        <Button
+          colors={colors}
+          type="button"
+          data-testid="move-discuss"
+          onClick={discuss}
+          style={growChip()}
+        >
+          Discuss with {agentName}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -4332,10 +4615,10 @@ function WinsStrip({ wins, colors }: { wins: GrowthWin[]; colors: ThemeColors })
             background: colors.surface, border: `1px solid ${colors.border}`,
             borderLeft: `3px solid ${colors.success}`, borderRadius: radius.md, padding: '10px 12px',
           }}>
-            <span aria-hidden style={{ color: colors.success, fontSize: 13, lineHeight: '18px' }}>✓</span>
+            <span aria-hidden style={{ color: colors.success, fontSize: textSize.small, lineHeight: '18px' }}>✓</span>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{w.title}</div>
-              <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, marginTop: 2 }}>{w.why}</div>
+              <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{w.title}</div>
+              <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginTop: 2 }}>{w.why}</div>
             </div>
           </div>
         ))}

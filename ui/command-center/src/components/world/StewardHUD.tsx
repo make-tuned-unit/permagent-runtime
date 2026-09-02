@@ -3,7 +3,9 @@ import { COLORS } from './constants';
 import { AGENT_TRIM } from './shared/palette';
 import { useAgentRuntimeStates } from './shared/agentStatus';
 import { HudShell, Section } from './HudShell';
+import { Chip } from '../common/Chip';
 import { api } from '../../lib/api';
+import { textSize } from '../../styles/tokens';
 
 // The Steward — git repo hygiene (crate::steward + the scheduled steward.yaml
 // recipe). Read/propose work (commit messages, stale-branch reports, repo
@@ -56,26 +58,18 @@ export function StewardHUD({ visible, onClose }: StewardHUDProps) {
             : 'STANDING BY';
   const pillColor = isDaemon && live?.hudState === 'error' ? '#FF5D5D' : STEWARD_TRIM;
 
-  const statusPill = (
-    <div style={{
-      display: 'inline-block',
-      padding: '2px 8px',
-      borderRadius: 3,
-      fontSize: 10,
-      fontWeight: 700,
-      letterSpacing: '0.08em',
-      background: 'rgba(127, 168, 144, 0.10)',
-      color: pillColor,
-      border: `1px solid ${pillColor}44`,
-    }}>
-      {label}
-    </div>
-  );
+  // A daemon-backed reading is a live one and is drawn as such — filled, with
+  // a liveness dot, pulsing only while work is genuinely in flight. Without a
+  // daemon behind it the label is a standing fact, not a status, so it takes
+  // the outline form that says so.
+  const statusPill = isDaemon
+    ? <Chip kind="state" color={pillColor} pulse={live?.hudState === 'working'}>{label}</Chip>
+    : <Chip kind="static" color={pillColor}>{label}</Chip>;
 
   return (
     <HudShell visible={visible} onClose={onClose} title="THE STEWARD" statusPill={statusPill}>
       <div style={{ padding: '4px 14px 8px' }}>
-        <span style={{ fontSize: 11, color: '#9CA3AF', lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5 }}>
           {enabled === false
             ? 'The native git-health sweep is off (Settings → Features). The weekday recipe can still file a fleet report. Either way: proposes; does not destroy, commit, or merge.'
             : 'The groundskeeper of your repositories — a weekday fleet pass under your dev root, plus an optional native sweep of one project at a time. Proposes; does not destroy, commit, or merge.'}
@@ -91,7 +85,7 @@ export function StewardHUD({ visible, onClose }: StewardHUDProps) {
 
       <Section title="THE SAFETY CORE" trimColor={COLORS.neonAmber}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: 11, color: '#D1D5DB', lineHeight: 1.5 }}>
+          <span style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
             Destructive git ops (branch deletes, history rewrites, force
             pushes) pass a safety core written in code, not prompt — protected
             branches are refused outright, and anything else destructive
@@ -105,7 +99,7 @@ export function StewardHUD({ visible, onClose }: StewardHUDProps) {
 
 function Bullet({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ fontSize: 11, color: '#D1D5DB', lineHeight: 1.7, display: 'flex', gap: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.7, display: 'flex', gap: 8 }}>
       <span style={{ color: STEWARD_TRIM }}>·</span>
       <span>{children}</span>
     </div>

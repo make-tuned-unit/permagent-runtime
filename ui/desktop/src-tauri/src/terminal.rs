@@ -166,6 +166,49 @@ struct PtyDataPayload {
     seq: u64,
 }
 
+/// Decode a PTY byte stream without corrupting a multibyte character split
+/// across `read(2)` boundaries. Invalid complete sequences still degrade to a
+/// replacement glyph, but an incomplete suffix is carried into the next read.
+fn decode_pty_chunk(carry: &mut Vec<u8>, input: &[u8], flush: bool) -> String {
+    let mut bytes = std::mem::take(carry);
+    bytes.extend_from_slice(input);
+    let mut out = String::new();
+    let mut cursor = 0usize;
+
+    while cursor < bytes.len() {
+        match std::str::from_utf8(&bytes[cursor..]) {
+            Ok(valid) => {
+                out.push_str(valid);
+                cursor = bytes.len();
+            }
+            Err(error) => {
+                let valid_end = cursor + error.valid_up_to();
+                if valid_end > cursor {
+                    // from_utf8 just proved this exact prefix valid.
+                    out.push_str(std::str::from_utf8(&bytes[cursor..valid_end]).unwrap());
+                    cursor = valid_end;
+                }
+                match error.error_len() {
+                    Some(invalid_len) => {
+                        out.push('�');
+                        cursor = (cursor + invalid_len).min(bytes.len());
+                    }
+                    None if flush => {
+                        out.push_str(&String::from_utf8_lossy(&bytes[cursor..]));
+                        cursor = bytes.len();
+                    }
+                    None => {
+                        carry.extend_from_slice(&bytes[cursor..]);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    out
+}
+
 // ── Bundled CLIs on the terminal's PATH ─────────────────────────────────────
 //
 // The Build tab's launch buttons type a command into this PTY, and the PTY is
@@ -339,39 +382,43 @@ pub async fn spawn_pty_session(
     let reader_produced = produced.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        let mut utf8_carry = Vec::with_capacity(4);
         loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let seq = reader_produced
-                        .fetch_add(data.len() as u64, std::sync::atomic::Ordering::SeqCst)
-                        + data.len() as u64;
-                    if let Ok(mut replay) = reader_output.lock() {
-                        replay.push_str(&data);
-                        const MAX_REPLAY_BYTES: usize = 2 * 1024 * 1024;
-                        if replay.len() > MAX_REPLAY_BYTES {
-                            let mut cut = replay.len() - MAX_REPLAY_BYTES;
-                            while !replay.is_char_boundary(cut) {
-                                cut += 1;
-                            }
-                            replay.drain(..cut);
-                        }
-                    }
-                    if let Some(tx) = &tee_tx {
-                        // Never blocks (unbounded); a dead forwarder is fine.
-                        let _ = tx.send(TeeFrame::Data(data.clone()));
-                    }
-                    let _ = app_handle.emit(
-                        "pty_data",
-                        PtyDataPayload {
-                            session_id: sid.clone(),
-                            data,
-                            seq,
-                        },
-                    );
-                }
+            let (data, eof) = match reader.read(&mut buf) {
+                Ok(0) => (decode_pty_chunk(&mut utf8_carry, &[], true), true),
+                Ok(n) => (decode_pty_chunk(&mut utf8_carry, &buf[..n], false), false),
                 Err(_) => break,
+            };
+            if !data.is_empty() {
+                let seq = reader_produced
+                    .fetch_add(data.len() as u64, std::sync::atomic::Ordering::SeqCst)
+                    + data.len() as u64;
+                if let Ok(mut replay) = reader_output.lock() {
+                    replay.push_str(&data);
+                    const MAX_REPLAY_BYTES: usize = 2 * 1024 * 1024;
+                    if replay.len() > MAX_REPLAY_BYTES {
+                        let mut cut = replay.len() - MAX_REPLAY_BYTES;
+                        while !replay.is_char_boundary(cut) {
+                            cut += 1;
+                        }
+                        replay.drain(..cut);
+                    }
+                }
+                if let Some(tx) = &tee_tx {
+                    // Never blocks (unbounded); a dead forwarder is fine.
+                    let _ = tx.send(TeeFrame::Data(data.clone()));
+                }
+                let _ = app_handle.emit(
+                    "pty_data",
+                    PtyDataPayload {
+                        session_id: sid.clone(),
+                        data,
+                        seq,
+                    },
+                );
+            }
+            if eof {
+                break;
             }
         }
         if let Some(tx) = &tee_tx {
@@ -591,6 +638,32 @@ pub async fn kill_pty(app: AppHandle, session_id: String) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_utf8_box_glyphs_survive_every_read_boundary() {
+        let frame = "┌─┬─┐\n└─┴─┘";
+        for split in 1..frame.len() {
+            let mut carry = Vec::new();
+            let mut decoded = decode_pty_chunk(&mut carry, &frame.as_bytes()[..split], false);
+            decoded.push_str(&decode_pty_chunk(
+                &mut carry,
+                &frame.as_bytes()[split..],
+                false,
+            ));
+            decoded.push_str(&decode_pty_chunk(&mut carry, &[], true));
+            assert_eq!(decoded, frame, "UTF-8 split at byte {split}");
+            assert!(!decoded.contains('�'));
+        }
+    }
+
+    #[test]
+    fn incomplete_final_utf8_degrades_only_when_the_stream_ends() {
+        let bytes = "┘".as_bytes();
+        let mut carry = Vec::new();
+        assert_eq!(decode_pty_chunk(&mut carry, &bytes[..2], false), "");
+        assert_eq!(carry, bytes[..2]);
+        assert_eq!(decode_pty_chunk(&mut carry, &[], true), "�");
+    }
 
     #[test]
     fn coalesce_merges_queued_data_in_order() {

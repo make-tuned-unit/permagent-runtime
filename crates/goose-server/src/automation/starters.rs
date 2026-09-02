@@ -16,6 +16,18 @@ const WORKSPACE_SNAPSHOT_YAML: &str = include_str!("workspace_snapshot.yaml");
 const STORAGE_INSIGHTS_YAML: &str = include_str!("storage_insights.yaml");
 const STEWARD_YAML: &str = include_str!("steward.yaml");
 const HEALTH_REVIEW_YAML: &str = include_str!("health_review.yaml");
+const HEALTH_REVIEW_EVIDENCE_PY: &str = include_str!("health_review_evidence.py");
+
+struct StarterAsset {
+    filename: &'static str,
+    content: &'static str,
+}
+
+const NO_ASSETS: &[StarterAsset] = &[];
+const HEALTH_REVIEW_ASSETS: &[StarterAsset] = &[StarterAsset {
+    filename: "health_review_evidence.py",
+    content: HEALTH_REVIEW_EVIDENCE_PY,
+}];
 
 struct StarterRecipe {
     id: &'static str,
@@ -27,6 +39,10 @@ struct StarterRecipe {
     /// This is what keeps Henry's HUD honest: it reports only jobs it owns, so
     /// the Steward's cron is no longer advertised as Henry's next scheduled run.
     owner: Option<&'static str>,
+    /// Deterministic helpers that live beside the YAML and are addressed via
+    /// `{{ recipe_dir }}`. These are implementation dependencies, not recipe
+    /// customizations, so reconciliation keeps them at the embedded version.
+    assets: &'static [StarterAsset],
 }
 
 // Crons are stored in 6-field (seconds-prefixed) form so the scheduler never
@@ -39,12 +55,14 @@ const STARTERS: &[StarterRecipe] = &[
         cron: "0 0 8 * * 1-5",
         yaml: WORKSPACE_SNAPSHOT_YAML,
         owner: None,
+        assets: NO_ASSETS,
     },
     StarterRecipe {
         id: "storage-insights",
         cron: "0 0 19 * * 0",
         yaml: STORAGE_INSIGHTS_YAML,
         owner: None,
+        assets: NO_ASSETS,
     },
     // The Steward's embodiment: crate::steward's docs call this recipe the
     // Steward itself, so the job belongs to the Steward, not to Henry.
@@ -53,6 +71,7 @@ const STARTERS: &[StarterRecipe] = &[
         cron: "0 0 6 * * 1-5",
         yaml: STEWARD_YAML,
         owner: Some("steward"),
+        assets: NO_ASSETS,
     },
     // 03:20 daily: after the day's work is in the log and before the morning
     // jobs (workspace-snapshot 08:00, git-steward 06:00) add noise of their
@@ -66,6 +85,7 @@ const STARTERS: &[StarterRecipe] = &[
         cron: "0 20 3 * * *",
         yaml: HEALTH_REVIEW_YAML,
         owner: None,
+        assets: HEALTH_REVIEW_ASSETS,
     },
 ];
 
@@ -81,6 +101,21 @@ fn extract_version(yaml: &str) -> String {
     serde_yaml::from_str::<Recipe>(yaml)
         .map(|r| r.version)
         .unwrap_or_else(|_| "1.0.0".to_string())
+}
+
+fn sync_starter_assets(
+    starter: &StarterRecipe,
+    recipe_path: &std::path::Path,
+) -> Result<(), String> {
+    let recipe_dir = recipe_path
+        .parent()
+        .ok_or_else(|| format!("recipe path {} has no parent", recipe_path.display()))?;
+    for asset in starter.assets {
+        let path = recipe_dir.join(asset.filename);
+        std::fs::write(&path, asset.content)
+            .map_err(|e| format!("write starter asset {}: {}", path.display(), e))?;
+    }
+    Ok(())
 }
 
 fn disabled_starters_path() -> PathBuf {
@@ -170,6 +205,10 @@ pub async fn seed_starter_recipes(scheduler: &dyn SchedulerTrait) {
             tracing::error!("Failed to write starter recipe '{}': {}", starter.id, e);
             continue;
         }
+        if let Err(e) = sync_starter_assets(starter, &recipe_path) {
+            tracing::error!("Failed to write assets for starter '{}': {}", starter.id, e);
+            continue;
+        }
 
         let version = extract_version(starter.yaml);
         let hash = content_hash(starter.yaml);
@@ -228,6 +267,18 @@ async fn reconcile_starter_recipes(scheduler: &dyn SchedulerTrait) {
             Some(j) => j,
             None => continue, // Not installed (disabled or new-install just handled)
         };
+
+        // Assets are runtime dependencies rather than editable recipe text.
+        // Sync them even when the YAML is current or user-customized so a
+        // newly bundled collector appears on the very next daemon start.
+        if let Err(e) = sync_starter_assets(starter, std::path::Path::new(&job.source)) {
+            tracing::error!(
+                "Failed to reconcile assets for starter '{}': {}",
+                starter.id,
+                e
+            );
+            continue;
+        }
 
         let embedded_version = extract_version(starter.yaml);
         let embedded_hash = content_hash(starter.yaml);
@@ -386,6 +437,7 @@ pub async fn reset_starter_to_default(
 
     // Write embedded YAML to disk
     std::fs::write(&job.source, starter.yaml).map_err(|e| format!("Failed to write: {}", e))?;
+    sync_starter_assets(starter, std::path::Path::new(&job.source))?;
 
     let version = extract_version(starter.yaml);
     let hash = content_hash(starter.yaml);
@@ -437,6 +489,24 @@ mod tests {
                 .unwrap_or_else(|e| panic!("starter '{}' failed to parse: {e}", s.id));
             assert!(!recipe.title.is_empty(), "{} has empty title", s.id);
         }
+    }
+
+    #[test]
+    fn health_review_bundles_its_evidence_collector() {
+        let starter = STARTERS
+            .iter()
+            .find(|starter| starter.id == "health-review")
+            .expect("health review starter");
+        let tmp = TempDir::new().unwrap();
+        let yaml = tmp.path().join("health-review.yaml");
+        std::fs::write(&yaml, starter.yaml).unwrap();
+        sync_starter_assets(starter, &yaml).unwrap();
+        let installed = std::fs::read_to_string(tmp.path().join("health_review_evidence.py"))
+            .expect("collector installed beside recipe");
+        assert_eq!(installed, HEALTH_REVIEW_EVIDENCE_PY);
+        assert!(starter
+            .yaml
+            .contains("{{ recipe_dir }}/health_review_evidence.py"));
     }
 
     // ── record_starter_deletion tombstone (bug-sweep wave 1) ────────────────

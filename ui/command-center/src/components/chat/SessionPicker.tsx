@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { FiChevronDown } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -42,31 +44,46 @@ export function SessionPicker() {
     await switchToSession(sessionId);
   };
 
+  // Resolves false when the create fails, so nothing can confirm a session that
+  // was never made. (Surfacing that failure is a separate concern — see report.)
   const handleNewSession = async () => {
     setOpen(false);
     try {
       const session = await api.createSession();
       await switchToSession(session.id);
+      return true;
     } catch { /* ignore */ }
+    return false;
   };
 
   return (
     <div ref={pickerRef} data-testid="session-picker" style={{ position: 'relative', minWidth: 0 }}>
+      {/* Disclosure toggle (aria-expanded/-controls pairing is what describes
+          it), so it keeps the element and takes only the shared `.pa-btn`
+          interaction rules — there is nothing to await here, and the pending
+          floor and success tick of the Button primitive would both be wrong. */}
       <button
         type="button"
+        className="pa-btn"
         aria-label="Choose chat session"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
         style={{
-          display: 'flex', alignItems: 'center', gap: 4, maxWidth: '100%',
-          background: 'transparent', border: 'none', cursor: 'pointer',
-          color: colors.text, fontSize: 13, fontWeight: 600, fontFamily: font.body,
-        }}
+          '--pa-btn-fg': colors.text,
+          '--pa-btn-fg-hover': colors.cyan,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '0',
+          '--pa-btn-weight': 600,
+          display: 'flex', justifyContent: 'flex-start', gap: 4, maxWidth: '100%',
+          // `.pa-btn` normalises to 11px/14px; this control is the agent name at
+          // 13px on the app's own leading, and its height is pure line-height.
+          fontSize: textSize.small, lineHeight: 1.5, fontFamily: font.body,
+        } as CSSProperties}
       >
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
           {agentName}
         </span>
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} style={{ flexShrink: 0 }}><path d="M6 9l6 6 6-6" /></svg>
+        <FiChevronDown size={10} style={{ flexShrink: 0 }} />
       </button>
 
       {open && (
@@ -74,43 +91,64 @@ export function SessionPicker() {
           position: 'absolute', top: '100%', left: 0, marginTop: 4,
           width: 260, maxHeight: 300, overflow: 'auto',
           background: gradient.dropdown, backdropFilter: 'blur(16px)',
-          border: `1px solid ${colors.borderHi}`, borderRadius: 8,
+          border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
           boxShadow: '0 12px 40px rgba(0,0,0,0.6)', zIndex: 100,
           padding: '4px 0',
         }}>
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
             type="button"
             onClick={handleNewSession}
             style={{
-              width: '100%', padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 6,
-              background: 'transparent', border: 'none', cursor: 'pointer',
-              color: colors.cyan, fontSize: 12, fontFamily: font.body, fontWeight: 500,
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-bg-hover': colors.cyanSoft,
+              '--pa-btn-pad': '8px 12px',
+              '--pa-btn-radius': '0',
+              width: '100%', justifyContent: 'flex-start', gap: 6,
+              fontSize: textSize.caption, fontFamily: font.body,
+              // Only the bottom edge is drawn — `.pa-btn`'s `border` shorthand
+              // paints all four, so this one longhand has to stay inline.
               borderBottom: `1px solid ${colors.border}`,
-            }}
+            } as CSSProperties}
           >
             + New session
-          </button>
-          {sessions.map(session => (
-            <button
-              type="button"
-              key={session.id}
-              onClick={() => handleSelectSession(session.id)}
-              style={{
-                width: '100%', padding: '6px 12px', display: 'flex', flexDirection: 'column', gap: 1,
-                background: session.id === chatSessionId ? colors.cyanSoft : 'transparent',
-                border: 'none', cursor: 'pointer', textAlign: 'left',
-              }}
-            >
-              <span style={{ fontSize: 12, color: session.id === chatSessionId ? colors.cyan : colors.text, fontFamily: font.body }}>
-                {session.name || `Session ${session.id}`}
-              </span>
-              {session.updated_at && (
-                <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
-                  {session.message_count} msgs · {timeAgo(session.updated_at)}
+          </Button>
+          {sessions.map(session => {
+            const isCurrent = session.id === chatSessionId;
+            return (
+              <Button
+                colors={colors}
+                variant="bare"
+                type="button"
+                key={session.id}
+                onClick={() => handleSelectSession(session.id)}
+                style={{
+                  '--pa-btn-bg': isCurrent ? colors.cyanSoft : 'transparent',
+                  '--pa-btn-bg-hover': isCurrent ? colors.cyanSoft : colors.surfaceHi,
+                  '--pa-btn-pad': '6px 12px',
+                  '--pa-btn-radius': '0',
+                  width: '100%', justifyContent: 'flex-start',
+                  textAlign: 'left', lineHeight: 1.5,
+                } as CSSProperties}
+              >
+                {/* The two lines stack inside the label, not on the button:
+                    `Button` folds its children into one span, so a column laid
+                    out on the button itself would put the name and the message
+                    count back on the same line. */}
+                <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1 }}>
+                  <span style={{ fontSize: textSize.caption, color: isCurrent ? colors.cyan : colors.text, fontFamily: font.body }}>
+                    {session.name || `Session ${session.id}`}
+                  </span>
+                  {session.updated_at && (
+                    <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
+                      {session.message_count} msgs · {timeAgo(session.updated_at)}
+                    </span>
+                  )}
                 </span>
-              )}
-            </button>
-          ))}
+              </Button>
+            );
+          })}
         </div>
       )}
     </div>

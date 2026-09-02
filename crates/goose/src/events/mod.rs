@@ -310,6 +310,10 @@ pub enum PermagentEventType {
     EntityUpdated,
     // Decision inbox
     DecisionCreated,
+    /// A verdict was PROPOSED on a channel that cannot authenticate (voice).
+    /// The decision is still open and still unanswered — this only tells the
+    /// confirm surface there is something to offer in one tap (D29).
+    DecisionStaged,
     DecisionResolved,
     // Agent runtime state
     AgentStateChanged,
@@ -606,6 +610,29 @@ pub fn goal_state_changed(
             "from": from,
             "to": to,
             "actor": actor,
+        }),
+    )
+}
+
+/// Emitted when a spoken (or otherwise unauthenticated) verdict is staged
+/// against a still-open decision. Payload: ids/classifications only — never the
+/// headline. This is NOT a resolution: consumers should refresh the inbox so
+/// the staged row can offer its one-tap commit, nothing more.
+pub fn decision_staged(
+    decision_id: &str,
+    kind: &str,
+    answer: &str,
+    staged_via: &str,
+    tier: i64,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::DecisionStaged,
+        serde_json::json!({
+            "decision_id": decision_id,
+            "kind": kind,
+            "answer": answer,
+            "staged_via": staged_via,
+            "tier": tier,
         }),
     )
 }
@@ -1035,7 +1062,7 @@ pub fn workspace_changed(workspace_id: &str, change: &str) -> PermagentEvent {
 }
 
 /// A project (or an owned collection of it) changed. `change` ∈
-/// `created|updated|deleted|touched|tags|memories|documents|notes`.
+/// `created|updated|deleted|touched|tags|memories|documents|notes|growth_actions`.
 pub fn project_changed(project_id: &str, change: &str) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::ProjectChanged,

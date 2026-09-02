@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { FiAlertTriangle, FiCheck, FiKey, FiPlus, FiSettings, FiStar, FiTrash2 } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import type { SecretSourcesResponse } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { ProviderInfo } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { AddCustomProviderModal } from './AddCustomProviderModal';
 import { ConfigureProviderModal } from './ConfigureProviderModal';
 import {
@@ -28,6 +29,12 @@ export function ProvidersSection() {
   const [configuring, setConfiguring] = useState<ProviderInfo | null>(null);
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
+  /** Which card is asking "Remove …?" in place, and what it says if that fails. */
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<{ name: string; message: string } | null>(null);
+  /** Which card's "Set as default" failed. The store used to swallow that
+   *  error, so the button ticked and the Default badge simply never moved. */
+  const [defaultError, setDefaultError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<ProviderTab | null>(null);
   const [secretSources, setSecretSources] = useState<SecretSourcesResponse | undefined>();
@@ -62,14 +69,28 @@ export function ProvidersSection() {
 
   // Only user-defined ("Custom") providers can be removed — built-in ones have
   // no on-disk definition to delete.
+  //
+  // Destructive, but recoverable with effort (re-add the definition, re-enter
+  // the key), so it confirms INLINE on the card rather than in a modal — the
+  // card stays on screen so what is about to go is still readable. It used to
+  // be an OS dialog, which also meant a failed removal was a `console.error`
+  // and a card that simply stayed put, indistinguishable from a cancel.
   const handleRemove = useCallback(async (p: ProviderInfo) => {
-    if (!confirm(`Remove custom provider "${p.displayName}"? This deletes its saved configuration.`)) return;
     setRemoving(p.name);
+    setRemoveError(null);
     try {
       await api.removeCustomProvider(p.name);
+      setConfirmRemove(null);
       await loadProviders();
+      return true;
     } catch (e) {
-      console.error('Failed to remove custom provider:', e);
+      setRemoveError({
+        name: p.name,
+        message: e instanceof Error ? e.message : String(e),
+      });
+      // The catch turns the throw into the card's own alert, so `false` is what
+      // keeps a refused removal from finishing with a success tick.
+      return false;
     } finally {
       setRemoving(null);
     }
@@ -89,16 +110,28 @@ export function ProvidersSection() {
     <div className="space-y-3">
       <div className="flex items-start justify-between gap-3">
         <p className="text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>Configure LLM providers and API keys. Connected keys sit on their own tab so the catalogue does not bury them. The default provider is used for new chat sessions.</p>
-        <button
+        <Button
+          colors={colors}
+          variant="ghostOn"
           type="button"
+          className="shrink-0"
           onClick={() => setAdding(true)}
-          className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded transition shrink-0"
-          style={{ border: `1px solid ${colors.cyan}4D`, color: colors.cyan }}
-          onMouseEnter={e => { e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
-          onMouseLeave={e => { e.currentTarget.style.backgroundColor = ''; }}
+          style={{
+            '--pa-btn-border': `${colors.cyan}4D`,
+            '--pa-btn-border-hover': `${colors.cyan}4D`,
+            '--pa-btn-bg-hover': colors.cyanSoft,
+            '--pa-btn-pad': '6px 12px',
+            '--pa-btn-radius': `${radius.xs}px`,
+          } as CSSProperties}
         >
-          <FiPlus size={11} /> Add custom provider
-        </button>
+          {/* `.pa-btn__label` is a plain span and Tailwind's preflight makes
+              every svg `display: block`, so an icon handed straight to Button
+              stacks on top of its own label. The pairing keeps its own
+              inline-flex until the primitive lays its label out. */}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <FiPlus size={11} /> Add custom provider
+          </span>
+        </Button>
       </div>
 
       {providers.length > 0 && (
@@ -113,20 +146,32 @@ export function ProvidersSection() {
           ] as const).map(([id, label, count]) => {
             const selected = activeTab === id;
             return (
+              // A `role="tab"` inside a tablist: `Button` would flatten the
+              // semantics that make this a tab strip at all, so it keeps the
+              // element and takes the shared interaction rules through
+              // `.pa-btn` instead. Selecting a tab used to look identical to
+              // not selecting it right up until the list underneath changed.
               <button
                 key={id}
                 type="button"
                 role="tab"
+                className="pa-btn"
                 aria-selected={selected}
                 data-testid={`providers-tab-${id}`}
                 onClick={() => setTab(id)}
                 style={{
-                  fontSize: 12, fontFamily: font.body,
-                  padding: '5px 12px', borderRadius: radius.sm, cursor: 'pointer', border: 'none',
-                  background: selected ? colors.cyanSoft : 'transparent',
-                  color: selected ? colors.cyan : colors.textMuted,
-                  fontWeight: selected ? 600 : 500,
-                }}
+                  fontSize: textSize.caption, fontFamily: font.body,
+                  '--pa-btn-pad': '5px 12px',
+                  '--pa-btn-radius': `${radius.sm}px`,
+                  '--pa-btn-border': 'transparent',
+                  '--pa-btn-border-hover': 'transparent',
+                  '--pa-btn-bg': selected ? colors.cyanSoft : 'transparent',
+                  '--pa-btn-bg-hover': selected ? colors.cyanSoft : colors.surfaceHi,
+                  '--pa-btn-bg-active': selected ? colors.cyanGlow : colors.surface,
+                  '--pa-btn-fg': selected ? colors.cyan : colors.textMuted,
+                  '--pa-btn-fg-hover': selected ? colors.cyan : colors.text,
+                  '--pa-btn-weight': selected ? 600 : 500,
+                } as CSSProperties}
               >
                 {label} ({count})
               </button>
@@ -142,16 +187,21 @@ export function ProvidersSection() {
       {providers.length === 0 && !loading && providersError && (
         <div className="rounded-lg p-4 text-center space-y-2" style={{ backgroundColor: colors.surface, border: `1px solid ${colors.border}` }}>
           <div className="text-xs" style={{ fontFamily: font.body, color: colors.danger }}>Couldn't load providers. Check that the daemon is running.</div>
-          <button
+          <Button
+            colors={colors}
+            variant="ghostOn"
             type="button"
             onClick={load}
-            className="text-[11px] px-3 py-1.5 rounded transition"
-            style={{ border: `1px solid ${colors.cyan}4D`, color: colors.cyan }}
-            onMouseEnter={e => { e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
-            onMouseLeave={e => { e.currentTarget.style.backgroundColor = ''; }}
+            style={{
+              '--pa-btn-border': `${colors.cyan}4D`,
+              '--pa-btn-border-hover': `${colors.cyan}4D`,
+              '--pa-btn-bg-hover': colors.cyanSoft,
+              '--pa-btn-pad': '6px 12px',
+              '--pa-btn-radius': `${radius.xs}px`,
+            } as CSSProperties}
           >
             Retry
-          </button>
+          </Button>
         </div>
       )}
 
@@ -238,42 +288,131 @@ export function ProvidersSection() {
           </div>
 
           <div className="flex items-center gap-2 mt-3">
-            <button
+            <Button
+              colors={colors}
               type="button"
               onClick={() => setConfiguring(p)}
-              className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded hover:bg-white/5 transition"
-              style={{ border: `1px solid ${colors.border}`, color: colors.textMuted }}
-              onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
-              onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
+              style={{
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-border': colors.border,
+                '--pa-btn-border-hover': colors.border,
+                '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+                '--pa-btn-pad': '6px 12px',
+                '--pa-btn-radius': `${radius.xs}px`,
+              } as CSSProperties}
             >
-              <FiSettings size={11} /> Configure
-            </button>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <FiSettings size={11} /> Configure
+              </span>
+            </Button>
             {p.isConfigured && !p.isDefault && (
-              <button
+              <Button
+                colors={colors}
+                variant="ghostOn"
                 type="button"
-                onClick={() => setDefaultProvider(p.name, p.defaultModel)}
-                className="text-[11px] px-3 py-1.5 rounded transition"
-                style={{ border: `1px solid ${colors.cyan}4D`, color: colors.cyan }}
-                onMouseEnter={e => { e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
-                onMouseLeave={e => { e.currentTarget.style.backgroundColor = ''; }}
+                onClick={async () => {
+                  setDefaultError(null);
+                  const ok = await setDefaultProvider(p.name, p.defaultModel);
+                  if (!ok) setDefaultError(p.name);
+                  return ok;
+                }}
+                style={{
+                  '--pa-btn-border': `${colors.cyan}4D`,
+                  '--pa-btn-border-hover': `${colors.cyan}4D`,
+                  '--pa-btn-bg-hover': colors.cyanSoft,
+                  '--pa-btn-pad': '6px 12px',
+                  '--pa-btn-radius': `${radius.xs}px`,
+                } as CSSProperties}
               >
                 Set as default
-              </button>
+              </Button>
             )}
-            {p.providerType === 'Custom' && (
-              <button
+            {p.providerType === 'Custom' && confirmRemove !== p.name && (
+              // Wave A's inline two-step: this arms the confirmation on the
+              // card, it does not remove anything, so there is nothing to await
+              // and a tick here would claim a removal that has not happened.
+              <Button
+                colors={colors}
                 type="button"
-                onClick={() => handleRemove(p)}
-                disabled={removing === p.name}
-                className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded transition disabled:opacity-50 ml-auto"
-                style={{ border: `1px solid ${colors.danger}4D`, color: colors.danger }}
-                onMouseEnter={e => { e.currentTarget.style.backgroundColor = `${colors.danger}1A`; }}
-                onMouseLeave={e => { e.currentTarget.style.backgroundColor = ''; }}
+                className="ml-auto"
+                flashSuccess={false}
+                onClick={() => { setConfirmRemove(p.name); setRemoveError(null); }}
+                style={{
+                  '--pa-btn-fg': colors.danger,
+                  '--pa-btn-border': `${colors.danger}4D`,
+                  '--pa-btn-border-hover': `${colors.danger}4D`,
+                  '--pa-btn-bg-hover': `${colors.danger}1A`,
+                  '--pa-btn-bg-active': `${colors.danger}26`,
+                  '--pa-btn-pad': '6px 12px',
+                  '--pa-btn-radius': `${radius.xs}px`,
+                } as CSSProperties}
               >
-                <FiTrash2 size={11} /> {removing === p.name ? 'Removing…' : 'Remove'}
-              </button>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <FiTrash2 size={11} /> Remove
+                </span>
+              </Button>
+            )}
+            {p.providerType === 'Custom' && confirmRemove === p.name && (
+              <div className="flex items-center gap-2 ml-auto">
+                <Button
+                  colors={colors}
+                  type="button"
+                  onClick={() => { setConfirmRemove(null); setRemoveError(null); }}
+                  disabled={removing === p.name}
+                  style={{
+                    '--pa-btn-fg': colors.textMuted,
+                    '--pa-btn-fg-hover': colors.text,
+                    '--pa-btn-border': colors.border,
+                    '--pa-btn-border-hover': colors.border,
+                    '--pa-btn-pad': '6px 12px',
+                    '--pa-btn-radius': `${radius.xs}px`,
+                  } as CSSProperties}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  colors={colors}
+                  type="button"
+                  onClick={() => handleRemove(p)}
+                  disabled={removing === p.name}
+                  style={{
+                    '--pa-btn-fg': colors.danger,
+                    '--pa-btn-border': `${colors.danger}4D`,
+                    '--pa-btn-border-hover': `${colors.danger}4D`,
+                    '--pa-btn-bg-hover': `${colors.danger}1A`,
+                    '--pa-btn-bg-active': `${colors.danger}26`,
+                    '--pa-btn-pad': '6px 12px',
+                    '--pa-btn-radius': `${radius.xs}px`,
+                  } as CSSProperties}
+                >
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <FiTrash2 size={11} /> {removing === p.name ? 'Removing…' : 'Remove provider'}
+                  </span>
+                </Button>
+              </div>
             )}
           </div>
+
+          {/* The two-step's own sentence: what removing this actually costs,
+              said on the card rather than in a dialog that covers it. */}
+          {confirmRemove === p.name && (
+            <div className="text-[11px] mt-2" style={{ fontFamily: font.body, color: colors.textMuted }}>
+              Remove {p.displayName}? This deletes its saved configuration — the endpoint,
+              the model list and the API key entry. You can add it again later, from scratch.
+            </div>
+          )}
+          {removeError?.name === p.name && (
+            <div role="alert" className="text-[11px] mt-2" style={{ fontFamily: font.body, color: colors.danger }}>
+              Couldn't remove {p.displayName} — {removeError.message}
+            </div>
+          )}
+          {defaultError === p.name && (
+            <div role="alert" className="text-[11px] mt-2" style={{ fontFamily: font.body, color: colors.danger }}>
+              Couldn't make {p.displayName} the default — the daemon didn't take
+              the change. The provider below the badge is still the one in use.
+            </div>
+          )}
 
           {/* A configured reference the daemon cannot read. Stated on the card,
               not just inside the modal, because the whole point is that the

@@ -2,10 +2,11 @@
  * Home card for the latest Council of LLMs weekly report.
  */
 
-import { useEffect, useState } from 'react';
-import { font, radius } from '../../../styles/tokens';
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from 'react';
+import { font, radius, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { api, type CouncilLatest } from '../../../lib/api';
+import { Button } from '../../common/Button';
 import { useDecisions } from '../decisions/useDecisions';
 import { DecisionInbox } from '../decisions/DecisionInbox';
 
@@ -14,16 +15,31 @@ export function CouncilCard() {
   const [data, setData] = useState<CouncilLatest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openTakes, setOpenTakes] = useState(false);
+  const takesId = useId();
   const [inboxOpen, setInboxOpen] = useState(false);
   const inbox = useDecisions();
+  const live = useRef(true);
 
-  useEffect(() => {
-    let active = true;
-    api.getCouncilLatest()
-      .then(d => { if (active) setData(d); })
-      .catch(e => { if (active) setError(e instanceof Error ? e.message : String(e)); });
-    return () => { active = false; };
+  useEffect(() => () => { live.current = false; }, []);
+
+  // A daemon that can't be reached is not a Council with nothing to say, so
+  // the failure names itself and hands back a way to try again rather than
+  // printing a raw exception and stopping there.
+  const load = useCallback(async () => {
+    try {
+      const d = await api.getCouncilLatest();
+      if (!live.current) return true;
+      setData(d);
+      setError(null);
+      return true;
+    } catch (e) {
+      if (!live.current) return false;
+      setError(e instanceof Error ? e.message : String(e));
+      return false;
+    }
   }, []);
+
+  useEffect(() => { void load(); }, [load]);
 
   const report = data?.report;
   const session = data?.session;
@@ -46,7 +62,7 @@ export function CouncilCard() {
         }}
       >
         <div style={{
-          fontFamily: font.body, fontSize: 11, fontWeight: 600,
+          fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600,
           letterSpacing: '0.10em', textTransform: 'uppercase',
           color: colors.textDim, marginBottom: 6,
         }}>
@@ -54,15 +70,21 @@ export function CouncilCard() {
         </div>
 
         {error && (
-          <div style={{ fontSize: 12, color: colors.danger }}>{error}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+            <div style={{ fontSize: textSize.small, color: colors.text, lineHeight: 1.5 }}>
+              Couldn't load the Council report — the daemon didn't answer.
+            </div>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono }}>{error}</div>
+            <Button colors={colors} type="button" onClick={() => load()}>Retry</Button>
+          </div>
         )}
 
         {!error && !data && (
-          <div style={{ fontSize: 12, color: colors.textMuted }}>Loading…</div>
+          <div style={{ fontSize: textSize.caption, color: colors.textMuted }}>Loading…</div>
         )}
 
         {data && !report && (
-          <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5 }}>
+          <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.5 }}>
             No weekly report yet. Turn on The Council under Settings → Features;
             the chat agent can also convene one on demand.
           </div>
@@ -71,45 +93,71 @@ export function CouncilCard() {
         {report && (
           <>
             <div style={{
-              fontSize: 16, fontWeight: 600, color: colors.text,
+              fontSize: textSize.heading, fontWeight: 600, color: colors.text,
               lineHeight: 1.3, marginBottom: 8,
             }}>
               {report.headline}
             </div>
             <div style={{
-              fontSize: 12, color: colors.textMuted, lineHeight: 1.5,
+              fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5,
               whiteSpace: 'pre-wrap', overflow: 'auto', flex: 1, minHeight: 0,
             }}>
               {report.markdown}
             </div>
             <div style={{
               display: 'flex', gap: 10, marginTop: 10, alignItems: 'center',
-              fontSize: 11, color: colors.textDim, flexWrap: 'wrap',
+              fontSize: textSize.micro, color: colors.textDim, flexWrap: 'wrap',
             }}>
               <span>{session?.status} · {positions.length} take{positions.length === 1 ? '' : 's'}</span>
+              {/* Disclosure toggle: it opens the takes list right below and
+                  there is nothing to await, so it takes the shared `.pa-btn`
+                  interaction rules rather than the Button primitive's
+                  pending/success machinery. */}
               <button
+                type="button"
+                className="pa-btn hover:underline"
+                aria-expanded={openTakes}
+                aria-controls={takesId}
                 onClick={() => setOpenTakes(v => !v)}
                 style={{
-                  background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-                  color: colors.cyan, fontFamily: font.body, fontSize: 11,
-                }}
+                  '--pa-btn-bg': 'transparent',
+                  '--pa-btn-fg': colors.cyan,
+                  '--pa-btn-border': 'transparent',
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-fg-hover': colors.cyan,
+                  '--pa-btn-bg-active': 'transparent',
+                  '--pa-btn-pad': '0',
+                  '--pa-btn-radius': '0',
+                  '--pa-btn-weight': 400,
+                  fontFamily: font.body, fontSize: textSize.micro,
+                } as CSSProperties}
               >
                 {openTakes ? 'Hide takes' : 'Per-model takes'}
               </button>
-              <button
+              <Button
+                colors={colors}
+                variant="bare"
+                type="button"
+                className="hover:underline"
                 onClick={() => setInboxOpen(true)}
                 style={{
-                  background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-                  color: colors.cyan, fontFamily: font.body, fontSize: 11,
-                }}
+                  '--pa-btn-fg': colors.cyan,
+                  '--pa-btn-fg-hover': colors.cyan,
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-bg-active': 'transparent',
+                  '--pa-btn-pad': '0',
+                  '--pa-btn-radius': '0',
+                  '--pa-btn-weight': 400,
+                  fontFamily: font.body, fontSize: textSize.micro,
+                } as CSSProperties}
               >
                 {actions} open action{actions === 1 ? '' : 's'}
-              </button>
+              </Button>
             </div>
             {openTakes && (
-              <div style={{
+              <div id={takesId} style={{
                 marginTop: 8, overflow: 'auto', maxHeight: 180,
-                fontSize: 11, color: colors.textMuted, lineHeight: 1.45,
+                fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.45,
               }}>
                 {positions.map(p => (
                   <div key={p.id} style={{ marginBottom: 10 }}>

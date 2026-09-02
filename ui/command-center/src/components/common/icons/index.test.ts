@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ICON_PATHS, resolveIconPath } from './icons';
+import { ICON_PATHS, resolveIconPath } from './index';
 
 /**
  * The point of resolving by name is that EXISTING installs — whose

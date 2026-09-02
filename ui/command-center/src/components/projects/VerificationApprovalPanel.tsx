@@ -16,10 +16,11 @@
  * verificationApproval.ts. Failures surface inline (#568 no-silent-catch).
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { FiPlus, FiTrash2, FiX } from 'react-icons/fi';
-import { font } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { formatAge } from '../dashboard/decisions/format';
 import { Panel } from './Panel';
 import {
@@ -30,6 +31,7 @@ import {
   type VerificationApproval,
 } from './verificationApproval';
 import type { Project } from './types';
+import { GLOSSARY } from '../../lib/vocabulary';
 
 export function VerificationApprovalPanel({ project }: { project: Project }) {
   const { colors, theme } = useTheme();
@@ -47,6 +49,8 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
   const [newEntry, setNewEntry] = useState('');
   const [showAllAudit, setShowAllAudit] = useState(false);
 
+  // Every helper below resolves `false` on failure: they all surface their own
+  // reason inline, so no button may tick over a write that did not land.
   const load = useCallback(async () => {
     try {
       const va = await fetchVerificationApproval(project.id);
@@ -55,11 +59,13 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
       setFullDraft(String(va.fullThreshold));
       setStatus('ready');
       setError(null);
+      return true;
     } catch (e) {
       // Keep the reason: "couldn't load" with no cause is the silent catch
       // this file's header promises not to do.
       setError((e as Error).message || 'request failed');
       setStatus('error');
+      return false;
     }
   }, [project.id]);
 
@@ -67,8 +73,8 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
 
   const addEntry = async () => {
     const token = newEntry.trim();
-    if (!data || !token) return;
-    if (data.allowlist.includes(token)) { setNewEntry(''); return; }
+    if (!data || !token) return false;
+    if (data.allowlist.includes(token)) { setNewEntry(''); return false; }
     setSaving(true);
     setError(null);
     try {
@@ -76,30 +82,34 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
       const updated = await saveVerificationApproval(project.id, { allowlist: next });
       setData(updated);
       setNewEntry('');
+      return true;
     } catch (e) {
       setError(`Couldn't save: ${(e as Error).message || 'request failed'}`);
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
   const removeEntry = async (token: string) => {
-    if (!data) return;
+    if (!data) return false;
     setSaving(true);
     setError(null);
     try {
       const next = data.allowlist.filter(t => t !== token);
       const updated = await saveVerificationApproval(project.id, { allowlist: next });
       setData(updated);
+      return true;
     } catch (e) {
       setError(`Couldn't remove: ${(e as Error).message || 'request failed'}`);
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
   const saveThresholds = async () => {
-    if (!data) return;
+    if (!data) return false;
     const readOnlyThreshold = Number(readOnlyDraft);
     const fullThreshold = Number(fullDraft);
     const whole = (n: number) => Number.isInteger(n) && n >= 0;
@@ -107,16 +117,16 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
       // A threshold counts clean runs, so it is a whole number of them. Caught
       // here rather than as a 400 from serde's u32, which would say less.
       setError('Thresholds must be whole numbers, zero or more.');
-      return;
+      return false;
     }
     if (fullThreshold > 0 && readOnlyThreshold > 0 && fullThreshold < readOnlyThreshold) {
       setError('The full threshold cannot be lower than the read-only one.');
-      return;
+      return false;
     }
     const changes: { readOnlyThreshold?: number; fullThreshold?: number } = {};
     if (readOnlyThreshold !== data.readOnlyThreshold) changes.readOnlyThreshold = readOnlyThreshold;
     if (fullThreshold !== data.fullThreshold) changes.fullThreshold = fullThreshold;
-    if (Object.keys(changes).length === 0) return;
+    if (Object.keys(changes).length === 0) return false;
     setSaving(true);
     setError(null);
     try {
@@ -124,8 +134,10 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
       setData(updated);
       setReadOnlyDraft(String(updated.readOnlyThreshold));
       setFullDraft(String(updated.fullThreshold));
+      return true;
     } catch (e) {
       setError(`Couldn't save thresholds: ${(e as Error).message || 'request failed'}`);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -140,15 +152,17 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
       setReadOnlyDraft(String(updated.readOnlyThreshold));
       setFullDraft(String(updated.fullThreshold));
       setNewEntry('');
+      return true;
     } catch (e) {
       setError(`Couldn't reset: ${(e as Error).message || 'request failed'}`);
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
   const inputStyle: React.CSSProperties = {
-    fontSize: 12, padding: '6px 9px', borderRadius: 7,
+    fontSize: textSize.caption, padding: '6px 9px', borderRadius: 7,
     background: colors.inputBg, border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none',
   };
@@ -156,7 +170,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
   if (status === 'loading') {
     return (
       <Panel title="Verification approval">
-        <div style={{ fontSize: 11, color: colors.textDim }}>Loading…</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading…</div>
       </Panel>
     );
   }
@@ -165,18 +179,25 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
     return (
       <Panel title="Verification approval">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 11, color: colors.danger }}>
+          <span style={{ fontSize: textSize.micro, color: colors.danger }}>
             Couldn't load verification approval settings{error ? `: ${error}` : '.'}
           </span>
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
+            className="hover:underline"
             onClick={load}
             style={{
-              fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
-              cursor: 'pointer', fontFamily: font.body, padding: 0, fontWeight: 600,
-            }}
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-weight': 600,
+              fontFamily: font.body,
+              fontSize: textSize.micro,
+            } as CSSProperties}
           >
             Retry
-          </button>
+          </Button>
         </div>
       </Panel>
     );
@@ -191,21 +212,28 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
     <Panel
       title="Verification approval"
       action={
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
+          className="hover:underline"
           onClick={reset}
           disabled={saving}
           style={{
-            background: 'none', border: 'none', padding: 0, cursor: saving ? 'default' : 'pointer',
-            color: colors.textDim, fontFamily: font.body, fontSize: 11, fontWeight: 600,
-            opacity: saving ? 0.5 : 1,
-          }}
+            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-weight': 600,
+            fontFamily: font.body,
+            fontSize: textSize.micro,
+          } as CSSProperties}
         >
           Reset
-        </button>
+        </Button>
       }
     >
       {error && (
-        <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{error}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error}</div>
       )}
 
       {/* Earned privilege — current level, the count, and what it permits. */}
@@ -217,22 +245,26 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
         }}
       >
         <span style={{
-          fontSize: 11, fontWeight: 700, color: levelColor, textTransform: 'uppercase',
+          fontSize: textSize.micro, fontWeight: 700, color: levelColor, textTransform: 'uppercase',
           letterSpacing: '0.04em',
         }}>
           {level === 'full' ? 'Full' : level === 'read_only' ? 'Read-only' : 'None'}
         </span>
-        <span style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono }}>
+        <span
+          data-testid="clean-runs"
+          title={GLOSSARY.cleanRuns}
+          style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, cursor: 'help' }}
+        >
           {data.cleanRuns} clean run{data.cleanRuns === 1 ? '' : 's'}
         </span>
       </div>
-      <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, marginBottom: 12 }}>
+      <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginBottom: 12 }}>
         {privilegeLevelBlurb(level)}
       </div>
 
       {/* Thresholds — editable numbers */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: colors.textDim }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: textSize.micro, color: colors.textDim }}>
           Read-only at
           <input
             type="number"
@@ -242,7 +274,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
             style={{ ...inputStyle, width: 56 }}
           />
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: colors.textDim }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: textSize.micro, color: colors.textDim }}>
           Full at
           <input
             type="number"
@@ -252,18 +284,23 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
             style={{ ...inputStyle, width: 56 }}
           />
         </label>
-        <button
+        <Button
+          colors={colors}
+          variant="ghostOn"
           onClick={saveThresholds}
           disabled={saving}
           style={{
-            fontSize: 11, fontWeight: 600, padding: '5px 12px', borderRadius: 7,
-            cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.5 : 1,
-            background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-            color: colors.cyan, fontFamily: font.body,
-          }}
+            '--pa-btn-bg': colors.cyanSoft,
+            '--pa-btn-border': colors.borderHi,
+            '--pa-btn-pad': '5px 12px',
+            '--pa-btn-radius': '7px',
+            '--pa-btn-weight': 600,
+            fontFamily: font.body,
+            fontSize: textSize.micro,
+          } as CSSProperties}
         >
           Save thresholds
-        </button>
+        </Button>
       </div>
 
       {/* Allowlist — add/remove */}
@@ -278,24 +315,28 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
           placeholder="Command token to allow — e.g. cargo"
           style={{ ...inputStyle, flex: 1, minWidth: 0 }}
         />
-        <button
-          onClick={addEntry}
+        <Button
+          colors={colors}
+          variant="ghostOn"
+                    onClick={addEntry}
           disabled={saving || !newEntry.trim()}
           style={{
-            display: 'inline-flex', alignItems: 'center', gap: 4,
-            fontSize: 11, fontWeight: 600, padding: '6px 10px', borderRadius: 7,
-            cursor: (saving || !newEntry.trim()) ? 'default' : 'pointer',
-            opacity: (saving || !newEntry.trim()) ? 0.5 : 1,
-            background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-            color: colors.cyan, fontFamily: font.body,
-          }}
+            '--pa-btn-bg': colors.cyanSoft,
+            '--pa-btn-border': colors.borderHi,
+            '--pa-btn-pad': '6px 10px',
+            '--pa-btn-radius': '7px',
+            '--pa-btn-weight': 600,
+            gap: 4,
+            fontFamily: font.body,
+            fontSize: textSize.micro,
+          } as CSSProperties}
         >
           <FiPlus size={11} /> Add
-        </button>
+        </Button>
       </div>
 
       {data.allowlist.length === 0 ? (
-        <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 12 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 12 }}>
           Nothing allowlisted yet — every command outside earned privilege asks first.
         </div>
       ) : (
@@ -305,23 +346,28 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
               key={token}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6,
-                borderRadius: 999, padding: '3px 6px 3px 10px',
+                borderRadius: radius.pill, padding: '3px 6px 3px 10px',
                 background: rowVeil, border: `1px solid ${colors.border}`,
-                fontFamily: font.mono, fontSize: 11, color: colors.text,
+                fontFamily: font.mono, fontSize: textSize.micro, color: colors.text,
               }}
             >
               {token}
-              <button
+              <Button
+                colors={colors}
+                variant="bare"
                 onClick={() => removeEntry(token)}
                 title={`Remove ${token}`}
+                aria-label={`Remove ${token}`}
                 disabled={saving}
                 style={{
-                  background: 'none', border: 'none', color: colors.textDim,
-                  cursor: saving ? 'default' : 'pointer', display: 'flex', padding: 2,
-                }}
+                  '--pa-btn-fg': colors.textDim,
+                  '--pa-btn-fg-hover': colors.danger,
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-pad': '2px',
+                } as CSSProperties}
               >
                 <FiTrash2 size={11} />
-              </button>
+              </Button>
             </span>
           ))}
         </div>
@@ -332,7 +378,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
         Recent activity
       </div>
       {visibleAudit.length === 0 ? (
-        <div style={{ fontSize: 11, color: colors.textDim }}>No checks recorded yet.</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>No checks recorded yet.</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {visibleAudit.map((row, i) => (
@@ -345,7 +391,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
             >
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
                 <span style={{
-                  fontFamily: font.mono, fontSize: 11, color: colors.text, flex: 1, minWidth: 0,
+                  fontFamily: font.mono, fontSize: textSize.micro, color: colors.text, flex: 1, minWidth: 0,
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>
                   {row.command}
@@ -365,16 +411,24 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
         </div>
       )}
       {auditNewestFirst.length > 8 && (
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
+          className="hover:underline"
           onClick={() => setShowAllAudit(s => !s)}
           style={{
-            marginTop: 8, background: 'none', border: 'none', padding: 0,
-            color: colors.cyan, fontFamily: font.body, fontSize: 11, fontWeight: 600,
-            cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4,
-          }}
+            '--pa-btn-fg': colors.cyan,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-weight': 600,
+            marginTop: 8,
+            gap: 4,
+            fontFamily: font.body,
+            fontSize: textSize.micro,
+          } as CSSProperties}
         >
           {showAllAudit ? <><FiX size={11} /> Show fewer</> : `Show all ${auditNewestFirst.length}`}
-        </button>
+        </Button>
       )}
     </Panel>
   );

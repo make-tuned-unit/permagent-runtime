@@ -21,6 +21,14 @@ use std::path::Path;
 const MAX_EXTENSIONS: usize = 5;
 const MAX_TOOLS: usize = 50;
 
+/// One resolution of "who is this agent", shared by the system prompt and the
+/// public accessors so they can never disagree.
+struct ResolvedPersona {
+    block: String,
+    display_name: String,
+    opening_greeting: String,
+}
+
 pub struct PromptManager {
     system_prompt_override: Option<String>,
     system_prompt_extras: IndexMap<String, String>,
@@ -268,41 +276,11 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             .filter(|(extensions, tools)| *extensions > MAX_EXTENSIONS || *tools > MAX_TOOLS);
 
         // Read persona for system prompt. Worker override takes precedence.
-        let (persona_block, display_name) =
-            if let Some((ref block, ref name)) = self.manager.persona_block_override {
-                (block.clone(), name.clone())
-            } else {
-                let persona = match self
-                    .manager
-                    .persona
-                    .as_ref()
-                    .and_then(|p| p.try_read().ok())
-                {
-                    // Live read succeeded: this is the source of truth. Refresh
-                    // the last-known-good cache so a later contended turn has a
-                    // current value to fall back to (renames included).
-                    Some(guard) => {
-                        let persona = guard.clone();
-                        if let Ok(mut cache) = self.manager.last_good_persona.write() {
-                            *cache = Some(persona.clone());
-                        }
-                        persona
-                    }
-                    // Live read failed (lock contention, e.g. a concurrent
-                    // identity hot-reload). Fall back to the last-known-good
-                    // value rather than silently reverting to the default
-                    // ("Aria") persona. Only truly defaults if no successful
-                    // read has happened yet (pre-startup-load).
-                    None => self
-                        .manager
-                        .last_good_persona
-                        .read()
-                        .ok()
-                        .and_then(|cache| cache.clone())
-                        .unwrap_or_default(),
-                };
-                (persona.system_prompt_block(), persona.display_name())
-            };
+        let ResolvedPersona {
+            block: persona_block,
+            display_name,
+            ..
+        } = self.manager.resolve_persona();
 
         // Pulled out of `system_prompt_extras` into its own template slot
         // (see `SystemPromptContext::repo_map_block`) instead of riding in
@@ -459,7 +437,27 @@ const VOLATILE_EXTRA_KEYS: &[&str] = &[
     // is detected (`Agent::dispatch_tool_call`) — an insertion partway through
     // a session by construction.
     "skill_proposals",
+    // Which provider and model are ACTUALLY serving this turn
+    // (`reply_parts::prepare_tools_and_prompt`, read from the live
+    // `Agent::provider`). Volatile because a mid-session failover changes it —
+    // that is the entire reason the line exists.
+    MODEL_IDENTITY_KEY,
 ];
+
+/// Key for the live "which model is answering" line.
+///
+/// Session 20260831_10 (2026-08-31): the harness silently failed over from
+/// `qwen38_split` to `anthropic/claude-haiku-4-5`, and the model — which has
+/// never had a model-identity fact anywhere in its prompt — asserted it was
+/// running on a third model entirely. There was no wrong string to delete; the
+/// fact was simply absent.
+pub const MODEL_IDENTITY_KEY: &str = "model_identity";
+
+/// The one live self-identity sentence, from the SAME provider handle the
+/// composer footer reads (`Agent::provider`), so the two can never disagree.
+pub fn model_identity_line(provider_name: &str, model_name: &str) -> String {
+    format!("You are currently served by {provider_name}/{model_name}.")
+}
 
 /// Prefix for the per-subdirectory hint extras the agent accumulates as it works
 /// (`SubdirectoryHintTracker::load_new_hints` keys them by directory path), so
@@ -514,6 +512,69 @@ impl PromptManager {
 
     pub fn set_persona(&mut self, persona: crate::config::agent_identity::SharedPersona) {
         self.persona = Some(persona);
+    }
+
+    /// The persona the system prompt would be built from right now.
+    ///
+    /// Factored out of `SystemPromptBuilder::build_parts`, where it was
+    /// inlined, so the accessors below and the prompt itself resolve identity
+    /// through exactly ONE path — two copies is how a banner drifts from what
+    /// the model was actually told.
+    fn resolve_persona(&self) -> ResolvedPersona {
+        // Worker override takes precedence.
+        if let Some((ref block, ref name)) = self.persona_block_override {
+            return ResolvedPersona {
+                block: block.clone(),
+                display_name: name.clone(),
+                // A worker persona has no greeting of its own, and inheriting
+                // the primary's would put the wrong voice in the wrong mouth.
+                opening_greeting: String::new(),
+            };
+        }
+        let persona = match self.persona.as_ref().and_then(|p| p.try_read().ok()) {
+            // Live read succeeded: this is the source of truth. Refresh
+            // the last-known-good cache so a later contended turn has a
+            // current value to fall back to (renames included).
+            Some(guard) => {
+                let persona = guard.clone();
+                if let Ok(mut cache) = self.last_good_persona.write() {
+                    *cache = Some(persona.clone());
+                }
+                persona
+            }
+            // Live read failed (lock contention, e.g. a concurrent
+            // identity hot-reload). Fall back to the last-known-good
+            // value rather than silently reverting to the default
+            // ("Aria") persona. Only truly defaults if no successful
+            // read has happened yet (pre-startup-load).
+            None => self
+                .last_good_persona
+                .read()
+                .ok()
+                .and_then(|cache| cache.clone())
+                .unwrap_or_default(),
+        };
+        ResolvedPersona {
+            block: persona.system_prompt_block(),
+            display_name: persona.display_name(),
+            opening_greeting: persona.opening_greeting.clone(),
+        }
+    }
+
+    /// The display name that would be interpolated into the system prompt
+    /// right now. Exists so callers outside `permagent::agents` can assert
+    /// persona identity behaviourally — and so the CLI banner can name whoever
+    /// the model is actually being told it is.
+    pub fn display_name(&self) -> String {
+        self.resolve_persona().display_name
+    }
+
+    /// The persona's own opening line, for surfaces that greet the user
+    /// client-side (Chat already does; the CLI now does too). Empty when the
+    /// persona sets none, or when a worker override is installed — a worker
+    /// does not greet anyone.
+    pub fn opening_greeting(&self) -> String {
+        self.resolve_persona().opening_greeting
     }
 
     pub fn set_persona_block_override(&mut self, block: String, display_name: String) {
@@ -588,6 +649,56 @@ mod tests {
     use insta::assert_snapshot;
 
     use super::*;
+    use crate::config::agent_identity::PrimaryPersona;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    fn persona_named(name: &str, greeting: &str) -> crate::config::agent_identity::SharedPersona {
+        Arc::new(RwLock::new(PrimaryPersona {
+            first_name: name.to_string(),
+            opening_greeting: greeting.to_string(),
+            ..Default::default()
+        }))
+    }
+
+    /// `Agent::prompt_manager` is private to this module, so the CLI's only
+    /// coverage for "the persona actually reached the prompt" was a grep of
+    /// its own source for the constructor call. This accessor is what makes
+    /// that assertable for real, and it must report the installed persona
+    /// rather than the first-run fallback.
+    #[test]
+    fn display_name_reports_the_installed_persona_not_the_fallback() {
+        let mut manager = PromptManager::new();
+        let fallback = manager.display_name();
+        manager.set_persona(persona_named("Henry", "What are we building?"));
+        assert_eq!(manager.display_name(), "Henry");
+        assert_eq!(manager.opening_greeting(), "What are we building?");
+        assert_ne!(fallback, "Henry", "the fallback must be a different name");
+    }
+
+    /// A worker override is what the prompt really carries, so it has to be
+    /// what the accessor reports — a banner naming the primary persona while
+    /// the model was told it is someone else is worse than no banner.
+    #[test]
+    fn a_worker_override_outranks_the_shared_persona() {
+        let mut manager = PromptManager::new();
+        manager.set_persona(persona_named("Henry", "What are we building?"));
+        manager.set_persona_block_override("Your name is Steward.".into(), "Steward".into());
+        assert_eq!(manager.display_name(), "Steward");
+        assert_eq!(manager.opening_greeting(), "", "a worker greets no one");
+    }
+
+    /// The accessor and the prompt must read the SAME resolution — two copies
+    /// of this logic is how the banner would drift from the system prompt.
+    #[test]
+    fn the_accessor_and_the_built_prompt_agree_on_the_name() {
+        let mut manager = PromptManager::new();
+        manager.set_persona(persona_named("Henry", "hi"));
+        let name = manager.display_name();
+        assert_eq!(name, "Henry");
+        let prompt = manager.builder().build();
+        assert!(prompt.contains(&name), "{name} missing from the prompt");
+    }
 
     fn briefing(summary: &str) -> crate::agents::self_knowledge::BriefingLine {
         crate::agents::self_knowledge::BriefingLine {
@@ -945,9 +1056,37 @@ mod tests {
         assert!(overlay_at < extra_at);
     }
 
+    /// Hard ceiling on the UNSCOPED prefix — `GoosePlatform::GooseDesktop`,
+    /// Aria's resident chat, which by product contract describes everything
+    /// Permagent can do. Measured at 19,257 tokens (`qwen-local`, the largest
+    /// overlay) when this gate was added; the headroom is ~4%, enough for a
+    /// descriptor edit and nowhere near enough to hide a new always-on section.
+    const UNSCOPED_PREFIX_TOKEN_CEILING: usize = 20_000;
+
+    /// Hard ceiling on the SCOPED prefix — the `GooseCli` family: the
+    /// interactive CLI, the coding harness, in-process goal workers and Summon
+    /// subagents, all of which declare an explicit extension set. Measured at
+    /// 3,533 tokens for the three extensions `permagent-coding` declares
+    /// (developer, analyze, summon), down from 14,289 before the Workers and
+    /// Surfaces inventories were scoped out with the tool list — 10,756 tokens
+    /// off every turn of every such session. ~5% headroom.
+    ///
+    /// These two constants are the point of the test. The snapshot below shows
+    /// a reviewer WHAT grew; the ceilings stop it growing back unnoticed —
+    /// #1090 was a prefix that quietly reached 69KB with nobody watching. The
+    /// gap between them is also the guard on the scoping itself: put a section
+    /// back on the unscoped path and only the snapshot moves; put one back on
+    /// BOTH paths and this ceiling fails.
+    const SCOPED_PREFIX_TOKEN_CEILING: usize = 3_700;
+
+    /// The extension set `crates/goose-cli/src/recipes/builtin/permagent-coding.yaml`
+    /// declares. Representative of every scoped session shape.
+    const CODING_HARNESS_EXTENSIONS: &[&str] = &["developer", "analyze", "summon"];
+
     /// The whole point of the change, measured: the per-family prompt cost sits
     /// in one snapshot, so a family growing an expensive habit is visible in a
-    /// review diff rather than only on a bill.
+    /// review diff rather than only on a bill — and past a stated ceiling it
+    /// fails the build instead of merely showing up in a diff.
     #[test]
     fn family_prompt_size_table() {
         // Pin config resolution to an empty temp root so the build is a
@@ -961,22 +1100,65 @@ mod tests {
         ]);
         let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
 
-        let baseline = manager.builder().build().len();
-        let mut table = format!(
-            "shared body (no family selected): {} bytes / ~{} tokens\n\n\
-             family        overlay_bytes  total_bytes  approx_total_tokens\n",
-            baseline,
-            baseline.div_ceil(4)
+        let declared: Option<Vec<String>> = Some(
+            CODING_HARNESS_EXTENSIONS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         );
-        for family in ModelFamily::ALL {
-            let total = manager.builder().with_model_family(*family).build().len();
+        let shapes: [(&str, Option<Vec<String>>, usize); 2] = [
+            (
+                "unscoped (GooseDesktop — full product-contract inventory)",
+                None,
+                UNSCOPED_PREFIX_TOKEN_CEILING,
+            ),
+            (
+                "scoped (GooseCli — declares developer, analyze, summon)",
+                declared,
+                SCOPED_PREFIX_TOKEN_CEILING,
+            ),
+        ];
+
+        let mut table = String::new();
+        for (label, declared_extensions, ceiling) in shapes {
+            let build = |family: Option<ModelFamily>| {
+                let mut b = manager
+                    .builder()
+                    .with_declared_extensions(declared_extensions.clone());
+                if let Some(f) = family {
+                    b = b.with_model_family(f);
+                }
+                b.build().len()
+            };
+
+            let baseline = build(None);
             table.push_str(&format!(
-                "{:<13} {:>13}  {:>11}  {:>19}\n",
-                family.as_str(),
-                family.overlay().len(),
-                total,
-                total.div_ceil(4)
+                "## {label}\nshared body (no family selected): {} bytes / ~{} tokens\n\n\
+                 family        overlay_bytes  total_bytes  approx_total_tokens\n",
+                baseline,
+                baseline.div_ceil(4)
             ));
+            let mut worst = baseline;
+            for family in ModelFamily::ALL {
+                let total = build(Some(*family));
+                worst = worst.max(total);
+                table.push_str(&format!(
+                    "{:<13} {:>13}  {:>11}  {:>19}\n",
+                    family.as_str(),
+                    family.overlay().len(),
+                    total,
+                    total.div_ceil(4)
+                ));
+            }
+            table.push('\n');
+
+            let worst_tokens = worst.div_ceil(4);
+            assert!(
+                worst_tokens <= ceiling,
+                "{label}: the system prefix reached ~{worst_tokens} tokens, over its \
+                 stated ceiling of {ceiling}. Every turn of every such session pays this. \
+                 Cut something, or raise the ceiling DELIBERATELY and say why here."
+            );
         }
         assert_snapshot!(table);
     }

@@ -83,6 +83,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
             post(ingest_statement).layer(DefaultBodyLimit::max(MAX_FILE_SIZE * 2)),
         )
         .route("/api/finance/transactions/{id}", patch(recategorize))
+        .route("/api/finance/fx", get(get_fx))
         .with_state(state)
 }
 
@@ -1301,5 +1302,185 @@ async fn recategorize(
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((StatusCode::NOT_FOUND, "no transaction with that id".into()).into())
+    }
+}
+
+// ── FX ──────────────────────────────────────────────────────────────────────
+//
+// The Finance tab can display in a currency other than the one its numbers were
+// recorded in. Conversion is DISPLAY only — nothing here writes anything — and
+// `money.ts`'s first rule is that a missing rate is never guessed: no rate, no
+// converted figure, and the board stays whole in USD rather than half in each.
+//
+// This endpoint is the daemon side of that. `market_data` already quotes FX
+// under the same symbols it quotes equities, but the finance routes only ever
+// quoted symbols the user had stored, so the client's request 404'd and every
+// reader saw US dollars. Nothing about the rate is cached or persisted here: a
+// quote is a reading at a moment, and the client states its `asOf` in the view.
+
+/// The rate table the tab converts through, in the client's wire shape.
+#[derive(Debug, Serialize)]
+struct FxRates {
+    base: String,
+    rates: HashMap<String, f64>,
+    /// When the rate was true, straight from the source — never `now()`. The
+    /// tab marks a rate older than a day and drops one older than a week, and
+    /// it can only do that if this is the exchange's stamp and not ours.
+    #[serde(rename = "asOf")]
+    as_of: Option<String>,
+    source: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FxQuery {
+    base: Option<String>,
+    quote: String,
+}
+
+/// A currency is three ASCII letters. Rejecting anything else here keeps a
+/// typo'd code from being pasted into a market-data symbol and coming back as
+/// somebody else's instrument.
+fn normalize_currency(code: &str) -> Result<String, String> {
+    let code = code.trim();
+    if code.len() == 3 && code.chars().all(|c| c.is_ascii_alphabetic()) {
+        Ok(code.to_ascii_uppercase())
+    } else {
+        Err(format!("`{code}` is not a three-letter currency code"))
+    }
+}
+
+/// Yahoo's own FX convention: `CAD=X` is one US dollar in Canadian dollars, and
+/// a non-USD base pairs both codes (`EURCAD=X`).
+fn fx_symbol(base: &str, quote: &str) -> String {
+    if base == "USD" {
+        format!("{quote}=X")
+    } else {
+        format!("{base}{quote}=X")
+    }
+}
+
+/// One unit of `base` in `quote`, or an error. A quote that came back without a
+/// usable price is NOT a rate — the whole point of the endpoint is that the tab
+/// would rather show US dollars than a number nobody measured.
+fn fx_rates(base: &str, quote: &str, reading: &Quote) -> Result<FxRates, String> {
+    let rate = reading
+        .price
+        .filter(|p| p.is_finite() && *p > 0.0)
+        .ok_or_else(|| format!("no {base}/{quote} price came back from the market data source"))?;
+    Ok(FxRates {
+        base: base.to_string(),
+        rates: HashMap::from([(quote.to_string(), rate)]),
+        as_of: reading.quoted_at.clone(),
+        source: format!("yahoo:{}", fx_symbol(base, quote)),
+    })
+}
+
+/// A currency against itself. Definitional, so it costs no round trip and
+/// carries no reading time.
+fn fx_identity(code: &str) -> FxRates {
+    FxRates {
+        base: code.to_string(),
+        rates: HashMap::from([(code.to_string(), 1.0)]),
+        as_of: None,
+        source: "identity".to_string(),
+    }
+}
+
+/// `GET /api/finance/fx?base=USD&quote=CAD`
+///
+/// 5xx when the reading could not be had, so the tab's "rate unavailable —
+/// showing US dollars" path fires. Never a fabricated rate, and never a 200
+/// carrying an empty table: the client would read an absent key as a bug rather
+/// than as an answer.
+async fn get_fx(
+    axum::extract::Query(query): axum::extract::Query<FxQuery>,
+) -> Result<Json<FxRates>, ApiError> {
+    let base = normalize_currency(query.base.as_deref().unwrap_or("USD"))
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let quote = normalize_currency(&query.quote).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    if base == quote {
+        return Ok(Json(fx_identity(&base)));
+    }
+
+    let symbol = fx_symbol(&base, &quote);
+    let reading = market_data::quote(&symbol)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{base}→{quote}: {e}")))?;
+    let rates = fx_rates(&base, &quote, &reading).map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(rates))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Yahoo prices FX under the same symbols it prices equities. `CAD=X` is
+    /// one US dollar in Canadian dollars; a non-USD base pairs both codes.
+    #[test]
+    fn the_fx_symbol_follows_yahoos_own_convention() {
+        assert_eq!(fx_symbol("USD", "CAD"), "CAD=X");
+        assert_eq!(fx_symbol("USD", "EUR"), "EUR=X");
+        assert_eq!(fx_symbol("EUR", "CAD"), "EURCAD=X");
+    }
+
+    #[test]
+    fn a_currency_code_is_three_letters_or_it_is_not_a_currency() {
+        assert_eq!(normalize_currency(" cad ").unwrap(), "CAD");
+        assert_eq!(normalize_currency("USD").unwrap(), "USD");
+        for bad in ["", "US", "USDX", "C$D", "12 "] {
+            assert!(
+                normalize_currency(bad).is_err(),
+                "{bad:?} was accepted as a currency"
+            );
+        }
+    }
+
+    /// THE rule of this endpoint: a reading that did not come back is not a
+    /// rate. Every one of these used to be the difference between "showing US
+    /// dollars" and a whole board silently mispriced.
+    #[test]
+    fn a_quote_with_no_usable_price_never_becomes_a_rate() {
+        for price in [
+            None,
+            Some(0.0),
+            Some(-1.0),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+        ] {
+            let q = Quote {
+                symbol: "CAD=X".into(),
+                price,
+                ..Default::default()
+            };
+            assert!(
+                fx_rates("USD", "CAD", &q).is_err(),
+                "price {price:?} was turned into a rate"
+            );
+        }
+    }
+
+    #[test]
+    fn a_live_reading_carries_its_rate_its_stamp_and_its_source() {
+        let q = Quote {
+            symbol: "CAD=X".into(),
+            price: Some(1.3712),
+            quoted_at: Some("2026-08-31T20:00:00Z".into()),
+            ..Default::default()
+        };
+        let out = fx_rates("USD", "CAD", &q).unwrap();
+        assert_eq!(out.base, "USD");
+        assert_eq!(out.rates.get("CAD"), Some(&1.3712));
+        assert_eq!(out.as_of.as_deref(), Some("2026-08-31T20:00:00Z"));
+        assert_eq!(out.source, "yahoo:CAD=X");
+    }
+
+    /// One dollar is one dollar. Definitional, not a guess — and it costs no
+    /// network round trip to say so.
+    #[test]
+    fn a_currency_converted_to_itself_is_one_and_names_itself_as_such() {
+        let out = fx_identity("USD");
+        assert_eq!(out.rates.get("USD"), Some(&1.0));
+        assert_eq!(out.source, "identity");
+        assert_eq!(out.as_of, None, "an identity has no reading time to state");
     }
 }

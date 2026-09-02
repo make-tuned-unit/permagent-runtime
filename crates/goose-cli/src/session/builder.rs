@@ -18,6 +18,21 @@ use tokio::task::JoinSet;
 
 const EXTENSION_HINT_MAX_LEN: usize = 5;
 
+/// Create a CLI agent with the user's persisted primary identity installed.
+///
+/// `PromptManager` deliberately has a built-in fallback persona for first-run
+/// and recovery paths. A coding-harness session is not one of those paths: it
+/// must share the primary persona saved by Chat in `agent.yaml`. Keeping this
+/// in one constructor also prevents helper/debug sessions from quietly
+/// reverting to the fallback identity.
+async fn new_primary_agent() -> Agent {
+    let agent = Agent::new();
+    agent
+        .set_persona(permagent::config::agent_identity::load_shared_persona())
+        .await;
+    agent
+}
+
 fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
     let truncated: String = s.chars().take(max_len).collect();
     if s.chars().count() > max_len {
@@ -191,7 +206,7 @@ async fn offer_extension_debugging_help(
     );
 
     // Create a minimal agent for debugging
-    let debug_agent = Agent::new();
+    let debug_agent = new_primary_agent().await;
 
     let session = debug_agent
         .config
@@ -453,6 +468,114 @@ fn resolve_provider_and_model(
         provider_name,
         model_name,
         model_config,
+    }
+}
+
+/// Pure: what a resolved-but-dead local endpoint becomes, and the sentence that
+/// says so. `None` when nothing is configured to fall back to — the caller must
+/// then stay put and report the dead endpoint rather than substitute a model
+/// nobody chose.
+///
+/// The announcement is the SAME builder the mid-turn failover uses
+/// (`cost_router::fallback::precommit_failover_reply`), so a switch reads
+/// identically whether it happened at startup or three turns in.
+fn startup_failover(
+    resolved: &ResolvedProviderConfig,
+    fallback: Option<&permagent::cost_router::role_map::RoleModel>,
+) -> Option<(ResolvedProviderConfig, String)> {
+    let target = fallback?;
+    let model_config = permagent::model::ModelConfig::new(&target.model)
+        .ok()?
+        .with_canonical_limits(&target.provider)
+        .with_temperature(resolved.model_config.temperature);
+    let notice = permagent::cost_router::fallback::precommit_failover_reply(
+        &resolved.provider_name,
+        &permagent::providers::errors::ProviderError::NetworkError(String::new()),
+        target,
+    );
+    Some((
+        ResolvedProviderConfig {
+            provider_name: target.provider.clone(),
+            model_name: target.model.clone(),
+            model_config,
+        },
+        notice,
+    ))
+}
+
+/// Put a startup-failover notice where this session's reader will actually
+/// find it, and return it when the caller still has to file it.
+///
+/// Interactive gets the terminal print and nothing else — the user is looking
+/// at the terminal, and the footer will agree with it from the first turn.
+/// Headless has neither: `render_notice` writes to a tty nobody reads, and a
+/// scheduled recipe or Build-tab launch has no footer at all. So the sentence
+/// goes to stderr (the harness run's captured output — never stdout, which
+/// `--output-format json` owns) AND comes back for the session journal, which
+/// is the only place a reader can find it afterwards.
+fn deliver_failover_notice(notice: String, interactive: bool) -> Option<String> {
+    if interactive {
+        output::render_notice(&notice);
+        None
+    } else {
+        eprintln!("note: {notice}");
+        Some(notice)
+    }
+}
+
+/// Probe a self-hosted endpoint BEFORE the first turn, and fail over now rather
+/// than burning a turn discovering it.
+///
+/// Session 20260831_10 (2026-08-31): the coding harness resolved
+/// `qwen38_split`/`qwen3.8-27b` from the harness role default — a source that
+/// answers "is it configured", never "is it up" — printed that as the banner,
+/// then spent a whole turn's latency finding the split's port closed before the
+/// mid-turn failover moved it to `anthropic/claude-haiku-4-5`.
+///
+/// Only endpoints the user hosts themselves are probed, on exactly the gate
+/// `/model` already uses (`super::provider_probe_url`, loopback or private LAN);
+/// a cloud provider pays no round trip here.
+///
+/// Returns the announcement when the caller still owes it a home — see
+/// [`deliver_failover_notice`].
+async fn failover_if_endpoint_is_dead(
+    resolved: ResolvedProviderConfig,
+    interactive: bool,
+) -> (ResolvedProviderConfig, Option<String>) {
+    let Some(url) = super::provider_probe_url(&resolved.provider_name) else {
+        return (resolved, None);
+    };
+    if super::endpoint_is_reachable(&url).await {
+        return (resolved, None);
+    }
+
+    match startup_failover(
+        &resolved,
+        permagent::cost_router::fallback::permanent_failure_fallback(&resolved.provider_name)
+            .as_ref(),
+    ) {
+        Some((switched, notice)) => {
+            tracing::warn!(
+                target: "permagent::cost_router",
+                from_provider = %resolved.provider_name,
+                to_provider = %switched.provider_name,
+                to_model = %switched.model_name,
+                probe_url = %url,
+                "startup probe found the endpoint dead; switched before the first turn"
+            );
+            (switched, deliver_failover_notice(notice, interactive))
+        }
+        // Nothing to fall back to. Say what is wrong now, in a sentence that
+        // names the port, instead of letting turn one die on a raw socket error.
+        None => {
+            output::render_error(&format!(
+                "`{}` is {} No fallback model is configured, so this session will \
+                 start on it anyway and the first turn will fail.",
+                resolved.provider_name,
+                super::unreachable_notice(&url)
+            ));
+            (resolved, None)
+        }
     }
 }
 
@@ -845,7 +968,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     permagent::posthog::set_session_context("cli", session_config.resume);
 
     let config = Config::global();
-    let agent: Agent = Agent::new();
+    let agent = new_primary_agent().await;
 
     if session_config.container.is_some() {
         agent.set_container(session_config.container.clone()).await;
@@ -868,6 +991,11 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 
     let resolved =
         resolve_provider_and_model(&session_config, config, saved_provider, saved_model_config);
+    // Resolution answers "what is configured", not "what is up". Settle a dead
+    // self-hosted endpoint HERE, so the banner below prints what will actually
+    // serve and turn one is not spent finding a closed port.
+    let (resolved, headless_failover_notice) =
+        failover_if_endpoint_is_dead(resolved, session_config.interactive).await;
 
     let recipe = session_config.recipe.as_ref();
 
@@ -881,6 +1009,21 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 
     let session_id =
         resolve_session_id(&session_config, &session_manager, agent.config.goose_mode).await;
+
+    // M2b: file the startup failover in the session's own journal, now that the
+    // session exists. A headless run has no banner and no footer, so without
+    // this the transcript claims nothing about which model actually served it —
+    // and whoever reads the run afterwards has no way to find out.
+    if let Some(notice) = headless_failover_notice {
+        let message = permagent::conversation::message::Message::assistant()
+            .with_system_notification(
+                permagent::conversation::message::SystemNotificationType::InlineMessage,
+                notice,
+            );
+        if let Err(e) = session_manager.add_message(&session_id, &message).await {
+            tracing::warn!("Failed to journal the startup failover notice: {e}");
+        }
+    }
 
     if session_config.resume {
         handle_resumed_session_workdir(&agent, &session_id, session_config.interactive).await;
@@ -968,6 +1111,11 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 
     let debug_mode = session_config.debug || config.get_param("GOOSE_DEBUG").unwrap_or(false);
 
+    // Read the identity out before the agent is moved into the session: the
+    // banner has to name whoever the model is being told it is, and
+    // `new_primary_agent` installed that several hundred lines ago.
+    let persona_name = agent_ptr.persona_display_name().await;
+
     let session = CliSession::new(
         Arc::try_unwrap(agent_ptr).unwrap_or_else(|_| panic!("There should be no more references")),
         session_id.clone(),
@@ -988,7 +1136,14 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             &resolved.provider_name,
             &resolved.model_name,
             &Some(session_id),
+            &persona_name,
         );
+        // No opening greeting here. The banner already ends on "<name> is
+        // ready", and a second line saying hello is one more thing to read
+        // before you can start working (ruling 2026-08-31, the user: "I don't
+        // need it to say Hello sir."). The persona's `opening_greeting` is
+        // unchanged and still Chat's — a graphical client opening on an empty
+        // thread has a blank space to fill; a terminal prompt does not.
     }
     session
 }
@@ -999,6 +1154,92 @@ mod tests {
 
     fn s(v: &str) -> Option<String> {
         Some(v.to_string())
+    }
+
+    /// REPLACES a source-text grep.
+    ///
+    /// The old guard read this file's own product half looking for one
+    /// `Agent::new();` and a literal `set_persona(...)` call. That could tell
+    /// you the constructor was written, never that the persona it installs is
+    /// the one the model is actually told about — the thing that was broken.
+    /// `Agent::persona_display_name` now reads the identity back out of the
+    /// prompt manager, so this asserts the contract instead of its spelling.
+    #[tokio::test]
+    async fn the_cli_agent_carries_the_persona_that_reaches_the_prompt() {
+        let saved = permagent::config::agent_identity::load_shared_persona();
+        let expected = saved.read().await.display_name();
+
+        let agent = new_primary_agent().await;
+        assert_eq!(
+            agent.persona_display_name().await,
+            expected,
+            "the harness must run as the identity saved in agent.yaml, not \
+             PromptManager's first-run fallback"
+        );
+    }
+
+    /// …and the accessor is reading real state, not returning a constant: an
+    /// agent with nothing installed reports the fallback, and installing a
+    /// persona changes what the prompt would say.
+    #[tokio::test]
+    async fn the_installed_persona_is_what_the_accessor_reports() {
+        let agent = Agent::new();
+        let fallback = agent.persona_display_name().await;
+        agent
+            .set_persona(std::sync::Arc::new(tokio::sync::RwLock::new(
+                permagent::config::agent_identity::PrimaryPersona {
+                    first_name: "Henry".into(),
+                    opening_greeting: "What are we building?".into(),
+                    ..Default::default()
+                },
+            )))
+            .await;
+        assert_eq!(agent.persona_display_name().await, "Henry");
+        assert_eq!(
+            agent.persona_opening_greeting().await,
+            "What are we building?"
+        );
+        assert_ne!(fallback, "Henry");
+    }
+
+    // ── startup reachability (M-startup) ──────────────────────────────────
+
+    fn dead_split() -> ResolvedProviderConfig {
+        ResolvedProviderConfig {
+            provider_name: "qwen38_split".to_string(),
+            model_name: "qwen3.8-27b".to_string(),
+            model_config: permagent::model::ModelConfig::new("qwen3.8-27b").unwrap(),
+        }
+    }
+
+    /// Source #4 (the harness role default) is an UNVERIFIED claim:
+    /// `qwen38_split` declares `requires_auth: false`, so it reads as
+    /// configured for the ~18 hours a day the split is not running. Waiting
+    /// for the first turn to discover that costs a full turn of latency and,
+    /// before M2, said nothing. Resolve the switch at startup instead.
+    #[test]
+    fn a_dead_local_endpoint_resolves_to_the_fallback_before_the_first_turn() {
+        let target = permagent::cost_router::role_map::RoleModel {
+            provider: "anthropic".to_string(),
+            model: "claude-haiku-4-5".to_string(),
+        };
+        let (switched, notice) =
+            startup_failover(&dead_split(), Some(&target)).expect("a configured fallback applies");
+        assert_eq!(switched.provider_name, "anthropic");
+        assert_eq!(switched.model_name, "claude-haiku-4-5");
+        assert_eq!(
+            switched.model_config.model_name, "claude-haiku-4-5",
+            "the ModelConfig must be rebuilt for the new model, not carried over"
+        );
+        assert!(notice.contains("qwen38_split"), "{notice}");
+        assert!(notice.contains("anthropic/claude-haiku-4-5"), "{notice}");
+    }
+
+    /// No fallback configured is not a licence to pretend: stay put, and let
+    /// the caller say the endpoint is dead.
+    #[test]
+    fn no_configured_fallback_means_no_silent_substitution() {
+        assert!(startup_failover(&dead_split(), None).is_none());
     }
 
     /// The five sources in `resolve_provider_and_model`'s order:
@@ -1062,6 +1303,25 @@ mod tests {
             first_configured([s("   "), s(""), None, None, s("session")]),
             s("session"),
             "a blanked-out key is unset, not a provider named whitespace"
+        );
+    }
+
+    /// M2b: a headless run has no terminal and no footer, so the notice the
+    /// interactive path prints must survive as something the session journal
+    /// can hold. Returning `None` here is what made a scheduled recipe run on
+    /// a model its own transcript never named.
+    #[test]
+    fn a_headless_failover_notice_survives_for_the_journal() {
+        let notice = "Switched to anthropic/claude-haiku-4-5.".to_string();
+        assert_eq!(
+            deliver_failover_notice(notice.clone(), false),
+            Some(notice.clone()),
+            "headless must keep the sentence — stderr alone is not a journal"
+        );
+        assert_eq!(
+            deliver_failover_notice(notice, true),
+            None,
+            "interactive already printed it; journalling it twice would double up"
         );
     }
 

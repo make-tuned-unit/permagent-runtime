@@ -6,18 +6,39 @@
  * Holdings, household, watchlist, and notes are the default surface.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
-import { font, radius, tabularNums, type } from '../../styles/tokens';
+import { duration, ease, font, radius, tabularNums, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { api, apiFetch, uploadFinanceStatement } from '../../lib/api';
 import { ViewHeader } from '../common/ViewHeader';
+import { AsOf } from '../common/AsOf';
+import { Button, SUCCESS_FLASH_MS } from '../common/Button';
+import { Chip } from '../common/Chip';
+import { JobProgress } from '../common/JobProgress';
+import { useLongRunningJob, pollingRunner, type LongRunningJob } from '../../hooks/useLongRunningJob';
 import { navigateToTool, useCommandCenter } from '../../lib/store';
+import { GLOSSARY } from '../../lib/vocabulary';
 import { AGENT_TRIM } from '../world/shared/palette';
 import { PolybotKeys } from './PolybotKeys';
 import { FundamentalsKey } from './FundamentalsKey';
 import { sparklinePolyline, sparklineZeroY } from '../grow/growthTrend';
+import {
+  BASE_CURRENCY,
+  DISPLAY_CURRENCIES,
+  USD_MONEY,
+  currencyLabel,
+  makeMoney,
+  rateLine,
+  type Money,
+} from './money';
+import {
+  FX_STALE_AFTER_MS,
+  useDisplayCurrency,
+  useFxRates,
+  type FxStatus,
+} from './displayCurrency';
 import {
   PICKER_DISCLAIMER,
   PICKER_ENABLED_KEY,
@@ -27,6 +48,8 @@ import {
   POLYBOT_ENABLED_KEY,
   parseUniverse,
   appendUniverse,
+  loopTagLabel,
+  loopTagTitle,
   pickIsApproved,
   sortPicks,
 } from './financeLabs';
@@ -316,6 +339,11 @@ interface DailyPick {
 }
 
 const POLL_MS = 60_000;
+/** How often a running Picker scan is asked whether it is done. */
+const SCAN_POLL_MS = 5_000;
+/** Ticks the scan may go without ever reporting `scanInProgress` before the
+ *  job stops waiting and reports whatever the board now says. */
+const SCAN_GRACE_TICKS = 4;
 
 const CATEGORIES = [
   'housing',
@@ -330,32 +358,18 @@ const CATEGORIES = [
   'uncategorized',
 ] as const;
 
-function fmtMoney(n: number | null | undefined, currency = 'USD'): string {
-  if (n == null || Number.isNaN(n)) return '—';
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency: currency.length === 3 ? currency : 'USD',
-      maximumFractionDigits: 2,
-    }).format(n);
-  } catch {
-    return n.toFixed(2);
-  }
-}
-
-function fmtPct(n: number | null | undefined): string {
-  if (n == null || Number.isNaN(n)) return '';
-  const sign = n > 0 ? '+' : '';
-  return `${sign}${n.toFixed(2)}%`;
-}
-
-function fmtSigned(n: number | null | undefined, currency = 'USD'): string {
-  if (n == null || Number.isNaN(n)) return '—';
-  const abs = fmtMoney(Math.abs(n), currency);
-  if (n < 0) return `−${abs}`;
-  if (n > 0) return `+${abs}`;
-  return abs;
-}
+/**
+ * The reader's currency, carried to the nineteen figures on this tab.
+ *
+ * A context rather than a prop because every one of those figures is inside a
+ * section that already takes five props, and because the failure mode a prop
+ * would allow — one section quietly left on the old formatter, rendering `$`
+ * beside its neighbours' `CA$` — is exactly the half-converted board the
+ * formatter's own rules forbid. The default is the plain USD formatter, so a
+ * section rendered outside the provider is still correct rather than empty.
+ */
+const MoneyContext = createContext<Money>(USD_MONEY);
+const useMoney = () => useContext(MoneyContext);
 
 function fmtWhen(iso: string | null | undefined): string {
   if (!iso) return '—';
@@ -376,6 +390,9 @@ export function FinanceView() {
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState<TradeDraft>(emptyDraft);
   const [optIn, setOptIn] = useState({ polybot: false, picker: false });
+  const [currency, setCurrency] = useDisplayCurrency();
+  const fx = useFxRates(currency);
+  const money = makeMoney(currency, fx.rates);
 
   const load = useCallback(async () => {
     try {
@@ -398,7 +415,64 @@ export function FinanceView() {
     return () => { live = false; };
   }, []);
 
-  const scanRunning = Boolean(board?.picker.scanInProgress);
+  /**
+   * The Picker scan, as a job rather than a boolean.
+   *
+   * The POST returns the moment the daemon accepts the scan, so the old
+   * `mutate()` spinner measured the request and not the work: the button
+   * ticked "done" while the scanner was still ranking. The scan's real
+   * progress lives in `/api/finance`'s `picker.scanInProgress`, so this is the
+   * poll-until-terminal shape — and every tick's board is pushed back into the
+   * view, which is what keeps the rest of the tab live during a scan.
+   *
+   * There is no total to report (the scanner never says how many tickers are
+   * left), so `JobProgress` draws the honest indeterminate band rather than a
+   * fabricated percentage.
+   */
+  const scanJob = useLongRunningJob<PickerStatus>({
+    run: pollingRunner<PickerStatus>({
+      begin: async () => {
+        await apiFetch('/api/finance/picker/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+      },
+      poll: (() => {
+        // The scanner may not have flipped `scanInProgress` by the first poll,
+        // and a fast scan may already be finished. Neither is a failure — but
+        // "never saw it run" must not be reported as a completed scan either,
+        // so give it a bounded grace window and then report what the board says.
+        let sawRunning = false;
+        let quiet = 0;
+        return async () => {
+          const next = await apiFetch<FinanceBoard>('/api/finance');
+          setBoard(next);
+          setError(null);
+          const p = next.picker;
+          if (!p.reachable) {
+            return { done: true, error: p.detail ?? 'the scanner stopped answering' };
+          }
+          if (p.scanInProgress) {
+            sawRunning = true;
+            return { done: false, reading: { stage: 'scanning', status: p.detail ?? 'Ranking the universe' } };
+          }
+          if (!sawRunning && quiet++ < SCAN_GRACE_TICKS) {
+            return { done: false, reading: { stage: 'starting', status: 'Waiting for the scanner to pick it up' } };
+          }
+          return { done: true, result: p };
+        };
+      })(),
+      intervalMs: SCAN_POLL_MS,
+    }),
+    summarize: (p) =>
+      p.results != null
+        ? `Scan complete — ${p.results} ranked`
+        : 'Scan finished — the scanner reported no ranking',
+  });
+
+  // A scan this UI did not start (launchd, another client) still deserves a
+  // faster board; one it did start is already being polled by the job above.
+  const scanRunning = Boolean(board?.picker.scanInProgress) && !scanJob.running;
   // `financeRev` is bumped by `livenessSync` on the daemon's `finance_changed`
   // frame, which `finance_ledger` emits on every real write — including the
   // agent's, which is the case the poll served worst. A trade the agent records
@@ -413,13 +487,19 @@ export function FinanceView() {
     return () => clearInterval(t);
   }, [load, scanRunning, financeRev]);
 
-  const mutate = useCallback(async (fn: () => Promise<unknown>) => {
+  // Returns whether the action actually succeeded. The error is still shown in
+  // the banner, but the boolean is what lets a Button decide between a success
+  // tick and no tick — before this, a failed action looked exactly like a
+  // successful one because `mutate` swallowed the throw.
+  const mutate = useCallback(async (fn: () => Promise<unknown>): Promise<boolean> => {
     setBusy(true);
     try {
       await fn();
       await load();
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Update failed');
+      return false;
     } finally {
       setBusy(false);
     }
@@ -443,14 +523,23 @@ export function FinanceView() {
     });
 
   return (
+    <MoneyContext.Provider value={money}>
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: font.body, color: colors.text }}>
       <ViewHeader
         title="Finance"
         subtitle="Holdings, household, and research. Optional desks stay off until you turn them on."
         actions={
-          <button type="button" onClick={() => { void load(); }} style={ghostBtn(colors)}>
-            Refresh
-          </button>
+          <>
+            <CurrencyControl
+              colors={colors}
+              money={money}
+              fx={fx}
+              onChange={setCurrency}
+            />
+            <Button colors={colors} type="button" onClick={() => load()}>
+              Refresh
+            </Button>
+          </>
         }
       />
       <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px 48px' }}>
@@ -477,6 +566,7 @@ export function FinanceView() {
               board={view}
               colors={colors}
               busy={busy}
+              scanJob={scanJob}
               mutate={mutate}
               setLab={setLab}
             />
@@ -520,20 +610,94 @@ export function FinanceView() {
         )}
       </div>
     </div>
+    </MoneyContext.Provider>
+  );
+}
+
+/**
+ * The display-currency control, and the one place the conversion explains
+ * itself.
+ *
+ * It lives in the view header because it is a Finance display preference and
+ * this is Finance's own chrome — one concept, one home. The caption under it
+ * is the honesty half and is not optional: a board full of `CA$` figures with
+ * no rate and no date on screen is a board asking to be trusted about a number
+ * it never showed you. So the rate, its age, and — when there is no rate — the
+ * plain sentence saying the board fell back to US dollars all surface here,
+ * once, rather than beside every figure.
+ */
+function CurrencyControl({
+  colors, money, fx, onChange,
+}: {
+  colors: ThemeColors;
+  money: Money;
+  fx: { asOf: string | number | null; status: FxStatus };
+  onChange: (code: string) => void;
+}) {
+  const line = rateLine(money.display, money.rates);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, ...type.label, color: colors.textMuted }}>
+        Show in
+        <select
+          data-testid="finance-currency"
+          aria-label="Display currency"
+          title={GLOSSARY.displayCurrency}
+          value={money.requested}
+          onChange={(e) => onChange(e.target.value)}
+          style={{ ...inputStyle(colors), ...type.caption, padding: '4px 8px', minWidth: 0 }}
+        >
+          {DISPLAY_CURRENCIES.map((c) => (
+            <option key={c.code} value={c.code}>{c.code}</option>
+          ))}
+        </select>
+      </label>
+      {money.requested !== BASE_CURRENCY && (
+        <div
+          data-testid="finance-currency-note"
+          data-status={fx.status}
+          style={{ ...type.micro, color: fx.status === 'ready' ? colors.textMuted : colors.stale }}
+        >
+          {fx.status === 'ready' && line ? (
+            <>
+              {line}
+              {' · '}
+              <AsOf
+                asOf={fx.asOf}
+                prefix="as of"
+                staleAfterMs={FX_STALE_AFTER_MS}
+                dot
+                data-testid="finance-currency-asof"
+              />
+            </>
+          ) : fx.status === 'loading' ? (
+            'Checking the rate…'
+          ) : (
+            `Rate unavailable — showing ${currencyLabel(BASE_CURRENCY)}`
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
 function SummaryStrip({
-  board, colors, busy, mutate, setLab,
+  board, colors, busy, scanJob, mutate, setLab,
 }: {
   board: FinanceBoard;
   colors: ThemeColors;
   busy: boolean;
-  mutate: (fn: () => Promise<unknown>) => Promise<void>;
-  setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<void>;
+  /** Threaded down from the view, whose board refresh IS this job's poll. */
+  scanJob: LongRunningJob<PickerStatus>;
+  mutate: (fn: () => Promise<unknown>) => Promise<boolean>;
+  setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<boolean>;
 }) {
+  const money = useMoney();
   const p = board.polybot;
   const asOf = p.asOf || p.lastUpdated;
+  // Lives here, not in PickerControls, so the "your list: empty" line in the
+  // card caption can open the very form it tells the user to use.
+  const [showPickerAdd, setShowPickerAdd] = useState(false);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, alignItems: 'start' }}>
@@ -542,10 +706,24 @@ function SummaryStrip({
             <Eyebrow colors={colors}>Polybot</Eyebrow>
             <Hero
               colors={colors}
-              value={fmtMoney(p.currentBalance)}
+              value={money.fmt(p.currentBalance)}
               tone={p.stale ? colors.warning : colors.text}
             />
-            <div style={{ ...type.caption, color: colors.textMuted, marginTop: 4 }}>
+            {/* The mechanism around this sentence already escalates correctly —
+                warning border on the card, warning tone on the hero figure —
+                but the sentence that actually SAYS the balance is 110 days old
+                rendered at the same muted caption weight as the routine "Live
+                file" line it replaces. The one line carrying the bad news was
+                the quietest thing in the card. It now takes small weight and
+                the warning tone whenever it is the stale variant, so the words
+                and the chrome say the same thing. */}
+            <div
+              data-testid="finance-polybot-freshness"
+              data-stale={p.stale ? 'true' : 'false'}
+              style={p.stale
+                ? { ...type.small, color: colors.warning, fontWeight: 600, marginTop: 4 }
+                : { ...type.caption, color: colors.textMuted, marginTop: 4 }}
+            >
               {p.stale
                 ? `As of ${fmtWhen(asOf)}${p.staleDays != null ? ` · ${p.staleDays}d stale` : ''}`
                 : p.paused
@@ -553,8 +731,8 @@ function SummaryStrip({
                   : `Live file · ${fmtWhen(asOf)}`}
             </div>
             <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
-              <Mini colors={colors} label="Realized" value={fmtSigned(p.realizedPnl)} tone={toneFor(p.realizedPnl, colors)} />
-              <Mini colors={colors} label="Open" value={fmtMoney(p.openExposure)} />
+              <Mini colors={colors} label="Realized" value={money.signed(p.realizedPnl)} tone={toneFor(p.realizedPnl, colors)} />
+              <Mini colors={colors} label="Open" value={money.fmt(p.openExposure)} />
               <Mini colors={colors} label="Trades" value={p.tradeCount != null ? String(p.tradeCount) : '—'} />
             </div>
             <div style={{ ...type.caption, color: colors.textMuted, marginTop: 8 }}>
@@ -570,15 +748,15 @@ function SummaryStrip({
 
         <Card colors={colors} testId="finance-holdings-card">
           <Eyebrow colors={colors}>Holdings</Eyebrow>
-          <Hero colors={colors} value={fmtSigned(board.holdings.netPnl)} tone={toneFor(board.holdings.netPnl, colors)} />
+          <Hero colors={colors} value={money.signed(board.holdings.netPnl)} tone={toneFor(board.holdings.netPnl, colors)} />
           <div style={{ ...type.caption, color: colors.textMuted, marginTop: 4 }}>
             Net P&amp;L · {board.holdings.openCount} open
             {' · '}
             {board.holdings.source === 'picker' ? 'Picker journal' : 'local ledger'}
           </div>
           <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
-            <Mini colors={colors} label="Unrealized" value={fmtSigned(board.holdings.netUnrealized)} tone={toneFor(board.holdings.netUnrealized, colors)} />
-            <Mini colors={colors} label="Realized" value={fmtSigned(board.holdings.netRealized)} tone={toneFor(board.holdings.netRealized, colors)} />
+            <Mini colors={colors} label="Unrealized" value={money.signed(board.holdings.netUnrealized)} tone={toneFor(board.holdings.netUnrealized, colors)} />
+            <Mini colors={colors} label="Realized" value={money.signed(board.holdings.netRealized)} tone={toneFor(board.holdings.netRealized, colors)} />
           </div>
           <HoldingsSparkline values={board.holdings.trend ?? []} colors={colors} />
         </Card>
@@ -588,18 +766,40 @@ function SummaryStrip({
             <Eyebrow colors={colors}>Picker</Eyebrow>
             <Hero
               colors={colors}
-              value={board.picker.reachable ? (board.picker.scanInProgress ? 'Scanning' : 'Up') : ((board.pickerUniverse?.length ?? 0) ? 'Universe' : 'Idle')}
+              value={board.picker.reachable ? (board.picker.scanInProgress ? 'Scanning' : 'Up') : ((board.pickerUniverse?.length ?? 0) ? 'Your list' : 'Idle')}
               tone={board.picker.reachable ? colors.success : colors.text}
             />
-            <div style={{ ...type.caption, color: colors.textMuted, marginTop: 4 }}>
+            {/* Two different lists used to share the word "universe": the
+                scanner's own exchange-listing cache (tens of thousands of
+                names it *could* rank) and the handful the user typed in. The
+                card showed only the first, labelled as if it were the second.
+                They now get separate lines and separate words. */}
+            <div data-testid="picker-scanner-pool" style={{ ...type.caption, color: colors.textMuted, marginTop: 4 }}>
               {(board.pickerUniverseCount ?? 0) > 0
-                ? `Picker universe · ${board.pickerUniverseCount?.toLocaleString()} names`
+                ? `Scanner pool · ${board.pickerUniverseCount?.toLocaleString()} tickers it can rank`
                 : board.picker.reachable
                   ? `${board.picker.results != null ? `${board.picker.results} ranked` : 'ready'}${board.picker.scanDate ? ` · ${board.picker.scanDate}` : ''}`
                   : 'Connected when the scanner is up'}
+            </div>
+            <div
+              data-testid="picker-your-tickers"
+              style={{ ...type.caption, color: colors.textMuted, marginTop: 2, display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}
+            >
               {(board.pickerUniverse?.length ?? 0) > 0
-                ? ` · ${board.pickerUniverse?.length} extra${board.pickerUniverse?.length === 1 ? '' : 's'} you added`
-                : ''}
+                ? `Your tickers · ${board.pickerUniverse?.length} you added`
+                : 'Your tickers · none yet, so picks come from the whole pool'}
+              {(board.pickerUniverse?.length ?? 0) === 0 && (
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  type="button"
+                  data-testid="picker-add-hint"
+                  style={{ color: colors.cyan, textDecoration: 'underline', padding: 0 }}
+                  onClick={() => setShowPickerAdd(() => true)}
+                >
+                  Add ticker
+                </Button>
+              )}
             </div>
             <div style={{ marginTop: 10 }}>
               <PickerControls
@@ -607,8 +807,11 @@ function SummaryStrip({
                 universe={board.pickerUniverse ?? []}
                 colors={colors}
                 busy={busy}
+                scanJob={scanJob}
                 mutate={mutate}
                 setLab={setLab}
+                showAdd={showPickerAdd}
+                setShowAdd={(fn) => setShowPickerAdd(fn)}
               />
             </div>
           </Card>
@@ -635,7 +838,7 @@ function LabsRow({
   pickerOn: boolean;
   colors: ThemeColors;
   busy: boolean;
-  setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<void>;
+  setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<boolean>;
 }) {
   const [dialog, setDialog] = useState<'polybot' | 'picker' | null>(null);
   return (
@@ -650,26 +853,26 @@ function LabsRow({
         }}
       >
         {!polybotOn && (
-          <button
+          <Button
+            colors={colors}
             type="button"
             data-testid="finance-enable-polybot"
             disabled={busy}
             onClick={() => setDialog('polybot')}
-            style={ghostBtn(colors)}
           >
             Turn on Polybot
-          </button>
+          </Button>
         )}
         {!pickerOn && (
-          <button
+          <Button
+            colors={colors}
             type="button"
             data-testid="finance-enable-picker"
             disabled={busy}
             onClick={() => setDialog('picker')}
-            style={ghostBtn(colors)}
           >
             Turn on Picker
-          </button>
+          </Button>
         )}
         <span style={{ ...type.caption, color: colors.textMuted }}>
           Optional desks. Off until you opt in.
@@ -745,17 +948,19 @@ function DisclaimerDialog({
         </label>
       )}
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-        <button
+        <Button
+          colors={colors}
+          variant="primary"
           type="button"
+          pending={busy}
           disabled={busy || !checked}
           onClick={onConfirm}
-          style={primaryBtn(colors)}
         >
           {confirmLabel}
-        </button>
-        <button type="button" disabled={busy} onClick={onCancel} style={ghostBtn(colors)}>
+        </Button>
+        <Button colors={colors} type="button" disabled={busy} onClick={onCancel}>
           Cancel
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -767,58 +972,63 @@ function PolybotControls({
   polybot: PolybotStatus;
   colors: ThemeColors;
   busy: boolean;
-  mutate: (fn: () => Promise<unknown>) => Promise<void>;
-  setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<void>;
+  mutate: (fn: () => Promise<unknown>) => Promise<boolean>;
+  setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<boolean>;
 }) {
   const [showKeys, setShowKeys] = useState(false);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-        <button
+        <Button
+          colors={colors}
+          variant={polybot.running && !polybot.paused ? 'ghost' : 'primary'}
           type="button"
+          data-testid="polybot-start"
           disabled={busy || (Boolean(polybot.running) && !polybot.paused)}
-          onClick={() => void mutate(() =>
+          onClick={() => mutate(() =>
             apiFetch('/api/finance/polybot/start', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
           )}
-          style={polybot.running && !polybot.paused ? ghostBtn(colors) : primaryBtn(colors)}
         >
           {polybot.running && !polybot.paused ? 'Running' : polybot.paused ? 'Resume' : 'Start'}
-        </button>
-        <button
+        </Button>
+        <Button
+          colors={colors}
           type="button"
+          data-testid="polybot-pause"
           disabled={busy || !polybot.running || polybot.paused}
-          onClick={() => void mutate(() =>
+          onClick={() => mutate(() =>
             apiFetch('/api/finance/polybot/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
           )}
-          style={ghostBtn(colors)}
         >
           Pause
-        </button>
-        <button
+        </Button>
+        <Button
+          colors={colors}
           type="button"
+          data-testid="polybot-scan"
           disabled={busy || polybot.paused || polybot.scanRequested}
-          onClick={() => void mutate(() =>
+          onClick={() => mutate(() =>
             apiFetch('/api/finance/polybot/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
           )}
-          style={ghostBtn(colors)}
         >
           {polybot.scanRequested ? 'Scan queued…' : 'Scan now'}
-        </button>
-        <button
+        </Button>
+        <Button
+          colors={colors}
           type="button"
+          aria-expanded={showKeys}
           onClick={() => setShowKeys((v) => !v)}
-          style={ghostBtn(colors)}
         >
           {showKeys ? 'Hide keys' : 'Keys'}
-        </button>
-        <button
+        </Button>
+        <Button
+          colors={colors}
           type="button"
           disabled={busy}
-          onClick={() => void setLab(POLYBOT_ENABLED_KEY, false)}
-          style={ghostBtn(colors)}
+          onClick={() => setLab(POLYBOT_ENABLED_KEY, false)}
         >
           Turn off
-        </button>
+        </Button>
       </div>
       {showKeys && (
         <PolybotKeys compact onChanged={() => void mutate(async () => undefined)} />
@@ -828,17 +1038,23 @@ function PolybotControls({
 }
 
 function PickerControls({
-  picker, universe, colors, busy, mutate, setLab,
+  picker, universe, colors, busy, scanJob, mutate, setLab, showAdd, setShowAdd,
 }: {
   picker: PickerStatus;
   universe: string[];
   colors: ThemeColors;
   busy: boolean;
-  mutate: (fn: () => Promise<unknown>) => Promise<void>;
-  setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<void>;
+  /** Owned by the view, because its poll is the view's board refresh. */
+  scanJob: LongRunningJob<PickerStatus>;
+  mutate: (fn: () => Promise<unknown>) => Promise<boolean>;
+  setLab: (key: typeof POLYBOT_ENABLED_KEY | typeof PICKER_ENABLED_KEY, on: boolean) => Promise<boolean>;
+  /** Owned by the card so the "Your tickers · none yet" caption can open the
+   *  same form its own link points at. */
+  showAdd: boolean;
+  setShowAdd: (fn: (v: boolean) => boolean) => void;
 }) {
-  const [showAdd, setShowAdd] = useState(false);
   const [draft, setDraft] = useState('');
+  const [added, setAdded] = useState(false);
 
   const saveExtras = (next: string[]) =>
     mutate(() => api.upsertConfig(PICKER_UNIVERSE_KEY, next.join('\n')));
@@ -846,42 +1062,51 @@ function PickerControls({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-        <button
+        <Button
+          colors={colors}
           type="button"
+          data-testid="picker-start"
           disabled={busy || picker.reachable}
-          onClick={() => void mutate(() =>
+          onClick={() => mutate(() =>
             apiFetch('/api/finance/picker/start', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
           )}
-          style={ghostBtn(colors)}
         >
           {picker.reachable ? 'Scanner up' : 'Start scanner'}
-        </button>
-        <button
+        </Button>
+        <Button
+          colors={colors}
           type="button"
-          disabled={busy || picker.scanInProgress}
-          onClick={() => void mutate(() =>
-            apiFetch('/api/finance/picker/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
-          )}
-          style={ghostBtn(colors)}
+          data-testid="picker-scan"
+          disabled={busy || picker.scanInProgress || scanJob.running}
+          // The job owns the in-flight state from here on, so the button must
+          // not also hold a spinner for the accept-POST: two indicators for one
+          // scan is how "is it still going?" became unanswerable.
+          minPendingMs={0}
+          onClick={() => { void scanJob.start(); }}
         >
-          {picker.scanInProgress ? 'Scan running…' : 'Run scan'}
-        </button>
-        <button
+          {picker.scanInProgress || scanJob.running ? 'Scan running…' : 'Run scan'}
+        </Button>
+        <Button
+          colors={colors}
+          variant={showAdd ? 'ghostOn' : 'ghost'}
           type="button"
+          id="picker-add-ticker"
+          data-testid="picker-add-ticker"
+          aria-expanded={showAdd}
           onClick={() => setShowAdd((v) => !v)}
-          style={ghostBtn(colors)}
         >
           {showAdd ? 'Hide add' : 'Add ticker'}
-        </button>
-        <button
+        </Button>
+        <Button
+          colors={colors}
           type="button"
           disabled={busy}
-          onClick={() => void setLab(PICKER_ENABLED_KEY, false)}
-          style={ghostBtn(colors)}
+          onClick={() => setLab(PICKER_ENABLED_KEY, false)}
         >
           Turn off
-        </button>
+        </Button>
       </div>
+      <JobProgress job={scanJob} label="Picker scan" />
       {universe.length > 0 && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} data-testid="picker-extras">
           {universe.map((t) => (
@@ -899,15 +1124,17 @@ function PickerControls({
               }}
             >
               {t}
-              <button
+              <Button
+                colors={colors}
+                variant="bare"
                 type="button"
                 disabled={busy}
                 aria-label={`Remove ${t}`}
-                onClick={() => void saveExtras(universe.filter((x) => x !== t))}
-                style={{ ...ghostBtn(colors), padding: '0 4px', border: 'none' }}
+                flashSuccess={false}
+                onClick={() => saveExtras(universe.filter((x) => x !== t))}
               >
                 ×
-              </button>
+              </Button>
             </span>
           ))}
         </div>
@@ -918,19 +1145,32 @@ function PickerControls({
           onSubmit={(e) => {
             e.preventDefault();
             const next = appendUniverse(universe, draft);
-            void saveExtras(next).then(() => setDraft(''));
+            void saveExtras(next).then((ok) => {
+              if (!ok) return;
+              setDraft('');
+              setAdded(true);
+              setTimeout(() => setAdded(false), SUCCESS_FLASH_MS);
+            });
           }}
           style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}
         >
           <input
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder="AAPL, SHOP.TO — added to your universe"
+            placeholder="AAPL, SHOP.TO — names you want ranked"
             style={{ ...inputStyle(colors), flex: 1, minWidth: 140 }}
           />
-          <button type="submit" disabled={busy || parseUniverse(draft).length === 0} style={primaryBtn(colors)}>
+          <Button
+            colors={colors}
+            variant="primary"
+            type="submit"
+            data-testid="picker-universe-add"
+            pending={busy}
+            success={added}
+            disabled={busy || parseUniverse(draft).length === 0}
+          >
             Add
-          </button>
+          </Button>
         </form>
       )}
     </div>
@@ -945,11 +1185,12 @@ function HoldingsSection({
   picker: PickerStatus;
   colors: ThemeColors;
   busy: boolean;
-  mutate: (fn: () => Promise<unknown>) => Promise<void>;
+  mutate: (fn: () => Promise<unknown>) => Promise<boolean>;
   draft: TradeDraft;
   setDraft: (d: TradeDraft) => void;
   onRecorded: (hint: string | null) => void;
 }) {
+  const money = useMoney();
   const [filter, setFilter] = useState<'open' | 'all'>('open');
   const [showForm, setShowForm] = useState(false);
   const editing = Boolean(draft.editingId);
@@ -992,13 +1233,14 @@ function HoldingsSection({
     <Card colors={colors}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, marginBottom: 12 }}>
         <SectionTitle colors={colors}>Lots</SectionTitle>
-        <button
+        <Button
+          colors={colors}
           type="button"
+          aria-expanded={showForm || editing}
           onClick={() => { setShowForm((s) => !s); if (editing) setDraft(emptyDraft()); }}
-          style={ghostBtn(colors)}
         >
           {showForm || editing ? 'Hide form' : 'Record a trade'}
-        </button>
+        </Button>
       </div>
       <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 12px' }}>
         Journal of trades already made. Does not buy or sell
@@ -1032,7 +1274,7 @@ function HoldingsSection({
             <Field colors={colors} label="Entry date">
               <input value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} placeholder="YYYY-MM-DD" style={inputStyle(colors)} required />
             </Field>
-            <Field colors={colors} label="Entry price">
+            <Field colors={colors} label={money.converting ? `Entry price (${BASE_CURRENCY})` : 'Entry price'}>
               <input value={draft.price} onChange={(e) => setDraft({ ...draft, price: e.target.value })} placeholder="0.00" style={inputStyle(colors)} required />
             </Field>
             <Field colors={colors} label="Shares">
@@ -1043,7 +1285,7 @@ function HoldingsSection({
             <Field colors={colors} label="Exit date">
               <input value={draft.exitDate} onChange={(e) => setDraft({ ...draft, exitDate: e.target.value })} placeholder="YYYY-MM-DD" style={inputStyle(colors)} />
             </Field>
-            <Field colors={colors} label="Exit price">
+            <Field colors={colors} label={money.converting ? `Exit price (${BASE_CURRENCY})` : 'Exit price'}>
               <input value={draft.exitPrice} onChange={(e) => setDraft({ ...draft, exitPrice: e.target.value })} placeholder="0.00" style={inputStyle(colors)} />
             </Field>
             <Field colors={colors} label="Notes" wide>
@@ -1051,13 +1293,13 @@ function HoldingsSection({
             </Field>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button type="submit" disabled={busy} style={primaryBtn(colors)}>
+            <Button colors={colors} variant="primary" type="submit" pending={busy} disabled={busy}>
               {editing ? 'Save trade' : 'Record trade'}
-            </button>
+            </Button>
             {editing && (
-              <button type="button" disabled={busy} onClick={() => { setDraft(emptyDraft()); setShowForm(false); }} style={ghostBtn(colors)}>
+              <Button colors={colors} type="button" disabled={busy} onClick={() => { setDraft(emptyDraft()); setShowForm(false); }}>
                 Cancel
-              </button>
+              </Button>
             )}
           </div>
         </form>
@@ -1069,12 +1311,12 @@ function HoldingsSection({
       ) : (
         <>
           <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
-            <button type="button" onClick={() => setFilter('open')} style={filter === 'open' ? ghostBtnOn(colors) : ghostBtn(colors)}>
+            <Button colors={colors} variant={filter === 'open' ? 'ghostOn' : 'ghost'} type="button" aria-pressed={filter === 'open'} onClick={() => setFilter('open')}>
               Open ({holdings.openCount})
-            </button>
-            <button type="button" onClick={() => setFilter('all')} style={filter === 'all' ? ghostBtnOn(colors) : ghostBtn(colors)}>
+            </Button>
+            <Button colors={colors} variant={filter === 'all' ? 'ghostOn' : 'ghost'} type="button" aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>
               All ({holdings.rows.length})
-            </button>
+            </Button>
           </div>
           <div style={{ overflowX: 'auto', minWidth: 0 }}>
           <table style={{ ...tableStyle(), tableLayout: 'fixed' }}>
@@ -1106,15 +1348,15 @@ function HoldingsSection({
                       {p.quoteError ? (
                         <span style={{ color: colors.textMuted }}>{p.quoteError}</span>
                       ) : closed ? (
-                        fmtMoney(p.exitPrice)
+                        money.fmt(p.exitPrice)
                       ) : (
-                        fmtMoney(p.last, p.quote?.currency ?? undefined)
+                        money.fmt(p.last, { source: p.quote?.currency })
                       )}
                     </td>
                     <td style={{ ...td(colors), textAlign: 'right', ...tabularNums, color: toneFor(pnl, colors), fontWeight: 600 }}>
-                      {fmtSigned(pnl)}
+                      {money.signed(pnl)}
                       {!closed && p.unrealizedPct != null ? (
-                        <div style={{ ...type.caption, color: colors.textMuted, fontWeight: 400 }}>{fmtPct(p.unrealizedPct)}</div>
+                        <div style={{ ...type.caption, color: colors.textMuted, fontWeight: 400 }}>{money.pct(p.unrealizedPct)}</div>
                       ) : null}
                     </td>
                     <td style={{ ...td(colors), textAlign: 'right', ...tabularNums, color: rsiHot ? colors.danger : colors.text }}>
@@ -1147,9 +1389,10 @@ function LotActions({
   row: HoldingRow;
   colors: ThemeColors;
   busy: boolean;
-  mutate: (fn: () => Promise<unknown>) => Promise<void>;
+  mutate: (fn: () => Promise<unknown>) => Promise<boolean>;
   onEdit: () => void;
 }) {
+  const money = useMoney();
   const [closing, setClosing] = useState(false);
   const [exitDate, setExitDate] = useState(todayIso());
   const [exitPrice, setExitPrice] = useState(row.last != null ? String(row.last) : '');
@@ -1164,20 +1407,20 @@ function LotActions({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end', minWidth: 0 }}>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-        <button type="button" disabled={busy} onClick={onEdit} style={ghostBtn(colors)}>Edit</button>
+        <Button colors={colors} type="button" disabled={busy} onClick={onEdit}>Edit</Button>
         {!row.exitDate && (
-          <button type="button" disabled={busy} onClick={() => setClosing((c) => !c)} style={ghostBtn(colors)}>
+          <Button colors={colors} type="button" disabled={busy} aria-expanded={closing} onClick={() => setClosing((c) => !c)}>
             Close
-          </button>
+          </Button>
         )}
-        <button
+        <Button
+          colors={colors}
           type="button"
           disabled={busy}
-          onClick={() => void mutate(() => apiFetch(deletePath, { method: 'DELETE' }))}
-          style={ghostBtn(colors)}
+          onClick={() => mutate(() => apiFetch(deletePath, { method: 'DELETE' }))}
         >
           Remove
-        </button>
+        </Button>
       </div>
       {closing && !row.exitDate && (
         <form
@@ -1193,9 +1436,19 @@ function LotActions({
           }}
           style={{ display: 'flex', gap: 6 }}
         >
-          <input value={exitDate} onChange={(e) => setExitDate(e.target.value)} style={{ ...inputStyle(colors), minWidth: 110 }} required />
-          <input value={exitPrice} onChange={(e) => setExitPrice(e.target.value)} style={{ ...inputStyle(colors), minWidth: 80 }} required />
-          <button type="submit" disabled={busy} style={primaryBtn(colors)}>Mark closed</button>
+          <input value={exitDate} onChange={(e) => setExitDate(e.target.value)} aria-label="Exit date" style={{ ...inputStyle(colors), minWidth: 110 }} required />
+          {/* The journal is recorded, not converted — the number typed here is
+              the one that gets stored, so the field says which currency it is
+              in whenever the board around it is showing another. */}
+          <input
+            value={exitPrice}
+            onChange={(e) => setExitPrice(e.target.value)}
+            aria-label={money.converting ? `Exit price (${BASE_CURRENCY})` : 'Exit price'}
+            placeholder={money.converting ? `Exit price (${BASE_CURRENCY})` : 'Exit price'}
+            style={{ ...inputStyle(colors), minWidth: 80 }}
+            required
+          />
+          <Button colors={colors} variant="primary" type="submit" pending={busy} disabled={busy}>Mark closed</Button>
         </form>
       )}
     </div>
@@ -1219,17 +1472,46 @@ function PicksSection({
     <Card colors={colors} testId="finance-picks-card">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
         <SectionTitle colors={colors}>Picks</SectionTitle>
-        <button type="button" onClick={() => navigateToTool('world')} style={ghostBtn(colors)}>
-          Financier
-        </button>
+        {/* A bare agent name is not a label — it says who, never what pressing
+            it does. The app already gets this right elsewhere ("Security — from
+            the Guard"), so the cross-link takes a verb and names its
+            destination. */}
+        <Button
+          colors={colors}
+          type="button"
+          data-testid="picks-world-link"
+          title="Open the World view, where the Financier's panel lives"
+          onClick={() => navigateToTool('world')}
+        >
+          View in World
+        </Button>
       </div>
-      <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 10px' }}>
-        Your universe, Yahoo + loop gate. Gold means the Financier approved it.
+      {/* The old caption said "your universe" even when the user had added
+          nothing — in that case every row is the scanner's own ranking, so say
+          so. The second line is the pipeline in one sentence: it is the only
+          place the words on the tags below get defined.
+
+          The badge sentence names the badge's own words. It used to say "Gold
+          means…", which described the mark by its colour — across three themes,
+          on a tag that has said "Agent approved" in words since it was
+          rewritten. Naming a control by a colour only works for readers who see
+          that colour the same way, and only until the colour changes. */}
+      <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 4px' }} data-testid="picks-caption">
+        {(board.pickerUniverse?.length ?? 0) > 0
+          ? 'Your tickers plus the scanner’s own ranking, priced from Yahoo.'
+          : 'The scanner’s own ranking — you haven’t added tickers of your own yet.'}
+        {' '}An “Agent approved” tag means the Financier approved that pick.
+      </p>
+      <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 10px', opacity: 0.85 }} data-testid="picks-legend">
+        How a name gets here: scanner ranks it {'→'} Yahoo prices it {'→'} a
+        significance check asks whether the signal is real {'→'} the Financier
+        picks at most one. Names that fail the check stay listed and are tagged
+        “filtered” {'—'} click a tag to read why.
       </p>
       {ranked.length === 0 ? (
         <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>
           {(board.pickerUniverse?.length ?? 0) === 0 && !(board.pickerUniverseCount)
-            ? 'Add tickers, or run a scan on the Picker universe.'
+            ? 'Add tickers of your own, or run a scan.'
             : 'No picks this cycle.'}
         </p>
       ) : (
@@ -1244,13 +1526,14 @@ function PicksSection({
             />
           ))}
           {hidden > 0 && (
-            <button
+            <Button
+              colors={colors}
               type="button"
+              style={{ alignSelf: 'flex-start', marginTop: 8 }}
               onClick={() => setShowAll(true)}
-              style={{ ...ghostBtn(colors), alignSelf: 'flex-start', marginTop: 8 }}
             >
               Show {hidden} more
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -1266,10 +1549,12 @@ function PickRow({
   colors: ThemeColors;
   onPrefill: (draft: TradeDraft) => void;
 }) {
+  const money = useMoney();
   const [open, setOpen] = useState(approved);
   const loop = pick.loop;
   const yahoo = pick.quote?.price ?? null;
   const mark = yahoo ?? pick.pickerPrice ?? null;
+  const rowId = `pick-detail-${pick.ticker.replace(/[^A-Za-z0-9]/g, '-')}`;
   return (
     <article
       data-testid="pick-row"
@@ -1280,25 +1565,52 @@ function PickRow({
       }}
     >
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+        {/* Both controls on this row were introduced in the same commit series
+            as the Button primitive and neither used it, so pressing either one
+            looked identical to not pressing it — an inline `style` cannot
+            express :hover or :active at all. They are disclosure toggles, not
+            actions: there is nothing to await, so what they need from the
+            primitive is its feedback, not its pending/success machinery. They
+            take the shared `.pa-btn` interaction rules and keep the
+            aria-expanded / aria-controls pairing that describes what they
+            actually do. */}
         <button
           type="button"
+          className="pa-btn"
+          aria-expanded={open}
+          aria-controls={rowId}
           onClick={() => setOpen((v) => !v)}
           style={{
-            background: 'none',
-            border: 'none',
-            padding: 0,
-            cursor: 'pointer',
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-pad': '2px 4px',
+            '--pa-btn-radius': `${radius.sm}px`,
             fontFamily: font.body,
+            fontSize: 'inherit',
             color: colors.text,
-            display: 'flex',
             gap: 8,
             alignItems: 'baseline',
+            justifyContent: 'flex-start',
             flex: 1,
             minWidth: 0,
             textAlign: 'left',
-          }}
+            marginLeft: -4,
+          } as CSSProperties}
         >
-          <strong style={{ fontSize: 13, fontWeight: 600 }}>{pick.ticker}</strong>
+          {/* Nothing said this row opened. A chevron is the cheapest way to
+              say it, and it rotates so open/closed reads at a glance. */}
+          <span
+            aria-hidden="true"
+            style={{
+              ...type.micro,
+              color: colors.textMuted,
+              display: 'inline-block',
+              transform: open ? 'rotate(90deg)' : 'none',
+              transition: `transform ${duration.fast}ms ${ease.out}`,
+            }}
+          >
+            ▸
+          </span>
+          <strong style={{ fontSize: textSize.small, fontWeight: 600 }}>{pick.ticker}</strong>
           {pick.companyName && (
             <span style={{ ...type.caption, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {pick.companyName}
@@ -1308,6 +1620,7 @@ function PickRow({
         {approved && (
           <span
             data-testid="pick-financier-badge"
+            title={GLOSSARY.financierApproved}
             style={{
               ...type.micro,
               color: '#3d2e0a',
@@ -1316,21 +1629,44 @@ function PickRow({
               letterSpacing: '0.04em',
               textTransform: 'uppercase',
               padding: '2px 7px',
-              borderRadius: 999,
+              borderRadius: radius.pill,
             }}
           >
             Agent approved
           </span>
         )}
         {loop && (
-          <span style={{ ...type.micro, color: loop.passed ? colors.success : colors.danger, fontWeight: 600 }}>
-            {loop.passed ? 'loop pass' : 'loop kill'}
-          </span>
+          // The tag IS the affordance: the reason it names is one click away,
+          // and hovering shows the whole thing without a click at all.
+          //
+          // Quiet, because on a normal cycle nearly every row is filtered.
+          // The tag was a filled danger pill carrying a per-row phrase, so a
+          // list of fifteen read as a wall of fifteen alerts of ragged widths
+          // — and the column stopped saying anything, least of all which row
+          // was different. The common case is now a dim hairline of a uniform
+          // width, and the emphasis budget goes where the news is: the rare
+          // name that passed keeps the filled mark, and the Financier's
+          // approval above it stays the one loud thing in the row.
+          <Chip
+            kind="link"
+            tone={loop.passed ? 'success' : 'danger'}
+            quiet={!loop.passed}
+            expanded={open}
+            controls={rowId}
+            title={loopTagTitle(loop)}
+            data-testid="pick-loop-tag"
+            onClick={() => setOpen((v) => !v)}
+            style={{ gap: 4 }}
+          >
+            {loopTagLabel(loop)}
+            {!loop.passed && <span aria-hidden="true" style={{ opacity: 0.7 }}>ⓘ</span>}
+          </Chip>
         )}
         <span style={{ ...type.caption, color: colors.textMuted, ...tabularNums }}>
-          {fmtMoney(yahoo ?? pick.pickerPrice, pick.quote?.currency ?? undefined)}
+          {money.fmt(yahoo ?? pick.pickerPrice, { source: pick.quote?.currency })}
         </span>
-        <button
+        <Button
+          colors={colors}
           type="button"
           onClick={() => onPrefill({
             ticker: pick.ticker,
@@ -1344,24 +1680,38 @@ function PickRow({
             editingId: null,
             source: null,
           })}
-          style={ghostBtn(colors)}
         >
           Prefill
-        </button>
+        </Button>
       </div>
       {open && (
-        <div style={{ ...type.caption, color: colors.textMuted, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div id={rowId} style={{ ...type.caption, color: colors.textMuted, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', ...tabularNums }}>
-            <span>Scan {fmtMoney(pick.pickerPrice)}</span>
-            <span>Yahoo {pick.quoteError ? pick.quoteError : fmtMoney(yahoo, pick.quote?.currency ?? undefined)}</span>
+            <span>Scan {money.fmt(pick.pickerPrice)}</span>
+            <span>Yahoo {pick.quoteError ? pick.quoteError : money.fmt(yahoo, { source: pick.quote?.currency })}</span>
             <span>RSI {pick.pickerRsi != null ? pick.pickerRsi.toFixed(1) : '—'}</span>
             {pick.score != null && <span>Score {pick.score.toFixed(1)}</span>}
           </div>
           {pick.reason && <p style={{ margin: 0 }}>{pick.reason}</p>}
           {loop && (
-            <p style={{ margin: 0 }}>
-              ICIR {fmtNum(loop.icir)} · half-life {loop.halfLifeDays != null ? `${loop.halfLifeDays.toFixed(1)}d` : '—'}
-              {loop.kills.length > 0 ? ` · ${loop.kills.join('; ')}` : ''}
+            <p style={{ margin: 0 }} data-testid="pick-loop-detail">
+              {loop.kills.length > 0
+                ? `Why it was filtered: ${loop.kills.join('; ')}. `
+                : 'Passed the significance check. '}
+              {/* Two borrowed terms, defined where they appear. They were bare
+                  chrome: a reader who does not already know what an ICIR is
+                  learns nothing from a number beside it, and the number is
+                  precisely what the filter above it acted on. */}
+              <span style={{ opacity: 0.75 }} data-testid="pick-loop-metrics">
+                <span title={GLOSSARY.icir} style={{ cursor: 'help', borderBottom: `1px dotted ${colors.border}` }}>
+                  ICIR
+                </span>
+                {' '}{fmtNum(loop.icir)} ·{' '}
+                <span title={GLOSSARY.halfLife} style={{ cursor: 'help', borderBottom: `1px dotted ${colors.border}` }}>
+                  half-life
+                </span>
+                {' '}{loop.halfLifeDays != null ? `${loop.halfLifeDays.toFixed(1)}d` : '—'}
+              </span>
             </p>
           )}
         </div>
@@ -1381,9 +1731,10 @@ function HouseholdSection({
   household: HouseholdView;
   colors: ThemeColors;
   busy: boolean;
-  mutate: (fn: () => Promise<unknown>) => Promise<void>;
+  mutate: (fn: () => Promise<unknown>) => Promise<boolean>;
   setError: (s: string | null) => void;
 }) {
+  const money = useMoney();
   const fileRef = useRef<HTMLInputElement>(null);
   const [hint, setHint] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -1409,9 +1760,9 @@ function HouseholdSection({
     <Card colors={colors}>
       <SectionTitle colors={colors}>Household</SectionTitle>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, margin: '12px 0 16px' }}>
-        <Mini colors={colors} label="30-day run-rate" value={fmtMoney(household.forecast.runRate30d)} large />
-        <Mini colors={colors} label="90-day run-rate" value={fmtMoney(household.forecast.runRate90d)} large />
-        <Mini colors={colors} label="Spent (window)" value={fmtMoney(household.forecast.spend90d)} large />
+        <Mini colors={colors} label="30-day run-rate" value={money.fmt(household.forecast.runRate30d)} large />
+        <Mini colors={colors} label="90-day run-rate" value={money.fmt(household.forecast.runRate90d)} large />
+        <Mini colors={colors} label="Spent (window)" value={money.fmt(household.forecast.spend90d)} large />
         <Mini colors={colors} label="Days" value={String(household.forecast.daysUsed)} large />
       </div>
       <div
@@ -1433,9 +1784,9 @@ function HouseholdSection({
           Drop a CSV, OFX, QFX, or a PDF/screenshot
         </span>
         {' '}
-        <button type="button" disabled={busy} style={ghostBtn(colors)} onClick={() => fileRef.current?.click()}>
+        <Button colors={colors} type="button" disabled={busy} onClick={() => fileRef.current?.click()}>
           Choose file
-        </button>
+        </Button>
         <input
           ref={fileRef}
           type="file"
@@ -1451,7 +1802,7 @@ function HouseholdSection({
       {household.forecast.byCategory.length > 0 && (
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
           {household.forecast.byCategory.slice(0, 6).map((c) => (
-            <Mini key={c.category} colors={colors} label={c.category} value={fmtMoney(c.amount)} />
+            <Mini key={c.category} colors={colors} label={c.category} value={money.fmt(c.amount)} />
           ))}
         </div>
       )}
@@ -1473,7 +1824,7 @@ function HouseholdSection({
                 <td style={{ ...td(colors), ...tabularNums, color: colors.textMuted }}>{t.date}</td>
                 <td style={td(colors)}>{t.payee}</td>
                 <td style={{ ...td(colors), textAlign: 'right', ...tabularNums, color: toneFor(t.amount, colors) }}>
-                  {fmtSigned(t.amount)}
+                  {money.signed(t.amount)}
                 </td>
                 <td style={td(colors)}>
                   <select
@@ -1508,8 +1859,9 @@ function WatchlistSection({
   board: FinanceBoard;
   colors: ThemeColors;
   busy: boolean;
-  mutate: (fn: () => Promise<unknown>) => Promise<void>;
+  mutate: (fn: () => Promise<unknown>) => Promise<boolean>;
 }) {
+  const money = useMoney();
   const [symbol, setSymbol] = useState('');
   const [label, setLabel] = useState('');
 
@@ -1559,24 +1911,25 @@ function WatchlistSection({
                       <span style={{ color: colors.textMuted }}>{row.quoteError}</span>
                     ) : (
                       <>
-                        <div>{fmtMoney(q?.price, q?.currency ?? undefined)}</div>
+                        <div>{money.fmt(q?.price, { source: q?.currency })}</div>
                         <div style={{ ...type.caption, color: toneFor(q?.change ?? null, colors) }}>
-                          {fmtPct(q?.changePercent)}
+                          {money.pct(q?.changePercent)}
                         </div>
                       </>
                     )}
                   </td>
                   <td style={{ ...td(colors), textAlign: 'right' }}>
-                    <button
+                    <Button
+                      colors={colors}
                       type="button"
                       disabled={busy}
-                      onClick={() => void mutate(() =>
+                      flashSuccess={false}
+                      onClick={() => mutate(() =>
                         apiFetch(`/api/finance/watchlist/${encodeURIComponent(row.symbol)}`, { method: 'DELETE' }),
                       )}
-                      style={ghostBtn(colors)}
                     >
                       Remove
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               );
@@ -1587,7 +1940,7 @@ function WatchlistSection({
       <form onSubmit={onAdd} style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
         <input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="AAPL" style={inputStyle(colors)} />
         <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Name" style={inputStyle(colors)} />
-        <button type="submit" disabled={busy || !symbol.trim()} style={ghostBtn(colors)}>Add</button>
+        <Button colors={colors} type="submit" pending={busy} disabled={busy || !symbol.trim()}>Add</Button>
       </form>
     </Card>
   );
@@ -1599,7 +1952,7 @@ function NotesSection({
   board: FinanceBoard;
   colors: ThemeColors;
   busy: boolean;
-  mutate: (fn: () => Promise<unknown>) => Promise<void>;
+  mutate: (fn: () => Promise<unknown>) => Promise<boolean>;
 }) {
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -1630,16 +1983,17 @@ function NotesSection({
                 <span style={{ fontWeight: 600 }}>{n.title}</span>
                 {n.symbol && <span style={{ ...type.caption, color: colors.textMuted, marginLeft: 8 }}>{n.symbol}</span>}
               </div>
-              <button
+              <Button
+                colors={colors}
                 type="button"
                 disabled={busy}
-                onClick={() => void mutate(() =>
+                flashSuccess={false}
+                onClick={() => mutate(() =>
                   apiFetch(`/api/finance/notes/${encodeURIComponent(n.id)}`, { method: 'DELETE' }),
                 )}
-                style={ghostBtn(colors)}
               >
                 Delete
-              </button>
+              </Button>
             </div>
             <p style={{ ...type.small, margin: '6px 0 0', whiteSpace: 'pre-wrap', color: colors.textMuted }}>{n.body}</p>
           </div>
@@ -1651,7 +2005,7 @@ function NotesSection({
           <input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="Ticker" style={inputStyle(colors)} />
         </div>
         <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Observation — not a recommendation" style={{ ...inputStyle(colors), minHeight: 64 }} required />
-        <button type="submit" disabled={busy} style={{ ...ghostBtn(colors), alignSelf: 'flex-start' }}>Add note</button>
+        <Button colors={colors} type="submit" pending={busy} disabled={busy} style={{ alignSelf: 'flex-start' }}>Add note</Button>
       </form>
     </Card>
   );
@@ -1798,7 +2152,7 @@ function Field({
 function SectionTitle({ children, colors }: { children: string; colors: ThemeColors }) {
   return (
     <h2 style={{
-      fontSize: 11,
+      fontSize: textSize.micro,
       fontWeight: 600,
       color: colors.textMuted,
       textTransform: 'uppercase',
@@ -1842,31 +2196,4 @@ function inputStyle(colors: ThemeColors): CSSProperties {
     minWidth: 100,
   };
 }
-function ghostBtn(colors: ThemeColors): CSSProperties {
-  return {
-    ...type.micro,
-    background: 'transparent',
-    color: colors.text,
-    border: `1px solid ${colors.border}`,
-    borderRadius: radius.sm,
-    padding: '6px 10px',
-    cursor: 'pointer',
-    fontFamily: font.body,
-  };
-}
-function ghostBtnOn(colors: ThemeColors): CSSProperties {
-  return { ...ghostBtn(colors), borderColor: colors.cyan, color: colors.cyan };
-}
-function primaryBtn(colors: ThemeColors): CSSProperties {
-  return {
-    ...type.micro,
-    background: colors.cyan,
-    color: colors.textOnCyan,
-    border: 'none',
-    borderRadius: radius.sm,
-    padding: '7px 12px',
-    cursor: 'pointer',
-    fontFamily: font.body,
-    fontWeight: 600,
-  };
-}
+

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
 import { api, type InboxFile } from '../../lib/api';
@@ -13,8 +13,9 @@ import {
   statusLabel,
   type RouteDestination,
 } from './inboxRouting';
-import { font } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 function formatBytes(b: number | null): string {
   if (b == null) return '—';
@@ -75,6 +76,12 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
   const [files, setFiles] = useState<InboxFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[] | null>(null);
+  /** The project list failed to load. Both catches used to `setProjects([])`,
+   *  which the picker then read as "No projects yet" — telling a user with a
+   *  dozen boards that they have none, in the one control they need to file a
+   *  file. The `error` state two lines up already does this correctly for
+   *  `files`; this is the second fetch in the same file. */
+  const [projectsError, setProjectsError] = useState(false);
   const [pick, setPick] = useState<PendingPick | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, RowResult>>({});
@@ -101,8 +108,8 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
   useEffect(() => {
     let active = true;
     fetchRoutableProjects()
-      .then(rows => { if (active) setProjects(rows); })
-      .catch(() => { if (active) setProjects([]); });
+      .then(rows => { if (active) { setProjects(rows); setProjectsError(false); } })
+      .catch(() => { if (active) setProjectsError(true); });
     return () => { active = false; };
   }, []);
 
@@ -117,10 +124,13 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
   const ensureProjects = useCallback(() => {
     if (projects !== null) return;
     fetchRoutableProjects()
-      .then(setProjects)
-      .catch(() => setProjects([]));
+      .then(rows => { setProjects(rows); setProjectsError(false); })
+      .catch(() => setProjectsError(true));
   }, [projects]);
 
+  // Resolves whether the route actually landed. The catch below turns a failure
+  // into a row message rather than rethrowing, so without this the button that
+  // triggered it would tick "done" over the top of "Could not route …".
   const sendTo = useCallback(async (file: InboxFile, destination: RouteDestination, projectId?: string) => {
     if (needsProject(destination) && !projectId) return; // picker enforces this; belt-and-braces
     const key = resultKey(file.id, destination);
@@ -158,24 +168,30 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
     );
   }, [ensureProjects]);
 
-  const actionBtn = (label: string, title: string, onClick: () => void, disabled: boolean, active = false) => (
-    <button
+  // `onClick` is `unknown`-returning on purpose: the routing handlers are
+  // async, and handing their promise to the primitive is what makes the round
+  // trip visible.
+  const actionBtn = (label: string, title: string, onClick: () => unknown, disabled: boolean, active = false) => (
+    <Button
+      colors={colors}
       onClick={onClick}
       disabled={disabled}
       title={title}
       style={{
+        '--pa-btn-bg': active ? colors.surface : 'transparent',
+        '--pa-btn-fg': disabled ? colors.textDim : colors.text,
+        '--pa-btn-border': colors.border,
+        '--pa-btn-bg-hover': active ? colors.surface : colors.surfaceHi,
+        '--pa-btn-border-hover': colors.borderHi,
+        '--pa-btn-bg-active': colors.surface,
+        '--pa-btn-pad': '0 10px',
+        '--pa-btn-radius': `${radius.sm}px`,
         height: 24,
-        padding: '0 10px',
-        borderRadius: 6,
-        background: active ? colors.surface : 'transparent',
-        border: `1px solid ${colors.border}`,
-        color: disabled ? colors.textDim : colors.text,
-        cursor: disabled ? 'default' : 'pointer',
         fontFamily: font.body,
-        fontSize: 11,
+        fontSize: textSize.micro,
         whiteSpace: 'nowrap',
-      }}
-    >{label}</button>
+      } as CSSProperties}
+    >{label}</Button>
   );
 
   return (
@@ -184,21 +200,30 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '20px 32px', borderBottom: `1px solid ${colors.border}` }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, letterSpacing: '-0.01em' }}>Downloads inbox</div>
-            <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
+            <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 2 }}>
               Files you download in the in-app browser land here — send them to the Brain, a project, or the post scheduler. You choose; nothing is routed for you.
             </div>
           </div>
-          <button
+          <Button
+            colors={colors}
             onClick={dismiss}
-            style={{ height: 30, padding: '0 12px', borderRadius: 8, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.textMuted, cursor: 'pointer', fontFamily: font.body, fontSize: 12 }}
-          >Close</button>
+            style={{
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-pad': '0 12px',
+              '--pa-btn-radius': `${radius.md}px`,
+              height: 30,
+              fontFamily: font.body,
+              fontSize: textSize.caption,
+            } as CSSProperties}
+          >Close</Button>
         </div>
       )}
       <div style={{ flex: 1, overflow: 'auto', padding: embedded ? '16px 20px' : '20px 32px' }}>
         {files === null ? (
-          <div style={{ color: colors.textDim, fontSize: 13 }}>Loading inbox…</div>
+          <div style={{ color: colors.textDim, fontSize: textSize.small }}>Loading inbox…</div>
         ) : files.length === 0 ? (
-          <div style={{ color: colors.textMuted, fontSize: 13, padding: '24px 0' }}>
+          <div style={{ color: colors.textMuted, fontSize: textSize.small, padding: '24px 0' }}>
             {error ?? 'Your inbox is empty. Download a file in the in-app browser — send it to Brain and it becomes searchable memory.'}
           </div>
         ) : (
@@ -219,16 +244,16 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
               return (
                 <div key={f.id} style={{ borderRadius: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
                   <div style={{ display: 'grid', gridTemplateColumns: COLS, gap: 12, alignItems: 'center', padding: '12px 12px 4px' }}>
-                    <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13, fontWeight: 600 }} title={f.filename}>{f.filename}</div>
-                    <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: colors.textMuted }} title={f.original_url ?? undefined}>{sourceLabel(f.original_url)}</div>
-                    <div style={{ fontSize: 12, color: colors.textMuted, fontFamily: font.mono }}>{formatBytes(f.size_bytes)}</div>
-                    <div style={{ fontSize: 12, color: colors.textMuted }}>{receivedLabel(f.created_at)}</div>
+                    <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: textSize.small, fontWeight: 600 }} title={f.filename}>{f.filename}</div>
+                    <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: textSize.caption, color: colors.textMuted }} title={f.original_url ?? undefined}>{sourceLabel(f.original_url)}</div>
+                    <div style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: font.mono }}>{formatBytes(f.size_bytes)}</div>
+                    <div style={{ fontSize: textSize.caption, color: colors.textMuted }}>{receivedLabel(f.created_at)}</div>
                     <div
-                      style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: f.project_id ? colors.text : colors.textDim }}
+                      style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: textSize.caption, color: f.project_id ? colors.text : colors.textDim }}
                       title={projectLabel(f.project_id, projects) ?? 'Not filed to a project yet'}
                     >{projectLabel(f.project_id, projects) ?? '—'}</div>
                     <div>
-                      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', padding: '2px 8px', borderRadius: 999, border: `1px solid ${colors.border}`, color: f.status === 'received' ? colors.text : colors.textMuted }}>
+                      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', padding: '2px 8px', borderRadius: radius.pill, border: `1px solid ${colors.border}`, color: f.status === 'received' ? colors.text : colors.textMuted }}>
                         {statusLabel(f.status)}
                       </span>
                     </div>
@@ -245,7 +270,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                     // and every line names the destination it is about.
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '0 12px 10px' }}>
                       {rowResults.map(({ dest, result }) => (
-                        <span key={dest} style={{ fontSize: 11, color: result.ok ? colors.textMuted : colors.danger }}>
+                        <span key={dest} style={{ fontSize: textSize.micro, color: result.ok ? colors.textMuted : colors.danger }}>
                           {result.text}
                         </span>
                       ))}
@@ -256,10 +281,14 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                       <select
                         value={rowPick.projectId}
                         onChange={e => setPick({ ...rowPick, projectId: e.target.value })}
-                        style={{ height: 26, borderRadius: 6, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.text, fontFamily: font.body, fontSize: 12, maxWidth: 280 }}
+                        style={{ height: 26, borderRadius: radius.sm, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.text, fontFamily: font.body, fontSize: textSize.caption, maxWidth: 280 }}
                       >
                         <option value="" disabled>
-                          {projects === null ? 'Loading projects…' : projects.length === 0 ? 'No projects yet' : 'Choose a project'}
+                          {projectsError
+                            ? "Couldn't load your projects"
+                            : projects === null ? 'Loading projects…'
+                            : projects.length === 0 ? 'No projects yet'
+                            : 'Choose a project'}
                         </option>
                         {(projects ?? []).map(p => (
                           <option key={p.id} value={p.id}>{p.name}</option>

@@ -1,9 +1,12 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, type CSSProperties } from 'react';
 import { COLORS } from './constants';
 import { Section, StatRow } from './HudShell';
 import { useIdentityStore } from '../../stores/identityStore';
 import { computePortalEligibility } from '../../utils/portalEligibility';
 import { SBT_CONTRACT } from '../../config/chain';
+import { radius, textSize } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 // ── External link helper ─────────────────────────────────────────
 
@@ -82,7 +85,7 @@ export function HenryIdentityTab() {
   if (!id) {
     return (
       <div style={{ padding: '20px 14px', textAlign: 'center' }}>
-        <div style={{ fontSize: 11, color: MUTED, lineHeight: 1.6 }}>
+        <div style={{ fontSize: textSize.micro, color: MUTED, lineHeight: 1.6 }}>
           Awaiting first verification
         </div>
       </div>
@@ -98,11 +101,11 @@ export function HenryIdentityTab() {
         <img
           src={id.avatarUrl}
           alt={id.name}
-          style={{ width: 36, height: 36, borderRadius: 6, border: `1px solid ${IDENTITY_GREEN}40` }}
+          style={{ width: 36, height: 36, borderRadius: radius.sm, border: `1px solid ${IDENTITY_GREEN}40` }}
         />
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: COLORS.primaryMarble }}>
+            <span style={{ fontSize: textSize.body, fontWeight: 600, color: COLORS.primaryMarble }}>
               {id.name}
             </span>
             {connectivity !== 'ok' && (
@@ -245,7 +248,7 @@ function LinkRow({ label, value, href }: { label: string; value: string; href?: 
       style={{
         display: 'flex',
         justifyContent: 'space-between',
-        fontSize: 11,
+        fontSize: textSize.micro,
         lineHeight: 1.6,
         cursor: clickable ? 'pointer' : 'default',
       }}
@@ -282,7 +285,7 @@ function CheckRow({ label, pass, detail, warn }: {
   const icon = pass ? '✓' : '✗';
   const color = pass ? CHECK_PASS : warn ? CHECK_WARN : CHECK_FAIL;
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, lineHeight: 1.6 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: textSize.micro, lineHeight: 1.6 }}>
       <span style={{ color: '#9CA3AF' }}>
         <span style={{ color, marginRight: 4 }}>{icon}</span>
         {label}
@@ -297,28 +300,32 @@ function ActionButton({ label, disabled, onClick }: {
   disabled?: boolean;
   onClick?: () => void;
 }) {
-  const [hovered, setHovered] = useState(false);
+  // The muted-to-cyan hover this kept a `hovered` state for is exactly what
+  // `--pa-btn-fg-hover` expresses, so the state and its handlers go and the
+  // press give and focus ring arrive.
+  const { colors } = useTheme();
   return (
-    <button
+    <Button
+      colors={colors}
+      variant="bare"
+      type="button"
       disabled={disabled}
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
+        '--pa-btn-fg': disabled ? '#4B5563' : '#9CA3AF',
+        '--pa-btn-fg-hover': COLORS.neonCyan,
+        '--pa-btn-bg-hover': 'transparent',
+        '--pa-btn-bg-active': 'transparent',
+        '--pa-btn-pad': '5px 0',
+        '--pa-btn-radius': '0',
+        '--pa-btn-weight': 600,
         flex: 1,
-        padding: '5px 0',
-        background: 'none',
-        border: 'none',
-        color: disabled ? '#4B5563' : hovered ? COLORS.neonCyan : '#9CA3AF',
         fontSize: 10,
-        fontWeight: 600,
         fontFamily: 'monospace',
         letterSpacing: '0.04em',
-        cursor: disabled ? 'default' : 'pointer',
-        transition: 'color 0.15s',
-      }}
+      } as CSSProperties}
     >
       {label}
-    </button>
+    </Button>
   );
 }

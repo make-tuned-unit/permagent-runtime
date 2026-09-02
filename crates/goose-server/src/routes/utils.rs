@@ -113,8 +113,19 @@ pub fn check_provider_configured(metadata: &ProviderMetadata, provider_type: Pro
                 }
             }
 
-            // Custom providers with config files are intentionally created
-            return provider_type == ProviderType::Custom;
+            // A hand-made custom provider is connected by existence ONLY when it
+            // names no api_key_env — header/env_var auth leaves nothing for the
+            // check above to find, so the file itself is the only signal. Once a
+            // provider declares an api_key_env AND requires_auth, the check above
+            // is meaningful and an unconditional `true` here would override it,
+            // reporting a provider with no stored key as connected.
+            //
+            // Mirrored EXACTLY from
+            // `permagent::providers::configured::is_provider_configured`. The two
+            // must not diverge — a split here is what made a provider read
+            // "connected" in one picker and "not configured" in another.
+            return provider_type == ProviderType::Custom
+                && loaded_provider.config.api_key_env.is_empty();
         }
     }
 
@@ -205,4 +216,80 @@ pub fn check_provider_configured(metadata: &ProviderMetadata, provider_type: Pro
 
         is_set_in_env || is_set_in_config
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use permagent::providers::configured::is_provider_configured;
+
+    /// Write a custom-provider definition to disk and return matching metadata.
+    ///
+    /// The file has to actually exist: with nothing there `load_provider` returns
+    /// `Err`, the custom/declarative branch never runs, and the assertions below
+    /// would hold for reasons unrelated to the branch they are guarding.
+    fn custom_provider_on_disk(name: &str, api_key_env: &str) -> ProviderMetadata {
+        crate::test_support::test_root();
+        let dir = permagent::config::declarative_providers::custom_providers_dir();
+        std::fs::create_dir_all(&dir).expect("custom_providers dir");
+        let json = serde_json::json!({
+            "name": name,
+            "engine": "openai",
+            "display_name": name,
+            "api_key_env": api_key_env,
+            "base_url": "https://example.invalid",
+            "models": [],
+            "requires_auth": true,
+        });
+        std::fs::write(
+            dir.join(format!("{name}.json")),
+            serde_json::to_string(&json).expect("serialize provider"),
+        )
+        .expect("write provider json");
+
+        // No config keys and no `<name>_configured` marker, so every path after
+        // the custom/declarative branch is false. A `true` came from that branch.
+        ProviderMetadata::new(name, name, "", "", vec![], "", vec![])
+    }
+
+    /// This route's check and `providers::configured::is_provider_configured` are
+    /// deliberate near-copies. They have drifted before — a provider read
+    /// "connected" in one picker and "not configured" in another — so assert the
+    /// two agree on the custom-provider hatch rather than trusting the comments.
+    #[test]
+    fn the_custom_provider_hatch_matches_the_shared_configured_check() {
+        let key = "PERMAGENT_TEST_DAEMON_CUSTOM_DECLARED_KEY";
+        let declared = custom_provider_on_disk("permagent-test-daemon-declared", key);
+        let headers = custom_provider_on_disk("permagent-test-daemon-headers", "");
+
+        for meta in [&declared, &headers] {
+            assert_eq!(
+                check_provider_configured(meta, ProviderType::Custom),
+                is_provider_configured(meta, ProviderType::Custom),
+                "{} disagrees with the shared configured check",
+                meta.name
+            );
+        }
+
+        assert!(
+            !check_provider_configured(&declared, ProviderType::Custom),
+            "a custom provider that requires auth and names an api_key_env is not \
+             connected until that key is stored"
+        );
+        assert!(
+            check_provider_configured(&headers, ProviderType::Custom),
+            "a custom provider with no api_key_env authenticates via headers/env \
+             vars and stays connected by existence"
+        );
+
+        Config::global()
+            .set_secret(key, &"sk-test".to_string())
+            .expect("store secret");
+        assert!(check_provider_configured(&declared, ProviderType::Custom));
+        assert_eq!(
+            check_provider_configured(&declared, ProviderType::Custom),
+            is_provider_configured(&declared, ProviderType::Custom),
+        );
+        Config::global().delete_secret(key).ok();
+    }
 }

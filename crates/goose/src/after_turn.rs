@@ -693,10 +693,14 @@ mod tests {
     use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Role};
 
     fn tool_exchange(name: &str, id: &str, ok: bool) -> Message {
+        tool_exchange_with_text(name, id, if ok { "out" } else { "failed" }, ok)
+    }
+
+    fn tool_exchange_with_text(name: &str, id: &str, text: &str, ok: bool) -> Message {
         let result = if ok {
-            CallToolResult::success(vec![Content::text("out")])
+            CallToolResult::success(vec![Content::text(text)])
         } else {
-            CallToolResult::error(vec![Content::text("failed")])
+            CallToolResult::error(vec![Content::text(text)])
         };
         Message::new(
             Role::Assistant,
@@ -794,6 +798,26 @@ mod tests {
         assert_eq!(
             guard.after_turn(&ctx(&done, 0)).await,
             AfterTurnAction::Allow
+        );
+    }
+
+    /// The live bug, end to end. A passing cargo suite prints `0 failed`;
+    /// `"failed"` was in the transcript-signal failure list, so two green runs
+    /// scored as a spin and this guard injected "Verify is still failing the
+    /// same way" AFTER a pass. Signals now read the wire's `is_error`.
+    #[tokio::test]
+    async fn a_green_run_whose_output_says_zero_failed_is_allowed_to_finish() {
+        let pass = "test result: ok. 42 passed; 0 failed; 0 ignored";
+        let guard = PrematureDoneGuard::new();
+        let done = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange_with_text("developer__verify", "v1", pass, true),
+            tool_exchange_with_text("developer__verify", "v2", pass, true),
+        ];
+        assert_eq!(
+            guard.after_turn(&ctx(&done, 0)).await,
+            AfterTurnAction::Allow,
+            "a passing suite must never be answered with 'still failing'"
         );
     }
 

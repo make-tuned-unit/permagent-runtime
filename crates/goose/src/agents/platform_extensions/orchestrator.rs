@@ -501,58 +501,12 @@ impl OrchestratorClient {
             kanban_cache: Arc::new(tokio::sync::Mutex::new(KanbanContextCache::new())),
         };
 
-        // Resume in-progress goals from a PRIOR DAEMON LIFECYCLE — at most once
-        // per process.
-        //
-        // This is `Self::new`, and `client_factory` runs it for every agent
-        // session that loads the orchestrator extension: every scheduled job,
-        // every chat turn. The sweep was therefore anything but one-shot. With
-        // `monitor-3-active-goals-every-2-minutes` on its schedule it ran every
-        // couple of minutes, and each pass treated freshly-dispatched goals as
-        // orphans and requeued them — eight Wave 1 goals died that way on
-        // 2026-08-05, logging "Resuming 8 in-progress goal(s) from prior
-        // session" twice in nine minutes while the daemon never restarted once.
-        //
-        // The guard is process-wide, not per-client, because that is the scope
-        // the sweep's own precondition assumes: "a prior daemon lifecycle" can
-        // only be recovered from once, at this daemon's start.
-        static RESUME_DONE: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
-        if RESUME_DONE
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-            )
-            .is_err()
-        {
-            return Ok(client);
-        }
-
-        let resume_sm = client.context.session_manager.clone();
-        tokio::spawn(async move {
-            // Small delay to let the DB pool and AgentManager finish initializing
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            if let Err(e) = resume_in_progress_goals(&resume_sm).await {
-                tracing::warn!(
-                    target: "permagentd::brain",
-                    "Failed to resume in-progress goals on startup: {}",
-                    e
-                );
-            }
-            // #504: once resume has re-registered live goals, reclaim goal
-            // worktrees orphaned by crashed or prior daemon lifecycles. Runs
-            // only at boot (orphans accrue across restarts, not steadily) and
-            // skips any worktree still attached to a non-terminal goal.
-            if let Err(e) = sweep_orphaned_goal_worktrees(&resume_sm).await {
-                tracing::warn!(
-                    target: "permagentd::brain",
-                    "Orphaned goal-worktree sweep failed on startup: {}",
-                    e
-                );
-            }
-        });
+        // Late trigger for the boot reconciliation, kept for the runs that
+        // never go through the daemon's own startup (a CLI session, a test
+        // harness). Idempotent: the daemon's boot call and this one claim the
+        // same process-wide guard, so whichever arrives first is the only one
+        // that sweeps.
+        spawn_boot_reconcile(client.context.session_manager.clone());
 
         Ok(client)
     }
@@ -738,13 +692,21 @@ pub(crate) async fn select_worker_fn(
 /// project was never indexed. The slicing itself lives in [`super::code_map`],
 /// shared with the analyze extension's `map_query` tool so the two views of a
 /// stored map cannot drift.
-async fn code_map_instructions_block(project_id: &str, goal_text: &str) -> Option<String> {
+/// Returns the block AND the map's provenance (`created_at` on the Brain row),
+/// because the caller owes the worker both: an index is only true as of when it
+/// was written, and a map with no date attached reads as current. The date
+/// feeds the assumptions ledger (`dispatch_brief::Assumption`).
+async fn code_map_instructions_block(
+    project_id: &str,
+    goal_text: &str,
+) -> Option<(String, Option<String>)> {
     let brain = super::get_global_brain()?;
     let mem = brain
         .get_memory_by_key(&format!("code:{project_id}:map"))
         .await
         .ok()??;
-    super::code_map::format_code_map_block(&mem.content, goal_text)
+    let block = super::code_map::format_code_map_block(&mem.content, goal_text)?;
+    Some((block, mem.created_at.clone()))
 }
 
 /// Pin dispatch to a NAMED roster worker, bypassing cost ranking.
@@ -1151,8 +1113,45 @@ pub(crate) async fn dispatch_goal_fn(
     // larger than the exploration it replaces, so oversized maps are cut at
     // a line boundary and say so. Best-effort — an absent Brain or unindexed
     // project changes nothing.
-    if let Some(block) =
+    let mut assumptions: Vec<super::dispatch_brief::Assumption> = Vec::new();
+    if let Some((block, generated_at)) =
         code_map_instructions_block(&project.id, &format!("{} {}", card.title, card.description))
+            .await
+    {
+        instructions = format!("{instructions}\n\n{block}");
+        // The map is the one memory-derived claim in a normal brief: it was
+        // written by an `index-code` run at some past moment and nothing
+        // revalidates it at dispatch. It goes in the ledger with its date.
+        assumptions.push(super::dispatch_brief::Assumption {
+            claim: "the codebase map above still describes the tree".to_string(),
+            source: format!("Brain memory 'code:{}:map'", project.id),
+            dated: generated_at,
+        });
+    }
+
+    // Project context digest (a3's B2): sibling-goal status + the project's
+    // notes field, ~400 tokens, staleness-labeled. Two blind spots close here.
+    // A worker that cannot see the board duplicates or contradicts work already
+    // in flight — the board was reachable as a TOOL in-process and by nothing at
+    // all out here. And `project.notes` was a column no code path read, so the
+    // one place a user writes durable project-level standing instructions never
+    // reached the agent doing the work. Small and linked-not-inlined by design:
+    // ten siblings, a notes excerpt, and the name of the bridge tool that
+    // answers live (see `dispatch_digest`). Best-effort — a DB hiccup costs the
+    // digest, never the dispatch.
+    //
+    // The digest's wording depends on whether THIS worker will actually get the
+    // read-only bridge: telling a codex worker to "call `board_query`" names a
+    // tool it does not have, and an instruction a worker cannot follow teaches
+    // it to discount the rest of the brief.
+    let bridge_available = match config.workers.get(&worker_key).map(|w| &w.engine) {
+        Some(agent_identity::WorkerEngineKind::ExternalCli { bin, .. }) => {
+            super::goal_context_mcp::bridge_supported(bin)
+        }
+        _ => false,
+    };
+    if let Some(block) =
+        super::dispatch_digest::load_dispatch_digest(&pool, &project, &card.id, bridge_available)
             .await
     {
         instructions = format!("{instructions}\n\n{block}");
@@ -1163,6 +1162,14 @@ pub(crate) async fn dispatch_goal_fn(
     instructions =
         super::dispatch_brief::with_retry_context_hydrated(&pool, instructions, &card, &project)
             .await;
+
+    // Assumptions ledger, LAST so it can honestly speak about the whole brief:
+    // "everything else here is confirmed". Without it, a Brain-recalled claim
+    // arrives in the same voice as a verified instruction — the shape
+    // `retrospect`'s module doc records as costing −9.2pp, because the worker
+    // obeys a stale fact instead of noticing it is stale. Absent entirely when
+    // nothing in the brief was recalled.
+    instructions = super::dispatch_brief::with_assumptions(instructions, &assumptions);
 
     // Working dir + baseline commit at dispatch time (recorded beside
     // dispatched_at so a commit-producing worker's changes can be diffed
@@ -1239,6 +1246,7 @@ pub(crate) async fn dispatch_goal_fn(
         timeout: std::time::Duration::from_secs(timeout_secs),
         output_tx: Some(output_tx),
         parent_session_id: context.session.as_ref().map(|s| s.id.clone()),
+        project_id: Some(project.id.clone()),
     };
 
     // Resolve once before engine construction so the scope is fixed for the
@@ -3794,6 +3802,40 @@ async fn run_decomposition(
     }
 }
 
+/// The single definition of "which goals may be dispatched right now" for a
+/// project — the arbiter every dispatch trigger goes through.
+///
+/// Returns an empty list when the roadmap is paused or the project has no
+/// Ready column. Promotion of Triage goals whose dependencies are all
+/// Complete runs first (guarded tier-0 transitions; parked goals are
+/// skipped), so a caller that just completed a goal sees its dependents here.
+///
+/// New triggers add CALLERS of this function. They must never grow a second,
+/// divergent notion of eligibility: the pause tag, the column gate, and the
+/// promotion rules are defined here once.
+async fn eligible_ready_goals(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+) -> Result<Vec<cards::Card>, String> {
+    // Check if roadmap is paused
+    let tags = crate::projects::list_tags(pool, project_id).await?;
+    if tags.iter().any(|t| t == "roadmap_paused") {
+        return Ok(Vec::new());
+    }
+
+    // Find goals in Ready state for this project
+    let ready_col = match cards::get_goal_column(pool, project_id, "ready").await? {
+        Some(c) => c,
+        None => return Ok(Vec::new()),
+    };
+
+    // Promote Triage goals whose dependencies are all Complete to Ready
+    // (guarded tier-0 transitions; parked goals are skipped).
+    goal_transition::promote_eligible_dependents(pool, project_id).await?;
+
+    cards::list_cards(pool, project_id, Some("goal"), Some(&ready_col.id)).await
+}
+
 /// Find and dispatch goals whose dependencies are all complete.
 ///
 /// Called after a goal completes (from handle_goal_completion) or
@@ -3803,25 +3845,7 @@ pub async fn dispatch_eligible_goals(
     project_id: &str,
     orchestrator: &OrchestratorClient,
 ) -> Result<u32, String> {
-    // Check if roadmap is paused
-    let tags = crate::projects::list_tags(pool, project_id).await?;
-    if tags.iter().any(|t| t == "roadmap_paused") {
-        return Ok(0);
-    }
-
-    // Find goals in Ready state for this project
-    let ready_col = match cards::get_goal_column(pool, project_id, "ready").await? {
-        Some(c) => c,
-        None => return Ok(0),
-    };
-
-    // Promote Triage goals whose dependencies are all Complete to Ready
-    // (guarded tier-0 transitions; parked goals are skipped).
-    goal_transition::promote_eligible_dependents(pool, project_id).await?;
-
-    // Now dispatch all goals in Ready
-    let ready_goals =
-        cards::list_cards(pool, project_id, Some("goal"), Some(&ready_col.id)).await?;
+    let ready_goals = eligible_ready_goals(pool, project_id).await?;
 
     let mut dispatched = 0u32;
     for goal in &ready_goals {
@@ -3839,6 +3863,217 @@ pub async fn dispatch_eligible_goals(
     }
 
     Ok(dispatched)
+}
+
+// ── The dispatch nudge (D10) ────────────────────────────────────────────────
+//
+// Until this seam existed, `dispatch_eligible_goals` had exactly ONE caller in
+// the tree: the manual `resume_roadmap` tool. Everything that made a goal
+// dispatchable — a dependent promoted Triage→Ready when its parent completed, a
+// parked goal unparked by an answered decision — left the goal sitting in
+// Ready with no worker, forever, until a human explicitly resumed the roadmap.
+// The comment in `verification/mod.rs` promising "the tracker after another
+// goal completes" picks it up described a call site that did not exist.
+//
+// The nudge adds those callers. It changes no eligibility rule: it routes
+// through `eligible_ready_goals` (pause tag, column gate, promotion rules) and
+// then through `dispatch_goal_fn`, which re-checks the Ready column, the
+// budget, and takes the atomic Ready→InProgress claim. A goal another
+// dispatcher already claimed is no longer in the Ready list, and would be
+// refused by the state check even if it were — so re-entrant nudges cannot
+// double-dispatch.
+
+/// Future returned by an installed [`GoalDispatchHook`].
+pub type GoalDispatchFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>;
+
+/// Dispatches ONE Ready goal by card id, returning the worker session id.
+///
+/// The daemon installs the real one at startup ([`install_dispatch_hook`]);
+/// tests inject their own through the `_with` entry points. When nothing is
+/// installed the nudge degrades to the pre-D10 behavior (goals wait for
+/// `resume_roadmap`) with a debug log — it never panics.
+pub type GoalDispatchHook = Box<dyn Fn(String) -> GoalDispatchFuture + Send + Sync>;
+
+/// Process-global dispatcher, installed once at daemon startup. Same shape and
+/// same contract as [`GOAL_REVIEW_HOOK`].
+pub static GOAL_DISPATCH_HOOK: std::sync::OnceLock<GoalDispatchHook> = std::sync::OnceLock::new();
+
+/// Install the goal dispatcher used by the nudge. Idempotent (OnceLock) — a
+/// second call is a no-op. Call once at daemon startup.
+///
+/// The installed closure resolves its own pool from `session_manager`, so it
+/// must only be installed in a process whose session manager owns the real
+/// database — never from a unit test holding an in-memory pool.
+pub fn install_dispatch_hook(session_manager: std::sync::Arc<crate::session::SessionManager>) {
+    let _ = GOAL_DISPATCH_HOOK.set(Box::new(move |card_id: String| {
+        let session_manager = std::sync::Arc::clone(&session_manager);
+        Box::pin(async move {
+            // A fresh ProbeCache is an empty in-memory map; building a
+            // throwaway OrchestratorClient here would instead spawn a resume +
+            // worktree-sweep task on construction (see project_manager.rs).
+            let context = PlatformExtensionContext {
+                extension_manager: None,
+                session_manager,
+                session: None,
+            };
+            let probe_cache = crate::config::worker_probe::ProbeCache::new();
+            dispatch_goal_fn(&context, &probe_cache, &card_id, None).await
+        }) as GoalDispatchFuture
+    }));
+}
+
+/// Dispatch every currently-eligible Ready goal in `project_id` through
+/// `dispatch`. Never returns an error: a nudge is best-effort by
+/// construction — it runs after an approval or an unpark that has ALREADY
+/// committed, and must never fail that caller.
+async fn dispatch_ready_goals_with(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    dispatch: Option<&GoalDispatchHook>,
+    reason: &str,
+) -> u32 {
+    let Some(dispatch) = dispatch else {
+        tracing::debug!(
+            target: "permagentd::brain",
+            project_id = %project_id,
+            reason = %reason,
+            "Dispatch nudge skipped: no goal dispatcher installed — newly Ready goals \
+             wait for resume_roadmap (pre-D10 behavior)"
+        );
+        return 0;
+    };
+
+    let ready_goals = match eligible_ready_goals(pool, project_id).await {
+        Ok(goals) => goals,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                project_id = %project_id,
+                reason = %reason,
+                "Dispatch nudge could not list eligible goals: {}",
+                e
+            );
+            return 0;
+        }
+    };
+
+    let mut dispatched = 0u32;
+    for goal in &ready_goals {
+        match dispatch(goal.id.clone()).await {
+            Ok(session_id) => {
+                dispatched += 1;
+                tracing::info!(
+                    target: "permagentd::brain",
+                    goal_id = %goal.id,
+                    project_id = %project_id,
+                    reason = %reason,
+                    session_id = %session_id,
+                    "Dispatch nudge started goal '{}'",
+                    goal.title
+                );
+            }
+            Err(e) => {
+                // Expected and harmless for a goal another dispatcher already
+                // claimed, a budget-exhausted goal (which parks itself), or a
+                // goal with no eligible worker. None of those may fail the
+                // approval/unpark that triggered the nudge.
+                tracing::debug!(
+                    target: "permagentd::brain",
+                    goal_id = %goal.id,
+                    project_id = %project_id,
+                    reason = %reason,
+                    "Dispatch nudge did not start goal '{}': {}",
+                    goal.title,
+                    e
+                );
+            }
+        }
+    }
+
+    dispatched
+}
+
+/// Nudge the installed dispatcher to start every eligible Ready goal in
+/// `project_id`. Returns how many started (0 when no dispatcher is installed).
+pub async fn nudge_dispatch_ready_goals(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    reason: &str,
+) -> u32 {
+    dispatch_ready_goals_with(pool, project_id, GOAL_DISPATCH_HOOK.get(), reason).await
+}
+
+/// Promote a completed goal's dependents Triage→Ready, then dispatch whatever
+/// became eligible — the goal-completion half of D10.
+///
+/// Returns [`goal_transition::promote_eligible_dependents_or_warn`]'s warning
+/// unchanged, so callers' existing `effect_error` / audit-note contract is
+/// untouched. The dispatch half is best-effort and never turns into an error:
+/// the approval it follows has already committed.
+pub async fn promote_and_dispatch_dependents(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    approved_goal_id: &str,
+) -> Option<String> {
+    promote_and_dispatch_dependents_with(
+        pool,
+        project_id,
+        approved_goal_id,
+        GOAL_DISPATCH_HOOK.get(),
+    )
+    .await
+}
+
+/// [`promote_and_dispatch_dependents`] with an injected dispatcher (tests).
+pub(crate) async fn promote_and_dispatch_dependents_with(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    approved_goal_id: &str,
+    dispatch: Option<&GoalDispatchHook>,
+) -> Option<String> {
+    let warning =
+        goal_transition::promote_eligible_dependents_or_warn(pool, project_id, approved_goal_id)
+            .await;
+    // The nudge re-runs promotion inside `eligible_ready_goals`. That pass is
+    // idempotent and cheap, and going through the shared arbiter is worth more
+    // than saving it: there is exactly one definition of eligibility.
+    dispatch_ready_goals_with(pool, project_id, dispatch, "dependent promotion").await;
+    warning
+}
+
+/// A dispatcher that records card ids instead of starting workers, for tests
+/// that must exercise the PRODUCTION call path (which reads the process-global
+/// [`GOAL_DISPATCH_HOOK`]) rather than an injected `_with` parameter.
+///
+/// The seam is a `OnceLock`, so the whole lib-test binary shares one recorder;
+/// assertions are keyed by card id, which is unique per test.
+#[cfg(test)]
+pub(crate) mod test_dispatch_recorder {
+    use super::{GoalDispatchFuture, GOAL_DISPATCH_HOOK};
+    use std::sync::{Mutex, OnceLock};
+
+    static RECORDED: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+    fn recorded() -> &'static Mutex<Vec<String>> {
+        RECORDED.get_or_init(|| Mutex::new(Vec::new()))
+    }
+
+    /// Install the recording dispatcher (idempotent — the global seam is set
+    /// at most once per process).
+    pub(crate) fn install() {
+        let _ = GOAL_DISPATCH_HOOK.set(Box::new(|card_id: String| {
+            Box::pin(async move {
+                recorded().lock().unwrap().push(card_id.clone());
+                Ok(format!("recorded-session-for-{card_id}"))
+            }) as GoalDispatchFuture
+        }));
+    }
+
+    /// Whether the dispatcher was asked to start this card.
+    pub(crate) fn saw(card_id: &str) -> bool {
+        recorded().lock().unwrap().iter().any(|id| id == card_id)
+    }
 }
 
 /// Check if Kanban context should be injected this turn.
@@ -5982,6 +6217,9 @@ pub async fn escalate_verify_fix_loop(
             crate::cost_router::extract_tool_signals(&[crate::cost_router::ToolTurn {
                 name: "verify",
                 result: verify_failure.unwrap_or(evidence),
+                // This path only fires after verify has failed identically
+                // `consecutive` times, so the outcome is known, not sniffed.
+                is_error: Some(true),
             }])
         } else {
             live
@@ -6114,6 +6352,234 @@ pub fn daemon_lifecycle_id() -> &'static str {
     ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
 }
 
+/// Metadata key recording the `dispatched_lifecycle` a goal has ALREADY been
+/// forgiven an attempt for (R2a). The restart exemption is granted once per
+/// interruption: a goal that comes back round on the same stamp is charged
+/// normally, so a restart loop can never buy unlimited free retries.
+pub const RESTART_FORGIVEN_LIFECYCLE: &str = "restart_forgiven_lifecycle";
+
+/// Briefing `kind` for the boot reconciler's own report (R2b).
+pub const RESTART_RECONCILE_BRIEFING_KIND: &str = "restart_reconcile";
+
+/// Whether the boot reconciler charges an attempt for an orphaned in-flight
+/// goal. Named and pure so the classification is assertable directly (R4's
+/// chaos gate needs it without a daemon).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartCharge {
+    /// The interruption is a proven daemon-lifecycle change and this goal has
+    /// not been forgiven for it yet — requeue at the SAME attempt count.
+    NoCharge,
+    /// Charge the attempt: either the interruption cannot be shown to be a
+    /// restart, or this goal has already had its one free pass for it.
+    Charge,
+}
+
+/// Decide whether an orphaned in-flight goal's requeue consumes an attempt.
+///
+/// Only reached on the boot path, where `resume_single_goal` has already
+/// established that no live in-process tracker owns the goal. The rule:
+///
+/// * No `dispatched_lifecycle` stamp → **Charge**. The exemption forgives
+///   evidence of a restart, never the absence of it.
+/// * Stamp equal to the forgiven-lifecycle marker (or to the current process's
+///   own id) → **Charge**. One exemption per interruption.
+/// * Otherwise → **NoCharge**. The daemon that dispatched this goal is gone;
+///   the worker did not fail at its task, it was taken down mid-work.
+///
+/// The budget is not made infinite by this: dispatch itself increments
+/// `attempt_count` (see `dispatch_goal`), so a goal that keeps being
+/// restart-interrupted still climbs one attempt per real dispatch and parks at
+/// the cap in the end. What stops is the *double* charge — one for the
+/// dispatch, another for the interruption that ended it.
+pub fn classify_restart_charge(meta: &serde_json::Value) -> RestartCharge {
+    let Some(dispatched) = meta.get("dispatched_lifecycle").and_then(|v| v.as_str()) else {
+        return RestartCharge::Charge;
+    };
+    if dispatched == daemon_lifecycle_id() {
+        return RestartCharge::Charge;
+    }
+    let forgiven = meta
+        .get(RESTART_FORGIVEN_LIFECYCLE)
+        .and_then(|v| v.as_str());
+    if forgiven == Some(dispatched) {
+        return RestartCharge::Charge;
+    }
+    RestartCharge::NoCharge
+}
+
+/// What the reconciler did with one in-flight goal it found at boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeDisposition {
+    /// Dispatched in THIS lifecycle — a live tracker owns it; not an orphan.
+    OwnedByLiveTracker,
+    /// The worker session is still alive; a polling tracker was re-attached.
+    Reattached,
+    /// The worktree held committed work — routed to Review with evidence.
+    ResumedToReview,
+    /// Requeued to Ready without charging the attempt (restart interruption).
+    RequeuedNoCharge,
+    /// Requeued to Ready with the attempt charged.
+    RequeuedCharged,
+    /// Budget exhausted — parked in Failed with an unblock decision.
+    ParkedFailed,
+}
+
+/// The boot reconciliation pass, as one value (R2b).
+///
+/// A restart that silently rewrites goal state is exactly the condition R0 had
+/// to reconstruct from the journal a month after the fact. The pass reports
+/// itself instead.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReconcileReport {
+    /// In-flight goal cards found, including those a live tracker owns.
+    pub examined: usize,
+    pub owned_by_live_tracker: usize,
+    pub reattached: usize,
+    pub resumed_to_review: usize,
+    pub requeued_no_charge: usize,
+    pub requeued_charged: usize,
+    pub parked_failed: usize,
+    /// Goals whose reconciliation itself errored (logged, then skipped).
+    pub errors: usize,
+}
+
+impl ReconcileReport {
+    fn record(&mut self, disposition: ResumeDisposition) {
+        match disposition {
+            ResumeDisposition::OwnedByLiveTracker => self.owned_by_live_tracker += 1,
+            ResumeDisposition::Reattached => self.reattached += 1,
+            ResumeDisposition::ResumedToReview => self.resumed_to_review += 1,
+            ResumeDisposition::RequeuedNoCharge => self.requeued_no_charge += 1,
+            ResumeDisposition::RequeuedCharged => self.requeued_charged += 1,
+            ResumeDisposition::ParkedFailed => self.parked_failed += 1,
+        }
+    }
+
+    /// Goals this pass actually acted on — everything but the ones a live
+    /// tracker in this same process already owns.
+    pub fn reconciled(&self) -> usize {
+        self.reattached
+            + self.resumed_to_review
+            + self.requeued_no_charge
+            + self.requeued_charged
+            + self.parked_failed
+    }
+
+    /// The one line that stands alone in Henry's brief.
+    pub fn summary(&self) -> String {
+        let n = self.reconciled();
+        format!(
+            "Reconciled {} interrupted goal{} after a daemon restart",
+            n,
+            if n == 1 { "" } else { "s" }
+        )
+    }
+
+    /// The breakdown, one disposition per line. Every line is printed even at
+    /// zero: a report that omits its empty rows cannot be told from a report
+    /// that never looked (the `job_health` rule).
+    pub fn detail(&self) -> String {
+        format!(
+            "Boot reconciliation of in-flight goals (daemon lifecycle {}):\n\
+             - examined: {} in-flight goal(s); {} already owned by a live tracker in this process\n\
+             - {} requeued to Ready — no attempt charged (restart interruption)\n\
+             - {} requeued to Ready — attempt charged\n\
+             - {} recovered to Review from committed worktree evidence\n\
+             - {} parked in Failed (budget exhausted)\n\
+             - {} re-attached to a still-live worker session\n\
+             - {} could not be reconciled (see the daemon log)",
+            daemon_lifecycle_id(),
+            self.examined,
+            self.owned_by_live_tracker,
+            self.requeued_no_charge,
+            self.requeued_charged,
+            self.resumed_to_review,
+            self.parked_failed,
+            self.reattached,
+            self.errors,
+        )
+    }
+
+    fn severity(&self) -> crate::briefings::Severity {
+        if self.parked_failed > 0 || self.errors > 0 {
+            crate::briefings::Severity::Attention
+        } else {
+            crate::briefings::Severity::Info
+        }
+    }
+}
+
+/// Process-wide guard for the boot reconciliation. It is one-shot per PROCESS,
+/// not per caller, because that is the scope the sweep's own precondition
+/// assumes: "a prior daemon lifecycle" can only be recovered from once, at this
+/// daemon's start.
+static RESUME_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Claim the once-per-process boot reconciliation against `done`. `true` means
+/// the caller owns the pass; every later caller gets `false`.
+///
+/// Takes the flag rather than reading the static so the claim can be exercised
+/// without burning the real one.
+fn claim_boot_reconcile(done: &std::sync::atomic::AtomicBool) -> bool {
+    done.compare_exchange(
+        false,
+        true,
+        std::sync::atomic::Ordering::SeqCst,
+        std::sync::atomic::Ordering::SeqCst,
+    )
+    .is_ok()
+}
+
+/// Spawn the boot reconciliation of goals interrupted by a PRIOR DAEMON
+/// LIFECYCLE, plus the orphaned-worktree sweep behind it. At most once per
+/// process, whichever entry point calls first.
+///
+/// Two entry points, deliberately:
+/// - **Daemon startup**, so a restart reconciles immediately. This is the one
+///   that matters: the pass used to live only in `OrchestratorRouter::new`, so
+///   a fresh boot reconciled nothing until some agent session happened to load
+///   the extension — a machine that restarted and then sat idle left its
+///   interrupted goals in `in_progress` indefinitely.
+/// - **`OrchestratorRouter::new`**, the original trigger, kept for runs that
+///   never pass through daemon startup.
+///
+/// The guard is what makes two triggers safe. `client_factory` builds a router
+/// for every agent session that loads the extension: every scheduled job, every
+/// chat turn. Unguarded, the sweep was anything but one-shot — with
+/// `monitor-3-active-goals-every-2-minutes` on its schedule it ran every couple
+/// of minutes, and each pass treated freshly-dispatched goals as orphans and
+/// requeued them. Eight Wave 1 goals died that way on 2026-08-05, logging
+/// "Resuming 8 in-progress goal(s) from prior session" twice in nine minutes
+/// while the daemon never restarted once.
+pub fn spawn_boot_reconcile(session_manager: Arc<crate::session::SessionManager>) {
+    if !claim_boot_reconcile(&RESUME_DONE) {
+        return;
+    }
+
+    tokio::spawn(async move {
+        // Small delay to let the DB pool and AgentManager finish initializing
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if let Err(e) = resume_in_progress_goals(&session_manager).await {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "Failed to resume in-progress goals on startup: {}",
+                e
+            );
+        }
+        // #504: once resume has re-registered live goals, reclaim goal
+        // worktrees orphaned by crashed or prior daemon lifecycles. Runs
+        // only at boot (orphans accrue across restarts, not steadily) and
+        // skips any worktree still attached to a non-terminal goal.
+        if let Err(e) = sweep_orphaned_goal_worktrees(&session_manager).await {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "Orphaned goal-worktree sweep failed on startup: {}",
+                e
+            );
+        }
+    });
+}
+
 /// Resume in-progress goals after daemon restart.
 ///
 /// Scans for goal cards in the `in_progress` state and either:
@@ -6126,43 +6592,102 @@ pub async fn resume_in_progress_goals(
         .pool_clone()
         .await
         .map_err(|e| e.to_string())?;
+    let manager = AgentManager::instance().await.ok();
+    reconcile_in_progress_goals(&pool, &manager).await;
+    Ok(())
+}
+
+/// The reconciliation pass itself, over a pool rather than a `SessionManager`,
+/// so a test can run a whole boot without a daemon.
+pub async fn reconcile_in_progress_goals(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    manager: &Option<Arc<AgentManager>>,
+) -> ReconcileReport {
+    let mut report = ReconcileReport::default();
 
     // Find all in-progress goal cards across all projects
-    let rows = sqlx::query_as::<_, (String, String)>(
+    let rows = match sqlx::query_as::<_, (String, String)>(
         "SELECT c.id, c.project_id FROM cards c
          JOIN board_columns bc ON c.column_id = bc.id
          WHERE c.card_type = 'goal'
            AND bc.state_binding = 'in_progress'
            AND c.archived_at IS NULL",
     )
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
-    .map_err(|e| e.to_string())?;
-
-    if rows.is_empty() {
-        return Ok(());
-    }
-
-    tracing::info!(
-        target: "permagentd::brain",
-        "Resuming {} in-progress goal(s) from prior session",
-        rows.len()
-    );
-
-    let manager = AgentManager::instance().await.ok();
-
-    for (card_id, project_id) in rows {
-        if let Err(e) = resume_single_goal(&pool, &manager, &card_id, &project_id).await {
+    {
+        Ok(rows) => rows,
+        Err(e) => {
             tracing::warn!(
                 target: "permagentd::brain",
-                "Failed to resume goal {}: {}",
-                card_id,
+                "Could not enumerate in-progress goals for restart reconciliation: {}",
                 e
             );
+            return report;
+        }
+    };
+
+    report.examined = rows.len();
+
+    // An empty enumeration falls through to the report line below rather than
+    // returning here. Returning was what made "nothing to reconcile" look
+    // exactly like "never ran" in the log; the loop over no rows costs
+    // nothing, and the pass owes an account of itself either way. Only the
+    // "Resuming N" line is worth suppressing when there is no N.
+    if !rows.is_empty() {
+        tracing::info!(
+            target: "permagentd::brain",
+            "Resuming {} in-progress goal(s) from prior session",
+            rows.len()
+        );
+    }
+
+    for (card_id, project_id) in rows {
+        match resume_single_goal(pool, manager, &card_id, &project_id).await {
+            Ok(disposition) => report.record(disposition),
+            Err(e) => {
+                report.errors += 1;
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "Failed to resume goal {}: {}",
+                    card_id,
+                    e
+                );
+            }
         }
     }
 
-    Ok(())
+    // R2b: leave an audit trail. A restart that rewrites goal state in silence
+    // is the condition R0 had to reconstruct from the journal a month later —
+    // and the log lines this pass already wrote reach nobody. Every boot logs
+    // this line, zero counts included, so the log can tell a quiet pass from a
+    // pass that never ran.
+    tracing::info!(
+        target: "permagentd::brain",
+        "{}",
+        report.detail()
+    );
+    // The briefing is the narrower surface: a boot that found nothing to
+    // reconcile files nothing, because this is a report of work done, not a
+    // heartbeat (a per-boot "all quiet" briefing on a machine restarting four
+    // times a day is noise that teaches people to ignore the surface).
+    if report.reconciled() > 0 {
+        crate::briefings::file_briefing(
+            pool,
+            crate::briefings::NewBriefing {
+                from_agent: "orchestrator".to_string(),
+                kind: RESTART_RECONCILE_BRIEFING_KIND.to_string(),
+                severity: report.severity(),
+                summary: report.summary(),
+                detail: Some(report.detail()),
+                ref_kind: None,
+                ref_id: None,
+            },
+        )
+        .await;
+    }
+
+    report
 }
 
 /// Boot-time sweep that reclaims goal worktrees orphaned by crashed or prior
@@ -6233,7 +6758,7 @@ async fn resume_single_goal(
     manager: &Option<Arc<AgentManager>>,
     card_id: &str,
     project_id: &str,
-) -> Result<(), String> {
+) -> Result<ResumeDisposition, String> {
     let card = cards::get_card(pool, card_id)
         .await?
         .ok_or_else(|| format!("Card {} not found during resume", card_id))?;
@@ -6256,7 +6781,7 @@ async fn resume_single_goal(
             "Goal '{}' was dispatched in the current daemon lifecycle — live tracker owns it, not reclaiming",
             card.title
         );
-        return Ok(());
+        return Ok(ResumeDisposition::OwnedByLiveTracker);
     }
 
     let session_id = meta
@@ -6341,6 +6866,7 @@ async fn resume_single_goal(
             card.title,
             session_id.unwrap_or("?")
         );
+        Ok(ResumeDisposition::Reattached)
     } else {
         // Before treating a dead-worker goal as abandoned: the worker may have
         // finished and committed its work in the detached worktree, but the
@@ -6350,11 +6876,33 @@ async fn resume_single_goal(
         // first — if it holds commits since baseline, capture the evidence and
         // route to Review (where a live completion would have landed).
         if try_complete_dead_worker_from_worktree(pool, &card, project_id, session_id).await {
-            return Ok(());
+            return Ok(ResumeDisposition::ResumedToReview);
         }
 
         // Case 1: session is dead — requeue, or park on budget exhaustion.
-        let new_attempt = attempt_count.saturating_add(1);
+        //
+        // R2a: whether that requeue COSTS an attempt depends on why the session
+        // is gone. A goal carrying a prior `dispatched_lifecycle` was taken down
+        // with its daemon, not defeated by its task, and charging it burned whole
+        // budgets in single restart storms (R0's census: every one of the eleven
+        // cap-exhausted goals, ~100% restart-caused, three attempts spent in
+        // nineteen minutes). Dispatch already charges an attempt of its own, so
+        // skipping the charge here removes a double count, not the cap: a goal
+        // that keeps being interrupted still climbs one per real dispatch and
+        // parks in the end.
+        //
+        // Note the blast radius, by design: `is_session_busy` structurally cannot
+        // see an external-CLI worker's subprocess, so for that whole engine class
+        // EVERY goal in flight across a restart lands here looking like "worker
+        // vanished", and the exemption applies to all of them. That is the
+        // intended trade — the alternative (charging them all) is what the census
+        // measured — and it stays true until a real liveness signal (PID
+        // tracking) exists for external-CLI workers.
+        let charge = classify_restart_charge(&card.metadata_json);
+        let new_attempt = match charge {
+            RestartCharge::Charge => attempt_count.saturating_add(1),
+            RestartCharge::NoCharge => attempt_count,
+        };
         let budget = goal_transition::goal_budget(&card.metadata_json);
         // The condition tested above is "the worker SESSION is dead" — which is
         // usually, but not necessarily, a daemon restart. Naming the cause
@@ -6365,7 +6913,17 @@ async fn resume_single_goal(
         // requests served continuously straight through the supposed restart).
         // The message must describe what was observed, so the next reader looks
         // at the worker rather than the daemon.
-        let abandon_reason = "Worker session ended before the goal completed";
+        //
+        // When the attempt is not charged the reason SAYS so, and still leads
+        // with the observation: the journal has to be honest about both what was
+        // seen and what it cost.
+        let abandon_reason = match charge {
+            RestartCharge::Charge => "Worker session ended before the goal completed",
+            RestartCharge::NoCharge => {
+                "Worker session ended before the goal completed — the daemon lifecycle changed \
+                 since dispatch, so this attempt was not charged"
+            }
+        };
 
         // Also honor token/wallclock budgets on the resume path (S4).
         let other_exhaustion = goal_transition::check_budget(pool, &card.metadata_json).await?;
@@ -6393,29 +6951,45 @@ async fn resume_single_goal(
                 exhaustion.describe(),
                 decision_id
             );
+            Ok(ResumeDisposition::ParkedFailed)
         } else {
-            // Retriable: requeue to Ready through the guard.
-            goal_transition::requeue_goal(
+            // Retriable: requeue to Ready through the guard. On a no-charge
+            // requeue the forgiven lifecycle is stamped in the SAME transaction,
+            // so this interruption can never be forgiven twice.
+            let extra_meta: Vec<(&str, serde_json::Value)> = match charge {
+                RestartCharge::NoCharge => dispatched_lifecycle
+                    .map(|lc| vec![(RESTART_FORGIVEN_LIFECYCLE, serde_json::json!(lc))])
+                    .unwrap_or_default(),
+                RestartCharge::Charge => Vec::new(),
+            };
+            goal_transition::requeue_goal_with_meta(
                 pool,
                 card_id,
                 decisions::ACTOR_SYSTEM,
                 new_attempt,
                 abandon_reason,
+                &extra_meta,
             )
             .await
             .map_err(String::from)?;
 
             tracing::info!(
                 target: "permagentd::brain",
-                "Goal '{}' requeued to Ready — worker session gone (attempt {}/{})",
+                "Goal '{}' requeued to Ready — worker session gone (attempt {}/{}, {})",
                 card.title,
                 new_attempt,
-                budget.attempt_cap
+                budget.attempt_cap,
+                match charge {
+                    RestartCharge::NoCharge => "attempt NOT charged: daemon lifecycle changed",
+                    RestartCharge::Charge => "attempt charged",
+                }
             );
+            Ok(match charge {
+                RestartCharge::NoCharge => ResumeDisposition::RequeuedNoCharge,
+                RestartCharge::Charge => ResumeDisposition::RequeuedCharged,
+            })
         }
     }
-
-    Ok(())
 }
 
 /// Recover a dead-worker goal whose worktree already holds committed work.
@@ -8563,17 +9137,14 @@ mod tests {
         );
     }
 
-    /// Merge `dispatched_lifecycle` into a card's metadata (mirrors what the
-    /// dispatch path stamps), preserving every other field.
-    async fn stamp_lifecycle(pool: &sqlx::Pool<sqlx::Sqlite>, card: &cards::Card, lifecycle: &str) {
+    /// Merge one string key into a card's LIVE metadata, preserving the rest.
+    async fn stamp_meta(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, key: &str, value: &str) {
+        let card = cards::get_card(pool, card_id).await.unwrap().unwrap();
         let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
-        meta.insert(
-            "dispatched_lifecycle".to_string(),
-            serde_json::json!(lifecycle),
-        );
+        meta.insert(key.to_string(), serde_json::json!(value));
         cards::update_card(
             pool,
-            &card.id,
+            card_id,
             cards::UpdateCard {
                 metadata_json: Some(serde_json::Value::Object(meta)),
                 ..Default::default()
@@ -8581,6 +9152,12 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    /// Merge `dispatched_lifecycle` into a card's metadata (mirrors what the
+    /// dispatch path stamps), preserving every other field.
+    async fn stamp_lifecycle(pool: &sqlx::Pool<sqlx::Sqlite>, card: &cards::Card, lifecycle: &str) {
+        stamp_meta(pool, &card.id, "dispatched_lifecycle", lifecycle).await;
     }
 
     /// Defect 1 regression: a goal dispatched in the CURRENT daemon lifecycle
@@ -8620,6 +9197,11 @@ mod tests {
     /// Crash-recovery preserved: a goal carrying a *different* lifecycle id (it
     /// was dispatched by a prior, now-dead daemon process) is a genuine orphan
     /// and IS reclaimed to Ready.
+    ///
+    /// R2a: and the attempt is NOT charged. The interruption is a confirmed
+    /// daemon-lifecycle change, not a worker that failed at its task — charging
+    /// it burned entire attempt budgets in a single restart storm (R0's census:
+    /// 11 cap-exhausted goals, ~100% restart-caused).
     #[tokio::test]
     async fn resume_reclaims_goal_from_prior_lifecycle() {
         let pool = test_pool().await;
@@ -8642,8 +9224,241 @@ mod tests {
         );
         assert_eq!(
             updated.metadata_json.get("attempt_count").unwrap().as_u64(),
-            Some(2),
+            Some(1),
+            "a restart interruption must not consume an attempt"
         );
+        assert_eq!(
+            updated
+                .metadata_json
+                .get(RESTART_FORGIVEN_LIFECYCLE)
+                .and_then(|v| v.as_str()),
+            Some("some-prior-daemon-lifecycle-id"),
+            "the forgiven lifecycle must be recorded so the exemption cannot repeat"
+        );
+        let reason = updated
+            .metadata_json
+            .get("last_error")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            reason.contains("not charged"),
+            "the journal must say plainly that no attempt was charged: {reason}"
+        );
+    }
+
+    /// The idempotency guard: the exemption is granted once per interruption.
+    /// A goal already forgiven for THIS `dispatched_lifecycle` is charged
+    /// normally, so a restart loop can never buy infinite free retries.
+    #[tokio::test]
+    async fn resume_charges_a_goal_already_forgiven_for_this_lifecycle() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_lifecycle(&pool, &card, "prior-lifecycle").await;
+        stamp_meta(
+            &pool,
+            &card.id,
+            RESTART_FORGIVEN_LIFECYCLE,
+            "prior-lifecycle",
+        )
+        .await;
+
+        resume_single_goal(&pool, &None, &card.id, &card.project_id)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(
+            updated.metadata_json.get("attempt_count").unwrap().as_u64(),
+            Some(2),
+            "a second free pass for the same interruption must not be granted"
+        );
+    }
+
+    /// A goal whose interruption cannot be PROVEN to be a lifecycle change (no
+    /// `dispatched_lifecycle` stamp at all) is charged as before. The exemption
+    /// forgives evidence, not absence of it.
+    #[tokio::test]
+    async fn resume_charges_an_orphan_with_no_lifecycle_evidence() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        resume_single_goal(&pool, &None, &card.id, &card.project_id)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(
+            updated.metadata_json.get("attempt_count").unwrap().as_u64(),
+            Some(2),
+            "an unexplained dead worker still consumes its attempt"
+        );
+    }
+
+    #[test]
+    fn restart_charge_classification() {
+        let cur = daemon_lifecycle_id();
+        // No evidence of a lifecycle change → charge.
+        assert_eq!(
+            classify_restart_charge(&serde_json::json!({})),
+            RestartCharge::Charge
+        );
+        // A recorded prior lifecycle → the interruption is proven → no charge.
+        assert_eq!(
+            classify_restart_charge(&serde_json::json!({"dispatched_lifecycle": "old"})),
+            RestartCharge::NoCharge
+        );
+        // Already forgiven for that same lifecycle → charge.
+        assert_eq!(
+            classify_restart_charge(&serde_json::json!({
+                "dispatched_lifecycle": "old",
+                (RESTART_FORGIVEN_LIFECYCLE): "old",
+            })),
+            RestartCharge::Charge
+        );
+        // Forgiven for a DIFFERENT, earlier lifecycle → this is a new
+        // interruption and earns its own exemption.
+        assert_eq!(
+            classify_restart_charge(&serde_json::json!({
+                "dispatched_lifecycle": "old",
+                (RESTART_FORGIVEN_LIFECYCLE): "older",
+            })),
+            RestartCharge::NoCharge
+        );
+        // The caller never reaches this function for a goal owned by the live
+        // process, but the classification is honest about it anyway.
+        assert_eq!(
+            classify_restart_charge(&serde_json::json!({"dispatched_lifecycle": cur})),
+            RestartCharge::Charge
+        );
+    }
+
+    /// R2b: the boot reconciler must leave an audit trail. A restart that
+    /// silently rewrites goal state is the condition R0 spent a day
+    /// reconstructing from the journal; the pass reports itself instead.
+    #[tokio::test]
+    async fn the_boot_reconciler_reports_what_it_did() {
+        let pool = test_pool().await;
+        crate::session::spectral_schema::apply_briefings_schema(&pool)
+            .await
+            .unwrap();
+        let orphan = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_lifecycle(&pool, &orphan, "prior-lifecycle").await;
+        let live = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_lifecycle(&pool, &live, daemon_lifecycle_id()).await;
+
+        let report = reconcile_in_progress_goals(&pool, &None).await;
+
+        assert_eq!(report.examined, 2);
+        assert_eq!(report.requeued_no_charge, 1);
+        assert_eq!(report.owned_by_live_tracker, 1);
+        assert_eq!(report.reconciled(), 1);
+
+        let filed = crate::briefings::unacknowledged(&pool, 10).await;
+        let brief = filed
+            .iter()
+            .find(|b| b.kind == RESTART_RECONCILE_BRIEFING_KIND)
+            .expect("the reconciler must file its summary");
+        assert!(
+            brief.summary.contains("1 interrupted goal"),
+            "summary must count what it touched: {}",
+            brief.summary
+        );
+        assert!(
+            brief
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("no attempt charged"),
+            "the detail must break the reconciliation down by disposition"
+        );
+    }
+
+    /// Capture everything a future logs at INFO, so "it reports itself" is
+    /// asserted rather than asserted-about. Same shape as `tool_inspection`'s
+    /// `captured_logs`, awaiting instead of calling: `set_default` installs a
+    /// thread-local subscriber and `#[tokio::test]` is current-thread, so the
+    /// guard still holds across the awaits.
+    async fn captured_info_logs<F: std::future::Future<Output = ()>>(f: F) -> String {
+        use std::sync::Mutex;
+        #[derive(Clone)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = Sink(buf.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || sink.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        f.await;
+        let bytes = buf.lock().unwrap().clone();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    /// R2b: "nothing to reconcile" and "never ran" must not look the same. The
+    /// pass used to return before `detail()` whenever no goal was in flight, so
+    /// a quiet boot left no line at all — exactly what `detail()`'s own comment
+    /// one level up forbids ("a report that omits its empty rows cannot be told
+    /// from a report that never looked").
+    #[tokio::test]
+    async fn a_quiet_boot_still_reports_that_it_looked() {
+        let pool = test_pool().await;
+        crate::session::spectral_schema::apply_briefings_schema(&pool)
+            .await
+            .unwrap();
+
+        let logs = captured_info_logs(async {
+            reconcile_in_progress_goals(&pool, &None).await;
+        })
+        .await;
+
+        assert!(
+            logs.contains("Boot reconciliation of in-flight goals"),
+            "a quiet boot must still emit its report line: {logs}"
+        );
+        assert!(
+            logs.contains("examined: 0 in-flight goal(s)"),
+            "the zero count is the whole point of the line: {logs}"
+        );
+    }
+
+    /// R2b: the boot reconciliation is one-shot per PROCESS, and both entry
+    /// points — daemon boot, and the first agent session to load this
+    /// extension — claim the same guard. A second sweep would treat
+    /// freshly-dispatched goals as orphans and requeue them (the eight Wave 1
+    /// goals lost on 2026-08-05).
+    #[test]
+    fn only_the_first_caller_claims_the_boot_reconciliation() {
+        let done = std::sync::atomic::AtomicBool::new(false);
+        assert!(
+            claim_boot_reconcile(&done),
+            "the first caller runs the pass"
+        );
+        assert!(
+            !claim_boot_reconcile(&done),
+            "every later caller is a no-op, whichever entry point it came from"
+        );
+    }
+
+    /// A boot that finds nothing in flight files nothing — the reconciler is a
+    /// report of work done, not a heartbeat.
+    #[tokio::test]
+    async fn a_quiet_boot_files_no_briefing() {
+        let pool = test_pool().await;
+        crate::session::spectral_schema::apply_briefings_schema(&pool)
+            .await
+            .unwrap();
+        let report = reconcile_in_progress_goals(&pool, &None).await;
+        assert_eq!(report.examined, 0);
+        assert!(crate::briefings::unacknowledged(&pool, 10).await.is_empty());
     }
 
     #[tokio::test]
@@ -8689,11 +9504,13 @@ mod tests {
                 .is_some_and(|e| e.contains("Worker session ended")),
             "abandonment reason must be recorded in last_error"
         );
-        // Parking does not fabricate a consumed attempt: the exhausted resume
-        // attempt was never dispatched, so attempt_count stays at 2.
+        // The attempt that tripped the cap is written back (9afc893b): the
+        // increment that makes `check_budget` park the goal used to live only
+        // in a local, so the card read 2 beside its own unblock decision
+        // saying "3/3 attempts". The card now agrees with that prose at 3.
         assert_eq!(
             updated.metadata_json.get("attempt_count").unwrap().as_u64(),
-            Some(2)
+            Some(3)
         );
 
         // S4 contract: an open kind='unblock' decision exists for the goal.
@@ -9215,6 +10032,220 @@ mod tests {
                 "{required} must be in the orchestrator tool list, got {names:?}"
             );
         }
+    }
+
+    // ── D10: the dispatch nudge ─────────────────────────────────────────
+    //
+    // Before this seam, `dispatch_eligible_goals` had one caller in the whole
+    // tree (the manual `resume_roadmap` tool). A dependent promoted
+    // Triage→Ready by an approval, and a goal unparked by an answered
+    // decision, both sat in Ready with no worker until a human resumed the
+    // roadmap by hand. These prove the promotion path now starts them, and
+    // that it starts nothing the existing rules refuse.
+
+    /// A dispatcher that records what it was asked to start and, optionally,
+    /// takes the real Ready→InProgress claim so idempotence can be observed.
+    fn recording_dispatcher(
+        seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        pool: Option<sqlx::Pool<sqlx::Sqlite>>,
+    ) -> GoalDispatchHook {
+        Box::new(move |card_id: String| {
+            let seen = std::sync::Arc::clone(&seen);
+            let pool = pool.clone();
+            Box::pin(async move {
+                seen.lock().unwrap().push(card_id.clone());
+                if let Some(pool) = pool {
+                    // Mirror the real dispatcher's atomic claim.
+                    crate::goal_transition::advance_goal_checked(
+                        &pool,
+                        &card_id,
+                        crate::goal_state::GoalAction::Dispatch,
+                        crate::decisions::ACTOR_SYSTEM,
+                        None,
+                        crate::goal_transition::TransitionEffects::default(),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                }
+                Ok(format!("session-for-{card_id}"))
+            }) as GoalDispatchFuture
+        })
+    }
+
+    /// Seed `parent` (Complete) and a Triage dependent on it. Returns the
+    /// dependent.
+    async fn dependent_of_completed_parent(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        title: &str,
+        parked: bool,
+    ) -> cards::Card {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        let parent = setup_goal_in_state(pool, "complete", 1).await;
+        let triage_col = cards::get_goal_column(pool, PERSONAL_PROJECT_ID, "triage")
+            .await
+            .unwrap()
+            .unwrap();
+        cards::create_card(
+            pool,
+            cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: title.to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(triage_col.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "depends_on": [parent.id],
+                    "attempt_count": 0,
+                    "needs_human_attention": parked,
+                })),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn state_of(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) -> String {
+        let card = cards::get_card(pool, card_id).await.unwrap().unwrap();
+        cards::get_column(pool, &card.column_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state_binding
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn nudge_dispatches_a_dependent_promoted_by_a_completed_goal() {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        let pool = test_pool().await;
+        let dependent = dependent_of_completed_parent(&pool, "Dependent to dispatch", false).await;
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let dispatcher = recording_dispatcher(std::sync::Arc::clone(&seen), Some(pool.clone()));
+
+        promote_and_dispatch_dependents_with(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            "parent",
+            Some(&dispatcher),
+        )
+        .await;
+
+        assert!(
+            seen.lock().unwrap().contains(&dependent.id),
+            "a dependent promoted Triage→Ready by a completed goal must be dispatched, \
+             not left waiting for a manual resume_roadmap"
+        );
+        assert_eq!(
+            state_of(&pool, &dependent.id).await,
+            "in_progress",
+            "the dispatched dependent must leave Ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn nudge_does_not_double_dispatch_an_already_claimed_goal() {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        let pool = test_pool().await;
+        let dependent =
+            dependent_of_completed_parent(&pool, "Dependent dispatched once", false).await;
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let dispatcher = recording_dispatcher(std::sync::Arc::clone(&seen), Some(pool.clone()));
+
+        // Two nudges — e.g. an approval followed by a second approval in the
+        // same project, or a retried effect-outbox replay.
+        promote_and_dispatch_dependents_with(&pool, PERSONAL_PROJECT_ID, "p", Some(&dispatcher))
+            .await;
+        promote_and_dispatch_dependents_with(&pool, PERSONAL_PROJECT_ID, "p", Some(&dispatcher))
+            .await;
+
+        let attempts = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| **id == dependent.id)
+            .count();
+        assert_eq!(
+            attempts, 1,
+            "the atomic Ready→InProgress claim takes the goal out of the eligible \
+             list; a second nudge must not dispatch it again"
+        );
+    }
+
+    #[tokio::test]
+    async fn nudge_respects_a_paused_roadmap() {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        let pool = test_pool().await;
+        let dependent = dependent_of_completed_parent(&pool, "Dependent under pause", false).await;
+        crate::projects::add_tag(&pool, PERSONAL_PROJECT_ID, "roadmap_paused")
+            .await
+            .unwrap();
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let dispatcher = recording_dispatcher(std::sync::Arc::clone(&seen), Some(pool.clone()));
+
+        let started = dispatch_ready_goals_with(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            Some(&dispatcher),
+            "paused-roadmap test",
+        )
+        .await;
+
+        assert_eq!(started, 0, "a paused roadmap dispatches nothing");
+        assert!(
+            !seen.lock().unwrap().contains(&dependent.id),
+            "the nudge must not bypass the roadmap_paused gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn nudge_leaves_a_parked_dependent_in_triage() {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        let pool = test_pool().await;
+        let parked = dependent_of_completed_parent(&pool, "Parked dependent", true).await;
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let dispatcher = recording_dispatcher(std::sync::Arc::clone(&seen), Some(pool.clone()));
+
+        promote_and_dispatch_dependents_with(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            "parent",
+            Some(&dispatcher),
+        )
+        .await;
+
+        assert_eq!(
+            state_of(&pool, &parked.id).await,
+            "triage",
+            "a parked goal stays parked until its unblock decision is answered"
+        );
+        assert!(
+            !seen.lock().unwrap().contains(&parked.id),
+            "the nudge must not dispatch a goal the promotion rules refused to promote"
+        );
+    }
+
+    #[tokio::test]
+    async fn nudge_without_a_dispatcher_degrades_instead_of_panicking() {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        let pool = test_pool().await;
+        let dependent =
+            dependent_of_completed_parent(&pool, "Dependent, no dispatcher", false).await;
+
+        let warning =
+            promote_and_dispatch_dependents_with(&pool, PERSONAL_PROJECT_ID, "parent", None).await;
+
+        assert!(warning.is_none(), "promotion itself still succeeds");
+        assert_eq!(
+            state_of(&pool, &dependent.id).await,
+            "ready",
+            "with no dispatcher installed the nudge degrades to the pre-D10 behavior: \
+             the goal is promoted and waits, exactly as before"
+        );
     }
 
     #[tokio::test]

@@ -17,11 +17,12 @@
  * stackEntries.ts. Failures surface inline (#568 no-silent-catch rule).
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiEdit2, FiExternalLink, FiPlus, FiTrash2, FiX } from 'react-icons/fi';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
-import { font } from '../../styles/tokens';
+import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import { normalizeUrl } from './workspaceMeta';
 import {
@@ -70,26 +71,32 @@ export function StackPanel({ project }: { project: Project }) {
   const [error, setError] = useState<string | null>(null);
   const loadGeneration = useRef(0);
 
+  // Resolves `false` when the load failed (or was superseded) so the retry
+  // button can only tick over a load that actually landed.
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
     try {
       const nextEntries = await listStackEntries(project.id);
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       if (!Array.isArray(nextEntries)) throw new Error('Invalid stack response');
       setEntries(nextEntries);
       setStatus('ready');
+      return true;
     } catch {
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current) return false;
       setStatus('error');
+      return false;
     }
   }, [project.id]);
 
   useEffect(() => { load(); }, [load]);
 
+  // Resolves `false` on failure: the error is surfaced inline, so the save
+  // button must not tick over an entry that never persisted.
   const save = useCallback(async () => {
-    if (!form || saving) return;
+    if (!form || saving) return false;
     const serviceName = form.serviceName.trim();
-    if (!serviceName) return;
+    if (!serviceName) return false;
     setError(null);
     setSaving(true);
     try {
@@ -117,8 +124,10 @@ export function StackPanel({ project }: { project: Project }) {
         setEntries(prev => [...prev, created]);
       }
       setForm(null);
+      return true;
     } catch (e) {
       setError(`Couldn't save entry: ${(e as Error).message || 'request failed'}`);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -129,8 +138,10 @@ export function StackPanel({ project }: { project: Project }) {
     try {
       await deleteStackEntry(project.id, entry.id);
       setEntries(prev => prev.filter(e => e.id !== entry.id));
+      return true;
     } catch (e) {
       setError(`Couldn't remove entry: ${(e as Error).message || 'request failed'}`);
+      return false;
     }
   };
 
@@ -147,7 +158,7 @@ export function StackPanel({ project }: { project: Project }) {
   };
 
   const inputStyle: React.CSSProperties = {
-    fontSize: 12, padding: '6px 9px', borderRadius: 7,
+    fontSize: textSize.caption, padding: '6px 9px', borderRadius: 7,
     background: colors.inputBg, border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none',
   };
@@ -159,27 +170,42 @@ export function StackPanel({ project }: { project: Project }) {
       title="Stack"
       action={
         form ? (
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
+            className="hover:underline"
             onClick={() => { setForm(null); setError(null); }}
             style={{
-              display: 'inline-flex', alignItems: 'center', gap: 4, background: 'none',
-              border: 'none', padding: 0, cursor: 'pointer', color: colors.textDim,
-              fontFamily: font.body, fontSize: 11, fontWeight: 600,
-            }}
+              '--pa-btn-fg': colors.textDim,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-weight': 600,
+              gap: 4,
+              fontFamily: font.body,
+              fontSize: textSize.micro,
+            } as CSSProperties}
           >
             <FiX size={11} /> Cancel
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
+            className="hover:underline"
             onClick={() => { setError(null); setForm(EMPTY_FORM); }}
             style={{
-              display: 'inline-flex', alignItems: 'center', gap: 4, background: 'none',
-              border: 'none', padding: 0, cursor: 'pointer', color: colors.cyan,
-              fontFamily: font.body, fontSize: 11, fontWeight: 600,
-            }}
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-weight': 600,
+              gap: 4,
+              fontFamily: font.body,
+              fontSize: textSize.micro,
+            } as CSSProperties}
           >
             <FiPlus size={11} /> Add service
-          </button>
+          </Button>
         )
       }
     >
@@ -228,19 +254,23 @@ export function StackPanel({ project }: { project: Project }) {
             style={inputStyle}
           />
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button
+            <Button
+              colors={colors}
+              variant="ghostOn"
               onClick={save}
               disabled={!form.serviceName.trim() || saving}
               style={{
-                fontSize: 12, fontWeight: 600, padding: '6px 14px', borderRadius: 7,
-                cursor: (!form.serviceName.trim() || saving) ? 'default' : 'pointer',
-                opacity: (!form.serviceName.trim() || saving) ? 0.5 : 1,
-                background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-                color: colors.cyan, fontFamily: font.body,
-              }}
+                '--pa-btn-bg': colors.cyanSoft,
+                '--pa-btn-border': colors.borderHi,
+                '--pa-btn-pad': '6px 14px',
+                '--pa-btn-radius': '7px',
+                '--pa-btn-weight': 600,
+                fontFamily: font.body,
+                fontSize: textSize.caption,
+              } as CSSProperties}
             >
               {saving ? 'Saving…' : form.id ? 'Save changes' : 'Add to stack'}
-            </button>
+            </Button>
             <span style={{ fontSize: 10, color: colors.textDim }}>
               No passwords or secrets — those stay in your password manager.
             </span>
@@ -249,30 +279,37 @@ export function StackPanel({ project }: { project: Project }) {
       )}
 
       {error && (
-        <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{error}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error}</div>
       )}
 
       {status === 'loading' && (
-        <div style={{ fontSize: 11, color: colors.textDim }}>Loading stack…</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading stack…</div>
       )}
 
       {status === 'error' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load the stack.</span>
-          <button
+          <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load the stack.</span>
+          <Button
+            colors={colors}
+            variant="bare"
+            className="hover:underline"
             onClick={load}
             style={{
-              fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
-              cursor: 'pointer', fontFamily: font.body, padding: 0, fontWeight: 600,
-            }}
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-weight': 600,
+              fontFamily: font.body,
+              fontSize: textSize.micro,
+            } as CSSProperties}
           >
             Retry
-          </button>
+          </Button>
         </div>
       )}
 
       {status === 'ready' && entries.length === 0 && !form && (
-        <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
           No services yet — add the ones this project runs on and which account
           you use for each. Reference only: no passwords or secrets, ever.
         </div>
@@ -302,65 +339,87 @@ export function StackPanel({ project }: { project: Project }) {
                   >
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: colors.text }}>
+                        <span style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text }}>
                           {entry.service_name}
                         </span>
                         {entry.identity ? (
                           <span
                             title="The login identity used for this service on this project"
                             style={{
-                              fontSize: 11, color: colors.cyan, fontFamily: font.mono,
+                              fontSize: textSize.micro, color: colors.cyan, fontFamily: font.mono,
                               overflowWrap: 'anywhere',
                             }}
                           >
                             {entry.identity}
                           </span>
                         ) : (
-                          <span style={{ fontSize: 11, color: colors.textDim, fontStyle: 'italic' }}>
+                          <span style={{ fontSize: textSize.micro, color: colors.textDim, fontStyle: 'italic' }}>
                             no identity recorded
                           </span>
                         )}
                       </div>
                       {entry.notes && (
                         <div style={{
-                          fontSize: 11, color: colors.textMuted, lineHeight: 1.5,
+                          fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5,
                           marginTop: 2, overflowWrap: 'anywhere',
                         }}>
                           {entry.notes}
                         </div>
                       )}
                       {entry.dashboard_url && (
-                        <button
+                        <Button
+                          colors={colors}
+                          variant="bare"
+                          className="hover:underline"
                           onClick={() => navigate(entry.dashboard_url!)}
                           title={`Open ${entry.dashboard_url} in the in-app browser`}
                           style={{
-                            display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 4,
-                            background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-                            color: colors.cyan, fontFamily: font.body, fontSize: 10, fontWeight: 600,
-                          }}
+                            '--pa-btn-fg': colors.cyan,
+                            '--pa-btn-bg-hover': 'transparent',
+                            '--pa-btn-pad': '0',
+                            '--pa-btn-weight': 600,
+                            marginTop: 4,
+                            gap: 4,
+                            fontFamily: font.body,
+                            fontSize: 10,
+                          } as CSSProperties}
                         >
                           Dashboard <FiExternalLink size={9} />
-                        </button>
+                        </Button>
                       )}
                     </div>
-                    <button
+                    <Button
+                      colors={colors}
+                      variant="bare"
                       onClick={() => startEdit(entry)}
                       title="Edit entry"
-                      style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', padding: 2, display: 'flex', flexShrink: 0 }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.cyan; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = colors.textDim; }}
+                      aria-label="Edit entry"
+                      style={{
+                        '--pa-btn-fg': colors.textDim,
+                        '--pa-btn-fg-hover': colors.cyan,
+                        '--pa-btn-bg-hover': 'transparent',
+                        '--pa-btn-pad': '2px',
+                        flexShrink: 0,
+                      } as CSSProperties}
                     >
                       <FiEdit2 size={13} />
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      colors={colors}
+                      variant="bare"
                       onClick={() => remove(entry)}
                       title="Remove entry"
-                      style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', padding: 2, display: 'flex', flexShrink: 0 }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.danger; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = colors.textDim; }}
+                      aria-label="Remove entry"
+                      style={{
+                        '--pa-btn-fg': colors.textDim,
+                        '--pa-btn-fg-hover': colors.danger,
+                        '--pa-btn-bg-hover': 'transparent',
+                        '--pa-btn-pad': '2px',
+                        flexShrink: 0,
+                      } as CSSProperties}
                     >
                       <FiTrash2 size={13} />
-                    </button>
+                    </Button>
                   </div>
                 ))}
               </div>

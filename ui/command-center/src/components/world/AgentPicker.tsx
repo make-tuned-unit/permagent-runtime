@@ -1,9 +1,12 @@
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { COLORS } from './constants';
 import { ROSTER } from './agents';
 import { useOrchestratorName } from './shared/useOrchestratorName';
 import { useCommandCenter } from '../../lib/store';
 import { agentIdForWorldAgent } from '../../lib/worldAgentIds';
+import { radius, textSize } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 interface AgentPickerProps {
   selectedAgentId: string | null;
@@ -16,6 +19,9 @@ interface AgentPickerProps {
 // fly to and a HUD that exists, so selecting always "brings you to that agent."
 export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps) {
   const [open, setOpen] = useState(false);
+  // World chrome keeps the world palette; `colors` only feeds the button
+  // primitive's variant defaults — every visible value below is a COLORS one.
+  const { colors } = useTheme();
   const orchestratorName = useOrchestratorName();
   const openAgentSettings = useCommandCenter(s => s.openAgentSettings);
 
@@ -33,43 +39,58 @@ export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps
 
   return (
     <div style={containerStyle}>
-      <button onClick={() => setOpen(!open)} style={triggerStyle}>
-        <span style={{ fontSize: 11, color: COLORS.primaryMarble }}>
+      <Button
+        colors={colors}
+        type="button"
+        onClick={() => setOpen(!open)}
+        flashSuccess={false}
+        style={triggerVars}
+      >
+        <span style={{ fontSize: textSize.micro, color: COLORS.primaryMarble }}>
           {selected ? displayName(selected.id, selected.name) : 'Select agent'}
         </span>
         <span style={{ fontSize: 10, color: '#6B7280', marginLeft: 6 }}>
           {open ? '▲' : '▼'}
         </span>
-      </button>
+      </Button>
 
       {manageableAgentId && (
-        <button
+        <Button
+          colors={colors}
           type="button"
           onClick={() => openAgentSettings(manageableAgentId)}
           style={{
-            ...triggerStyle,
+            ...triggerVars,
+            '--pa-btn-fg': COLORS.neonCyan,
+            '--pa-btn-fg-hover': COLORS.neonCyan,
             marginLeft: 8,
             fontSize: 10,
-            color: COLORS.neonCyan,
-          }}
+          } as CSSProperties}
         >
           Manage in Settings
-        </button>
+        </Button>
       )}
 
       {open && (
         <div style={dropdownStyle}>
+          {/* A name group pushed apart from a role label: the children have to
+              stay the button's own flex children, which `.pa-btn__label`'s
+              `display: contents` gives them. They had no hover or pressed state
+              at all before this — the list read as inert. */}
           {ROSTER.map((agent) => (
-            <button
+            <Button
               key={agent.id}
+              colors={colors}
               onClick={() => {
                 onSelectAgent(agent.id);
                 setOpen(false);
               }}
               style={{
-                ...itemStyle,
-                background: agent.id === selectedAgentId ? 'rgba(0,213,255,0.12)' : 'transparent',
-              }}
+                ...itemVars,
+                '--pa-btn-bg': agent.id === selectedAgentId ? 'rgba(0,213,255,0.12)' : 'transparent',
+                '--pa-btn-bg-hover': agent.id === selectedAgentId ? 'rgba(0,213,255,0.20)' : 'rgba(255,255,255,0.06)',
+                '--pa-btn-bg-active': agent.id === selectedAgentId ? 'rgba(0,213,255,0.12)' : 'transparent',
+              } as CSSProperties}
             >
               <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 {/* Identity trim swatch — matches the agent's toga trim in-world. */}
@@ -84,7 +105,7 @@ export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps
               <span style={{ fontSize: 10, color: '#6B7280', marginLeft: 8 }}>
                 {roleLabel(agent.role)}
               </span>
-            </button>
+            </Button>
           ))}
         </div>
       )}
@@ -102,17 +123,18 @@ const containerStyle: React.CSSProperties = {
   alignItems: 'center',
 };
 
-const triggerStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  padding: '8px 14px',
-  background: 'rgba(10, 14, 26, 0.88)',
+const triggerVars = {
+  '--pa-btn-bg': 'rgba(10, 14, 26, 0.88)',
+  '--pa-btn-fg': COLORS.primaryMarble,
+  '--pa-btn-border': `${COLORS.marbleVeining}25`,
+  '--pa-btn-bg-hover': 'rgba(16, 22, 38, 0.92)',
+  '--pa-btn-border-hover': `${COLORS.marbleVeining}45`,
+  '--pa-btn-bg-active': 'rgba(10, 14, 26, 0.88)',
+  '--pa-btn-pad': '8px 14px',
+  '--pa-btn-radius': `${radius.md}px`,
   backdropFilter: 'blur(12px)',
-  border: `1px solid ${COLORS.marbleVeining}25`,
-  borderRadius: 8,
-  cursor: 'pointer',
   fontFamily: 'monospace',
-};
+} as CSSProperties;
 
 const dropdownStyle: React.CSSProperties = {
   position: 'absolute',
@@ -123,20 +145,19 @@ const dropdownStyle: React.CSSProperties = {
   background: 'rgba(10, 14, 26, 0.92)',
   backdropFilter: 'blur(16px)',
   border: `1px solid ${COLORS.marbleVeining}25`,
-  borderRadius: 8,
+  borderRadius: radius.md,
   overflow: 'hidden',
   fontFamily: 'monospace',
 };
 
-const itemStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
+const itemVars = {
+  '--pa-btn-border': 'transparent',
+  '--pa-btn-border-hover': 'transparent',
+  '--pa-btn-pad': '8px 14px',
+  '--pa-btn-radius': '0',
   justifyContent: 'space-between',
   width: '100%',
-  padding: '8px 14px',
-  border: 'none',
-  cursor: 'pointer',
   fontFamily: 'monospace',
-  fontSize: 11,
+  fontSize: textSize.micro,
   textAlign: 'left',
-};
+} as CSSProperties;
