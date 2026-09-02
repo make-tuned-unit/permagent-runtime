@@ -1,4 +1,4 @@
-import { Suspense, useState, useCallback, useEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { Suspense, useState, useCallback, useEffect, useRef, type CSSProperties } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { AdaptiveEvents, PerformanceMonitor, usePerformanceMonitor } from '@react-three/drei';
 import * as THREE from 'three';
@@ -28,11 +28,13 @@ import { AgentPicker } from './AgentPicker';
 import { PerfProbe, perfProbeEnabled, devDprOverride } from './shared/PerfProbe';
 import { useWorldVisibility } from './atmosphere/useWorldVisibility';
 import { installDevHarness } from './atmosphere/devHarness';
-import { getReduceMotion, radius, textSize } from '../../styles/tokens';
+import { textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { useGlass } from '../common/Glass';
 import { Button } from '../common/Button';
 import { TourMode } from './camera/TourMode';
 import { createFrameClock, stepFrameClock, type FrameClock } from './frameClock';
+import { HUD_PANEL_RADIUS, hudTransition } from './hudChrome';
 
 // DEV-ONLY: window.__worldDev harness for ambience evidence (no-op in prod).
 installDevHarness();
@@ -310,7 +312,8 @@ function SceneContent({
 export function WorldView({ visible = true }: { visible?: boolean }) {
   // The world's chrome paints from its own palette; the theme is here only to
   // feed the button primitive's variant defaults.
-  const { colors: themeColors } = useTheme();
+  const { colors: themeColors, reduceMotion } = useTheme();
+  const agoraGlass = useGlass('glass');
   const [cameraMode, setCameraMode] = useState<CameraMode>('orbit');
   const [hoveredAgent, setHoveredAgent] = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
@@ -331,13 +334,12 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   // has not been sized yet. Prevents GPU burn behind other tabs and the
   // zero-size GL_INVALID_FRAMEBUFFER_OPERATION spam at startup.
   const canvasActive = useWorldVisibility(containerRef);
-  // Read once per mount, like every other reduceMotion consumer in world/.
-  const reduceMotion = useMemo(() => getReduceMotion(), []);
   // Someone who asked for less motion did not ask for the resolution to
   // breathe in and out underneath them, so the adaptive lever is held still
   // for them (bible §8: reduceMotion gets a static fallback, not a quieter
   // version of the same movement). A dev dpr sweep also pins it, or the sweep
   // would be measuring the adaptation rather than the scene.
+  // reduceMotion comes from useTheme() (three-state: explicit choice, else OS).
   const adaptiveDprEnabled = !reduceMotion && !(import.meta.env.DEV && devDprOverride());
 
   const handleSelectAgent = useCallback((id: string) => {
@@ -585,36 +587,40 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       {/* Agora return affordance (#306 arc beat 5) — visible once you cross into
           the mesh; returns you home through the portal (also bound to ESC). */}
       {agoraPhase !== 'home' && (
-        <Button
-          colors={themeColors}
-          variant="ghostOn"
-          type="button"
-          onClick={handleExitAgora}
-          flashSuccess={false}
-          style={{
-            '--pa-btn-bg': 'rgba(10, 14, 26, 0.82)',
-            '--pa-btn-fg': COLORS.neonCyan,
-            '--pa-btn-border': `${COLORS.neonCyan}66`,
-            '--pa-btn-bg-hover': 'rgba(16, 24, 44, 0.9)',
-            '--pa-btn-border-hover': COLORS.neonCyan,
-            '--pa-btn-bg-active': 'rgba(10, 14, 26, 0.82)',
-            '--pa-btn-pad': '9px 20px',
-            '--pa-btn-radius': `${radius.sm}px`,
-            position: 'absolute',
-            bottom: 28,
-            left: '50%',
-            // The centring transform has to stay inline, which does mean
-            // `.pa-btn`'s press scale cannot apply to this one button.
-            transform: 'translateX(-50%)',
-            fontFamily: 'JetBrains Mono, monospace',
-            fontSize: textSize.micro,
-            letterSpacing: '0.18em',
-            boxShadow: `0 0 18px ${COLORS.neonCyan}33`,
-            backdropFilter: 'blur(4px)',
-          } as CSSProperties}
-        >
-          ↩ RETURN TO THE ROTUNDA · ESC
-        </Button>
+        <div style={{
+          position: 'absolute',
+          bottom: 28,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          ...agoraGlass,
+          borderRadius: HUD_PANEL_RADIUS,
+          border: `1px solid ${themeColors.borderHi}`,
+          overflow: 'hidden',
+          transition: hudTransition(reduceMotion),
+        }}>
+          <Button
+            colors={themeColors}
+            variant="bare"
+            type="button"
+            onClick={handleExitAgora}
+            flashSuccess={false}
+            style={{
+              '--pa-btn-bg': 'transparent',
+              '--pa-btn-fg': themeColors.cyan,
+              '--pa-btn-border': 'transparent',
+              '--pa-btn-bg-hover': themeColors.fillHover,
+              '--pa-btn-fg-hover': themeColors.cyan,
+              '--pa-btn-bg-active': themeColors.fillActive,
+              '--pa-btn-pad': '9px 20px',
+              '--pa-btn-radius': '0',
+              fontFamily: 'JetBrains Mono, monospace',
+              fontSize: textSize.micro,
+              letterSpacing: '0.18em',
+            } as CSSProperties}
+          >
+            ↩ RETURN TO THE ROTUNDA · ESC
+          </Button>
+        </div>
       )}
       <HenryHUD
         visible={activeHud === 'henry'}

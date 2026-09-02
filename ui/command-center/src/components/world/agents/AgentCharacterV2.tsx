@@ -8,7 +8,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { getReduceMotion, textSize } from '../../../styles/tokens';
+import { getReduceMotion, radius, textSize } from '../../../styles/tokens';
+import { useTheme } from '../../../styles/useTheme';
+import { useGlass } from '../../common/Glass';
 import { ENV, type AgentHudState } from '../shared/palette';
 import { getAgentRuntimeStates } from '../shared/agentStatus';
 import type { AgentIdentity } from './roster';
@@ -114,6 +116,8 @@ export function AgentCharacterV2({
   // world/ (PetitionBasin, Horologium, TourMode, ...) — a live toggle mid-session
   // is a reload away, which matches how the setting is surfaced elsewhere.
   const reduceMotion = useMemo(() => getReduceMotion(), []);
+  const { colors } = useTheme();
+  const nameplateGlass = useGlass('glass');
   // Damped look-at state (yaw/pitch), persisted across frames outside React.
   const look = useRef({ yaw: 0, pitch: 0 });
 
@@ -460,15 +464,14 @@ export function AgentCharacterV2({
         <Html position={[0, 3, 0]} center distanceFactor={15} style={{ pointerEvents: 'none' }}>
           <div
             style={{
-              background: `${ENV.deepVoid}D9`,
-              color: ENV.neonCyan,
+              ...nameplateGlass,
+              color: colors.cyan,
               padding: '4px 12px',
-              borderRadius: '6px',
+              borderRadius: radius.sm,
               fontSize: `${textSize.small}px`,
               fontFamily: 'monospace',
-              border: `1px solid ${ENV.neonCyan}40`,
+              border: `1px solid ${colors.borderHi}`,
               whiteSpace: 'nowrap',
-              backdropFilter: 'blur(4px)',
             }}
           >
             {/* Henry is the AGENT'S NAME (user-chosen persona), not a role —
