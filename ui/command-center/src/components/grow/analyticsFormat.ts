@@ -2,8 +2,16 @@
 // tested — the staleness rule ("a stale figure must never read as a quiet
 // day", the botsExcluded pattern) lives here rather than inline in JSX.
 
-/** A drain older than this is stale enough to warn about. */
-export const DRAIN_STALE_MS = 60 * 60 * 1000;
+/** A drain older than this is stale enough to warn about.
+ *
+ *  The poller polls each site once a day (`analytics_drain::POLL_INTERVAL` —
+ *  anything faster keeps the site's Postgres from ever scaling to zero). So a
+ *  drain that is several hours old is the NORMAL state, not a fault: this has
+ *  to sit past a full day or the panel would fly the warning tint for ~23
+ *  hours out of every 24 and mean nothing. A day plus two hours leaves room
+ *  for the wake schedule to drift without crying wolf, while still catching a
+ *  poller that has genuinely stopped. */
+export const DRAIN_STALE_MS = 26 * 60 * 60 * 1000;
 
 export interface DrainFreshness {
   /** e.g. "drained 2m ago" */
