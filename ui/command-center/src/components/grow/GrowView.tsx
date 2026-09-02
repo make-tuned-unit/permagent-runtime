@@ -3776,7 +3776,9 @@ function FirstPartyAnalyticsPanel({
   }, [projectId, onRefresh]);
 
   // Point the daemon at the site's drain endpoint — the URL the coding agent
-  // reports back after installing the relay.
+  // reports back after installing the relay. The same call runs the first pass
+  // immediately, so setup does not sit on "not receiving" until tomorrow's
+  // scheduled drain.
   const setDrain = useCallback((url: string) => {
     setSaving(true);
     apiFetch<FirstPartySetup>(
@@ -3822,6 +3824,39 @@ function FirstPartyAnalyticsPanel({
       }))
       .finally(() => setVerifying(false));
   }, [projectId]);
+
+  // Pull from the relay right now. The daemon drains each site once a day and
+  // nothing faster — anything faster stops the site's own database ever scaling
+  // to zero, which is what the old two-minute poller cost ($91 of Neon compute
+  // for August 2026). So the daily schedule is the floor, and this is how the
+  // user gets today's numbers when they actually want them.
+  //
+  // POST to the drain route with NO drainUrl: absent means "leave the target
+  // alone, just drain". Sending an empty string would CLEAR it.
+  const [drainingNow, setDrainingNow] = useState(false);
+  const checkNow = useCallback(async () => {
+    setDrainingNow(true);
+    try {
+      const s = await apiFetch<FirstPartySetup>(
+        `/api/projects/${encodeURIComponent(projectId)}/analytics/first_party/drain`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        },
+      );
+      // A failed pass comes back 200 with lastError set (the panel's
+      // convention), so this render path covers both outcomes.
+      setSetup(s);
+      onRefresh();
+    } catch {
+      // Transport-level failure only. Re-read rather than inventing a state:
+      // the pass may well have run and persisted before the response was lost.
+      onRefresh();
+    } finally {
+      setDrainingNow(false);
+    }
+  }, [projectId, onRefresh]);
 
   // Rotate the drain secret. It ships inside the install brief, so it lands in
   // the coding agent's transcript and tool logs — a credential that has passed
@@ -3922,7 +3957,20 @@ function FirstPartyAnalyticsPanel({
             </span>
           )}
         </div>
-        <Button colors={colors} style={buttonStyle} onClick={onRefresh}>Refresh</Button>
+        {/* One refresh control, and it does the thing the word promises. It
+            used to re-read only THIS hub's copy, which was honest while the
+            poller ran every two minutes; now that a site is polled once a day
+            (to let its database scale to zero), a button that reloads a
+            day-old local copy would show a quiet day and be believed. So
+            Refresh pulls from the relay first, then reloads. */}
+        <Button
+          colors={colors}
+          style={buttonStyle}
+          disabled={drainingNow}
+          pending={drainingNow}
+          title="Pull from the site now, then reload. The daily schedule lets the site's database sleep; this is how you get the last few hours on demand."
+          onClick={checkNow}
+        >{drainingNow ? 'Checking…' : 'Refresh'}</Button>
       </div>
 
       {!receiving && (
@@ -4016,9 +4064,12 @@ function FirstPartyAnalyticsPanel({
         }
         // Drain health, subtly, but honest: freshness comes from stats (it
         // refreshes with the panel; setup only loads once), and a drain that
-        // has gone quiet for over an hour — or a relay holding events we have
+        // has missed a whole daily cycle — or a relay holding events we have
         // not pulled — gets the warning tint. A stale figure must never read
-        // as a quiet day (the botsExcluded rule).
+        // as a quiet day (the botsExcluded rule). The threshold sits past a
+        // day because the poller only runs daily (DRAIN_STALE_MS says why), so
+        // "drained 6h ago" is the schedule working, not a fault — Refresh
+        // above is how you close the gap on demand.
         const fresh = drainFreshness(stats?.lastDrainAt ?? setup.lastDrainAt);
         if (!fresh) return null;
         const lag = stats?.drainLagEvents ?? 0;

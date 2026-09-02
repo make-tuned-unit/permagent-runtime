@@ -156,11 +156,24 @@ built SPA, Knex migrations run automatically at boot (`db.migrate.latest()` in
    `commands/agent.rs:168` beside `watcher_insights::spawn` /
    `concierge::spawn`, which is the closest existing analogue (iterates active
    projects, writes to the DB, holds `AppState`). Sleep past boot before the
-   first pass, then tick every ~2 minutes. Per project: GET the drain URL with
-   the secret, `INSERT OR IGNORE` the batch in one transaction, advance the
-   cursor only after commit, and keep paging while a full batch returns so a
+   first pass, then poll each site **once a day**. Per project: GET the drain
+   URL with the secret, `INSERT OR IGNORE` the batch in one transaction, advance
+   the cursor only after commit, and keep paging while a full batch returns so a
    long outage catches up promptly. Record `lastError` rather than logging into
    the void.
+
+   There is no shorter timer anywhere in the loop — no tick, no per-project
+   backoff, no "poll quiet sites less often" heuristic. The daily interval is
+   not a tuning preference: every poll is a query into the SITE's database, and
+   a Postgres that scales to zero (Neon suspends after five idle minutes) can
+   never reach idle while anything is knocking hourly. Three quiet sites billed
+   ~$91 for August 2026 in polling alone.
+
+   Freshness comes from events instead of timers. `POST
+   /api/projects/{id}/analytics/first_party/drain` both configures the target
+   (when it carries a `drainUrl`) and runs a pass immediately, unthrottled —
+   it is what the analytics panel's Refresh button calls, and what makes setup
+   light up straight after the URL is pasted rather than on tomorrow's pass.
 
    **Two non-obvious requirements:**
    - **Sovereignty gate.** Outbound HTTP is not on the audited egress path;
