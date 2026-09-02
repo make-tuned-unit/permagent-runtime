@@ -28,6 +28,16 @@ objc2-screen-capture-kit = { version = "0.3", features = ["SCStream", "SCShareab
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", features = ["exception"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSValue"] }
+# AppKit window/view geometry, for the traffic-light re-inset in chrome.rs.
+# Every feature here is already enabled by tao 0.35 on the same 0.3.2 crate, so
+# this is a re-declaration for direct use rather than a new build unit.
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+] }
 # Objective-C blocks — needed for the one callback-shaped AppKit API we use,
 # NSWorkspace's accessibility-change observer (see src/accessibility.rs).
 block2 = "0.6"
