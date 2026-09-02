@@ -376,6 +376,31 @@ export function resolutionText(d: Decision, agentName = 'your agent'): string {
   return d.answer_note ? `${verb}${by} — note: ${d.answer_note}` : `${verb}${by}`;
 }
 
+/**
+ * Prefix `decisions_effects.rs`'s outbox drain writes on a decision_audit row
+ * when its gated effect exhausted every retry (CASE A fix #4) — the marker
+ * that makes a dead-lettered decision distinguishable from one whose effect
+ * actually applied, since the decisions row itself still reads
+ * status=answered/answer=approve either way.
+ */
+const EFFECT_DEAD_LETTER_PREFIX = 'effect_dead: ';
+
+/**
+ * The plain-language line for a history row whose answer was approved (or
+ * otherwise resolved) but whose gated effect never took effect after every
+ * retry — null for every ordinary row (the common case: the effect either
+ * succeeded or there was nothing to apply). Reads a single `HistoryItem`'s
+ * own `outcome`; a decision can appear as several history rows (one per
+ * decision_audit entry) and this only fires on the dead-letter row itself.
+ */
+export function deadLetterText(item: HistoryItem): string | null {
+  if (!item.outcome.startsWith(EFFECT_DEAD_LETTER_PREFIX)) return null;
+  const detail = item.outcome.slice(EFFECT_DEAD_LETTER_PREFIX.length).trim();
+  return detail
+    ? `Approved, but this never took effect after every retry — ${detail}`
+    : 'Approved, but this never took effect after every retry.';
+}
+
 /** Thrown when the decision was already resolved elsewhere (HTTP 409). */
 export class DecisionConflictError extends Error {
   constructor() {

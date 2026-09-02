@@ -66,14 +66,35 @@ export interface CanvasLegendProps {
 }
 
 function Rows({ rows, palette }: { rows: LegendRow[]; palette: LegendPalette }) {
+  // A true grid, not one flex row per entry: flex sized each row's term
+  // column off that row's own content, so "Drag" and "Right-drag or arrow
+  // keys" landed their descriptions at two different x positions and a
+  // wrapped second line had nothing to hang under. Grid tracks are shared
+  // across every row, so the marker/term/description columns line up top to
+  // bottom and a wrapped description stays under its own first line.
+  const hasMarkers = rows.some(row => row.marker != null);
   return (
-    <dl style={{ margin: 0, display: 'grid', gap: 4 }}>
+    <dl
+      style={{
+        margin: 0,
+        display: 'grid',
+        gridTemplateColumns: hasMarkers ? 'auto auto 1fr' : 'auto 1fr',
+        columnGap: 6,
+        rowGap: 5,
+        alignItems: 'baseline',
+      }}
+    >
       {rows.map(row => (
-        <div key={row.term} style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
-          {row.marker != null && (
-            <span aria-hidden="true" style={{ flexShrink: 0, lineHeight: 1.4 }}>{row.marker}</span>
+        // `display: contents` lets this wrapper carry the row's `key` without
+        // introducing a box of its own — its children join the parent grid
+        // directly, as if they were its siblings.
+        <div key={row.term} style={{ display: 'contents' }}>
+          {hasMarkers && (
+            <span aria-hidden="true" style={{ lineHeight: 1.4, alignSelf: 'center' }}>
+              {row.marker}
+            </span>
           )}
-          <dt style={{ color: palette.text, fontWeight: 600, flexShrink: 0 }}>{row.term}</dt>
+          <dt style={{ margin: 0, color: palette.text, fontWeight: 600 }}>{row.term}</dt>
           <dd style={{ margin: 0, color: palette.dim, lineHeight: 1.45 }}>{row.meaning}</dd>
         </div>
       ))}

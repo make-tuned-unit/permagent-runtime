@@ -93,13 +93,13 @@ export function AgentStateSources() {
     setAgentSource('steward', 'The Steward', 'idle', 'daemon');
     setAgentSource('financier', 'The Financier', 'idle', 'daemon');
     // Council and Picker just flipped from `static` to `daemon` (their
-    // emitters landed) and Growth measurement is a brand-new daemon seat —
-    // all three get the same initial publish financier does, so each has a
-    // reading from mount instead of sitting with none until its first real
-    // event.
+    // emitters landed) and the Grower (growth measurement) is a brand-new
+    // daemon seat — all three get the same initial publish financier does, so
+    // each has a reading from mount instead of sitting with none until its
+    // first real event.
     setAgentSource('council', 'The Council', 'idle', 'daemon');
     setAgentSource('picker', 'The Picker', 'idle', 'daemon');
-    setAgentSource('growth_measurement', 'Growth measurement', 'idle', 'daemon');
+    setAgentSource('growth_measurement', 'The Grower', 'idle', 'daemon');
 
     return subscribeWorldEvents((evt) => {
       const { type, payload, replayed } = evt;

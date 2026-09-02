@@ -35,7 +35,7 @@ export function PolybotHUD({ visible, onClose }: PolybotHUDProps) {
     <HudShell
       visible={visible}
       onClose={onClose}
-      title="POLYBOT"
+      title="THE TRADER"
       statusPill={
         status.live
           ? <Chip kind="state" color={pillColor} asOf={reading.asOf} pulse={status.pulse}>{status.label}</Chip>

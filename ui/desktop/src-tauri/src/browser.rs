@@ -39,17 +39,31 @@ use tauri::{
 // `navigation_policy` returns `WKNavigationActionPolicy::Download` when
 // `WKNavigationAction.shouldPerformDownload` is set — that flag is the HTML
 // `download` attribute — and `navigation_policy_response` returns
-// `WKNavigationResponsePolicy::Download` only when `!canShowMIMEType`. A PDF, a
-// Word document, a CSV, an image, or anything served `Content-Disposition:
-// attachment` under a displayable MIME type all report `canShowMIMEType ==
-// true`, so WebKit RENDERS them in a native viewer instead. That single fact is
-// also why the agent sees an empty string for an attachment tab: no download
-// event, and no HTML body to scrape either.
+// `WKNavigationResponsePolicy::Download` only when `!canShowMIMEType`. A PDF,
+// a CSV, an image, or anything served `Content-Disposition: attachment` under
+// a MIME type `WKWebView` can display all report `canShowMIMEType == true`,
+// so WebKit RENDERS those in a native viewer instead — no download event, and
+// no HTML body to scrape either, which is why the agent sees an empty string
+// for one of those attachment tabs.
 //
-// So capture cannot be an event we wait for; it has to be an action the shell
-// can take on a tab — `save_tab_to_inbox` below. It runs shell -> page, the
-// same direction as `get_page_content`, so it opens no new channel a remote
-// page could reach for. That was #1050's reasoning and it still holds.
+// CORRECTED 2026-09-01: a Word document is NOT in that bucket. `WKWebView`
+// has no renderer for `.docx`, so `canShowMIMEType` is `false` and WebKit
+// DOES mint a real `WKDownload` for it — live-traced from a Gmail `.docx`
+// chip: `browser_links.js` reroutes the click to a new tab, the new tab's
+// navigation converts straight to a download, and the tab never commits
+// because there was never a page for it. `on_download`'s `Requested` arm
+// captures the file correctly; what was missing (see FIX 1, 2026-09-01) was
+// telling the shell, which left the empty tab sitting there with no
+// explanation and no way to close it.
+//
+// So capture still cannot be an event we wait for in general — most
+// documents (PDF, CSV, image) still render rather than download, and for
+// those the shell has to ask for the file itself. `save_tab_to_inbox` below
+// is that ask; it runs shell -> page, the same direction as
+// `get_page_content`, so it opens no new channel a remote page could reach
+// for. That was #1050's reasoning and it still holds — `on_download` is the
+// other half, for the minority of formats WebKit hands us a real download
+// for.
 
 /// A file destined for the inbox: bytes already on disk, metadata not yet
 /// recorded. Also the carrier for a native download between `Requested` and
@@ -66,6 +80,29 @@ struct PendingInboxDownload {
     /// later. The column and the routing endpoint already existed; what did not
     /// exist was any way for the capture site to say which project it was in.
     project_id: Option<String>,
+}
+
+/// Emitted from `on_download`'s `Requested` arm the moment WebKit hands us a
+/// `WKDownload` (see the file-intake note above: this happens for a MIME type
+/// WebKit cannot render, e.g. a `.docx`). The tab this navigation opened in
+/// will never commit — there is no page for it to load — so the shell uses
+/// this to close that dead tab and surface the filename itself, rather than
+/// leaving a permanently-blank tab with no explanation (reported 2026-09-01).
+#[derive(Clone, Serialize)]
+struct BrowserDownloadCapturedPayload {
+    webview_id: String,
+    filename: String,
+    url: String,
+}
+
+/// Emitted from `on_download`'s `Finished` arm once WebKit reports the bytes
+/// are down (or failed). Companion to `browser_download_captured` above for
+/// UI that wants to know the outcome, not just that a download started.
+#[derive(Clone, Serialize)]
+struct BrowserDownloadFinishedPayload {
+    webview_id: String,
+    filename: String,
+    success: bool,
 }
 
 fn inbox_dir() -> PathBuf {
@@ -782,6 +819,8 @@ pub async fn create_browser_webview(
     let title_app = app.clone();
     let popup_id = label.clone();
     let popup_app = app.clone();
+    let download_id = label.clone();
+    let download_app = app.clone();
     // Pending downloads keyed by source URL, carried Requested -> Finished.
     let pending: Arc<Mutex<HashMap<String, PendingInboxDownload>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -802,6 +841,26 @@ pub async fn create_browser_webview(
                             // minted a download" — both look like silence.
                             println!("[permagent-app] inbox: native download {key} -> {filename}");
                             *destination = abs_path.clone();
+                            // The tab this navigation opened in never commits —
+                            // WebKit converted the response straight to a
+                            // WKDownload, so `on_page_load` fires nothing and
+                            // the tab sits blank forever with no trace but this
+                            // println (reported 2026-09-01, a Gmail `.docx`
+                            // chip). Tell the shell so it can close that dead
+                            // tab and surface the filename itself, instead of
+                            // only the manual "Save to inbox" button knowing.
+                            if let Err(e) = download_app.emit(
+                                "browser_download_captured",
+                                BrowserDownloadCapturedPayload {
+                                    webview_id: download_id.clone(),
+                                    filename: filename.clone(),
+                                    url: key.clone(),
+                                },
+                            ) {
+                                eprintln!(
+                                    "[permagent-app] inbox: emit of browser_download_captured FAILED: {e}"
+                                );
+                            }
                             if let Ok(mut map) = pending.lock() {
                                 map.insert(
                                     key.clone(),
@@ -833,8 +892,16 @@ pub async fn create_browser_webview(
                         .lock()
                         .ok()
                         .and_then(|mut m| m.remove(&url.to_string()));
-                    if success {
-                        if let Some(entry) = entry {
+                    if let Some(entry) = entry {
+                        let _ = download_app.emit(
+                            "browser_download_finished",
+                            BrowserDownloadFinishedPayload {
+                                webview_id: download_id.clone(),
+                                filename: entry.filename.clone(),
+                                success,
+                            },
+                        );
+                        if success {
                             tauri::async_runtime::spawn(async move {
                                 if let Err(e) = record_inbox_file(entry).await {
                                     eprintln!("[permagent-app] inbox: record failed: {e}");
@@ -2051,9 +2118,11 @@ mod tests {
     /// session, so it is the one that works for `download`-attribute links and
     /// for MIME types WebKit cannot render. It is also the one that looks like
     /// dead code, because the directory it writes to stays empty until someone
-    /// downloads a `.zip`. Both halves have to stay: the hook for the cases
-    /// WebKit does hand us, and the capture command for the far more common
-    /// ones it renders instead (a PDF, a Word document, an image).
+    /// downloads a `.zip` — or a `.docx`, which also mints a real `WKDownload`
+    /// (WebKit cannot render it; see the file-intake note near the top of
+    /// this file). Both halves have to stay: the hook for the cases WebKit
+    /// does hand us, and the capture command for the ones it renders instead
+    /// (a PDF, a CSV, an image).
     #[test]
     fn both_halves_of_the_file_intake_path_are_wired() {
         let src = include_str!("browser.rs");
@@ -2072,10 +2141,12 @@ mod tests {
         );
         assert!(
             src.contains(concat!("fn save_tab_to_", "inbox(")),
-            "WebKit renders a PDF / Word document rather than downloading it \
+            "WebKit renders a PDF / CSV / image rather than downloading it \
              (canShowMIMEType is true), so no download event exists for the \
-             documents people actually open. The capture command is how those \
-             reach the inbox at all."
+             documents people actually open most often. The capture command \
+             is how those reach the inbox at all — a Word document is the \
+             opposite case (canShowMIMEType is false), and IS a real \
+             download; on_download's Requested arm is that path."
         );
         assert!(
             src.contains(concat!("\"/api/", "inbox\"")) || src.contains("api/inbox"),
@@ -2087,6 +2158,31 @@ mod tests {
             "A captured file must be able to arrive already filed. The column \
              and the routing endpoint always existed; nothing on this side \
              ever sent the project, so every intake was unscoped."
+        );
+    }
+
+    /// Reported 2026-09-01: a Gmail `.docx` chip opens a tab that stays blank
+    /// forever. WebKit converts the navigation straight to a `WKDownload` (it
+    /// cannot render `.docx`), so `on_page_load` never fires for that tab and
+    /// the file lands correctly in the inbox — but the only trace anywhere is
+    /// a `println!` on the Requested arm, which the shell cannot see. Without
+    /// an emit, Browser.tsx has no way to know the tab it just opened is dead
+    /// and should be closed instead of left sitting there.
+    #[test]
+    fn on_download_requested_tells_the_shell_not_just_the_terminal() {
+        let src = include_str!("browser.rs");
+        assert!(
+            src.contains(concat!("\"browser_download_", "captured\"")),
+            "on_download's Requested arm must emit \"browser_download_captured\" \
+             so Browser.tsx learns a download-converted navigation happened. \
+             Today only println!/eprintln! record it, and those never leave \
+             the terminal."
+        );
+        assert!(
+            src.contains(concat!("download_", "app.emit(")),
+            "The emit must go over AppHandle::emit — the same channel \
+             page_load/title/popup routing use and the one Browser.tsx's \
+             listen() is proven to receive."
         );
     }
 
