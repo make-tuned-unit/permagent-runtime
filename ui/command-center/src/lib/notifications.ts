@@ -326,7 +326,10 @@ async function connect(): Promise<void> {
                 title: 'New download',
                 body: `${filename} landed in your inbox${from}`,
                 onActivate: () => {
-                  useCommandCenter.getState().setActivePanel('settings');
+                  // Downloads is a History segment, not a Settings pane. The
+                  // section key is unchanged ('inbox') because it is what
+                  // History reads to open on the right segment.
+                  useCommandCenter.getState().setActivePanel('history');
                   useCommandCenter.getState().setPendingSettingsSection('inbox');
                 },
               });

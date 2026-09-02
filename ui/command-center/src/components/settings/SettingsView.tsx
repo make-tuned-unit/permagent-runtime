@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import {
-  FiClock, FiCommand, FiCpu, FiDatabase, FiEdit3, FiKey, FiLock, FiServer,
+  FiCommand, FiCpu, FiDatabase, FiEdit3, FiKey, FiLock, FiServer,
   FiShield, FiSliders, FiSmartphone, FiSun, FiUser, FiUsers,
 } from 'react-icons/fi';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
@@ -31,7 +31,6 @@ import { StateBlock } from '../common/StateBlock';
 import { Tooltip } from '../common/Tooltip';
 import { Toggle } from '../common/Toggle';
 import { makeQrMatrix } from '../../lib/qrMatrix';
-import { HistoryView, isHistoryTab } from '../history/HistoryView';
 import { AgentsPanel } from './agents/AgentsPanel';
 import { timeAgo } from './format';
 import { useDecisions } from '../dashboard/decisions/useDecisions';
@@ -123,14 +122,11 @@ const CATEGORIES = [
     { key: 'memory',      label: 'Memory',           icon: FiDatabase },
     { key: 'autonomy',    label: 'Autonomy & guardrails', icon: FiShield },
   ]},
-  // Sessions, Downloads, Activity and Spend are RECORDS, not settings, and are
-  // one destination now (components/history/HistoryView). They are still
-  // reached from here only because the sidebar rail and the destination switch
-  // belong to lane A1c this wave — see HistoryView's header for the two lines
-  // that finish the promotion and delete this group.
-  { group: 'History', items: [
-    { key: 'history',     label: 'History',          icon: FiClock },
-  ]},
+  // No History group. Sessions, Downloads, Activity and Spend are RECORDS,
+  // not settings, and they are a top-level destination now — a row on the
+  // sidebar rail, `activePanel: 'history'`, `components/history/HistoryView`.
+  // Listing them here as well would be the same surface in two places, which
+  // is the thing the 2026-08 consolidation was trying to stop.
   { group: 'Connections', items: [
     // MCP is defined once, in the pane's own subtitle — a nav label is not the
     // place to teach an acronym.
@@ -163,7 +159,11 @@ const CATEGORIES = [
  * History uses the key itself to preselect its segment.
  */
 const SECTION_HOME: Record<string, string> = {
-  sessions: 'history', inbox: 'history', activity: 'history', spend: 'history',
+  // sessions/inbox/activity/spend are deliberately absent: they leave for the
+  // History destination before Settings ever sees them (`panelForSection` in
+  // ./sections). A key that somehow arrives here anyway is unrecognized and
+  // falls to the default pane, which is the honest outcome — better than a
+  // `PANELS` miss and a blank right-hand column.
   features: 'agents',
   search: 'services', sources: 'services',
   data: 'privacy', sovereignty: 'privacy',
@@ -1600,14 +1600,9 @@ function PrivacyPanel() {
   );
 }
 
-// ── History (Sessions / Downloads / Activity / Spend) ───────────────
-// The four are one destination now and live in components/history. This pane
-// is the temporary host: it renders the SAME component the sidebar rail will,
-// so promoting it is a branch in App.tsx and a row in Sidebar.tsx, not a move.
-
-function HistoryPane({ section }: { section: string }) {
-  return <HistoryView initialTab={isHistoryTab(section) ? section : 'sessions'} />;
-}
+// History has no pane here. Its four records are a top-level destination
+// (`activePanel: 'history'`), reached from the sidebar rail and from deep
+// links through `panelForSection` in ./sections.
 
 /** One entry per PANE. Legacy section keys reach these through `SECTION_HOME`;
  *  there is deliberately no second entry for an alias, so a pane cannot come
@@ -1619,7 +1614,6 @@ export const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
   services: ServicesPanel,
   appearance: AppearancePanel, shortcuts: ShortcutsPanel,
   privacy: PrivacyPanel,
-  history: HistoryPane,
   agents: AgentsPanel,
 };
 

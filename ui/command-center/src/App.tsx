@@ -3,6 +3,7 @@ import { useCommandCenter, navigateToTool } from './lib/store';
 import { useTheme } from './styles/useTheme';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsView } from './components/settings/SettingsView';
+import { HistoryView, isHistoryTab, type HistoryTabKey } from './components/history/HistoryView';
 import { SkillsPanel } from './components/skills/SkillsPanel';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { WorkspaceSaveErrorChip } from './components/workspaces/WorkspaceSaveErrorChip';
@@ -38,11 +39,32 @@ function MainContent() {
   // Skills Library renders as a labeled overlay so accepting a skill proposal
   // — which sets activePanel:'skills' — lands on a real surface instead of a
   // blank/unchanged screen. Also the target of navigate_app("Skills").
-  // The old Console overlay (Sessions/Inbox/Trace/Governance) is gone: those
-  // pages live inside Settings now (2026-08 ruling) and deep links route
-  // through pendingSettingsSection.
   const showSkills = activePanel === 'skills';
+  // History — Sessions, Downloads, Activity, Spend. The old Console overlay
+  // was retired into Settings by the 2026-08 ruling because there was nowhere
+  // else to put it; #1177 made the four one component, and this is the half
+  // that finishes the move: a record of what your agent did is not a setting,
+  // and it should not cost a trip through a configuration screen to read one.
+  // The segment comes from the deep link's own section key (`pendingSettings
+  // Section`), so "Settings → Spend" still opens Spend and not Sessions.
+  const showHistory = activePanel === 'history';
+  const pendingSection = useCommandCenter(s => s.pendingSettingsSection);
+  const setPendingSection = useCommandCenter(s => s.setPendingSettingsSection);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
+
+  // The deep link's segment, consumed ONCE — the same contract SettingsView
+  // has always had with `pendingSettingsSection`. Consuming it matters here
+  // for a reason that only shows up on the second visit: nothing else clears
+  // the key now that History is not a Settings pane, so a stale "spend" would
+  // make every later trip to History open on Spend. Holding the segment in
+  // state after that is deliberate — coming back to History where you left it
+  // is what the Settings pane did, and what a destination should do.
+  const [historyTab, setHistoryTab] = useState<HistoryTabKey>('sessions');
+  useEffect(() => {
+    if (!showHistory || !isHistoryTab(pendingSection)) return;
+    setHistoryTab(pendingSection);
+    setPendingSection(null);
+  }, [showHistory, pendingSection, setPendingSection]);
 
   if (!workspacesLoaded) {
     return (
@@ -52,7 +74,7 @@ function MainContent() {
     );
   }
 
-  if (!activeWorkspaceId && !showSettings && !showSkills) {
+  if (!activeWorkspaceId && !showSettings && !showSkills && !showHistory) {
     return (
       <div className="flex h-full items-center justify-center text-dark-muted text-xs font-mono">
         No workspaces available
@@ -75,11 +97,18 @@ function MainContent() {
           <SkillsPanel onClose={() => setActivePanel('chat')} />
         </div>
       )}
+      {showHistory && (
+        <div className="absolute inset-0 z-10">
+          <ErrorBoundary surface="History">
+            <HistoryView initialTab={isHistoryTab(pendingSection) ? pendingSection : historyTab} />
+          </ErrorBoundary>
+        </div>
+      )}
       {workspaces.map(ws => (
         <div
           key={ws.id}
           className="absolute inset-0"
-          style={{ display: (!showSettings && !showSkills && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
+          style={{ display: (!showSettings && !showSkills && !showHistory && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
         >
           <ErrorBoundary surface="the workspace">
             <WorkspaceRenderer workspaceId={ws.id} />

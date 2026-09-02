@@ -112,7 +112,7 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'er
 // overlay values ('sessions' | 'inbox' | 'trace' | 'governance') and the
 // never-used 'events' are gone (2026-08 ruling): those pages live inside
 // Settings and deep-link via pendingSettingsSection.
-export type ActivePanel = 'chat' | 'skills' | 'settings' | 'terminal' | 'browser';
+export type ActivePanel = 'chat' | 'skills' | 'settings' | 'history' | 'terminal' | 'browser';
 
 // ── Workspace types ──
 
