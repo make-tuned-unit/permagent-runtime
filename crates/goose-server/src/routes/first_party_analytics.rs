@@ -194,7 +194,11 @@ struct SetupResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SetDrainRequest {
-    /// Absolute URL of the site's drain endpoint. Empty/absent clears it.
+    /// Absolute URL of the site's drain endpoint. ABSENT (or no body at all)
+    /// leaves the configured target untouched and just runs a drain pass — that
+    /// is what the panel's Refresh button sends. An explicit EMPTY STRING
+    /// clears the target and stops ingestion. The two used to mean the same
+    /// thing, which made a bodyless POST wipe the config.
     #[serde(default)]
     drain_url: Option<String>,
 }
@@ -494,7 +498,19 @@ fn agent_prompt_for(
          - Auth: header `x-permagent-key` must equal env var PERMAGENT_ANALYTICS_KEY. Fail \
          CLOSED with 401 when the env var is unset or the header does not match. Do not accept \
          the key in a query param.\n\
+         - HOW OFTEN PERMAGENT CALLS THIS: once a day, plus once when the Permagent \
+         daemon starts, plus whenever the user presses Refresh in the analytics panel. \
+         It is NOT polled continuously — this endpoint runs against your database, and \
+         a database that scales to zero has to be left alone long enough to do it. \
+         Design the route for a once-a-day caller that expects to receive everything \
+         since its last visit.\n\
          - Query: ?since=<id>&limit=<n> (default limit 500, cap 1000).\n\
+         - HONOURING `since` IS NOT OPTIONAL. The caller sends the id of the last row \
+         it stored and expects only rows after it. A route that ignores `since` and \
+         returns the newest N rows, or the whole table, makes every daily call re-read \
+         your entire history — that shipped once and cost ~2 GB of egress a day before \
+         anyone noticed, because duplicate rows are dropped on our side and the drain \
+         reported success the whole time.\n\
          - Return rows with id > since, ORDERED BY id ASC, as JSON:\n\
          {{ \"events\": [ {{ \"id\": 123, \"kind\": \"pageview\", \"path\": \"/deals\", \
          \"referrer\": null, \"name\": null, \"visitorHash\": \"ab12…\", \
@@ -622,9 +638,17 @@ fn agent_prompt_for(
          - Curl the drain with the key and confirm JSON comes back:\n\
            curl -s -H \"x-permagent-key: $PERMAGENT_ANALYTICS_KEY\" \
          '<deployed-origin>{drain_path}?since=0&limit=5'\n\
+         - Curl it AGAIN with `since` set to the highest id that came back, and confirm \
+         you get only newer rows (usually none). If the same rows come back a second \
+         time, `since` is being ignored and the install is broken in the one way that \
+         looks healthy from both ends.\n\
          - Confirm the drain returns 401 with a wrong key.\n\
          Paste the output of those checks into your report, then report the deployed origin and \
-         the full drain URL, which get pasted back into Permagent.\n\n\
+         the drain URL, which get pasted back into Permagent. REPORT THE URL WITH NO QUERY \
+         STRING — `<deployed-origin>{drain_path}` and nothing else. The `?since=0&limit=5` above \
+         is a smoke test, not the value to hand over: Permagent appends its own cursor, and a \
+         pasted `?since=0` wins over it in every framework's searchParams, pinning every future \
+         call to page one forever.\n\n\
          Permagent then runs the SAME assertions itself against the deployed origin before it \
          starts ingesting — fetching the HTML on two routes, reading the CSP, posting a real \
          beacon and exercising the drain with a correct and a wrong key. It reports pass/fail \
@@ -863,23 +887,43 @@ pub(crate) fn strip_cursor_params(drain_url: &str) -> String {
     parsed.to_string()
 }
 
-/// Point the daemon at the site's drain endpoint (the value the coding agent
-/// reports back after installing the relay). Clearing it stops ingestion.
+/// `POST …/analytics/first_party/drain` — configure the drain target and/or
+/// run a drain pass right now. It is the ONE manual entry point into the
+/// relay, and it does both things because the user only ever wants one of two
+/// outcomes from it: "start ingesting from this URL" (setup) or "go and get my
+/// numbers" (the panel's Refresh button).
+///
+/// Running the pass here is not a nicety. The background loop drains each site
+/// once a day and nothing faster (`analytics_drain::POLL_INTERVAL` — a poller
+/// on a shorter timer stops the site's database ever scaling to zero, which
+/// cost $91 in August 2026). This route is deliberately NOT subject to that
+/// pacing: the whole schedule is affordable because the user can always ask.
+///
+/// Body semantics, and the trap they close: `drainUrl` ABSENT (or no body at
+/// all) means "leave the target alone, just drain" — that is what Refresh
+/// sends. An explicit empty string means "clear it and stop ingesting". Those
+/// used to be the same thing, so a bodyless POST silently wiped the config.
+///
+/// Failures are reported as a 200 with `lastError` set rather than a 5xx, the
+/// convention this panel is built on: the UI must be able to render "drain
+/// failing" honestly instead of an opaque error. The response is re-read after
+/// the pass, so the caller sees the new cursor, timestamp and error in one
+/// round trip.
 async fn set_drain(
     State(state): State<Arc<AppState>>,
     Path(project_id): Path<String>,
     body: Option<Json<SetDrainRequest>>,
 ) -> Result<Json<SetupResponse>, StatusCode> {
     let (pool, project) = project_and_pool(&state, &project_id).await?;
-    let requested = body
-        .and_then(|Json(b)| b.drain_url)
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    // Some(Some(url)) = set it, Some(None) = clear it, None = leave it alone.
+    let requested: Option<Option<String>> = body.and_then(|Json(b)| b.drain_url).map(|s| {
+        let s = s.trim().to_string();
         // The poller owns the cursor params; a pasted verification URL that
         // carries `?since=0&limit=…` must not pin every request to page one.
-        .map(|s| strip_cursor_params(&s));
+        (!s.is_empty()).then(|| strip_cursor_params(&s))
+    });
 
-    if let Some(url) = requested.as_deref() {
+    if let Some(Some(url)) = requested.as_ref() {
         // Reject anything the poller could not use, loudly, at config time —
         // a bad URL discovered only by a silent background failure is the worst
         // version of this.
@@ -889,19 +933,37 @@ async fn set_drain(
     }
 
     let mut config = config_from_project(&project).ok_or(StatusCode::NOT_FOUND)?;
-    // A changed target is a different data source; reset the watermark so the
-    // new site is drained from its beginning rather than from a stale cursor.
-    if config.drain_url.as_deref() != requested.as_deref() {
-        config.cursor = None;
-        config.last_error = None;
+    if let Some(requested) = requested {
+        // A changed target is a different data source; reset the watermark so
+        // the new site is drained from its beginning rather than from a stale
+        // cursor.
+        if config.drain_url != requested {
+            config.cursor = None;
+            config.last_error = None;
+        }
+        config.drain_url = requested;
     }
-    config.drain_url = requested;
 
     let updated = write_config(&pool, project, &config).await?;
+
+    // Then pull, immediately. A project with no URL configured yet returns
+    // Ok(None) and this is a no-op, which is exactly right for the setup call
+    // that just cleared the target.
+    if let Err(e) = crate::analytics_drain::drain_now(&pool, &updated).await {
+        tracing::warn!(target: "analytics_drain", "on-demand drain failed: {e}");
+    }
+
+    // Re-read: the pass wrote cursor/lastDrainAt/lastError into the metadata
+    // bag, so `config` above is already stale.
+    let updated = projects::get_project_by_id_or_slug(&pool, &project_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let config = config_from_project(&updated);
     let receiving = has_any_events(&pool, &updated.id).await;
     let secret = stored_drain_secret(&updated.id);
     Ok(Json(setup_response(
-        Some(&config),
+        config.as_ref(),
         &updated,
         secret.as_deref(),
         receiving,
@@ -2283,6 +2345,91 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(stats["drainLagEvents"], serde_json::json!(null));
+    }
+
+    /// The Refresh button's wiring. It POSTs to this route with `{}` — no
+    /// `drainUrl` — meaning "leave the target alone, just go and pull". That
+    /// distinction is the whole test: the field used to be Option<String>
+    /// where absent and empty both cleared the configuration, so wiring
+    /// Refresh here would have silently switched analytics OFF on the first
+    /// click. An explicit empty string must still clear it, because that is
+    /// how the panel turns ingestion off.
+    ///
+    /// The route runs a drain pass on every call and is deliberately not
+    /// subject to the daily pacing — that is what makes a once-a-day poller
+    /// acceptable. There is no drain URL configured here, so the pass is a
+    /// no-op and this test stays hermetic (no outbound HTTP); the pass itself
+    /// is covered in `analytics_drain`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn refresh_drains_without_clearing_the_configured_target() {
+        let root = crate::test_support::test_root();
+        let home = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
+        ]);
+        let (app, _collect_app, pool, _state) = test_app().await;
+        let project = seed_project(&pool, "fp-refresh-drains").await;
+        let drain = format!("/api/projects/{}/analytics/first_party/drain", project.id);
+
+        request(
+            &app,
+            "POST",
+            &format!("/api/projects/{}/analytics/first_party/enable", project.id),
+            Some(serde_json::json!({})),
+        )
+        .await;
+
+        // Setup: point it at the site. The pasted cursor params are stripped —
+        // keeping them is what pinned Evntally to page one for two weeks.
+        let (status, setup) = request(
+            &app,
+            "POST",
+            &drain,
+            Some(serde_json::json!({
+                "drainUrl": "https://example.org/api/permagent-analytics/drain?since=0&limit=500"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            setup["drainUrl"],
+            serde_json::json!("https://example.org/api/permagent-analytics/drain"),
+            "since/limit belong to the poller, not the stored URL"
+        );
+
+        // Refresh: no drainUrl at all. The target must survive.
+        let (status, after) = request(&app, "POST", &drain, Some(serde_json::json!({}))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            after["drainUrl"],
+            serde_json::json!("https://example.org/api/permagent-analytics/drain"),
+            "a bodyless refresh must not clear the drain target"
+        );
+
+        // And with no body whatsoever, which is what a bare POST sends.
+        let (status, after) = request(&app, "POST", &drain, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            after["drainUrl"],
+            serde_json::json!("https://example.org/api/permagent-analytics/drain")
+        );
+
+        // An explicit empty string still means "stop ingesting".
+        let (status, cleared) = request(
+            &app,
+            "POST",
+            &drain,
+            Some(serde_json::json!({ "drainUrl": "" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            cleared["drainUrl"],
+            serde_json::json!(null),
+            "an explicit empty string is how the panel clears the target"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
