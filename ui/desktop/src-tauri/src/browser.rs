@@ -766,6 +766,13 @@ fn create_opener_preserving_popup(
         .on_document_title_changed(|window, title| {
             if !title.trim().is_empty() {
                 let _ = window.set_title(&title);
+                // Every `set_title` resets the traffic-light inset (#13044).
+                // A no-op for these sign-in popups, which deliberately keep the
+                // system titlebar so the user can read the site's own title —
+                // `chrome::inset_for_label` returns None for `browser-popup-*`.
+                // It is here so the rule "re-inset after every set_title" holds
+                // at every call site rather than only where it currently bites.
+                crate::chrome::ensure_inset(&window);
             }
         });
 

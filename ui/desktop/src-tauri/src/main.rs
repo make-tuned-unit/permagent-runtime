@@ -5,6 +5,7 @@ use tauri::Manager;
 mod accessibility;
 mod activity;
 mod browser;
+mod chrome;
 mod daemon;
 mod files;
 mod menu;
@@ -292,6 +293,24 @@ fn main() {
         // block it. The happy path is unchanged — the window is already gone
         // and the timer finds nothing.
         .on_window_event(|window, event| {
+            // ── Traffic-light re-inset (macOS chrome, see chrome.rs) ──
+            //
+            // Two things un-do the inset that neither the config nor our own
+            // explicit calls can anticipate: leaving fullscreen (AppKit
+            // rebuilds the titlebar on the way out) and any `set_title` we do
+            // not own. Both show up here as a resize or a focus change.
+            // `ensure_inset` reads the live geometry and returns immediately
+            // when it is already correct, so hanging it off `Resized` — which
+            // fires per frame during a live drag — costs two AppKit property
+            // reads per event and never touches a view that is already right.
+            if matches!(
+                event,
+                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Focused(true)
+            ) {
+                if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+                    chrome::ensure_inset(&w);
+                }
+            }
             if !matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
                 return;
             }
@@ -371,6 +390,7 @@ fn main() {
             haptic_success,
             raise_chat_above_main,
             accessibility::reduce_transparency,
+            chrome::reinset_traffic_lights,
         ])
         .setup(|app| {
             daemon::start_daemon(app.handle())?;
@@ -385,6 +405,14 @@ fn main() {
             // native value is pushed to the webview instead — once on demand,
             // and on every accessibility-options change from here on.
             accessibility::watch(app.handle());
+            // The main window's traffic-light position comes from
+            // tauri.conf.json (the only path that works under `unstable` —
+            // chrome.rs documents why). This is belt-and-braces for the case
+            // where something has already retitled the window before we get
+            // here; it is a no-op when the config inset is intact.
+            if let Some(main) = app.get_webview_window("main") {
+                chrome::ensure_inset(&main);
+            }
             // Media capture is enabled per-window via enable_media_capture_cmd,
             // called from JS on mount. NOT done here — the WKWebView is not
             // fully initialized during did_finish_launching.
