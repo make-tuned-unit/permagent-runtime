@@ -17,18 +17,25 @@
  */
 
 import { useEffect, useState, type CSSProperties } from 'react';
-import { Row, Section, ModelStateBadge, selectStyle } from '../atoms';
+import { Row, Section, Block, ModelStateBadge, selectStyle } from '../atoms';
 import { Button } from '../../common/Button';
 import { Toggle } from '../../common/Toggle';
-import { font, radius, textSize } from '../../../styles/tokens';
+import { font, radius, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
-import { api } from '../../../lib/api';
+import { api, type CouncilMembers, type CouncilSeat } from '../../../lib/api';
+import { conciergePreconditionCopy, gmailTokenPresent, type IntegrationStatus } from '../workerGates';
 
 /**
  * Which agents have a settings block here. Keyed by the agents-API id, which
  * is the id `AgentDetailPane` is routed on.
+ *
+ * `council` and `concierge` joined when Settings → Features was retired: the
+ * board's six toggles were a SECOND writer of the same six `gate.config_key`s
+ * the Agents page already writes, but two things on it were not duplicates —
+ * the Council's seat list and the Concierge's Gmail precondition. Those came
+ * here, to the agent each belongs to.
  */
-export const AGENTS_WITH_SETTINGS = new Set(['strix', 'watcher', 'librarian']);
+export const AGENTS_WITH_SETTINGS = new Set(['strix', 'watcher', 'librarian', 'council', 'concierge']);
 
 const inputStyle = (colors: ReturnType<typeof useTheme>['colors']): CSSProperties => ({
   width: 260, fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
@@ -353,10 +360,146 @@ export function LibrarianScheduleSettings() {
   );
 }
 
+// ── The Concierge ──────────────────────────────────────────────
+
+/**
+ * The Gmail precondition, from the retired Features board.
+ *
+ * It is not a setting and there is nothing here to switch: the Concierge's
+ * switch is the gate row above, and the loop is simply inert until a token
+ * exists. But "I turned it on and nothing happened" has exactly one cause, and
+ * this row is the only place that says so. It says nothing about consent or
+ * permission — read-only Gmail, drafts only, never sends.
+ */
+export function ConciergePrecondition() {
+  const { colors } = useTheme();
+  const [integrations, setIntegrations] = useState<IntegrationStatus[] | null>(null);
+  /** The read FAILED. Distinct from "no token": a dead daemon must not tell the
+   *  user to go and run a command they may not need. */
+  const [unreadable, setUnreadable] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    api.getIntegrations()
+      .then(list => { if (active) { setIntegrations(list); setUnreadable(false); } })
+      .catch(() => { if (active) setUnreadable(true); });
+    return () => { active = false; };
+  }, []);
+
+  const token = gmailTokenPresent(integrations);
+  return (
+    <Section title="Mailbox" sub="The Concierge reads your Gmail inbox read-only on the local model, flags what needs you, and proposes an editable reply draft as a Decision-Inbox card. It can never send or change mail.">
+      <Row label="Gmail" hint="Needed before the loop has anything to read. Without it the Concierge stays idle whether or not it is switched on.">
+        <span
+          data-testid="concierge-precondition"
+          style={{
+            fontSize: textSize.caption, fontFamily: font.body, lineHeight: 1.5,
+            color: unreadable ? colors.danger : token === false ? colors.text : colors.textMuted,
+          }}
+        >
+          {conciergePreconditionCopy(token, unreadable)}
+        </span>
+      </Row>
+    </Section>
+  );
+}
+
+// ── The Council ────────────────────────────────────────────────
+
+function seatedSeats(members: CouncilMembers): CouncilSeat[] {
+  return members.seats.filter(s => s.configured && !s.cli_or_acp);
+}
+
+/**
+ * Who sits on the Council. Moved here verbatim from the retired Features board
+ * — it is the Council's own configuration, not a feature switch, and it was
+ * only on that board because the switch that reveals it was.
+ */
+export function CouncilSeatSettings() {
+  const { colors } = useTheme();
+  const [members, setMembers] = useState<CouncilMembers | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    api.getCouncilMembers()
+      .then(m => { if (active) setMembers(m); })
+      .catch(err => { if (active) setError(err instanceof Error ? err.message : String(err)); });
+    return () => { active = false; };
+  }, []);
+
+  const toggle = (provider: string, seated: boolean) => {
+    if (!members) return;
+    const prev = members;
+    const exclude = seated
+      ? members.exclude.filter(p => p.toLowerCase() !== provider.toLowerCase())
+      : [...members.exclude.filter(p => p.toLowerCase() !== provider.toLowerCase()), provider];
+    const next: CouncilMembers = {
+      ...members,
+      exclude,
+      seats: members.seats.map(s => (s.provider === provider ? { ...s, excluded: !seated } : s)),
+    };
+    setMembers(next);
+    setError(null);
+    api.putCouncilMembers(next.exclude)
+      .then(saved => setMembers(saved))
+      .catch(err => {
+        setMembers(prev);
+        setError(`Couldn't save seats: ${err instanceof Error ? err.message : String(err)}`);
+      });
+  };
+
+  const seats = members ? seatedSeats(members) : [];
+  return (
+    <Section
+      title="Seats"
+      sub="Every connected chat-completion provider sits on the Council unless you drop it here. Coding CLIs (Claude Code, Cursor, Codex) are workers, not debate seats. Unchecking a toy local model keeps it from spending a seat next to Claude."
+    >
+      {!members && !error && (
+        <Block><span style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading seats…</span></Block>
+      )}
+      {error && (
+        <Block><span style={{ fontSize: textSize.caption, color: colors.danger }}>{error}</span></Block>
+      )}
+      {members && seats.length === 0 && (
+        <Block>
+          <span style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>
+            No connected chat providers. Connect a key under Settings → API keys, then they will appear here.
+          </span>
+        </Block>
+      )}
+      {seats.map(seat => {
+        const on = !seat.excluded;
+        return (
+          <label
+            key={seat.provider}
+            data-testid={`council-seat-${seat.provider}`}
+            style={{
+              display: 'flex', alignItems: 'center', gap: space.lg,
+              padding: `${space.xl}px ${space.xxl}px`,
+              fontSize: textSize.small, color: colors.text, cursor: 'pointer',
+            }}
+          >
+            <input type="checkbox" checked={on} onChange={e => toggle(seat.provider, e.target.checked)} />
+            <span style={{ flex: 1 }}>
+              {seat.display_name}
+              <span style={{ color: colors.textDim, marginLeft: space.md, fontFamily: font.body, fontSize: textSize.micro }}>
+                {seat.model}
+              </span>
+            </span>
+          </label>
+        );
+      })}
+    </Section>
+  );
+}
+
 /** The block for one agent, or nothing when that agent has no extra settings. */
 export function AgentSettingsBlock({ agentId }: { agentId: string }) {
   if (agentId === 'strix') return <GuardSweepSettings />;
   if (agentId === 'watcher') return <WatcherTopicSettings />;
   if (agentId === 'librarian') return <LibrarianScheduleSettings />;
+  if (agentId === 'council') return <CouncilSeatSettings />;
+  if (agentId === 'concierge') return <ConciergePrecondition />;
   return null;
 }

@@ -28,7 +28,7 @@ vi.mock('../../lib/api', () => ({
   getApiBaseUrl: vi.fn(() => 'http://localhost:1234'),
 }));
 
-import { GrowActions } from './GrowView';
+import { GrowActions } from './GrowActions';
 import { getThemedColors } from '../../styles/tokens';
 import type { Project } from '../projects/types';
 

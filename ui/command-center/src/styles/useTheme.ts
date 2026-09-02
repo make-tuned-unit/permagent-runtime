@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   getTheme, getThemePref, getThemeGradient, getThemedColors, getThemedGlass, onThemeChange,
-  getMobiusGlow, getIdleAnim, getShowHeroMobius,
+  getMobiusGlow, getIdleAnim,
   getDensity, getReduceMotion, getReduceTransparency,
 } from './tokens';
 import type { ThemeId, ThemeColors, ThemeGlass, GlassSurface, IdleAnim, UIDensity } from './tokens';
@@ -21,7 +21,6 @@ export function useTheme() {
     reduceTransparency: getReduceTransparency(),
     mobiusGlow: getMobiusGlow(),
     idleAnim: getIdleAnim(),
-    showHeroMobius: getShowHeroMobius(),
     density: getDensity(),
     reduceMotion: getReduceMotion(),
   };

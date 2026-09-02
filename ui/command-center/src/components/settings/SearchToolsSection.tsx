@@ -5,6 +5,7 @@ import { useCommandCenter } from '../../lib/store';
 import { SEARCH_PROVIDERS, buildSearchExtensionQuery, saveAndEnableSearchProvider, type SearchProvider } from '../../lib/searchProviders';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { font, radius } from '../../styles/tokens';
+import { Tooltip } from '../common/Tooltip';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Toggle } from '../common/Toggle';
@@ -156,16 +157,20 @@ export function SearchToolsSection() {
               </div>
               <div className="flex items-center gap-2">
                 {r.configured ? (
+                  // `content` empty is how the primitive says "no tip" — the
+                  // chip still renders when there is no masked value to show.
+                  <Tooltip content={r.masked ? `Stored in your keychain as ${r.masked}` : null}>
                   <span
                     className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
                     style={{ backgroundColor: `${colors.success}26`, color: colors.success }}
-                    title={r.masked ? `Stored in your keychain as ${r.masked}` : undefined}
+                    tabIndex={0}
                   >
                     <FiCheck size={10} /> Key saved
                     {r.masked && (
                       <span style={{ fontFamily: font.mono, opacity: 0.8 }}>{r.masked}</span>
                     )}
                   </span>
+                  </Tooltip>
                 ) : (
                   <span
                     className="text-[10px] px-2 py-0.5 rounded"
@@ -199,11 +204,11 @@ export function SearchToolsSection() {
               >
                 {r.busy ? 'Saving…' : 'Save'}
               </Button>
+              <Tooltip content={r.configured ? 'Start the provider and list its tools' : 'Add a key first'}>
               <Button
                 colors={colors}
                 onClick={() => testProvider(p)}
                 disabled={r.probing || !r.configured}
-                title={r.configured ? 'Start the provider and list its tools' : 'Add a key first'}
                 style={{
                   '--pa-btn-fg': colors.textMuted,
                   '--pa-btn-fg-hover': colors.text,
@@ -213,14 +218,15 @@ export function SearchToolsSection() {
               >
                 {r.probing ? 'Testing…' : 'Test'}
               </Button>
+              </Tooltip>
+              <Tooltip content={`Open ${p.keyPageLabel} in the browser`}>
               <Button
                 colors={colors}
                 onClick={() => openInBrowser(p.keyPageUrl)}
-                title={`Open ${p.keyPageLabel} in the browser`}
                 style={{
                   '--pa-btn-fg': colors.textMuted,
                   '--pa-btn-fg-hover': colors.text,
-                  '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
+                  '--pa-btn-bg-hover': colors.fillHover,
                   '--pa-btn-pad': '6px 12px',
                   '--pa-btn-radius': `${radius.xs}px`,
                 } as CSSProperties}
@@ -233,6 +239,7 @@ export function SearchToolsSection() {
                   <FiExternalLink size={11} /> Get key
                 </span>
               </Button>
+              </Tooltip>
             </div>
             {r.probe && (
               <div

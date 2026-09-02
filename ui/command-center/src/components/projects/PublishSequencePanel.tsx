@@ -113,7 +113,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
   // The look these controls had at rest, re-expressed as the primitive's custom
   // properties so `:hover` / `:active` / `:disabled` can finally reach them.
   const btn = (primary: boolean): CSSProperties => ({
-    '--pa-btn-bg': primary ? colors.cyanSoft : 'rgba(255,255,255,0.03)',
+    '--pa-btn-bg': primary ? colors.cyanSoft : colors.fillSubtle,
     '--pa-btn-fg': primary ? colors.cyan : colors.textMuted,
     '--pa-btn-border': primary ? colors.borderHi : colors.border,
     '--pa-btn-bg-hover': primary ? colors.cyanSoft : colors.surfaceHi,
@@ -126,7 +126,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
     fontSize: textSize.micro,
   } as CSSProperties);
   const tinyBtn: CSSProperties = {
-    '--pa-btn-bg': 'rgba(255,255,255,0.03)',
+    '--pa-btn-bg': colors.fillSubtle,
     '--pa-btn-fg': colors.textMuted,
     '--pa-btn-border': colors.border,
     '--pa-btn-bg-hover': colors.surfaceHi,
@@ -135,7 +135,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
     '--pa-btn-pad': '2px 6px',
     // 5px, not a radius token: these three sit inside a 24px row and the
     // resting shape must not change under the migration.
-    '--pa-btn-radius': '5px',
+    '--pa-btn-radius': `${radius.xs}px`,
     fontFamily: font.body,
     fontSize: textSize.micro,
     lineHeight: 1,
@@ -170,7 +170,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
                 aria-label={`Step ${i + 1} command`}
                 style={{
                   flex: 1, minWidth: 0, padding: '6px 8px', borderRadius: radius.sm,
-                  background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
+                  background: colors.fillSubtle, border: `1px solid ${colors.border}`,
                   color: colors.text, fontFamily: font.mono, fontSize: textSize.micro, outline: 'none',
                 }}
               />
@@ -182,7 +182,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
                 aria-label={`Step ${i + 1} timeout in seconds`}
                 style={{
                   width: 62, flexShrink: 0, padding: '6px 8px', borderRadius: radius.sm,
-                  background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
+                  background: colors.fillSubtle, border: `1px solid ${colors.border}`,
                   color: colors.text, fontFamily: font.mono, fontSize: textSize.micro, outline: 'none',
                 }}
               />
@@ -233,7 +233,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
               {s.timeoutSecs !== undefined && (
                 <span style={{
                   fontSize: 10, color: colors.textDim, flexShrink: 0,
-                  padding: '1px 6px', borderRadius: radius.xs, background: 'rgba(255,255,255,0.06)',
+                  padding: '1px 6px', borderRadius: radius.xs, background: colors.fillHover,
                 }}>
                   {s.timeoutSecs}s
                 </span>

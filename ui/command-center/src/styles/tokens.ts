@@ -17,6 +17,14 @@ export const color = {
   border: 'rgba(255,255,255,0.07)',
   borderHi: 'rgba(0,213,255,0.18)',
   cyan: NEON_ACCENT,
+  /** The step BELOW cyanSoft: an accent presence you read as atmosphere
+   *  rather than as a fill. For the backgrounds of empty, loading and error
+   *  states — a panel that is waiting or has nothing to show, tinted enough to
+   *  belong to the app and not enough to look like a control. Added
+   *  2026-09-02 at the Brain lane's request, on the evidence that six sites
+   *  had already written it by hand (Splash, WizardShell, ErrorBoundary,
+   *  BrainView x3) at 0.04-0.06, because 0.14 reads as a filled surface. */
+  cyanWash: 'rgba(0,213,255,0.04)',
   cyanSoft: 'rgba(0,213,255,0.14)',
   cyanGlow: 'rgba(0,213,255,0.45)',
   purple: '#8D44AE',
@@ -30,6 +38,22 @@ export const color = {
   /** Strong red for ANSI output and high-emphasis destructive states. */
   dangerStrong: '#EF4444',
 } as const;
+
+/**
+ * The ink that goes on a bright, saturated fill — a flat cyan button, an amber
+ * identity badge, a green trim. Near-black, so it clears 12:1 on any of them;
+ * white on a bright fill is the recurring contrast failure this exists to stop
+ * (white on #00BFEF is ~1.9:1).
+ *
+ * One value, one definition, three names' worth of call sites: `textOnCyan`
+ * was the first name for it and is kept as an alias in every theme so the
+ * existing call sites keep working. New code should say `textOnBright`, which
+ * is what it actually means — the ink is a function of the fill's BRIGHTNESS,
+ * not of its hue. Added 2026-09-02 for the Finance lane, which had minted a
+ * local `FINANCIER_BADGE_INK` because the only token for this was named after
+ * a colour its badge is not.
+ */
+export const INK_ON_BRIGHT = '#04141B';
 
 export const font = {
   display: '"Manrope", "Satoshi", -apple-system, BlinkMacSystemFont, sans-serif',
@@ -163,9 +187,18 @@ export const duration = {
  * something to migrate *to*. The 650 raw values are deliberately NOT migrated
  * in this change — a token nobody consumes yet is still the prerequisite for
  * migrating them, and doing both at once would bury the scale in a diff.
+ *
+ * `xxs: 2` was added 2026-09-02 on the same evidence and by the same rule, at
+ * lane R14's request (browser chrome, chip padding). It is not a preference:
+ * counting the tree first, `2` appears in 74 hand-written paddings and gaps
+ * (49 single-property, 25 as the vertical half of a `'2px Npx'` shorthand)
+ * against 40 for `4` by the same grep. Dense chrome — chips, badges, inline
+ * pills — genuinely needs a step below 4, and a scale whose floor is above
+ * what the code reaches for is a scale people step outside of. It keeps the
+ * 2pt grid the bottom of the scale already runs on (4/6/8/10/12).
  */
 export const space = {
-  xs: 4, sm: 6, md: 8, lg: 10, xl: 12, xxl: 16, xxxl: 20, huge: 24,
+  xxs: 2, xs: 4, sm: 6, md: 8, lg: 10, xl: 12, xxl: 16, xxxl: 20, huge: 24,
 } as const;
 
 /**
@@ -233,13 +266,55 @@ export function concentric(outer: number, padding: number): number {
   return Math.max(0, Math.round(outer - padding));
 }
 
+/**
+ * Window-shell geometry — the numbers the CSS shares with AppKit.
+ *
+ * The macOS window runs `titleBarStyle: "Overlay"` + `hiddenTitle` with
+ * `decorations: true`, so the system titlebar is transparent, our HTML runs
+ * edge-to-edge underneath it, and macOS still draws the window's corner and
+ * shadow for free. That makes the top-left corner of the page a shared space:
+ * the traffic lights are native and always composite above everything the
+ * webview draws, so the shell has to leave room for them rather than negotiate.
+ *
+ * These four numbers are that room, and they are load-bearing in both
+ * directions — `ui/desktop/src-tauri/src/chrome.rs` holds the same values as
+ * Rust constants, `tauri.conf.json` holds them again as the only path that
+ * actually applies them (A1a's binding verdict), and `shell.test.ts` fails if
+ * the three copies ever disagree.
+ *
+ * `trafficLights.y` is NOT the distance from the top of the window. AppKit
+ * sizes the titlebar container `buttonSize + y` tall and pins it to the top
+ * edge, while the button keeps its own 9pt origin inside it — so the visible
+ * inset is `y - 9`. y = 22 puts a 14pt button 13pt down, centred in the 40pt
+ * `titlebar` band.
+ *
+ * `rail.collapsed` is 76 rather than the 64 it was before the rail went
+ * full-height: the three window buttons span `x + 60 = 72pt` and now sit
+ * INSIDE the rail, so anything narrower hangs the zoom button over the rail's
+ * edge onto the content pane. That constraint is what fixed x at 12.
+ */
+export const shell = {
+  /** Height of the titlebar band, in the sidebar and over the content alike. */
+  titlebar: 40,
+  /** Native window-control geometry. Mirrors `chrome.rs` / `tauri.conf.json`. */
+  trafficLights: { x: 12, y: 22, buttonSize: 14, spacing: 23 },
+  /** Sidebar rail width, open and collapsed. */
+  rail: { open: 208, collapsed: 76 },
+} as const;
+
+/** Window-left edge to the right edge of the zoom button, in px. */
+export function trafficLightSpan(x: number = shell.trafficLights.x): number {
+  const { spacing, buttonSize } = shell.trafficLights;
+  return x + 2 * spacing + buttonSize;
+}
+
 export const shadow = {
   glow: '0 0 40px rgba(0,213,255,0.25)',
   glowStrong: '0 0 80px rgba(0,213,255,0.4)',
   card: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
 } as const;
 
-export const tokens = { color, font, type, textSize, tabularNums, ease, duration, space, radius, shadow } as const;
+export const tokens = { color, font, type, textSize, tabularNums, ease, duration, space, radius, shadow, shell } as const;
 export type DesignTokens = typeof tokens;
 
 // ── Theme gradients + colors ────────────────────────────────────────
@@ -249,7 +324,7 @@ export type ThemeId = 'dark' | 'aurora' | 'silver';
 export interface ThemeColors {
   bg: string; bgDeeper: string; surface: string; surfaceHi: string;
   border: string; borderHi: string;
-  cyan: string; cyanSoft: string; cyanGlow: string;
+  cyan: string; cyanWash: string; cyanSoft: string; cyanGlow: string;
   purple: string; purpleBright: string; purpleSoft: string; purpleGlow: string;
   text: string; textMuted: string; textDim: string;
   danger: string; dangerStrong: string;
@@ -279,6 +354,9 @@ export interface ThemeColors {
    *  be a fixed dark ink — white/`colors.bg` fails WCAG contrast (and inverts to
    *  near-white on the silver theme). Never use textOnAccent on a flat-cyan fill. */
   textOnCyan: string;
+  /** The same ink as `textOnCyan`, under the name that says what it is for:
+   *  any bright, saturated fill, whatever its hue. Prefer this. */
+  textOnBright: string;
   /** Success semantic */
   success: string;
   /** Warning semantic */
@@ -367,7 +445,7 @@ export interface ThemeGlass { glass: GlassSurface; glassHi: GlassSurface; }
 const DARK_COLORS: ThemeColors = {
   bg: color.bg, bgDeeper: color.bgDeeper, surface: color.surface, surfaceHi: color.surfaceHi,
   border: color.border, borderHi: color.borderHi,
-  cyan: color.cyan, cyanSoft: color.cyanSoft, cyanGlow: color.cyanGlow,
+  cyan: color.cyan, cyanWash: color.cyanWash, cyanSoft: color.cyanSoft, cyanGlow: color.cyanGlow,
   purple: color.purple, purpleBright: color.purpleBright, purpleSoft: color.purpleSoft, purpleGlow: color.purpleGlow,
   text: color.text, textMuted: color.textMuted, textDim: color.textDim,
   danger: color.danger,
@@ -382,7 +460,8 @@ const DARK_COLORS: ThemeColors = {
   userBubbleText: '#FFFFFF',
   inputBg: '#1E2433',
   textOnAccent: '#FFFFFF',
-  textOnCyan: '#04141B',
+  textOnCyan: INK_ON_BRIGHT,
+  textOnBright: INK_ON_BRIGHT,
   success: '#34D399',
   warning: '#FBBF24',
   // 8.6:1 on the dark ground, and a hue nobody mistakes for the amber alarm.
@@ -414,6 +493,9 @@ const SILVER_COLORS: ThemeColors = {
   borderHi: 'rgba(0,191,239,0.40)',  // Cyan focus
   // Accents — brand cyan/violet
   cyan: '#00BFEF',           // Cyan Intelligence
+  // Same step below Soft as the dark theme takes (0.04 x 0.10/0.14), because
+  // silver dials the whole cyan family down by that ratio already.
+  cyanWash: 'rgba(0,191,239,0.03)',
   cyanSoft: 'rgba(0,191,239,0.10)',
   cyanGlow: 'rgba(0,191,239,0.25)',
   purple: '#8B5CFF',         // Violet Memory
@@ -439,7 +521,8 @@ const SILVER_COLORS: ThemeColors = {
   userBubbleText: '#1E2530', // Graphite (BLACK text)
   inputBg: '#EEF2F7',       // Chrome Mist (recessed)
   textOnAccent: '#FFFFFF',
-  textOnCyan: '#04141B',    // Deep ink — ~12:1 on #00BFEF (white would be ~1.9:1)
+  textOnCyan: INK_ON_BRIGHT,  // ~12:1 on #00BFEF (white would be ~1.9:1)
+  textOnBright: INK_ON_BRIGHT,
   success: '#059669',
   warning: '#D97706',
   // Amber-700 — 4.9:1 on white (AA), a step deeper than the warning amber so
@@ -702,10 +785,6 @@ export function setMobiusGlow(v: number) { _set('permagent-mobius-glow', String(
 export type IdleAnim = 'still' | 'breathing' | 'drifting';
 export function getIdleAnim(): IdleAnim { return _get('permagent-idle-anim', 'breathing') as IdleAnim; }
 export function setIdleAnim(v: IdleAnim) { _set('permagent-idle-anim', v); }
-
-// Show Möbius in dashboard hero
-export function getShowHeroMobius(): boolean { return _get('permagent-show-hero-mobius', 'true') === 'true'; }
-export function setShowHeroMobius(v: boolean) { _set('permagent-show-hero-mobius', String(v)); }
 
 // UI density: 'comfortable' | 'default' | 'compact'
 export type UIDensity = 'comfortable' | 'default' | 'compact';

@@ -4,6 +4,7 @@ import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
 import { duration, ease, font, radius, space, textSize, type } from '../../styles/tokens';
 import { useGlass } from '../common/Glass';
+import { Tooltip } from '../common/Tooltip';
 
 /**
  * VoiceOrb — the full-window conversation-mode takeover.
@@ -384,22 +385,22 @@ export function VoiceOrb({
             : (wakeHint ?? 'Listening');
 
   return (
-    <div
-      onClick={onExit}
-      title="Click anywhere to end the conversation"
-      style={{
-        position: 'absolute',
-        inset: 0,
-        zIndex: 60,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: space.xl,
-        cursor: 'pointer',
-        background: `radial-gradient(ellipse at center, ${colors.surfaceHi} 0%, ${colors.bg} 75%)`,
-      }}
-    >
+    <Tooltip content="Click anywhere to end the conversation">
+      <div
+        onClick={onExit}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 60,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: space.xl,
+          cursor: 'pointer',
+          background: `radial-gradient(ellipse at center, ${colors.surfaceHi} 0%, ${colors.bg} 75%)`,
+        }}
+      >
       <div style={{ position: 'relative', width: SIZE, maxWidth: '90%', maxHeight: '60%' }}>
         <canvas
           ref={canvasRef}
@@ -481,5 +482,6 @@ export function VoiceOrb({
         </span>
       </div>
     </div>
+    </Tooltip>
   );
 }

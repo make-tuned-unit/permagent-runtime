@@ -15,8 +15,10 @@
 // that bots are excluded, and how many rows could not be sequenced.
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
+import { FIELD_CLASS, growCard, growLabel } from './growChrome';
+import { CARD_PAD, CARD_R } from './growGeometry';
 import { Button } from '../common/Button';
 import { apiFetch } from '../../lib/api';
 
@@ -227,7 +229,7 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
   const controlStyle: React.CSSProperties = {
     background: colors.bgDeeper, color: colors.text,
     border: `1px solid ${colors.border}`, borderRadius: radius.md,
-    padding: '5px 8px', fontSize: textSize.micro, fontFamily: font.mono,
+    padding: `${space.xs}px ${space.md}px`, fontSize: textSize.micro, fontFamily: font.mono,
   };
   // The builder's controls sit on the same chrome as its selects, so the look
   // is expressed as `--pa-btn-*` rather than inline `background`/`color`: an
@@ -244,11 +246,11 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
 
   return (
     <section style={{
-      background: colors.surface, border: `1px solid ${colors.border}`,
-      borderRadius: radius.lg, padding: 16, display: 'flex', flexDirection: 'column', gap: 10,
+      ...growCard(colors, { r: CARD_R, pad: CARD_PAD }),
+      display: 'flex', flexDirection: 'column', gap: space.lg,
     }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-        <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: space.lg, flexWrap: 'wrap' }}>
+        <h3 style={{ ...growLabel(colors), margin: 0 }}>
           Conversion funnel
         </h3>
         {state === 'ready' && data && entered > 0 && (
@@ -261,11 +263,12 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
       </div>
 
       {/* ── Builder ─────────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
         {steps.map((step, i) => (
-          <div key={`step-${i}`} style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, width: 16 }}>{i + 1}</span>
+          <div key={`step-${i}`} style={{ display: 'flex', gap: space.sm, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ ...growLabel(colors), width: 16 }}>{i + 1}</span>
             <select
+              className={FIELD_CLASS}
               aria-label={`Step ${i + 1} type`}
               value={step.type}
               onChange={(e) => updateStep(i, { type: e.target.value as BuilderStep['type'], value: '' })}
@@ -275,6 +278,7 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
               <option value="path">page</option>
             </select>
             <select
+              className={FIELD_CLASS}
               aria-label={`Step ${i + 1}`}
               value={step.value}
               onChange={(e) => updateStep(i, { value: e.target.value })}
@@ -298,9 +302,10 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
         ))}
       </div>
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: space.md, alignItems: 'center', flexWrap: 'wrap' }}>
         <Button colors={colors} onClick={addStep} disabled={steps.length >= MAX_STEPS} style={buttonVars}>+ Add step</Button>
         <select
+          className={FIELD_CLASS}
           aria-label="Count each step by"
           value={identity}
           onChange={(e) => setIdentity(e.target.value as FunnelIdentity)}
@@ -349,12 +354,12 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
               No {unit} entered this funnel in the last {DAYS} days.
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
               {data.steps.map((s, i) => {
                 const isBiggestDrop = data.biggestDropStep === i + 1;
                 const median = formatDuration(s.medianSecondsFromPrev);
                 return (
-                  <div key={`${s.label}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div key={`${s.label}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
                     <div style={{
                       width: 140, fontSize: textSize.micro, color: colors.textMuted, textAlign: 'right',
                       flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -364,9 +369,12 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
                       <div style={{
                         width: `${Math.max(s.sessions > 0 ? 4 : 0, (s.sessions / entered) * 100)}%`,
                         height: '100%',
-                        background: isBiggestDrop
-                          ? colors.warning
-                          : `linear-gradient(90deg, ${colors.cyan}, ${colors.purple})`,
+                        // One tint. The bar was a cyan-to-purple gradient,
+                        // which reads as a second dimension a magnitude bar
+                        // does not have — the warning fill on the biggest drop
+                        // is the one colour here that MEANS something, and a
+                        // decorative gradient beside it dilutes exactly that.
+                        background: isBiggestDrop ? colors.warning : colors.cyan,
                         borderRadius: radius.sm,
                         opacity: isBiggestDrop ? 0.75 : 0.9,
                       }} />
@@ -376,7 +384,7 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
                       fontSize: textSize.caption, color: colors.text, fontVariantNumeric: 'tabular-nums',
                     }}>{s.sessions.toLocaleString()}</div>
                     <div style={{
-                      minWidth: 190, flexShrink: 0, fontSize: 10, fontFamily: font.mono,
+                      minWidth: 190, flexShrink: 0, fontSize: textSize.micro, fontFamily: font.mono,
                       color: isBiggestDrop ? colors.warning : colors.textDim,
                     }}>
                       {i === 0
@@ -395,7 +403,7 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
           )}
           {/* A denominator nobody can name is not a measurement. Say what a bar
               counts, and what was filtered out of it. */}
-          <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, lineHeight: 1.5 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, lineHeight: 1.5 }}>
             {identityNote(data.identity)}
             {data.excludedBots > 0 && (
               <> {data.excludedBots.toLocaleString()} bot row{data.excludedBots === 1 ? '' : 's'} excluded.</>

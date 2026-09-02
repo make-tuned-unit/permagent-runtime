@@ -195,7 +195,10 @@ describe('space scale', () => {
   it('is the ramp the code already writes by hand', () => {
     // 650 raw gaps and paddings, measured, converged on this without anyone
     // agreeing to it — a 4pt subdivision of Apple's 8pt grid.
-    expect(space).toEqual({ xs: 4, sm: 6, md: 8, lg: 10, xl: 12, xxl: 16, xxxl: 20, huge: 24 });
+    // `xxs: 2` joined 2026-09-02 by the same rule that built the rest: 74
+    // hand-written 2px paddings/gaps in the tree (vs 40 for 4) — dense chrome
+    // reaching for a step the scale did not have. See tokens.ts.
+    expect(space).toEqual({ xxs: 2, xs: 4, sm: 6, md: 8, lg: 10, xl: 12, xxl: 16, xxxl: 20, huge: 24 });
   });
 
   it('is strictly ascending, with no step wider than the one before it', () => {

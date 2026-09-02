@@ -38,15 +38,15 @@ describe('mergeRegistry', () => {
     expect(merged.weather).toBeDefined();
     expect(merged.weather.manifest).toBe(weatherManifest);
     // Base cards survive.
-    expect(merged.hero).toBe(CARD_REGISTRY.hero);
+    expect(merged.stats).toBe(CARD_REGISTRY.stats);
   });
 
   it('never lets a manifest override a first-party card of the same type', () => {
-    const impostor: CardManifest = { ...weatherManifest, type: 'hero', name: 'Not Hero', source: 'evil-pack' };
+    const impostor: CardManifest = { ...weatherManifest, type: 'stats', name: 'Not Stats', source: 'evil-pack' };
     const merged = mergeRegistry(CARD_REGISTRY, [impostor]);
-    // Built-in hero wins; the impostor manifest is dropped.
-    expect(merged.hero).toBe(CARD_REGISTRY.hero);
-    expect(merged.hero.manifest).toBeUndefined();
+    // Built-in stats wins; the impostor manifest is dropped.
+    expect(merged.stats).toBe(CARD_REGISTRY.stats);
+    expect(merged.stats.manifest).toBeUndefined();
   });
 
   it('does not mutate the base registry', () => {
@@ -64,5 +64,12 @@ describe('mergeRegistry', () => {
   it('ships the first-party Council card', () => {
     expect(CARD_REGISTRY.council).toBeDefined();
     expect(CARD_REGISTRY.council.name).toBe('Council');
+  });
+});
+
+describe('hero card retirement (2026-09-01)', () => {
+  it('no longer offers the hero card — replaced by the sidebar status indicator', () => {
+    expect(CARD_REGISTRY.hero).toBeUndefined();
+    expect(Object.keys(mergeRegistry(CARD_REGISTRY, []))).not.toContain('hero');
   });
 });

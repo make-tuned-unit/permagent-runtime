@@ -56,7 +56,9 @@ const LANE_OWNED: Record<string, { max: number; lane: string }> = {
   // Canvas overlay legend, shared by the world and brain canvases. It follows
   // whichever of those two lands first; it is not a screen of its own.
   'components/common/CanvasLegend.tsx': { max: 2, lane: 'R13/R16 canvas overlays' },
-  'components/projects/PersonDetailModal.tsx': { max: 2, lane: 'R12 Projects' },
+  // PersonDetailModal's two are GONE (R12): the drawer was a hand-rolled
+  // second modal, and it is a `DetailModal placement="contained"` now — a
+  // modal body is content by Apple's own list, so it is simply opaque.
   'components/chat/SessionPicker.tsx': { max: 1, lane: "R4' chat dock/launcher" },
   // MeetingRecorder's two are GONE (R4' voice surfaces): the floating panel
   // takes `glassSurface()`, and the picker modal — a modal BODY, which is

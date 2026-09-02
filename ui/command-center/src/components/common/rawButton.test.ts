@@ -113,9 +113,16 @@ const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {
     why: 'the whole todo row is the control: a two-line title and provenance block',
   },
   'components/notifications/NotificationHost.tsx': {
-    count: 2,
-    why: 'the tray row and the toast are both the control: title, body and '
-      + 'timestamp stacked by the button itself',
+    count: 1,
+    why: 'the tray row is the control: title, body and timestamp stacked by '
+      + 'the button itself (R5: the toast moved to its own file, Toast.tsx, '
+      + 'below)',
+  },
+  'components/notifications/Toast.tsx': {
+    count: 1,
+    why: 'the toast is the control: title and body stacked by the button '
+      + 'itself, plus its own spring-in/out and dismiss timer — split out of '
+      + 'NotificationHost.tsx (R5) so that behaviour is testable on its own',
   },
   'components/people/PersonFace.tsx': {
     count: 1,

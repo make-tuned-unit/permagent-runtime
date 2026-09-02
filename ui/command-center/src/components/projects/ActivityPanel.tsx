@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'r
 import { FiActivity, FiBookOpen, FiCheckSquare, FiFileText, FiRefreshCw } from 'react-icons/fi';
 import { api, apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font, textSize } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -28,8 +28,12 @@ type ActivityItem = {
 };
 
 export function ActivityPanel({ project }: { project: Project }) {
-  const { colors, theme } = useTheme();
-  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const { colors } = useTheme();
+  const rowVeil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
   const projectsRev = useCommandCenter(s => s.projectsRev);
   const [memories, setMemories] = useState<ProjectMemory[]>([]);
   const [notes, setNotes] = useState<ProjectNote[]>([]);
@@ -117,7 +121,7 @@ export function ActivityPanel({ project }: { project: Project }) {
       {status === 'ready' && items.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {items.map(item => (
-            <div key={item.id} style={{ display: 'flex', gap: 9, padding: '8px 10px', borderRadius: 7, background: rowVeil, border: `1px solid ${colors.border}` }}>
+            <div key={item.id} style={{ display: 'flex', gap: 9, padding: '8px 10px', borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}` }}>
               <span style={{ color: colors.cyan, marginTop: 2, flexShrink: 0 }}>{icon(item.kind)}</span>
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>{item.title}</div>
