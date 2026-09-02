@@ -2,7 +2,7 @@
 // Mounted once at App root. Every item is a real daemon event (see
 // lib/notifications.ts); clicking one deep-links to its surface.
 
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useState } from 'react';
 import {
   useNotifications,
   markAllRead,
@@ -11,12 +11,15 @@ import {
   type AppNotification,
 } from '../../lib/notifications';
 import { navigateToTool, useCommandCenter } from '../../lib/store';
-import { font, radius, duration, ease, textSize } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import { Button } from '../common/Button';
 import { useGlass } from '../common/Glass';
+import { ToastCard } from './Toast';
 
 const TOAST_MS = 6000;
+/** Never more than this many stacked at once — a wall of toasts is its own
+ *  kind of noise. */
+const MAX_TOASTS = 3;
 
 export function NotificationHost() {
   const { colors } = useTheme();
@@ -35,22 +38,43 @@ export function NotificationHost() {
   const { items } = useNotifications();
   const open = useTrayOpen();
   const [toastIds, setToastIds] = useState<string[]>([]);
+  const pushBrowserOverlay = useCommandCenter((s) => s.pushBrowserOverlay);
+  const popBrowserOverlay = useCommandCenter((s) => s.popBrowserOverlay);
 
   // Newest item becomes a transient toast (skip when the tray is open).
-  // One dismissal timer PER toast, never cancelled by a newer arrival: the
-  // old effect-cleanup cleared the previous toast's timer whenever newestId
-  // changed, so any toast followed within 6s by another had no timer left
-  // and sat on screen forever with no way to dismiss it.
+  // Each toast owns its own dismiss timer now (`ToastCard`), so an arrival
+  // never has to reach into a sibling's countdown — the old bug this
+  // replaced was exactly that: a shared effect-cleanup that cancelled the
+  // PREVIOUS toast's timer whenever a new one arrived, leaving it on screen
+  // forever with no way to dismiss it.
   const newestId = items[0]?.id;
   useEffect(() => {
     if (!newestId || open) return;
-    setToastIds((prev) => (prev.includes(newestId) ? prev : [newestId, ...prev].slice(0, 3)));
-    setTimeout(
-      () => setToastIds((prev) => prev.filter((id) => id !== newestId)),
-      TOAST_MS,
-    );
+    setToastIds((prev) => (prev.includes(newestId) ? prev : [newestId, ...prev].slice(0, MAX_TOASTS)));
   }, [newestId, open]);
 
+  // The toast IS the browser-overlay-hiding case `pushBrowserOverlay` exists
+  // for: the native browser webview composites above every DOM layer
+  // regardless of z-index (the "corner-cede trap" — see MeetingRecorder's
+  // picker and ProjectChip's popover for the same fix), so a toast that lands
+  // while the in-app browser is full-bleed would otherwise render invisibly
+  // underneath it. `lib/notifications.ts` flagged this exact gap when the
+  // download toast shipped; this closes it for every toast, not just that
+  // kind. The tray gets the same treatment — it can sit open indefinitely
+  // over whatever workspace is showing, browser included.
+  const hasToasts = toastIds.length > 0;
+  useEffect(() => {
+    if (!hasToasts) return;
+    pushBrowserOverlay();
+    return () => popBrowserOverlay();
+  }, [hasToasts, pushBrowserOverlay, popBrowserOverlay]);
+  useEffect(() => {
+    if (!open) return;
+    pushBrowserOverlay();
+    return () => popBrowserOverlay();
+  }, [open, pushBrowserOverlay, popBrowserOverlay]);
+
+  // Called by a ToastCard once its own exit spring has finished playing.
   const dismissToast = (id: string) =>
     setToastIds((prev) => prev.filter((tid) => tid !== id));
 
@@ -96,7 +120,9 @@ export function NotificationHost() {
           position: 'fixed', bottom: 96, left: 60, zIndex: 90, width: 320,
           maxHeight: '60vh', overflowY: 'auto',
           ...glass,
-          border: `1px solid ${colors.borderHi}`, borderRadius: radius.lg,
+          // D4: the tray is the same floating-glass class as a toast, so it
+          // takes the same outer step — not the old, uncoordinated `radius.lg`.
+          border: `1px solid ${colors.borderHi}`, borderRadius: radius.glass,
           // The material's own shadow is a specular rim plus a close ambient;
           // the tray's existing float height is kept by composing the theme's
           // elevation on top of it rather than replacing it.
@@ -111,7 +137,14 @@ export function NotificationHost() {
             /* Left as a raw <button> on purpose: this row IS the card — three
                stacked blocks (title, body, timestamp) laid out by the button
                itself. `.pa-btn`'s inline-flex + centring would turn them into
-               one centred row. */
+               one centred row.
+               `radius.md`, NOT a `concentric()` derivation off the tray's own
+               radius: a scrolling list of independent rows is content sitting
+               INSIDE the glass shell (D1 — "list rows are content"), the same
+               way a card is content inside a glass sidebar. Concentricity is
+               for chrome nested directly against the glass edge (the toast's
+               dismiss button below); it isn't owed to everything a glass
+               container happens to contain. */
             <button key={n.id} onClick={() => activate(n)} style={{
               display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
               padding: '9px 10px', borderRadius: radius.md, marginBottom: 2,
@@ -130,7 +163,9 @@ export function NotificationHost() {
         </div>
       )}
 
-      {/* Toasts */}
+      {/* Toasts. Each card owns its own spring in/out, hover-pause and
+          Escape-dismiss (`ToastCard`) — this is just the stack: newest on
+          top, a fixed gap between cards, nothing else. */}
       <div style={{
         // Top-right (2026-07-27): the bottom-right corner belongs to the
         // Chat-with-Henry pill, which was overlapping toasts.
@@ -138,45 +173,9 @@ export function NotificationHost() {
         display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none',
       }}>
         {toasts.map((n) => (
-          <div key={n.id} style={{ position: 'relative', pointerEvents: 'auto', width: 300 }}>
-            {/* Same reasoning as the tray row: the toast IS the button, a
-                stacked title + body block, and centring it would be wrong. */}
-            <button
-              onClick={() => { dismissToast(n.id); activate(n); }}
-              style={{
-                textAlign: 'left', cursor: 'pointer', width: '100%',
-                ...glass,
-                border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
-                boxShadow: `${glass.boxShadow}, ${colors.elevationFloating}`,
-                padding: '10px 28px 10px 12px',
-                // A toast arriving is a spring, not a ramp: `snappy` settles in
-                // 240ms with a 0.6% overshoot, which reads as the thing landing.
-                color: colors.text, animation: `pa-toast-in ${duration.snappy}ms ${ease.snappy}`,
-              }}
-            >
-              <div style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600, color: colors.cyan }}>{n.title}</div>
-              {n.body && <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 2 }}>{n.body}</div>}
-            </button>
-            <Button
-              colors={colors}
-              variant="bare"
-              onClick={(e) => { e.stopPropagation(); dismissToast(n.id); }}
-              aria-label="Dismiss notification"
-              title="Dismiss"
-              style={{
-                '--pa-btn-fg': colors.textDim,
-                '--pa-btn-fg-hover': colors.text,
-                '--pa-btn-pad': '0',
-                position: 'absolute', top: 6, right: 6, width: 18, height: 18,
-                fontSize: textSize.small, lineHeight: 1,
-              } as CSSProperties}
-            >
-              ×
-            </Button>
-          </div>
+          <ToastCard key={n.id} notification={n} ttlMs={TOAST_MS} onDismiss={dismissToast} onActivate={activate} />
         ))}
       </div>
-      <style>{`@keyframes pa-toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }`}</style>
     </>
   );
 }
