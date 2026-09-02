@@ -74,17 +74,26 @@ case "$PROFILE" in
   release) CARGO_PROFILE_FLAG=(--release) ;;
   *) echo "[test-daemon] unknown profile '$PROFILE' (use debug or release)" >&2; exit 2 ;;
 esac
+# The default (debug) profile leaves CARGO_PROFILE_FLAG EMPTY, and macOS ships
+# bash 3.2, where `"${empty[@]}"` under `set -u` is an "unbound variable" error
+# — so this script aborted before running a single test on its own default
+# path. Every expansion of it below therefore uses the `${a[@]+"${a[@]}"}`
+# guard, which yields zero arguments when the array is empty.
+#
+# NOT `"${a[@]:-}"`: in bash 3.2 that expands an empty array to one EMPTY
+# STRING argument, which cargo takes as a second test filter and either runs
+# the wrong set or rejects the invocation. Verified both ways before choosing.
 
 PROFILE_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$ROOT/target}}/$PROFILE"
 FILTER="${1:-}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   # Only macOS needs the signing dance; elsewhere plain cargo works.
-  exec cargo test -p permagent-daemon "${CARGO_PROFILE_FLAG[@]}" --lib --tests ${FILTER:+"$FILTER"}
+  exec cargo test -p permagent-daemon ${CARGO_PROFILE_FLAG[@]+"${CARGO_PROFILE_FLAG[@]}"} --lib --tests ${FILTER:+"$FILTER"}
 fi
 
 echo "[test-daemon] building test binary ($PROFILE)…"
-cargo build -p permagent-daemon "${CARGO_PROFILE_FLAG[@]}" --tests
+cargo build -p permagent-daemon ${CARGO_PROFILE_FLAG[@]+"${CARGO_PROFILE_FLAG[@]}"} --tests
 
 echo "[test-daemon] ad-hoc signing dylibs in $PROFILE_DIR"
 shopt -s nullglob
@@ -103,4 +112,4 @@ echo "[test-daemon] signed $signed dylib(s)"
 export DYLD_LIBRARY_PATH="$PROFILE_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 
 echo "[test-daemon] running tests in $PROFILE${FILTER:+ (filter: $FILTER)}"
-exec cargo test -p permagent-daemon "${CARGO_PROFILE_FLAG[@]}" --lib --tests ${FILTER:+"$FILTER"}
+exec cargo test -p permagent-daemon ${CARGO_PROFILE_FLAG[@]+"${CARGO_PROFILE_FLAG[@]}"} --lib --tests ${FILTER:+"$FILTER"}
