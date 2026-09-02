@@ -9,15 +9,23 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { ease, font, radius, textSize } from '../../styles/tokens';
+import { duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { ViewHeader } from '../common/ViewHeader';
 import { Button } from '../common/Button';
+import { Tooltip } from '../common/Tooltip';
 import type { Project } from '../projects/types';
 import type { SocialCard } from './calendarPosts';
-import { segmentedTab } from './growStyles';
+import { SEGMENT_STRIP_PAD, SEGMENT_STRIP_RADIUS, segmentedTab } from './growStyles';
+import {
+  FIELD_CLASS,
+  GrowChrome,
+  LINK_CLASS,
+  growChromeVars,
+  growField,
+} from './growChrome';
 import { ErrorState, LoadingState } from './GrowStateBlocks';
 import { GrowResults } from './GrowResults';
 import { GrowActions } from './GrowActions';
@@ -33,6 +41,7 @@ const SWAP_FADE_MS = 140;
 /** How long the outgoing height stays pinned after the swap, so a panel that
  *  is still fetching cannot collapse the scroll container under the cursor. */
 const SWAP_SETTLE_MS = 600;
+
 
 // Actions leads: the point of collecting analytics is deciding what to do.
 // Results sits next to it so "what I did" is as reachable as "what to do".
@@ -280,33 +289,50 @@ export function GrowView() {
   }, [activeId, setPendingProjectNavigation]);
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
-      {/* Header + project switcher. The title/subtitle come from ViewHeader so
-          Grow wears the same header as Home, Projects, Automate and Build —
-          this view used to hand-roll a 16px title against the ramp's 20px
-          `type.title`, which read as a visibly smaller heading. The wrapper
-          exists only to carry Grow's brand ribbon, which ViewHeader has no
-          slot for; it must stay `position: relative` for the ribbon to anchor. */}
-      <div style={{ position: 'relative', flexShrink: 0 }}>
-        <div style={{ position: 'absolute', left: 0, right: 0, bottom: -1, height: 2, background: `linear-gradient(90deg, ${colors.cyan}, ${colors.purple})`, opacity: 0.5, zIndex: 1 }} />
+    <div
+      data-grow-chrome=""
+      style={{
+        width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+        background: gradient.workspace, color: colors.text, fontFamily: font.body,
+        ...growChromeVars(colors),
+      }}
+    >
+      <GrowChrome />
+      {/* Header + project switcher, from ViewHeader so Grow wears the same
+          header as Home, Projects, Automate and Build.
+
+          THE HARD SCROLL EDGE (D11). Apple assigns `soft` to iOS and `hard`
+          "mostly used on macOS": under pinned chrome the boundary is "a linear,
+          nearly opaque boundary between pinned controls and scrolling content",
+          not a blurred gradient. The header used to be transparent over the
+          workspace gradient, so the panel's first card showed faintly through
+          it and the boundary was a hairline over a see-through bar. An opaque
+          fill plus that one hairline IS the hard edge — one per view, as the
+          rule requires, and nothing else here is doing the separating.
+
+          The brand ribbon that used to sit on this wrapper is gone: a 2px
+          cyan-to-purple gradient across the header is decoration standing in
+          for hierarchy (D13) and a second tint competing with the view's one
+          accented action (D8). It said nothing the title does not. */}
+      <div style={{ flexShrink: 0, background: colors.bg, position: 'relative', zIndex: 1 }}>
         <ViewHeader
           title="Grow"
           subtitle={
-            <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: space.lg, flexWrap: 'wrap' }}>
               <span>Take {active ? active.name : 'your project'} to market — {agentName} drafts with the project's real context.</span>
               {active?.siteUrl && (
-                <a href={active.siteUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>site ↗</a>
+                <a href={active.siteUrl} className={LINK_CLASS} target="_blank" rel="noreferrer" style={{ color: colors.cyan }}>site ↗</a>
               )}
               {active?.repoUrl && (
-                <a href={active.repoUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>repo ↗</a>
+                <a href={active.repoUrl} className={LINK_CLASS} target="_blank" rel="noreferrer" style={{ color: colors.cyan }}>repo ↗</a>
               )}
               {active && (
+                <Tooltip content={`Open ${active.name} in Projects`} placement="bottom">
                 <Button
                   colors={colors}
                   variant="bare"
                   type="button"
                   onClick={openInProjects}
-                  title={`Open ${active.name} in Projects`}
                   style={{
                     '--pa-btn-fg': colors.cyan,
                     '--pa-btn-fg-hover': colors.cyan,
@@ -317,13 +343,14 @@ export function GrowView() {
                     lineHeight: 'inherit',
                   } as CSSProperties}
                 >open project ↗</Button>
+                </Tooltip>
               )}
               {/* Always rendered so the count fades in rather than popping the
                   header line around on every project change. */}
               <span style={{
                 color: colors.textDim,
                 opacity: ctx ? 1 : 0,
-                transition: reduceMotion ? undefined : `opacity 220ms ${ease.out}`,
+                transition: reduceMotion ? undefined : `opacity ${duration.smooth}ms ${ease.smooth}`,
               }}>
                 {ctx && `${ctx.goals} ${ctx.goals === 1 ? 'goal' : 'goals'} · ${ctx.people} ${ctx.people === 1 ? 'person' : 'people'}`}
               </span>
@@ -331,7 +358,11 @@ export function GrowView() {
           }
           actions={<>
         {/* VIEW axis — segmented tab toggle (mirrors the Kanban/overview toggle) */}
-        <div role="tablist" aria-label="Grow view" style={{ display: 'flex', gap: 2, background: colors.bgDeeper, borderRadius: radius.md, padding: 2 }}>
+        {/* The strip is the container and each tab is its child, so the tab's
+            radius is the strip's minus the strip's padding — `concentric()`,
+            not a second number picked by eye (D4). `segmentedTab` derives it
+            from the same two values. */}
+        <div role="tablist" aria-label="Grow view" style={{ display: 'flex', gap: SEGMENT_STRIP_PAD, background: colors.bgDeeper, borderRadius: SEGMENT_STRIP_RADIUS, padding: SEGMENT_STRIP_PAD }}>
           {LENSES.map((l) => {
             const selected = lens === l;
             return (
@@ -360,10 +391,8 @@ export function GrowView() {
           value={pendingId ?? activeId ?? ''}
           onChange={(e) => switchProject(e.target.value)}
           aria-label="Select project"
-          style={{
-            background: colors.bgDeeper, color: colors.text, border: `1px solid ${colors.border}`,
-            borderRadius: radius.md, padding: '6px 10px', fontSize: textSize.small, fontFamily: font.body,
-          }}
+          className={FIELD_CLASS}
+          style={{ ...growField(colors), borderRadius: radius.md, fontSize: textSize.small }}
         >
           {/* The shared selection can point at a project Grow doesn't track.
               An unlisted value would render the switcher blank, which reads as
@@ -390,11 +419,11 @@ export function GrowView() {
           aria-label={`${lens} view`}
           aria-busy={swapping}
           style={{
-            flex: 1, overflowY: 'auto', padding: '20px 24px',
-            display: 'flex', flexDirection: 'column', gap: 20,
+            flex: 1, overflowY: 'auto', padding: `${space.xxxl}px ${space.huge}px`,
+            display: 'flex', flexDirection: 'column', gap: space.xxxl,
             minHeight: pinnedHeight,
             opacity: swapping ? 0 : 1,
-            transition: reduceMotion ? undefined : `opacity ${SWAP_FADE_MS}ms ${ease.out}`,
+            transition: reduceMotion ? undefined : `opacity ${SWAP_FADE_MS}ms ${ease.smooth}`,
           }}
         >
           {/* Keyed for the same reason the analytics panels are: the load
@@ -429,7 +458,7 @@ export function GrowView() {
           Create a project in the Projects tab, then grow it here.
         </div>
       ) : (
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: colors.textDim, fontSize: textSize.small, textAlign: 'center', padding: '0 24px', lineHeight: 1.6 }}>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: colors.textDim, fontSize: textSize.small, textAlign: 'center', padding: `0 ${space.huge}px`, lineHeight: 1.6 }}>
           The project you have open isn't tracked here — Grow skips archived
           projects. Pick one from the switcher above.
         </div>

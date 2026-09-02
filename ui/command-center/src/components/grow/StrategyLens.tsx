@@ -8,13 +8,16 @@
 
 import { useState } from 'react';
 import type { CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import type { IconType } from 'react-icons';
 import { FiCalendar, FiEdit3, FiShare2, FiTarget, FiUsers, FiZap } from 'react-icons/fi';
 import { Button } from '../common/Button';
+import { Tooltip } from '../common/Tooltip';
 import type { Project } from '../projects/types';
 import { growAccent, growBare, growChip } from './growStyles';
+import { FIELD_CLASS, growCard, growField, growLabel } from './growChrome';
+import { CARD_INNER_R, CARD_PAD, CARD_R } from './growGeometry';
 import {
   PILLARS,
   brandPrompt,
@@ -26,6 +29,7 @@ import {
   type ProjectBrand,
   type SavedPillar,
 } from './growStrategy';
+
 
 /**
  * The lens itself. `send` is GrowView's one-click hand-off to the chat dock —
@@ -42,16 +46,17 @@ export function StrategyLens({
 }) {
   return (
     <section>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '0 0 12px' }}>
-        <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Go-to-market strategy</h3>
-        <Button
-          colors={colors}
-          onClick={() => send(runAllPrompt(active.name))}
-          title={`${agentName} researches every pillar and fills these cards with the results`}
-          style={{ ...growAccent(colors, '6px 14px'), '--pa-btn-weight': 600, fontSize: textSize.caption } as CSSProperties}
-        >✦ Generate</Button>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: `0 0 ${space.xl}px` }}>
+        <h3 style={{ ...growLabel(colors), margin: 0 }}>Go-to-market strategy</h3>
+        <Tooltip content={`${agentName} researches every pillar and fills these cards with the results`} placement="left">
+          <Button
+            colors={colors}
+            onClick={() => send(runAllPrompt(active.name))}
+            style={{ ...growAccent(colors, `${space.sm}px ${space.xxl}px`), '--pa-btn-weight': 600, fontSize: textSize.caption } as CSSProperties}
+          >✦ Generate</Button>
+        </Tooltip>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: space.xl }}>
         {PILLARS.map((pillar) => (
           <PillarCard
             key={pillar.key}
@@ -129,16 +134,13 @@ function PillarCard({
     }
   };
 
+  // Opaque, no blur (D1). This is a card — a bordered box with a label, a body
+  // and a save state, sitting in the page's flow. Cards are content, and Apple
+  // keeps glass off the content layer. Elevation comes from the fill and the
+  // hairline, which is where it should come from.
   const shell: CSSProperties = {
-    // Opaque, blur deleted (D1). This is a card — a bordered box with a label,
-    // a body and a save state, sitting in the page's flow. Cards are content,
-    // and Apple keeps glass off the content layer: "Don't use Liquid Glass in
-    // the content layer." Its elevation already comes from the border and the
-    // fill, which is where it should come from.
-    background: colors.surface,
-    border: `1px solid ${saved ? colors.borderHi : colors.border}`,
-    borderRadius: radius.lg, padding: 16,
-    display: 'flex', flexDirection: 'column', gap: 10, minHeight: 120,
+    ...growCard(colors, { r: CARD_R, pad: CARD_PAD, accent: !!saved }),
+    display: 'flex', flexDirection: 'column', gap: space.lg, minHeight: 120,
   };
 
   if (editing) {
@@ -153,12 +155,12 @@ function PillarCard({
           style={{
             width: '100%', resize: 'vertical', fontSize: textSize.caption, lineHeight: 1.5,
             fontFamily: font.body, color: colors.text, background: 'transparent',
-            border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: 8,
+            border: `1px solid ${colors.border}`, borderRadius: CARD_INNER_R, padding: space.md,
             outline: 'none',
           }}
         />
         {saveError && <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't save — try again.</span>}
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: space.md }}>
           <Button colors={colors} onClick={() => commit()} disabled={saving} style={{ ...growAccent(colors), '--pa-btn-weight': 600 } as CSSProperties}>
             {saving ? 'Saving…' : 'Save'}
           </Button>
@@ -174,17 +176,18 @@ function PillarCard({
 
   return (
     <div style={shell}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
         <PillarIcon size={15} style={{ flexShrink: 0 }} color={saved ? colors.cyan : colors.textMuted} />
         <span style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text, flex: 1 }}>{label}</span>
         {saved && (
-          <Button
-            colors={colors}
-            variant="bare"
-            onClick={() => { setDraft(saved.content); setSaveError(false); setEditing(true); }}
-            title={saved.updated_at ? `Saved ${new Date(saved.updated_at).toLocaleString()}` : 'Edit'}
-            style={{ ...growBare(colors), fontSize: 10 }}
-          >Edit</Button>
+          <Tooltip content={saved.updated_at ? `Saved ${new Date(saved.updated_at).toLocaleString()}` : 'Edit'}>
+            <Button
+              colors={colors}
+              variant="bare"
+              onClick={() => { setDraft(saved.content); setSaveError(false); setEditing(true); }}
+              style={{ ...growBare(colors), fontSize: textSize.micro }}
+            >Edit</Button>
+          </Tooltip>
         )}
       </div>
 
@@ -196,9 +199,9 @@ function PillarCard({
           }}>{saved.content}</div>
 
           {saved.points && saved.points.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
               {saved.points.map((pt, i) => (
-                <div key={i} style={{ display: 'flex', gap: 7, fontSize: 11.5, lineHeight: 1.45 }}>
+                <div key={i} style={{ display: 'flex', gap: space.sm, fontSize: textSize.caption, lineHeight: 1.45 }}>
                   <span style={{ color: colors.cyan, flexShrink: 0 }}>▸</span>
                   <span style={{ color: colors.textMuted, overflowWrap: 'break-word', minWidth: 0 }}>
                     <span style={{ color: colors.text, fontWeight: 600 }}>{pt.label}</span>
@@ -210,16 +213,16 @@ function PillarCard({
           )}
 
           {saved.metrics && saved.metrics.length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 'auto' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm, marginTop: 'auto' }}>
               {saved.metrics.map((m, i) => (
                 <span key={i} title={m.label} style={{
                   // Chips must never exceed the card: wrap long label·value
                   // pairs inside the pill instead of bleeding across the grid.
-                  fontSize: 10.5, fontFamily: font.mono, lineHeight: 1.4,
+                  fontSize: textSize.micro, fontFamily: font.mono, lineHeight: 1.4,
                   maxWidth: '100%', overflowWrap: 'anywhere',
                   color: colors.cyan, background: colors.cyanSoft,
-                  border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
-                  padding: '3px 8px',
+                  border: `1px solid ${colors.borderHi}`, borderRadius: CARD_INNER_R,
+                  padding: `${space.xs}px ${space.md}px`,
                 }}>
                   <span style={{ color: colors.textMuted }}>{m.label} · </span>{m.value}
                 </span>
@@ -253,26 +256,22 @@ function BrandCard({
   const [saving, setSaving] = useState(false);
   const filled = !!(brand.voice || brand.origin || brand.bg);
   const shell: CSSProperties = {
-    background: colors.surface, border: `1px solid ${filled ? colors.borderHi : colors.border}`,
-    borderRadius: radius.lg, padding: 16, display: 'flex', flexDirection: 'column', gap: 10, minHeight: 120,
+    ...growCard(colors, { r: CARD_R, pad: CARD_PAD, accent: filled }),
+    display: 'flex', flexDirection: 'column', gap: space.lg, minHeight: 120,
   };
-  const field: CSSProperties = {
-    width: '100%', fontSize: textSize.caption, fontFamily: font.body, color: colors.text,
-    background: colors.bgDeeper, border: `1px solid ${colors.border}`, borderRadius: radius.sm,
-    padding: '6px 8px', boxSizing: 'border-box',
-  };
+  const field: CSSProperties = { ...growField(colors), width: '100%', borderRadius: CARD_INNER_R };
   if (editing) {
     return (
       <div style={shell}>
         <div style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>Brand</div>
-        <textarea value={draft.voice} onChange={(e) => setDraft({ ...draft, voice: e.target.value })} placeholder="Voice" rows={3} style={field} />
-        <textarea value={draft.origin} onChange={(e) => setDraft({ ...draft, origin: e.target.value })} placeholder="Why this was built" rows={3} style={field} />
-        <div style={{ display: 'flex', gap: 6 }}>
-          <input value={draft.bg} onChange={(e) => setDraft({ ...draft, bg: e.target.value })} placeholder="#bg" aria-label="Background hex" style={field} />
-          <input value={draft.fg} onChange={(e) => setDraft({ ...draft, fg: e.target.value })} placeholder="#fg" aria-label="Foreground hex" style={field} />
-          <input value={draft.accent} onChange={(e) => setDraft({ ...draft, accent: e.target.value })} placeholder="#accent" aria-label="Accent hex" style={field} />
+        <textarea value={draft.voice} onChange={(e) => setDraft({ ...draft, voice: e.target.value })} placeholder="Voice" rows={3} className={FIELD_CLASS} style={field} />
+        <textarea value={draft.origin} onChange={(e) => setDraft({ ...draft, origin: e.target.value })} placeholder="Why this was built" rows={3} className={FIELD_CLASS} style={field} />
+        <div style={{ display: 'flex', gap: space.sm }}>
+          <input value={draft.bg} onChange={(e) => setDraft({ ...draft, bg: e.target.value })} placeholder="#bg" aria-label="Background hex" className={FIELD_CLASS} style={field} />
+          <input value={draft.fg} onChange={(e) => setDraft({ ...draft, fg: e.target.value })} placeholder="#fg" aria-label="Foreground hex" className={FIELD_CLASS} style={field} />
+          <input value={draft.accent} onChange={(e) => setDraft({ ...draft, accent: e.target.value })} placeholder="#accent" aria-label="Accent hex" className={FIELD_CLASS} style={field} />
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: space.md }}>
           {/* Returning the save promise instead of dropping it on the floor is
               what buys the spinner and the tick — the round trip is the thing
               the user is waiting on. */}
@@ -301,7 +300,7 @@ function BrandCard({
   }
   return (
     <div style={shell}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
         <div style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>Brand</div>
         <div style={{ flex: 1 }} />
         <Button colors={colors} type="button" onClick={onAsk} style={growChip()}>Ask {agentName}</Button>
@@ -311,9 +310,9 @@ function BrandCard({
         <>
           {brand.voice && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>{brand.voice}</div>}
           {brand.origin && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>{brand.origin}</div>}
-          <div style={{ display: 'flex', gap: 6 }}>
+          <div style={{ display: 'flex', gap: space.sm }}>
             {[['bg', brand.bg], ['fg', brand.fg], ['accent', brand.accent]].filter(([, v]) => v).map(([k, v]) => (
-              <span key={k} style={{ fontSize: 10, fontFamily: font.mono, color: colors.textDim }}>{k} {v}</span>
+              <span key={k} style={{ fontSize: textSize.micro, fontFamily: font.mono, color: colors.textDim }}>{k} {v}</span>
             ))}
           </div>
         </>

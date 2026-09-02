@@ -7,11 +7,13 @@
  * honest loading / error / empty states.
  */
 
-import { font, radius, textSize } from '../../styles/tokens';
+import { radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { useCommandCenter } from '../../lib/store';
 import { Button } from '../common/Button';
 import { growChip } from './growStyles';
+import { growCard, growLabel } from './growChrome';
+import { CARD_PAD, CARD_R, ROW_PAD, ROW_R } from './growGeometry';
 import { ErrorState, SkeletonCards } from './GrowStateBlocks';
 import type { GrowthInboxData, GrowthMove, GrowthWin, LoadState, MovePriority } from './growTypes';
 
@@ -51,12 +53,12 @@ export function GrowthInboxSection({
 
   return (
     <section>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '0 0 12px', flexWrap: 'wrap' }}>
-        <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: space.lg, margin: `0 0 ${space.xl}px`, flexWrap: 'wrap' }}>
+        <h3 style={{ ...growLabel(colors), margin: 0 }}>
           Your growth moves this week
         </h3>
         {hasSignal && signal && (
-          <span style={{ fontSize: 10, color: colors.textDim }}>
+          <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
             from {signal.posts} {signal.posts === 1 ? 'post' : 'posts'} · {signal.shipped} shipped
           </span>
         )}
@@ -68,20 +70,20 @@ export function GrowthInboxSection({
         <SkeletonCards colors={colors} count={3} height={68} />
       ) : !inbox ? null : empty ? (
         <div style={{
-          border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: 28,
+          border: `1px dashed ${colors.border}`, borderRadius: CARD_R, padding: space.huge,
           textAlign: 'center', fontSize: textSize.caption, color: colors.textDim, lineHeight: 1.6,
         }}>
           Not enough signal yet. Publish a post or ship a goal and I'll start surfacing your 2-3
           highest-leverage growth moves here each week — ranked, no guesswork.
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
           {moves.length > 0 ? (
             moves.map((m) => <MoveCard key={m.title} move={m} colors={colors} projectName={projectName} />)
           ) : (
             <div style={{
-              border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '12px 14px',
-              fontSize: textSize.caption, color: colors.textMuted, background: colors.surface,
+              ...growCard(colors, { r: CARD_R, pad: CARD_PAD }),
+              fontSize: textSize.caption, color: colors.textMuted,
             }}>
               You're on track — no urgent moves this week. Keep doing what's working below.
             </div>
@@ -131,23 +133,23 @@ function MoveCard({ move, colors, projectName }: {
 
   return (
     <div style={{
-      display: 'flex', flexDirection: 'column', gap: 6,
-      background: colors.surface, border: `1px solid ${colors.border}`,
-      borderLeft: `3px solid ${meta.color}`, borderRadius: radius.md, padding: '12px 14px',
+      display: 'flex', flexDirection: 'column', gap: space.sm,
+      ...growCard(colors, { r: ROW_R, pad: ROW_PAD }),
+      borderLeft: `3px solid ${meta.color}`,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
         <span style={{
-          fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '0.06em',
-          color: meta.color, border: `1px solid ${meta.color}`, borderRadius: radius.pill, padding: '1px 8px',
+          ...growLabel(colors, meta.color),
+          border: `1px solid ${meta.color}`, borderRadius: radius.pill, padding: `1px ${space.md}px`,
         }}>{meta.label}</span>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 10, color: colors.textDim, fontVariantNumeric: 'tabular-nums' }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textDim, fontVariantNumeric: 'tabular-nums' }}>
           {move.evidenceCount} {move.evidenceCount === 1 ? 'signal' : 'signals'}
         </span>
       </div>
       <div style={{ fontSize: textSize.body, fontWeight: 600, color: colors.text }}>{move.title}</div>
       <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>{move.why}</div>
-      <div style={{ display: 'flex', marginTop: 2 }}>
+      <div style={{ display: 'flex', marginTop: space.xs / 2 }}>
         <Button
           colors={colors}
           type="button"
@@ -164,21 +166,21 @@ function MoveCard({ move, colors, projectName }: {
 
 function WinsStrip({ wins, colors }: { wins: GrowthWin[]; colors: ThemeColors }) {
   return (
-    <div style={{ marginTop: 4 }}>
-      <div style={{ fontSize: 10, fontFamily: font.mono, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
+    <div style={{ marginTop: space.xs }}>
+      <div style={{ ...growLabel(colors), marginBottom: space.md }}>
         Keep doing
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
         {wins.map((w) => (
           <div key={w.title} style={{
-            display: 'flex', alignItems: 'flex-start', gap: 8,
-            background: colors.surface, border: `1px solid ${colors.border}`,
-            borderLeft: `3px solid ${colors.success}`, borderRadius: radius.md, padding: '10px 12px',
+            display: 'flex', alignItems: 'flex-start', gap: space.md,
+            ...growCard(colors, { r: ROW_R, pad: ROW_PAD }),
+            borderLeft: `3px solid ${colors.success}`,
           }}>
             <span aria-hidden style={{ color: colors.success, fontSize: textSize.small, lineHeight: '18px' }}>✓</span>
             <div>
               <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{w.title}</div>
-              <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginTop: 2 }}>{w.why}</div>
+              <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginTop: space.xs / 2 }}>{w.why}</div>
             </div>
           </div>
         ))}

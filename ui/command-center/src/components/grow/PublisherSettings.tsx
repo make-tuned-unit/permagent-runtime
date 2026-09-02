@@ -8,11 +8,13 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
 import { Button } from '../common/Button';
+import { Tooltip } from '../common/Tooltip';
 import { growAccent, growLink } from './growStyles';
+import { FIELD_CLASS, LINK_CLASS, growField } from './growChrome';
 
 type ChannelBinding = {
   integrationId?: string;
@@ -45,10 +47,7 @@ export function PostizConnect({ colors }: { colors: ThemeColors }) {
       .then((s) => setConfigured(!!s && !Array.isArray(s) && s.configured))
       .catch(() => setConfigured(false));
   }, []);
-  const field: CSSProperties = {
-    fontSize: textSize.micro, fontFamily: font.mono, color: colors.text, background: colors.bgDeeper,
-    border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '4px 6px',
-  };
+  const field = growField(colors, { mono: true });
   const save = async () => {
     setBusy(true);
     try {
@@ -63,16 +62,16 @@ export function PostizConnect({ colors }: { colors: ThemeColors }) {
     } finally { setBusy(false); }
   };
   return (
-    <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: space.md }}>
       Posting uses your Postiz account (Cloud by default). {configured ? 'API key saved.' : 'Not connected — Approve stays on this calendar until you save a key and log in to a network for this project.'}
       {' '}
       <Button colors={colors} variant="bare" type="button" onClick={() => setOpen((v) => !v)} style={growLink(colors)}>
         {configured ? 'Replace key' : 'Save API key'}
       </Button>
       {open && (
-        <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Postiz API key" type="password" aria-label="Postiz API key" style={field} />
-          <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.postiz.com/public/v1" aria-label="Postiz base URL" style={{ ...field, minWidth: 220 }} />
+        <div style={{ display: 'flex', gap: space.sm, marginTop: space.md, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Postiz API key" type="password" aria-label="Postiz API key" className={FIELD_CLASS} style={field} />
+          <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.postiz.com/public/v1" aria-label="Postiz base URL" className={FIELD_CLASS} style={{ ...field, minWidth: 220 }} />
           <Button colors={colors} type="button" disabled={busy || !apiKey.trim()} onClick={() => save()} style={growAccent(colors, '4px 10px')}>Save</Button>
         </div>
       )}
@@ -144,15 +143,15 @@ export function ProjectChannels({ projectId, colors }: { projectId: string; colo
   const anyBound = NETWORKS.some((n) => channels[n.id]?.integrationId);
 
   return (
-    <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 12 }}>
-      <div style={{ marginBottom: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: space.xl }}>
+      <div style={{ marginBottom: space.md }}>
         {anyBound
           ? 'Approve schedules this post on the connected account for that channel.'
           : configured
             ? 'Connect Instagram, LinkedIn, or X for this project. A login window opens; after you sign in, that account is ready to post to.'
             : 'Approve parks a draft on this calendar until this project has a connected account.'}
       </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.md }}>
         {NETWORKS.map((n) => {
           const bound = channels[n.id];
           const waiting = pending === n.id;
@@ -160,20 +159,20 @@ export function ProjectChannels({ projectId, colors }: { projectId: string; colo
             ? `${n.label} · ${bound.name || bound.profile}`
             : n.label;
           return (
-            <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 6, border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '4px 8px' }}>
+            <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: space.sm, border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: `${space.xs}px ${space.md}px` }}>
               <span style={{ color: bound ? colors.text : colors.textDim }}>{waiting ? `Waiting for ${n.label} login…` : label}</span>
               {bound ? (
                 <Button colors={colors} variant="bare" type="button" disabled={busy === n.id} onClick={() => disconnect(n.id)} style={growLink(colors)}>
                   Disconnect
                 </Button>
               ) : (
+                <Tooltip content={configured ? `Connect ${n.label}` : 'Save a Postiz API key above first'}>
                 <Button
                   colors={colors}
                   variant="bare"
                   type="button"
                   disabled={busy === n.id}
                   onClick={() => connect(n.id)}
-                  title={configured ? `Connect ${n.label}` : 'Save a Postiz API key above first'}
                   style={{
                     ...growLink(colors),
                     // Muted until a key exists, so hover must not promise the
@@ -184,18 +183,19 @@ export function ProjectChannels({ projectId, colors }: { projectId: string; colo
                 >
                   {waiting ? 'Open login again' : `Connect ${n.label}`}
                 </Button>
+                </Tooltip>
               )}
             </div>
           );
         })}
       </div>
       {loginUrl && (
-        <div style={{ marginTop: 6 }}>
+        <div style={{ marginTop: space.sm }}>
           If a browser window did not open,{' '}
-          <a href={loginUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan }}>open the {pending ? NETWORKS.find((n) => n.id === pending)?.label ?? '' : ''} login</a>.
+          <a href={loginUrl} className={LINK_CLASS} target="_blank" rel="noreferrer" style={{ color: colors.cyan }}>open the {pending ? NETWORKS.find((n) => n.id === pending)?.label ?? '' : ''} login</a>.
         </div>
       )}
-      {error && <div role="alert" style={{ color: colors.danger, marginTop: 6 }}>{error}</div>}
+      {error && <div role="alert" style={{ color: colors.danger, marginTop: space.sm }}>{error}</div>}
     </div>
   );
 }
@@ -211,10 +211,7 @@ export function HiggsfieldConnect({ colors }: { colors: ThemeColors }) {
       .then((s) => setConfigured(s.configured))
       .catch(() => setConfigured(false));
   }, []);
-  const field: CSSProperties = {
-    fontSize: textSize.micro, fontFamily: font.mono, color: colors.text, background: colors.bgDeeper,
-    border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '4px 6px',
-  };
+  const field = growField(colors, { mono: true });
   const save = async () => {
     setBusy(true);
     try {
@@ -229,16 +226,16 @@ export function HiggsfieldConnect({ colors }: { colors: ThemeColors }) {
     } finally { setBusy(false); }
   };
   return (
-    <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 12 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: space.xl }}>
       Reels use your Higgsfield account. {configured ? 'Connected.' : 'Not connected — stills still generate locally.'}
       {' '}
       <Button colors={colors} variant="bare" type="button" onClick={() => setOpen((v) => !v)} style={growLink(colors)}>
         {configured ? 'Replace keys' : 'Connect'}
       </Button>
       {open && (
-        <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-          <input value={keyId} onChange={(e) => setKeyId(e.target.value)} placeholder="Key ID" aria-label="Higgsfield key id" style={field} />
-          <input value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="Secret" type="password" aria-label="Higgsfield secret" style={field} />
+        <div style={{ display: 'flex', gap: space.sm, marginTop: space.md, flexWrap: 'wrap' }}>
+          <input value={keyId} onChange={(e) => setKeyId(e.target.value)} placeholder="Key ID" aria-label="Higgsfield key id" className={FIELD_CLASS} style={field} />
+          <input value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="Secret" type="password" aria-label="Higgsfield secret" className={FIELD_CLASS} style={field} />
           <Button colors={colors} type="button" disabled={busy} onClick={() => save()} style={growAccent(colors, '4px 10px')}>Save</Button>
         </div>
       )}

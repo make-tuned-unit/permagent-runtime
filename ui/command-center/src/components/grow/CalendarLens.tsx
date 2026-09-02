@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
 import { Button } from '../common/Button';
@@ -25,6 +25,8 @@ import {
 } from './calendarPosts';
 import { draftPostPrompt } from './growStrategy';
 import { growChip } from './growStyles';
+import { FIELD_CLASS, growCard, growField, growLabel } from './growChrome';
+import { ROW_INNER_R, ROW_PAD, ROW_R, CARD_R } from './growGeometry';
 import { ErrorState, LoadingState } from './GrowStateBlocks';
 import { HiggsfieldConnect, PostizConnect, ProjectChannels } from './PublisherSettings';
 import { PostStill, PostVideo } from './PostMedia';
@@ -49,15 +51,15 @@ export function CalendarSection({
 }) {
   return (
     <section>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 12px' }}>
-        <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Content calendar</h3>
-        <span style={{ fontSize: 10, color: colors.textDim, background: colors.bgDeeper, padding: '1px 6px', borderRadius: radius.pill, fontVariantNumeric: 'tabular-nums' }}>{posts.length}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, margin: `0 0 ${space.xl}px` }}>
+        <h3 style={{ ...growLabel(colors), margin: 0 }}>Content calendar</h3>
+        <span style={{ fontSize: textSize.micro, color: colors.textDim, background: colors.bgDeeper, padding: `1px ${space.sm}px`, borderRadius: radius.pill, fontVariantNumeric: 'tabular-nums' }}>{posts.length}</span>
         <div style={{ flex: 1 }} />
         <Button
           colors={colors}
           onClick={() => send(draftPostPrompt(active.name))}
           style={{
-            '--pa-btn-pad': '5px 12px',
+            '--pa-btn-pad': `${space.sm}px ${space.xl}px`,
             '--pa-btn-radius': `${radius.md}px`,
             fontFamily: font.body,
           } as CSSProperties}
@@ -68,9 +70,9 @@ export function CalendarSection({
       <ProjectChannels projectId={active.id} colors={colors} />
       {postsMutationError && (
         <div role="alert" style={{
-          fontSize: textSize.caption, color: colors.danger, marginBottom: 10,
+          fontSize: textSize.caption, color: colors.danger, marginBottom: space.lg,
           background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-          borderRadius: radius.md, padding: '8px 10px',
+          borderRadius: ROW_R, padding: `${space.md}px ${space.lg}px`,
         }}>
           Couldn&apos;t save changes: {postsMutationError}
         </div>
@@ -86,7 +88,7 @@ export function CalendarSection({
         <LoadingState colors={colors} inline label="Loading posts…" />
       ) : posts.length === 0 ? (
         <div style={{
-          border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: 28,
+          border: `1px dashed ${colors.border}`, borderRadius: CARD_R, padding: space.huge,
           textAlign: 'center', fontSize: textSize.caption, color: colors.textDim,
         }}>
           No posts yet. Draft one with {agentName} above — it is written in this project's voice, a still is generated, and Approve schedules it on this project's connected accounts when you are ready.
@@ -115,14 +117,11 @@ function CalendarLens({
 }) {
   const groups = groupPostsByDay(posts);
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
       {groups.map((group) => (
         <div key={group.day}>
-          <div style={{
-            fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim,
-            textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8,
-          }}>{group.label}</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ ...growLabel(colors), marginBottom: space.md }}>{group.label}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
             {group.posts.map((post) => (
               <CalendarPostRow
                 key={post.id}
@@ -172,9 +171,8 @@ function CalendarPostRow({
   // row had, and it said nothing about hover, press or disabled.
   const btn: CSSProperties = growChip();
   const chip: CSSProperties = {
-    fontSize: 10, fontFamily: font.mono, color: colors.textDim,
-    background: colors.bgDeeper, padding: '1px 6px', borderRadius: radius.pill,
-    textTransform: 'uppercase', letterSpacing: '0.04em',
+    ...growLabel(colors),
+    background: colors.bgDeeper, padding: `1px ${space.sm}px`, borderRadius: radius.pill,
   };
 
   const saveEdit = async () => {
@@ -239,11 +237,8 @@ function CalendarPostRow({
   const canRetryStill = status === 'draft' && media.mediaStatus !== 'generating';
 
   return (
-    <div style={{
-      background: colors.surface, border: `1px solid ${colors.border}`,
-      borderRadius: radius.md, padding: '12px 14px',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+    <div style={growCard(colors, { r: ROW_R, pad: ROW_PAD })}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.md, marginBottom: space.sm }}>
         <span style={chip}>{status}</span>
         <span style={chip}>{media.mediaStatus}</span>
         {media.channel && <span style={chip}>{media.channel}</span>}
@@ -261,7 +256,7 @@ function CalendarPostRow({
           </>
         )}
       </div>
-      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+      <div style={{ display: 'flex', gap: space.xl, alignItems: 'flex-start' }}>
         {/* The Reel wins the slot when there is one: it is the artefact being
             approved, and the still is only its first frame — showing the poster
             beside the video would be the same picture twice. A post with no
@@ -291,10 +286,10 @@ function CalendarPostRow({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             aria-label="Post title"
+            className={FIELD_CLASS}
             style={{
-              width: '100%', fontSize: textSize.small, fontWeight: 600, fontFamily: font.body,
-              color: colors.text, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-              borderRadius: radius.sm, padding: '6px 8px', marginBottom: 6, boxSizing: 'border-box',
+              ...growField(colors), width: '100%', fontSize: textSize.small, fontWeight: 600,
+              borderRadius: ROW_INNER_R, marginBottom: space.sm,
             }}
           />
           <textarea
@@ -302,10 +297,10 @@ function CalendarPostRow({
             onChange={(e) => setBody(e.target.value)}
             aria-label="Post body"
             rows={3}
+            className={FIELD_CLASS}
             style={{
-              width: '100%', fontSize: textSize.caption, fontFamily: font.body, lineHeight: 1.5,
-              color: colors.textMuted, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-              borderRadius: radius.sm, padding: '6px 8px', resize: 'vertical', boxSizing: 'border-box',
+              ...growField(colors), width: '100%', lineHeight: 1.5,
+              color: colors.textMuted, borderRadius: ROW_INNER_R, resize: 'vertical',
             }}
           />
         </>
@@ -313,17 +308,17 @@ function CalendarPostRow({
         <>
           <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{post.title}</div>
           {post.description && (
-            <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>{post.description}</div>
+            <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: space.xs, lineHeight: 1.5 }}>{post.description}</div>
           )}
         </>
       )}
         </div>
       </div>
       {media.mediaError && (
-        <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 8 }}>{media.mediaError}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.md }}>{media.mediaError}</div>
       )}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, alignItems: 'center' }}>
-        <label style={{ fontSize: textSize.micro, color: colors.textDim, display: 'flex', alignItems: 'center', gap: 6 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.md, marginTop: space.lg, alignItems: 'center' }}>
+        <label style={{ fontSize: textSize.micro, color: colors.textDim, display: 'flex', alignItems: 'center', gap: space.sm }}>
           Schedule
           <input
             type="datetime-local"
@@ -335,26 +330,20 @@ function CalendarPostRow({
               if (when === toDatetimeLocalValue(meta.scheduledFor)) return;
               void saveSchedule(when, status);
             }}
-            style={{
-              fontSize: textSize.micro, fontFamily: font.body, color: colors.text,
-              background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-              borderRadius: radius.sm, padding: '4px 6px',
-            }}
+            className={FIELD_CLASS}
+            style={{ ...growField(colors), fontSize: textSize.micro, borderRadius: ROW_INNER_R }}
           />
         </label>
         {status !== 'draft' && (
-        <label style={{ fontSize: textSize.micro, color: colors.textDim, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <label style={{ fontSize: textSize.micro, color: colors.textDim, display: 'flex', alignItems: 'center', gap: space.sm }}>
           Status
           <select
             aria-label="Post status"
             value={status}
             disabled={busy}
             onChange={(e) => void saveSchedule(when, e.target.value as PostStatus)}
-            style={{
-              fontSize: textSize.micro, fontFamily: font.body, color: colors.text,
-              background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-              borderRadius: radius.sm, padding: '4px 6px',
-            }}
+            className={FIELD_CLASS}
+            style={{ ...growField(colors), fontSize: textSize.micro, borderRadius: ROW_INNER_R }}
           >
             <option value="scheduled">scheduled</option>
             <option value="posted">posted</option>
@@ -378,7 +367,7 @@ function CalendarPostRow({
         )}
       </div>
       {canRetryStill && (
-        <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'flex-start' }}>
+        <div style={{ display: 'flex', gap: space.md, marginTop: space.lg, alignItems: 'flex-start' }}>
           <textarea
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
@@ -386,11 +375,10 @@ function CalendarPostRow({
             aria-label="Still taste notes"
             placeholder="Taste notes for a new still — copy stays"
             rows={2}
+            className={FIELD_CLASS}
             style={{
-              flex: 1, fontSize: textSize.micro, fontFamily: font.body, color: colors.text,
-              background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-              borderRadius: radius.sm, padding: '6px 8px', resize: 'vertical',
-              boxSizing: 'border-box',
+              ...growField(colors), flex: 1, fontSize: textSize.micro,
+              borderRadius: ROW_INNER_R, resize: 'vertical',
             }}
           />
           <Button

@@ -10,11 +10,13 @@
 
 import { useCallback, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
 import { Button } from '../common/Button';
 import { growSmall } from './growStyles';
+import { FIELD_CLASS, growField, growLabel } from './growChrome';
+import { CARD_INNER_R } from './growGeometry';
 import {
   FINAL_WINDOW_DAYS,
   FIRST_WINDOW_DAYS,
@@ -95,21 +97,19 @@ export function ActionVerify({
   }, [projectId, identity, onChanged]);
 
   const rule: CSSProperties = {
-    marginTop: 10, paddingTop: 8, borderTop: `1px solid ${colors.border}`,
-    display: 'flex', flexDirection: 'column', gap: 8,
+    marginTop: space.lg, paddingTop: space.md, borderTop: `1px solid ${colors.border}`,
+    display: 'flex', flexDirection: 'column', gap: space.md,
   };
-  const label: CSSProperties = {
-    fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
-    textTransform: 'uppercase', color: colors.textDim,
-  };
+  const label: CSSProperties = growLabel(colors);
   // Set through `--pa-btn-*`: an inline `background`/`color` would outrank
   // `.pa-btn:hover`, and the dimming these carried by hand is now what
   // `.pa-btn:disabled` and `[data-pending]` say for themselves.
   const button = growSmall(colors);
   const select: CSSProperties = {
-    background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-    borderRadius: radius.sm, padding: '3px 6px', color: colors.text,
-    fontFamily: font.body, fontSize: textSize.micro,
+    ...growField(colors),
+    borderRadius: CARD_INNER_R,
+    padding: `${space.xs}px ${space.sm}px`,
+    fontSize: textSize.micro,
   };
 
   // On the shelf there is nothing to say unless a check actually confirmed
@@ -162,9 +162,9 @@ export function ActionVerify({
               self-report are different claims, so they get different colour,
               different border and different words. */}
           <div style={{
-            display: 'flex', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
+            display: 'flex', alignItems: 'center', gap: space.sm, alignSelf: 'flex-start',
             border: `1px ${provenance.checked ? 'solid' : 'dashed'} ${provenance.checked ? colors.success : colors.warning}`,
-            borderRadius: radius.sm, padding: '2px 8px',
+            borderRadius: CARD_INNER_R, padding: `2px ${space.md}px`,
             color: provenance.checked ? colors.success : colors.warning,
             ...label,
           }}>
@@ -191,13 +191,13 @@ export function ActionVerify({
             return (
               <div key={o.windowDays} style={{
                 background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-                borderRadius: radius.md, padding: 10,
-                display: 'flex', flexDirection: 'column', gap: 4,
+                borderRadius: CARD_INNER_R, padding: space.lg,
+                display: 'flex', flexDirection: 'column', gap: space.xs,
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: space.md, flexWrap: 'wrap' }}>
                   <span style={{
                     ...label, color: meta.color, border: `1px solid ${meta.color}`,
-                    borderRadius: radius.pill, padding: '1px 7px',
+                    borderRadius: radius.pill, padding: `1px ${space.sm}px`,
                   }}>{meta.label}</span>
                   <span style={{ ...label }}>{o.windowDays}-day window</span>
                   {o.windowDays < FINAL_WINDOW_DAYS && (
@@ -296,7 +296,7 @@ export function ActionVerify({
                   unfalsifiability the pre-registration gate was built to stop.
                   The selects survive only for a row that genuinely carries no
                   prediction. */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, flexWrap: 'wrap' }}>
                 <Button
                   colors={colors}
                   onClick={() => verify(targetBody())}
@@ -313,9 +313,10 @@ export function ActionVerify({
                   ? 'I couldn’t say what this should move, so pick the metric before checking it.'
                   : 'Say what this should move before checking it — a metric picked after the result is known can’t be wrong.'}
               </span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, flexWrap: 'wrap' }}>
                 <select
                   aria-label="Target metric"
+                  className={FIELD_CLASS}
                   value={metric}
                   onChange={(e) => setMetric(e.target.value)}
                   style={select}
@@ -327,6 +328,7 @@ export function ActionVerify({
                 </select>
                 <select
                   aria-label="Target direction"
+                  className={FIELD_CLASS}
                   value={dir}
                   onChange={(e) => setDir(e.target.value)}
                   style={select}
@@ -356,8 +358,8 @@ export function ActionVerify({
       {result && (
         <div style={{
           background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-          borderRadius: radius.md, padding: 10,
-          display: 'flex', flexDirection: 'column', gap: 6,
+          borderRadius: CARD_INNER_R, padding: space.lg,
+          display: 'flex', flexDirection: 'column', gap: space.sm,
         }}>
           {/* "Could not confirm" is not "not done", and the checks say which
               one it was (growth_verify.rs:9-11). */}

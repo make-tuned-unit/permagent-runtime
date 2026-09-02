@@ -9,11 +9,13 @@
 
 import { useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
 import { Button } from '../common/Button';
 import { growAccent, growChip } from './growStyles';
+import { FIELD_CLASS, growCard, growField, growLabel } from './growChrome';
+import { CARD_INNER_R, CARD_PAD, CARD_R } from './growGeometry';
 import { ErrorState, LoadingState } from './GrowStateBlocks';
 import {
   PROVIDER_LABELS,
@@ -98,12 +100,12 @@ export function AnalyticsConnectionPanel({
   if (!conn?.connected) {
     return (
       <div style={{
-        border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: '16px 18px',
-        display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
+        border: `1px dashed ${colors.border}`, borderRadius: CARD_R, padding: CARD_PAD,
+        display: 'flex', alignItems: 'center', gap: space.xxl, flexWrap: 'wrap',
       }}>
         <div style={{ flex: 1, minWidth: 220 }}>
           <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>Connect analytics</div>
-          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 3, lineHeight: 1.5 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs, lineHeight: 1.5 }}>
             Point the funnel at your existing Plausible or GoatCounter account — a read-only stats
             fetch, your data stays where it is.
           </div>
@@ -111,7 +113,7 @@ export function AnalyticsConnectionPanel({
         <Button
           colors={colors}
           onClick={() => setShowForm(true)}
-          style={{ ...growAccent(colors, '7px 14px'), fontSize: textSize.caption }}
+          style={{ ...growAccent(colors, `${space.sm}px ${space.xxl}px`), fontSize: textSize.caption }}
         >Connect analytics</Button>
       </div>
     );
@@ -134,13 +136,12 @@ export function AnalyticsConnectionPanel({
 
   return (
     <div style={{
-      background: colors.surface, border: `1px solid ${colors.border}`,
-      borderRadius: radius.lg, padding: '12px 14px',
-      display: 'flex', flexDirection: 'column', gap: 8,
+      ...growCard(colors, { r: CARD_R, pad: CARD_PAD }),
+      display: 'flex', flexDirection: 'column', gap: space.md,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, flexWrap: 'wrap' }}>
         <span aria-hidden style={{
-          width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+          width: space.md, height: space.md, borderRadius: '50%', flexShrink: 0,
           background: statsFailed ? colors.warning : colors.success,
         }} />
         <span style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text }}>{providerLabel}</span>
@@ -219,29 +220,27 @@ function AnalyticsConnectForm({
   };
 
   const fieldStyle: CSSProperties = {
-    background: colors.bgDeeper, color: colors.text, border: `1px solid ${colors.border}`,
-    borderRadius: radius.md, padding: '6px 10px', fontSize: textSize.caption, fontFamily: font.body, width: '100%',
-    boxSizing: 'border-box',
+    ...growField(colors), borderRadius: CARD_INNER_R, width: '100%',
   };
   const labelStyle: CSSProperties = {
-    fontSize: 10, fontFamily: font.mono, color: colors.textDim,
-    textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4, display: 'block',
+    ...growLabel(colors), marginBottom: space.xs, display: 'block',
   };
 
   return (
     <div style={{
-      background: colors.surface, border: `1px solid ${colors.border}`,
-      borderRadius: radius.lg, padding: 16, display: 'flex', flexDirection: 'column', gap: 12,
+      ...growCard(colors, { r: CARD_R, pad: CARD_PAD }),
+      display: 'flex', flexDirection: 'column', gap: space.xl,
     }}>
       <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>
         {conn?.connected ? 'Edit analytics connection' : 'Connect analytics'}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: space.xl }}>
         <label>
           <span style={labelStyle}>Provider</span>
           <select
             value={provider}
             onChange={(e) => setProvider(e.target.value as AnalyticsProviderId)}
+            className={FIELD_CLASS}
             style={fieldStyle}
           >
             {(Object.keys(PROVIDER_LABELS) as AnalyticsProviderId[]).map((p) => (
@@ -256,6 +255,7 @@ function AnalyticsConnectForm({
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder={baseUrlPlaceholder}
+            className={FIELD_CLASS}
             style={fieldStyle}
           />
         </label>
@@ -267,6 +267,7 @@ function AnalyticsConnectForm({
               value={siteId}
               onChange={(e) => setSiteId(e.target.value)}
               placeholder="example.com"
+              className={FIELD_CLASS}
               style={fieldStyle}
             />
           </label>
@@ -279,18 +280,19 @@ function AnalyticsConnectForm({
             onChange={(e) => setApiKey(e.target.value)}
             placeholder={hasStoredKey ? 'stored — leave blank to keep' : 'paste your stats API key'}
             autoComplete="off"
+            className={FIELD_CLASS}
             style={fieldStyle}
           />
         </label>
       </div>
-      <div style={{ fontSize: 10, color: colors.textDim, lineHeight: 1.5 }}>
+      <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
         {provider === 'goatcounter'
           ? 'GoatCounter: your site lives in the URL (no separate site id). Create an API token under Settings → API in your GoatCounter dashboard.'
           : 'Plausible: the site id is the domain as it appears in Plausible. Create a Stats API key under Settings → API keys.'}
         {' '}Read-only — this never writes to your analytics account.
       </div>
       {error && <div style={{ fontSize: textSize.micro, color: colors.warning }}>{error}</div>}
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: space.md }}>
         {/* The unsaveable state keeps its own muted chrome — it is what says
             "there is nothing here to save yet" before the button is pressed. */}
         <Button
@@ -304,7 +306,7 @@ function AnalyticsConnectForm({
             '--pa-btn-border': canSave ? colors.borderHi : colors.border,
             '--pa-btn-bg-hover': canSave ? colors.cyanGlow : 'transparent',
             '--pa-btn-border-hover': canSave ? colors.cyan : colors.border,
-            '--pa-btn-pad': '6px 14px',
+            '--pa-btn-pad': `${space.sm}px ${space.xxl}px`,
             '--pa-btn-radius': `${radius.md}px`,
             fontFamily: font.body, fontSize: textSize.caption,
           } as CSSProperties}
@@ -316,7 +318,7 @@ function AnalyticsConnectForm({
             '--pa-btn-fg': colors.textMuted,
             '--pa-btn-fg-hover': colors.text,
             '--pa-btn-border': colors.border,
-            '--pa-btn-pad': '6px 14px',
+            '--pa-btn-pad': `${space.sm}px ${space.xxl}px`,
             '--pa-btn-radius': `${radius.md}px`,
             fontFamily: font.body, fontSize: textSize.caption,
           } as CSSProperties}

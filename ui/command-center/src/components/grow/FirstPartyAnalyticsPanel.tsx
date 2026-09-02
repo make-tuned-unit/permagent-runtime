@@ -8,13 +8,16 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
 import { Button } from '../common/Button';
+import { Tooltip } from '../common/Tooltip';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { drainFreshness } from './analyticsFormat';
 import { ErrorState } from './GrowStateBlocks';
+import { FIELD_CLASS, growCard, growField, growLabel } from './growChrome';
+import { CARD_INNER_R, CARD_PAD, CARD_R } from './growGeometry';
 import type { FirstPartySetup, FirstPartyStats, LoadState, VerifyResponse } from './growTypes';
 
 // ── First-party analytics panel (#23) ────────────────────────────────────────
@@ -206,8 +209,8 @@ export function FirstPartyAnalyticsPanel({
   }, []);
 
   const shell: React.CSSProperties = {
-    background: colors.surface, border: `1px solid ${colors.border}`,
-    borderRadius: radius.lg, padding: 16, display: 'flex', flexDirection: 'column', gap: 10,
+    ...growCard(colors, { r: CARD_R, pad: CARD_PAD }),
+    display: 'flex', flexDirection: 'column', gap: space.lg,
   };
   // Through `--pa-btn-*`, never inline `background`/`color`: an inline
   // declaration outranks `.pa-btn:hover` and would kill the state this is
@@ -219,7 +222,7 @@ export function FirstPartyAnalyticsPanel({
     '--pa-btn-border': colors.border,
     '--pa-btn-bg-hover': colors.surfaceHi,
     '--pa-btn-border-hover': colors.borderHi,
-    '--pa-btn-pad': '6px 12px',
+    '--pa-btn-pad': `${space.sm}px ${space.xl}px`,
     '--pa-btn-radius': `${radius.md}px`,
     fontSize: textSize.caption,
   } as React.CSSProperties;
@@ -236,10 +239,10 @@ export function FirstPartyAnalyticsPanel({
   if (!setup?.enabled) {
     return (
       <div style={shell}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.xl }}>
           <div>
             <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>Self-hosted analytics</div>
-            <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 2 }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs / 2 }}>
               Your daemon collects pageviews directly — no third-party account, your data stays here.
             </div>
           </div>
@@ -259,11 +262,11 @@ export function FirstPartyAnalyticsPanel({
 
   return (
     <div style={shell}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.xl }}>
         <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>
           Self-hosted analytics
           {receiving && (
-            <span style={{ marginLeft: 8, fontSize: 10, color: colors.cyan, fontFamily: font.mono }}>
+            <span style={{ marginLeft: space.md, fontSize: textSize.micro, color: colors.cyan, fontFamily: font.mono }}>
               ● live{stats && stats.eventsLast5m > 0 ? ` · ${stats.eventsLast5m} events / 5m` : ''}
             </span>
           )}
@@ -274,14 +277,15 @@ export function FirstPartyAnalyticsPanel({
             (to let its database scale to zero), a button that reloads a
             day-old local copy would show a quiet day and be believed. So
             Refresh pulls from the relay first, then reloads. */}
-        <Button
-          colors={colors}
-          style={buttonStyle}
-          disabled={drainingNow}
-          pending={drainingNow}
-          title="Pull from the site now, then reload. The daily schedule lets the site's database sleep; this is how you get the last few hours on demand."
-          onClick={checkNow}
-        >{drainingNow ? 'Checking…' : 'Refresh'}</Button>
+        <Tooltip content="Pull from the site now, then reload. The daily schedule lets the site's database sleep; this is how you get the last few hours on demand." placement="bottom">
+          <Button
+            colors={colors}
+            style={buttonStyle}
+            disabled={drainingNow}
+            pending={drainingNow}
+            onClick={checkNow}
+          >{drainingNow ? 'Checking…' : 'Refresh'}</Button>
+        </Tooltip>
       </div>
 
       {!receiving && (
@@ -295,7 +299,7 @@ export function FirstPartyAnalyticsPanel({
             Mac then pulls events outbound every couple of minutes — nothing here is ever exposed to
             the internet, and events survive while it sleeps.
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: space.md }}>
             {/* Each already says "Copied ✓" for itself, so the primitive's tick
                 would be the same confirmation twice. */}
             <Button colors={colors} style={buttonStyle} flashSuccess={false} onClick={() => copy('prompt', setup.agentPrompt)}>
@@ -304,25 +308,23 @@ export function FirstPartyAnalyticsPanel({
             <Button colors={colors} style={buttonStyle} flashSuccess={false} onClick={() => copy('snippet', setup.snippet)}>
               {copied === 'snippet' ? 'Copied ✓' : 'Copy snippet only'}
             </Button>
-            <Button
-              colors={colors}
-              style={buttonStyle}
-              disabled={rotating}
-              pending={rotating}
-              title="Mint a new drain key — the old one stops working immediately"
-              onClick={() => setConfirmingRotate(true)}
-            >{rotating ? 'Rotating…' : 'Rotate key'}</Button>
+            <Tooltip content="Mint a new drain key — the old one stops working immediately">
+              <Button
+                colors={colors}
+                style={buttonStyle}
+                disabled={rotating}
+                pending={rotating}
+                onClick={() => setConfirmingRotate(true)}
+              >{rotating ? 'Rotating…' : 'Rotate key'}</Button>
+            </Tooltip>
           </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: space.md, alignItems: 'center', flexWrap: 'wrap' }}>
             <input
               value={ingestBase}
               onChange={(e) => setIngestBase(e.target.value)}
               placeholder="https://yoursite.com/api/permagent-analytics/drain"
-              style={{
-                flex: '1 1 260px', background: colors.bgDeeper, color: colors.text,
-                border: `1px solid ${colors.border}`, borderRadius: radius.md,
-                padding: '6px 10px', fontSize: textSize.caption, fontFamily: font.mono,
-              }}
+              className={FIELD_CLASS}
+              style={{ ...growField(colors, { mono: true }), flex: '1 1 260px', borderRadius: CARD_INNER_R }}
             />
             <Button
               colors={colors}
@@ -331,34 +333,35 @@ export function FirstPartyAnalyticsPanel({
               pending={saving}
               onClick={() => setDrain(ingestBase.trim())}
             >{saving ? 'Saving…' : 'Start ingesting'}</Button>
-            <Button
-              colors={colors}
-              style={buttonStyle}
-              disabled={verifying}
-              pending={verifying}
-              title="Fetch the deployed site and assert the install actually works"
-              onClick={() => {
+            <Tooltip content="Fetch the deployed site and assert the install actually works">
+              <Button
+                colors={colors}
+                style={buttonStyle}
+                disabled={verifying}
+                pending={verifying}
+                onClick={() => {
                 // Derive the origin from the drain URL the agent reported.
                 const url = ingestBase.trim() || setup.drainUrl || '';
                 try { runVerify(new URL(url).origin); } catch { /* not a URL yet */ }
               }}
-            >{verifying ? 'Verifying…' : 'Verify install'}</Button>
+              >{verifying ? 'Verifying…' : 'Verify install'}</Button>
+            </Tooltip>
           </div>
           {verifyResult && (
             <div style={{
               fontSize: textSize.micro, fontFamily: font.mono, whiteSpace: 'pre-wrap',
-              background: colors.bgDeeper, borderRadius: radius.md, padding: 10,
+              background: colors.bgDeeper, borderRadius: CARD_INNER_R, padding: space.lg,
               border: `1px solid ${verifyResult.verified ? colors.border : colors.danger}`,
               color: verifyResult.verified ? colors.textMuted : colors.text,
               maxHeight: 260, overflowY: 'auto',
             }}>{verifyResult.summary}</div>
           )}
           {setup.lastError && (
-            <div style={{ fontSize: 10, color: colors.danger, fontFamily: font.mono }}>
+            <div style={{ fontSize: textSize.micro, color: colors.danger, fontFamily: font.mono }}>
               Last drain failed: {setup.lastError}
             </div>
           )}
-          <div style={{ fontSize: 10, color: colors.textDim }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
             {setup.drainUrl
               ? `Draining from ${setup.drainUrl}${setup.lastDrainAt ? ` · last checked ${new Date(setup.lastDrainAt).toLocaleTimeString()}` : ' · waiting for the first pass…'}`
               : 'Waiting for a drain URL.'}
@@ -368,7 +371,7 @@ export function FirstPartyAnalyticsPanel({
       {receiving && (() => {
         if (setup.lastError) {
           return (
-            <div style={{ fontSize: 10, color: colors.danger, fontFamily: font.mono }}>
+            <div style={{ fontSize: textSize.micro, color: colors.danger, fontFamily: font.mono }}>
               Drain failing: {setup.lastError}
             </div>
           );
@@ -386,7 +389,7 @@ export function FirstPartyAnalyticsPanel({
         const lag = stats?.drainLagEvents ?? 0;
         return (
           <div style={{
-            fontSize: 10, fontFamily: font.mono,
+            fontSize: textSize.micro, fontFamily: font.mono,
             color: fresh.stale || lag > 0 ? colors.warning : colors.textDim,
           }}>
             {fresh.label}
@@ -430,7 +433,10 @@ export function FirstPartyAnalyticsPanel({
                       background: d.pageviews > 0
                         ? `linear-gradient(180deg, ${colors.cyan}, ${colors.purple})`
                         : colors.border,
-                      borderRadius: 1,
+                      // No radius. These bars are 2px wide at thirty days in a
+                      // 320px panel: a 1px rounding is invisible at that scale
+                      // and is not a step on the scale either — decoration
+                      // standing in for nothing (D13).
                       opacity: d.pageviews > 0 ? 0.9 : 1,
                     }}
                   />
@@ -439,7 +445,7 @@ export function FirstPartyAnalyticsPanel({
             );
           })()}
           {/* Headline figures, each labelled for what it actually is. */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: space.lg }}>
             {([
               ['Pageviews', stats.pageviews.toLocaleString(), `last ${stats.periodDays} days`],
               // NOT "visitors": the hash merges people sharing a browser build,
@@ -454,15 +460,15 @@ export function FirstPartyAnalyticsPanel({
             ] as const).map(([label, value, sub]) => (
               <div key={label} style={{
                 background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-                borderRadius: radius.md, padding: '8px 10px',
+                borderRadius: CARD_INNER_R, padding: space.lg,
               }}>
                 <div style={{ fontFamily: font.display, fontSize: textSize.title, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
-                <div style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 2 }}>{label}</div>
-                <div style={{ fontSize: 9, color: colors.textDim, marginTop: 1 }}>{sub}</div>
+                <div style={{ ...growLabel(colors), marginTop: space.xs / 2 }}>{label}</div>
+                <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 1 }}>{sub}</div>
               </div>
             ))}
           </div>
-          <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono }}>
             {stats.pageviews.toLocaleString()} pageviews · {stats.deviceSignatures.toLocaleString()} devices
             {stats.sessions > 0 && <> · {stats.sessions.toLocaleString()} sessions</>}
             {stats.bounceRate != null && <> · {Math.round(stats.bounceRate * 100)}% bounce</>}
@@ -473,12 +479,12 @@ export function FirstPartyAnalyticsPanel({
             )}
           </div>
           {(stats.aeoVisits ?? 0) > 0 && (
-            <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginBottom: 8 }}>
-              <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em', textTransform: 'uppercase' }}>AEO</span>
+            <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginBottom: space.md }}>
+              <span style={growLabel(colors)}>AEO</span>
               {' '}{(stats.aeoVisits ?? 0).toLocaleString()} answer-engine visit{(stats.aeoVisits === 1) ? '' : 's'}
             </div>
           )}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: space.xl }}>
             {([
               ['Top pages', stats.topPages],
               ['Sources', stats.topSources],
@@ -488,10 +494,10 @@ export function FirstPartyAnalyticsPanel({
               ['Events', stats.topEvents],
             ] as const).map(([label, rows]) => (
               <div key={label}>
-                <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
+                <div style={{ ...growLabel(colors), marginBottom: space.xs }}>{label}</div>
                 {rows.length === 0 && <div style={{ fontSize: textSize.micro, color: colors.textDim }}>—</div>}
                 {rows.slice(0, 5).map((r) => (
-                  <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: textSize.micro, color: colors.textMuted, padding: '2px 0' }}>
+                  <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', gap: space.md, fontSize: textSize.micro, color: colors.textMuted, padding: `${space.xs / 2}px 0` }}>
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
                     <span style={{ fontFamily: font.mono, color: colors.text }}>{r.count.toLocaleString()}</span>
                   </div>

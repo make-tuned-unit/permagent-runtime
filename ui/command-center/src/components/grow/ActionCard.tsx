@@ -9,18 +9,21 @@
 
 import { useCallback, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { GLOSSARY } from '../../lib/vocabulary';
 import { Button } from '../common/Button';
+import { Tooltip } from '../common/Tooltip';
 import type { Project } from '../projects/types';
 import { codingAgentDirective } from './codingAgentDirective';
 import { CODING_AGENTS, codingAgentById, codingAgentSelectLabel } from './codingAgents';
 import { growSmall } from './growStyles';
 import { ARCHIVABLE, categoryColor, verdictMeta, type ActionLane } from './growthWindows';
 import type { GrowthAction } from './growTypes';
+import { FIELD_CLASS, SUMMARY_CLASS, growCard, growField, growLabel } from './growChrome';
+import { CARD_INNER_R, CARD_PAD, CARD_R } from './growGeometry';
 import { ActionVerify } from './ActionVerify';
 import { TrackingRail } from './TrackingRail';
 
@@ -190,26 +193,26 @@ export function ActionCard({
   // the same chrome and is not a button; the buttons take the custom
   // properties so `.pa-btn`'s hover, press and disabled rules apply.
   const smallButton: CSSProperties = {
-    background: colors.surface, border: `1px solid ${colors.border}`,
-    borderRadius: radius.sm, padding: '3px 10px', cursor: 'pointer',
-    color: colors.text, fontFamily: font.body, fontSize: textSize.micro,
+    ...growField(colors),
+    borderRadius: CARD_INNER_R,
+    padding: `${space.xs}px ${space.lg}px`,
+    cursor: 'pointer',
+    fontSize: textSize.micro,
   };
   const smallBtn = growSmall(colors);
 
   return (
     <div style={{
-      background: colors.surface, border: `1px solid ${colors.border}`,
-      borderRadius: radius.lg, padding: 14,
+      ...growCard(colors, { r: CARD_R, pad: CARD_PAD }),
       // Filed work reads as a record, not as something still asking to be done.
       opacity: readOnly ? 0.75 : 1,
     }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md, marginBottom: space.sm }}>
         {showCategory && (
           <span style={{
-            fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
-            textTransform: 'uppercase', color: tint,
+            ...growLabel(colors, tint),
             border: `1px solid ${tint}`,
-            borderRadius: radius.pill, padding: '1px 7px', flexShrink: 0,
+            borderRadius: radius.pill, padding: `1px ${space.sm}px`, flexShrink: 0,
           }}>{action.category}</span>
         )}
         <span style={{ fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>
@@ -225,13 +228,19 @@ export function ActionCard({
           // each measures AND that both are the model's own estimate rather
           // than something measured — which is the part a reader would
           // otherwise have to assume either way.
-          <span
-            data-testid="action-impact-confidence"
-            title={GLOSSARY.impactConfidence}
-            style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, flexShrink: 0, cursor: 'help' }}
-          >
-            {action.impact} impact · {action.confidence} confidence
-          </span>
+          // A non-interactive host, so it needs `tabIndex` for the tip to be
+          // reachable by keyboard at all — the primitive's rule, and the
+          // difference between a gloss everyone can read and one only a mouse
+          // can find.
+          <Tooltip content={GLOSSARY.impactConfidence}>
+            <span
+              data-testid="action-impact-confidence"
+              tabIndex={0}
+              style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, flexShrink: 0, cursor: 'help' }}
+            >
+              {action.impact} impact · {action.confidence} confidence
+            </span>
+          </Tooltip>
         )}
       </div>
 
@@ -242,7 +251,7 @@ export function ActionCard({
           is not auditable, and is indistinguishable from the model flattering
           its own suggestion. */}
       {transfer && (
-        <div style={{ marginBottom: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div style={{ marginBottom: space.sm, display: 'flex', flexDirection: 'column', gap: space.xs / 2 }}>
           <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
             {transfer.helped > 0
               ? `Worked on ${transfer.helped} of ${transfer.projects} other project(s)`
@@ -254,11 +263,8 @@ export function ActionCard({
           </span>
           {transfer.examples.length > 0 && (
             <details>
-              <summary style={{
-                fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
-                textTransform: 'uppercase', color: colors.textDim, cursor: 'pointer',
-              }}>Where that comes from</summary>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 4 }}>
+              <summary className={SUMMARY_CLASS} style={growLabel(colors)}>Where that comes from</summary>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs / 2, marginTop: space.xs }}>
                 {transfer.examples.map((ex, xi) => (
                   <div key={`${ex.projectName}-${xi}`} style={{ fontSize: textSize.micro, color: colors.textDim }}>
                     &ldquo;{ex.title}&rdquo; on {ex.projectName} —{' '}
@@ -280,7 +286,7 @@ export function ActionCard({
       {action.evidence && (
         <div style={{
           fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
-          borderLeft: `2px solid ${colors.border}`, paddingLeft: 8, marginBottom: 6,
+          borderLeft: `2px solid ${colors.border}`, paddingLeft: space.md, marginBottom: space.sm,
         }}>{action.evidence}</div>
       )}
       <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.5 }}>
@@ -290,7 +296,7 @@ export function ActionCard({
       {/* Ordered steps: an action nobody knows how to start is an observation
           wearing an action's clothes. */}
       {action.steps?.length > 0 && (
-        <ol style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.6 }}>
+        <ol style={{ margin: `${space.md}px 0 0`, paddingLeft: space.xxxl, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.6 }}>
           {action.steps.map((step, si) => <li key={si}>{step}</li>)}
         </ol>
       )}
@@ -299,9 +305,9 @@ export function ActionCard({
           post. Copying the raw artifact is how SEO work landed in chat as a
           blog post with no path and no instruction. */}
       {lane === 'actions' && (
-        <div style={{ marginTop: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
-            <span style={{ fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.textDim }}>
+        <div style={{ marginTop: space.lg }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.md, marginBottom: space.xs, flexWrap: 'wrap' }}>
+            <span style={growLabel(colors)}>
               Prompt for your coding agent
             </span>
             <div style={{ flex: 1 }} />
@@ -315,6 +321,7 @@ export function ActionCard({
             >{copied ? 'Copied ✓' : 'Copy'}</Button>
             <select
               aria-label="Coding agent"
+              className={FIELD_CLASS}
               value={agentId}
               onChange={(e) => setAgentId(e.target.value)}
               style={{
@@ -328,19 +335,20 @@ export function ActionCard({
                 </option>
               ))}
             </select>
-            <Button
-              colors={colors}
-              onClick={sendToAgent}
-              disabled={sending || !project.rootPath}
-              title={!project.rootPath
-                ? 'Add a root path to this project to launch a coding agent here.'
-                : `Open ${codingAgentById(agentId)?.label ?? 'the agent'} in Build with this prompt`}
-              style={smallBtn}
-            >{sending ? 'Sending…' : 'Send'}</Button>
+            <Tooltip content={!project.rootPath
+              ? 'Add a root path to this project to launch a coding agent here.'
+              : `Open ${codingAgentById(agentId)?.label ?? 'the agent'} in Build with this prompt`}>
+              <Button
+                colors={colors}
+                onClick={sendToAgent}
+                disabled={sending || !project.rootPath}
+                style={smallBtn}
+              >{sending ? 'Sending…' : 'Send'}</Button>
+            </Tooltip>
           </div>
           <pre style={{
             margin: 0, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-            borderRadius: radius.md, padding: 10, fontSize: textSize.micro, fontFamily: font.mono,
+            borderRadius: CARD_INNER_R, padding: space.lg, fontSize: textSize.micro, fontFamily: font.mono,
             color: colors.textMuted, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             maxHeight: 200, overflowY: 'auto',
           }}>{directive}</pre>
@@ -367,7 +375,7 @@ export function ActionCard({
       )}
 
       {canArchive && (
-        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ marginTop: space.md, display: 'flex', alignItems: 'center', gap: space.md, flexWrap: 'wrap' }}>
           {/* Not deletion, and the wording must not promise permanence: an
               archived action keeps being measured while it still owes a window,
               keeps feeding the agent's learning, and releases its text back for
@@ -388,13 +396,13 @@ export function ActionCard({
               style={smallBtn}
             >{moving === 'reopened' ? 'Reopening…' : 'Reopen'}</Button>
           )}
-          <span style={{ fontSize: 10, color: colors.textDim }}>
+          <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
             Files it away. It keeps being measured and keeps teaching the agent.
           </span>
         </div>
       )}
       {canDismiss && (
-        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ marginTop: space.md, display: 'flex', alignItems: 'center', gap: space.md, flexWrap: 'wrap' }}>
           <Button
             colors={colors}
             onClick={() => move('dismissed')}
@@ -406,13 +414,13 @@ export function ActionCard({
               archiving: a dismissed action stays ON the board, so the generator
               still sees it and cannot propose it again. Archiving releases the
               text. */}
-          <span style={{ fontSize: 10, color: colors.textDim }}>
+          <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
             Takes it off the list. The agent keeps it in view, so it will not suggest it again.
           </span>
         </div>
       )}
       {moveError && (
-        <div style={{ marginTop: 6, fontSize: textSize.micro, color: colors.danger }}>{moveError}</div>
+        <div style={{ marginTop: space.sm, fontSize: textSize.micro, color: colors.danger }}>{moveError}</div>
       )}
     </div>
   );

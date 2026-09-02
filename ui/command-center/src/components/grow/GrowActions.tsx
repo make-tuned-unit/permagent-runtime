@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
@@ -19,7 +19,9 @@ import { FiLoader } from 'react-icons/fi';
 import { Button } from '../common/Button';
 import type { Project } from '../projects/types';
 import { groupActionsByCategory } from './growActionTabs';
-import { segmentedTab } from './growStyles';
+import { SEGMENT_STRIP_PAD, SEGMENT_STRIP_RADIUS, segmentedTab } from './growStyles';
+import { SUMMARY_CLASS, growLabel } from './growChrome';
+import { CARD_PAD, CARD_R } from './growGeometry';
 import { WINDOW_DAYS } from './growthWindows';
 import { SkeletonCards } from './GrowStateBlocks';
 import { ActionCard } from './ActionCard';
@@ -212,14 +214,14 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
         projectName={project.name}
       />
 
-      <section style={{ marginTop: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-          <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
+      <section style={{ marginTop: space.md }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.lg }}>
+          <h3 style={{ ...growLabel(colors), margin: 0 }}>
             From your analytics
           </h3>
           <div style={{ flex: 1 }} />
           {actions?.generatedAt && (
-            <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
+            <span style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono }}>
               {new Date(actions.generatedAt).toLocaleString()}
             </span>
           )}
@@ -246,9 +248,9 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
               '--pa-btn-border': colors.border,
               '--pa-btn-bg-hover': colors.surfaceHi,
               '--pa-btn-border-hover': colors.borderHi,
-              '--pa-btn-pad': '5px 12px',
+              '--pa-btn-pad': `${space.sm}px ${space.xl}px`,
               '--pa-btn-radius': `${radius.md}px`,
-              fontFamily: font.body, fontSize: textSize.caption, gap: 6,
+              fontFamily: font.body, fontSize: textSize.caption, gap: space.sm,
             } as CSSProperties}
           >
             {busyGenerating
@@ -262,8 +264,8 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
             daemon, so this is true whether or not this tab is open. */}
         {busyGenerating && (
           <div style={{
-            fontSize: textSize.micro, color: colors.textDim, marginBottom: 10,
-            display: 'flex', alignItems: 'center', gap: 6,
+            fontSize: textSize.micro, color: colors.textDim, marginBottom: space.lg,
+            display: 'flex', alignItems: 'center', gap: space.sm,
           }}>
             <FiLoader size={11} className="pa-spin" aria-hidden />
             <span>
@@ -283,7 +285,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
         {actionsState === 'ready' && !hasActions && !busyGenerating && (
           <div style={{
             fontSize: textSize.caption, color: colors.textMuted, background: colors.bgDeeper,
-            border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: 12,
+            border: `1px solid ${colors.border}`, borderRadius: CARD_R, padding: CARD_PAD,
           }}>
             {/* An empty Actions list with a full Tracking list is not "nothing
                 to say" — it is "everything you were offered is now being
@@ -300,9 +302,9 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
             role="tablist"
             aria-label="Action category"
             style={{
-              display: 'flex', gap: 2, flexWrap: 'wrap',
-              background: colors.bgDeeper, borderRadius: radius.md, padding: 2,
-              marginBottom: 10,
+              display: 'flex', gap: SEGMENT_STRIP_PAD, flexWrap: 'wrap',
+              background: colors.bgDeeper, borderRadius: SEGMENT_STRIP_RADIUS, padding: SEGMENT_STRIP_PAD,
+              marginBottom: space.lg,
             }}
           >
             {actionGroups.map((group) => {
@@ -331,7 +333,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
           </div>
         )}
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
           {(selectedGroup?.actions ?? []).map((a, i) => (
             // Identity first: the durable id survives a regeneration that
             // rewords the title, so an in-flight verify stays attached to the
@@ -362,18 +364,15 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
             the verdict, not a reason to still call it undone, which is why
             the subhead carries that nuance instead of the heading. */}
         {tracking.length > 0 && (
-          <section style={{ marginTop: 18 }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
-              <h3 style={{
-                fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim,
-                textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0,
-              }}>Completed ({tracking.length})</h3>
-              <span style={{ fontSize: 10, color: colors.textDim }}>
+          <section style={{ marginTop: space.xxl + space.xs }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: space.lg, marginBottom: space.lg }}>
+              <h3 style={{ ...growLabel(colors), margin: 0 }}>Completed ({tracking.length})</h3>
+              <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
                 Shipped — still being measured, at {WINDOW_DAYS.join(', ')} days against the
                 traffic before them.
               </span>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
               {tracking.map((a, i) => (
                 <ActionCard
                   key={a.identity?.id ?? `tracking-${a.title}-${i}`}
@@ -392,12 +391,9 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
             looking for rather than something competing with the board — but
             present, because an archive you cannot open is a delete. */}
         {archived.length > 0 && (
-          <details style={{ marginTop: 12 }}>
-            <summary style={{
-              fontFamily: font.mono, fontSize: 10, letterSpacing: '0.08em',
-              textTransform: 'uppercase', color: colors.textDim, cursor: 'pointer',
-            }}>Archived ({archived.length})</summary>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+          <details style={{ marginTop: space.xl }}>
+            <summary className={SUMMARY_CLASS} style={growLabel(colors)}>Archived ({archived.length})</summary>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg, marginTop: space.lg }}>
               {archived.map((a, i) => (
                 <ActionCard
                   key={a.identity?.id ?? `archived-${a.title}-${i}`}
@@ -418,12 +414,9 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
             released. Collapsed for the same reason as the archive — a refusal
             is a record, not work. */}
         {dismissed.length > 0 && (
-          <details style={{ marginTop: 12 }}>
-            <summary style={{
-              fontFamily: font.mono, fontSize: 10, letterSpacing: '0.08em',
-              textTransform: 'uppercase', color: colors.textDim, cursor: 'pointer',
-            }}>Dismissed ({dismissed.length})</summary>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+          <details style={{ marginTop: space.xl }}>
+            <summary className={SUMMARY_CLASS} style={growLabel(colors)}>Dismissed ({dismissed.length})</summary>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg, marginTop: space.lg }}>
               {dismissed.map((a, i) => (
                 <ActionCard
                   key={a.identity?.id ?? `dismissed-${a.title}-${i}`}
@@ -439,7 +432,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
         )}
 
         {hasActions && (
-          <div style={{ fontSize: 10, color: colors.textDim, marginTop: 10 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.lg }}>
             Read from your own analytics by your agent, over the last{' '}
             {actions?.periodDays ?? 30} days. Each item cites the figure it came from — check it
             before acting.
@@ -452,7 +445,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
             drop nobody is told about is indistinguishable from a model that had
             less to say. */}
         {(droppedRestated > 0 || droppedNoTarget > 0 || droppedPresent > 0) && (
-          <div style={{ fontSize: 10, color: colors.textDim, marginTop: 6 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.sm }}>
             Last review dropped {droppedRestated + droppedNoTarget + droppedPresent} suggestion(s):{' '}
             {[
               droppedRestated > 0

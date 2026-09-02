@@ -21,7 +21,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { api } from '../../lib/api';
 
@@ -144,7 +144,7 @@ export function PostVideo({
         style={{
           ...shell,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          textAlign: 'center', padding: 8, boxSizing: 'border-box',
+          textAlign: 'center', padding: space.md, boxSizing: 'border-box',
           fontSize: textSize.micro, fontFamily: font.body, color: colors.textDim,
         }}
       >

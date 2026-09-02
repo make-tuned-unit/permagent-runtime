@@ -68,7 +68,6 @@ const OFF_RAMP_BUDGET: Record<string, number> = {
   'components/common': 3,
   'components/dashboard': 33,
   'components/finance': 1,
-  'components/grow': 52,
   'components/inbox': 4,
   'components/inspection': 10,
   'components/notifications': 1,

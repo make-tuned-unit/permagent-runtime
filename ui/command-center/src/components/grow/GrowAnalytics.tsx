@@ -7,12 +7,14 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
 import { Button } from '../common/Button';
 import type { Project } from '../projects/types';
 import { FunnelPanel } from './FunnelPanel';
+import { growCard, growLabel } from './growChrome';
+import { CARD_PAD, CARD_R } from './growGeometry';
 import type { SocialCard } from './calendarPosts';
 import { FirstPartyAnalyticsPanel } from './FirstPartyAnalyticsPanel';
 import { AnalyticsConnectionPanel } from './AnalyticsConnectionPanel';
@@ -201,7 +203,8 @@ export function GrowAnalytics({
     <>
       <div style={{
         fontSize: textSize.micro, color: colors.textDim, background: colors.bgDeeper,
-        border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '8px 12px', marginBottom: 4,
+        border: `1px solid ${colors.border}`, borderRadius: CARD_R, padding: `${space.md}px ${space.xl}px`,
+        marginBottom: space.xs,
       }}>
         Analytics for <strong style={{ color: colors.text }}>{project.name}</strong>, collected by
         Permagent onto your own infrastructure — nothing here is faked or shared. What to DO about
@@ -264,36 +267,37 @@ export function GrowAnalytics({
       )}
 
       {/* Metric tiles */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: space.xl }}>
         {tiles.map((t) => (
-          <div key={t.label} style={{
-            background: colors.surface, border: `1px solid ${colors.border}`,
-            borderRadius: radius.lg, padding: 16,
-          }}>
-            <div style={{ fontFamily: font.display, fontSize: 26, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{t.value}</div>
-            <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em', marginTop: 4 }}>{t.label}</div>
-            <div style={{ fontSize: 10, color: colors.textDim, marginTop: 2 }}>{t.sub}</div>
+          <div key={t.label} style={growCard(colors, { r: CARD_R, pad: CARD_PAD })}>
+            <div style={{ fontFamily: font.display, fontSize: textSize.title, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{t.value}</div>
+            <div style={{ ...growLabel(colors), marginTop: space.xs }}>{t.label}</div>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs / 2 }}>{t.sub}</div>
           </div>
         ))}
       </div>
 
       {/* Funnel */}
-      <section style={{ marginTop: 8 }}>
-        <h3 style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 12px' }}>Growth funnel</h3>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <section style={{ marginTop: space.md }}>
+        <h3 style={{ ...growLabel(colors), margin: `0 0 ${space.xl}px` }}>Growth funnel</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
           {funnel.map((f) => (
-            <div key={f.stage} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div key={f.stage} style={{ display: 'flex', alignItems: 'center', gap: space.xl }}>
               <div style={{ width: 96, fontSize: textSize.caption, color: colors.textMuted, textAlign: 'right', flexShrink: 0 }}>{f.stage}</div>
               <div style={{ flex: 1, height: 26, background: colors.bgDeeper, borderRadius: radius.sm, overflow: 'hidden', position: 'relative' }}>
                 {f.source ? (
+                  // One tint, not two. The bar was a cyan-to-purple gradient,
+                  // which reads as a second dimension the number does not have —
+                  // a magnitude bar encodes length and nothing else. D8: one
+                  // accent per view, and it belongs to the action.
                   <div style={{
                     width: `${Math.max(6, ((f.value ?? 0) / maxV) * 100)}%`, height: '100%',
-                    background: `linear-gradient(90deg, ${colors.cyan}, ${colors.purple})`,
+                    background: colors.cyan,
                     borderRadius: radius.sm,
                   }} />
                 ) : (
-                  <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', paddingLeft: 10 }}>
-                    <span style={{ fontSize: 10, color: colors.textDim, fontStyle: 'italic' }}>{f.hint}</span>
+                  <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', paddingLeft: space.lg }}>
+                    <span style={{ fontSize: textSize.micro, color: colors.textDim, fontStyle: 'italic' }}>{f.hint}</span>
                   </div>
                 )}
               </div>
