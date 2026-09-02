@@ -3,6 +3,7 @@ import { AGENT_TRIM } from './shared/palette';
 import { HudShell, Section } from './HudShell';
 import { Chip } from '../common/Chip';
 import { textSize } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 
 // The Reader — the local OCR / document-ingest pipeline (#336/#342). Unlike Henry and
 // the Librarian, the Reader has no live status endpoint yet (its state is sim-ambient
@@ -18,6 +19,7 @@ interface ReaderHUDProps {
 }
 
 export function ReaderHUD({ visible, onClose }: ReaderHUDProps) {
+  const { colors } = useTheme();
   if (!visible) return null;
 
   // Static, and now drawn as such. "LOCAL" is a fact about where the Reader
@@ -38,7 +40,7 @@ export function ReaderHUD({ visible, onClose }: ReaderHUDProps) {
   return (
     <HudShell visible={visible} onClose={onClose} title="THE READER" statusPill={statusPill}>
       <div style={{ padding: '4px 14px 8px' }}>
-        <span style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           On-device OCR &amp; document ingest — turns dropped files into Brain memories,
           entirely on this machine.
         </span>
@@ -51,7 +53,7 @@ export function ReaderHUD({ visible, onClose }: ReaderHUDProps) {
       </Section>
 
       <Section title="HOW TO FEED IT" trimColor={COLORS.neonAmber}>
-        <span style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.5 }}>
           Drag a file onto the window. The Reader extracts its text locally and hands
           the digest to the Brain — nothing leaves the machine.
         </span>
@@ -61,8 +63,9 @@ export function ReaderHUD({ visible, onClose }: ReaderHUDProps) {
 }
 
 function Bullet({ children }: { children: React.ReactNode }) {
+  const { colors } = useTheme();
   return (
-    <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.7, display: 'flex', gap: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.7, display: 'flex', gap: 8 }}>
       <span style={{ color: READER_TRIM }}>·</span>
       <span>{children}</span>
     </div>

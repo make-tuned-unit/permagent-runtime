@@ -4,6 +4,7 @@ import { HudShell, Section } from './HudShell';
 import { useNudge } from './agents/watcherNudge';
 import { Chip } from '../common/Chip';
 import { textSize } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 
 // The Watcher (Echo, #672) — the daemon's proactive worker. It watches the
 // Brain and project news and surfaces at most one nudge a day.
@@ -23,6 +24,7 @@ interface WatcherHUDProps {
 }
 
 export function WatcherHUD({ visible, onClose }: WatcherHUDProps) {
+  const { colors } = useTheme();
   const nudge = useNudge();
 
   if (!visible) return null;
@@ -44,7 +46,7 @@ export function WatcherHUD({ visible, onClose }: WatcherHUDProps) {
   return (
     <HudShell visible={visible} onClose={onClose} title="THE WATCHER" statusPill={statusPill}>
       <div style={{ padding: '4px 14px 8px' }}>
-        <span style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           The proactive worker — dormant Brain threads, project news, and (with
           the Financier) overbought sell signals on stocks you already hold.
           News is at most one a day. Holding alerts are daily per symbol.
@@ -61,15 +63,15 @@ export function WatcherHUD({ visible, onClose }: WatcherHUDProps) {
       <Section title="LAST NUDGE" trimColor={COLORS.neonAmber}>
         {hasNudge ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <span style={{ fontSize: textSize.micro, color: '#F3F4F6', fontWeight: 600, lineHeight: 1.4 }}>
+            <span style={{ fontSize: textSize.micro, color: colors.text, fontWeight: 600, lineHeight: 1.4 }}>
               {nudge.subject || nudge.kind || 'Nudge'}
             </span>
             {nudge.message && (
-              <span style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
+              <span style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.5 }}>
                 {nudge.message}
               </span>
             )}
-            <span style={{ fontSize: 10, color: '#9CA3AF' }}>
+            <span style={{ fontSize: textSize.micro, color: colors.textMuted }}>
               {new Date(nudge.at).toLocaleString(undefined, {
                 month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
               })}
@@ -77,7 +79,7 @@ export function WatcherHUD({ visible, onClose }: WatcherHUDProps) {
             </span>
           </div>
         ) : (
-          <span style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
+          <span style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.5 }}>
             No nudge yet this session. The vigil beacon on the Watcher's tower
             flares when one arrives.
           </span>
@@ -88,8 +90,9 @@ export function WatcherHUD({ visible, onClose }: WatcherHUDProps) {
 }
 
 function Bullet({ children }: { children: React.ReactNode }) {
+  const { colors } = useTheme();
   return (
-    <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.7, display: 'flex', gap: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.7, display: 'flex', gap: 8 }}>
       <span style={{ color: WATCHER_TRIM }}>·</span>
       <span>{children}</span>
     </div>

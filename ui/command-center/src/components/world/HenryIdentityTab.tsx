@@ -1,10 +1,9 @@
 import { useEffect, useState, useCallback, type CSSProperties } from 'react';
-import { COLORS } from './constants';
 import { Section, StatRow } from './HudShell';
 import { useIdentityStore } from '../../stores/identityStore';
 import { computePortalEligibility } from '../../utils/portalEligibility';
 import { SBT_CONTRACT } from '../../config/chain';
-import { radius, textSize } from '../../styles/tokens';
+import { duration, ease, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -52,24 +51,21 @@ function arweaveUrl(txId: string): string {
   return `https://arweave.net/${txId}`;
 }
 
-// ── Colors ───────────────────────────────────────────────────────
+// ── Theme-derived identity ink (was hardcoded greens/reds) ─────────
 
-const IDENTITY_GREEN = '#4ADE80';
-const SEALED_PILL = { bg: 'rgba(74, 222, 128, 0.12)', text: IDENTITY_GREEN, border: '#22C55E' };
-const CHECK_PASS = '#4ADE80';
-const CHECK_FAIL = '#EF4444';
-const CHECK_WARN = COLORS.neonAmber;
-const MUTED = '#6B7280';
-
-const CONNECTIVITY_COLORS: Record<string, string> = {
-  ok: '#4ADE80',
-  degraded: COLORS.neonAmber,
-  offline: '#EF4444',
-};
+function sealedPill(success: string) {
+  return { bg: `${success}1f`, text: success, border: success };
+}
+function connectivityColor(c: { success: string; warning: string; dangerStrong: string }, state: string): string {
+  if (state === 'ok') return c.success;
+  if (state === 'degraded') return c.warning;
+  return c.dangerStrong;
+}
 
 // ── Component ────────────────────────────────────────────────────
 
 export function HenryIdentityTab() {
+  const { colors } = useTheme();
   const { data: id, loading, connectivity, lastSuccessfulFetch, refresh, startPolling, stopPolling } = useIdentityStore();
 
   useEffect(() => {
@@ -85,7 +81,7 @@ export function HenryIdentityTab() {
   if (!id) {
     return (
       <div style={{ padding: '20px 14px', textAlign: 'center' }}>
-        <div style={{ fontSize: textSize.micro, color: MUTED, lineHeight: 1.6 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.6 }}>
           Awaiting first verification
         </div>
       </div>
@@ -101,19 +97,19 @@ export function HenryIdentityTab() {
         <img
           src={id.avatarUrl}
           alt={id.name}
-          style={{ width: 36, height: 36, borderRadius: radius.sm, border: `1px solid ${IDENTITY_GREEN}40` }}
+          style={{ width: 36, height: 36, borderRadius: radius.sm, border: `1px solid ${colors.success}40` }}
         />
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: textSize.body, fontWeight: 600, color: COLORS.primaryMarble }}>
+            <span style={{ fontSize: textSize.body, fontWeight: 600, color: colors.text }}>
               {id.name}
             </span>
             {connectivity !== 'ok' && (
               <span style={{
                 width: 6,
                 height: 6,
-                borderRadius: '50%',
-                background: CONNECTIVITY_COLORS[connectivity],
+                borderRadius: radius.pill,
+                background: connectivityColor(colors, connectivity),
                 display: 'inline-block',
                 flexShrink: 0,
               }} title={`Chain: ${connectivity}`} />
@@ -122,13 +118,13 @@ export function HenryIdentityTab() {
           <div style={{
             display: 'inline-block',
             padding: '1px 8px',
-            borderRadius: 3,
-            fontSize: 10,
+            borderRadius: radius.xs,
+            fontSize: textSize.micro,
             fontWeight: 700,
             letterSpacing: '0.08em',
-            background: SEALED_PILL.bg,
-            color: SEALED_PILL.text,
-            border: `1px solid ${SEALED_PILL.border}`,
+            background: sealedPill(colors.success).bg,
+            color: sealedPill(colors.success).text,
+            border: `1px solid ${sealedPill(colors.success).border}`,
             marginTop: 2,
           }}>
             {id.status.toUpperCase()}
@@ -137,14 +133,14 @@ export function HenryIdentityTab() {
       </div>
 
       {/* SOUL */}
-      <Section title="SOUL" trimColor={IDENTITY_GREEN}>
+      <Section title="SOUL" trimColor={colors.success}>
         <StatRow label="DID" value={id.did} />
         <StatRow label="Born" value={formatDate(id.bornAt)} />
         <StatRow label="Owner" value={truncAddr(id.owner)} />
       </Section>
 
       {/* VERIFICATION */}
-      <Section title="VERIFICATION" trimColor={IDENTITY_GREEN}>
+      <Section title="VERIFICATION" trimColor={colors.success}>
         <StatRow label="Status" value={id.status.toUpperCase()} />
         <StatRow label="Soul" value={id.soulValid ? 'Valid' : 'Invalid'} />
         <StatRow label="Last verified" value={eligibility.verifiedDaysAgo != null ? `${eligibility.verifiedDaysAgo}d ago` : 'N/A'} />
@@ -152,7 +148,7 @@ export function HenryIdentityTab() {
       </Section>
 
       {/* ON-CHAIN */}
-      <Section title="ON-CHAIN" trimColor={COLORS.neonAmber}>
+      <Section title="ON-CHAIN" trimColor={colors.warning}>
         <LinkRow label="SBT" value={`#${id.sbtId}`} href={sbtUrl(id.sbtId)} />
         <LinkRow label="Passport" value={`#${id.passportId}`} href={passportUrl(id.passportId)} />
         <LinkRow label="Chain" value="Base L2" />
@@ -160,7 +156,7 @@ export function HenryIdentityTab() {
       </Section>
 
       {/* PORTAL READINESS */}
-      <Section title="PORTAL READINESS" trimColor={COLORS.neonCyan}>
+      <Section title="PORTAL READINESS" trimColor={colors.cyan}>
         <CheckRow
           label="Sealed"
           pass={eligibility.sealed}
@@ -184,11 +180,11 @@ export function HenryIdentityTab() {
         />
         {/* Overall status */}
         <div style={{
-          fontSize: 10,
+          fontSize: textSize.micro,
           fontWeight: 700,
           letterSpacing: '0.06em',
           marginTop: 8,
-          color: eligibility.ready ? CHECK_PASS : MUTED,
+          color: eligibility.ready ? colors.success : colors.textDim,
         }}>
           {eligibility.ready
             ? 'READY'
@@ -199,10 +195,10 @@ export function HenryIdentityTab() {
       {/* ACTIONS */}
       <div style={{ padding: '4px 14px 12px' }}>
         <div style={{
-          fontSize: 10,
+          fontSize: textSize.micro,
           fontWeight: 700,
           letterSpacing: '0.1em',
-          color: MUTED,
+          color: colors.textDim,
           marginBottom: 6,
         }}>
           ACTIONS
@@ -223,8 +219,8 @@ export function HenryIdentityTab() {
       {/* Footer: last refreshed */}
       <div style={{
         padding: '4px 14px 8px',
-        fontSize: 10,
-        color: '#4B5563',
+        fontSize: textSize.micro,
+        color: colors.textDim,
         textAlign: 'right',
       }}>
         Last refreshed: {relativeMinutes(lastSuccessfulFetch)}
@@ -236,6 +232,7 @@ export function HenryIdentityTab() {
 // ── Sub-components ───────────────────────────────────────────────
 
 function LinkRow({ label, value, href }: { label: string; value: string; href?: string }) {
+  const { colors } = useTheme();
   const [hovered, setHovered] = useState(false);
   const clickable = !!href;
 
@@ -256,19 +253,19 @@ function LinkRow({ label, value, href }: { label: string; value: string; href?: 
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <span style={{ color: '#9CA3AF' }}>{label}</span>
+      <span style={{ color: colors.textMuted }}>{label}</span>
       <span style={{
-        color: COLORS.primaryMarble,
+        color: colors.text,
         fontWeight: 500,
         textDecoration: clickable && hovered ? 'underline' : 'none',
       }}>
         {value}
         {clickable && (
           <span style={{
-            color: hovered ? COLORS.neonCyan : MUTED,
+            color: hovered ? colors.cyan : colors.textDim,
             marginLeft: 4,
-            fontSize: 10,
-            transition: 'color 0.15s',
+            fontSize: textSize.micro,
+            transition: `color ${duration.snappy}ms ${ease.snappy}`,
           }}>↗</span>
         )}
       </span>
@@ -282,15 +279,16 @@ function CheckRow({ label, pass, detail, warn }: {
   detail: string;
   warn?: boolean;
 }) {
+  const { colors } = useTheme();
   const icon = pass ? '✓' : '✗';
-  const color = pass ? CHECK_PASS : warn ? CHECK_WARN : CHECK_FAIL;
+  const color = pass ? colors.success : warn ? colors.warning : colors.dangerStrong;
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: textSize.micro, lineHeight: 1.6 }}>
-      <span style={{ color: '#9CA3AF' }}>
+      <span style={{ color: colors.textMuted }}>
         <span style={{ color, marginRight: 4 }}>{icon}</span>
         {label}
       </span>
-      <span style={{ color: MUTED, fontSize: 10, fontWeight: 400 }}>{detail}</span>
+      <span style={{ color: colors.textDim, fontSize: textSize.micro, fontWeight: 400 }}>{detail}</span>
     </div>
   );
 }
@@ -312,15 +310,15 @@ function ActionButton({ label, disabled, onClick }: {
       disabled={disabled}
       onClick={onClick}
       style={{
-        '--pa-btn-fg': disabled ? '#4B5563' : '#9CA3AF',
-        '--pa-btn-fg-hover': COLORS.neonCyan,
-        '--pa-btn-bg-hover': 'transparent',
-        '--pa-btn-bg-active': 'transparent',
+        '--pa-btn-fg': disabled ? colors.textDim : colors.textMuted,
+        '--pa-btn-fg-hover': colors.cyan,
+        '--pa-btn-bg-hover': colors.fillHover,
+        '--pa-btn-bg-active': colors.fillActive,
         '--pa-btn-pad': '5px 0',
         '--pa-btn-radius': '0',
         '--pa-btn-weight': 600,
         flex: 1,
-        fontSize: 10,
+        fontSize: textSize.micro,
         fontFamily: 'monospace',
         letterSpacing: '0.04em',
       } as CSSProperties}

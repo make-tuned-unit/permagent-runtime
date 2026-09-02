@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { COLORS } from './constants';
-import { AGENT_TRIM } from './shared/palette';
+import { AGENT_TRIM, STATE } from './shared/palette';
 import { useAgentRuntimeStates } from './shared/agentStatus';
 import { HudShell, Section } from './HudShell';
 import { Button } from '../common/Button';
@@ -23,9 +23,7 @@ interface FinancierHUDProps {
 export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
   const runtime = useAgentRuntimeStates();
   const [tabHint, setTabHint] = useState(false);
-  // World chrome keeps the world palette; the theme only feeds the button
-  // primitive's variant defaults.
-  const { colors: themeColors } = useTheme();
+  const { colors } = useTheme();
 
   useEffect(() => {
     if (!visible) setTabHint(false);
@@ -42,7 +40,7 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
       : live?.hudState === 'error'
         ? 'QUOTE FAILED'
         : 'ON THE LEDGER';
-  const pillColor = isDaemon && live?.hudState === 'error' ? '#FF5D5D' : FINANCIER_TRIM;
+  const pillColor = isDaemon && live?.hudState === 'error' ? STATE.error : FINANCIER_TRIM;
 
   // A daemon-backed reading is a live one and is drawn as such — filled, with
   // a liveness dot, pulsing only while work is genuinely in flight. Without a
@@ -55,7 +53,7 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
   return (
     <HudShell visible={visible} onClose={onClose} title="THE FINANCIER" statusPill={statusPill}>
       <div style={{ padding: '4px 14px 8px' }}>
-        <span style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           Owns the Finance tab. The Orchestrator can see the board and
           queries this desk for prices, the ledger, and Polybot. The Watcher
           delivers overbought holding alerts. Keys stay in the keychain;
@@ -72,7 +70,7 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
       </Section>
 
       <Section title="THE LEASH" trimColor={COLORS.neonAmber}>
-        <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.5 }}>
           No size advice. Permagent does not hold CLOB keys. Starting Polybot
           lets that bot trade on Polymarket.
         </div>
@@ -80,7 +78,7 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
 
       <div style={{ padding: '8px 14px 12px' }}>
         <Button
-          colors={themeColors}
+          colors={colors}
           variant="ghostOn"
           type="button"
           onClick={() => {
@@ -105,7 +103,7 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
           OPEN THE FINANCE TAB
         </Button>
         {tabHint && (
-          <div style={{ fontSize: textSize.micro, color: '#9CA3AF', marginTop: 8 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 8 }}>
             The Finance tab is not in this workspace yet — it is added on the next daemon start.
           </div>
         )}
@@ -115,8 +113,9 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
 }
 
 function Bullet({ children }: { children: React.ReactNode }) {
+  const { colors } = useTheme();
   return (
-    <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.7, display: 'flex', gap: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.7, display: 'flex', gap: 8 }}>
       <span style={{ color: FINANCIER_TRIM }}>·</span>
       <span>{children}</span>
     </div>

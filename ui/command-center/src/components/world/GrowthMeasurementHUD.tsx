@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { COLORS } from './constants';
-import { AGENT_TRIM } from './shared/palette';
+import { AGENT_TRIM, STATE } from './shared/palette';
 import { useAgentRuntimeStates } from './shared/agentStatus';
 import { HudShell, Section, StatRow } from './HudShell';
 import { Chip } from '../common/Chip';
 import { apiFetch } from '../../lib/api';
 import { textSize } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 import type { GrowthResultsData } from '../grow/growthResults';
 
 // Growth measurement — the pass that closes the Grow loop (crate::growth::sweep
@@ -29,6 +30,7 @@ interface GrowthMeasurementHUDProps {
 }
 
 export function GrowthMeasurementHUD({ visible, onClose }: GrowthMeasurementHUDProps) {
+  const { colors } = useTheme();
   const runtime = useAgentRuntimeStates();
   const [data, setData] = useState<GrowthResultsData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +65,7 @@ export function GrowthMeasurementHUD({ visible, onClose }: GrowthMeasurementHUDP
         : isDaemon
           ? 'ON WATCH'
           : 'STANDING BY';
-  const pillColor = isDaemon && live?.hudState === 'error' ? '#FF5D5D' : GROWTH_TRIM;
+  const pillColor = isDaemon && live?.hudState === 'error' ? STATE.error : GROWTH_TRIM;
   const statusPill = isDaemon ? (
     <Chip kind="state" color={pillColor} pulse={live?.hudState === 'working'}>
       {label}
@@ -81,7 +83,7 @@ export function GrowthMeasurementHUD({ visible, onClose }: GrowthMeasurementHUDP
   return (
     <HudShell visible={visible} onClose={onClose} title="THE GROWER" statusPill={statusPill}>
       <div style={{ padding: '4px 14px 8px' }}>
-        <span style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           Every 6 hours: verify a shipped growth action, freeze its
           before-window, then as each 7/14/28-day window closes compare after
           with before against the project's own week-to-week swing.
@@ -103,14 +105,14 @@ export function GrowthMeasurementHUD({ visible, onClose }: GrowthMeasurementHUDP
             <StatRow label="Projects" value={fleet.projects} />
           </>
         ) : (
-          <div style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
             Reading…
           </div>
         )}
       </Section>
 
       <Section title="LAST SWEEP" trimColor={GROWTH_TRIM}>
-        <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.5 }}>
           {lastJudgedAt
             ? `Last verdict landed ${new Date(lastJudgedAt).toLocaleString()}.`
             : measured === 0
