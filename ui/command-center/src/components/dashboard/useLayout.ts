@@ -14,18 +14,21 @@ export interface DashboardLayoutData {
   cards: DashboardCardLayout[];
 }
 
+// 'hero' (Status/readiness) is gone from this default (2026-09-01) — retired
+// in favor of the sidebar's nav status indicator beside Home. Positions are
+// recomputed by `reflow` rather than hand-adjusted, same as every other pass
+// in this file.
 export const DEFAULT_LAYOUT: DashboardLayoutData = {
-  cards: [
-    { id: 'hero', type: 'hero', position: { x: 0, y: 0 }, size: { w: 7, h: 4 }, visible: true },
-    { id: 'decisions', type: 'decisions', position: { x: 7, y: 0 }, size: { w: 5, h: 4 }, visible: true },
-    { id: 'stats', type: 'stats', position: { x: 0, y: 4 }, size: { w: 5, h: 4 }, visible: true },
-    { id: 'calendar', type: 'calendar', position: { x: 5, y: 4 }, size: { w: 7, h: 4 }, visible: true },
-    { id: 'council', type: 'council', position: { x: 0, y: 8 }, size: { w: 12, h: 6 }, visible: true },
-    { id: 'in_flight', type: 'in_flight', position: { x: 0, y: 14 }, size: { w: 12, h: 3 }, visible: true },
-    { id: 'growth_results', type: 'growth_results', position: { x: 0, y: 17 }, size: { w: 12, h: 6 }, visible: true },
-    { id: 'recent', type: 'recent', position: { x: 0, y: 23 }, size: { w: 12, h: 4 }, visible: true },
-    { id: 'timeline', type: 'timeline', position: { x: 0, y: 27 }, size: { w: 12, h: 6 }, visible: true },
-  ],
+  cards: reflow([
+    { id: 'decisions', type: 'decisions', position: { x: 0, y: 0 }, size: { w: 5, h: 4 }, visible: true },
+    { id: 'stats', type: 'stats', position: { x: 0, y: 0 }, size: { w: 5, h: 4 }, visible: true },
+    { id: 'calendar', type: 'calendar', position: { x: 0, y: 0 }, size: { w: 7, h: 4 }, visible: true },
+    { id: 'council', type: 'council', position: { x: 0, y: 0 }, size: { w: 12, h: 6 }, visible: true },
+    { id: 'in_flight', type: 'in_flight', position: { x: 0, y: 0 }, size: { w: 12, h: 3 }, visible: true },
+    { id: 'growth_results', type: 'growth_results', position: { x: 0, y: 0 }, size: { w: 12, h: 6 }, visible: true },
+    { id: 'recent', type: 'recent', position: { x: 0, y: 0 }, size: { w: 12, h: 4 }, visible: true },
+    { id: 'timeline', type: 'timeline', position: { x: 0, y: 0 }, size: { w: 12, h: 6 }, visible: true },
+  ]),
 };
 
 /**
@@ -73,6 +76,31 @@ const COMPACT_SIZES: Record<string, CardSize> = {
   timeline: { w: 12, h: 5 },
   council: { w: 12, h: 5 },
 };
+
+/**
+ * First-party card types the registry no longer offers. A layout persisted
+ * before a retirement still names them, and without this the grid asks
+ * `Component: registry[card.type]?.component`, gets nothing, and shows a
+ * MissingCard "Card no longer available" ghost tile forever (registry.ts has
+ * no entry to add back). Filtering them out of the loaded layout is the
+ * graceful-degrade path instead: the retired card simply is not there, same
+ * as if the user had removed it in Customize.
+ *
+ * No one-time-pass marker (unlike the migrations below): this is safe and
+ * cheap to re-check on every load — once a layout has none of these types it
+ * is a no-op forever, and a future retirement only has to add a type here.
+ */
+const RETIRED_CARD_TYPES = new Set<string>(['hero']);
+
+export function stripRetiredCards(
+  layout: DashboardLayoutData,
+): { layout: DashboardLayoutData; changed: boolean } {
+  if (!layout.cards.some(c => RETIRED_CARD_TYPES.has(c.type))) {
+    return { layout, changed: false };
+  }
+  const cards = layout.cards.filter(c => !RETIRED_CARD_TYPES.has(c.type));
+  return { layout: { cards: reflow(cards) }, changed: true };
+}
 
 /**
  * Marker for the one-time compaction. Without it the pass would re-apply on
@@ -237,13 +265,17 @@ export function useLayout() {
     apiFetch<DashboardLayoutData>('/api/dashboard/layout')
       .then(fetched => {
         if (cancelled) return;
+        // Strip any retired first-party card (e.g. 'hero') before anything
+        // else touches the layout — every pass below should only ever see
+        // card types the registry can still render.
+        const stripped = stripRetiredCards(fetched);
         // Run the compaction at most once per machine; afterwards the user's
         // own sizing is authoritative.
         const compacted = hasRunCompactPass()
-          ? { layout: fetched, changed: false }
-          : compactLayoutPass(fetched);
+          ? { layout: stripped.layout, changed: false }
+          : compactLayoutPass(stripped.layout);
         let normalized = compacted.layout;
-        let changed = compacted.changed;
+        let changed = stripped.changed || compacted.changed;
         if (!hasRunGrowthCardPass()) {
           const inserted = ensureGrowthResultsCard(normalized);
           normalized = inserted.layout;

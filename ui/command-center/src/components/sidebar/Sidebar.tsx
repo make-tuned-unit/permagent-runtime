@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
+import type { LayoutNode } from '../../lib/store';
 import { ease, font, radius, shell, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { FiBell, FiChevronLeft, FiChevronRight, FiSettings } from 'react-icons/fi';
@@ -10,6 +11,16 @@ import { markAllRead, toggleTray, useNotifications, useTrayOpen } from '../../li
 import { resolveIconPath } from '../common/icons';
 import { SidebarTooltip, useSidebarTooltip } from './SidebarTooltip';
 import { MeetingRecorder } from '../voice/MeetingRecorder';
+import { NavStatusBadge, NavStatusLine, useNavAgentStatus } from './NavAgentStatus';
+
+/** The workspace whose layout is a single `dashboard` panel — "Home". Walks
+ *  split layouts too, though Home in practice is never split. Identifying it
+ *  by tool rather than by name keeps this honest against a renamed workspace
+ *  (workspace names, like the agent's, are user-configurable). */
+function hasDashboardTool(node: LayoutNode): boolean {
+  if (node.type === 'panel') return node.tool === 'dashboard';
+  return node.children.some(hasDashboardTool);
+}
 
 
 /** Notifications row — a standard sidebar row (above Settings) that toggles
@@ -169,6 +180,7 @@ export function Sidebar() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
 
   const { target: tooltipTarget, show: showTooltip, hide: hideTooltip } = useSidebarTooltip();
+  const navStatus = useNavAgentStatus();
 
   const isSettingsOpen = activePanel === 'settings';
   // Any non-chat panel (settings, skills) is a full-screen overlay. It
@@ -250,18 +262,49 @@ export function Sidebar() {
         const shortcut = i < 9
           ? (navigator.platform.includes('Mac') ? `⌘${i + 1}` : `Ctrl+${i + 1}`)
           : undefined;
+        // Home carries the agent status indicator (2026-09-01 ruling) — the
+        // dashboard's old hero card, retired, in a quiet line beside its row
+        // instead of a whole card's worth of chrome. See NavAgentStatus.tsx.
+        // Every other row is unaffected — same bare SidebarRow as before.
+        if (!hasDashboardTool(ws.layoutJson)) {
+          return (
+            <SidebarRow
+              key={ws.id}
+              icon={iconPath}
+              label={ws.name}
+              active={isActive}
+              open={open}
+              onClick={() => goToWorkspace(ws.id)}
+              shortcut={shortcut}
+              onHover={showTooltip}
+              onLeave={hideTooltip}
+            />
+          );
+        }
         return (
-          <SidebarRow
-            key={ws.id}
-            icon={iconPath}
-            label={ws.name}
-            active={isActive}
-            open={open}
-            onClick={() => goToWorkspace(ws.id)}
-            shortcut={shortcut}
-            onHover={showTooltip}
-            onLeave={hideTooltip}
-          />
+          <div key={ws.id} style={{ position: 'relative' }}>
+            <SidebarRow
+              icon={iconPath}
+              label={ws.name}
+              active={isActive}
+              open={open}
+              onClick={() => goToWorkspace(ws.id)}
+              shortcut={shortcut}
+              onHover={showTooltip}
+              onLeave={hideTooltip}
+            />
+            {open ? (
+              <NavStatusLine name={navStatus.name} state={navStatus.state} word={navStatus.word} />
+            ) : (
+              <NavStatusBadge
+                name={navStatus.name}
+                state={navStatus.state}
+                word={navStatus.word}
+                onHover={showTooltip}
+                onLeave={hideTooltip}
+              />
+            )}
+          </div>
         );
       })}
 

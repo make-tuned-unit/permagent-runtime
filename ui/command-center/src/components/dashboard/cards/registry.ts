@@ -1,5 +1,4 @@
 import type { ComponentType } from 'react';
-import { HeroCard } from './HeroCard';
 import { StatsCard } from './StatsCard';
 import { InFlightCard } from './InFlightCard';
 import { RecentCard } from './RecentCard';
@@ -91,7 +90,10 @@ export interface CardRegistryEntry {
  * (below) can be added without editing this file at all.
  */
 export const CARD_REGISTRY: Record<string, CardRegistryEntry> = {
-  hero:      { component: HeroCard,     name: 'Status',          description: 'Agent status and readiness',    defaultSize: { w: 7, h: 4 } },
+  // 'hero' (Status/readiness) retired 2026-09-01 — replaced by the sidebar's
+  // nav status indicator beside Home (components/sidebar/NavAgentStatus.tsx).
+  // useLayout.ts strips any persisted 'hero' card so an old layout degrades
+  // to "not there" instead of a MissingCard ghost tile.
   decisions: { component: DecisionsCard, name: 'Decisions',      description: 'What your agent needs from you', defaultSize: { w: 5, h: 4 } },
   stats:     { component: StatsCard,    name: 'Stats',           description: 'Sessions today, memory nodes',  defaultSize: { w: 5, h: 4 } },
   in_flight: { component: InFlightCard, name: 'In Flight',       description: 'Goals your agent is actively working',defaultSize: { w: 12, h: 3 } },
