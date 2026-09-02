@@ -4,17 +4,21 @@
 
 import type { ReactNode } from 'react';
 import { useTheme } from '../../styles/useTheme';
-import { textSize } from '../../styles/tokens';
+import { radius, textSize } from '../../styles/tokens';
 
 export function Panel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   // Subtle surface veil — a white wash vanishes on silver, so flip to a faint
-  // graphite tint there (same approach as BrainList's theme-conditional rows).
-  const veil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  // graphite tint there — which is exactly what `fillSubtle` now is.
+  const veil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
   return (
     <section style={{
       background: veil, border: `1px solid ${colors.border}`,
-      borderRadius: 10, padding: '14px 16px',
+      borderRadius: radius.lg, padding: '14px 16px',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
         <span style={{

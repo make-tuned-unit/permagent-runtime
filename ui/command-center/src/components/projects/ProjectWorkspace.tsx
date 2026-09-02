@@ -157,10 +157,10 @@ function ProjectSwitcher({ project, projects, onSwitch }: {
                   '--pa-btn-fg': isCurrent ? colors.cyan : colors.text,
                   // The row the user is already on stayed inert under the mouse
                   // before, and still does — hover is a "you can go here" signal.
-                  '--pa-btn-bg-hover': isCurrent ? colors.cyanSoft : 'rgba(255,255,255,0.05)',
-                  '--pa-btn-bg-active': isCurrent ? colors.cyanSoft : 'rgba(255,255,255,0.09)',
+                  '--pa-btn-bg-hover': isCurrent ? colors.cyanSoft : colors.fillHover,
+                  '--pa-btn-bg-active': isCurrent ? colors.cyanSoft : colors.fillActive,
                   '--pa-btn-pad': '6px 10px',
-                  '--pa-btn-radius': '5px',
+                  '--pa-btn-radius': `${radius.xs}px`,
                   '--pa-btn-weight': isCurrent ? 600 : 400,
                   width: '100%',
                   justifyContent: 'flex-start',
@@ -191,7 +191,7 @@ function ViewToggle({ lens, onChange }: { lens: ProjectLens; onChange: (l: Proje
   return (
     <div style={{
       display: 'flex', gap: 2, padding: 2, borderRadius: radius.md,
-      background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
+      background: colors.fillSubtle, border: `1px solid ${colors.border}`,
     }}>
       {tabs.map(t => {
         const active = lens === t.key;
@@ -206,9 +206,9 @@ function ViewToggle({ lens, onChange }: { lens: ProjectLens; onChange: (l: Proje
               '--pa-btn-fg': active ? colors.cyan : colors.textMuted,
               // The selected tab is already where you are: hover only offers the
               // other two.
-              '--pa-btn-bg-hover': active ? colors.cyanSoft : 'rgba(255,255,255,0.05)',
+              '--pa-btn-bg-hover': active ? colors.cyanSoft : colors.fillHover,
               '--pa-btn-fg-hover': active ? colors.cyan : colors.text,
-              '--pa-btn-bg-active': active ? colors.cyanSoft : 'rgba(255,255,255,0.09)',
+              '--pa-btn-bg-active': active ? colors.cyanSoft : colors.fillActive,
               '--pa-btn-pad': '4px 12px',
               '--pa-btn-radius': `${radius.sm}px`,
               '--pa-btn-weight': active ? 600 : 500,

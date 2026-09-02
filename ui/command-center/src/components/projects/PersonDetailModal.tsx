@@ -1250,7 +1250,7 @@ function PersonDetailShell({
 function inputStyle(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
   return {
     fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
-    background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
+    background: colors.fillSubtle, border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none', width: '100%',
     boxSizing: 'border-box',
   };

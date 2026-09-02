@@ -20,7 +20,7 @@ import { FiExternalLink } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { projectMemoryPreview, type BrainMemoryTarget } from '../brain/brainMemoryFocus';
-import { font, textSize } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -95,7 +95,7 @@ export function CodeIndexPanel({ project }: { project: Project }) {
           '--pa-btn-bg': colors.cyanSoft,
           '--pa-btn-border': colors.borderHi,
           '--pa-btn-pad': '6px 14px',
-          '--pa-btn-radius': '7px',
+          '--pa-btn-radius': `${radius.md}px`,
           '--pa-btn-weight': 600,
           fontFamily: font.body,
           fontSize: textSize.caption,

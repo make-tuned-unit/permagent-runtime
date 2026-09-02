@@ -119,7 +119,10 @@ export function DocumentViewer({ projectId, doc, onClose }: {
       </>}
       bodyStyle={{
         padding: 0, minHeight: 0,
-        background: kind === 'image' ? '#0b0b0f' : colors.surface,
+        // The image mat. `bgDeeper` is the theme's own recessed ground, which
+        // is what a mat is; the literal near-black it replaces stayed near-black
+        // on the silver theme, where Preview.app's own mat is a light grey.
+        background: kind === 'image' ? colors.bgDeeper : colors.surface,
       }}
     >
       {error
@@ -190,8 +193,8 @@ function renderContent(
             colors={colors}
             onClick={onDownload}
             style={{
-              '--pa-btn-bg': 'rgba(255,255,255,0.04)',
-              '--pa-btn-bg-hover': 'rgba(255,255,255,0.08)',
+              '--pa-btn-bg': colors.fillSubtle,
+              '--pa-btn-bg-hover': colors.fillActive,
               '--pa-btn-border': colors.border,
               '--pa-btn-border-hover': colors.borderHi,
               '--pa-btn-pad': '8px 14px',

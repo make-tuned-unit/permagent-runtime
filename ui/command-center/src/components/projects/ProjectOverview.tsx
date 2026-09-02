@@ -417,9 +417,10 @@ function StrixFindingsPanel({ project }: { project: Project }) {
 }
 
 function KeyFactsPanel({ project }: { project: Project }) {
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   // White veils vanish on silver — flip to a faint graphite tint there.
-  const chipVeil = theme === 'silver' ? 'rgba(30,37,48,0.06)' : 'rgba(255,255,255,0.06)';
+  const chipVeil = colors.fillHover;
+  // The chip tint, one rung up the same neutral ladder (4/7/11).
   const facts: { label: string; value: ReactNode }[] = [
     { label: 'Status', value: <StatusPill status={project.status} /> },
     { label: 'Slug', value: project.slug },
@@ -532,8 +533,8 @@ function RootPathRow({ project }: { project: Project }) {
             aria-label="Copy root path"
             flashSuccess={false}
             style={{
-              '--pa-btn-bg': 'rgba(255,255,255,0.03)',
-              '--pa-btn-bg-hover': 'rgba(255,255,255,0.03)',
+              '--pa-btn-bg': colors.fillSubtle,
+              '--pa-btn-bg-hover': colors.fillSubtle,
               '--pa-btn-fg': copied ? colors.success : colors.textMuted,
               '--pa-btn-border': colors.border,
               '--pa-btn-border-hover': colors.borderHi,
@@ -676,8 +677,8 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
               colors={colors}
               onClick={() => navigate(link.url)}
               style={{
-                '--pa-btn-bg': 'rgba(255,255,255,0.03)',
-                '--pa-btn-bg-hover': 'rgba(255,255,255,0.03)',
+                '--pa-btn-bg': colors.fillSubtle,
+                '--pa-btn-bg-hover': colors.fillSubtle,
                 '--pa-btn-border': colors.border,
                 '--pa-btn-border-hover': colors.borderHi,
                 '--pa-btn-fg': colors.text,
@@ -712,10 +713,15 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
   onRetry: () => void;
   onOpenGoal: (cardId: string) => void;
 }) {
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   // White veils vanish on silver — flip to a faint graphite tint there.
-  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
-  const chipVeil = theme === 'silver' ? 'rgba(30,37,48,0.06)' : 'rgba(255,255,255,0.06)';
+  const rowVeil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
+  const chipVeil = colors.fillHover;
+  // The chip tint, one rung up the same neutral ladder (4/7/11).
   const ordered = [...columns].sort((a, b) => {
     const ai = a.stateBinding ? STATE_ORDER.indexOf(a.stateBinding) : 99;
     const bi = b.stateBinding ? STATE_ORDER.indexOf(b.stateBinding) : 99;
@@ -758,7 +764,7 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
                   <span style={{ fontSize: 10, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     {col.name}
                   </span>
-                  <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '0 5px', borderRadius: 7 }}>
+                  <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '0 5px', borderRadius: radius.md }}>
                     {colCards.length}
                   </span>
                 </div>
@@ -831,7 +837,7 @@ function fieldLabel(colors: ThemeColors): React.CSSProperties {
 function fieldInput(colors: ThemeColors): React.CSSProperties {
   return {
     fontSize: textSize.caption, fontFamily: font.body, color: colors.text,
-    background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
+    background: colors.fillSubtle, border: `1px solid ${colors.border}`,
     borderRadius: radius.sm, padding: '6px 8px', outline: 'none',
     textTransform: 'none', letterSpacing: 'normal', fontWeight: 400,
   };
@@ -906,8 +912,8 @@ function StatusPill({ status }: { status: string }) {
   return (
     <span style={{
       fontSize: 10, fontWeight: 600, textTransform: 'capitalize',
-      padding: '1px 8px', borderRadius: 5, color,
-      background: 'rgba(255,255,255,0.05)', border: `1px solid ${color}33`,
+      padding: '1px 8px', borderRadius: radius.xs, color,
+      background: colors.fillHover, border: `1px solid ${color}33`,
     }}>
       {status}
     </span>

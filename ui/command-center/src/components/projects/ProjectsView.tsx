@@ -247,12 +247,17 @@ projects, onOpenProject, onStatusChange }: {
   onOpenProject: (id: string) => void;
   onStatusChange: (id: string, status: string) => void;
 }) {
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   const { gradient } = useTheme();
   // White veils vanish on silver's white surfaces — flip to a faint graphite
-  // tint there (same approach as BrainList's theme-conditional rows).
-  const stripVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
-  const chipVeil = theme === 'silver' ? 'rgba(30,37,48,0.06)' : 'rgba(255,255,255,0.06)';
+  // tint there — which is exactly what `fillSubtle`/`fillHover` now are.
+  const stripVeil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
+  const chipVeil = colors.fillHover;
+  // The chip tint, one rung up the same neutral ladder (4/7/11).
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -346,7 +351,7 @@ projects, onOpenProject, onStatusChange }: {
               onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, col.key)}
               style={{
-                marginTop: 14, borderRadius: 10,
+                marginTop: 14, borderRadius: radius.lg,
                 border: isOver ? `1px solid ${colors.borderHi}` : `1px solid ${colors.border}`,
                 background: isOver ? colors.cyanSoft : stripVeil,
                 transition: 'all 150ms',
@@ -420,8 +425,9 @@ project, onOpen, onDragStart }: {
   onOpen: () => void;
   onDragStart: (e: React.DragEvent) => void;
 }) {
-  const { colors, theme, reduceMotion } = useTheme();
-  const tagVeil = theme === 'silver' ? 'rgba(30,37,48,0.06)' : 'rgba(255,255,255,0.06)';
+  const { colors, reduceMotion } = useTheme();
+  const tagVeil = colors.fillHover;
+  // The chip tint, one rung up the same neutral ladder (4/7/11).
   const isPersonal = project.id === PERSONAL_ID;
 
   return (
