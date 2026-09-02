@@ -71,6 +71,34 @@ pub(crate) async fn git_checked(dir: &Path, args: &[&str]) -> Option<String> {
     }
 }
 
+/// Like [`git_checked`], but on failure returns git's own stderr instead of
+/// discarding it (`git_checked` nulls stderr — fine for a yes/no probe, wrong
+/// for the one command whose FAILURE is what a refusal message needs to
+/// explain). `Ok(trimmed stdout)` on a clean exit, `Err(trimmed stderr, or a
+/// launch-failure message)` otherwise.
+pub(crate) async fn git_checked_verbose(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_subprocess(&mut cmd);
+    match cmd.output().await {
+        Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).trim().to_string()),
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            Err(if stderr.is_empty() {
+                format!("git exited {} with no stderr", o.status)
+            } else {
+                stderr
+            })
+        }
+        Err(e) => Err(format!("could not launch git: {e}")),
+    }
+}
+
 /// Does this worktree hold commits not present on any remote (unpushed work)?
 ///
 /// - `Some(true)`  — HEAD has commits reachable from no remote-tracking ref.
@@ -231,11 +259,27 @@ pub async fn branch_is_merged(repo: &Path, branch: &str) -> Option<(bool, String
 
 // ── The effect (second look) ────────────────────────────────────────────────
 
-/// The exact argv for a branch delete. `-d`, NEVER `-D`: git's own merge check
-/// is the final guard even after every predicate above passed.
+/// The exact argv for a branch delete: `-D`, not `-d`.
+///
+/// This used to be `-d` on the theory that git's own merge check was a free
+/// extra guard even after every predicate above passed. In practice `-d`
+/// checks mergedness against the branch's OWN upstream (`branch.<name>.merge`)
+/// when one is configured, not against the trunk — so a branch that IS merged
+/// to trunk (verified above, against `trunk_ref`, the same evidence the
+/// approval was filed on) gets refused by `-d` whenever its local tip diverged
+/// from a stale upstream ref (e.g. the local commit was amended or rebased
+/// after the last push). Reproduced: git says "not yet merged to
+/// refs/remotes/origin/<branch>, even though it is merged to HEAD" — which is
+/// exactly the case the trunk-ancestry re-check above already cleared. `-D`
+/// is safe here BECAUSE `branch_is_merged` against `trunk_ref` is re-run,
+/// fresh, immediately before this call (step 4 in `apply_branch_delete`) —
+/// that re-check IS the guard, and it is strictly stronger for this decision
+/// than `-d`'s upstream check (it answers "merged to the branch this delete
+/// was approved against", not "merged to whatever ref happened to be tracked
+/// last time someone pushed").
 pub(crate) fn branch_delete_args(branch: &str) -> [&'static str; 2] {
     let _ = branch;
-    ["branch", "-d"]
+    ["branch", "-D"]
 }
 
 fn refused(message: impl Into<String>) -> Result<EffectResult, GuardError> {
@@ -476,20 +520,31 @@ async fn apply_branch_delete(target: &RepoTarget) -> Result<EffectResult, GuardE
             )))
         }
     };
-    // 5. Delete with -d, NEVER -D: git's own merge check is the last guard.
+    // 5. Delete. The trunk-ancestry re-check just above (step 4) is the guard
+    // — see `branch_delete_args` for why `-D` (not `-d`) is correct here: git's
+    // own `-d` merge check answers a different, weaker-and-sometimes-wrong
+    // question (merged into the branch's stale upstream, not into trunk). A
+    // `-D` failure at this point is not "try again later" — every predicate
+    // that could make this unsafe was just re-verified fresh, so a refusal
+    // here means something unexpected (a TOCTOU race, a corrupt ref); retrying
+    // cannot fix that, so it resolves `Ok` with a refusal like every other
+    // world-changed case, carrying git's own stderr instead of a canned
+    // message (fix #2: `git_checked` used to null stderr here, so a refusal
+    // could never say what git actually objected to).
     let args = branch_delete_args(branch);
-    if git_checked(repo, &[args[0], args[1], branch])
-        .await
-        .is_none()
-    {
-        return Err(GuardError::Invalid(format!(
-            "`git branch -d {branch}` refused (git's own merge check is the final guard) — \
-             nothing deleted, will retry"
-        )));
+    match git_checked_verbose(repo, &[args[0], args[1], branch]).await {
+        Ok(_) => {}
+        Err(stderr) => {
+            return refused(format!(
+                "`git branch {} {branch}` refused even after the trunk-ancestry re-check passed \
+                 ({stderr}) — nothing deleted, not retried",
+                args[1]
+            ));
+        }
     }
     Ok((
         Some(format!(
-            "branch '{branch}' deleted (merged per {via}; git -d merge check passed)"
+            "branch '{branch}' deleted (merged per {via}; trunk-ancestry re-check passed)"
         )),
         None,
     ))
@@ -780,7 +835,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn merged_branch_is_deleted_with_dash_d_and_honesty_string() {
+    async fn merged_branch_is_deleted_with_honesty_string() {
         let tmp = tempfile::TempDir::new().unwrap();
         let (repo, _) = init_repo_with_remote(tmp.path());
         // A branch at the baseline commit is trivially an ancestor of
@@ -852,15 +907,79 @@ mod tests {
         assert!(msg.unwrap().contains("already gone"));
     }
 
-    // ── -d, never -D ──
+    // ── -D, because the trunk-ancestry re-check is the guard, not `-d` ──
 
     #[test]
-    fn branch_delete_argv_is_lowercase_d_never_capital() {
+    fn branch_delete_argv_is_capital_d() {
+        // `-d` is NOT safer here: its own merge check answers a different
+        // question (merged into the branch's stale upstream) than the one the
+        // approval was actually filed on (merged into trunk, re-verified fresh
+        // by `branch_is_merged` immediately before this call). See
+        // `branch_delete_args`'s doc comment for the reproduced failure this
+        // replaces.
         let args = branch_delete_args("feature/anything");
-        assert_eq!(args, ["branch", "-d"]);
+        assert_eq!(args, ["branch", "-D"]);
+    }
+
+    /// CASE A repro: a branch whose local tip diverged from its own stale
+    /// upstream (amended/rebased after the last push) but IS merged to trunk
+    /// via the rewritten commit. Before the fix, git's own `-d` refuses this
+    /// with "not yet merged to refs/remotes/origin/b, even though it is
+    /// merged to HEAD" — reproduced below as a sanity check on the fixture —
+    /// and `apply_repo_hygiene` surfaced that as `Err` (retried forever,
+    /// never succeeding, since retrying cannot un-stale a diverged upstream).
+    /// After the fix, the fresh trunk-ancestry re-check (not the branch's own
+    /// upstream) is the guard, and `-D` completes the delete it already
+    /// cleared.
+    #[tokio::test]
+    async fn merged_to_trunk_but_diverged_from_stale_upstream_is_deleted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, _) = init_repo_with_remote(tmp.path());
+
+        git(&repo, &["checkout", "-q", "-b", "b"]);
+        std::fs::write(repo.join("work.txt"), "v1").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "work"]);
+        git(&repo, &["push", "-q", "-u", "origin", "b"]);
+        // Rewrite the tip locally — origin/b still points at the pre-rewrite
+        // commit, so local b and origin/b have now diverged (b is no longer
+        // an ancestor of its own upstream).
+        git(&repo, &["commit", "-q", "--amend", "-m", "work (amended)"]);
+        git(&repo, &["checkout", "-q", "main"]);
+        git(&repo, &["merge", "-q", "--no-ff", "b", "-m", "merge b"]);
+        // Push the merge so `origin/main` (the trunk-ancestry check's target)
+        // actually contains the rewritten commit.
+        git(&repo, &["push", "-q", "origin", "main"]);
+
+        // Sanity: this fixture really does reproduce git's own `-d` refusal.
+        let d = git(&repo, &["branch", "-d", "b"]);
         assert!(
-            !args.contains(&"-D"),
-            "the Steward must NEVER force-delete a branch"
+            !d.status.success(),
+            "fixture must reproduce git's own -d refusal on a diverged upstream"
+        );
+        let stderr = String::from_utf8_lossy(&d.stderr);
+        assert!(
+            stderr.contains("not yet merged"),
+            "unexpected git -d stderr: {stderr}"
+        );
+        assert!(
+            git(&repo, &["rev-parse", "--verify", "refs/heads/b"])
+                .status
+                .success(),
+            "the failed -d must not have removed the branch"
+        );
+
+        let t = target(&repo, None, Some("b"));
+        let (msg, _) = apply_repo_hygiene(ACTION_REPO_BRANCH_DELETE, &t)
+            .await
+            .unwrap();
+        let msg = msg.unwrap();
+        assert!(msg.contains("deleted"), "{msg}");
+        assert!(
+            !git(&repo, &["rev-parse", "--verify", "refs/heads/b"])
+                .status
+                .success(),
+            "branch must actually be gone"
         );
     }
 

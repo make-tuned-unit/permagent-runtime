@@ -17,7 +17,7 @@ import { DetailModal } from '../../common/DetailModal';
 import { StateBlock } from '../../common/StateBlock';
 import type { useDecisions } from './useDecisions';
 import type { HistoryItem } from './types';
-import { resolutionText } from './types';
+import { resolutionText, deadLetterText } from './types';
 import { DecisionItem } from './DecisionItem';
 import { decisionsClient } from './client';
 import { formatAge } from './format';
@@ -439,6 +439,22 @@ function HistoryList({ items, failed, onRetry }: {
           <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 4 }}>
             {resolutionText(item, agentName)}
           </div>
+          {/* CASE A fix #4: the answer succeeded but the gated effect never
+              took effect after every retry — the decisions row alone reads
+              identically to a decision whose effect actually ran, so this is
+              the one place that says otherwise. */}
+          {deadLetterText(item) && (
+            <div
+              role="alert"
+              style={{
+                marginTop: 6, fontSize: textSize.caption, color: colors.danger,
+                borderRadius: radius.md, border: `1px solid ${colors.danger}`,
+                background: colors.danger + '14', padding: '6px 10px',
+              }}
+            >
+              {deadLetterText(item)}
+            </div>
+          )}
         </div>
       ))}
     </div>
