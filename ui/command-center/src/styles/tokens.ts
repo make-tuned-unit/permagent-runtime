@@ -703,10 +703,6 @@ export type IdleAnim = 'still' | 'breathing' | 'drifting';
 export function getIdleAnim(): IdleAnim { return _get('permagent-idle-anim', 'breathing') as IdleAnim; }
 export function setIdleAnim(v: IdleAnim) { _set('permagent-idle-anim', v); }
 
-// Show Möbius in dashboard hero
-export function getShowHeroMobius(): boolean { return _get('permagent-show-hero-mobius', 'true') === 'true'; }
-export function setShowHeroMobius(v: boolean) { _set('permagent-show-hero-mobius', String(v)); }
-
 // UI density: 'comfortable' | 'default' | 'compact'
 export type UIDensity = 'comfortable' | 'default' | 'compact';
 export function getDensity(): UIDensity { return _get('permagent-density', 'default') as UIDensity; }

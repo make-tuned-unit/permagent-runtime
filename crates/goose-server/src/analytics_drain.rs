@@ -4,7 +4,10 @@
 //! A public site cannot beacon to this daemon: the browser would have to reach
 //! a home machine behind NAT over HTTP from an HTTPS page. So the direction is
 //! inverted. The site collects same-origin into its own database and exposes an
-//! authenticated drain endpoint; this loop pulls outbound on a timer.
+//! authenticated drain endpoint; this loop pulls outbound ONCE A DAY per site,
+//! plus once shortly after boot, plus whenever the user clicks Refresh in the
+//! analytics panel. There is no other timer — see [`POLL_INTERVAL`] for why
+//! anything faster costs real money, and [`drain_now`] for the on-demand pass.
 //!
 //! Two properties fall out of that, and both are the point:
 //!   * nothing inbound is exposed — no tunnel, no port-forward, no third party
@@ -27,13 +30,46 @@ use sqlx::{Pool, Sqlite};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-const TICK: Duration = Duration::from_secs(120);
+/// The one and only cadence: each site is drained once a day.
+///
+/// There is deliberately no shorter timer anywhere in this module — no tick, no
+/// per-project backoff, no "poll quiet sites less often" heuristic. Every poll
+/// is a real query into the SITE's database, not ours, and a Postgres that
+/// scales to zero (Neon suspends after five idle minutes) simply cannot reach
+/// idle while anything is knocking. The 120-second poller this replaces ran
+/// three quiet sites for ~860 compute-hours in August 2026 and billed $91,
+/// entirely for asking. An earlier attempt at backing quiet sites off to an
+/// hour was still 24 wake-ups a day — still 24 hours of compute — which is why
+/// the heuristic is gone rather than retuned: the interval has to clear the
+/// site's own idle timeout by a wide margin, for every site, busy or quiet.
+///
+/// Freshness is paid back two ways, both of them events rather than timers:
+///   * the pass at [`BOOT_DELAY`] after the daemon starts, so a restart or an
+///     update never loses a day; and
+///   * [`drain_now`], which the analytics panel's Refresh button calls, so the
+///     user can always pull the last few hours on demand.
+///
+/// Daemon downtime still costs nothing: the site keeps accumulating, and the
+/// next pass catches up from the stored cursor.
+const POLL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Let boot settle before the first pass (same courtesy as watcher_insights).
 const BOOT_DELAY: Duration = Duration::from_secs(45);
 const PAGE_LIMIT: u32 = 500;
-/// Bound one project's catch-up per tick so a huge backlog can't monopolise a
-/// pass; the next tick continues from the advanced cursor.
-const MAX_PAGES_PER_TICK: u32 = 20;
+/// Ceiling on the pages one pass will walk — a guard against a broken or
+/// hostile relay that answers a full page forever, not a fairness quota.
+///
+/// It was 20 (10k events) when a project was polled every two minutes, where
+/// anything left over was picked up 120 seconds later. At one pass a day the
+/// leftovers wait 24 hours, so a site busier than the cap falls permanently
+/// further behind and eventually loses events off the far end of the relay's
+/// own retention. 200 pages is 100k events per site per day — two orders of
+/// magnitude above what these sites produce — and still bounded.
+const MAX_PAGES_PER_PASS: u32 = 200;
+/// First cursor value for a project that has never drained. Every subsequent
+/// request must carry the id of the last row ingested — see
+/// [`a_second_pass_asks_for_rows_after_the_first_pass`] for the regression this
+/// keeps nailed down.
+const FIRST_CURSOR: &str = "0";
 /// How long collected events are kept. Beyond the dashboard's longest window,
 /// so nothing displayable is ever removed.
 const RETENTION_DAYS: u32 = 400;
@@ -146,6 +182,13 @@ struct DrainResponse {
     first_available_id: Option<String>,
 }
 
+/// The entire schedule: one pass shortly after boot, then one a day.
+///
+/// There is no other timer. `sleep(POLL_INTERVAL)` between passes IS the
+/// pacing — the per-project deadline map and the doubling backoff that used to
+/// live here are gone, because any of them running faster than daily defeats
+/// the point (see [`POLL_INTERVAL`]). Everything more urgent than a day arrives
+/// through [`drain_now`] instead, on the user's click.
 pub fn spawn(state: Arc<AppState>) {
     tokio::spawn(async move {
         tokio::time::sleep(BOOT_DELAY).await;
@@ -153,16 +196,16 @@ pub fn spawn(state: Arc<AppState>) {
             if let Err(e) = run_once(&state).await {
                 tracing::debug!(target: "analytics_drain", "drain pass skipped: {e}");
             }
-            tokio::time::sleep(TICK).await;
+            tokio::time::sleep(POLL_INTERVAL).await;
         }
     });
 }
 
 async fn run_once(state: &AppState) -> Result<(), String> {
-    // The global off-switch stays a plain early return: this loop wakes every
-    // TICK, so auditing it here would write ~720 blocked rows a day per project
-    // for requests that were never built. The per-project guard below is the
-    // audited choke point, and it covers every request a pass actually makes.
+    // The global off-switch stays a plain early return rather than an audited
+    // block: it covers requests that were never built, and the per-project
+    // guard below is the audited choke point that covers every request a pass
+    // actually makes.
     if permagent::sovereignty::global_sovereign_mode() {
         return Ok(());
     }
@@ -174,40 +217,9 @@ async fn run_once(state: &AppState) -> Result<(), String> {
     prune_old_events(&pool).await;
     let projects = projects::list_projects(&pool, Some("active")).await?;
     for project in &projects {
-        let Some(mut config) = crate::routes::first_party_analytics::drain_config(project) else {
+        let Some(outcome) = drain_one(&pool, project).await else {
             continue;
         };
-        let Some(drain_url) = config.drain_url.clone() else {
-            continue;
-        };
-        let Some(secret) =
-            crate::routes::first_party_analytics::stored_drain_secret_readonly(&project.id)
-        else {
-            continue;
-        };
-
-        // This is the audited choke point for outbound drain HTTP; a mid-pass
-        // sovereign flip or unwritable audit skips the project rather than
-        // egressing unaudited.
-        if !permagent::sovereignty::guard_outbound_egress(
-            permagent::sovereignty::EgressKind::Telemetry,
-            &drain_url,
-            &project.id,
-        )
-        .await
-        {
-            continue;
-        }
-
-        let outcome = drain_project(&pool, &project.id, &drain_url, &secret, &mut config).await;
-        // Persist the cursor/status regardless of outcome: a partial catch-up
-        // must keep its progress, and a failure must be visible in the UI
-        // rather than looking like a quiet traffic day.
-        if let Err(e) =
-            crate::routes::first_party_analytics::persist_drain_state(&pool, project, &config).await
-        {
-            tracing::warn!(target: "analytics_drain", "could not persist drain state: {e}");
-        }
         match outcome {
             Ok(0) => {}
             Ok(n) => tracing::info!(
@@ -222,6 +234,76 @@ async fn run_once(state: &AppState) -> Result<(), String> {
     }
     sweep_behavioural_bots(&pool, &projects).await;
     Ok(())
+}
+
+/// Drain ONE project and persist what the pass learned.
+///
+/// `None` means there was nothing to drain — analytics off, no drain URL
+/// configured yet, no secret, or egress denied — as opposed to `Some(Err(_))`,
+/// which is a pass that ran and failed. The caller needs that distinction:
+/// only a project that was really polled should be paced.
+async fn drain_one(
+    pool: &Pool<Sqlite>,
+    project: &projects::Project,
+) -> Option<Result<usize, String>> {
+    let mut config = crate::routes::first_party_analytics::drain_config(project)?;
+    let drain_url = config.drain_url.clone()?;
+    let secret = crate::routes::first_party_analytics::stored_drain_secret_readonly(&project.id)?;
+
+    // This is the audited choke point for outbound drain HTTP; a mid-pass
+    // sovereign flip or unwritable audit skips the project rather than
+    // egressing unaudited.
+    if !permagent::sovereignty::guard_outbound_egress(
+        permagent::sovereignty::EgressKind::Telemetry,
+        &drain_url,
+        &project.id,
+    )
+    .await
+    {
+        return None;
+    }
+
+    let outcome = drain_project(pool, &project.id, &drain_url, &secret, &mut config).await;
+    // Persist the cursor/status regardless of outcome: a partial catch-up
+    // must keep its progress, and a failure must be visible in the UI
+    // rather than looking like a quiet traffic day.
+    if let Err(e) =
+        crate::routes::first_party_analytics::persist_drain_state(pool, project, &config).await
+    {
+        tracing::warn!(target: "analytics_drain", "could not persist drain state: {e}");
+    }
+    Some(outcome)
+}
+
+/// Drain one project RIGHT NOW, on the user's say-so, ignoring the daily
+/// pacing entirely.
+///
+/// This is the other half of [`POLL_INTERVAL`]: the background loop is allowed
+/// to be a day stale precisely because the UI can ask for a pass whenever the
+/// numbers actually matter. It is a manual, per-project action behind the
+/// bearer choke point, so it does not need pacing of its own — and it must not
+/// consult it either, or "check now" would silently do nothing for 24 hours.
+///
+/// `Ok(None)` is "nothing to drain" (see [`drain_one`]); the sovereign
+/// off-switch is honoured here exactly as in the loop.
+pub async fn drain_now(
+    pool: &Pool<Sqlite>,
+    project: &projects::Project,
+) -> Result<Option<usize>, String> {
+    if permagent::sovereignty::global_sovereign_mode() {
+        return Err("sovereign mode is on — outbound drain is blocked".to_string());
+    }
+    match drain_one(pool, project).await {
+        None => Ok(None),
+        Some(Ok(n)) => {
+            tracing::info!(
+                target: "analytics_drain",
+                project = %project.name, ingested = n, "analytics drained on request"
+            );
+            Ok(Some(n))
+        }
+        Some(Err(e)) => Err(e),
+    }
 }
 
 /// Behavioural bot classification — the second half of bot detection.
@@ -313,8 +395,15 @@ async fn drain_project(
     // erased before the caller ever persisted it. Carried out of the loop so
     // the success path can keep it.
     let mut retention_warning: Option<String> = None;
-    for _ in 0..MAX_PAGES_PER_TICK {
-        let since = config.cursor.clone().unwrap_or_else(|| "0".to_string());
+    for _ in 0..MAX_PAGES_PER_PASS {
+        // The cursor, or the beginning if this project has never drained. It is
+        // read from `config` on EVERY page and every pass, and `config` is
+        // persisted by the caller, which is what makes a pass resume where the
+        // last one stopped instead of re-pulling the table.
+        let since = config
+            .cursor
+            .clone()
+            .unwrap_or_else(|| FIRST_CURSOR.to_string());
         // Strips any since/limit already baked into the configured URL — see
         // `drain_page_url` for the silent stall this prevents.
         let url =
@@ -496,6 +585,64 @@ async fn insert_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Replays `spawn`'s sleep sequence — `sleep(BOOT_DELAY)`, then a pass and
+    /// `sleep(POLL_INTERVAL)` forever — and lists when a site's database is
+    /// touched. That list IS the change: one pass at boot, then one a day.
+    ///
+    /// It fails on every earlier shape of this loop by a wide margin. The flat
+    /// 120 s tick made 720 passes a day (5040 across this week); the doubling
+    /// backoff capped at an hour made ~24 a day (172). Both are two orders of
+    /// magnitude away from 7, so this cannot pass on either.
+    #[test]
+    fn a_site_is_drained_once_at_boot_and_once_a_day() {
+        let week = Duration::from_secs(7 * 24 * 60 * 60);
+        let mut passes = Vec::new();
+        let mut t = BOOT_DELAY;
+        while t <= week {
+            passes.push(t);
+            t += POLL_INTERVAL;
+        }
+        // Seven days, seven passes: the boot pass IS day one's, offset by the
+        // boot delay, and each following day gets exactly one.
+        assert_eq!(
+            passes.len(),
+            7,
+            "one pass per day and not one more, got {passes:?}"
+        );
+        assert_eq!(
+            passes[0], BOOT_DELAY,
+            "the boot pass is what stops a restart losing a day"
+        );
+        assert_eq!(
+            passes[1] - passes[0],
+            POLL_INTERVAL,
+            "and nothing between them"
+        );
+        assert_eq!(
+            POLL_INTERVAL,
+            Duration::from_secs(24 * 60 * 60),
+            "the interval a Neon compute needs to reach idle is a day, not an hour"
+        );
+        assert!(
+            BOOT_DELAY < POLL_INTERVAL,
+            "the boot pass must land before the first scheduled one"
+        );
+    }
+
+    /// A day's worth of a busy site has to fit in one pass, because the
+    /// leftovers now wait 24 hours rather than 120 seconds — a site over the
+    /// cap would fall further behind every day until the relay's own retention
+    /// ate the difference.
+    #[test]
+    fn one_pass_can_absorb_a_busy_day() {
+        let per_pass = MAX_PAGES_PER_PASS as u64 * PAGE_LIMIT as u64;
+        assert_eq!(per_pass, 100_000);
+        assert!(
+            per_pass >= 50_000,
+            "one daily pass must hold a busy day, holds {per_pass}"
+        );
+    }
 
     async fn mem_pool() -> Pool<Sqlite> {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
@@ -699,6 +846,101 @@ mod tests {
             "skipped forward over the hole and then advanced normally"
         );
         assert!(state.last_drain_at.is_some(), "freshness still recorded");
+    }
+
+    /// REGRESSION — the `since=0` stall, observed live. An Aug 11 daemon on the
+    /// user's Mac mini logged `analytics drained project=Evntally
+    /// ingested=10000` every 131 seconds from Aug 4 onward: 20 pages x 500,
+    /// the paging cap, every single tick. It was re-fetching the same ten
+    /// thousand rows forever (~2 GB/day of egress) because the configured drain
+    /// URL had the verification example's `?since=0&limit=500` baked into it,
+    /// and every framework's `searchParams.get` returns the FIRST value — so
+    /// the cursor this poller appended was ignored and page one was served
+    /// forever. `INSERT OR IGNORE` swallowed the duplicates, so it reported a
+    /// clean drain the whole time.
+    ///
+    /// Fixed 2026-08-18 by `1f67def4` (#1046), which made `drain_page_url` own
+    /// `since`/`limit`. This asserts the behaviour that fix bought, from the
+    /// poller's side and with the exact URL shape that broke: the drain asks
+    /// for page one EXACTLY ONCE, ever, and the next pass resumes from the
+    /// stored cursor.
+    #[tokio::test]
+    async fn a_second_pass_asks_for_rows_after_the_first_pass() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // Page one. `expect(1)` is the whole point: under the old bug this was
+        // hit by every pass, forever.
+        Mock::given(method("GET"))
+            .and(path("/api/permagent-analytics/drain"))
+            .and(query_param("since", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "events": [
+                    { "id": 1, "path": "/", "visitorHash": "aa", "at": "2026-07-20T09:00:00.000Z" },
+                    { "id": 2, "path": "/x", "visitorHash": "bb", "at": "2026-07-20T09:01:00.000Z" }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Everything after page one resumes from the cursor.
+        Mock::given(method("GET"))
+            .and(path("/api/permagent-analytics/drain"))
+            .and(query_param("since", "2"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "events": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let pool = mem_pool().await;
+        let mut state = crate::routes::first_party_analytics::DrainState {
+            site_key: "k".into(),
+            ingest_base: None,
+            drain_url: None,
+            cursor: None,
+            last_drain_at: None,
+            last_error: None,
+            relay_latest_id: None,
+        };
+        // The URL EXACTLY as it was stored for Evntally — cursor params and all.
+        let url = format!(
+            "{}/api/permagent-analytics/drain?since=0&limit=500",
+            server.uri()
+        );
+
+        let first = drain_project(&pool, "p1", &url, "SECRET123", &mut state)
+            .await
+            .expect("first pass succeeds");
+        assert_eq!(first, 2, "first pass ingests page one");
+        assert_eq!(state.cursor.as_deref(), Some("2"), "cursor advanced");
+
+        // The cursor survives the trip through the project metadata bag, which
+        // is what carries it from one day's pass to the next.
+        let round_tripped: crate::routes::first_party_analytics::DrainState =
+            serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+        assert_eq!(
+            round_tripped.cursor.as_deref(),
+            Some("2"),
+            "the cursor must survive persistence, or every pass restarts at 0"
+        );
+
+        let mut next_day = round_tripped;
+        let second = drain_project(&pool, "p1", &url, "SECRET123", &mut next_day)
+            .await
+            .expect("second pass succeeds");
+        assert_eq!(second, 0, "nothing new — and nothing re-pulled");
+        assert_eq!(next_day.cursor.as_deref(), Some("2"), "cursor held");
+
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM analytics_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 2, "two events drained, not four");
+
+        // Fails the test if page one was requested more than once.
+        server.verify().await;
     }
 
     /// END-TO-END CONTRACT TEST. Stands up a mock site speaking exactly the
