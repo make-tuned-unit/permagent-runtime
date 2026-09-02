@@ -1,8 +1,16 @@
-import { useEffect, useState, type CSSProperties } from 'react';
-import { COLORS } from './constants';
-import { radius, textSize } from '../../styles/tokens';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { useGlass } from '../common/Glass';
 import { Button } from '../common/Button';
+import {
+  HUD_GEOM,
+  HUD_INNER_RADIUS,
+  HUD_PANEL_RADIUS,
+  hudBareVars,
+  hudCaption,
+  hudTransition,
+} from './hudChrome';
 
 // ── Tab definition ────────────────────────────────────────────────
 
@@ -20,11 +28,11 @@ interface HudShellProps {
   visible: boolean;
   onClose: () => void;
   title: string;
-  statusPill?: React.ReactNode;
+  statusPill?: ReactNode;
   tabs?: HudTab[];
   activeTab?: string;
   onTabChange?: (id: string) => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }
 
 // ── Component ─────────────────────────────────────────────────────
@@ -39,12 +47,11 @@ export function HudShell({
   onTabChange,
   children,
 }: HudShellProps) {
-  // The HUD chrome paints from the world palette, not the app theme, so every
-  // colour below is still a `COLORS`/hex value — `colors` is here only because
-  // the button primitive takes a theme for its variant defaults.
-  const { colors } = useTheme();
+  // Floating control over the 3D canvas — glass is correct here (D1). One plane
+  // for the whole panel; tabs/close use fillHover, never a second filter (D2).
+  const { colors, reduceMotion } = useTheme();
+  const glass = useGlass('glass');
 
-  // ESC to close — capture phase
   useEffect(() => {
     if (!visible) return;
     const handler = (e: KeyboardEvent) => {
@@ -59,11 +66,53 @@ export function HudShell({
 
   if (!visible) return null;
 
+  const panelStyle: CSSProperties = {
+    position: 'absolute',
+    top: HUD_GEOM.panelInset,
+    left: HUD_GEOM.panelInset,
+    width: HUD_GEOM.panelWidth,
+    ...glass,
+    border: `1px solid ${colors.border}`,
+    borderRadius: HUD_PANEL_RADIUS,
+    fontFamily: font.mono,
+    color: colors.text,
+    zIndex: 20,
+    pointerEvents: 'auto',
+    overflow: 'hidden',
+  };
+
+  const headerStyle: CSSProperties = {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: `${HUD_GEOM.headerPadTop}px ${HUD_GEOM.panelPadX}px ${HUD_GEOM.headerPadBottom}px`,
+    fontSize: textSize.small,
+    color: colors.text,
+    borderBottom: `1px solid ${colors.border}`,
+    marginBottom: 0,
+  };
+
+  const closeVars = {
+    ...hudBareVars(colors, {
+      radiusPx: HUD_INNER_RADIUS > 0 ? HUD_INNER_RADIUS : radius.xs,
+    }),
+    fontSize: textSize.body,
+    lineHeight: 1,
+    transition: hudTransition(reduceMotion),
+  } as CSSProperties;
+
+  const tabBarStyle: CSSProperties = {
+    display: 'flex',
+    gap: 0,
+    padding: `0 ${HUD_GEOM.panelPadX}px`,
+    borderBottom: `1px solid ${colors.border}`,
+    marginBottom: space.xs,
+  };
+
   return (
     <div style={panelStyle} onClick={(e) => e.stopPropagation()}>
-      {/* Header */}
       <div style={headerStyle}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
           <span style={{ fontWeight: 600, letterSpacing: '0.05em' }}>
             {title}
           </span>
@@ -76,16 +125,16 @@ export function HudShell({
           onClick={onClose}
           title="Close (ESC)"
           aria-label="Close"
-          style={closeBtnVars}
+          style={closeVars}
         >✕</Button>
       </div>
 
-      {/* Tab bar — only when tabs prop provided */}
       {tabs && tabs.length > 0 && (
         <div style={tabBarStyle}>
           {tabs.map((tab, idx) => {
             const isActive = tab.id === activeTab;
             const isDisabled = !!tab.disabled;
+            const padLeft = idx === 0 ? 0 : HUD_GEOM.tabPadX;
             return (
               <Button
                 key={tab.id}
@@ -98,16 +147,26 @@ export function HudShell({
                 disabled={isDisabled}
                 flashSuccess={false}
                 style={{
-                  ...tabBtnVars,
-                  '--pa-btn-pad': idx === 0 ? '6px 10px 5px 0' : '6px 10px 5px',
-                  '--pa-btn-fg': isActive
-                    ? tab.accentColor
-                    : isDisabled
-                      ? '#4B5563'
-                      : '#6B7280',
-                  '--pa-btn-fg-hover': isActive ? tab.accentColor : COLORS.primaryMarble,
-                  // Only the underline is drawn — `.pa-btn`'s `border` shorthand
-                  // paints all four edges, so this longhand has to stay inline.
+                  ...hudBareVars(colors, {
+                    fg: isActive
+                      ? tab.accentColor
+                      : isDisabled
+                        ? colors.textDim
+                        : colors.textMuted,
+                    fgHover: isActive ? tab.accentColor : colors.text,
+                    // Underline-only tabs: fill stays transparent; hover still
+                    // lifts via fg (D10) without a second glass plane.
+                    bg: 'transparent',
+                    pad: `${HUD_GEOM.tabPadY}px ${HUD_GEOM.tabPadX}px ${HUD_GEOM.tabPadY - 1}px ${padLeft}px`,
+                    radiusPx: 0,
+                    weight: 700,
+                  }),
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-bg-active': 'transparent',
+                  fontSize: textSize.micro,
+                  letterSpacing: '0.08em',
+                  lineHeight: 1,
+                  transition: hudTransition(reduceMotion),
                   borderBottom: isActive
                     ? `2px solid ${tab.accentColor}`
                     : '2px solid transparent',
@@ -116,9 +175,9 @@ export function HudShell({
                 {tab.label}
                 {isDisabled && tab.disabledLabel && (
                   <span style={{
-                    fontSize: 10,
-                    marginLeft: 4,
-                    color: '#4B5563',
+                    ...hudCaption,
+                    marginLeft: space.xs,
+                    color: colors.textDim,
                     fontWeight: 400,
                     letterSpacing: '0.04em',
                   }}>
@@ -131,7 +190,6 @@ export function HudShell({
         </div>
       )}
 
-      {/* Body */}
       {children}
     </div>
   );
@@ -142,18 +200,18 @@ export function HudShell({
 export function Section({ title, trimColor, children }: {
   title: string;
   trimColor: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
-    <div style={{ padding: '0 14px 8px' }}>
+    <div style={{ padding: `0 ${HUD_GEOM.panelPadX}px ${HUD_GEOM.bodyPadY}px` }}>
       <div style={{
-        fontSize: 10,
+        fontSize: textSize.micro,
         fontWeight: 700,
         letterSpacing: '0.1em',
         color: trimColor,
         borderBottom: `1px solid ${trimColor}30`,
         paddingBottom: 3,
-        marginBottom: 6,
+        marginBottom: HUD_GEOM.sectionGap,
       }}>
         {title}
       </div>
@@ -163,10 +221,11 @@ export function Section({ title, trimColor, children }: {
 }
 
 export function StatRow({ label, value }: { label: string; value: string | number }) {
+  const { colors } = useTheme();
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: textSize.micro, lineHeight: 1.6 }}>
-      <span style={{ color: '#9CA3AF' }}>{label}</span>
-      <span style={{ color: COLORS.primaryMarble, fontWeight: 500 }}>{String(value)}</span>
+      <span style={{ color: colors.textMuted }}>{label}</span>
+      <span style={{ color: colors.text, fontWeight: 500 }}>{String(value)}</span>
     </div>
   );
 }
@@ -180,64 +239,3 @@ export function useTabReset(visible: boolean, defaultTab: string): [string, (id:
   }, [visible, defaultTab]);
   return [tab, setTab];
 }
-
-// ── Styles ───────────────────────────────────────────────────────
-
-const panelStyle: React.CSSProperties = {
-  position: 'absolute',
-  top: 16,
-  left: 16,
-  width: 300,
-  background: 'rgba(10, 14, 26, 0.88)',
-  backdropFilter: 'blur(12px)',
-  border: `1px solid ${COLORS.marbleVeining}25`,
-  borderRadius: radius.md,
-  fontFamily: 'monospace',
-  color: COLORS.primaryMarble,
-  zIndex: 20,
-  pointerEvents: 'auto',
-  overflow: 'hidden',
-};
-
-const headerStyle: React.CSSProperties = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '10px 14px 6px',
-  fontSize: textSize.small,
-  color: COLORS.primaryMarble,
-  borderBottom: `1px solid ${COLORS.marbleVeining}20`,
-  marginBottom: 0,
-};
-
-const closeBtnVars = {
-  '--pa-btn-fg': '#6B7280',
-  '--pa-btn-fg-hover': COLORS.primaryMarble,
-  '--pa-btn-bg-hover': 'rgba(255,255,255,0.06)',
-  '--pa-btn-pad': '2px 4px',
-  '--pa-btn-radius': `${radius.xs}px`,
-  fontSize: textSize.body,
-  lineHeight: 1,
-} as CSSProperties;
-
-const tabBarStyle: React.CSSProperties = {
-  display: 'flex',
-  gap: 0,
-  padding: '0 14px',
-  borderBottom: `1px solid ${COLORS.marbleVeining}15`,
-  marginBottom: 4,
-};
-
-const tabBtnVars = {
-  '--pa-btn-bg': 'transparent',
-  '--pa-btn-bg-hover': 'transparent',
-  '--pa-btn-bg-active': 'transparent',
-  '--pa-btn-border': 'transparent',
-  '--pa-btn-border-hover': 'transparent',
-  '--pa-btn-radius': '0',
-  '--pa-btn-weight': 700,
-  fontFamily: 'monospace',
-  fontSize: 10,
-  letterSpacing: '0.08em',
-  lineHeight: 1,
-} as CSSProperties;

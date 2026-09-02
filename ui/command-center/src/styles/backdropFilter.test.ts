@@ -39,29 +39,24 @@ const OWNERS = ['styles/tokens.ts', 'components/common/Glass.tsx'];
  * that matters — the list can only get shorter.
  *
  * Nothing here is endorsed. It is a debt register with names on it.
+ *
+ * R16 (world HUD chrome) paid off HudShell, WorldView (Agora return),
+ * WorldHUD, AgentPicker, AgentCharacterV2 nameplate, and CanvasLegend —
+ * those entries are gone. Remaining world/** glass belongs to other surfaces.
  */
 const LANE_OWNED: Record<string, { max: number; lane: string }> = {
-  // World is a parallel design system (~140 hex literals, never calls
-  // useTheme). Its HUD chrome is also the one place in the app that could
-  // legitimately justify Apple's Clear variant, over the 3D scene — which is a
-  // judgement to make against a real backdrop, on that screen, not here.
-  'components/world/HudShell.tsx': { max: 1, lane: 'R16 world HUD chrome' },
-  'components/world/WorldView.tsx': { max: 1, lane: 'R16 world HUD chrome' },
-  'components/world/WorldHUD.tsx': { max: 2, lane: 'R16 world HUD chrome' },
-  'components/world/AgentPicker.tsx': { max: 2, lane: 'R16 world HUD chrome' },
-  'components/world/agents/AgentCharacterV2.tsx': { max: 1, lane: 'R16 world HUD chrome' },
   // Brain is the intended proof-case for the token migration and carries the
   // densest cluster (8), including its own local `glass` object. Converting it
-  // piecemeal from here would collide with that redesign.
+  // piecemeal from here would collide with that redesign. R13 is in flight.
   'components/brain/BrainView.tsx': { max: 8, lane: 'R13 Brain' },
-  // Canvas overlay legend, shared by the world and brain canvases. It follows
-  // whichever of those two lands first; it is not a screen of its own.
-  'components/common/CanvasLegend.tsx': { max: 2, lane: 'R13/R16 canvas overlays' },
   'components/projects/PersonDetailModal.tsx': { max: 2, lane: 'R12 Projects' },
   'components/chat/SessionPicker.tsx': { max: 1, lane: "R4' chat dock/launcher" },
   // MeetingRecorder's two are GONE (R4' voice surfaces): the floating panel
   // takes `glassSurface()`, and the picker modal — a modal BODY, which is
   // content by Apple's own list — is simply opaque, over the theme's `veil`.
+  //
+  // R16 paid off world HUD chrome + CanvasLegend (HudShell, WorldHUD,
+  // AgentPicker, WorldView Agora return, AgentCharacterV2 nameplate).
 };
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
