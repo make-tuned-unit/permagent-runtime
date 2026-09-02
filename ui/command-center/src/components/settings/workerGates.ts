@@ -1,22 +1,24 @@
 /**
- * Settings → Features — pure helpers for the switches pane. The five workers
- * here are OFF by default; each is a plain boolean config key the daemon
+ * The worker gate table, in TypeScript.
+ *
+ * Six workers are OFF by default; each is a plain boolean config key the daemon
  * re-reads on every tick of its loop, so a flip lands at the next tick with no
- * restart. Kept free of React so the copy and the key table are unit-testable.
- *
- * These keys are ALSO written by the agent's own page under Settings → Agents.
- * One key, never a second — the daemon serialises the key it reads on every
- * agent row (`gate.config_key`), and every surface writes THAT through the same
- * `/config/upsert` call, so the surfaces cannot drift apart.
- *
- * `strix_enabled` is the exception, and deliberately so (J8/C7): the Guard is
- * the one worker here that runs live exploit tooling, so it has exactly ONE
- * writable switch — its own agent page — and this board shows its state and
- * points there. `switchedAt` marks that.
- *
- * The set mirrors the Rust gate table
+ * restart. The set mirrors the Rust gate table
  * (`crates/goose/src/agents/self_knowledge/mod.rs::worker_gate`), which pins it
  * from the other side.
+ *
+ * There used to be a Settings → Features board built on this table: six
+ * toggles, each writing one of these keys. It was a SECOND writer of keys the
+ * Agents page already writes — the daemon serialises the key it reads on every
+ * agent row as `gate.config_key`, and the agent's own page writes THAT — which
+ * is exactly the "five places to switch an agent on" the settings surface was
+ * consolidated to remove. The board is gone; the table stayed, because it is
+ * the app's own record of which key gates which worker and two tests hold it
+ * against the Rust side.
+ *
+ * What was NOT a duplicate moved with it: the Council's seat list and the
+ * Concierge's Gmail precondition are on those agents' own pages
+ * (`agents/agentSettings.tsx`).
  */
 
 export type FeatureKey =
@@ -34,12 +36,6 @@ export type FeatureRow = {
   what: string;
   /** How soon a flip takes effect. Every loop here re-reads the flag per tick. */
   effect: string;
-  /**
-   * This worker's switch is NOT writable here — it has one home, named by this
-   * agent id, and this board only reads it. Set for the Guard, whose switch
-   * arms live exploit tooling and therefore gets one deliberate place to flip.
-   */
-  switchedAt?: { agentId: string; why: string };
 };
 
 /** Row order is the display order. */
@@ -73,10 +69,6 @@ export const FEATURE_ROWS: readonly FeatureRow[] = [
     label: 'The Guard (security sweeps)',
     what: 'Sweeps ONE of your own projects per pass — rotating, least-recently-scanned first — for exposed secrets, vulnerable dependencies, injection and access-control weaknesses, and files a security report with a fix plan as a note on that project. It reports only: it never edits code to fix what it found. Needs the external `strix` scanner and Docker, locally or on the host in `strix_docker_ssh`, and each sweep spends your API credits.',
     effect: 'Off by default. Takes effect within about 15 minutes, no restart. The switch and the sweep cadence both live on the Guard\'s own page.',
-    switchedAt: {
-      agentId: 'strix',
-      why: 'A scanner that runs live exploit tooling is switched on deliberately, in one place — not from a list of six.',
-    },
   },
   {
     key: 'council_enabled',
@@ -116,13 +108,4 @@ export function conciergePreconditionCopy(
   if (tokenPresent === true) return 'Gmail token present.';
   if (tokenPresent === false) return `Needs a Gmail token: run \`${GMAIL_CONNECT_COMMAND}\`. Until then the loop stays idle.`;
   return 'Checking for a Gmail token…';
-}
-
-/**
- * The daemon answers `/config/read` with the bare JSON value (`true`, `null`,
- * …). Only a literal `true` counts as on — a missing key, `"true"` or `1` is off,
- * exactly as the Rust `get_param::<bool>` would read it.
- */
-export function readFlag(raw: unknown): boolean {
-  return raw === true;
 }

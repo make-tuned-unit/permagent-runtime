@@ -33,7 +33,7 @@ vi.mock('../../lib/api', () => ({
 }));
 
 import { ModelsPanel } from './SettingsView';
-import { FEATURE_ROWS } from './features/features';
+import { FEATURE_ROWS } from './workerGates';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -63,7 +63,7 @@ afterEach(() => {
 });
 
 async function mount(goto: (key: string) => void) {
-  await act(async () => { root.render(<ModelsPanel goto={goto} />); });
+  await act(async () => { root.render(<ModelsPanel goto={goto} section="models" />); });
   // The role table loads six keys via Promise.all — one more microtask hop
   // than the single .then() chains elsewhere on this pane.
   await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });

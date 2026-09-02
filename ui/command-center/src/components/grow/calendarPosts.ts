@@ -40,6 +40,18 @@ export function readMediaMeta(card: SocialCard): {
   mediaStatus: MediaStatus;
   mediaError: string | null;
   stillFile: string | null;
+  /**
+   * The animated Reel, when the generator produced one.
+   *
+   * `format: "reel"` sends the still through Higgsfield and pushes a second
+   * media item — `{"kind": "video", "file": "…mp4"}` — onto the card
+   * (crates/goose/src/grow_media/mod.rs). This read used to match `still` and
+   * nothing else, so every Reel the daemon generated was invisible in the app:
+   * the calendar rendered the poster frame and the video was never asked for.
+   * Null on a text or carousel post, and null on a reel whose animation failed
+   * (`mediaError` carries the reason in that case).
+   */
+  videoFile: string | null;
   format: string | null;
   channel: string | null;
   mediaFeedback: string;
@@ -53,17 +65,20 @@ export function readMediaMeta(card: SocialCard): {
       ? meta.mediaError
       : null;
   const items = Array.isArray(meta?.media) ? (meta!.media as unknown[]) : [];
-  const still = items.find((item) => {
+  const ofKind = (kind: string) => items.find((item) => {
     if (!item || typeof item !== 'object') return false;
     const rec = item as Record<string, unknown>;
-    return rec.kind === 'still' && typeof rec.file === 'string';
+    return rec.kind === kind && typeof rec.file === 'string';
   }) as Record<string, unknown> | undefined;
+  const still = ofKind('still');
+  const video = ofKind('video');
   const mediaFeedback =
     meta && typeof meta.mediaFeedback === 'string' ? meta.mediaFeedback : '';
   return {
     mediaStatus,
     mediaError,
     stillFile: still && typeof still.file === 'string' ? still.file : null,
+    videoFile: video && typeof video.file === 'string' ? video.file : null,
     format: meta && typeof meta.format === 'string' ? meta.format : null,
     channel: meta && typeof meta.channel === 'string' ? meta.channel : null,
     mediaFeedback,

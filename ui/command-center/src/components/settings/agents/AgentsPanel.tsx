@@ -31,7 +31,7 @@ import {
   type AgentGate,
   type LabelTone,
 } from '../agentsPanel';
-import { font, radius, textSize } from '../../../styles/tokens';
+import { font, radius, textSize, type } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { api } from '../../../lib/api';
 import { useCommandCenter } from '../../../lib/store';
@@ -929,7 +929,7 @@ function GateChip({ id, gate }: { id: string; gate: AgentGate }) {
     <span
       data-testid={`gate-chip-${id}`}
       style={{
-        fontSize: 10, fontWeight: 600, padding: '1px 7px', borderRadius: radius.pill,
+        ...type.label, padding: '1px 7px', borderRadius: radius.pill,
         border: `1px solid ${gate.enabled ? colors.borderHi : colors.border}`,
         color: gate.enabled ? colors.cyan : colors.textDim,
         fontFamily: font.body,

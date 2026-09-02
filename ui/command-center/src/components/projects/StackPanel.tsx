@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiEdit2, FiExternalLink, FiPlus, FiTrash2, FiX } from 'react-icons/fi';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
-import { font, textSize } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -60,8 +60,12 @@ const EMPTY_FORM: EntryForm = {
 };
 
 export function StackPanel({ project }: { project: Project }) {
-  const { colors, theme } = useTheme();
-  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const { colors } = useTheme();
+  const rowVeil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
   const navigate = useBrowserNavigate();
 
   const [entries, setEntries] = useState<StackEntry[]>([]);
@@ -158,7 +162,7 @@ export function StackPanel({ project }: { project: Project }) {
   };
 
   const inputStyle: React.CSSProperties = {
-    fontSize: textSize.caption, padding: '6px 9px', borderRadius: 7,
+    fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
     background: colors.inputBg, border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none',
   };
@@ -213,7 +217,7 @@ export function StackPanel({ project }: { project: Project }) {
       {form && (
         <div style={{
           display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10,
-          padding: '10px', borderRadius: 7, background: rowVeil,
+          padding: '10px', borderRadius: radius.md, background: rowVeil,
           border: `1px solid ${colors.borderHi}`,
         }}>
           <div style={{ display: 'flex', gap: 6 }}>
@@ -263,7 +267,7 @@ export function StackPanel({ project }: { project: Project }) {
                 '--pa-btn-bg': colors.cyanSoft,
                 '--pa-btn-border': colors.borderHi,
                 '--pa-btn-pad': '6px 14px',
-                '--pa-btn-radius': '7px',
+                '--pa-btn-radius': `${radius.md}px`,
                 '--pa-btn-weight': 600,
                 fontFamily: font.body,
                 fontSize: textSize.caption,
@@ -331,7 +335,7 @@ export function StackPanel({ project }: { project: Project }) {
                     key={entry.id}
                     style={{
                       display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px',
-                      borderRadius: 7, background: rowVeil, border: `1px solid ${colors.border}`,
+                      borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}`,
                       transition: 'border-color 150ms',
                     }}
                     onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}

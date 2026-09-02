@@ -48,12 +48,13 @@ export function readAgentGate(row: unknown): AgentGate | null {
 }
 
 /**
- * Names the key and the pane that shares it, because the whole point of the
- * switch living here is that it is not a SECOND switch: the same key is written
- * by Settings → Features and by the Models pane's Guard block.
+ * Names the key, because the whole point of the switch living here is that it
+ * is the ONLY one. There used to be two more surfaces writing these keys — the
+ * Settings → Features board and the Models pane's Guard block — and both are
+ * gone; this hint used to point at Features, which no longer exists.
  */
 export function gateRowHint(gate: AgentGate): string {
-  return `Writes ${gate.config_key} — the same key as Settings → Features. Takes effect at the daemon's next tick, no restart.`;
+  return `Writes ${gate.config_key} — the one key that switches this on, and this is the only place it is written. Takes effect at the daemon's next tick, no restart.`;
 }
 
 /**

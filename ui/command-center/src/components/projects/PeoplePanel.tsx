@@ -23,9 +23,13 @@ import { Panel } from './Panel';
 import type { NamedPersonMeeting, Person, Project, ProjectPerson } from './types';
 
 export function PeoplePanel({ project }: { project: Project }) {
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   // White veils vanish on silver — flip to a faint graphite tint there.
-  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const rowVeil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
   const openPersonDetail = useCommandCenter(s => s.openPersonDetail);
   const bumpPeople = useCommandCenter(s => s.bumpPeople);
   const peopleRev = useCommandCenter(s => s.peopleRev);
@@ -173,7 +177,7 @@ export function PeoplePanel({ project }: { project: Project }) {
                 '--pa-btn-bg-hover': rowVeil,
                 '--pa-btn-border-hover': colors.borderHi,
                 '--pa-btn-pad': '6px 9px',
-                '--pa-btn-radius': '7px',
+                '--pa-btn-radius': `${radius.md}px`,
                 '--pa-btn-weight': 'inherit',
                 alignItems: 'baseline',
                 justifyContent: 'flex-start',
@@ -247,8 +251,8 @@ function AssociatePicker({ colors, excludeIds, onPick }: {
         onChange={e => setQuery(e.target.value)}
         placeholder="Search people…"
         style={{
-          fontSize: textSize.caption, padding: '6px 9px', borderRadius: 7,
-          background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
+          fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
+          background: colors.fillSubtle, border: `1px solid ${colors.border}`,
           color: colors.text, fontFamily: font.body, outline: 'none',
         }}
       />

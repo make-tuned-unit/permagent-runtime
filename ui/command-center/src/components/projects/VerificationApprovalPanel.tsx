@@ -34,8 +34,12 @@ import type { Project } from './types';
 import { GLOSSARY } from '../../lib/vocabulary';
 
 export function VerificationApprovalPanel({ project }: { project: Project }) {
-  const { colors, theme } = useTheme();
-  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const { colors } = useTheme();
+  const rowVeil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
 
   const [data, setData] = useState<VerificationApproval | null>(null);
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
@@ -162,7 +166,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
   };
 
   const inputStyle: React.CSSProperties = {
-    fontSize: textSize.caption, padding: '6px 9px', borderRadius: 7,
+    fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
     background: colors.inputBg, border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none',
   };
@@ -293,7 +297,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
             '--pa-btn-bg': colors.cyanSoft,
             '--pa-btn-border': colors.borderHi,
             '--pa-btn-pad': '5px 12px',
-            '--pa-btn-radius': '7px',
+            '--pa-btn-radius': `${radius.md}px`,
             '--pa-btn-weight': 600,
             fontFamily: font.body,
             fontSize: textSize.micro,
@@ -324,7 +328,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
             '--pa-btn-bg': colors.cyanSoft,
             '--pa-btn-border': colors.borderHi,
             '--pa-btn-pad': '6px 10px',
-            '--pa-btn-radius': '7px',
+            '--pa-btn-radius': `${radius.md}px`,
             '--pa-btn-weight': 600,
             gap: 4,
             fontFamily: font.body,
@@ -385,7 +389,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
             <div
               key={`${row.at}-${i}`}
               style={{
-                padding: '7px 9px', borderRadius: 7, background: rowVeil,
+                padding: '7px 9px', borderRadius: radius.md, background: rowVeil,
                 border: `1px solid ${colors.border}`,
               }}
             >

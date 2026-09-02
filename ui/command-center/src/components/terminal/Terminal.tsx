@@ -6,9 +6,14 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import { useEventBus } from '../../lib/eventBus';
 import { useTheme } from '../../styles/useTheme';
-import { font, radius, textSize } from '../../styles/tokens';
+import { duration, ease, font, space, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { getXtermTheme } from './xtermTheme';
+import {
+  CHIP_BTN_RADIUS,
+  CHIP_RADIUS,
+  CHROME_GEOM,
+} from './terminalChrome';
 import { onRepaintRegain } from '../../lib/repaintOnRegain';
 import { handlePtyData, type PtyDataPayload, type PtyStreamSink } from './ptyStream';
 import {
@@ -714,18 +719,26 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         style={{ backgroundColor: xtermBg }}
       />
       {pendingPrompt && (
+        // Floating control over opaque PTY content (D1). Opaque elevated —
+        // not a second glass plane over the tab-strip glass (D2).
         <div
           role="status"
-          className="absolute bottom-2 right-2 z-10 max-w-xs rounded-lg px-3 py-2 text-xs"
+          className="absolute z-10 max-w-xs"
           style={{
+            bottom: CHROME_GEOM.chipInset,
+            right: CHROME_GEOM.chipInset,
+            padding: `${CHROME_GEOM.chipPadY}px ${CHROME_GEOM.chipPadX}px`,
+            borderRadius: CHIP_RADIUS,
             backgroundColor: colors.surfaceHi,
             border: `1px solid ${colors.border}`,
             boxShadow: colors.elevationFloating,
             color: colors.text,
             fontFamily: font.body,
+            fontSize: textSize.caption,
+            transition: `opacity ${duration.fast}ms ${ease.smooth}`,
           }}
         >
-          <div className="flex items-start justify-between gap-2">
+          <div className="flex items-start justify-between" style={{ gap: space.md }}>
             <span style={{ color: colors.textMuted }}>
               Prompt not delivered — the agent didn&apos;t take the terminal in time.
             </span>
@@ -739,7 +752,8 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
               style={{
                 '--pa-btn-fg': colors.textMuted,
                 '--pa-btn-fg-hover': colors.text,
-                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-bg-hover': colors.fillHover,
+                '--pa-btn-bg-active': colors.fillActive,
                 '--pa-btn-pad': '0',
                 fontSize: textSize.caption,
               } as CSSProperties}
@@ -747,19 +761,18 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
               <FiX size={12} />
             </Button>
           </div>
-          <div className="mt-2 flex items-center gap-2">
+          <div className="mt-2 flex items-center" style={{ gap: space.md }}>
             <Button
               colors={colors}
               variant="primary"
               type="button"
               onClick={sendPendingNow}
-              // `gap: 4` is the old `gap-1` between the icon and the word.
               style={{
-                '--pa-btn-pad': '4px 8px',
-                '--pa-btn-radius': `${radius.xs}px`,
+                '--pa-btn-pad': `${CHROME_GEOM.chipBtnPadY}px ${CHROME_GEOM.chipBtnPadX}px`,
+                '--pa-btn-radius': `${CHIP_BTN_RADIUS}px`,
                 fontFamily: font.body,
                 fontSize: textSize.caption,
-                gap: 4,
+                gap: CHROME_GEOM.chipBtnGap,
               } as CSSProperties}
             >
               <FiSend size={11} /> Send now
@@ -769,11 +782,13 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
               type="button"
               onClick={copyPending}
               style={{
-                '--pa-btn-pad': '4px 8px',
-                '--pa-btn-radius': `${radius.xs}px`,
+                '--pa-btn-pad': `${CHROME_GEOM.chipBtnPadY}px ${CHROME_GEOM.chipBtnPadX}px`,
+                '--pa-btn-radius': `${CHIP_BTN_RADIUS}px`,
+                '--pa-btn-bg-hover': colors.fillHover,
+                '--pa-btn-bg-active': colors.fillActive,
                 fontFamily: font.body,
                 fontSize: textSize.caption,
-                gap: 4,
+                gap: CHROME_GEOM.chipBtnGap,
               } as CSSProperties}
             >
               <FiCopy size={11} /> Copy

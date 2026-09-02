@@ -49,7 +49,11 @@ const LANE_OWNED: Record<string, { max: number; lane: string }> = {
   // densest cluster (8), including its own local `glass` object. Converting it
   // piecemeal from here would collide with that redesign. R13 is in flight.
   'components/brain/BrainView.tsx': { max: 8, lane: 'R13 Brain' },
-  'components/projects/PersonDetailModal.tsx': { max: 2, lane: 'R12 Projects' },
+  // CanvasLegend's two are GONE (R16): the shared canvas overlay legend now
+  // draws on the glass tokens, so it no longer needs a hand-rolled entry.
+  // PersonDetailModal's two are GONE (R12): the drawer was a hand-rolled
+  // second modal, and it is a `DetailModal placement="contained"` now — a
+  // modal body is content by Apple's own list, so it is simply opaque.
   'components/chat/SessionPicker.tsx': { max: 1, lane: "R4' chat dock/launcher" },
   // MeetingRecorder's two are GONE (R4' voice surfaces): the floating panel
   // takes `glassSurface()`, and the picker modal — a modal BODY, which is
