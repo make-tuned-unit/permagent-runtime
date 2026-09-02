@@ -25,16 +25,20 @@ import { FiTrash2, FiMic, FiSquare, FiLoader, FiExternalLink, FiCopy, FiCheck, F
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { useDictation } from '../../hooks/useDictation';
-import { font, textSize } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { Project, ProjectNote } from './types';
 
 export function NotesPanel({ project }: { project: Project }) {
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   // White veils vanish on silver — flip to a faint graphite tint there.
-  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const rowVeil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
   const focusBrainMemory = useCommandCenter(s => s.focusBrainMemory);
   const [notes, setNotes] = useState<ProjectNote[]>([]);
   const [title, setTitle] = useState('');
@@ -185,7 +189,7 @@ export function NotesPanel({ project }: { project: Project }) {
           onChange={e => setTitle(e.target.value)}
           placeholder="Title (optional)"
           style={{
-            fontSize: textSize.caption, padding: '6px 9px', borderRadius: 7,
+            fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
             background: colors.inputBg, border: `1px solid ${colors.border}`,
             color: colors.text, fontFamily: font.body, outline: 'none',
           }}
@@ -200,7 +204,7 @@ export function NotesPanel({ project }: { project: Project }) {
           placeholder="Write a note… it lands in your project's Brain."
           rows={3}
           style={{
-            fontSize: textSize.caption, padding: '7px 9px', borderRadius: 7, resize: 'vertical', minHeight: 56,
+            fontSize: textSize.caption, padding: '7px 9px', borderRadius: radius.md, resize: 'vertical', minHeight: 56,
             background: colors.inputBg, border: `1px solid ${colors.border}`,
             color: colors.text, fontFamily: font.body, lineHeight: 1.5, outline: 'none',
           }}
@@ -215,7 +219,7 @@ export function NotesPanel({ project }: { project: Project }) {
               '--pa-btn-bg': colors.cyanSoft,
               '--pa-btn-border': colors.borderHi,
               '--pa-btn-pad': '6px 14px',
-              '--pa-btn-radius': '7px',
+              '--pa-btn-radius': `${radius.md}px`,
               '--pa-btn-weight': 600,
               fontFamily: font.body,
               fontSize: textSize.caption,
@@ -242,7 +246,7 @@ export function NotesPanel({ project }: { project: Project }) {
               '--pa-btn-fg-hover': dictation === 'recording' ? colors.textOnAccent : colors.text,
               '--pa-btn-border-hover': dictation === 'recording' ? colors.danger : colors.borderHi,
               '--pa-btn-pad': '0',
-              '--pa-btn-radius': '7px',
+              '--pa-btn-radius': `${radius.md}px`,
               width: 30,
               height: 30,
             } as CSSProperties}
@@ -303,7 +307,7 @@ export function NotesPanel({ project }: { project: Project }) {
                   else rowEls.current.delete(note.id);
                 }}
                 style={{
-                  borderRadius: 7, background: rowVeil,
+                  borderRadius: radius.md, background: rowVeil,
                   border: `1px solid ${highlightId === note.id ? colors.cyan : colors.border}`,
                   transition: 'border-color 600ms',
                 }}

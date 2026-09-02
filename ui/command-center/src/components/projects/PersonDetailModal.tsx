@@ -31,18 +31,27 @@
  * PersonDetailModalHost is mounted once at the app root and renders the overlay
  * dock when the target was opened from a project (PeopleView owns the inline
  * case so the graph stays visible beside it).
+ *
+ * The panel itself is a `common/DetailModal` (R12). It used to be
+ * `PersonDetailShell`, 108 lines of second modal: its own header/badge/close
+ * row, its own scrollable body, its own footer, its own Escape handler and its
+ * own hand-rolled glass, each of them a re-implementation of the shared shell
+ * that then drifted from it. All that is left here is WHERE the panel sits —
+ * `PersonDetailDock`, below — because that is the only thing about this
+ * surface that was ever actually different.
  */
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { FiBookOpen, FiCalendar, FiCheck, FiCheckSquare, FiExternalLink, FiFileText, FiPlus, FiTrash2, FiX } from 'react-icons/fi';
+import { FiBookOpen, FiCalendar, FiCheck, FiCheckSquare, FiExternalLink, FiFileText, FiPlus, FiTrash2 } from 'react-icons/fi';
 import { apiFetch } from '../../lib/api';
 import { hapticSuccess } from '../../lib/haptic';
 import { navigateToTool, useCommandCenter } from '../../lib/store';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
-import { ease, font, radius, textSize } from '../../styles/tokens';
+import { duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Chip } from '../common/Chip';
+import { DetailModal } from '../common/DetailModal';
 import type { DeleteReport, MergeReport, Person, PersonActivity, PersonAssociation, PersonMeeting, PersonProject, PersonRelationship, UndoReport } from './types';
 import { PersonFace } from '../people/PersonFace';
 import { MergePersonPanel } from '../people/MergePersonPanel';
@@ -641,107 +650,120 @@ export function PersonDetailModal({
   );
 
   return (
-    <PersonDetailShell variant={variant} title={view.display_name} badge={badge} onClose={handleClose} footer={footer}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {deletedReport ? (
-          <DeletedCard colors={colors} report={deletedReport} onClose={onClose} />
-        ) : merging ? (
-          <MergePersonPanel person={view} onDone={handleMergeDone} onCancel={() => setMerging(false)} />
-        ) : (
-          <>
-            {mergeReport && (
-              <MergeResultCard
+    <PersonDetailDock variant={variant}>
+      <DetailModal
+        placement="contained"
+        title={view.display_name}
+        badge={badge}
+        onClose={handleClose}
+        footer={footer}
+        bodyStyle={{ padding: space.xxl }}
+        // Six actions in a 400px dock: they wrap, and they read left-to-right
+        // from the primary pair rather than being right-aligned against the
+        // destructive ones.
+        footerStyle={{ flexWrap: 'wrap', justifyContent: 'flex-start', gap: space.md }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
+          {deletedReport ? (
+            <DeletedCard colors={colors} report={deletedReport} onClose={onClose} />
+          ) : merging ? (
+            <MergePersonPanel person={view} onDone={handleMergeDone} onCancel={() => setMerging(false)} />
+          ) : (
+            <>
+              {mergeReport && (
+                <MergeResultCard
+                  colors={colors}
+                  report={mergeReport}
+                  undoing={undoing}
+                  undoReport={undoReport}
+                  undoError={undoError}
+                  onUndo={undoMerge}
+                />
+              )}
+              {deleteStep === 1 && (
+                <DeleteWarningCard
+                  colors={colors}
+                  name={view.display_name}
+                  meetingsCount={meetings.length}
+                  projectsCount={projectsStatus === 'error' ? null : personProjects.length}
+                  deleting={deleting}
+                  error={deleteError}
+                  onCancel={() => { setDeleteStep(0); setDeleteError(null); }}
+                  onConfirm={doDelete}
+                />
+              )}
+              <EditForm
                 colors={colors}
-                report={mergeReport}
-                undoing={undoing}
-                undoReport={undoReport}
-                undoError={undoError}
-                onUndo={undoMerge}
+                personName={view.display_name}
+                draft={draft}
+                onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
               />
-            )}
-            {deleteStep === 1 && (
-              <DeleteWarningCard
+              {association && (
+                <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono }}>
+                  {association.project_role ? `${association.project_role} · ` : ''}Associated {fmtTime(association.associated_at)}
+                </div>
+              )}
+              <PersonProjects
                 colors={colors}
-                name={view.display_name}
-                meetingsCount={meetings.length}
-                projectsCount={projectsStatus === 'error' ? null : personProjects.length}
-                deleting={deleting}
-                error={deleteError}
-                onCancel={() => { setDeleteStep(0); setDeleteError(null); }}
-                onConfirm={doDelete}
+                rows={personProjects}
+                status={projectsStatus}
+                onRetry={loadProjects}
+                onOpen={openProject}
               />
-            )}
-            <EditForm
-              colors={colors}
-              personName={view.display_name}
-              draft={draft}
-              onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
-            />
-            {association && (
-              <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono }}>
-                {association.project_role ? `${association.project_role} · ` : ''}Associated {fmtTime(association.associated_at)}
-              </div>
-            )}
-            <PersonProjects
-              colors={colors}
-              rows={personProjects}
-              status={projectsStatus}
-              onRetry={loadProjects}
-              onOpen={openProject}
-            />
-            <RelatedPeople colors={colors} rows={relationships} people={allPeople} status={relatedStatus}
-              adding={addingRelationship} targetId={targetId} predicate={predicate}
-              onStart={() => setAddingRelationship(true)} onCancel={() => setAddingRelationship(false)}
-              onTarget={setTargetId} onPredicate={setPredicate} onAdd={addRelationship} onRemove={removeRelationship} />
-            <MeetingsSection
-              colors={colors}
-              personName={view.display_name}
-              rows={meetings}
-              projects={personProjects}
-              status={meetingsStatus}
-              adding={addingMeeting}
-              title={meetingTitle}
-              starts={meetingStarts}
-              notes={meetingNotes}
-              projectId={meetingProjectId}
-              followUp={followUp}
-              followUpAt={followUpAt}
-              followUpNote={followUpNote}
-              saving={savingMeeting}
-              onStart={() => {
-                setAddingMeeting(true);
-                setFollowUpAt(plusDaysLocal(meetingStarts || localDateTimeValue(), 7));
-              }}
-              onCancel={() => setAddingMeeting(false)}
-              onTitle={setMeetingTitle}
-              onStarts={v => {
-                setMeetingStarts(v);
-                if (followUp) setFollowUpAt(plusDaysLocal(v, 7));
-              }}
-              onNotes={setMeetingNotes}
-              onProject={setMeetingProjectId}
-              onFollowUp={setFollowUp}
-              onFollowUpAt={setFollowUpAt}
-              onFollowUpNote={setFollowUpNote}
-              onAdd={addMeeting}
-              onRetry={loadMeetings}
-              onFollowUpDone={markFollowUpDone}
-            />
-            <PersonActivityTimeline colors={colors} rows={activity} status={activityStatus} onRetry={loadActivity} />
+              <RelatedPeople colors={colors} rows={relationships} people={allPeople} status={relatedStatus}
+                adding={addingRelationship} targetId={targetId} predicate={predicate}
+                onStart={() => setAddingRelationship(true)} onCancel={() => setAddingRelationship(false)}
+                onTarget={setTargetId} onPredicate={setPredicate} onAdd={addRelationship} onRemove={removeRelationship} />
+              <MeetingsSection
+                colors={colors}
+                personName={view.display_name}
+                rows={meetings}
+                projects={personProjects}
+                status={meetingsStatus}
+                adding={addingMeeting}
+                title={meetingTitle}
+                starts={meetingStarts}
+                notes={meetingNotes}
+                projectId={meetingProjectId}
+                followUp={followUp}
+                followUpAt={followUpAt}
+                followUpNote={followUpNote}
+                saving={savingMeeting}
+                onStart={() => {
+                  setAddingMeeting(true);
+                  setFollowUpAt(plusDaysLocal(meetingStarts || localDateTimeValue(), 7));
+                }}
+                onCancel={() => setAddingMeeting(false)}
+                onTitle={setMeetingTitle}
+                onStarts={v => {
+                  setMeetingStarts(v);
+                  if (followUp) setFollowUpAt(plusDaysLocal(v, 7));
+                }}
+                onNotes={setMeetingNotes}
+                onProject={setMeetingProjectId}
+                onFollowUp={setFollowUp}
+                onFollowUpAt={setFollowUpAt}
+                onFollowUpNote={setFollowUpNote}
+                onAdd={addMeeting}
+                onRetry={loadMeetings}
+                onFollowUpDone={markFollowUpDone}
+              />
+              <PersonActivityTimeline colors={colors} rows={activity} status={activityStatus} onRetry={loadActivity} />
 
-            {error && (
-              <div style={{
-                fontSize: textSize.caption, color: colors.danger,
-                borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-                background: colors.danger + '14', padding: '8px 12px',
-              }}>
-                {error}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </PersonDetailShell>
+              {error && (
+                <div style={{
+                  fontSize: textSize.caption, color: colors.danger,
+                  borderRadius: radius.md, border: `1px solid ${colors.danger}`,
+                  background: colors.danger + '14', padding: '8px 12px',
+                }}>
+                  {error}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </DetailModal>
+    </PersonDetailDock>
   );
 }
 
@@ -1133,116 +1155,56 @@ function EditForm({ colors, personName, draft, onChange }: {
   );
 }
 
-function PersonDetailShell({
-  variant,
-  title,
-  badge,
-  onClose,
-  footer,
-  children,
-}: {
+/** The dock is 400px wide in both placements — wide enough for the widest
+ *  thing in it (a datetime input beside its label) and narrow enough that the
+ *  board or the graph it opens over is still legible beside it. */
+const DOCK_WIDTH = 400;
+/** The app's titlebar. The overlay dock starts below it rather than under it. */
+const TITLEBAR_INSET = 28;
+
+/**
+ * Where the person panel sits — and, after R12, the only thing this file still
+ * decides about the panel's chrome.
+ *
+ * `overlay` pins it to the window's right edge (opened from a project's People
+ * list, over the board). `inline` docks it into PeopleView's layout, where the
+ * graph shrinks to make room and stays live beside it — which is exactly why
+ * `DetailModal` is asked for `placement="contained"` and not for a modal: a
+ * scrim would black out the graph this panel exists to explain, and a focus
+ * trap would swallow Tab on a surface the user can still see and still click.
+ *
+ * `data-testid` rides here now because the dock IS the panel from the outside;
+ * PeopleView's tests locate the open panel by it.
+ */
+function PersonDetailDock({ variant, children }: {
   variant: 'inline' | 'overlay';
-  title: string;
-  badge?: { label: string; color: string; bg: string } | null;
-  onClose: () => void;
-  footer?: ReactNode;
   children: ReactNode;
 }) {
-  const { colors, theme, reduceMotion } = useTheme();
-
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [onClose]);
-
-  const panel = (
-    <div
-      data-testid="person-detail-panel"
-      style={{
-        height: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        background: theme === 'silver' ? 'rgba(255,255,255,0.92)' : 'rgba(20,28,48,0.92)',
-        backdropFilter: 'blur(24px) saturate(140%)',
-        WebkitBackdropFilter: 'blur(24px) saturate(140%)',
-        borderLeft: `1px solid ${theme === 'silver' ? 'rgba(167,176,190,0.35)' : 'rgba(0,213,255,0.16)'}`,
-        boxShadow: theme === 'silver'
-          ? '0 24px 60px rgba(30,37,48,0.12)'
-          : '0 24px 60px rgba(0,0,0,0.35)',
-      }}
-    >
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 10,
-        padding: '14px 16px',
-        borderBottom: `1px solid ${colors.border}`,
-        flexShrink: 0,
-      }}>
-        <span style={{
-          fontFamily: font.display, fontSize: textSize.heading, fontWeight: 600,
-          color: colors.text, flex: 1, minWidth: 0,
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>
-          {title}
-        </span>
-        {badge && (
-          <span style={{
-            fontFamily: font.mono, fontSize: 10, letterSpacing: '0.04em',
-            textTransform: 'uppercase', borderRadius: radius.pill, padding: '2px 9px',
-            flexShrink: 0, color: badge.color, background: badge.bg,
-          }}>
-            {badge.label}
-          </span>
-        )}
-        <Button
-          colors={colors}
-          variant="bare"
-          onClick={onClose}
-          title="Close"
-          aria-label="Close"
-          style={{
-            '--pa-btn-fg': colors.textMuted,
-            '--pa-btn-fg-hover': colors.text,
-            '--pa-btn-bg-hover': 'transparent',
-            '--pa-btn-pad': '4px',
-          } as CSSProperties}
-        >
-          <FiX size={16} />
-        </Button>
-      </div>
-      <div style={{ overflow: 'auto', padding: '16px', flex: 1 }}>
-        {children}
-      </div>
-      {footer && (
-        <div style={{
-          padding: '12px 16px', borderTop: `1px solid ${colors.border}`,
-          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
-          flexShrink: 0,
-        }}>
-          {footer}
-        </div>
-      )}
-    </div>
-  );
+  const { reduceMotion } = useTheme();
 
   if (variant === 'inline') {
     return (
-      <div style={{
-        width: 400, flexShrink: 0, height: '100%', minHeight: 0,
-        transition: reduceMotion ? 'none' : `width 240ms ${ease.out}`,
-      }}>
-        {panel}
+      <div
+        data-testid="person-detail-panel"
+        style={{
+          width: DOCK_WIDTH, flexShrink: 0, height: '100%', minHeight: 0,
+          transition: reduceMotion ? 'none' : `width ${duration.smooth}ms ${ease.smooth}`,
+        }}
+      >
+        {children}
       </div>
     );
   }
 
   return (
-    <div style={{
-      position: 'fixed', top: 28, right: 0, bottom: 0, width: 400, zIndex: 80,
-    }}>
-      {panel}
+    <div
+      data-testid="person-detail-panel"
+      style={{
+        position: 'fixed', top: TITLEBAR_INSET, right: 0, bottom: 0,
+        width: DOCK_WIDTH, zIndex: 80,
+      }}
+    >
+      {children}
     </div>
   );
 }
@@ -1250,7 +1212,7 @@ function PersonDetailShell({
 function inputStyle(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
   return {
     fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
-    background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
+    background: colors.fillSubtle, border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none', width: '100%',
     boxSizing: 'border-box',
   };

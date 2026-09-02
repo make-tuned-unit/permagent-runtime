@@ -22,16 +22,20 @@ import { FiExternalLink, FiRefreshCw } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { projectMemoryPreview } from '../brain/brainMemoryFocus';
-import { font, textSize } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { Project, ProjectMemory } from './types';
 
 export function MemoriesPanel({ project }: { project: Project }) {
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   // White veils vanish on silver — flip to a faint graphite tint there.
-  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const rowVeil = colors.fillSubtle;
+  // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
+  // replaces predates the token and was a shade off on both themes; the token
+  // carries the THEME's own ink, so one name reads as a lift on the void and
+  // as a shade on the pearl without a conditional here.
   const [memories, setMemories] = useState<ProjectMemory[]>([]);
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
   const loadGeneration = useRef(0);
@@ -140,7 +144,7 @@ export function MemoriesPanel({ project }: { project: Project }) {
               style={{
                 textAlign: 'left', width: '100%', cursor: 'pointer',
                 display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px',
-                borderRadius: 7, background: rowVeil, border: `1px solid ${colors.border}`,
+                borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}`,
                 color: colors.text, fontFamily: font.body, transition: 'border-color 150ms',
               }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
