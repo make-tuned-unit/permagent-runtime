@@ -36,12 +36,30 @@ export type VoiceState =
 export const VOICE_WATCHDOG_MS = 90_000;
 
 /**
+ * Consecutive zero-byte recordings (started, then stopped having captured no
+ * frames at all) before the watchdog forces a recovery regardless of state or
+ * frame traffic.
+ *
+ * The liveness half of the watchdog (below) only ever saw `processing`/
+ * `playing` sitting idle — a fast start/stop loop looks alive to it because
+ * every `Idle` frame resets `lastActivityRef`, and the loop never even
+ * REACHES `processing` (a 0-sample stop returns straight to `ready`). The
+ * 2026-09-01 incident free-ran ~1,430 such cycles at ~7.9 Hz over three
+ * minutes without ever tripping VOICE_WATCHDOG_MS. This backstops fix 3a's
+ * own teach-specific cap for any OTHER fast loop that captures no audio.
+ */
+export const VOICE_ZERO_BYTE_CAPTURE_STREAK_LIMIT = 5;
+
+/**
  * Pure predicate: is a busy voice state wedged and in need of a forced clear?
  *
- * Wedged = in a mic-locking state (`processing`/`playing`), with NO audio
- * actively playing or queued (so it isn't making local progress), and no
- * daemon activity for longer than the threshold. Extracted so the watchdog
- * decision is unit-testable without a live audio session.
+ * Wedged = EITHER (a) a mic-locking state (`processing`/`playing`), with NO
+ * audio actively playing or queued (so it isn't making local progress), and
+ * no daemon activity for longer than the threshold; OR (b) a run of
+ * consecutive zero-byte capture cycles — a fast start/stop loop that never
+ * captures anything is wedged regardless of which state it currently reports
+ * or how much frame traffic is flowing. Extracted so the watchdog decision is
+ * unit-testable without a live audio session.
  */
 export function isVoiceWedged(opts: {
   state: VoiceState;
@@ -49,6 +67,8 @@ export function isVoiceWedged(opts: {
   queuedChunks: number;
   msSinceActivity: number;
   thresholdMs?: number;
+  consecutiveZeroByteCaptures?: number;
+  zeroByteCaptureLimit?: number;
 }): boolean {
   const {
     state,
@@ -56,7 +76,10 @@ export function isVoiceWedged(opts: {
     queuedChunks,
     msSinceActivity,
     thresholdMs = VOICE_WATCHDOG_MS,
+    consecutiveZeroByteCaptures = 0,
+    zeroByteCaptureLimit = VOICE_ZERO_BYTE_CAPTURE_STREAK_LIMIT,
   } = opts;
+  if (consecutiveZeroByteCaptures >= zeroByteCaptureLimit) return true;
   if (state !== 'processing' && state !== 'playing') return false;
   if (isPlaying || queuedChunks > 0) return false;
   return msSinceActivity > thresholdMs;
@@ -169,18 +192,35 @@ export function beginVadTurn(now: number, heardSpeech: boolean): VadTurnTiming {
   return { heardSpeech, lastVoiceAt: now, turnStartedAt: now };
 }
 
-/** Pure endpoint decision, kept outside the audio callback for regression tests. */
+/**
+ * Pure endpoint decision, kept outside the audio callback for regression tests.
+ *
+ * `opts.recordingStartedAt`, when given, is when the CURRENT recording
+ * actually began — set unconditionally by every call to `startRecording`
+ * (see its docstring). It's a floor under `timing.turnStartedAt`: a
+ * `turnStartedAt` older than the recording it's supposed to describe is by
+ * definition a stale leftover from a PREVIOUS turn — the exact failure class
+ * `beginVadTurn` exists to close — so it's judged from the recording's own
+ * start instead of trusting the stale clock. Defense in depth on top of the
+ * single-seam fix in `startRecording`: even a future call site that forgets
+ * to arm the turn clocks can't make this function kill a turn before its
+ * first buffer.
+ */
 export function shouldEndVadTurn(
   timing: VadTurnTiming,
   now: number,
-  opts: { maxTurnMs?: number } = {},
+  opts: { maxTurnMs?: number; recordingStartedAt?: number } = {},
 ): boolean {
   const maxTurnMs = opts.maxTurnMs ?? VAD_MAX_TURN_MS;
-  const turnFor = Math.max(0, now - timing.turnStartedAt);
+  const effectiveStart =
+    opts.recordingStartedAt !== undefined
+      ? Math.max(timing.turnStartedAt, opts.recordingStartedAt)
+      : timing.turnStartedAt;
+  const turnFor = Math.max(0, now - effectiveStart);
   if (turnFor > maxTurnMs) return true;
   if (!timing.heardSpeech) return false;
   const silentFor = Math.max(0, now - timing.lastVoiceAt);
-  const voicedFor = Math.max(0, timing.lastVoiceAt - timing.turnStartedAt);
+  const voicedFor = Math.max(0, timing.lastVoiceAt - effectiveStart);
   return silentFor > endpointWindowMs(voicedFor);
 }
 
@@ -228,6 +268,22 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const [teachWord, setTeachWord] = useState<string | null>(null);
   const teachWordRef = useRef<string | null>(null);
   teachWordRef.current = teachWord;
+  // FIX 1: a `teach` frame arrives at synthesis-QUEUE time, well before its
+  // audio (ASK_FIRST/ASK_AGAIN) actually reaches the speaker — applying it
+  // instantly let the pill (and the mic it arms) lead the narration that
+  // announces it by tens of seconds. Held here and applied only once
+  // playback genuinely drains, mirroring pendingNavRef/flushNavIfIdle below.
+  // `{ word }` (vs. bare `string | null`) distinguishes "nothing pending"
+  // from "pending change to null".
+  const pendingTeachRef = useRef<{ word: string | null } | null>(null);
+  // FIX 3a: consecutive teach-driven listens that captured NO audio (server
+  // replied `Idle` for a too-short buffer). Capped so a listen that can never
+  // capture (mic issue, VAD misfire) can't restart forever — see the 'idle'
+  // handler below. Reset whenever a listen actually produces a transcript,
+  // or a fresh teach prompt (word or re-ask) is applied.
+  const teachZeroSampleStreakRef = useRef(0);
+  /** FIX 3a cap — matches MAX_TEACH_ATTEMPTS on the server (voice_pronounce.rs). */
+  const MAX_TEACH_ZERO_SAMPLE_LISTENS = 3;
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -240,6 +296,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const audioQueueRef = useRef<Float32Array[]>([]);
   const playingRef = useRef(false);
   const playbackCtxRef = useRef<AudioContext | null>(null);
+  // ALSO (backstops fix 3a): consecutive recordings that captured zero
+  // frames, regardless of state or which loop caused them. Reset in
+  // stopRecording whenever a recording captures at least one frame.
+  const zeroByteCaptureStreakRef = useRef(0);
   // Frequency analyser tapping the TTS output, so the chat can draw a live
   // waveform while the agent speaks. Lives on the playback context; recreated
   // with it, nulled when it closes.
@@ -331,6 +391,32 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
   }, [fireNav]);
 
+  // FIX 1: apply a deferred `teach` frame only once nothing is left to
+  // play — the same "narration finished" signal flushNavIfIdle uses, so the
+  // pill (and the recording it arms via startRecordingRef) can never land
+  // before the audio that announces it. Safe to call redundantly.
+  //
+  // Updates teachWordRef directly (not just via the `teachWord` render sync
+  // above) so a same-tick `if (teachWordRef.current)` check right after this
+  // call sees the fresh value — React state updates don't land until the
+  // next render.
+  const flushTeachIfIdle = useCallback(() => {
+    if (
+      pendingTeachRef.current &&
+      !playingRef.current &&
+      audioQueueRef.current.length === 0 &&
+      !pendingAudioRef.current
+    ) {
+      const teach = pendingTeachRef.current;
+      pendingTeachRef.current = null;
+      // A fresh prompt (word, or a re-ask of the same word) gets its own
+      // zero-sample-listen budget.
+      teachZeroSampleStreakRef.current = 0;
+      teachWordRef.current = teach.word;
+      setTeachWord(teach.word);
+    }
+  }, []);
+
   const setStateAndEmit = useCallback((newState: VoiceState) => {
     stateRef.current = newState;
     setState(newState);
@@ -348,8 +434,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
         analyserRef.current = null;
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           setStateAndEmit('ready');
-          // Narration finished playing — release any deferred navigation now.
+          // Narration finished playing — release any deferred navigation
+          // and any deferred teach word (FIX 1) now: this is the actual
+          // "nothing left to play" moment, so the pill can never lead the
+          // audio that announces it.
           flushNavIfIdle();
+          flushTeachIfIdle();
           if (teachWordRef.current) {
             startRecordingRef.current?.();
           }
@@ -386,7 +476,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       playingRef.current = false;
       pendingAudioRef.current = false;
     }
-  }, [setStateAndEmit, flushNavIfIdle]);
+  }, [setStateAndEmit, flushNavIfIdle, flushTeachIfIdle]);
 
   // Halt playback and return to ready WITHOUT touching the socket — the
   // response to a spoken "stop": the daemon already ended (or never had) the
@@ -451,10 +541,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
               wakeGatedRef.current = false;
               setWakeGated(false);
               lastConvActivityRef.current = Date.now();
-              const timing = beginVadTurn(Date.now(), false);
-              vadHeardSpeechRef.current = timing.heardSpeech;
-              vadLastVoiceRef.current = timing.lastVoiceAt;
-              vadTurnStartRef.current = timing.turnStartedAt;
+              // FIX 2: startRecording itself arms the VAD turn clocks now —
+              // a single seam every recording start goes through, so there
+              // is nothing to duplicate here.
               startRecordingRef.current?.();
             } else if (action === 'halt-playback') {
               haltPlayback();
@@ -471,6 +560,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
             // transient error (e.g. a prior "No speech detected") so it doesn't
             // stick in the UI while the conversation is in fact succeeding.
             setError(null);
+            // A real capture — the zero-sample-listen budget (FIX 3a) is
+            // about a listen that never captures anything, not one that did.
+            teachZeroSampleStreakRef.current = 0;
             setLastTranscript(msg.text ?? '');
             emit({ type: 'transcript', text: msg.text ?? '' });
             break;
@@ -486,7 +578,11 @@ export function useVoice(options: UseVoiceOptions = {}) {
             setStateAndEmit('playing');
             break;
           case 'teach':
-            setTeachWord(typeof msg.word === 'string' && msg.word ? msg.word : null);
+            // FIX 1: defer — do not apply instantly. See pendingTeachRef.
+            pendingTeachRef.current = {
+              word: typeof msg.word === 'string' && msg.word ? msg.word : null,
+            };
+            flushTeachIfIdle();
             break;
           case 'taught':
             setTeachWord(null);
@@ -495,6 +591,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
             pendingAudioRef.current = false;
             if (!playingRef.current && audioQueueRef.current.length === 0) {
               setStateAndEmit('ready');
+              // Covers a teach frame that arrived mid-reply and is only now
+              // safe to apply (FIX 1) — same drain point that starts the
+              // teach-driven recording.
+              flushTeachIfIdle();
               if (teachWordRef.current) {
                 startRecordingRef.current?.();
               }
@@ -527,8 +627,31 @@ export function useVoice(options: UseVoiceOptions = {}) {
           case 'idle':
             setError(null);
             setStateAndEmit('ready');
+            // By the time an 'idle' for a teach-driven listen arrives, any
+            // teach frame that raced it must already have been applied at
+            // the drain point (playNextChunk / reply_end) that started this
+            // recording in the first place — flush defensively anyway, it's
+            // a no-op if nothing is pending.
+            flushTeachIfIdle();
             if (teachWordRef.current) {
-              startRecordingRef.current?.();
+              // FIX 3a: bound consecutive listens that capture nothing (a
+              // too-short/empty buffer comes back as this same 'idle') —
+              // the old unconditional re-arm free-ran ~1,430 cycles at
+              // ~7.9 Hz over three minutes (2026-09-01 incident) with the
+              // pending word parked forever.
+              teachZeroSampleStreakRef.current += 1;
+              if (teachZeroSampleStreakRef.current >= MAX_TEACH_ZERO_SAMPLE_LISTENS) {
+                teachZeroSampleStreakRef.current = 0;
+                // Give up locally first — the pill can never hang forever
+                // even if the socket send below is slow or lost. The
+                // server's own teach_skip handling (SKIPPED + resume,
+                // mirroring a spoken "skip") reconciles right behind it.
+                teachWordRef.current = null;
+                setTeachWord(null);
+                wsRef.current?.send(JSON.stringify({ type: 'teach_skip' }));
+              } else {
+                startRecordingRef.current?.();
+              }
             }
             break;
           case 'error':
@@ -566,7 +689,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
         emit({ type: 'reply_audio', audio: { samples, sampleRate: 24000 } });
       }
     }
-  }, [setStateAndEmit, emit, playNextChunk, flushNavIfIdle, haltPlayback, sessionId]);
+  }, [setStateAndEmit, emit, playNextChunk, flushNavIfIdle, flushTeachIfIdle, haltPlayback, sessionId]);
 
   // Monotonic connect epoch. Each connectSocket call claims a new epoch; a
   // call that gets superseded while awaiting the daemon token (e.g. the
@@ -683,6 +806,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
     playbackCtxRef.current = null;
     analyserRef.current = null;
     lastActivityRef.current = Date.now();
+    // A fresh socket starts a clean capture streak — otherwise a
+    // watchdog-triggered recovery would find the same stale streak still
+    // over the limit and immediately re-trigger.
+    zeroByteCaptureStreakRef.current = 0;
 
     if (activeRef.current) {
       // Even if a connect is already in flight, start a fresh one: the
@@ -730,6 +857,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
           isPlaying: playingRef.current,
           queuedChunks: audioQueueRef.current.length,
           msSinceActivity: Date.now() - lastActivityRef.current,
+          consecutiveZeroByteCaptures: zeroByteCaptureStreakRef.current,
         })
       ) {
         forceRecover('watchdog: busy state wedged with no daemon activity');
@@ -871,6 +999,14 @@ export function useVoice(options: UseVoiceOptions = {}) {
     setWakeActive(false);
     wakeGatedRef.current = false;
     setWakeGated(false);
+    // FIX 4: the pill must not survive an explicit "end voice" — otherwise
+    // it sits on screen showing a word nothing is listening for anymore.
+    // The socket close below is what makes the SERVER forget it too
+    // (Message::Close handling in voice.rs).
+    pendingTeachRef.current = null;
+    teachZeroSampleStreakRef.current = 0;
+    teachWordRef.current = null;
+    setTeachWord(null);
     // Close socket
     if (wsRef.current) {
       wsRef.current.onclose = null;
@@ -880,8 +1016,22 @@ export function useVoice(options: UseVoiceOptions = {}) {
     setStateAndEmit('idle');
   }, [setStateAndEmit]);
 
-  /** Start recording. SYNCHRONOUS — no async gaps, no press-release race.
-   *  Only works when socket is open, state is 'ready', and mic is acquired. */
+  /**
+   * Start recording. SYNCHRONOUS — no async gaps, no press-release race.
+   * Only works when socket is open, state is 'ready', and mic is acquired.
+   *
+   * FIX 2 (2026-09-01 incident, single seam): every recording start — push-
+   * to-talk, wake word, VAD onset, AND a teach-driven auto-start — arms the
+   * VAD turn clocks here, unconditionally. Three teach-driven call sites
+   * used to call this with the clocks never (re)armed, leaving
+   * vadTurnStartRef holding a value up to ~100s stale from a PRIOR turn;
+   * shouldEndVadTurn's very first check (`now - turnStartedAt > 45000ms`)
+   * then stopped the recording before its 256ms ScriptProcessor emitted a
+   * single buffer — 0-sample recordings. This is the exact bug class
+   * beginVadTurn's own docstring was written to close, now closed at the
+   * one place every start goes through instead of duplicated (and
+   * incompletely applied) at each call site.
+   */
   const startRecording = useCallback(() => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -892,6 +1042,13 @@ export function useVoice(options: UseVoiceOptions = {}) {
       console.warn('[useVoice] startRecording: no mic stream (not activated?)');
       return;
     }
+
+    const now = Date.now();
+    recordingStartedAtRef.current = now;
+    const timing = beginVadTurn(now, false);
+    vadHeardSpeechRef.current = timing.heardSpeech;
+    vadLastVoiceRef.current = timing.lastVoiceAt;
+    vadTurnStartRef.current = timing.turnStartedAt;
 
     const audioCtx = new AudioContext({ sampleRate });
     audioCtxRef.current = audioCtx;
@@ -929,6 +1086,16 @@ export function useVoice(options: UseVoiceOptions = {}) {
     const frames = frameCountRef.current;
     frameCountRef.current = 0;
     console.log(`[useVoice] stopRecording: sent ${frames} frames (${(frames * 4096 / sampleRate).toFixed(1)}s)`);
+    // ALSO (backstops fix 3a): track consecutive captures that sent NOTHING —
+    // the watchdog (isVoiceWedged) catches a run of these regardless of
+    // state or how much OTHER frame traffic (VAD monitor frames, JSON
+    // control messages) is flowing, which is what let the 2026-09-01
+    // incident's fast start/stop loop look alive.
+    if (frames === 0) {
+      zeroByteCaptureStreakRef.current += 1;
+    } else {
+      zeroByteCaptureStreakRef.current = 0;
+    }
 
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN && stateRef.current === 'recording') {
@@ -1003,6 +1170,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const vadBargeStreakRef = useRef(0);
   const vadOnsetStreakRef = useRef(0);
   const vadTurnStartRef = useRef(0);
+  // FIX 2 hardening: when the CURRENT recording actually began, set
+  // unconditionally by startRecording. Passed into shouldEndVadTurn as a
+  // floor under vadTurnStartRef — see that function's docstring.
+  const recordingStartedAtRef = useRef(0);
 
   // A mechanical keyboard's click is a loud, very SHORT transient. Speech is
   // quieter per-buffer but sustained — so the discriminator that works is
@@ -1116,10 +1287,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
           vadOnsetStreakRef.current += 1;
           if (vadOnsetStreakRef.current >= VAD_ONSET_STREAK) {
             vadOnsetStreakRef.current = 0;
-            const timing = beginVadTurn(now, true);
-            vadHeardSpeechRef.current = timing.heardSpeech;
-            vadLastVoiceRef.current = timing.lastVoiceAt;
-            vadTurnStartRef.current = timing.turnStartedAt;
+            // FIX 2: startRecording itself arms the VAD turn clocks now —
+            // single seam, nothing to duplicate here.
             startRecordingRef.current?.();
           }
         } else {
@@ -1139,7 +1308,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
           heardSpeech: vadHeardSpeechRef.current,
           lastVoiceAt: vadLastVoiceRef.current,
           turnStartedAt: vadTurnStartRef.current,
-        }, now)) {
+        }, now, { recordingStartedAt: recordingStartedAtRef.current })) {
           vadHeardSpeechRef.current = false;
           stopRecordingRef.current?.();
         }
