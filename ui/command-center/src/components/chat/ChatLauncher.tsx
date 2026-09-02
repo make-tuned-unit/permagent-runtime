@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import { FiMessageSquare } from 'react-icons/fi';
-import { ease, font, radius, textSize } from '../../styles/tokens';
+import { duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
@@ -13,7 +13,7 @@ const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 export const CHAT_LAUNCHER_MARGIN = 20;
 
 export function ChatLauncher() {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const glass = useGlass('glass');
   const [agentName, setAgentName] = useState('Agent');
   // Store-tracked (not local): createChatWindow sets it on EVERY open path
@@ -207,6 +207,20 @@ export function ChatLauncher() {
   // checked the window, so it stayed on screen over an open chat.
   if (chatWindowOpen || chatDockOpen) return null;
 
+  // The pointer ladder as FILL, not as a second material (D2/D10). The glass
+  // token already supplies the surface; hover and press add the theme's own
+  // neutral ink on top of it as an extra background layer, which is the one
+  // way to lighten a translucent fill without stacking a second
+  // `backdrop-filter` on it. `fillHover`/`fillActive` carry the theme's ink, so
+  // the same token reads as a lift on the void and as a shade on the pearl.
+  const lift = pressed ? colors.fillActive : hovered ? colors.fillHover : null;
+  // `glass.background` is always set by `glassSurface()` — translucent normally,
+  // the theme's flat surface under Reduce Transparency — but it is typed
+  // optional, and a stray `undefined` in a background list would drop the fill
+  // entirely rather than fail loudly.
+  const base = glass.background ?? colors.surface;
+  const background = lift ? `linear-gradient(0deg, ${lift}, ${lift}), ${base}` : base;
+
   return (
     <button
       ref={buttonRef}
@@ -217,22 +231,41 @@ export function ChatLauncher() {
       onMouseUp={() => setPressed(false)}
       style={{
       position: 'fixed', bottom: CHAT_LAUNCHER_MARGIN, right: CHAT_LAUNCHER_MARGIN, zIndex: 9999,
-      display: 'flex', alignItems: 'center', gap: 10,
-      padding: '12px 20px', borderRadius: radius.pill,
+      display: 'flex', alignItems: 'center', gap: space.lg,
+      padding: `${space.xl}px ${space.xxxl}px`,
+      // Capsule, and it is the one control in the app that has earned one:
+      // Tahoe rounds LARGE and extra-large prominent controls into capsules and
+      // keeps dense ones as rounded rectangles (D5). This is the single
+      // most prominent floating action on every screen.
+      borderRadius: radius.pill,
       // Real glass. A fixed pill at z-index 9999 that hovers over every screen
       // in the app is the floating control layer by definition, and it is
       // small — so the default `glass`, not the sidebar-weight `glassHi`.
       // It was already asking for blur(16px) over an opaque fill.
       ...glass,
-      // Theme-safe elevation — a cool soft shadow on silver, deep on dark
-      // (the hardcoded black glow was invisible on the light themes).
+      background,
       border: `1px solid ${hovered ? colors.cyan : colors.borderHi}`,
       color: colors.cyan, cursor: 'pointer',
       fontFamily: font.body, fontSize: textSize.small, fontWeight: 600,
-      boxShadow: `${glass.boxShadow}, ${colors.cardShadow}`,
-      // Tactile feedback: lift on hover, settle on press.
+      // ONE ambient shadow, the glass token's own. It was stacked with
+      // `colors.cardShadow`, which is a second ambient plus a second hairline
+      // over the rim the material already draws — two shadows doing one job
+      // (D13, and Apple.com ships exactly one drop shadow in its whole system).
+      boxShadow: glass.boxShadow,
+      // Physicality, not a colour swap (D10): lift on hover, settle on press.
       transform: pressed ? 'scale(0.97)' : hovered ? 'translateY(-2px)' : 'translateY(0)',
-      transition: `all 200ms ${ease.out}`,
+      // Springs, and named properties rather than `all` — `all` would also
+      // animate the padding and border the store's published size is measured
+      // from. `snappy` (bounce 0.15, 240ms) is the control-state-change spring;
+      // `smooth` carries the border tint. Both under Apple's 500ms ceiling.
+      //
+      // The FILL is deliberately not in this list. A layered gradient cannot
+      // interpolate, so naming it would be a transition that silently does
+      // nothing — and an instant highlight under the pointer with the give
+      // animated is what a Mac control actually does.
+      transition: reduceMotion
+        ? 'none'
+        : `transform ${duration.snappy}ms ${ease.snappy}, border-color ${duration.fast}ms ${ease.smooth}`,
     }}>
       <FiMessageSquare size={16} />
       Chat with {agentName}

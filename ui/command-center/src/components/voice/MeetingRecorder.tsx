@@ -31,11 +31,12 @@ import { createPortal } from 'react-dom';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
 import { toast } from '../../lib/notifications';
-import { ease, font, radius, textSize } from '../../styles/tokens';
+import { duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useMeetingDictation, formatElapsed } from '../../hooks/useMeetingDictation';
 import { FiChevronDown, FiMic } from 'react-icons/fi';
 import { Button } from '../common/Button';
+import { useGlass } from '../common/Glass';
 import type { Project } from '../projects/types';
 
 /** Above this many projects the picker gets a filter field — scrolling a long
@@ -43,7 +44,10 @@ import type { Project } from '../projects/types';
 const FILTER_THRESHOLD = 6;
 
 export function MeetingRecorder({ open }: { open: boolean }) {
-  const { colors, gradient } = useTheme();
+  const { colors, gradient, reduceMotion } = useTheme();
+  // Hook form, so the Reduce-Transparency bridge is started by the surface
+  // that asks for glass rather than being inherited from whoever mounted first.
+  const floatingGlass = useGlass('glass');
   const {
     state, error, elapsedSeconds, failedChunks, target, hasUnsavedTranscript,
     start, stop, retrySave, discard,
@@ -201,22 +205,40 @@ export function MeetingRecorder({ open }: { open: boolean }) {
       '--pa-btn-border-hover': kind === 'quiet' ? colors.borderHi : kind === 'primary' ? colors.cyan : line,
       '--pa-btn-fg-hover': kind === 'quiet' ? colors.text : ink,
       '--pa-btn-bg-active': fill,
-      '--pa-btn-pad': '5px 12px',
-      '--pa-btn-radius': '7px',
+      '--pa-btn-pad': `${space.sm}px ${space.xl}px`,
+      '--pa-btn-radius': `${radius.sm}px`,
       '--pa-btn-weight': kind === 'primary' ? 600 : 400,
       fontFamily: font.body,
       fontSize: textSize.micro,
     } as CSSProperties;
   };
 
-  /** The floating card both the recovery prompt and the live panel sit in. */
-  const cardStyle = (accent: string) => ({
-    position: 'fixed' as const, right: 16, bottom: 16, zIndex: 999,
-    background: gradient.dropdown, backdropFilter: 'blur(16px)',
+  /**
+   * The card the recovery prompt and the live panel sit in.
+   *
+   * Floating, it is real glass now: a fixed card at z-index 999 pinned to the
+   * window corner over whatever screen happens to be underneath is the floating
+   * control layer by definition (D1). It was `gradient.dropdown` — a
+   * near-opaque 0.98 fill — under a hand-written `blur(16px)`, which is the
+   * standing bug the glass tokens exist to stop: the filter sampled the
+   * backdrop and the fill painted over it, so the blur cost a compositing pass
+   * every frame and never reached a pixel.
+   *
+   * DOCKED, it is not: it becomes a block inside the chat dock's opaque column,
+   * where there is nothing behind it to refract and glass would just be a
+   * second material on the same plane. So the docked branch takes the flat
+   * surface, and takes the ambient shadow off with it.
+   */
+  const cardStyle = (accent: string, floating: boolean) => ({
+    ...(floating
+      ? {
+          position: 'fixed' as const, right: space.xxl, bottom: space.xxl, zIndex: 999,
+          ...floatingGlass,
+        }
+      : { background: colors.surface }),
     border: `1px solid ${accent}`, borderRadius: radius.lg,
-    boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
-    padding: '10px 14px', fontFamily: font.body,
-    display: 'flex', flexDirection: 'column' as const, gap: 8,
+    padding: `${space.lg}px ${space.xxl}px`, fontFamily: font.body,
+    display: 'flex', flexDirection: 'column' as const, gap: space.md,
   });
 
   /** What the panel can honestly claim about capture right now. */
@@ -257,16 +279,21 @@ export function MeetingRecorder({ open }: { open: boolean }) {
           '--pa-btn-border-hover': state === 'recording' ? colors.danger : active ? colors.borderHi : 'transparent',
           '--pa-btn-fg-hover': state === 'recording' ? colors.danger : colors.cyan,
           '--pa-btn-bg-active': state === 'recording' ? colors.danger + '24' : active ? colors.cyanSoft : colors.borderHi,
-          '--pa-btn-pad': open ? '0 12px' : '0',
+          '--pa-btn-pad': open ? `0 ${space.xl}px` : '0',
+          // 10px, deliberately not `radius.md`: this row IS a SidebarRow
+          // visually, and that radius is written at Sidebar.tsx:129. It moves
+          // when the rail moves, not before.
           '--pa-btn-radius': '10px',
           '--pa-btn-weight': active ? 600 : 500,
-          width: open ? 'calc(100% - 16px)' : 40,
+          width: open ? `calc(100% - ${space.xxl}px)` : 40,
           height: 40,
-          gap: 12,
+          gap: space.xl,
           justifyContent: open ? 'flex-start' : 'center',
-          margin: open ? '0 8px' : '0 auto',
+          margin: open ? `0 ${space.md}px` : '0 auto',
           cursor: state === 'finishing' ? 'default' : 'pointer',
-          transition: `all 200ms ${ease.out}`,
+          // The rail's collapse animates width, padding and margin at once, so
+          // this one stays `all` — but on the spring, not the old bezier.
+          transition: reduceMotion ? 'none' : `all ${duration.smooth}ms ${ease.smooth}`,
           fontFamily: font.body, fontSize: textSize.small,
           textAlign: 'left',
         } as CSSProperties}
@@ -283,8 +310,8 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             unlike a floating chip it can never be buried by the browser. */}
         {!open && state === 'recording' && (
           <span className="pa-rec-dot" style={{
-            position: 'absolute', top: 5, right: 5, width: 7, height: 7,
-            borderRadius: '50%', background: colors.danger,
+            position: 'absolute', top: space.xs, right: space.xs, width: 7, height: 7,
+            borderRadius: radius.pill, background: colors.danger,
             animation: 'pa-rec-pulse 1.4s ease-in-out infinite',
           }} />
         )}
@@ -296,7 +323,10 @@ export function MeetingRecorder({ open }: { open: boolean }) {
           onMouseDown={e => { if (e.target === e.currentTarget) { setPickerOpen(false); setFilter(''); } }}
           style={{
             position: 'fixed', inset: 0, zIndex: 1000,
-            background: 'rgba(0,0,0,0.45)',
+            // The theme's own scrim. `rgba(0,0,0,0.45)` is a blackout on the
+            // pearl theme and the wrong weight on the void; `veil` is the
+            // token that knows which ground it is dimming.
+            background: colors.veil,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}
         >
@@ -305,18 +335,22 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             aria-modal="true"
             aria-label="Record a meeting"
             style={{
-              width: 380, maxWidth: 'calc(100vw - 48px)', maxHeight: '70vh',
+              width: 380, maxWidth: `calc(100vw - ${space.huge * 2}px)`, maxHeight: '70vh',
               display: 'flex', flexDirection: 'column',
-              background: gradient.dropdown, backdropFilter: 'blur(16px)',
+              // A modal BODY is content, not chrome — Apple's own list, and the
+              // reason the blur that used to be here is gone rather than made
+              // real (D1). The dimming behind it is the `veil` above; this
+              // surface is simply opaque, and reads the same on every theme.
+              background: gradient.dropdownSolid,
               border: `1px solid ${colors.borderHi}`, borderRadius: radius.lg,
-              boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
-              padding: 16, fontFamily: font.body,
+              boxShadow: colors.elevationFloating,
+              padding: space.xxl, fontFamily: font.body,
             }}
           >
-            <div style={{ fontSize: textSize.body, fontWeight: 600, color: colors.text, marginBottom: 4 }}>
+            <div style={{ fontSize: textSize.body, fontWeight: 600, color: colors.text, marginBottom: space.xs }}>
               Record a meeting
             </div>
-            <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginBottom: 10 }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginBottom: space.lg }}>
               {systemAudio
                 ? "Records BOTH sides — your microphone and this Mac's audio output, which is the other participants. The audio is transcribed on this device and never uploaded. Saved as a note on the project you pick."
                 : "Records your own voice from this machine's microphone (not the other side of a call), transcribes it on this device — the audio is never uploaded — and saves the transcript as a note on the project you pick when you stop."}
@@ -335,7 +369,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 sovereignty endpoint — say a local provider EXISTS, not that it
                 is the configured one, and a privacy line that is right most of
                 the time is worse than one that is always right. */}
-            <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginBottom: 10 }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginBottom: space.lg }}>
               Afterwards the transcript text is sent to your configured model to
               write the summary and pull out to-dos. Configure a local model, or
               turn on Sovereign mode, to keep the text on this device too.
@@ -348,14 +382,14 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 what makes system audio reachable at all. */}
             {canCaptureSystem && (
               <label style={{
-                display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 10,
+                display: 'flex', alignItems: 'flex-start', gap: space.md, marginBottom: space.lg,
                 fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, cursor: 'pointer',
               }}>
                 <input
                   type="checkbox"
                   checked={systemAudio}
                   onChange={e => setSystemAudio(e.target.checked)}
-                  style={{ marginTop: 2, accentColor: colors.cyan }}
+                  style={{ marginTop: space.xs / 2, accentColor: colors.cyan }}
                 />
                 <span>
                   <span style={{ color: colors.text, fontWeight: 600 }}>Also record the other participants</span>
@@ -369,12 +403,12 @@ export function MeetingRecorder({ open }: { open: boolean }) {
 
             {systemAudioError && (
               <div style={{
-                fontSize: textSize.micro, color: colors.danger, marginBottom: 8, lineHeight: 1.5,
+                fontSize: textSize.micro, color: colors.danger, marginBottom: space.md, lineHeight: 1.5,
               }}>{systemAudioError}</div>
             )}
 
             {loadError && (
-              <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md, display: 'flex', gap: space.md, alignItems: 'center' }}>
                 Couldn't load projects.
                 <Button
                   colors={colors}
@@ -391,7 +425,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               </div>
             )}
             {!loadError && projects === null && (
-              <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 8 }}>Loading projects…</div>
+              <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: space.md }}>Loading projects…</div>
             )}
 
             {projects !== null && projects.length > FILTER_THRESHOLD && (
@@ -402,7 +436,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 placeholder="Filter projects…"
                 aria-label="Filter projects"
                 style={{
-                  marginBottom: 8, padding: '6px 8px', borderRadius: 7,
+                  marginBottom: space.md, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.sm,
                   background: colors.inputBg, color: colors.text,
                   border: `1px solid ${colors.border}`, outline: 'none',
                   fontFamily: font.body, fontSize: textSize.caption,
@@ -411,7 +445,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             )}
 
             {projects !== null && (
-              <div style={{ overflow: 'auto', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
+              <div style={{ overflow: 'auto', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: space.xs, marginBottom: space.xl }}>
                 {visibleProjects.length === 0 && (
                   <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
                     {projects.length === 0 ? 'No projects available.' : 'No project matches that.'}
@@ -432,7 +466,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                       '--pa-btn-border-hover': selectedId === p.id ? colors.borderHi : colors.borderHi,
                       '--pa-btn-fg-hover': selectedId === p.id ? colors.cyan : colors.text,
                       '--pa-btn-bg-active': selectedId === p.id ? colors.cyanSoft : colors.surface,
-                      '--pa-btn-pad': '8px 10px',
+                      '--pa-btn-pad': `${space.md}px ${space.lg}px`,
                       '--pa-btn-radius': `${radius.md}px`,
                       '--pa-btn-weight': selectedId === p.id ? 600 : 400,
                       // The list is a column of full-width rows: the name reads
@@ -447,7 +481,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               </div>
             )}
 
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: space.md, justifyContent: 'flex-end', alignItems: 'center' }}>
               <span style={{ fontSize: 10, color: colors.textDim, marginRight: 'auto' }}>
                 Esc to cancel · Enter to start
               </span>
@@ -461,8 +495,8 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                   '--pa-btn-bg-hover': colors.surfaceHi,
                   '--pa-btn-border-hover': colors.borderHi,
                   '--pa-btn-fg-hover': colors.text,
-                  '--pa-btn-pad': '7px 14px',
-                  '--pa-btn-radius': '7px',
+                  '--pa-btn-pad': `${space.md}px ${space.xl}px`,
+                  '--pa-btn-radius': `${radius.sm}px`,
                   fontFamily: font.body, fontSize: textSize.caption,
                 } as CSSProperties}
               >
@@ -479,8 +513,8 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                   '--pa-btn-bg-hover': colors.cyanSoft,
                   '--pa-btn-border-hover': colors.cyan,
                   '--pa-btn-bg-active': colors.cyanSoft,
-                  '--pa-btn-pad': '7px 14px',
-                  '--pa-btn-radius': '7px',
+                  '--pa-btn-pad': `${space.md}px ${space.xl}px`,
+                  '--pa-btn-radius': `${radius.sm}px`,
                   '--pa-btn-weight': 600,
                   fontFamily: font.body, fontSize: textSize.caption,
                 } as CSSProperties}
@@ -498,8 +532,8 @@ export function MeetingRecorder({ open }: { open: boolean }) {
           stack of interrupted meetings is worked through rather than buried.
           Renders only while idle so it never competes with a live recording. */}
       {newestDraft && state === 'idle' && createPortal(
-        <div style={{ ...cardStyle(colors.borderHi), maxWidth: 340 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <div style={{ ...cardStyle(colors.borderHi, true), maxWidth: 340 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md }}>
             <div style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text }}>
               Interrupted recording recovered
             </div>
@@ -520,7 +554,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
           {error && (
             <div style={{ fontSize: textSize.micro, color: colors.danger, lineHeight: 1.4 }}>{error}</div>
           )}
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: space.md }}>
             <Button
               colors={colors}
               onClick={async () => {
@@ -549,20 +583,20 @@ export function MeetingRecorder({ open }: { open: boolean }) {
           sidebar's slot when the dock is open; floats bottom-right otherwise. */}
       {(busy || state === 'error') && createPortal(
         <div style={{
-          ...cardStyle(state === 'recording' ? colors.danger : colors.borderHi),
+          ...cardStyle(state === 'recording' ? colors.danger : colors.borderHi, !docked),
           width: state === 'recording' ? panelWidth : 340,
-          maxWidth: 'calc(100vw - 32px)',
-          transition: `width 220ms ${ease.out}`,
+          maxWidth: `calc(100vw - ${space.huge + space.md}px)`,
+          transition: reduceMotion ? 'none' : `width ${duration.smooth}ms ${ease.smooth}`,
           ...(docked ? {
             position: 'relative' as const, right: 'auto', bottom: 'auto', zIndex: 1,
-            width: '100%', maxWidth: '100%', boxShadow: 'none', borderRadius: 10,
+            width: '100%', maxWidth: '100%', boxShadow: 'none', borderRadius: radius.md,
           } : null),
         }}>
           <style>{
             '@keyframes pa-rec-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }' +
             '@media (prefers-reduced-motion: reduce) { .pa-rec-dot { animation: none !important; } }'
           }</style>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
             {state === 'recording' && (
               <span className="pa-rec-dot" style={{
                 width: 9, height: 9, borderRadius: '50%', background: colors.danger,
@@ -589,13 +623,13 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 style={{
                   '--pa-btn-fg': colors.textMuted,
                   '--pa-btn-fg-hover': colors.text,
-                  '--pa-btn-pad': '2px',
+                  '--pa-btn-pad': `${space.xs / 2}px`,
                   '--pa-btn-radius': `${radius.xs}px`,
                   marginLeft: 'auto',
                 } as CSSProperties}
               >
                 <FiChevronDown size={14}
-                  style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: `transform 200ms ${ease.out}` }} />
+                  style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: reduceMotion ? 'none' : `transform ${duration.snappy}ms ${ease.snappy}` }} />
               </Button>
             )}
           </div>
@@ -625,9 +659,9 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                   height: expanded ? 260 : 96,
                   background: colors.inputBg, color: colors.text,
                   border: `1px solid ${colors.border}`, borderRadius: radius.md,
-                  padding: '8px 10px', fontFamily: font.body, fontSize: textSize.caption,
+                  padding: `${space.md}px ${space.lg}px`, fontFamily: font.body, fontSize: textSize.caption,
                   lineHeight: 1.6, outline: 'none',
-                  transition: `height 220ms ${ease.out}`,
+                  transition: reduceMotion ? 'none' : `height ${duration.smooth}ms ${ease.smooth}`,
                 }}
               />
               <div style={{ fontSize: 10, color: colors.textDim }}>
@@ -650,7 +684,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             <div style={{ fontSize: textSize.micro, color: colors.danger, lineHeight: 1.4 }}>{error}</div>
           )}
 
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: space.md }}>
             {state === 'recording' && (
               <>
                 {/* Stopping is confirmed by the panel changing to "Transcribing

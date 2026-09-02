@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { orbAmp, orbBands, orbMotionFor, orbSpin } from './orbDrive';
 import { useTheme } from '../../styles/useTheme';
-import { ease, font, radius, textSize } from '../../styles/tokens';
+import type { ThemeColors } from '../../styles/useTheme';
+import { duration, ease, font, radius, space, textSize, type } from '../../styles/tokens';
+import { useGlass } from '../common/Glass';
 
 /**
  * VoiceOrb — the full-window conversation-mode takeover.
@@ -54,14 +56,62 @@ function makePoints(): { sphere: Pt[]; halo: Array<Pt & { r: number; tw: number 
   return { sphere, halo };
 }
 
-/** Lerp through the reference palette: cyan → electric blue → violet → magenta. */
-function palette(g: number): [number, number, number] {
-  const stops: Array<[number, number, number]> = [
-    [0, 213, 255],   // cyan
-    [64, 120, 255],  // electric blue
-    [141, 68, 174],  // violet (brand)
-    [255, 79, 216],  // magenta
+type RGB = [number, number, number];
+
+/**
+ * `#RGB` / `#RRGGBB` -> channels. Canvas is the one place in the app that
+ * cannot read a CSS custom property, so the theme has to arrive as numbers.
+ */
+function channels(hex: string): RGB {
+  const s = hex.replace('#', '');
+  const full = s.length === 3 ? s[0] + s[0] + s[1] + s[1] + s[2] + s[2] : s;
+  return [
+    parseInt(full.substring(0, 2), 16),
+    parseInt(full.substring(2, 4), 16),
+    parseInt(full.substring(4, 6), 16),
   ];
+}
+
+const mix = (a: RGB, b: RGB, t: number): RGB =>
+  [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+
+/**
+ * The orb's four gradient stops, DERIVED from the active theme.
+ *
+ * They used to be four hand-written rgb triplets — cyan `[0,213,255]`, an
+ * "electric blue" `[64,120,255]`, the brand violet `[141,68,174]` and a magenta
+ * `[255,79,216]` — which meant the orb wore the dark theme's brand colours on
+ * every theme, including the pearl one, where a magenta halo over near-white is
+ * not the same picture at all. Canvas cannot read a CSS variable, so the fix is
+ * not a variable: it is to compute the ramp from `useTheme().colors` in JS and
+ * hand the numbers to the gradient.
+ *
+ * Every stop traces to a token:
+ *   0  `colors.cyan`                        — the accent, unchanged
+ *   1  45% of the way from cyan to purple   — the old "electric blue" step;
+ *                                             mix(#00D5FF,#8D44AE,0.45) lands
+ *                                             at #3F82D4, within a few points
+ *                                             of the #4078FF that was typed
+ *   2  `colors.purple`                      — the brand violet, unchanged
+ *   3  `colors.purpleBright` pulled 35%
+ *      toward `colors.text`                 — the hot far end. Toward WHITE on
+ *                                             the dark themes (as the magenta
+ *                                             was), toward graphite on silver,
+ *                                             where lighter would mean fainter
+ */
+export function paletteStops(colors: ThemeColors): RGB[] {
+  const cyan = channels(colors.cyan);
+  const purple = channels(colors.purple);
+  const bright = channels(colors.purpleBright);
+  const ink = channels(colors.text);
+  return [cyan, mix(cyan, purple, 0.45), purple, mix(bright, ink, 0.35)];
+}
+
+/** `[r,g,b]` -> the channel triplet a canvas `rgba(...)` string wants. */
+const rgb = (c: RGB): string => `${c[0] | 0}, ${c[1] | 0}, ${c[2] | 0}`;
+
+/** Lerp through the theme-derived ramp: accent → blue → violet → hot end. */
+function palette(stops: RGB[], g: number): RGB {
   const t = Math.min(0.9999, Math.max(0, g)) * (stops.length - 1);
   const i = Math.floor(t);
   const f = t - i;
@@ -90,25 +140,35 @@ export function VoiceOrb({
   /** Word placed on the Orb for a listen-once pronunciation. Never spoken. */
   teachWord?: string | null;
 }) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
+  const wordGlass = useGlass('glass');
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number | null>(null);
   const levelRef = useRef(0);
   const stateRef = useRef(state);
   stateRef.current = state;
 
-  // Reduced motion draws ONE static frame instead of running the animation
-  // loop. Hoisted out of the effect so the effect can depend on it: without
-  // this, a reduced-motion viewer kept whatever frame was drawn at mount for
-  // the rest of the session, so the canvas never showed that the orb had moved
-  // from listening to thinking to speaking — the one audience that most needs
-  // the state to be legible got the least of it. See the dep array below.
-  const reduce = useMemo(
-    () =>
-      typeof window !== 'undefined' &&
-      (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false),
-    [],
-  );
+  // The theme's colours as canvas numbers, held in a ref so a theme switch
+  // repaints from the next frame WITHOUT tearing down the animation loop —
+  // restarting it would reset the band smoothing and the rotation mid-turn.
+  const stops = useMemo(() => paletteStops(colors), [colors]);
+  const stopsRef = useRef(stops);
+  stopsRef.current = stops;
+
+  // Reduced motion DAMPS the orb; it does not stop it. It used to draw a
+  // single static frame, and the state — listening vs thinking vs speaking —
+  // is carried by this canvas, so the one audience that most needs the state
+  // to be legible got the least of it. The damping mirrors how Mobius answers
+  // the same setting (Mobius.tsx:74): the AMBIENT motion goes (the autonomous
+  // spin, the surface churn, the random sparks, the per-point electric
+  // jitter), and the motion that carries meaning — amplitude and brightness
+  // following the voice — stays. Calmer, not dead.
+  //
+  // It also reads the app's own setting rather than `matchMedia` directly, so
+  // an explicit choice in Settings wins over the OS the way it does everywhere
+  // else (`getReduceMotion`, tokens.ts:722).
+  const reduceRef = useRef(reduceMotion);
+  reduceRef.current = reduceMotion;
   const mirrorRef = useRef(mirrorLevel);
   mirrorRef.current = mirrorLevel;
 
@@ -189,9 +249,15 @@ export function VoiceOrb({
       const level = Math.min(1.2, low * 0.5 + mid * 0.35 + high * 0.15);
       levelRef.current = level;
 
-      rotY += dt * orbSpin(mid, s === 'playing'); // mids spin it up
-      noiseT += dt * (0.9 + mid * 4.5 + high * 2.0); // speech churns the surface
-      const rotX = 0.42 + 0.06 * Math.sin(t * 0.00013);
+      // Reduce Motion scales the AMBIENT terms only. `orbSpin`, `orbAmp` and
+      // `orbBands` are untouched — the drive is the same drive, and what it
+      // drives is quieter.
+      const calm = reduceRef.current;
+      const ambient = calm ? 0.25 : 1;
+
+      rotY += dt * orbSpin(mid, s === 'playing') * ambient; // mids spin it up
+      noiseT += dt * ((calm ? 0.15 : 0.9) + (mid * 4.5 + high * 2.0) * ambient); // speech churns the surface
+      const rotX = 0.42 + 0.06 * Math.sin(t * 0.00013) * ambient;
       const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
       const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
       const amp = orbAmp(low, s === 'playing'); // lows swell the whole body
@@ -211,11 +277,18 @@ export function VoiceOrb({
       //    Canvas interpolates gradient stops per-channel, so fading toward
       //    transparent BLACK drags RGB down as alpha drops — a grey wash that
       //    is invisible on the dark themes and obvious over near-white.
+      //
+      // The two hues are stops 1 and 2 of the theme-derived ramp — the blue
+      // step and the brand violet — so the halo is the same material as the
+      // points it surrounds, on every theme.
+      const ramp = stopsRef.current;
+      const blue = rgb(ramp[1]);
+      const violet = rgb(ramp[2]);
       ctx.clearRect(0, 0, SIZE, SIZE);
       const glow = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, SIZE * 0.5);
-      glow.addColorStop(0, `rgba(64, 120, 255, ${0.10 + level * 0.14})`);
-      glow.addColorStop(0.55, `rgba(141, 68, 174, ${0.05 + level * 0.08})`);
-      glow.addColorStop(1, 'rgba(141, 68, 174, 0)');
+      glow.addColorStop(0, `rgba(${blue}, ${0.10 + level * 0.14})`);
+      glow.addColorStop(0.55, `rgba(${violet}, ${0.05 + level * 0.08})`);
+      glow.addColorStop(1, `rgba(${violet}, 0)`);
       ctx.fillStyle = glow;
       ctx.fillRect(0, 0, SIZE, SIZE);
 
@@ -230,11 +303,12 @@ export function VoiceOrb({
         z = p.y * sinX + z * cosX;
         const px = cx + x * R * p.r;
         const py = cy + y2 * R * p.r;
-        const twinkle = 0.25 + 0.5 * (0.5 + 0.5 * Math.sin(tt * p.tw + p.seed * 40));
-        const spark = Math.random() < 0.003 + level * 0.01 ? 0.9 : 0;
+        const twinkle = 0.25 + 0.5 * (0.5 + 0.5 * Math.sin(tt * p.tw + p.seed * 40) * ambient);
+        // The sparks are the one purely random motion in the picture, and
+        // random flicker is exactly what Reduce Motion is for.
+        const spark = !calm && Math.random() < 0.003 + level * 0.01 ? 0.9 : 0;
         const g = (px / SIZE) * 0.6 + (py / SIZE) * 0.4;
-        const [r, gg, b] = palette(g);
-        ctx.fillStyle = `rgba(${r | 0}, ${gg | 0}, ${b | 0}, ${Math.min(1, twinkle + spark)})`;
+        ctx.fillStyle = `rgba(${rgb(palette(ramp, g))}, ${Math.min(1, twinkle + spark)})`;
         const sz = spark ? 2.4 : 1.3;
         ctx.fillRect(px, py, sz, sz);
       }
@@ -246,7 +320,7 @@ export function VoiceOrb({
           Math.sin(3.4 * p.y - tt * 0.7) * 0.3 +
           Math.sin(5.2 * p.z + tt * 1.2) * 0.2;
         // Electric static: per-point charge jitter scaled by the live level.
-        const jitter = (Math.random() - 0.5) * level * 0.05;
+        const jitter = calm ? 0 : (Math.random() - 0.5) * level * 0.05;
         const rr = 1 + d * amp + jitter;
 
         let x = p.x * cosY - p.z * sinY;
@@ -258,33 +332,30 @@ export function VoiceOrb({
         const py = cy + y2 * rr * R;
         const depth = (z + 1) / 2; // 0 back … 1 front
         const g = (px / SIZE) * 0.62 + (py / SIZE) * 0.38;
-        const [r, gg, b] = palette(g);
         // Highs shimmer: per-point brightness ripples race across the surface
-        // while consonants land; silence leaves a calm, even glow.
-        const shimmer = high * 0.5 * (0.5 + 0.5 * Math.sin(tt * 6 + p.seed * 40));
+        // while consonants land; silence leaves a calm, even glow. The RIPPLE
+        // is ambient; the brightness the level buys is not, so under Reduce
+        // Motion the surface still lights up with the voice, evenly.
+        const shimmer = high * 0.5 * (0.5 + 0.5 * Math.sin(tt * 6 + p.seed * 40) * ambient);
         const alpha = Math.min(1, 0.14 + depth * (0.6 + level * 0.35) + shimmer);
-        ctx.fillStyle = `rgba(${r | 0}, ${gg | 0}, ${b | 0}, ${alpha})`;
+        ctx.fillStyle = `rgba(${rgb(palette(ramp, g))}, ${alpha})`;
         const sz = 0.9 + depth * (1.3 + level * 1.2) + shimmer * 1.1;
         ctx.fillRect(px - sz / 2, py - sz / 2, sz, sz);
       }
 
-      if (!reduce) rafRef.current = requestAnimationFrame(frame);
+      rafRef.current = requestAnimationFrame(frame);
     };
 
-    if (reduce) {
-      frame(0); // one static render — the label still communicates state
-      return;
-    }
     rafRef.current = requestAnimationFrame(frame);
     return () => {
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     };
-    // `reduce ? state : ''` redraws the single static frame when the state
-    // changes, and is a constant for everyone else — so the animation loop is
-    // never torn down mid-turn (which would reset the band smoothing and the
-    // rotation).
-  }, [getPlaybackAnalyser, getMicAnalyser, points, reduce, reduce ? state : '']);
+    // No `state` and no `reduce` in the deps, deliberately. Both are read from
+    // refs inside the frame, so a state change, a theme switch or a Reduce
+    // Motion toggle changes what the NEXT frame draws instead of tearing the
+    // loop down and resetting the band smoothing and the rotation mid-turn.
+  }, [getPlaybackAnalyser, getMicAnalyser, points]);
 
   const stateColor = speaking
     ? colors.cyan
@@ -324,7 +395,7 @@ export function VoiceOrb({
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 12,
+        gap: space.xl,
         cursor: 'pointer',
         background: `radial-gradient(ellipse at center, ${colors.surfaceHi} 0%, ${colors.bg} 75%)`,
       }}
@@ -347,32 +418,38 @@ export function VoiceOrb({
               justifyContent: 'center',
               pointerEvents: 'none',
               textAlign: 'center',
-              padding: 24,
+              padding: space.huge,
             }}
           >
+            {/* The word-pill is the ONE glass plane on this screen. It floats
+                over the orb canvas, and a canvas is content — so this is the
+                floating control layer sitting on content, which is exactly
+                where Apple puts glass (D1), and there is only one of it, so no
+                glass sits on glass (D2). It was hand-written as a flat
+                `rgba(0,0,0,0.72)` box with `#fff` text: black-on-any-theme,
+                which on the pearl theme is a hole punched in the picture.
+                `radius.glass` because this is a top-level floating surface. */}
             <div
               style={{
+                ...type.display,
                 fontFamily: font.display,
-                fontSize: 28,
-                fontWeight: 600,
-                color: '#fff',
-                lineHeight: 1.15,
-                background: 'rgba(0,0,0,0.72)',
-                borderRadius: radius.xl,
-                padding: '12px 18px',
+                color: colors.text,
+                ...wordGlass,
+                borderRadius: radius.glass,
+                padding: `${space.xl}px ${space.xxl}px`,
               }}
             >
               {teachWord}
             </div>
             <div
               style={{
-                marginTop: 8,
+                marginTop: space.md,
                 fontFamily: font.body,
                 fontSize: textSize.micro,
                 fontWeight: 700,
                 letterSpacing: '0.16em',
                 textTransform: 'uppercase',
-                color: 'rgba(255,255,255,0.72)',
+                color: colors.textMuted,
               }}
             >
               Say this
@@ -381,7 +458,7 @@ export function VoiceOrb({
         ) : null}
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: space.md }}>
         <span
           style={{
             fontFamily: font.display,
@@ -390,7 +467,11 @@ export function VoiceOrb({
             letterSpacing: '0.1em',
             textTransform: 'uppercase',
             color: stateColor,
-            transition: `color 400ms ${ease.out}`,
+            // The state word is the one thing on this screen that must not
+            // snap between colours, so it gets the no-overshoot spring at its
+            // settle time — 320ms, inside Apple's 500ms ceiling. Reduce Motion
+            // takes the cross-fade off; the colour still changes.
+            transition: reduceMotion ? 'none' : `color ${duration.smooth}ms ${ease.smooth}`,
           }}
         >
           {label}
