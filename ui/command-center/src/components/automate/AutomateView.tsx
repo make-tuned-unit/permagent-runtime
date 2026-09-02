@@ -1,9 +1,10 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import type { CSSProperties } from 'react';
 import { FiChevronRight, FiFolder, FiMessageSquare, FiSearch } from 'react-icons/fi';
-import { font, radius, textSize } from '../../styles/tokens';
+import { concentric, duration, ease, font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
+import { useGlass } from '../common/Glass';
 import { cronToEnglish } from '../../lib/schedule-format';
 import { useCommandCenter } from '../../lib/store';
 import { AUTOMATION } from '../../lib/vocabulary';
@@ -238,6 +239,14 @@ const PRIMARY_ACTION_VARS = {
   '--pa-btn-pad': '6px 16px',
   fontFamily: font.body,
 } as CSSProperties;
+
+// D9: transitions ride the spring tokens, not a bare bezier-less "150ms". The
+// hand-rolled hover/focus states on this page (RecipeCard, the skill tile —
+// anything not built on `Button`, which already carries `.pa-btn`'s own
+// spring transition) share one motion string per property list so the same
+// state change always settles at the same rate.
+const springTransition = (...props: string[]) =>
+  props.map(p => `${p} ${duration.fast}ms ${ease.smooth}`).join(', ');
 
 /**
  * The mount guard `Btn` used to release through its `onDone` callback.
@@ -939,7 +948,6 @@ export function AutomateView() {
                 <div key={proposal.argument_shape_hash} style={{
                   padding: '16px 20px', borderRadius: radius.lg,
                   background: withAlpha(colors.warning, 0.04), border: `1px solid ${withAlpha(colors.warning, 0.2)}`,
-                  transition: 'border-color 150ms',
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                     <div style={{ width: 8, height: 8, borderRadius: '50%', background: colors.warning }} />
@@ -1003,14 +1011,21 @@ export function AutomateView() {
                       tabIndex={0}
                       aria-label={`Open ${skill.name} in the skills library`}
                       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSkill(skill.id); } }}
-                      onMouseEnter={e => { e.currentTarget.style.borderColor = colors.borderHi; }}
-                      onMouseLeave={e => { e.currentTarget.style.borderColor = colors.border; }}
+                      // D10: a Mac pointer target needs a hover fill AND a
+                      // press fill, not a border tint alone — `fillHover` /
+                      // `fillActive` are the theme-safe ladder for exactly
+                      // this (tokens.ts), visible on every theme unlike the
+                      // old white-alpha idiom.
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = colors.borderHi; e.currentTarget.style.background = colors.fillHover; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.background = colors.surface; }}
+                      onMouseDown={e => { e.currentTarget.style.background = colors.fillActive; }}
+                      onMouseUp={e => { e.currentTarget.style.background = colors.fillHover; }}
                       onFocus={e => { e.currentTarget.style.borderColor = colors.borderHi; e.currentTarget.style.boxShadow = `0 0 0 2px ${colors.cyanGlow}`; }}
                       onBlur={e => { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.boxShadow = 'none'; }}
                       style={{
                         padding: '16px 20px', borderRadius: radius.lg, cursor: 'pointer', outline: 'none',
                         background: colors.surface, border: `1px solid ${colors.border}`,
-                        transition: 'border-color 150ms, box-shadow 150ms',
+                        transition: springTransition('border-color', 'background', 'box-shadow'),
                       }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                         <div style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor }} />
@@ -1240,15 +1255,20 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
       aria-pressed={selected}
       aria-label={`Open details for ${name}`}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); } }}
-      onMouseEnter={e => { if (!selected) e.currentTarget.style.borderColor = colors.borderHi; }}
-      onMouseLeave={e => { if (!selected) e.currentTarget.style.borderColor = colors.border; }}
+      // D10: hover/press get a real fill, not just the border tint the card
+      // already had — `selected`'s own cyan tint takes priority and is never
+      // overwritten by the pointer state.
+      onMouseEnter={e => { if (!selected) { e.currentTarget.style.borderColor = colors.borderHi; e.currentTarget.style.background = colors.fillHover; } }}
+      onMouseLeave={e => { if (!selected) { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.background = colors.surface; } }}
+      onMouseDown={e => { if (!selected) e.currentTarget.style.background = colors.fillActive; }}
+      onMouseUp={e => { if (!selected) e.currentTarget.style.background = colors.fillHover; }}
       onFocus={e => { if (!selected) e.currentTarget.style.borderColor = colors.borderHi; e.currentTarget.style.boxShadow = `0 0 0 2px ${colors.cyanGlow}`; }}
       onBlur={e => { if (!selected) e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.boxShadow = 'none'; }}
       style={{
       padding: '16px 20px', borderRadius: radius.lg, cursor: 'pointer', outline: 'none',
       background: selected ? withAlpha(colors.cyan, 0.04) : colors.surface,
       border: `1px solid ${selected ? colors.borderHi : colors.border}`,
-      transition: 'border-color 150ms, background 150ms, box-shadow 150ms',
+      transition: springTransition('border-color', 'background', 'box-shadow'),
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
         <div style={{
@@ -1318,6 +1338,15 @@ detail, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefaul
   onActionDone: (key: string, afterRefresh?: () => void) => void;
 }) {
   const { colors } = useTheme();
+  // D1/D6: this rail is the one surface on the screen that earns Liquid Glass
+  // — Apple's inspector, verbatim: "edge-to-edge glass that sits alongside
+  // the content" (HIG sidebars, §1.7). It floats above the same content it
+  // sits beside, so it takes `glassHi` (the large-surface, more-opaque
+  // variant) rather than the default `glass`. It is edge-to-edge (flush to
+  // the window's top/right/bottom, only the left edge borders content), so it
+  // carries no radius — a rounded floating card is the wrong shape here, not
+  // a corner-nesting case `concentric()` has anything to derive.
+  const material = useGlass('glassHi');
   // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -1326,9 +1355,14 @@ detail, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefaul
   }, [onClose]);
 
   return (
+    // Spread, not named — `backdropFilter`/`WebkitBackdropFilter` are written
+    // ONLY inside `<Glass>`/`glassSurface()` (backdropFilter.test.ts). Naming
+    // the keys here would be exactly the hand-rolled glass this lane exists
+    // to remove, even though the values come from the token.
     <div style={{
       width: '50%', minWidth: 480, maxWidth: 640, height: '100%',
-      borderLeft: `1px solid ${colors.border}`, background: colors.bg,
+      ...material,
+      borderLeft: `1px solid ${colors.borderHi}`,
       overflowY: 'auto', padding: '20px 24px', flexShrink: 0,
     }}>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
@@ -1815,7 +1849,7 @@ function ReportToggle({ text, createdAt, tokens }: { text: string; createdAt: st
         } as CSSProperties}
       >
         <FiChevronRight size={10}
-          style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 150ms' }} />
+          style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: springTransition('transform') }} />
         View full report &middot; <AsOf asOf={createdAt} /> &middot; {tokens ?? 0} tokens
       </button>
       {open && <div style={{ maxHeight: 400, overflowY: 'auto', marginTop: 4 }}><RenderedReport text={text} /></div>}
@@ -1849,7 +1883,7 @@ function renderInline(text: string, colors: { text: string; cyan: string; border
     const bold = remaining.match(/^(.*?)\*\*(.+?)\*\*(.*)/s);
     if (bold) { if (bold[1]) parts.push(<span key={key++}>{bold[1]}</span>); parts.push(<strong key={key++} style={{ color: colors.text, fontWeight: 600 }}>{bold[2]}</strong>); remaining = bold[3]; continue; }
     const code = remaining.match(/^(.*?)`(.+?)`(.*)/s);
-    if (code) { if (code[1]) parts.push(<span key={key++}>{code[1]}</span>); parts.push(<code key={key++} style={{ fontFamily: font.mono, fontSize: textSize.micro, padding: '1px 4px', borderRadius: 3, background: colors.border, color: colors.cyan }}>{code[2]}</code>); remaining = code[3]; continue; }
+    if (code) { if (code[1]) parts.push(<span key={key++}>{code[1]}</span>); parts.push(<code key={key++} style={{ fontFamily: font.mono, fontSize: textSize.micro, padding: '1px 4px', borderRadius: radius.xs, background: colors.border, color: colors.cyan }}>{code[2]}</code>); remaining = code[3]; continue; }
     parts.push(<span key={key++}>{remaining}</span>); break;
   }
   return parts.length === 1 ? parts[0] : <>{parts}</>;
@@ -2355,6 +2389,10 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
 
         <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>When should it run?</label>
         <div style={{ display: 'flex', gap: 4, marginBottom: 12, background: colors.surface, borderRadius: radius.sm, padding: 3, border: `1px solid ${colors.border}` }}>
+          {/* D4: the one legitimately concentric pair on this screen — a tab
+              sits flush inside the segmented control's own padding, so its
+              radius is DERIVED from the container's, not a second number
+              picked by eye. concentric(radius.sm, 3) = 3px. */}
           {kindTabs.map(t => (
             <Button
               key={t.id}
@@ -2368,7 +2406,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
                 '--pa-btn-fg': kind === t.id ? colors.textOnCyan : colors.textMuted,
                 '--pa-btn-fg-hover': kind === t.id ? colors.textOnCyan : colors.text,
                 '--pa-btn-pad': '6px 0',
-                '--pa-btn-radius': `${radius.sm}px`,
+                '--pa-btn-radius': `${concentric(radius.sm, 3)}px`,
                 '--pa-btn-weight': kind === t.id ? 600 : 400,
                 fontFamily: font.body,
                 fontSize: textSize.caption,
