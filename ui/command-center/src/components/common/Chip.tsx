@@ -52,6 +52,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { font, radius, tabularNums } from '../../styles/tokens';
 import { useTheme, type ThemeColors } from '../../styles/useTheme';
 import { useFreshness } from '../../hooks/useFreshness';
+import { Tooltip } from './Tooltip';
 
 export type ChipKind = 'state' | 'static' | 'filter' | 'count' | 'link';
 export type ChipTone = 'neutral' | 'accent' | 'success' | 'warning' | 'danger' | 'stale';
@@ -201,7 +202,7 @@ export function Chip(props: ChipProps) {
   );
 
   if (props.kind === 'filter' || props.kind === 'link') {
-    return (
+    const button = (
       <button
         type="button"
         // The app's one set of interaction rules: hover, the 80ms pressed
@@ -213,20 +214,27 @@ export function Chip(props: ChipProps) {
         aria-expanded={props.kind === 'link' ? props.expanded : undefined}
         aria-controls={props.kind === 'link' ? props.controls : undefined}
         onClick={props.onClick}
-        title={explain}
         data-testid={props['data-testid']}
         style={shell}
       >
         {body}
       </button>
     );
+    return explain ? <Tooltip content={explain}>{button}</Tooltip> : button;
   }
 
-  return (
-    <span title={explain} data-testid={props['data-testid']} style={shell}>
+  const span = (
+    <span
+      data-testid={props['data-testid']}
+      style={shell}
+      // Static / count chips are not buttons; when they carry an explanation
+      // the tip must still be reachable from the keyboard.
+      tabIndex={explain ? 0 : undefined}
+    >
       {body}
     </span>
   );
+  return explain ? <Tooltip content={explain}>{span}</Tooltip> : span;
 }
 
 /** What the chip says about itself when the caller hasn't. Only `static` gets

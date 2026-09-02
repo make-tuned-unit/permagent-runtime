@@ -3,6 +3,7 @@ import { useTheme } from '../../styles/useTheme';
 import { font, radius, textSize } from '../../styles/tokens';
 import { useVoices, useVoicePreview } from '../../lib/useVoices';
 import { Button } from '../common/Button';
+import { Tooltip } from '../common/Tooltip';
 
 type C = ReturnType<typeof useTheme>['colors'];
 
@@ -99,14 +100,15 @@ export function VoicePicker({
       </select>
       {/* The preview resolves when playback STARTS, and reports failure into
           `previewError` rather than by rejecting — a tick would be a guess. */}
-      <Button
-        colors={colors}
-        onClick={() => preview(effective)}
-        disabled={!!playingId}
-        flashSuccess={false}
-        title="Preview this voice"
-        style={btnVars(colors)}
-      >{playingId ? '…' : '▶ Preview'}</Button>
+      <Tooltip content="Preview this voice">
+        <Button
+          colors={colors}
+          onClick={() => preview(effective)}
+          disabled={!!playingId}
+          flashSuccess={false}
+          style={btnVars(colors)}
+        >{playingId ? '…' : '▶ Preview'}</Button>
+      </Tooltip>
       {previewError && <span style={{ fontSize: textSize.caption, color: colors.danger }}>{previewError}</span>}
     </div>
   );

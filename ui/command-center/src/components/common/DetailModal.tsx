@@ -17,6 +17,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { FiX } from 'react-icons/fi';
 import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Tooltip } from './Tooltip';
 
 interface Props {
   title: string;
@@ -156,16 +157,17 @@ export function DetailModal({
             </span>
           )}
           {headerRight}
-          <button
-            onClick={onClose}
-            title="Close"
-            style={{
-              background: 'none', border: 'none', color: colors.textMuted,
-              cursor: 'pointer', padding: 4, display: 'flex',
-            }}
-          >
-            <FiX size={16} />
-          </button>
+          <Tooltip content="Close">
+            <button
+              onClick={onClose}
+              style={{
+                background: 'none', border: 'none', color: colors.textMuted,
+                cursor: 'pointer', padding: 4, display: 'flex',
+              }}
+            >
+              <FiX size={16} />
+            </button>
+          </Tooltip>
         </div>
 
         {/* Body */}

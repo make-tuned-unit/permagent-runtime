@@ -242,9 +242,14 @@ it('explains a filtered pick on the tag, and the tag opens the reason', async ()
   // The reason is not in the label: nearly every row carries this tag, and a
   // per-row phrase turns the column into fifteen sentences to read.
   expect(tag.textContent).not.toContain('looks like noise');
-  // Hovering is enough to get the reason, headline first.
-  expect(tag.getAttribute('title')).toContain('looks like noise');
-  expect(tag.getAttribute('title')).toContain('likely noise');
+  // Focus opens the Tooltip primitive (title no longer sets a native attribute).
+  await act(async () => { tag.focus(); });
+  const tipId = tag.getAttribute('aria-describedby');
+  expect(tipId).toBeTruthy();
+  const tip = tipId ? document.getElementById(tipId) : null;
+  expect(tip?.getAttribute('role')).toBe('tooltip');
+  expect(tip?.textContent).toContain('looks like noise');
+  expect(tip?.textContent).toContain('likely noise');
   // And the common case whispers: a hairline, no fill.
   expect(tag.style.getPropertyValue('--pa-btn-bg')).toBe('transparent');
   // The row starts closed, and the tag is what opens it.

@@ -7,6 +7,7 @@ import { probedFocusTarget, recalledFocusTarget } from './citationFocus';
 import { ease, font, radius, type ThemeColors, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useGlass } from '../common/Glass';
+import { Tooltip } from '../common/Tooltip';
 
 interface Props {
   probed: ProbedMemoryRef[];
@@ -84,31 +85,31 @@ export function CitationMarker({ probed, recalled }: Props) {
             </div>
           )}
           {probed.map((m, i) => (
-            <button
-              key={m.id || i}
-              type="button"
-              onClick={() => open(probedFocusTarget(m))}
-              title="Open in Brain"
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.purpleSoft; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
-              style={memoryRowStyle(colors)}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                <span style={{ fontSize: 10, fontFamily: font.mono, color: colors.cyan }}>
-                  {m.relevance.toFixed(2)}
-                </span>
-                {m.wing && (
-                  <span style={{ padding: '0 4px', borderRadius: 3, fontSize: 10, background: colors.cyanSoft, color: colors.cyan }}>
-                    {m.wing}
+            <Tooltip key={m.id || i} content="Open in Brain" placement="left">
+              <button
+                type="button"
+                onClick={() => open(probedFocusTarget(m))}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.purpleSoft; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                style={memoryRowStyle(colors)}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                  <span style={{ fontSize: 10, fontFamily: font.mono, color: colors.cyan }}>
+                    {m.relevance.toFixed(2)}
                   </span>
-                )}
-                <span style={{ flex: 1 }} />
-                <OpenArrow color={colors.purple} />
-              </div>
-              <div style={{ fontSize: textSize.micro, fontFamily: font.body, color: colors.textMuted, lineHeight: 1.3 }}>
-                {m.content_summary}
-              </div>
-            </button>
+                  {m.wing && (
+                    <span style={{ padding: '0 4px', borderRadius: 3, fontSize: 10, background: colors.cyanSoft, color: colors.cyan }}>
+                      {m.wing}
+                    </span>
+                  )}
+                  <span style={{ flex: 1 }} />
+                  <OpenArrow color={colors.purple} />
+                </div>
+                <div style={{ fontSize: textSize.micro, fontFamily: font.body, color: colors.textMuted, lineHeight: 1.3 }}>
+                  {m.content_summary}
+                </div>
+              </button>
+            </Tooltip>
           ))}
           {recalled.length > 0 && (
             <div style={{ padding: '4px 12px 2px', fontSize: 10, fontWeight: 600, fontFamily: font.display, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
@@ -116,15 +117,14 @@ export function CitationMarker({ probed, recalled }: Props) {
             </div>
           )}
           {recalled.map((m, i) => (
-            <button
-              key={m.id || i}
-              type="button"
-              onClick={() => open(recalledFocusTarget(m))}
-              title="Open in Brain"
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.purpleSoft; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
-              style={memoryRowStyle(colors)}
-            >
+            <Tooltip key={m.id || i} content="Open in Brain" placement="left">
+              <button
+                type="button"
+                onClick={() => open(recalledFocusTarget(m))}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.purpleSoft; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                style={memoryRowStyle(colors)}
+              >
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
                 <span style={{ fontSize: 10, fontFamily: font.mono, color: colors.purple }}>
                   score: {m.signal_score.toFixed(2)}
@@ -136,6 +136,7 @@ export function CitationMarker({ probed, recalled }: Props) {
                 {m.content_summary}
               </div>
             </button>
+            </Tooltip>
           ))}
         </div>
       )}
