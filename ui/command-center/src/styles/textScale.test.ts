@@ -69,7 +69,8 @@ const OFF_RAMP_BUDGET: Record<string, number> = {
   'components/dashboard': 33,
   'components/finance': 1,
   'components/grow': 52,
-  'components/inbox': 4,
+  // components/inbox: 4 → 0 in R17 (fontSize 18/10 migrated to type.title /
+  // type.label / textSize.micro). Entry deleted per the stale-budget gate.
   'components/inspection': 10,
   'components/notifications': 1,
   'components/people': 4,
