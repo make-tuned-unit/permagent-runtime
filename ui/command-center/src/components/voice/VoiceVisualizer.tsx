@@ -1,9 +1,16 @@
 import { useEffect, useRef } from 'react';
 import { useTheme } from '../../styles/useTheme';
-import { radius } from '../../styles/tokens';
+import { radius, space } from '../../styles/tokens';
 
 const BAR_COUNT = 7;
 const MIN_SCALE = 0.16; // resting height so bars never fully collapse
+/** One bar's geometry. Not spacing — these are the mark, and the row's height
+ *  is the spacing scale's `xxl`, which is what it has always measured. */
+const BAR_W = 3;
+const BAR_H = space.xxl;
+/** Half a step of the 4pt subdivision — the smallest gap the scale implies,
+ *  and the one that keeps seven bars inside a 28px control. */
+const BAR_GAP = space.xs / 2;
 
 /**
  * VoiceVisualizer — a live frequency waveform drawn while the agent speaks.
@@ -22,7 +29,7 @@ export function VoiceVisualizer({
   getAnalyser: () => AnalyserNode | null;
   active: boolean;
 }) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const barsRef = useRef<Array<HTMLDivElement | null>>([]);
   const rafRef = useRef<number | null>(null);
 
@@ -38,11 +45,13 @@ export function VoiceVisualizer({
       return;
     }
 
-    const reduce =
-      typeof window !== 'undefined' &&
-      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    if (reduce) {
-      // No animation loop — a calm, static "speaking" row.
+    // The app's own Reduce Motion, not `matchMedia` directly: an explicit
+    // choice in Settings has to win over the OS here the way it does
+    // everywhere else (`getReduceMotion`, tokens.ts:722). Seven bars twitching
+    // at 60fps are pure ambient motion with no state in them — the button's
+    // own fill already says "speaking" — so unlike the orb, this one is
+    // correctly still rather than merely damped.
+    if (reduceMotion) {
       setAll(0.45);
       return;
     }
@@ -68,14 +77,14 @@ export function VoiceVisualizer({
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     };
-  }, [active, getAnalyser]);
+  }, [active, getAnalyser, reduceMotion]);
 
   if (!active) return null;
 
   return (
     <div
       aria-hidden
-      style={{ display: 'flex', alignItems: 'center', gap: 2.5, height: 16 }}
+      style={{ display: 'flex', alignItems: 'center', gap: BAR_GAP, height: BAR_H }}
     >
       {Array.from({ length: BAR_COUNT }).map((_, i) => (
         <div
@@ -84,8 +93,8 @@ export function VoiceVisualizer({
             barsRef.current[i] = el;
           }}
           style={{
-            width: 2.5,
-            height: 16,
+            width: BAR_W,
+            height: BAR_H,
             borderRadius: radius.pill,
             transformOrigin: 'center',
             transform: `scaleY(${MIN_SCALE})`,
