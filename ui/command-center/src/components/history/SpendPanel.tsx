@@ -12,6 +12,7 @@ import { api, type SpendSnapshot } from '../../lib/api';
 import { font, radius, space, tabularNums, textSize, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { Tooltip } from '../common/Tooltip';
 import { Card, SectionLabel, StatRow } from '../settings/atoms';
 import { bandColor, bandLabel, formatTokens, formatUsd, timeAgo } from '../settings/format';
 
@@ -210,12 +211,14 @@ export function SpendPanel() {
                 right={
                   <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     {s.band !== 'ok' && (
-                      <span
-                        title={`This session is ${bandLabel(s.band)}`}
-                        style={{ ...type.label, fontWeight: 700, color: bandColor(s.band, colors) }}
-                      >
-                        {s.band}
-                      </span>
+                      <Tooltip content={`This session is ${bandLabel(s.band)}`}>
+                        <span
+                          tabIndex={0}
+                          style={{ ...type.label, fontWeight: 700, color: bandColor(s.band, colors) }}
+                        >
+                          {s.band}
+                        </span>
+                      </Tooltip>
                     )}
                     <span style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, ...tabularNums }}>
                       {formatUsd(s.costUsd)}

@@ -33,6 +33,7 @@ import { concentric, radius, space, textSize, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useNotifications } from '../../lib/notifications';
 import { Button } from '../common/Button';
+import { Tooltip } from '../common/Tooltip';
 import { H1 } from '../settings/atoms';
 import { SessionsList } from '../sessions/SessionsList';
 import { InboxPanel } from '../inbox/InboxPanel';
@@ -115,9 +116,11 @@ function IncidentsStrip() {
       </div>
       {incidents.map(i => (
         <div key={i.id} style={{ display: 'flex', alignItems: 'baseline', gap: space.lg, padding: `${space.sm}px 0`, borderBottom: `1px solid ${colors.border}` }}>
-          <span style={{ fontSize: textSize.caption, color: colors.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${i.user_goal} — ${i.observation}`}>
-            [{i.surface}] {i.observation}
-          </span>
+          <Tooltip content={`${i.user_goal} — ${i.observation}`}>
+            <span tabIndex={0} style={{ fontSize: textSize.caption, color: colors.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              [{i.surface}] {i.observation}
+            </span>
+          </Tooltip>
           <span style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: 'monospace' }}>{i.mechanism}</span>
           <Button
             colors={colors}

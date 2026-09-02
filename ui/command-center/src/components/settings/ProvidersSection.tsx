@@ -5,6 +5,7 @@ import type { SecretSourcesResponse } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { ProviderInfo } from '../../lib/store';
 import { font, radius, textSize } from '../../styles/tokens';
+import { Tooltip } from '../common/Tooltip';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { AddCustomProviderModal } from './AddCustomProviderModal';
@@ -249,17 +250,23 @@ export function ProvidersSection() {
             </div>
             <div className="flex items-center gap-2">
               {sourceEntry && (
-                <span
-                  className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
-                  title={sourceProblem ?? `${keyName} is read from ${sourceEntry.label} (${sourceEntry.reference})`}
-                  style={
-                    sourceProblem
-                      ? { backgroundColor: `${colors.danger}26`, color: colors.danger }
-                      : { backgroundColor: `${colors.textMuted}26`, color: colors.textMuted }
-                  }
-                >
-                  {sourceProblem ? <FiAlertTriangle size={10} /> : <FiKey size={10} />} {sourceEntry.label}
-                </span>
+                // A chip that only carries an explanation is not focusable on
+                // its own, and the adoption note is explicit: give a
+                // non-interactive host `tabIndex={0}` or the tip is
+                // mouse-only.
+                <Tooltip content={sourceProblem ?? `${keyName} is read from ${sourceEntry.label} (${sourceEntry.reference})`}>
+                  <span
+                    className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
+                    tabIndex={0}
+                    style={
+                      sourceProblem
+                        ? { backgroundColor: `${colors.danger}26`, color: colors.danger }
+                        : { backgroundColor: `${colors.textMuted}26`, color: colors.textMuted }
+                    }
+                  >
+                    {sourceProblem ? <FiAlertTriangle size={10} /> : <FiKey size={10} />} {sourceEntry.label}
+                  </span>
+                </Tooltip>
               )}
               {p.isDefault && (
                 <span

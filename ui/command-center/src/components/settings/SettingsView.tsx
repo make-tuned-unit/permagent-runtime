@@ -28,6 +28,7 @@ import { PronunciationSection } from '../voice/PronunciationSection';
 import { H1, Section, Row, Block, TextInput, Chip, Slider, Kbd, SaveButton, ModelStateBadge, selectStyle } from './atoms';
 import { Button } from '../common/Button';
 import { StateBlock } from '../common/StateBlock';
+import { Tooltip } from '../common/Tooltip';
 import { Toggle } from '../common/Toggle';
 import { makeQrMatrix } from '../../lib/qrMatrix';
 import { HistoryView, isHistoryTab } from '../history/HistoryView';
@@ -532,8 +533,15 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
               const current = trust === opt.v;
               const locked = !SELECTABLE_TRUST_MODES.has(opt.v);
               return (
-                <button key={opt.v} disabled={locked} onClick={() => saveTrust(opt.v)}
-                  title={locked ? 'Locked while the approval pipeline is hardened — approval prompts route to the Decision Inbox' : undefined}
+                // A DISABLED button never fires pointer events, so the native
+                // title on this one was already unreachable for the very state
+                // it explains. The primitive listens on the wrapper's own
+                // handlers, so the locked tile can finally say why it is locked.
+                <Tooltip
+                  key={opt.v}
+                  content={locked ? 'Locked while the approval pipeline is hardened — approval prompts route to the Decision Inbox' : null}
+                >
+                <button disabled={locked} onClick={() => saveTrust(opt.v)}
                   style={{
                     // The group is radius.lg with `Row`'s 16px of horizontal
                     // padding; a tile inside it takes what is left of the curve.
@@ -551,6 +559,7 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
                   </div>
                   <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>{opt.d}</div>
                 </button>
+                </Tooltip>
               );
             })}
           </div>
@@ -1536,12 +1545,19 @@ function SovereigntyBlock() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {log.map(e => (
                   <div key={e.id} style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: space.xl, alignItems: 'center', padding: `${space.md}px ${space.lg}px`, borderRadius: concentric(radius.lg, space.xs), background: colors.fillSubtle }}>
-                    <div style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: font.mono }} title={`${new Date(e.ts).toLocaleString()}${e.sessionId ? ' · ' + e.sessionId : ''} · ${e.contentHash.slice(0, 12)}…`}>
-                      {timeAgo(e.ts) || e.ts}
-                    </div>
-                    <div style={{ fontSize: textSize.caption, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${e.provider} · ${e.model}`}>
-                      <span style={{ color: colors.textMuted }}>{e.provider}</span> · {e.model}
-                    </div>
+                    {/* The primitive clones its child rather than boxing it,
+                        so these stay grid ITEMS and the ellipsis truncation
+                        below still measures against the column. */}
+                    <Tooltip content={`${new Date(e.ts).toLocaleString()}${e.sessionId ? ' · ' + e.sessionId : ''} · ${e.contentHash.slice(0, 12)}…`}>
+                      <div tabIndex={0} style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: font.mono }}>
+                        {timeAgo(e.ts) || e.ts}
+                      </div>
+                    </Tooltip>
+                    <Tooltip content={`${e.provider} · ${e.model}`}>
+                      <div tabIndex={0} style={{ fontSize: textSize.caption, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span style={{ color: colors.textMuted }}>{e.provider}</span> · {e.model}
+                      </div>
+                    </Tooltip>
                     <div style={{ fontSize: textSize.caption, color: colors.textMuted }}>{e.kind}</div>
                     <div>
                       <span style={{
@@ -1803,6 +1819,7 @@ function DevicesPanel() {
                       style={ghost(colors)}
                       onClick={() => { setEditingId(d.id); setEditName(d.name); setConfirmRevokeId(null); }}
                     >Rename</Button>
+                    <Tooltip content="This device stops authenticating immediately. Pair it again to restore access.">
                     <Button
                       colors={colors}
                       // The danger palette rides in as custom properties, not as
@@ -1816,7 +1833,6 @@ function DevicesPanel() {
                         '--pa-btn-bg-hover': `${colors.danger}1A`,
                         '--pa-btn-bg-active': `${colors.danger}26`,
                       } as CSSProperties}
-                      title="This device stops authenticating immediately. Pair it again to restore access."
                       // The first press only arms the confirmation — nothing is
                       // in flight, so it returns nothing and nothing ticks.
                       onClick={() => {
@@ -1826,6 +1842,7 @@ function DevicesPanel() {
                           .catch(() => { setConfirmRevokeId(null); return false; });
                       }}
                     >{confirmRevokeId === d.id ? 'Confirm revoke' : 'Revoke'}</Button>
+                    </Tooltip>
                   </>
                 )}
               </div>
@@ -1875,10 +1892,10 @@ function DevicesPanel() {
           {tailnet?.running ? (
             <span style={{ fontSize: textSize.caption, color: colors.cyan }}>● Connected{tailnet.magic_dns_name ? ` — ${tailnet.magic_dns_name}` : ''}</span>
           ) : (
+            <Tooltip content={`Copies a setup request and opens chat — ${agentName} runs the terminal steps for you.`}>
             <Button
               colors={colors}
               style={ghost(colors)}
-              title={`Copies a setup request and opens chat — ${agentName} runs the terminal steps for you.`}
               onClick={() => {
                 navigator.clipboard.writeText(
                   'Set up Tailscale on this machine so my other devices can reach Permagent: '
@@ -1889,6 +1906,7 @@ function DevicesPanel() {
                 navigateToTool('chat');
               }}
             >Have {agentName} set it up</Button>
+            </Tooltip>
           )}
         </Row>
         <Row
