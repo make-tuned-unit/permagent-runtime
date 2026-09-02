@@ -183,6 +183,9 @@ const OWNED_DIRS = [
   'voice',
   'sidebar',
   'common',
+  'settings',
+  'history',
+  'inbox',
 ];
 
 /** Component props named `title` that are headings / labels, not OS tooltips. */
@@ -192,6 +195,9 @@ const TITLE_PROP_COMPONENTS = new Set([
   'FormModal',
   'ConfirmDialog',
   'Chip', // Chip's `title` prop is the tip string; Tooltip owns the chrome.
+  'Section', // Settings' grouped-inset-list header — a heading, not a tooltip.
+  'WorkSection', // Agents panel's section header — same shape as Section.
+  'StateBlock', // Empty/error block's title is its headline, not a tooltip.
 ]);
 
 /**
