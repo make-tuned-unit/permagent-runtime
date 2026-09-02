@@ -27,7 +27,7 @@ import { draftPostPrompt } from './growStrategy';
 import { growChip } from './growStyles';
 import { ErrorState, LoadingState } from './GrowStateBlocks';
 import { HiggsfieldConnect, PostizConnect, ProjectChannels } from './PublisherSettings';
-import { PostStill } from './PostMedia';
+import { PostStill, PostVideo } from './PostMedia';
 import type { LoadState } from './growTypes';
 
 /**
@@ -262,7 +262,20 @@ function CalendarPostRow({
         )}
       </div>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-        {media.stillFile && (
+        {/* The Reel wins the slot when there is one: it is the artefact being
+            approved, and the still is only its first frame — showing the poster
+            beside the video would be the same picture twice. A post with no
+            video keeps the thumbnail it always had. */}
+        {media.videoFile ? (
+          <PostVideo
+            projectId={projectId}
+            cardId={post.id}
+            filename={media.videoFile}
+            posterFilename={media.stillFile}
+            cacheKey={media.mediaStatus}
+            colors={colors}
+          />
+        ) : media.stillFile ? (
           <PostStill
             projectId={projectId}
             cardId={post.id}
@@ -270,7 +283,7 @@ function CalendarPostRow({
             cacheKey={media.mediaStatus}
             colors={colors}
           />
-        )}
+        ) : null}
         <div style={{ flex: 1, minWidth: 0 }}>
       {editing ? (
         <>
