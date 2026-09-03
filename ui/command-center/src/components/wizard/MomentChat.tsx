@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { font, textSize } from '../../styles/tokens';
+import { font, space, textSize } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { Particles, PrimaryButton } from './atoms';
 import { useTheme } from '../../styles/useTheme';
@@ -48,7 +48,7 @@ export function MomentChat({ persona, onComplete }: Props) {
 
       {/* Header */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 14, padding: '18px 24px',
+        display: 'flex', alignItems: 'center', gap: 14, padding: `18px ${space.huge}px`,
         borderBottom: `1px solid ${colors.border}`,
       }}>
         <Mobius size={29} state={isSpeaking ? 'speaking' : 'idle'} logoMode />
@@ -56,7 +56,7 @@ export function MomentChat({ persona, onComplete }: Props) {
           <div style={{ fontFamily: font.display, fontSize: textSize.heading, fontWeight: 700, color: colors.text }}>
             {persona.name}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
             <div style={{
               width: 6, height: 6, borderRadius: '50%',
               background: isSpeaking ? colors.cyan : colors.success,
@@ -71,22 +71,22 @@ export function MomentChat({ persona, onComplete }: Props) {
       </div>
 
       {/* Conversation */}
-      <div style={{ flex: 1, padding: '28px 24px', overflowY: 'auto' }}>
+      <div style={{ flex: 1, padding: `28px ${space.huge}px`, overflowY: 'auto' }}>
         <div style={{
           fontFamily: font.body, fontSize: textSize.body, color: colors.text, lineHeight: 1.7,
           maxWidth: 560,
         }}>
           {streamed}
-          {!done && <span style={{ animation: 'pa-caret 0.9s steps(1) infinite', borderLeft: `2px solid ${colors.cyan}`, marginLeft: 1 }}>&nbsp;</span>}
+          {!done && <span style={{ animation: 'pa-caret 0.9s steps(1) infinite', borderLeft: `2px solid ${colors.cyan}`, marginLeft: space.xxs }}>&nbsp;</span>}
         </div>
       </div>
 
       {/* Footer — enter app */}
       <div style={{
-        padding: '16px 24px', borderTop: `1px solid ${colors.border}`,
+        padding: `${space.xxl}px ${space.huge}px`, borderTop: `1px solid ${colors.border}`,
         display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
       }}>
-        <PrimaryButton onClick={onComplete} style={{ padding: '12px 32px' }}>
+        <PrimaryButton onClick={onComplete} style={{ padding: `${space.xl}px 32px` }}>
           Enter Permagent
         </PrimaryButton>
         <p style={{

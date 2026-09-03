@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, type CSSProperties, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { FiArrowLeft, FiChevronDown } from 'react-icons/fi';
-import { font, ease, duration, radius, textSize } from '../../styles/tokens';
+import { font, ease, duration, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -120,7 +120,7 @@ value, onChange, placeholder, type = 'text', onKeyDown, onBlur, autoFocus, ariaL
         color: colors.text,
         background: colors.inputBg,
         border: focus ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
-        borderRadius: radius.md, padding: '13px 14px', outline: 'none',
+        borderRadius: radius.md, padding: `${space.xl}px 14px`, outline: 'none',
         boxShadow: focus ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
         transition: `all ${duration.fast}ms ${ease.out}`, ...style,
       }}
@@ -147,7 +147,7 @@ export function Textarea({
         width: '100%', fontFamily: font.body, fontSize: textSize.body, fontWeight: 400,
         color: colors.text, background: colors.inputBg, resize: 'none', lineHeight: 1.6,
         border: focus ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
-        borderRadius: radius.md, padding: '13px 14px', outline: 'none',
+        borderRadius: radius.md, padding: `${space.xl}px 14px`, outline: 'none',
         boxShadow: focus ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
         transition: `all ${duration.fast}ms ${ease.out}`, ...style,
       }}
@@ -211,7 +211,7 @@ value, onChange, options, style = {} }: {
         fontFamily: font.body, fontSize: textSize.body, lineHeight: 1.5,
         boxShadow: open ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
       } as CSSProperties}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
           {current.dot && <span style={{ width: 8, height: 8, borderRadius: '50%', background: current.dot }} />}
           {current.label}
         </span>
@@ -221,7 +221,7 @@ value, onChange, options, style = {} }: {
         <div role="listbox" style={{
           position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0,
           background: colors.surface, border: `1px solid ${colors.border}`,
-          borderRadius: radius.md, padding: 6, boxShadow: colors.cardShadow, zIndex: 30,
+          borderRadius: radius.md, padding: space.sm, boxShadow: colors.cardShadow, zIndex: 30,
         }}>
           {options.map(o => {
             const selected = o.value === value;
@@ -237,7 +237,7 @@ value, onChange, options, style = {} }: {
               // Escape closes (handled on the container). Focus mirrors hover.
               onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); } }}
               style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 10px', borderRadius: radius.sm,
+                display: 'flex', alignItems: 'center', gap: space.lg, padding: `${space.lg}px ${space.lg}px`, borderRadius: radius.sm,
                 fontFamily: font.body, fontSize: textSize.small, color: colors.text,
                 background: selected ? colors.cyanSoft : 'transparent', cursor: 'pointer',
               }}
@@ -264,7 +264,7 @@ export function ProgressDots({ count = 4, current = 0, style = {} }: {
 }) {
   const { colors } = useTheme();
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center', ...style }}>
+    <div style={{ display: 'flex', gap: space.md, alignItems: 'center', ...style }}>
       {Array.from({ length: count }).map((_, i) => (
         <div key={i} style={{
           width: i === current ? 18 : 6, height: 6, borderRadius: radius.pill,
@@ -301,7 +301,7 @@ onClick }: { onClick: () => void }) {
       {/* `Button` folds its children into one label span, so the arrow and the
           word need their own row to keep the 6px that used to come from the
           button's own `display:flex`. */}
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: space.sm }}>
         <FiArrowLeft size={14} />
         Back
       </span>

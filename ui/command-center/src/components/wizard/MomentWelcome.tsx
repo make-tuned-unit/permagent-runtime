@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { font, textSize } from '../../styles/tokens';
+import { font, space, textSize } from '../../styles/tokens';
 import { useCommandCenter } from '../../lib/store';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, GhostLink, Input, Select, Glass, Particles, type SelectOption } from './atoms';
@@ -221,23 +221,23 @@ export function MomentWelcome({ onAdvance }: Props) {
         )}
         {!isLocal && showHelp && KEY_HELP[provider] && (
           <Glass r={12} padding={14}>
-            <div style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600, color: colors.text, marginBottom: 8 }}>
+            <div style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600, color: colors.text, marginBottom: space.md }}>
               Getting a {KEY_HELP[provider].label} key
             </div>
             <PrimaryButton
               onClick={() => window.open(KEY_HELP[provider].url, '_blank', 'noopener,noreferrer')}
               full
-              style={{ height: 36, fontSize: textSize.small, marginBottom: 10 }}
+              style={{ height: 36, fontSize: textSize.small, marginBottom: space.lg }}
             >
               Open {KEY_HELP[provider].label} ↗
             </PrimaryButton>
             {KEY_HELP[provider].steps.map((s, i) => (
-              <div key={i} style={{ display: 'flex', gap: 8, fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.7 }}>
+              <div key={i} style={{ display: 'flex', gap: space.md, fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.7 }}>
                 <span style={{ color: colors.cyan, fontWeight: 600, flexShrink: 0 }}>{i + 1}.</span>
                 <span>{s}</span>
               </div>
             ))}
-            <GhostLink onClick={() => setShowHelp(false)} style={{ marginTop: 8, fontSize: textSize.caption }}>Hide steps</GhostLink>
+            <GhostLink onClick={() => setShowHelp(false)} style={{ marginTop: space.md, fontSize: textSize.caption }}>Hide steps</GhostLink>
           </Glass>
         )}
       </div>

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { font, ease, duration, radius, textSize } from '../../styles/tokens';
+import { font, ease, duration, radius, space, textSize } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, Particles, WizardHeading, WizardSubhead } from './atoms';
 import { useTheme } from '../../styles/useTheme';
@@ -32,20 +32,20 @@ export function MomentCalibration({ onAdvance }: Props) {
         Pick a personality template. You can refine it in the next step.
       </WizardSubhead>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, width: 400, marginBottom: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: space.xl, width: 400, marginBottom: space.huge }}>
         {PRESETS.map(p => {
           const active = selected === p.id;
           return (
             <button key={p.id} onClick={() => setSelected(p.id)}
               aria-pressed={active}
               style={{
-                padding: '16px 14px', borderRadius: radius.lg, cursor: 'pointer',
+                padding: `${space.xxl}px 14px`, borderRadius: radius.lg, cursor: 'pointer',
                 background: active ? colors.cyanSoft : colors.inputBg,
                 border: active ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
                 boxShadow: active ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
                 textAlign: 'left', transition: `all ${duration.base}ms ${ease.out}`,
               }}>
-              <div style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text, marginBottom: 4 }}>
+              <div style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text, marginBottom: space.xs }}>
                 {p.label}
               </div>
               <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.4 }}>

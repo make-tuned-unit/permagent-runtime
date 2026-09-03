@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, Particles, Textarea, WizardHeading, WizardSubhead } from './atoms';
 import { useTheme } from '../../styles/useTheme';
+import { space } from '../../styles/tokens';
 
 const PLACEHOLDERS = [
   'Build a SaaS product from scratch...',
@@ -41,7 +42,7 @@ export function MomentIntent({ intent, setIntent, onAdvance }: Props) {
         chat message — edit it or send it as-is.
       </WizardSubhead>
 
-      <div style={{ width: 400, marginBottom: 24 }}>
+      <div style={{ width: 400, marginBottom: space.huge }}>
         <Textarea
           value={intent}
           onChange={setIntent}
