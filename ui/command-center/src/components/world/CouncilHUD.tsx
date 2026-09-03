@@ -5,7 +5,7 @@ import { HudShell, Section, StatRow } from './HudShell';
 import { Chip } from '../common/Chip';
 import { councilStatus } from './deskStatus';
 import { api, type CouncilLatest } from '../../lib/api';
-import { textSize } from '../../styles/tokens';
+import { space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 // The Council of LLMs — every configured provider argues the same brief and a
@@ -65,7 +65,7 @@ export function CouncilHUD({ visible, onClose }: CouncilHUDProps) {
       title="THE COUNCIL"
       statusPill={<Chip kind="static" color={COUNCIL_TRIM}>{status.label}</Chip>}
     >
-      <div style={{ padding: '4px 14px 8px' }}>
+      <div style={{ padding: `${space.xs}px 14px ${space.md}px` }}>
         <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           {enabled === false
             ? 'Off — enable the Council in Settings. When on, every configured provider argues the same brief and a chair writes up where they agreed and where they did not.'
@@ -92,7 +92,7 @@ export function CouncilHUD({ visible, onClose }: CouncilHUDProps) {
             <StatRow label="Status" value={session.status} />
             <StatRow label="Open actions" value={latest?.openActions ?? 0} />
             {report && (
-              <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.5, marginTop: 6 }}>
+              <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.5, marginTop: space.sm }}>
                 {report.headline}
               </div>
             )}

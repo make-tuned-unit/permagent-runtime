@@ -20,7 +20,7 @@ import { FiExternalLink } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { projectMemoryPreview, type BrainMemoryTarget } from '../brain/brainMemoryFocus';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -82,7 +82,7 @@ export function CodeIndexPanel({ project }: { project: Project }) {
 
   return (
     <Panel title="Codebase">
-      <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.55, marginBottom: 10 }}>
+      <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.55, marginBottom: space.lg }}>
         Parse this project's code into your Brain — its directory structure and
         symbols become recallable and described, the same way its documents and
         notes are.
@@ -106,11 +106,11 @@ export function CodeIndexPanel({ project }: { project: Project }) {
       </Button>
 
       {error && (
-        <div style={{ fontSize: textSize.micro, color: colors.danger, marginTop: 8 }}>{error}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginTop: space.md }}>{error}</div>
       )}
 
       {result && !error && (
-        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 8, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.md, lineHeight: 1.5 }}>
           <span style={{ color: colors.success, fontWeight: 600 }}>
             Indexed {result.files} file{result.files !== 1 ? 's' : ''}
           </span>{' '}
@@ -132,9 +132,9 @@ export function CodeIndexPanel({ project }: { project: Project }) {
                   '--pa-btn-bg-hover': 'transparent',
                   '--pa-btn-pad': '0',
                   '--pa-btn-weight': 'inherit',
-                  marginTop: 3,
+                  marginTop: space.xxs,
                   maxWidth: '100%',
-                  gap: 5,
+                  gap: space.xs,
                   fontFamily: font.mono,
                   fontSize: 10,
                 } as CSSProperties}

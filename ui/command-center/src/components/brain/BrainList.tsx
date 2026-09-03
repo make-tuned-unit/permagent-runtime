@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
-import { concentric, duration, ease, font, radius, textSize } from '../../styles/tokens';
+import { concentric, duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { Button } from '../common/Button';
 import type { GraphMemory, GraphEntity } from './useBrainData';
@@ -173,7 +173,7 @@ export function BrainList({
     }}>
       {/* Stats bar — pinned above the scrolling rows; see `listScrolled`. */}
       <div style={{
-        padding: '8px 16px', display: 'flex', justifyContent: 'space-between',
+        padding: `${space.md}px ${space.xxl}px`, display: 'flex', justifyContent: 'space-between',
         fontFamily: font.mono, fontSize: 10, color: colors.textDim,
         borderBottom: `1px solid ${listScrolled ? colors.borderHi : 'transparent'}`,
         transition: reduceMotion ? 'none' : `border-color ${duration.fast}ms ${ease.out}`,
@@ -199,7 +199,7 @@ export function BrainList({
         {showEntities && !isSearch && filteredEntities.length > 0 && (
           <>
             <div style={{
-              padding: '6px 14px 4px', fontFamily: font.mono, fontSize: 10,
+              padding: `${space.sm}px 14px ${space.xs}px`, fontFamily: font.mono, fontSize: 10,
               color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em',
             }}>
               Entities ({filteredEntities.length})
@@ -220,7 +220,7 @@ export function BrainList({
             ))}
             {showMemories && (
               <div style={{
-                padding: '10px 14px 4px', fontFamily: font.mono, fontSize: 10,
+                padding: `${space.lg}px 14px ${space.xs}px`, fontFamily: font.mono, fontSize: 10,
                 color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em',
               }}>
                 Memories
@@ -246,14 +246,14 @@ export function BrainList({
         ))}
 
         {showMemories && displayLoading && (
-          <div style={{ padding: 20, textAlign: 'center', fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim }}>
+          <div style={{ padding: space.xxxl, textAlign: 'center', fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim }}>
             Loading...
           </div>
         )}
 
         {showMemories && !displayLoading && displayError && displayMemories.length === 0 && (
           <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: textSize.small }}>
-            <div style={{ color: colors.textMuted, marginBottom: 10 }}>
+            <div style={{ color: colors.textMuted, marginBottom: space.lg }}>
               {isSearch ? `Could not search your Brain: ${displayError}` : "Couldn't load memories."}
             </div>
             {!isSearch && (
@@ -287,7 +287,7 @@ export function BrainList({
         )}
 
         {showMemories && !isSearch && state.hasMore && !state.loading && (
-          <div style={{ padding: 12, textAlign: 'center', fontFamily: font.mono, fontSize: 10, color: colors.textDim }}>
+          <div style={{ padding: space.xl, textAlign: 'center', fontFamily: font.mono, fontSize: 10, color: colors.textDim }}>
             Scroll for more...
           </div>
         )}
@@ -341,7 +341,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
       onClick={onClick}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       style={{
-        padding: '10px 14px', marginBottom: 2, cursor: 'pointer',
+        padding: `${space.lg}px 14px`, marginBottom: space.xxs, cursor: 'pointer',
         borderRadius: radius.md,
         background: rowBg,
         border: selected ? `1px solid ${colors.borderHi}` : '1px solid transparent',
@@ -359,15 +359,15 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
       onBlur={e => { (e.currentTarget as HTMLDivElement).style.outline = 'none'; }}
     >
       {/* Title row */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: space.xs }}>
         <div style={{
           fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text,
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: 12,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: space.xl,
         }}>
           {highlightText(title, highlightTerms, colors)}
           {memory.layer && (
             <span style={{
-              marginLeft: 8, fontFamily: font.mono, fontSize: 10, fontWeight: 500,
+              marginLeft: space.md, fontFamily: font.mono, fontSize: 10, fontWeight: 500,
               color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.06em',
             }}>{memory.layer}</span>
           )}
@@ -381,7 +381,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
       {descPreview && (
         <div style={{
           fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5,
-          marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis',
+          marginBottom: space.xs, overflow: 'hidden', textOverflow: 'ellipsis',
           display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
         }}>
           {highlightText(descPreview, highlightTerms, colors)}
@@ -398,7 +398,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
 
       {/* Metadata footer */}
       <div style={{
-        display: 'flex', gap: 16, marginTop: 6,
+        display: 'flex', gap: space.xxl, marginTop: space.sm,
         fontFamily: font.mono, fontSize: 10, color: colors.textDim,
       }}>
         {/* The same field the graph panel shows. It used to say "signal" here
@@ -462,12 +462,12 @@ function EntityRow({ entity, selected, onClick }: {
       onClick={onClick}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       style={{
-        padding: '8px 14px', marginBottom: 2, cursor: 'pointer',
+        padding: `${space.md}px 14px`, marginBottom: space.xxs, cursor: 'pointer',
         borderRadius: radius.md, background: rowBg,
         border: selected ? `1px solid ${colors.borderHi}` : '1px solid transparent',
         outline: 'none',
         transition: rowTransition,
-        display: 'flex', alignItems: 'center', gap: 10,
+        display: 'flex', alignItems: 'center', gap: space.lg,
       }}
       onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowHoverBg; }}
       onMouseLeave={e => {
@@ -486,7 +486,7 @@ function EntityRow({ entity, selected, onClick }: {
           short type name aligned at the same column while letting a longer
           one grow the box instead of spilling out of it. */}
       <span style={{
-        display: 'inline-flex', alignItems: 'center', gap: 6,
+        display: 'inline-flex', alignItems: 'center', gap: space.sm,
         flexShrink: 0, minWidth: 62, justifyContent: 'flex-end',
       }}>
         <span aria-hidden style={{

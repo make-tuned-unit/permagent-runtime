@@ -5,7 +5,7 @@
 // shell down with it.
 
 import { Component, type ErrorInfo, type ReactNode } from 'react';
-import { radius, textSize } from '../../styles/tokens';
+import { radius, space, textSize } from '../../styles/tokens';
 
 interface Props {
   /** Human label for what failed, e.g. "the World View". */
@@ -63,8 +63,8 @@ export class ErrorBoundary extends Component<Props, State> {
         <button
           onClick={this.reset}
           style={{
-            marginTop: 4,
-            padding: '8px 18px',
+            marginTop: space.xs,
+            padding: `${space.md}px 18px`,
             borderRadius: radius.md,
             border: '1px solid rgba(0,213,255,0.4)',
             background: 'rgba(0,213,255,0.1)',

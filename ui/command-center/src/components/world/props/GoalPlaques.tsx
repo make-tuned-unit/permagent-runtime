@@ -12,7 +12,7 @@ import { Html } from '@react-three/drei';
 import { useActiveGoals, type ActiveGoalLite } from '../agents/goalActivity';
 import { ENV } from '../shared/palette';
 import { useCommandCenter, navigateToTool } from '../../../lib/store';
-import { radius } from '../../../styles/tokens';
+import { radius, space } from '../../../styles/tokens';
 
 import { Tooltip } from '../../common/Tooltip';
 const ROW_Z = [0, -3.0];
@@ -88,7 +88,7 @@ function PlaqueCard({
           onPointerEnter={() => setHover(true)}
           onPointerLeave={() => setHover(false)}
           style={{
-            padding: '4px 8px',
+            padding: `${space.xs}px ${space.md}px`,
             borderRadius: radius.xs,
             background: hover ? 'rgba(16, 22, 40, 0.92)' : 'rgba(10, 14, 26, 0.82)',
             border: `1px solid ${accent}${hover ? 'aa' : '55'}`,
@@ -106,7 +106,7 @@ function PlaqueCard({
             transition: 'border-color 120ms, box-shadow 120ms, background 120ms',
           }}
         >
-          <span style={{ color: accent, marginRight: 5 }}>{working ? '⚒' : '◇'}</span>
+          <span style={{ color: accent, marginRight: space.xs }}>{working ? '⚒' : '◇'}</span>
           {goal.title}
         </div>
       </Tooltip>

@@ -2,7 +2,7 @@ import { useState, useEffect, type CSSProperties } from 'react';
 import { COLORS } from './constants';
 import { AGENT_TRIM } from './shared/palette';
 import { api } from '../../lib/api';
-import { radius, textSize } from '../../styles/tokens';
+import { radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { HudShell, Section, StatRow, useTabReset } from './HudShell';
@@ -130,7 +130,7 @@ export function HenryHUD({ visible, onClose }: HenryHUDProps) {
   const statusPill = (
     <div style={{
       display: 'inline-block',
-      padding: '2px 8px',
+      padding: `${space.xxs}px ${space.md}px`,
       borderRadius: radius.xs,
       fontSize: textSize.micro,
       fontWeight: 700,
@@ -187,7 +187,7 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
           {status.active_sessions.slice(0, 3).map((s) => (
             <div key={s.id} style={{ fontSize: textSize.micro, lineHeight: 1.6 }}>
               <span style={{ color: themeColors.text }}>{truncate(s.name, 32)}</span>
-              <span style={{ color: themeColors.textDim, marginLeft: 8 }}>{relativeTime(s.started_at)}</span>
+              <span style={{ color: themeColors.textDim, marginLeft: space.md }}>{relativeTime(s.started_at)}</span>
             </div>
           ))}
         </Section>
@@ -197,8 +197,8 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
       <Section title="TASKS" trimColor={HENRY_TRIM}>
         <StatRow label="Tasks running" value={status.tasks_in_flight} />
         {status.recent_tasks.length > 0 && (
-          <div style={{ marginTop: 6 }}>
-            <div style={{ fontSize: textSize.micro, color: themeColors.textDim, marginBottom: 3 }}>Recent:</div>
+          <div style={{ marginTop: space.sm }}>
+            <div style={{ fontSize: textSize.micro, color: themeColors.textDim, marginBottom: space.xxs }}>Recent:</div>
             {status.recent_tasks.slice(0, 5).map((t) => (
               <div key={t.id} style={{ fontSize: textSize.micro, lineHeight: 1.5, display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: themeColors.text, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -221,7 +221,7 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
         <Section title="BRIEFINGS" trimColor={COLORS.neonAmber}>
           {briefings.map((b) => (
             <div key={b.id} style={briefingRowStyle}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
                 <span
                   style={{
                     ...briefingSeverityStyle,
@@ -320,7 +320,7 @@ const briefingFromStyle: React.CSSProperties = {
 
 const briefingSummaryStyle: React.CSSProperties = {
   fontSize: textSize.micro,
-  marginTop: 2,
+  marginTop: space.xxs,
   lineHeight: 1.4,
 };
 

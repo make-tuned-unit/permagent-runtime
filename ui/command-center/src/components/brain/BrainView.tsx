@@ -310,7 +310,7 @@ export function BrainView() {
       {error && !data && (
         <div style={{
           position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
-          alignItems: 'center', justifyContent: 'center', zIndex: 11, gap: 12,
+          alignItems: 'center', justifyContent: 'center', zIndex: 11, gap: space.xl,
           background: cyanWash,
         }}>
           <div style={{ fontSize: 26, color: colors.textMuted }}>◇</div>
@@ -335,7 +335,7 @@ export function BrainView() {
               '--pa-btn-pad': '8px 18px',
               '--pa-btn-radius': `${radius.md}px`,
               '--pa-btn-weight': 600,
-              marginTop: 4, fontSize: textSize.small, lineHeight: 1.5,
+              marginTop: space.xs, fontSize: textSize.small, lineHeight: 1.5,
             } as CSSProperties}
           >Try again</Button>
         </div>
@@ -346,7 +346,7 @@ export function BrainView() {
       {loading && !data && !error && viewMode === 'graph' && (
         <div style={{
           position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
-          alignItems: 'center', justifyContent: 'center', zIndex: 10, gap: 16,
+          alignItems: 'center', justifyContent: 'center', zIndex: 10, gap: space.xxl,
           background: cyanWash,
         }}>
           <Mobius size={160} state={reduceMotion ? 'idle' : 'thinking'} />
@@ -363,10 +363,10 @@ export function BrainView() {
           background: cyanWash,
         }}>
           <Mobius size={200} state="idle" />
-          <h2 style={{ fontFamily: font.display, fontSize: 22, fontWeight: 700, color: colors.text, marginTop: 24 }}>
+          <h2 style={{ fontFamily: font.display, fontSize: 22, fontWeight: 700, color: colors.text, marginTop: space.huge }}>
             Your agent's memory grows here.
           </h2>
-          <p style={{ fontFamily: font.body, fontSize: textSize.body, color: colors.textMuted, marginTop: 8 }}>
+          <p style={{ fontFamily: font.body, fontSize: textSize.body, color: colors.textMuted, marginTop: space.md }}>
             Begin a conversation.
           </p>
         </div>
@@ -374,13 +374,13 @@ export function BrainView() {
 
       {/* Header */}
       <div style={{
-        position: 'absolute', top: 16, left: 16, right: 16, zIndex: 10,
-        display: 'flex', alignItems: 'center', gap: 12,
+        position: 'absolute', top: space.xxl, left: space.xxl, right: space.xxl, zIndex: 10,
+        display: 'flex', alignItems: 'center', gap: space.xl,
       }}>
         {/* Mind label — a capsule badge, not a "control", so it keeps the pill
             shape regardless of D5 (D5 governs buttons, not branding chrome). */}
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px',
+          display: 'flex', alignItems: 'center', gap: space.lg, padding: `${space.md}px 14px`,
           ...glassMat,
           border: `1px solid ${colors.borderHi}`, borderRadius: radius.pill,
         }}>
@@ -405,18 +405,18 @@ export function BrainView() {
               width: '100%', fontFamily: font.body, fontSize: textSize.small, color: colors.text,
               ...glassMat,
               border: `1px solid ${colors.borderHi}`, borderRadius: radius.pill,
-              padding: '9px 16px', outline: 'none',
+              padding: `${space.md}px ${space.xxl}px`, outline: 'none',
             }}
           />
         </div>
 
         {/* Filter chips */}
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px',
+          display: 'flex', alignItems: 'center', gap: space.sm, padding: `${space.sm}px ${space.lg}px`,
           ...glassMat,
           border: `1px solid ${colors.borderHi}`, borderRadius: shellRadius,
         }}>
-          <span style={{ fontFamily: font.body, fontSize: 10, color: colors.textDim, marginRight: 4 }}>show</span>
+          <span style={{ fontFamily: font.body, fontSize: 10, color: colors.textDim, marginRight: space.xs }}>show</span>
           {TOP_FILTERS.map(f => (
             <Button
               key={f.key}
@@ -429,14 +429,14 @@ export function BrainView() {
                 filters[f.key], '4px 8px', chipRadius, 11,
               )}
             >
-              <span style={{ marginRight: 4 }}>{f.shape}</span>{f.label}
+              <span style={{ marginRight: space.xs }}>{f.shape}</span>{f.label}
             </Button>
           ))}
 
           {/* Topics group with drilldown */}
           <span style={{
-            display: 'inline-flex', alignItems: 'center', gap: 2,
-            borderLeft: `1px solid ${colors.border}`, paddingLeft: 6,
+            display: 'inline-flex', alignItems: 'center', gap: space.xxs,
+            borderLeft: `1px solid ${colors.border}`, paddingLeft: space.sm,
           }}>
             <Button
               colors={colors}
@@ -457,7 +457,7 @@ export function BrainView() {
                 TOPIC_KEYS.some(k => filters[k]), '4px 8px', chipRadius, 11,
               )}
             >
-              <span style={{ marginRight: 4 }}>◆</span>topics
+              <span style={{ marginRight: space.xs }}>◆</span>topics
             </Button>
             {/* A disclosure toggle for the sub-filters beside it: nothing to
                 await, so the pending floor and the success tick are both wrong
@@ -497,12 +497,12 @@ export function BrainView() {
                   filters[f.key], '3px 6px', chipRadius, 10,
                 )}
               >
-                <span style={{ marginRight: 3 }}>{f.shape}</span>{f.label}
+                <span style={{ marginRight: space.xxs }}>{f.shape}</span>{f.label}
               </Button>
             ))}
           </span>
 
-          <span style={{ borderLeft: `1px solid ${colors.border}`, paddingLeft: 6 }}>
+          <span style={{ borderLeft: `1px solid ${colors.border}`, paddingLeft: space.sm }}>
             <Button
               colors={colors}
               variant="bare"
@@ -513,14 +513,14 @@ export function BrainView() {
                 filters.memory, '4px 8px', chipRadius, 11,
               )}
             >
-              <span style={{ marginRight: 4 }}>·</span>memories
+              <span style={{ marginRight: space.xs }}>·</span>memories
             </Button>
           </span>
         </div>
 
         {/* Graph / List toggle */}
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 2, padding: '4px 6px',
+          display: 'flex', alignItems: 'center', gap: space.xxs, padding: `${space.xs}px ${space.sm}px`,
           ...glassMat,
           border: `1px solid ${colors.borderHi}`, borderRadius: shellRadius,
         }}>
@@ -559,7 +559,7 @@ export function BrainView() {
       {hover && (
         <div style={{
           position: 'fixed', left: hover.x + 14, top: hover.y + 14, zIndex: 20,
-          maxWidth: 280, padding: '8px 12px',
+          maxWidth: 280, padding: `${space.md}px ${space.xl}px`,
           ...glassMat,
           border: `1px solid ${colors.borderHi}`, borderRadius: shellRadius,
           fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
@@ -567,7 +567,7 @@ export function BrainView() {
         }}>
           <div style={{ fontWeight: 600 }}>{hover.label}</div>
           {hover.note && hover.note !== hover.label && (
-            <div style={{ color: colors.textMuted, marginTop: 2, fontSize: textSize.micro }}>{hover.note.slice(0, 120)}</div>
+            <div style={{ color: colors.textMuted, marginTop: space.xxs, fontSize: textSize.micro }}>{hover.note.slice(0, 120)}</div>
           )}
         </div>
       )}
@@ -577,7 +577,7 @@ export function BrainView() {
           toolbar-scale `glass` everything else on this view uses. */}
       <div style={{
         position: 'absolute', top: 0, right: 0, bottom: 0, width: 360, zIndex: 15,
-        padding: 16, pointerEvents: selected ? 'auto' : 'none',
+        padding: space.xxl, pointerEvents: selected ? 'auto' : 'none',
         transform: selected ? 'translateX(0)' : 'translateX(105%)',
         transition: `transform ${duration.smooth}ms ${ease.smooth}`,
       }}>
@@ -585,7 +585,7 @@ export function BrainView() {
           height: '100%', overflow: 'hidden',
           ...glassHiMat,
           border: `1px solid ${colors.borderHi}`,
-          borderRadius: shellRadius, padding: 24,
+          borderRadius: shellRadius, padding: space.huge,
           display: 'flex', flexDirection: 'column',
         }}>
           {selected && (<>
@@ -611,7 +611,7 @@ export function BrainView() {
             {/* Type label (+ P4 honesty badge: a preview-resolved memory is the
                 caller's snapshot — possibly a truncated content_summary — not
                 the enriched graph copy; styled like the field-provenance chip) */}
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: space.md }}>
               <span style={{
                 fontFamily: font.mono, fontSize: 10, fontWeight: 600,
                 color: colors.cyan, textTransform: 'uppercase', letterSpacing: '0.1em',
@@ -621,7 +621,7 @@ export function BrainView() {
                   <span style={{
                     fontFamily: font.mono, fontSize: 10, fontWeight: 500,
                     color: colors.textMuted, letterSpacing: '0.06em',
-                    border: `1px solid ${colors.border}`, borderRadius: radius.pill, padding: '1px 7px',
+                    border: `1px solid ${colors.border}`, borderRadius: radius.pill, padding: `${space.xxs}px ${space.sm}px`,
                     textTransform: 'uppercase',
                   }}>{(selected.data as GraphMemory).layer}</span>
                 )}
@@ -631,7 +631,7 @@ export function BrainView() {
                   <span tabIndex={0} style={{ outline: 'none' }}>
                     <span
                       style={{
-                        fontFamily: font.mono, fontSize: 10, padding: '1px 5px', borderRadius: concentric(radius.sm, 3),
+                        fontFamily: font.mono, fontSize: 10, padding: `${space.xxs}px ${space.xs}px`, borderRadius: concentric(radius.sm, 3),
                         color: colors.warning, border: `1px solid ${colors.warning}`,
                         textTransform: 'uppercase', letterSpacing: '0.08em',
                       }}
@@ -659,9 +659,9 @@ export function BrainView() {
                 </p>
 
                 {fields.length > 0 && (
-                  <div style={{ marginBottom: 16, overflowY: 'auto', maxHeight: 200 }}>
+                  <div style={{ marginBottom: space.xxl, overflowY: 'auto', maxHeight: 200 }}>
                     {fields.map(f => (
-                      <div key={f.field_name} style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '5px 0', borderBottom: `1px solid ${colors.border}` }}>
+                      <div key={f.field_name} style={{ display: 'flex', alignItems: 'baseline', gap: space.md, padding: '5px 0', borderBottom: `1px solid ${colors.border}` }}>
                         <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.06em', minWidth: 84 }}>
                           {f.field_name.replace(/_/g, ' ')}
                         </span>
@@ -671,7 +671,7 @@ export function BrainView() {
                           ) : f.value}
                         </span>
                         <span style={{
-                          fontFamily: font.mono, fontSize: 10, padding: '1px 5px', borderRadius: concentric(radius.sm, 3),
+                          fontFamily: font.mono, fontSize: 10, padding: `${space.xxs}px ${space.xs}px`, borderRadius: concentric(radius.sm, 3),
                           color: f.source === 'manual' ? colors.cyan : colors.textMuted,
                           border: `1px solid ${f.source === 'manual' ? colors.cyan : colors.border}`,
                           textTransform: 'uppercase', letterSpacing: '0.08em', flexShrink: 0,
@@ -698,7 +698,7 @@ export function BrainView() {
                         '--pa-btn-pad': '6px 12px',
                         '--pa-btn-radius': `${radius.md}px`,
                         '--pa-btn-weight': 600,
-                        alignSelf: 'flex-start', marginBottom: 16,
+                        alignSelf: 'flex-start', marginBottom: space.xxl,
                         fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5,
                       } as CSSProperties}
                     >
@@ -707,7 +707,7 @@ export function BrainView() {
                   </Tooltip>
                 )}
 
-                <div style={{ display: 'flex', gap: 18, marginTop: 'auto', paddingTop: 12, borderTop: `1px solid ${colors.border}` }}>
+                <div style={{ display: 'flex', gap: 18, marginTop: 'auto', paddingTop: space.xl, borderTop: `1px solid ${colors.border}` }}>
                   {[
                     { label: 'CONNECTIONS', value: degree, onClick: undefined as (() => void) | undefined },
                     // Clicking MEMORIES surfaces the memories that mention this
@@ -730,7 +730,7 @@ export function BrainView() {
                             disabled={!interactive}
                             style={{
                               textAlign: 'left', background: 'transparent', border: 'none',
-                              padding: `2px ${space.sm}px`, margin: `-2px -${space.sm}px`,
+                              padding: `${space.xxs}px ${space.sm}px`, margin: `-${space.xxs}px -${space.sm}px`,
                               cursor: interactive ? 'pointer' : 'default', borderRadius: radius.sm,
                               transition: chipTransition,
                             }}
@@ -766,7 +766,7 @@ export function BrainView() {
                     style={{
                       flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 14,
                       borderTop: `1px solid ${panelScrolled ? colors.borderHi : 'transparent'}`,
-                      marginTop: -1, paddingTop: 1,
+                      marginTop: -1, paddingTop: space.xxs,
                       transition: reduceMotion ? 'none' : `border-color ${duration.fast}ms ${ease.out}`,
                     }}
                   >
@@ -777,7 +777,7 @@ export function BrainView() {
                     )}
                     <p style={{
                       fontFamily: font.mono, fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.6, margin: 0,
-                      padding: '10px 12px', background: colors.fillSubtle, borderRadius: radius.md,
+                      padding: `${space.lg}px ${space.xl}px`, background: colors.fillSubtle, borderRadius: radius.md,
                       whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                     }}>
                       {mem.text}
@@ -793,7 +793,7 @@ export function BrainView() {
                       </details>
                     )}
                     {mem.ent.length > 0 && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm }}>
                         {mem.ent.map(id => {
                           const ent = entityById.get(id);
                           // Unresolved id — render an inert chip rather than a
@@ -810,7 +810,7 @@ export function BrainView() {
                                 key={id}
                                 kind="static"
                                 title="This memory references an entity that is not in the graph — nothing to open"
-                                style={{ fontFamily: font.mono, fontSize: 10, letterSpacing: 0, padding: '4px 10px' }}
+                                style={{ fontFamily: font.mono, fontSize: 10, letterSpacing: 0, padding: `${space.xs}px ${space.lg}px` }}
                               >
                                 {id}
                               </Chip>
@@ -847,7 +847,7 @@ export function BrainView() {
                       wiring audit): it fabricated concrete recall dates
                       ("3 days ago") from the same age bucket recency already
                       shows — the backend tracks no recall timestamp. */}
-                  <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, borderTop: `1px solid ${colors.borderHi}`, paddingTop: 12 }}>
+                  <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: space.md, borderTop: `1px solid ${colors.borderHi}`, paddingTop: space.xl }}>
                     {/* One number, one word. This said "reinforcement" while
                         the List view called the same field "signal" — same
                         memory, same tab, two vocabularies and neither defined.
@@ -900,8 +900,8 @@ export function BrainView() {
 
       {/* Time slider */}
       <div style={{
-        position: 'absolute', bottom: 16, left: 16, right: selected ? 376 : 16, zIndex: 10,
-        display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px',
+        position: 'absolute', bottom: space.xxl, left: space.xxl, right: selected ? 376 : 16, zIndex: 10,
+        display: 'flex', alignItems: 'center', gap: space.xl, padding: `${space.lg}px ${space.xxl}px`,
         ...glassMat,
         border: `1px solid ${colors.borderHi}`, borderRadius: shellRadius,
       }}>
@@ -935,7 +935,7 @@ function Stat({ label, value, tone, title }: {
     <Tooltip content={title}>
       <span tabIndex={0} style={{ outline: 'none' }}>
         <div style={{ textAlign: 'center' }}>
-          <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginBottom: 2, textTransform: 'uppercase' }}>{label}</div>
+          <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginBottom: space.xxs, textTransform: 'uppercase' }}>{label}</div>
           <div style={{
             fontFamily: font.body, fontSize: textSize.small, fontWeight: 600,
             color: tone === 'stale' ? colors.stale : colors.text,

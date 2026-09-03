@@ -89,7 +89,7 @@ const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
             {(goal.hold_note || goal.routing_note) && (
               <div style={{
                 fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted,
-                marginTop: 6, lineHeight: 1.4,
+                marginTop: space.sm, lineHeight: 1.4,
               }}>
                 {goal.hold_note || goal.routing_note}
               </div>

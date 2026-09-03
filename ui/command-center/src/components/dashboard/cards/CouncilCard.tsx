@@ -64,7 +64,7 @@ export function CouncilCard() {
         <div style={{
           fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600,
           letterSpacing: '0.10em', textTransform: 'uppercase',
-          color: colors.textDim, marginBottom: 6,
+          color: colors.textDim, marginBottom: space.sm,
         }}>
           Council
         </div>
@@ -94,7 +94,7 @@ export function CouncilCard() {
           <>
             <div style={{
               fontSize: textSize.heading, fontWeight: 600, color: colors.text,
-              lineHeight: 1.3, marginBottom: 8,
+              lineHeight: 1.3, marginBottom: space.md,
             }}>
               {report.headline}
             </div>
@@ -105,7 +105,7 @@ export function CouncilCard() {
               {report.markdown}
             </div>
             <div style={{
-              display: 'flex', gap: space.lg, marginTop: 10, alignItems: 'center',
+              display: 'flex', gap: space.lg, marginTop: space.lg, alignItems: 'center',
               fontSize: textSize.micro, color: colors.textDim, flexWrap: 'wrap',
             }}>
               <span>{session?.status} · {positions.length} take{positions.length === 1 ? '' : 's'}</span>
@@ -156,11 +156,11 @@ export function CouncilCard() {
             </div>
             {openTakes && (
               <div id={takesId} style={{
-                marginTop: 8, overflow: 'auto', maxHeight: 180,
+                marginTop: space.md, overflow: 'auto', maxHeight: 180,
                 fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.45,
               }}>
                 {positions.map(p => (
-                  <div key={p.id} style={{ marginBottom: 10 }}>
+                  <div key={p.id} style={{ marginBottom: space.lg }}>
                     <div style={{ fontWeight: 600, color: colors.text }}>
                       {p.provider} / {p.model} ({p.status})
                     </div>

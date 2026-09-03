@@ -32,7 +32,7 @@ import {
   type AgentGate,
   type LabelTone,
 } from '../agentsPanel';
-import { font, radius, textSize, type } from '../../../styles/tokens';
+import { font, radius, space, textSize, type } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { api } from '../../../lib/api';
 import { useCommandCenter } from '../../../lib/store';
@@ -112,7 +112,7 @@ function WorldLink({ agentId }: { agentId: string }) {
         Open in World
       </Button>
       {unreachable && (
-        <div style={{ fontSize: textSize.micro, color: colors.warning, marginTop: 6, lineHeight: 1.45 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.warning, marginTop: space.sm, lineHeight: 1.45 }}>
           No workspace has the World view open, so there is nowhere to fly to. Add it to a
           workspace first.
         </div>
@@ -184,10 +184,10 @@ function SecretsEditor({
 
   return (
     <div>
-      <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
+      <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: space.lg, lineHeight: 1.5 }}>
         {STORED_SECRETS_NOTE}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         {secrets.items.map(item => {
           const label = presenceLabel(item.presence);
           return (
@@ -195,12 +195,12 @@ function SecretsEditor({
               key={item.name}
               data-testid={`secret-row-${item.name}`}
               style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.xl,
                 fontSize: textSize.caption, fontFamily: font.body,
               }}
             >
               <span style={{ color: colors.text, fontFamily: font.mono }}>{item.name}</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
                 <StatusText text={label.text} tone={label.tone} />
                 <Button
                   colors={colors}
@@ -229,7 +229,7 @@ function SecretsEditor({
           </div>
         )}
       </div>
-      {error && <div style={{ marginTop: 8, fontSize: textSize.caption, color: colors.danger }}>{error}</div>}
+      {error && <div style={{ marginTop: space.md, fontSize: textSize.caption, color: colors.danger }}>{error}</div>}
     </div>
   );
 }
@@ -302,27 +302,27 @@ function GrantsEditor({
 
   return (
     <div>
-      <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: 10 }}>
+      <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: space.lg }}>
         Current: {grantsSummary(persona)}
       </div>
       {listTruncated && (
-        <div style={{ fontSize: textSize.caption, color: colors.warning, marginBottom: 10, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.warning, marginBottom: space.lg, lineHeight: 1.5 }}>
           This grant list came back truncated, so what is shown is not the whole set. Editing is
           disabled — saving would silently revoke the grants that were cut off.
         </div>
       )}
       <div
         data-testid="grants-editor"
-        style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}
+        style={{ display: 'flex', flexWrap: 'wrap', gap: space.md, marginBottom: space.xl }}
       >
         <Chip on={mode === 'inherit'} onClick={() => setMode('inherit')}>Inherit global</Chip>
         <Chip on={mode === 'nothing'} onClick={() => setMode('nothing')}>Grant nothing</Chip>
         <Chip on={mode === 'narrowed'} onClick={() => setMode('narrowed')}>Narrowed</Chip>
       </div>
       {mode === 'narrowed' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm, marginBottom: space.xl }}>
           {enabledCaps.map(cap => (
-            <label key={cap.key} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: textSize.caption }}>
+            <label key={cap.key} style={{ display: 'flex', alignItems: 'center', gap: space.md, fontSize: textSize.caption }}>
               <input
                 type="checkbox"
                 checked={selected.includes(cap.key)}
@@ -337,7 +337,7 @@ function GrantsEditor({
             <div
               key={key}
               data-testid={`stale-grant-${key}`}
-              style={{ fontSize: textSize.caption, color: colors.warning, lineHeight: 1.45, paddingLeft: 2 }}
+              style={{ fontSize: textSize.caption, color: colors.warning, lineHeight: 1.45, paddingLeft: space.xxs }}
             >
               Stale grant: <span style={{ fontFamily: font.mono }}>{key}</span> — cannot be re-saved
               until this capability is enabled globally.
@@ -370,7 +370,7 @@ function GrantsEditor({
       >
         {busy ? 'Saving…' : 'Save grants'}
       </Button>
-      {error && <div style={{ marginTop: 8, fontSize: textSize.caption, color: colors.danger }}>{error}</div>}
+      {error && <div style={{ marginTop: space.md, fontSize: textSize.caption, color: colors.danger }}>{error}</div>}
     </div>
   );
 }
@@ -385,7 +385,7 @@ function WorkSection({
   const { colors } = useTheme();
   return (
     <div style={{ marginBottom: 18 }}>
-      <div style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text, marginBottom: 8 }}>{title}</div>
+      <div style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text, marginBottom: space.md }}>{title}</div>
       {children}
     </div>
   );
@@ -411,10 +411,10 @@ function WorkReviewBlock({ work }: { work: WorkReview }) {
           : activity.items.length === 0
             ? <div data-testid="empty-activity" style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>{EMPTY_ACTIVITY_NOTE}</div>
             : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
                 {activity.items.map(item => (
                   <div key={item.id} style={{ fontSize: textSize.caption, color: colors.text, lineHeight: 1.45 }}>
-                    <span style={{ color: colors.textDim, fontFamily: font.mono, marginRight: 8 }}>{item.ts}</span>
+                    <span style={{ color: colors.textDim, fontFamily: font.mono, marginRight: space.md }}>{item.ts}</span>
                     <strong>{item.title}</strong>
                     {item.detail && <span style={{ color: colors.textMuted }}> — {item.detail}</span>}
                   </div>
@@ -430,13 +430,13 @@ function WorkReviewBlock({ work }: { work: WorkReview }) {
         {renderGenericSection(work.goals, colors, EMPTY_GOALS_NOTE, goal => {
           const reviews = goal.review_decisions;
           return (
-            <div key={goal.id} style={{ fontSize: textSize.caption, marginBottom: 8 }}>
+            <div key={goal.id} style={{ fontSize: textSize.caption, marginBottom: space.md }}>
               <div style={{ color: colors.text, fontWeight: 500 }}>{goal.title}</div>
               <div style={{ color: colors.textDim }}>{goal.state} · {goal.updated_at}</div>
               {reviews.status === 'unavailable'
                 ? renderListUnavailable(reviews.reason, colors)
                 : reviews.items.length > 0 && (
-                  <div style={{ marginTop: 4, color: colors.textMuted }}>
+                  <div style={{ marginTop: space.xs, color: colors.textMuted }}>
                     Reviews: {reviews.items.map((d, i) => (
                       <span key={i}>
                         {d.answer ?? '(no answer)'}
@@ -466,7 +466,7 @@ function WorkReviewBlock({ work }: { work: WorkReview }) {
 
       <WorkSection title="Scheduled jobs">
         {renderGenericSection(work.scheduled_jobs, colors, EMPTY_JOBS_NOTE, job => (
-          <div key={job.id} style={{ fontSize: textSize.caption, color: colors.text, marginBottom: 6 }}>
+          <div key={job.id} style={{ fontSize: textSize.caption, color: colors.text, marginBottom: space.sm }}>
             <span style={{ fontFamily: font.mono }}>{job.id}</span>
             {' · '}{job.cron}
             {job.paused ? ' · paused' : ''}
@@ -497,7 +497,7 @@ function renderGenericSection<T>(
     <div>
       {section.items.map(renderItem)}
       {section.truncated && (
-        <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 6 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.sm }}>
           {truncatedNote(section.items.length)}
         </div>
       )}
@@ -635,13 +635,13 @@ function AgentDetailPane({
           '--pa-btn-bg-hover': 'transparent',
           '--pa-btn-pad': '0',
           '--pa-btn-weight': 600,
-          fontSize: textSize.caption, marginBottom: 16, fontFamily: font.body,
+          fontSize: textSize.caption, marginBottom: space.xxl, fontFamily: font.body,
         } as CSSProperties}
       >
         ← Back to agents
       </Button>
 
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: space.xxl }}>
         <AgentPortrait agentId={id} size={56} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <H1 sub={detail.kind === 'worker' ? detail.what_it_does : detail.role}>
@@ -650,7 +650,7 @@ function AgentDetailPane({
         </div>
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px', marginBottom: 20, fontSize: textSize.caption, color: colors.textMuted }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px', marginBottom: space.xxxl, fontSize: textSize.caption, color: colors.textMuted }}>
         <span>{detail.kind === 'worker' ? 'Background worker' : 'Dispatch persona'}</span>
         <span>
           {detail.kind === 'worker'
@@ -700,7 +700,7 @@ function AgentDetailPane({
               // still shows what is recorded on disk, and the sentence says why
               // it cannot be edited here.
               <div>
-                <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: 10 }}>
+                <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: space.lg }}>
                   Current: {grantsSummary(detail)}
                 </div>
                 <div
@@ -832,7 +832,7 @@ export function AgentsPanel({ goto }: PanelProps) {
             '--pa-btn-bg-hover': 'transparent',
             '--pa-btn-pad': '0',
             '--pa-btn-weight': 600,
-            fontSize: textSize.caption, marginBottom: 16, fontFamily: font.body,
+            fontSize: textSize.caption, marginBottom: space.xxl, fontFamily: font.body,
           } as CSSProperties}
         >
           ← Back to agents
@@ -854,8 +854,8 @@ export function AgentsPanel({ goto }: PanelProps) {
         <div
           data-testid="unknown-agent"
           style={{
-            fontSize: textSize.caption, color: colors.warning, marginBottom: 16, lineHeight: 1.5,
-            padding: '10px 12px', borderRadius: radius.md, border: `1px solid ${colors.border}`,
+            fontSize: textSize.caption, color: colors.warning, marginBottom: space.xxl, lineHeight: 1.5,
+            padding: `${space.lg}px ${space.xl}px`, borderRadius: radius.md, border: `1px solid ${colors.border}`,
           }}
         >
           The roster the daemon returned has no agent named {unknownFocus}. Flag-gated workers
@@ -868,7 +868,7 @@ export function AgentsPanel({ goto }: PanelProps) {
         title="Workers"
         sub="Background workers run themselves and are not dispatchable. A worker whose flag is off is listed here too, marked off — its switch is on its own page."
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
           {roster.workers.map(worker => (
             <WorkerRow key={worker.id} worker={worker} onOpen={() => setSelectedId(worker.id)} />
           ))}
@@ -882,7 +882,7 @@ export function AgentsPanel({ goto }: PanelProps) {
         title="Dispatch roster"
         sub="Worker personas goals are dispatched to — engine, availability, cost, and grants."
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
           {roster.dispatch_roster.map(persona => (
             <PersonaRow key={persona.key} persona={persona} onOpen={() => setSelectedId(persona.key)} />
           ))}
@@ -902,7 +902,7 @@ export function AgentsPanel({ goto }: PanelProps) {
         title="Capabilities"
         sub="Platform extensions — not agents. Enablement is managed under Tools."
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
           {roster.capabilities.map(cap => (
             <CapabilityRow key={cap.key} capability={cap} onManage={() => goto('tools')} />
           ))}
@@ -930,7 +930,7 @@ function GateChip({ id, gate }: { id: string; gate: AgentGate }) {
     <span
       data-testid={`gate-chip-${id}`}
       style={{
-        ...type.label, padding: '1px 7px', borderRadius: radius.pill,
+        ...type.label, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.pill,
         border: `1px solid ${gate.enabled ? colors.borderHi : colors.border}`,
         color: gate.enabled ? colors.cyan : colors.textDim,
         fontFamily: font.body,
@@ -952,17 +952,17 @@ function WorkerRow({ worker, onOpen }: { worker: BackgroundWorker; onOpen: () =>
       onClick={onOpen}
       data-testid={`worker-row-${worker.id}`}
       style={{
-        display: 'block', width: '100%', textAlign: 'left', padding: '12px 14px',
+        display: 'block', width: '100%', textAlign: 'left', padding: `${space.xl}px 14px`,
         borderRadius: radius.md, background: colors.bgDeeper,
         border: `1px solid ${problem ? colors.danger : colors.border}`,
         cursor: 'pointer', fontFamily: font.body,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
         <AgentPortrait agentId={worker.id} size={28} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: space.xl, marginBottom: space.xs }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
               <span style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{worker.display_name}</span>
               {gate && <GateChip id={worker.id} gate={gate} />}
             </span>
@@ -985,16 +985,16 @@ function PersonaRow({ persona, onOpen }: { persona: DispatchPersona; onOpen: () 
       onClick={onOpen}
       data-testid={`persona-row-${persona.key}`}
       style={{
-        display: 'block', width: '100%', textAlign: 'left', padding: '12px 14px',
+        display: 'block', width: '100%', textAlign: 'left', padding: `${space.xl}px 14px`,
         borderRadius: radius.md, background: colors.bgDeeper,
         border: `1px solid ${colors.border}`, cursor: 'pointer', fontFamily: font.body,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: space.lg }}>
         <AgentPortrait agentId={persona.key} size={28} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: space.xl, marginBottom: space.xs }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
               <span style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{persona.display_name}</span>
               {gate && <GateChip id={persona.key} gate={gate} />}
             </span>
@@ -1004,7 +1004,7 @@ function PersonaRow({ persona, onOpen }: { persona: DispatchPersona; onOpen: () 
             <span>{engineLabel(persona.engine)}</span>
             <span>{persona.cost_tier}</span>
           </div>
-          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 6 }}>{grantsSummary(persona)}</div>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.sm }}>{grantsSummary(persona)}</div>
         </div>
       </div>
     </button>
@@ -1024,23 +1024,23 @@ function CapabilityRow({
     <div
       data-testid={`capability-row-${capability.key}`}
       style={{
-        padding: '12px 14px', borderRadius: radius.md, background: colors.bgDeeper,
+        padding: `${space.xl}px 14px`, borderRadius: radius.md, background: colors.bgDeeper,
         border: `1px solid ${colors.border}`,
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: space.xl, marginBottom: space.xs }}>
         <span style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>{capability.display_name}</span>
         <span style={{ fontSize: textSize.micro, color: capability.enabled ? colors.cyan : colors.textDim }}>
           {capability.enabled ? 'enabled' : 'disabled'}
         </span>
       </div>
-      <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginBottom: 4 }}>
+      <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginBottom: space.xs }}>
         {capability.source} · {defaultEnabledLabel(capability.default_enabled)}
       </div>
-      <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.45, marginBottom: 8 }}>
+      <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.45, marginBottom: space.md }}>
         {requiredSecretsLabel(capability.required_secrets)}
         {requiredSecretHints(capability.required_secrets).map(hint => (
-          <div key={hint} data-testid="required-secret-hint" style={{ marginTop: 2 }}>{hint}</div>
+          <div key={hint} data-testid="required-secret-hint" style={{ marginTop: space.xxs }}>{hint}</div>
         ))}
       </div>
       <Button

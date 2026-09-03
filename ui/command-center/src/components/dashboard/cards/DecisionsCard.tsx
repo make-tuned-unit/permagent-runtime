@@ -89,7 +89,7 @@ export function DecisionsCard({ activeCount }: Props = {}) {
         <div style={{
           fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600,
           letterSpacing: '0.10em', textTransform: 'uppercase',
-          color: colors.textDim, marginBottom: 6,
+          color: colors.textDim, marginBottom: space.sm,
         }}>
           Needs you
         </div>
@@ -117,11 +117,11 @@ export function DecisionsCard({ activeCount }: Props = {}) {
             }}>
               {data === null ? '—' : count}
             </div>
-            <div style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text, marginTop: 2 }}>
+            <div style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text, marginTop: space.xxs }}>
               {s.headline}
             </div>
             {s.oldestLabel && (
-              <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, marginTop: 6 }}>
+              <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, marginTop: space.sm }}>
                 {s.oldestLabel}
               </div>
             )}
@@ -129,7 +129,7 @@ export function DecisionsCard({ activeCount }: Props = {}) {
               // Was a raw hex, hardcoded regardless of theme — the one gap in
               // this screen's otherwise-clean token grade. "Needs your
               // attention" is the warning semantic, not a bespoke amber.
-              <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.warning, marginTop: 6 }}>
+              <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.warning, marginTop: space.sm }}>
                 {s.attentionLabel}
               </div>
             )}

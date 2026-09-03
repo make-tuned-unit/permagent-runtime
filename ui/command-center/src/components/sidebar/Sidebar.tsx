@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import type { LayoutNode } from '../../lib/store';
-import { ease, font, radius, shell, textSize } from '../../styles/tokens';
+import { ease, font, radius, space, shell, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { FiBell, FiChevronLeft, FiChevronRight, FiClock, FiSettings } from 'react-icons/fi';
 import type { IconType } from 'react-icons';
@@ -189,7 +189,7 @@ function SidebarRow({
         position: 'relative',
         width: open ? 'calc(100% - 16px)' : 40,
         height: 40,
-        display: 'flex', gap: 12,
+        display: 'flex', gap: space.xl,
         justifyContent: open ? 'flex-start' : 'center',
         margin: open ? '0 8px' : '0 auto',
         fontFamily: font.body, fontSize: textSize.small,
@@ -270,7 +270,7 @@ export function Sidebar() {
       borderRight: `1px solid ${colors.border}`,
       background: gradient.sidebar,
       display: 'flex', flexDirection: 'column',
-      padding: '0 0 14px', gap: 4,
+      padding: '0 0 14px', gap: space.xs,
       transition: `width 220ms ${ease.out}`,
       overflow: 'hidden',
     }}>
@@ -411,7 +411,7 @@ export function Sidebar() {
               '--pa-btn-radius': `${radius.md}px`,
               width: 'calc(100% - 16px)', height: 32,
               margin: '4px 8px 0',
-              gap: 8,
+              gap: space.md,
               fontFamily: font.body, fontSize: textSize.micro,
             } as CSSProperties}
           >

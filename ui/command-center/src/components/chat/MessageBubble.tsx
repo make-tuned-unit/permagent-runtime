@@ -5,7 +5,7 @@ import { MessageRenderer } from './MessageRenderer';
 import { CitationMarker } from '../awareness/CitationMarker';
 import { useCopyToClipboard } from '../../lib/clipboard';
 import { dispatchBody } from './dispatchBody';
-import { font } from '../../styles/tokens';
+import { font, space } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -67,7 +67,7 @@ function MessageBubbleInner({ message }: { message: ChatMessage }) {
                   '--pa-btn-pad': '0',
                   fontFamily: font.mono,
                   fontSize: 10,
-                  gap: 4,
+                  gap: space.xs,
                 } as CSSProperties}
               >
                 {copyState === 'copied' ? <><FiCheck size={11} /> Copied</>

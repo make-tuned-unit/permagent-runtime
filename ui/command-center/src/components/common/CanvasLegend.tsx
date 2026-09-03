@@ -84,7 +84,7 @@ function Rows({ rows, palette }: { rows: LegendRow[]; palette: LegendPalette }) 
         display: 'grid',
         gridTemplateColumns: hasMarkers ? 'auto auto 1fr' : 'auto 1fr',
         columnGap: space.sm,
-        rowGap: 5,
+        rowGap: space.xs,
         alignItems: 'baseline',
       }}
     >
@@ -258,7 +258,7 @@ export function CanvasLegend({
 
 function Section({ label, palette, children }: { label: string; palette: LegendPalette; children: ReactNode }) {
   return (
-    <div style={{ display: 'grid', gap: 3 }}>
+    <div style={{ display: 'grid', gap: space.xxs }}>
       <span style={{
         fontFamily: font.mono,
         fontSize: textSize.micro,

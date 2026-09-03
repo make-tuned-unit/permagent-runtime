@@ -164,7 +164,7 @@ export function ActionVerify({
           <div style={{
             display: 'flex', alignItems: 'center', gap: space.sm, alignSelf: 'flex-start',
             border: `1px ${provenance.checked ? 'solid' : 'dashed'} ${provenance.checked ? colors.success : colors.warning}`,
-            borderRadius: CARD_INNER_R, padding: `2px ${space.md}px`,
+            borderRadius: CARD_INNER_R, padding: `${space.xxs}px ${space.md}px`,
             color: provenance.checked ? colors.success : colors.warning,
             ...label,
           }}>

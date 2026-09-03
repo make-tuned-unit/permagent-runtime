@@ -212,7 +212,7 @@ export function Section({ title, trimColor, children }: {
         letterSpacing: '0.1em',
         color: trimColor,
         borderBottom: `1px solid ${trimColor}30`,
-        paddingBottom: 3,
+        paddingBottom: space.xxs,
         marginBottom: HUD_GEOM.sectionGap,
       }}>
         {title}

@@ -405,7 +405,7 @@ function TimelineRow({ item, isLast, onOpenDecisions }: {
           }}>{item.title}</div>
           {item.detail && (
             <div style={{
-              fontSize: textSize.micro, color: colors.textMuted, marginTop: 1,
+              fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs,
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>{item.detail}</div>
           )}

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import { FiCopy, FiCheck, FiAlertCircle } from 'react-icons/fi';
-import { font } from '../../styles/tokens';
+import { font, space } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useCopyToClipboard } from '../../lib/clipboard';
 import { Button } from '../common/Button';
@@ -83,7 +83,7 @@ export function CodeBlock({ language, code }: { language: string; code: string }
             '--pa-btn-pad': '0',
             fontFamily: font.mono,
             fontSize: 10,
-            gap: 4,
+            gap: space.xs,
           } as CSSProperties}
         >
           {copyState === 'copied' ? <><FiCheck size={11} style={{ color: colors.success }} /> Copied</>

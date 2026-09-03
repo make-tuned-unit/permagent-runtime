@@ -9,7 +9,7 @@
  */
 
 import { type CSSProperties, type ReactNode } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -46,8 +46,8 @@ export function HomeBanner({
         display: 'flex',
         alignItems: 'center',
         gap: 18,
-        marginBottom: 20,
-        padding: '14px 16px',
+        marginBottom: space.xxxl,
+        padding: `14px ${space.xxl}px`,
         borderRadius: 14,
         background: colors.surface,
         border: `1px solid ${colors.borderHi}`,
@@ -63,9 +63,9 @@ export function HomeBanner({
             fontSize: textSize.micro,
             letterSpacing: '0.14em',
             color: colors.textDim,
-            marginBottom: 4,
+            marginBottom: space.xs,
             display: 'flex',
-            gap: 10,
+            gap: space.lg,
             alignItems: 'center',
           }}
         >
@@ -77,7 +77,7 @@ export function HomeBanner({
         </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.md, flexShrink: 0 }}>
         {actions}
         <Tooltip content="Not now">
           <Button

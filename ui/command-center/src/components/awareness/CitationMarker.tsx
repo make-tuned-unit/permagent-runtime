@@ -4,7 +4,7 @@ import type { ProbedMemoryRef, RecalledMemoryRef } from '../../lib/store';
 import { useCommandCenter } from '../../lib/store';
 import type { BrainMemoryTarget } from '../brain/brainMemoryFocus';
 import { probedFocusTarget, recalledFocusTarget } from './citationFocus';
-import { ease, font, radius, type ThemeColors, textSize } from '../../styles/tokens';
+import { ease, font, radius, space, type ThemeColors, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useGlass } from '../common/Glass';
 import { Tooltip } from '../common/Tooltip';
@@ -57,7 +57,7 @@ export function CitationMarker({ probed, recalled }: Props) {
           '--pa-btn-bg-active': colors.purpleSoft,
           '--pa-btn-pad': '2px 8px',
           '--pa-btn-radius': '10px',
-          gap: 4,
+          gap: space.xs,
           fontSize: 10, fontFamily: font.body,
         } as CSSProperties}
       >
@@ -68,7 +68,7 @@ export function CitationMarker({ probed, recalled }: Props) {
       {expanded && (
         <div id={listId} style={{
           position: 'absolute', bottom: '100%', right: 0,
-          marginBottom: 6, width: 320,
+          marginBottom: space.sm, width: 320,
           ...glass,
           border: `1px solid ${colors.borderHi}`,
           borderRadius: radius.md, padding: '8px 0',
@@ -80,7 +80,7 @@ export function CitationMarker({ probed, recalled }: Props) {
           maxHeight: 280, overflow: 'auto',
         }}>
           {probed.length > 0 && (
-            <div style={{ padding: '4px 12px 2px', fontSize: 10, fontWeight: 600, fontFamily: font.display, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <div style={{ padding: `${space.xs}px ${space.xl}px ${space.xxs}px`, fontSize: 10, fontWeight: 600, fontFamily: font.display, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Probed memories
             </div>
           )}
@@ -93,7 +93,7 @@ export function CitationMarker({ probed, recalled }: Props) {
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
                 style={memoryRowStyle(colors)}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, marginBottom: space.xxs }}>
                   <span style={{ fontSize: 10, fontFamily: font.mono, color: colors.cyan }}>
                     {m.relevance.toFixed(2)}
                   </span>
@@ -112,7 +112,7 @@ export function CitationMarker({ probed, recalled }: Props) {
             </Tooltip>
           ))}
           {recalled.length > 0 && (
-            <div style={{ padding: '4px 12px 2px', fontSize: 10, fontWeight: 600, fontFamily: font.display, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <div style={{ padding: `${space.xs}px ${space.xl}px ${space.xxs}px`, fontSize: 10, fontWeight: 600, fontFamily: font.display, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Recalled memories
             </div>
           )}
@@ -125,7 +125,7 @@ export function CitationMarker({ probed, recalled }: Props) {
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
                 style={memoryRowStyle(colors)}
               >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, marginBottom: space.xxs }}>
                 <span style={{ fontSize: 10, fontFamily: font.mono, color: colors.purple }}>
                   score: {m.signal_score.toFixed(2)}
                 </span>
@@ -153,7 +153,7 @@ function memoryRowStyle(colors: ThemeColors): React.CSSProperties {
   return {
     display: 'block', width: '100%', textAlign: 'left',
     background: 'transparent', border: 'none', borderBottom: `1px solid ${colors.border}`,
-    padding: '4px 12px', cursor: 'pointer', color: 'inherit', fontFamily: font.body,
+    padding: `${space.xs}px ${space.xl}px`, cursor: 'pointer', color: 'inherit', fontFamily: font.body,
     transition: `background 120ms ${ease.out}`,
   };
 }

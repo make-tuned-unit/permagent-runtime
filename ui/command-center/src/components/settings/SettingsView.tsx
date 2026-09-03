@@ -69,7 +69,7 @@ const ghost = (colors: C): React.CSSProperties => ({
   '--pa-btn-radius': `${radius.md}px`,
   '--pa-btn-weight': 500,
   height: 32,
-  fontFamily: font.body, fontSize: textSize.caption, gap: 6,
+  fontFamily: font.body, fontSize: textSize.caption, gap: space.sm,
 } as React.CSSProperties);
 
 // ── Voice model route readout ────────────────────────────────────────
@@ -221,7 +221,7 @@ function PersonaPanel() {
     <div>
       <H1 sub="Shape how your agent thinks, talks, and decides. Changes take effect at the start of the next conversation.">Persona</H1>
       <Section title="Identity">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 24, marginBottom: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.huge, marginBottom: space.md }}>
           <Mobius size={140} state="idle" glow={1} />
           <div style={{ flex: 1 }}>
             <Row label="Name" hint="What you'll call them."><TextInput value={name} onChange={changeName} /></Row>
@@ -238,8 +238,8 @@ function PersonaPanel() {
       <Section title="Tone">
         <Row label="Tone" hint="How they describe their own speaking style (text, not audio)."><TextInput multi value={tone} onChange={changeTone} /></Row>
         <Row label="Traits" hint="Pick from suggestions or add your own. The agent will lean into these.">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.md }}>
               {/* Selected traits (incl. custom ones not in the suggestion list) — click to remove */}
               {traits.map(t => <Chip key={t} on onClick={() => toggleTrait(t)}>{t}</Chip>)}
               {/* Unselected suggestions — click to add */}
@@ -254,13 +254,13 @@ function PersonaPanel() {
               style={{
                 width: '100%', fontFamily: font.body, fontSize: textSize.small, color: colors.text,
                 background: colors.inputBg, border: `1px solid ${colors.border}`,
-                borderRadius: radius.md, padding: '8px 12px', outline: 'none',
+                borderRadius: radius.md, padding: `${space.md}px ${space.xl}px`, outline: 'none',
               }}
             />
           </div>
         </Row>
       </Section>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: space.xl }}>
         {error && <span style={{ fontSize: textSize.caption, color: colors.danger }}>{error}</span>}
         {/* Failed initial load: offer a retry instead of leaving a form that
             reads as broken (#167). Saving still works from the form's values. */}
@@ -379,7 +379,7 @@ export function MemoryPanel({ goto: _goto }: { goto?: (key: string) => void }) {
     <div>
       <H1 sub="What your agent remembers about you, your projects, and the people in your world.">Memory</H1>
       <Section title="Manage">
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: space.md, flexWrap: 'wrap' }}>
           <Button colors={colors} style={ghost(colors)} onClick={() => navigateToTool('memory')}>Open Brain view</Button>
           <Button colors={colors} style={ghost(colors)} data-testid="memory-open-librarian" onClick={() => openAgentSettings('librarian')}>Nightly pruning (the Librarian's schedule) →</Button>
           {/* Export/Forget removed (2026-07-10 audit): a destructive-styled
@@ -432,7 +432,7 @@ export function ApprovalsStrip() {
   return (
     <>
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+        display: 'flex', alignItems: 'center', gap: space.lg, flexWrap: 'wrap',
         padding: `${space.lg}px ${space.xxl}px`, marginBottom: space.xl, borderRadius: radius.md,
         background: colors.surface, border: `1px solid ${colors.border}`,
       }}>
@@ -555,7 +555,7 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.sm, marginBottom: space.xs }}>
                     <span style={{ fontSize: textSize.small, fontWeight: 600, color: current ? colors.cyan : colors.text }}>{opt.l}</span>
                     {locked && (
-                      <span style={{ ...type.label, color: colors.textMuted, border: `1px solid ${colors.border}`, borderRadius: radius.pill, padding: '1px 6px' }}>Soon</span>
+                      <span style={{ ...type.label, color: colors.textMuted, border: `1px solid ${colors.border}`, borderRadius: radius.pill, padding: `${space.xxs}px ${space.sm}px` }}>Soon</span>
                     )}
                   </div>
                   <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>{opt.d}</div>
@@ -565,7 +565,7 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
             })}
           </div>
         </Row>
-        <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 10, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: space.lg, lineHeight: 1.5 }}>
           Per-tool approval (Ask every time / Smart approve) is temporarily
           locked here while the approval pipeline is hardened. Approval prompts
           already land in the <strong>Decision Inbox</strong> on your Dashboard —
@@ -639,7 +639,7 @@ function ToolsPanel({ goto }: PanelProps) {
       {/* MCP is defined here, once — the nav label carries the user's word and
           the pane carries the acronym. */}
       <H1 sub="Tools your agent can use. Most arrive over MCP — the Model Context Protocol — so connecting a server is what gives the agent something new it can call.">Tools</H1>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.xxl }}>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: textSize.caption, color: colors.textMuted }}>{enabledCount} of {extensions.length} enabled</span>
       </div>
@@ -648,7 +648,7 @@ function ToolsPanel({ goto }: PanelProps) {
         // only way to find that out is to guess — which is how someone ends up
         // on this tab looking for their Brave key.
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          display: 'flex', alignItems: 'center', gap: space.lg, flexWrap: 'wrap',
           padding: `${space.lg}px ${space.xxl}px`, marginBottom: space.xxl, borderRadius: radius.md,
           background: colors.surface, border: `1px solid ${colors.border}`,
         }}>
@@ -665,13 +665,13 @@ function ToolsPanel({ goto }: PanelProps) {
       ) : extensions.length === 0 ? (
         <Section title="No extensions"><div style={{ color: colors.textMuted, fontSize: textSize.small }}>No MCP tools or extensions configured.</div></Section>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: space.lg }}>
           {extensions.map((ext, i) => (
             <div key={ext.name || `ext-${i}`} style={{ display: 'flex', alignItems: 'center', gap: space.xxl, padding: space.xxl, borderRadius: radius.lg, background: colors.surface, border: `1px solid ${colors.border}` }}>
               <div style={{ width: 32, height: 32, borderRadius: radius.md, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: textSize.small, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{extensionLabel(ext).charAt(0).toUpperCase() || '?'}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: textSize.small, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{extensionLabel(ext)}</div>
-                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {ext.type}{ext.bundled ? ' · bundled' : ''} · {ext.available_tools?.length ?? 0} tools
                   {(ext.env_keys?.length ?? 0) > 0 && ` · needs ${ext.env_keys!.join(', ')}`}
                 </div>
@@ -815,21 +815,21 @@ function RoleModelRow({
   return (
     <Row label={label} hint={hint}>
       <div data-testid={testId}>
-      <div style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, marginBottom: 10 }}>
+      <div style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, marginBottom: space.lg }}>
         {effective.display}
         {effective.suffix && (
-          <span style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginLeft: 8 }}>
+          <span style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginLeft: space.md }}>
             · {effective.suffix}
           </span>
         )}
       </div>
       {warn && (
-        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>
           provider and model must be set together, or neither
         </div>
       )}
-      {error && <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error}</div>}
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      {error && <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>{error}</div>}
+      <div style={{ display: 'flex', gap: space.md, alignItems: 'center' }}>
         <div style={{ width: 160 }}>
           <TextInput
             value={providerInput}
@@ -976,7 +976,7 @@ export function ModelsPanel({ goto }: PanelProps) {
       <Section title="Providers" sub="Provider credentials live in the API keys tab — add or update a key there, then route to it below.">
         {/* One-line primary readout (condensed from Governance → Models; the
             full editor is redundant with the provider modal on API keys). */}
-        <div style={{ fontSize: textSize.small, color: colors.text, fontFamily: font.mono, marginBottom: 12 }}>
+        <div style={{ fontSize: textSize.small, color: colors.text, fontFamily: font.mono, marginBottom: space.xl }}>
           {primary === null
             ? 'Loading primary model…'
             : `${primary.model ?? '—'} · provider: ${primary.provider ?? 'default'}${primary.mode ? ` · mode: ${primary.mode}` : ''}`}
@@ -1015,11 +1015,11 @@ export function ModelsPanel({ goto }: PanelProps) {
             the wrong resolver here would tell the operator the wrong thing. */}
         <Row label="Voice" hint="spoken turns">
           <div data-testid="role-row-voice">
-            <div style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, marginBottom: 10 }}>
+            <div style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, marginBottom: space.lg }}>
               {describeVoiceRoute(voiceProvider, voiceModel)}
             </div>
-            {voiceError && <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{voiceError}</div>}
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {voiceError && <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>{voiceError}</div>}
+            <div style={{ display: 'flex', gap: space.md, alignItems: 'center' }}>
               <div style={{ width: 160 }}>
                 <TextInput
                   value={voiceProviderInput}
@@ -1077,7 +1077,7 @@ export function ModelsPanel({ goto }: PanelProps) {
                 const running = ollama.running.find(r => r.name === m.name);
                 return (
                   <Row key={m.name} label={m.name} hint={formatBytes(m.size)}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
                       <ModelStateBadge state={running ? 'running' : 'installed'} />
                       {running?.expires_at && (
                         <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
@@ -1183,7 +1183,7 @@ function AppearancePanel() {
     <div>
       <H1 sub="How Permagent looks while it runs alongside you.">Appearance</H1>
       <Section title="Theme" sub="System follows your device — silver by day, dark when your other apps go dark.">
-        <div role="radiogroup" aria-label="Theme" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+        <div role="radiogroup" aria-label="Theme" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: space.lg }}>
           {themes.map(th => {
             const on = prefs.themePref === th.id;
             return (
@@ -1196,7 +1196,7 @@ function AppearancePanel() {
                 onClick={() => setThemeFn(th.id)}
                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setThemeFn(th.id); } }}
                 style={{
-                  padding: 4, borderRadius: radius.lg, cursor: 'pointer', outline: 'none',
+                  padding: space.xs, borderRadius: radius.lg, cursor: 'pointer', outline: 'none',
                   border: on ? `2px solid ${colors.cyan}` : '2px solid transparent',
                   boxShadow: on ? `0 0 14px ${colors.cyanGlow}` : 'none',
                 }}
@@ -1204,7 +1204,7 @@ function AppearancePanel() {
                 onBlur={e => { if (!on) e.currentTarget.style.borderColor = 'transparent'; }}
               >
                 <div style={{ height: 96, borderRadius: radius.md, background: th.g, border: `1px solid ${colors.border}` }} />
-                <div style={{ fontSize: textSize.caption, padding: '8px 4px', textAlign: 'center', color: on ? colors.cyan : colors.text }}>{th.l}</div>
+                <div style={{ fontSize: textSize.caption, padding: `${space.md}px ${space.xs}px`, textAlign: 'center', color: on ? colors.cyan : colors.text }}>{th.l}</div>
               </div>
             );
           })}
@@ -1213,11 +1213,11 @@ function AppearancePanel() {
       <Section title="Möbius">
         <Row label="Glow intensity"><Slider value={prefs.mobiusGlow} onChange={v => setMobiusGlow(v)} suffix="%" /></Row>
         <Row label="Animation when idle">
-          <div style={{ display: 'flex', gap: 8 }}>{animOptions.map((a, i) => <Chip key={a} on={prefs.idleAnim === a} onClick={() => setIdleAnim(a)}>{animLabels[i]}</Chip>)}</div>
+          <div style={{ display: 'flex', gap: space.md }}>{animOptions.map((a, i) => <Chip key={a} on={prefs.idleAnim === a} onClick={() => setIdleAnim(a)}>{animLabels[i]}</Chip>)}</div>
         </Row>
       </Section>
       <Section title="Density">
-        <Row label="UI density"><div style={{ display: 'flex', gap: 8 }}>{densityOptions.map((d, i) => <Chip key={d} on={prefs.density === d} onClick={() => setDensityFn(d)}>{densityLabels[i]}</Chip>)}</div></Row>
+        <Row label="UI density"><div style={{ display: 'flex', gap: space.md }}>{densityOptions.map((d, i) => <Chip key={d} on={prefs.density === d} onClick={() => setDensityFn(d)}>{densityLabels[i]}</Chip>)}</div></Row>
         <Row label="Reduce motion" hint="Honors system preference by default."><Toggle on={prefs.reduceMotion} onChange={v => setReduceMotionFn(v)} /></Row>
       </Section>
     </div>
@@ -1266,7 +1266,7 @@ function ShortcutsPanel() {
           {grp.items.map(([l, keys]) => (
             <div key={l} style={{ display: 'flex', alignItems: 'center', padding: '12px 0', borderTop: `1px solid ${colors.border}` }}>
               <span style={{ fontSize: textSize.small, flex: 1 }}>{l}</span>
-              <div style={{ display: 'flex', gap: 4 }}>{keys.map((k, i) => <Kbd key={i}>{k}</Kbd>)}</div>
+              <div style={{ display: 'flex', gap: space.xs }}>{keys.map((k, i) => <Kbd key={i}>{k}</Kbd>)}</div>
             </div>
           ))}
         </Section>
@@ -1365,7 +1365,7 @@ export function DataPanel() {
         )}
       </Section>
       <Section title="Crash report" sub="Export a redacted crash report to attach to a support message. Written locally — home paths, keys, tokens, emails, and UUIDs are redacted first. Nothing is uploaded.">
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: space.md, flexWrap: 'wrap', alignItems: 'center' }}>
           <Button
             colors={colors}
             onClick={runExport}
@@ -1394,10 +1394,10 @@ export function DataPanel() {
                 : `${exportResult.reportCount} crash report(s) redacted and saved to:`}
             </div>
             <div style={{ fontSize: textSize.caption, color: colors.text, fontFamily: font.mono, wordBreak: 'break-all', padding: '2px 0 6px' }}>{exportResult.path}</div>
-            <div style={{ fontSize: textSize.micro, color: colors.textDim, paddingBottom: 4 }}>Preview (exactly what would be shared):</div>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim, paddingBottom: space.xs }}>Preview (exactly what would be shared):</div>
             <pre style={{
               fontSize: textSize.micro, fontFamily: font.mono, color: colors.text, background: colors.surface,
-              border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: 8, margin: 0,
+              border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: space.md, margin: 0,
               maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             }}>{exportResult.content}</pre>
           </div>
@@ -1538,12 +1538,12 @@ function SovereigntyBlock() {
             Nothing has left this machine yet. Every cloud call will be recorded here.
           </div>
         ) : (
-          <div style={{ marginTop: 12, overflowX: 'auto' }}>
+          <div style={{ marginTop: space.xl, overflowX: 'auto' }}>
             <div style={{ minWidth: 460 }}>
               <div style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: space.xl, padding: `0 ${space.lg}px ${space.md}px`, ...type.label, color: colors.textDim }}>
                 <div>When</div><div>Provider · Model</div><div>Kind</div><div>Result</div>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
                 {log.map(e => (
                   <div key={e.id} style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: space.xl, alignItems: 'center', padding: `${space.md}px ${space.lg}px`, borderRadius: concentric(radius.lg, space.xs), background: colors.fillSubtle }}>
                     {/* The primitive clones its child rather than boxing it,
@@ -1563,7 +1563,7 @@ function SovereigntyBlock() {
                     <div>
                       <span style={{
                         ...type.label, fontWeight: 700,
-                        padding: '2px 8px', borderRadius: radius.pill, border: `1px solid ${colors.border}`,
+                        padding: `${space.xxs}px ${space.md}px`, borderRadius: radius.pill, border: `1px solid ${colors.border}`,
                         color: e.blocked ? colors.warning : colors.success,
                       }}>
                         {e.blocked ? 'blocked' : 'allowed'}
@@ -1720,7 +1720,7 @@ function DevicesPanel() {
 
       {/* Role clarity (ruling 2026-07-11): friendly first, deeper on ask. */}
       <Section title={isHub ? 'This device is your hub' : 'This device is a companion'}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.md }}>
           <span style={{
             width: 8, height: 8, borderRadius: '50%',
             background: hubUp === false ? colors.danger : colors.cyan,
@@ -1785,7 +1785,7 @@ function DevicesPanel() {
             }
           >
             {editingId === d.id ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
                 <TextInput value={editName} onChange={setEditName} placeholder="Device name" />
                 <Button
                   colors={colors}
@@ -1804,7 +1804,7 @@ function DevicesPanel() {
                 <Button colors={colors} style={ghost(colors)} onClick={() => setEditingId(null)}>Cancel</Button>
               </div>
             ) : (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
                 {d.revoked ? (
                   <span style={{ fontSize: textSize.micro, fontWeight: 600, color: colors.danger }}>REVOKED</span>
                 ) : (
@@ -1857,7 +1857,7 @@ function DevicesPanel() {
                 : 'Off — this hub is only reachable from this machine, so no phone can pair with it.'
           }
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, flexWrap: 'wrap' }}>
             <Toggle
               on={!!access?.enabled}
               disabled={accessBusy || access?.available === false}
@@ -1921,7 +1921,7 @@ function DevicesPanel() {
           />
         </Row>
         <Row label="Device name" hint="Name the device you are pairing — this is how it appears in the registry above.">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
             <TextInput value={pairName} onChange={setPairName} placeholder="e.g. iPhone" />
             <Button
               colors={colors}
@@ -1948,20 +1948,20 @@ function DevicesPanel() {
             // originally squeezed in beside the URL at 112px, which read as a
             // decoration and is small for a phone to acquire — it leads now,
             // at a size that scans from a comfortable distance.
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: space.xxl, minWidth: 0 }}>
               <div style={{ flexShrink: 0, textAlign: 'center' }}>
                 <PairingQrCode value={pairingUrl} size={196} />
-                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 6 }}>
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.sm }}>
                   Scan with your iPhone
                 </div>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0, paddingTop: 2 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: space.md, minWidth: 0, paddingTop: space.xxs }}>
                 <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
                   Open Permagent on the phone and scan this. No typing.
                 </span>
                 <code style={{
                   fontFamily: font.mono, fontSize: textSize.micro, color: colors.cyan,
-                  background: colors.bgDeeper, padding: '6px 8px', borderRadius: radius.sm,
+                  background: colors.bgDeeper, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.sm,
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320,
                 }}>{pairingUrl}</code>
                 <Button
@@ -2034,10 +2034,10 @@ export function SettingsView() {
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', background: gradient.shell, color: colors.text, fontFamily: font.body }}>
-      <div style={{ width: 240, borderRight: `1px solid ${colors.border}`, background: gradient.navRail, padding: '24px 14px', overflow: 'auto', flexShrink: 0 }}>
+      <div style={{ width: 240, borderRight: `1px solid ${colors.border}`, background: gradient.navRail, padding: `${space.huge}px 14px`, overflow: 'auto', flexShrink: 0 }}>
         <div style={{ ...type.heading, fontFamily: font.display, padding: `0 ${space.lg}px ${space.xxxl}px` }}>Settings</div>
         {CATEGORIES.map(cat => (
-          <div key={cat.group} style={{ marginBottom: 16 }}>
+          <div key={cat.group} style={{ marginBottom: space.xxl }}>
             <div style={{ ...type.label, color: colors.textDim, padding: `0 ${space.lg}px ${space.sm}px` }}>{cat.group}</div>
             {cat.items.map(it => {
               const on = pane === it.key;

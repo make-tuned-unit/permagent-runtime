@@ -5,7 +5,7 @@ import { useAgentRuntimeStates } from './shared/agentStatus';
 import { HudShell, Section } from './HudShell';
 import { Chip } from '../common/Chip';
 import { api } from '../../lib/api';
-import { textSize } from '../../styles/tokens';
+import { space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 // The Guard — the security agent, born of the Strix pentest engine
@@ -69,7 +69,7 @@ export function StrixHUD({ visible, onClose }: StrixHUDProps) {
 
   return (
     <HudShell visible={visible} onClose={onClose} title="THE GUARD" statusPill={statusPill}>
-      <div style={{ padding: '4px 14px 8px' }}>
+      <div style={{ padding: `${space.xs}px 14px ${space.md}px` }}>
         <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           {enabled === false
             ? 'Standing by — sweeps disabled; enable in Settings → Models. When on, the Guard probes your own projects the way an attacker would, on its own cadence. Born of the Strix pentest engine.'
@@ -108,7 +108,7 @@ export function StrixHUD({ visible, onClose }: StrixHUDProps) {
 function Bullet({ children }: { children: React.ReactNode }) {
   const { colors } = useTheme();
   return (
-    <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.7, display: 'flex', gap: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.7, display: 'flex', gap: space.md }}>
       <span style={{ color: STRIX_TRIM }}>·</span>
       <span>{children}</span>
     </div>

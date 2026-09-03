@@ -1,7 +1,7 @@
 import { useRef, useEffect, useMemo, useState, useCallback, type CSSProperties } from 'react';
 import { FiChevronDown, FiMessageSquare, FiVolume2 } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { MessageBubble } from './MessageBubble';
@@ -266,7 +266,7 @@ export function MessageList() {
               '--pa-btn-radius': `${radius.pill}px`,
               fontFamily: font.mono,
               fontSize: textSize.micro,
-              gap: 4,
+              gap: space.xs,
               boxShadow: colors.cardShadow,
             } as CSSProperties}
           >

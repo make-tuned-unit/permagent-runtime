@@ -29,7 +29,7 @@
 
 import { useCallback, useState } from 'react';
 import type { ReactNode } from 'react';
-import { font, type } from '../../styles/tokens';
+import { font, space, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from './Button';
 import { DetailModal } from './DetailModal';
@@ -96,7 +96,7 @@ export function ConfirmDialog({
         <div
           role="alert"
           style={{
-            marginTop: 12, fontFamily: font.body, ...type.caption,
+            marginTop: space.xl, fontFamily: font.body, ...type.caption,
             color: colors.danger, lineHeight: 1.5,
           }}
         >

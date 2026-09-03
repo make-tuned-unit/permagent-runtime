@@ -25,7 +25,7 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { DetailModal } from '../common/DetailModal';
@@ -199,14 +199,14 @@ export function CardDetailModal({
         <div style={{
           fontSize: textSize.caption, color: colors.danger,
           borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-          background: colors.danger + '14', padding: '8px 12px',
+          background: colors.danger + '14', padding: `${space.md}px ${space.xl}px`,
         }}>
           Couldn&apos;t load this card. Check the daemon connection and try again.
         </div>
       )}
 
       {card && !loading && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
           {editing ? (
             <>
               <Field label="Title">
@@ -234,7 +234,7 @@ export function CardDetailModal({
                   onChange={e => setDraftDueDate(e.target.value)}
                   style={{ ...inputStyle(colors), width: 200 }}
                 />
-                <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 4 }}>
+                <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs }}>
                   A to-do only reaches the Home tab&apos;s list once it has a due date. Clear the
                   field to take it off that list; the card stays on the board either way.
                 </div>
@@ -272,7 +272,7 @@ export function CardDetailModal({
             <div style={{
               fontSize: textSize.caption, color: colors.danger,
               borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-              background: colors.danger + '14', padding: '8px 12px',
+              background: colors.danger + '14', padding: `${space.md}px ${space.xl}px`,
             }}>
               {saveError}
             </div>
@@ -289,7 +289,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div>
       <div style={{
         fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
-        textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6,
+        textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: space.sm,
       }}>
         {label}
       </div>
@@ -320,7 +320,7 @@ function MetaGrid({ colors, rows }: {
 
 function inputStyle(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
   return {
-    width: '100%', boxSizing: 'border-box', padding: '7px 9px',
+    width: '100%', boxSizing: 'border-box', padding: `${space.sm}px ${space.md}px`,
     borderRadius: radius.md, border: `1px solid ${colors.border}`,
     background: colors.inputBg, color: colors.text,
     fontFamily: font.body, fontSize: textSize.caption, outline: 'none',

@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { FiX } from 'react-icons/fi';
-import { duration, ease, font, radius, textSize } from '../../styles/tokens';
+import { duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Tooltip } from './Tooltip';
 
@@ -197,7 +197,7 @@ export function DetailModal({
       >
         {/* Header */}
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 10,
+          display: 'flex', alignItems: 'center', gap: space.lg,
           padding: '14px 18px', flexShrink: 0,
           borderBottom: '1px solid', ...edge(edges.top),
         }}>
@@ -212,7 +212,7 @@ export function DetailModal({
           {badge && (
             <span style={{
               fontFamily: font.mono, fontSize: 10, letterSpacing: '0.04em',
-              textTransform: 'uppercase', borderRadius: radius.pill, padding: '2px 9px',
+              textTransform: 'uppercase', borderRadius: radius.pill, padding: `${space.xxs}px ${space.md}px`,
               flexShrink: 0, color: badge.color, background: badge.bg,
             }}>
               {badge.label}
@@ -245,7 +245,7 @@ export function DetailModal({
         <div
           ref={bodyRef}
           onScroll={measure}
-          style={{ overflow: 'auto', overscrollBehavior: 'contain', padding: '16px 18px', flex: 1, ...bodyStyle }}
+          style={{ overflow: 'auto', overscrollBehavior: 'contain', padding: `${space.xxl}px 18px`, flex: 1, ...bodyStyle }}
         >
           {children}
         </div>
@@ -253,9 +253,9 @@ export function DetailModal({
         {/* Footer */}
         {footer && (
           <div style={{
-            padding: '12px 18px', flexShrink: 0,
+            padding: `${space.xl}px 18px`, flexShrink: 0,
             borderTop: '1px solid', ...edge(edges.bottom),
-            display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'flex-end',
+            display: 'flex', alignItems: 'center', gap: space.lg, justifyContent: 'flex-end',
             ...footerStyle,
           }}>
             {footer}

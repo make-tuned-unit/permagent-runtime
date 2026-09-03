@@ -11,7 +11,7 @@ import {
   type AppNotification,
 } from '../../lib/notifications';
 import { navigateToTool, useCommandCenter } from '../../lib/store';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useGlass } from '../common/Glass';
 import { ToastCard } from './Toast';
@@ -127,7 +127,7 @@ export function NotificationHost() {
           // the tray's existing float height is kept by composing the theme's
           // elevation on top of it rather than replacing it.
           boxShadow: `${glass.boxShadow}, ${colors.elevationFloating}`,
-          padding: 8,
+          padding: space.md,
         }}>
           {items.length === 0 ? (
             <div style={{ padding: 18, textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
@@ -147,15 +147,15 @@ export function NotificationHost() {
                container happens to contain. */
             <button key={n.id} onClick={() => activate(n)} style={{
               display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
-              padding: '9px 10px', borderRadius: radius.md, marginBottom: 2,
+              padding: `${space.md}px ${space.lg}px`, borderRadius: radius.md, marginBottom: space.xxs,
               background: n.read ? 'transparent' : colors.cyanSoft,
               border: 'none', color: colors.text,
             }}>
               <div style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600 }}>{n.title}</div>
               {n.body && (
-                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 2, lineHeight: 1.4 }}>{n.body}</div>
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs, lineHeight: 1.4 }}>{n.body}</div>
               )}
-              <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginTop: 3 }}>
+              <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginTop: space.xxs }}>
                 {new Date(n.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </div>
             </button>
@@ -170,7 +170,7 @@ export function NotificationHost() {
         // Top-right (2026-07-27): the bottom-right corner belongs to the
         // Chat-with-Henry pill, which was overlapping toasts.
         position: 'fixed', top: 40, right: 14, zIndex: 95,
-        display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none',
+        display: 'flex', flexDirection: 'column', gap: space.md, pointerEvents: 'none',
       }}>
         {toasts.map((n) => (
           <ToastCard key={n.id} notification={n} ttlMs={TOAST_MS} onDismiss={dismissToast} onActivate={activate} />

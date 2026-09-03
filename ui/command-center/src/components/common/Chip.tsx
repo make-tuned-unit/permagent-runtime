@@ -49,7 +49,7 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
-import { font, radius, tabularNums } from '../../styles/tokens';
+import { font, radius, space, tabularNums } from '../../styles/tokens';
 import { useTheme, type ThemeColors } from '../../styles/useTheme';
 import { useFreshness } from '../../hooks/useFreshness';
 import { Tooltip } from './Tooltip';
@@ -122,8 +122,8 @@ function toneColor(tone: ChipTone, colors: ThemeColors): string {
 const SHELL: CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
-  gap: 6,
-  padding: '2px 8px',
+  gap: space.sm,
+  padding: `${space.xxs}px ${space.md}px`,
   borderRadius: radius.pill,
   fontFamily: font.body,
   fontSize: 10,

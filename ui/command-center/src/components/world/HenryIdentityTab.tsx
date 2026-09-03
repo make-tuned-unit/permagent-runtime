@@ -3,7 +3,7 @@ import { Section, StatRow } from './HudShell';
 import { useIdentityStore } from '../../stores/identityStore';
 import { computePortalEligibility } from '../../utils/portalEligibility';
 import { SBT_CONTRACT } from '../../config/chain';
-import { duration, ease, radius, textSize } from '../../styles/tokens';
+import { duration, ease, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -81,7 +81,7 @@ export function HenryIdentityTab() {
   // First launch — no cached data at all
   if (!id) {
     return (
-      <div style={{ padding: '20px 14px', textAlign: 'center' }}>
+      <div style={{ padding: `${space.xxxl}px 14px`, textAlign: 'center' }}>
         <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.6 }}>
           Awaiting first verification
         </div>
@@ -94,14 +94,14 @@ export function HenryIdentityTab() {
   return (
     <>
       {/* Header row: avatar + name + status pill + connectivity indicator */}
-      <div style={{ padding: '8px 14px 4px', display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div style={{ padding: `${space.md}px 14px ${space.xs}px`, display: 'flex', alignItems: 'center', gap: space.lg }}>
         <img
           src={id.avatarUrl}
           alt={id.name}
           style={{ width: 36, height: 36, borderRadius: radius.sm, border: `1px solid ${colors.success}40` }}
         />
         <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
             <span style={{ fontSize: textSize.body, fontWeight: 600, color: colors.text }}>
               {id.name}
             </span>
@@ -122,7 +122,7 @@ export function HenryIdentityTab() {
           </div>
           <div style={{
             display: 'inline-block',
-            padding: '1px 8px',
+            padding: `${space.xxs}px ${space.md}px`,
             borderRadius: radius.xs,
             fontSize: textSize.micro,
             fontWeight: 700,
@@ -130,7 +130,7 @@ export function HenryIdentityTab() {
             background: sealedPill(colors.success).bg,
             color: sealedPill(colors.success).text,
             border: `1px solid ${sealedPill(colors.success).border}`,
-            marginTop: 2,
+            marginTop: space.xxs,
           }}>
             {id.status.toUpperCase()}
           </div>
@@ -188,7 +188,7 @@ export function HenryIdentityTab() {
           fontSize: textSize.micro,
           fontWeight: 700,
           letterSpacing: '0.06em',
-          marginTop: 8,
+          marginTop: space.md,
           color: eligibility.ready ? colors.success : colors.textDim,
         }}>
           {eligibility.ready
@@ -198,17 +198,17 @@ export function HenryIdentityTab() {
       </Section>
 
       {/* ACTIONS */}
-      <div style={{ padding: '4px 14px 12px' }}>
+      <div style={{ padding: `${space.xs}px 14px ${space.xl}px` }}>
         <div style={{
           fontSize: textSize.micro,
           fontWeight: 700,
           letterSpacing: '0.1em',
           color: colors.textDim,
-          marginBottom: 6,
+          marginBottom: space.sm,
         }}>
           ACTIONS
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: space.md }}>
           <ActionButton
             label={loading ? '[ Refreshing... ]' : '[ Refresh ]'}
             disabled={loading}
@@ -223,7 +223,7 @@ export function HenryIdentityTab() {
 
       {/* Footer: last refreshed */}
       <div style={{
-        padding: '4px 14px 8px',
+        padding: `${space.xs}px 14px ${space.md}px`,
         fontSize: textSize.micro,
         color: colors.textDim,
         textAlign: 'right',
@@ -268,7 +268,7 @@ function LinkRow({ label, value, href }: { label: string; value: string; href?: 
         {clickable && (
           <span style={{
             color: hovered ? colors.cyan : colors.textDim,
-            marginLeft: 4,
+            marginLeft: space.xs,
             fontSize: textSize.micro,
             transition: `color ${duration.snappy}ms ${ease.snappy}`,
           }}>↗</span>
@@ -290,7 +290,7 @@ function CheckRow({ label, pass, detail, warn }: {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: textSize.micro, lineHeight: 1.6 }}>
       <span style={{ color: colors.textMuted }}>
-        <span style={{ color, marginRight: 4 }}>{icon}</span>
+        <span style={{ color, marginRight: space.xs }}>{icon}</span>
         {label}
       </span>
       <span style={{ color: colors.textDim, fontSize: textSize.micro, fontWeight: 400 }}>{detail}</span>

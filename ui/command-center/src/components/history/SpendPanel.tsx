@@ -104,9 +104,9 @@ export function SpendPanel() {
   }
 
   const numInput = (v: string, on: (s: string) => void, label: string, scope = 'Session') => (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 90 }}>
+    <label style={{ display: 'flex', flexDirection: 'column', gap: space.xs, flex: 1, minWidth: 90 }}>
       <span style={{ ...type.label, color: colors.textDim }}>{label}</span>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4, height: 30, padding: '0 8px', borderRadius: radius.md, background: colors.inputBg, border: `1px solid ${colors.border}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.xs, height: 30, padding: '0 8px', borderRadius: radius.md, background: colors.inputBg, border: `1px solid ${colors.border}` }}>
         <span style={{ color: colors.textDim, fontSize: textSize.small }}>$</span>
         <input
           type="number" min="0" step="0.5" value={v}
@@ -119,11 +119,11 @@ export function SpendPanel() {
   );
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
       {/* Running total */}
       <Card>
         <SectionLabel>Running total — everything you have spent</SectionLabel>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 20, marginTop: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: space.xxxl, marginTop: space.lg, flexWrap: 'wrap' }}>
           <div style={{ ...type.display, fontFamily: font.display, color: colors.cyan, ...tabularNums }}>
             {formatUsd(snap.runningTotalUsd)}
           </div>
@@ -136,22 +136,22 @@ export function SpendPanel() {
       {/* Budget */}
       <Card>
         <SectionLabel>Budget — optional caps you set</SectionLabel>
-        <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: 8, marginBottom: 12 }}>
+        <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: space.md, marginBottom: space.xl }}>
           Enforced locally: at the gate ceiling the agent pauses and asks in the Decision Inbox before spending more; at the hard ceiling it stops and preserves your work. Leave high to run uncapped.
         </div>
         <div style={{ ...type.label, color: colors.textDim, marginBottom: space.sm }}>Per session</div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: space.lg, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           {numInput(soft, setSoft, 'Warn (soft)')}
           {numInput(gate, setGate, 'Ask (gate)')}
           {numInput(hard, setHard, 'Stop (hard)')}
         </div>
         <div style={{ ...type.label, color: colors.textDim, margin: `${space.xxl}px 0 ${space.sm}px` }}>Per task</div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: space.lg, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           {numInput(taskSoft, setTaskSoft, 'Warn (soft)', 'Task')}
           {numInput(taskGate, setTaskGate, 'Ask (gate)', 'Task')}
           {numInput(taskHard, setTaskHard, 'Stop (hard)', 'Task')}
         </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 14 }}>
+        <div style={{ display: 'flex', gap: space.lg, alignItems: 'center', marginTop: 14 }}>
           <Button
             colors={colors}
             variant="primary"
@@ -169,16 +169,16 @@ export function SpendPanel() {
           </Button>
           {saved && <span style={{ fontSize: textSize.caption, color: colors.success }}>Saved</span>}
         </div>
-        {error && <div style={{ color: colors.textMuted, fontSize: textSize.caption, marginTop: 8 }}>{error}</div>}
+        {error && <div style={{ color: colors.textMuted, fontSize: textSize.caption, marginTop: space.md }}>{error}</div>}
       </Card>
 
       {/* Per-project */}
       <Card>
         <SectionLabel>By project</SectionLabel>
         {snap.projects.length === 0 ? (
-          <div style={{ color: colors.textMuted, fontSize: textSize.small, marginTop: 10 }}>No spend recorded yet.</div>
+          <div style={{ color: colors.textMuted, fontSize: textSize.small, marginTop: space.lg }}>No spend recorded yet.</div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.md, marginTop: space.xl }}>
             {snap.projects.map(p => (
               <StatRow
                 key={p.path}
@@ -187,7 +187,7 @@ export function SpendPanel() {
                 right={
                   <span style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, ...tabularNums }}>
                     {formatUsd(p.costUsd)}
-                    <span style={{ color: colors.textDim, marginLeft: 8 }}>{formatTokens(p.tokens)}</span>
+                    <span style={{ color: colors.textDim, marginLeft: space.md }}>{formatTokens(p.tokens)}</span>
                   </span>
                 }
               />
@@ -200,16 +200,16 @@ export function SpendPanel() {
       <Card>
         <SectionLabel>By session</SectionLabel>
         {snap.sessions.length === 0 ? (
-          <div style={{ color: colors.textMuted, fontSize: textSize.small, marginTop: 10 }}>No spend recorded yet.</div>
+          <div style={{ color: colors.textMuted, fontSize: textSize.small, marginTop: space.lg }}>No spend recorded yet.</div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.md, marginTop: space.xl }}>
             {snap.sessions.map(s => (
               <StatRow
                 key={s.id}
                 left={s.name || s.id}
                 sub={`${s.sessionType}${s.updatedAt ? ` · ${timeAgo(s.updatedAt)}` : ''}`}
                 right={
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
                     {s.band !== 'ok' && (
                       <Tooltip content={`This session is ${bandLabel(s.band)}`}>
                         <span
@@ -222,7 +222,7 @@ export function SpendPanel() {
                     )}
                     <span style={{ fontFamily: font.mono, fontSize: textSize.small, color: colors.text, ...tabularNums }}>
                       {formatUsd(s.costUsd)}
-                      <span style={{ color: colors.textDim, marginLeft: 8 }}>{formatTokens(s.tokens)}</span>
+                      <span style={{ color: colors.textDim, marginLeft: space.md }}>{formatTokens(s.tokens)}</span>
                     </span>
                   </span>
                 }

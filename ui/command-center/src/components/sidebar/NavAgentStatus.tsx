@@ -137,7 +137,7 @@ export function NavStatusBadge({
       onFocus={e => onHover(e.currentTarget, `${name} · ${word}`)}
       onBlur={onLeave}
       style={{
-        position: 'absolute', bottom: 2, right: 2,
+        position: 'absolute', bottom: space.xxs, right: space.xxs,
         lineHeight: 0, borderRadius: '50%',
         cursor: 'default',
       } as CSSProperties}

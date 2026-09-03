@@ -1,6 +1,6 @@
 import { type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -31,8 +31,8 @@ export function WorkspaceSaveErrorChip() {
         <div
           style={{
             position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)',
-            zIndex: 95, display: 'flex', alignItems: 'center', gap: 10,
-            padding: '6px 12px', borderRadius: radius.md,
+            zIndex: 95, display: 'flex', alignItems: 'center', gap: space.lg,
+            padding: `${space.sm}px ${space.xl}px`, borderRadius: radius.md,
             background: colors.surface, border: `1px solid ${colors.border}`,
             boxShadow: colors.cardShadow, fontFamily: font.body, fontSize: textSize.micro,
           }}

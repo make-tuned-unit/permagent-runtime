@@ -182,8 +182,8 @@ export function HistoryView({ initialTab = 'sessions' }: { initialTab?: HistoryT
         role="tablist"
         aria-label="History"
         style={{
-          display: 'inline-flex', gap: 2, alignSelf: 'flex-start',
-          padding: 2, marginBottom: space.xxl,
+          display: 'inline-flex', gap: space.xxs, alignSelf: 'flex-start',
+          padding: space.xxs, marginBottom: space.xxl,
           borderRadius: radius.md, background: colors.fillSubtle,
           border: `1px solid ${colors.border}`,
         }}

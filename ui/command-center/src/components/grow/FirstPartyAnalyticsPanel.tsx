@@ -418,7 +418,7 @@ export function FirstPartyAnalyticsPanel({
             }
             const max = Math.max(1, ...days.map((d) => d.pageviews));
             return (
-              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 1, height: 48 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: space.xxs, height: 48 }}>
                 {days.map((d) => (
                   <Tooltip content={d.pageviews > 0
                       ? `${d.day}: ${d.pageviews} pageviews · ${d.visitors} devices`
@@ -468,7 +468,7 @@ export function FirstPartyAnalyticsPanel({
               }}>
                 <div style={{ fontFamily: font.display, fontSize: textSize.title, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
                 <div style={{ ...growLabel(colors), marginTop: space.xs / 2 }}>{label}</div>
-                <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 1 }}>{sub}</div>
+                <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xxs }}>{sub}</div>
               </div>
             ))}
           </div>

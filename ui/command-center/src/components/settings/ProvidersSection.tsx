@@ -4,7 +4,7 @@ import { api } from '../../lib/api';
 import type { SecretSourcesResponse } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { ProviderInfo } from '../../lib/store';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { Tooltip } from '../common/Tooltip';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
@@ -129,7 +129,7 @@ export function ProvidersSection() {
               every svg `display: block`, so an icon handed straight to Button
               stacks on top of its own label. The pairing keeps its own
               inline-flex until the primitive lays its label out. */}
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: space.sm }}>
             <FiPlus size={11} /> Add custom provider
           </span>
         </Button>
@@ -139,7 +139,7 @@ export function ProvidersSection() {
         <div
           role="tablist"
           aria-label="API key lists"
-          style={{ display: 'flex', gap: 2, background: colors.bgDeeper, borderRadius: radius.md, padding: 2, width: 'fit-content' }}
+          style={{ display: 'flex', gap: space.xxs, background: colors.bgDeeper, borderRadius: radius.md, padding: space.xxs, width: 'fit-content' }}
         >
           {([
             ['connected', 'Connected', connected.length],
@@ -309,7 +309,7 @@ export function ProvidersSection() {
                 '--pa-btn-radius': `${radius.xs}px`,
               } as CSSProperties}
             >
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: space.sm }}>
                 <FiSettings size={11} /> Configure
               </span>
             </Button>
@@ -355,7 +355,7 @@ export function ProvidersSection() {
                   '--pa-btn-radius': `${radius.xs}px`,
                 } as CSSProperties}
               >
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: space.sm }}>
                   <FiTrash2 size={11} /> Remove
                 </span>
               </Button>
@@ -393,7 +393,7 @@ export function ProvidersSection() {
                     '--pa-btn-radius': `${radius.xs}px`,
                   } as CSSProperties}
                 >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: space.sm }}>
                     <FiTrash2 size={11} /> {removing === p.name ? 'Removing…' : 'Remove provider'}
                   </span>
                 </Button>

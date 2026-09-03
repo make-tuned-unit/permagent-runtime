@@ -4,7 +4,7 @@ import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { SEARCH_PROVIDERS, buildSearchExtensionQuery, saveAndEnableSearchProvider, type SearchProvider } from '../../lib/searchProviders';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, space } from '../../styles/tokens';
 import { Tooltip } from '../common/Tooltip';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
@@ -235,7 +235,7 @@ export function SearchToolsSection() {
                     makes every svg `display: block`, so an icon handed straight
                     to Button stacks on top of its own label. The row keeps its
                     own inline-flex until the primitive lays its label out. */}
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: space.xs }}>
                   <FiExternalLink size={11} /> Get key
                 </span>
               </Button>

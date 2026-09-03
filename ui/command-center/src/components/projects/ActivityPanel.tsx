@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'r
 import { FiActivity, FiBookOpen, FiCheckSquare, FiFileText, FiRefreshCw } from 'react-icons/fi';
 import { api, apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -95,7 +95,7 @@ export function ActivityPanel({ project }: { project: Project }) {
     ) : undefined}>
       {status === 'loading' && <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading activity…</div>}
       {status === 'error' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
           <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load activity.</span>
           <Button
             colors={colors}
@@ -116,19 +116,19 @@ export function ActivityPanel({ project }: { project: Project }) {
         </div>
       )}
       {status === 'ready' && items.length === 0 && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: textSize.micro, color: colors.textDim }}>
+        <div style={{ display: 'flex', gap: space.md, alignItems: 'center', fontSize: textSize.micro, color: colors.textDim }}>
           <FiActivity size={13} /> No project activity yet.
         </div>
       )}
       {status === 'ready' && items.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
           {items.map(item => (
-            <div key={item.id} style={{ display: 'flex', gap: 9, padding: '8px 10px', borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}` }}>
-              <span style={{ color: colors.cyan, marginTop: 2, flexShrink: 0 }}>{icon(item.kind)}</span>
+            <div key={item.id} style={{ display: 'flex', gap: space.md, padding: `${space.md}px ${space.lg}px`, borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}` }}>
+              <span style={{ color: colors.cyan, marginTop: space.xxs, flexShrink: 0 }}>{icon(item.kind)}</span>
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>{item.title}</div>
-                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.detail}</div>
-                <div style={{ fontSize: 10, color: colors.textDim, marginTop: 3 }}>{formatActivityTime(item.timestamp)}</div>
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.detail}</div>
+                <div style={{ fontSize: 10, color: colors.textDim, marginTop: space.xxs }}>{formatActivityTime(item.timestamp)}</div>
               </div>
             </div>
           ))}

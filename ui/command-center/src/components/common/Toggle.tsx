@@ -31,7 +31,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { ease, radius, textSize } from '../../styles/tokens';
+import { ease, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Tooltip } from './Tooltip';
 
@@ -109,7 +109,7 @@ export function Toggle({ on, onChange, disabled = false, disabledReason, label, 
       disabled={disabled}
       onClick={flip}
       style={{
-        width: 36, height: 22, borderRadius: radius.pill, padding: 2,
+        width: 36, height: 22, borderRadius: radius.pill, padding: space.xxs,
         background: shown ? colors.cyan : colors.surfaceHi,
         border: 'none',
         cursor: disabled ? 'not-allowed' : busy ? 'progress' : 'pointer',
@@ -147,7 +147,7 @@ export function Toggle({ on, onChange, disabled = false, disabledReason, label, 
   );
 
   return (
-    <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
+    <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: space.sm }}>
       {disabled && disabledReason ? (
         // Disabled buttons are not focusable and often skip pointer events;
         // wrap so the reason stays reachable from keyboard and hover.

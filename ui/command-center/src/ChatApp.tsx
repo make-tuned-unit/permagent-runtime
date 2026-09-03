@@ -5,7 +5,7 @@
  */
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from 'react';
 import { FiEye } from 'react-icons/fi';
-import { font, radius } from './styles/tokens';
+import { font, radius, space } from './styles/tokens';
 import { useTheme } from './styles/useTheme';
 import { Button } from './components/common/Button';
 import { Tooltip } from './components/common/Tooltip';
@@ -139,7 +139,7 @@ export default function ChatApp() {
       <div style={{
         height: 36, flexShrink: 0,
         display: 'flex', alignItems: 'center',
-        padding: '0 12px', gap: 8,
+        padding: '0 12px', gap: space.md,
         borderBottom: `1px solid ${colors.border}`,
       }}>
         {/* NO `overflow: hidden` on this row. It is the positioning ancestor
@@ -148,7 +148,7 @@ export default function ChatApp() {
             becomes unreachable. A long agent name is kept from pushing the
             model picker off the bar by truncating the NAME (below), which is
             the only thing that can grow, rather than by clipping the row. */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.md, flex: 1, minWidth: 0 }}>
           <Mobius size={16} state="idle" glow={0.6} />
 
           <SessionPicker />

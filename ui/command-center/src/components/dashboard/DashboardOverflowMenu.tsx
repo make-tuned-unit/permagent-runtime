@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, type CSSProperties } from 'react';
 import { FiMoreVertical } from 'react-icons/fi';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -66,7 +66,7 @@ export function DashboardOverflowMenu({ items }: Props) {
 
       {open && (
         <div style={{
-          position: 'absolute', top: '100%', right: 0, marginTop: 6,
+          position: 'absolute', top: '100%', right: 0, marginTop: space.sm,
           minWidth: 200, borderRadius: radius.md,
           background: colors.surface,
           border: `1px solid ${colors.border}`,
@@ -97,7 +97,7 @@ export function DashboardOverflowMenu({ items }: Props) {
             >
               {/* One row inside the primitive's label span, so the icon keeps
                   its 10px from the label. */}
-              <span style={{ display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: space.lg, textAlign: 'left' }}>
                 {item.icon}
                 {item.label}
               </span>

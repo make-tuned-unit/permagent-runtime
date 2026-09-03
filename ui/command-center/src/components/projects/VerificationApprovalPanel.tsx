@@ -18,7 +18,7 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { FiPlus, FiTrash2, FiX } from 'react-icons/fi';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { formatAge } from '../dashboard/decisions/format';
@@ -167,7 +167,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
   };
 
   const inputStyle: React.CSSProperties = {
-    fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
+    fontSize: textSize.caption, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.md,
     background: colors.inputBg, border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none',
   };
@@ -183,7 +183,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
   if (status === 'error' || !data) {
     return (
       <Panel title="Verification approval">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
           <span style={{ fontSize: textSize.micro, color: colors.danger }}>
             Couldn't load verification approval settings{error ? `: ${error}` : '.'}
           </span>
@@ -238,7 +238,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
       }
     >
       {error && (
-        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>{error}</div>
       )}
 
       {/* Earned privilege — current level, the count, and what it permits. */}
@@ -246,7 +246,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
         data-testid="privilege-level"
         data-level={level}
         style={{
-          display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4,
+          display: 'flex', alignItems: 'baseline', gap: space.md, marginBottom: space.xs,
         }}
       >
         <span style={{
@@ -266,13 +266,13 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
           </span>
         </Tooltip>
       </div>
-      <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginBottom: 12 }}>
+      <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginBottom: space.xl }}>
         {privilegeLevelBlurb(level)}
       </div>
 
       {/* Thresholds — editable numbers */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: textSize.micro, color: colors.textDim }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.md, marginBottom: space.xl, flexWrap: 'wrap' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: space.sm, fontSize: textSize.micro, color: colors.textDim }}>
           Read-only at
           <input
             type="number"
@@ -282,7 +282,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
             style={{ ...inputStyle, width: 56 }}
           />
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: textSize.micro, color: colors.textDim }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: space.sm, fontSize: textSize.micro, color: colors.textDim }}>
           Full at
           <input
             type="number"
@@ -312,10 +312,10 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
       </div>
 
       {/* Allowlist — add/remove */}
-      <div style={{ fontSize: 10, fontWeight: 600, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+      <div style={{ fontSize: 10, fontWeight: 600, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: space.sm }}>
         Allowlist
       </div>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+      <div style={{ display: 'flex', gap: space.sm, marginBottom: space.md }}>
         <input
           value={newEntry}
           onChange={e => setNewEntry(e.target.value)}
@@ -334,7 +334,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
             '--pa-btn-pad': '6px 10px',
             '--pa-btn-radius': `${radius.md}px`,
             '--pa-btn-weight': 600,
-            gap: 4,
+            gap: space.xs,
             fontFamily: font.body,
             fontSize: textSize.micro,
           } as CSSProperties}
@@ -344,17 +344,17 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
       </div>
 
       {data.allowlist.length === 0 ? (
-        <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 12 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: space.xl }}>
           Nothing allowlisted yet — every command outside earned privilege asks first.
         </div>
       ) : (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm, marginBottom: space.xl }}>
           {data.allowlist.map(token => (
             <span
               key={token}
               style={{
-                display: 'inline-flex', alignItems: 'center', gap: 6,
-                borderRadius: radius.pill, padding: '3px 6px 3px 10px',
+                display: 'inline-flex', alignItems: 'center', gap: space.sm,
+                borderRadius: radius.pill, padding: `${space.xxs}px ${space.sm}px ${space.xxs}px ${space.lg}px`,
                 background: rowVeil, border: `1px solid ${colors.border}`,
                 fontFamily: font.mono, fontSize: textSize.micro, color: colors.text,
               }}
@@ -385,22 +385,22 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
       )}
 
       {/* Recent audit */}
-      <div style={{ fontSize: 10, fontWeight: 600, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+      <div style={{ fontSize: 10, fontWeight: 600, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: space.sm }}>
         Recent activity
       </div>
       {visibleAudit.length === 0 ? (
         <div style={{ fontSize: textSize.micro, color: colors.textDim }}>No checks recorded yet.</div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
           {visibleAudit.map((row, i) => (
             <div
               key={`${row.at}-${i}`}
               style={{
-                padding: '7px 9px', borderRadius: radius.md, background: rowVeil,
+                padding: `${space.sm}px ${space.md}px`, borderRadius: radius.md, background: rowVeil,
                 border: `1px solid ${colors.border}`,
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md }}>
                 <span style={{
                   fontFamily: font.mono, fontSize: textSize.micro, color: colors.text, flex: 1, minWidth: 0,
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -413,7 +413,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
                   </span>
                 )}
               </div>
-              <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 2 }}>
+              <div style={{ fontSize: 10, color: colors.textMuted, marginTop: space.xxs }}>
                 {row.decision.replace(/_/g, ' ')}
                 {row.reason ? ` — ${row.reason}` : ''}
               </div>
@@ -432,8 +432,8 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
             '--pa-btn-bg-hover': 'transparent',
             '--pa-btn-pad': '0',
             '--pa-btn-weight': 600,
-            marginTop: 8,
-            gap: 4,
+            marginTop: space.md,
+            gap: space.xs,
             fontFamily: font.body,
             fontSize: textSize.micro,
           } as CSSProperties}

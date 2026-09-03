@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiChevronDown } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -74,7 +74,7 @@ export function SessionPicker() {
           '--pa-btn-bg-hover': 'transparent',
           '--pa-btn-pad': '0',
           '--pa-btn-weight': 600,
-          display: 'flex', justifyContent: 'flex-start', gap: 4, maxWidth: '100%',
+          display: 'flex', justifyContent: 'flex-start', gap: space.xs, maxWidth: '100%',
           // `.pa-btn` normalises to 11px/14px; this control is the agent name at
           // 13px on the app's own leading, and its height is pure line-height.
           fontSize: textSize.small, lineHeight: 1.5, fontFamily: font.body,
@@ -88,7 +88,7 @@ export function SessionPicker() {
 
       {open && (
         <div style={{
-          position: 'absolute', top: '100%', left: 0, marginTop: 4,
+          position: 'absolute', top: '100%', left: 0, marginTop: space.xs,
           width: 260, maxHeight: 300, overflow: 'auto',
           background: gradient.dropdown, backdropFilter: 'blur(16px)',
           border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
@@ -105,7 +105,7 @@ export function SessionPicker() {
               '--pa-btn-bg-hover': colors.cyanSoft,
               '--pa-btn-pad': '8px 12px',
               '--pa-btn-radius': '0',
-              width: '100%', justifyContent: 'flex-start', gap: 6,
+              width: '100%', justifyContent: 'flex-start', gap: space.sm,
               fontSize: textSize.caption, fontFamily: font.body,
               // Only the bottom edge is drawn — `.pa-btn`'s `border` shorthand
               // paints all four, so this one longhand has to stay inline.
@@ -136,7 +136,7 @@ export function SessionPicker() {
                     `Button` folds its children into one span, so a column laid
                     out on the button itself would put the name and the message
                     count back on the same line. */}
-                <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1 }}>
+                <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: space.xxs }}>
                   <span style={{ fontSize: textSize.caption, color: isCurrent ? colors.cyan : colors.text, fontFamily: font.body }}>
                     {session.name || `Session ${session.id}`}
                   </span>

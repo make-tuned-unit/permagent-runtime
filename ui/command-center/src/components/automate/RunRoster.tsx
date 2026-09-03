@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { FiSquare } from 'react-icons/fi';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { apiFetch } from '../../lib/api';
@@ -105,11 +105,11 @@ export function RunRoster() {
         background: colors.surface,
         border: `1px solid ${colors.border}`,
         borderRadius: radius.lg,
-        padding: '14px 16px',
-        marginBottom: 16,
+        padding: `14px ${space.xxl}px`,
+        marginBottom: space.xxl,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: space.lg }}>
         <div style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 600, color: colors.text, letterSpacing: 0.2 }}>
           Agents at work
         </div>
@@ -123,13 +123,13 @@ export function RunRoster() {
       )}
 
       {stopError && (
-        <div style={{ fontSize: textSize.micro, color: colors.danger, fontFamily: font.body, marginBottom: 8 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, fontFamily: font.body, marginBottom: space.md }}>
           {stopError}
         </div>
       )}
 
       {status === 'error' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
           <span style={{ fontSize: textSize.caption, color: colors.danger, fontFamily: font.body }}>Couldn't load activity.</span>
           <Button
             colors={colors}
@@ -156,12 +156,12 @@ export function RunRoster() {
       )}
 
       {status === 'ready' && sorted.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
           {sorted.map(r => (
             <div
               key={`${r.kind}:${r.id}`}
               style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px',
+                display: 'flex', alignItems: 'center', gap: space.lg, padding: `${space.sm}px ${space.lg}px`,
                 borderRadius: radius.md, background: colors.bgDeeper,
                 border: `1px solid ${colors.border}`,
               }}
@@ -178,7 +178,7 @@ export function RunRoster() {
                 </span>
               </Tooltip>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md }}>
                   <span style={{ fontSize: 12.5, fontWeight: 600, color: colors.text, fontFamily: font.body, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {r.name}
                   </span>
@@ -212,7 +212,7 @@ export function RunRoster() {
                       '--pa-btn-radius': `${radius.sm}px`,
                       fontFamily: font.body,
                       fontSize: 10,
-                      gap: 4,
+                      gap: space.xs,
                       flexShrink: 0,
                     } as CSSProperties}
                   >
@@ -240,7 +240,7 @@ export function RunRoster() {
                       '--pa-btn-radius': `${radius.sm}px`,
                       fontFamily: font.body,
                       fontSize: 10,
-                      gap: 4,
+                      gap: space.xs,
                       flexShrink: 0,
                     } as CSSProperties}
                   >

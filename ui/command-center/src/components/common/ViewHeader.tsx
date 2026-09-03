@@ -14,7 +14,7 @@
  * and every view follows.
  */
 import type { CSSProperties, ReactNode } from 'react';
-import { font, type } from '../../styles/tokens';
+import { font, space, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 /**
@@ -74,8 +74,8 @@ export function ViewHeader({ title, subtitle, leading, afterTitle, actions, surf
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 12,
-        padding: '16px 24px',
+        gap: space.xl,
+        padding: `${space.xxl}px ${space.huge}px`,
         borderBottom: `1px solid ${colors.border}`,
         // The bar is a fixed sibling ABOVE the scroll container, never inside
         // it — a header that scrolls away takes the view's identity with it.
@@ -112,7 +112,7 @@ export function ViewHeader({ title, subtitle, leading, afterTitle, actions, surf
           {title}
         </div>
         {subtitle !== undefined && subtitle !== null && (
-          <div style={{ ...type.micro, color: colors.textMuted, marginTop: 2 }}>{subtitle}</div>
+          <div style={{ ...type.micro, color: colors.textMuted, marginTop: space.xxs }}>{subtitle}</div>
         )}
       </div>
 
@@ -122,7 +122,7 @@ export function ViewHeader({ title, subtitle, leading, afterTitle, actions, surf
       {afterTitle && <div style={{ flex: 1 }} />}
 
       {actions && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.md, flexShrink: 0 }}>
           {actions}
         </div>
       )}

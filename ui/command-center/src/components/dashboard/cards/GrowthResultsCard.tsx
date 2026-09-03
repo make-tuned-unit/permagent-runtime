@@ -99,10 +99,10 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
 
           {trend.length > 0 && (
             <Tooltip content="All projects, last 12 weeks">
-              <div onClick={openFleet} style={{ cursor: 'pointer', marginTop: 12 }}>
+              <div onClick={openFleet} style={{ cursor: 'pointer', marginTop: space.xl }}>
                 <div style={{
                   fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
-                  textTransform: 'uppercase', color: colors.textDim, marginBottom: 4,
+                  textTransform: 'uppercase', color: colors.textDim, marginBottom: space.xs,
                 }}>All projects</div>
                 <GrowthSparkline points={trend} colors={colors} height={52} />
               </div>
@@ -110,10 +110,10 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
           )}
 
           {byProject.length > 0 && (
-            <div style={{ flex: 1, overflowY: 'auto', marginTop: 10, minHeight: 0 }}>
+            <div style={{ flex: 1, overflowY: 'auto', marginTop: space.lg, minHeight: 0 }}>
               <div style={{
                 fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
-                textTransform: 'uppercase', color: colors.textDim, marginBottom: 4,
+                textTransform: 'uppercase', color: colors.textDim, marginBottom: space.xs,
               }}>By project</div>
               {byProject.map((row) => {
                 const net = lastCumulativeNet(row.points);

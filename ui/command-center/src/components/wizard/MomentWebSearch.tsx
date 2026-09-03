@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Mobius } from '../mobius/Mobius';
@@ -118,7 +118,7 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
   };
 
   return (
-    <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, overflowY: 'auto' }}>
+    <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: space.huge, overflowY: 'auto' }}>
       <Particles density={20} />
       <Mobius size={72} state="idle" glow={0.9} />
       <WizardHeading style={{ marginTop: 18 }}>Give {who} the web?</WizardHeading>
@@ -128,29 +128,29 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
         system keychain and never leaves this device. You can also skip this and set it up later.
       </WizardSubhead>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 22, width: '100%', maxWidth: 480 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.xl, marginTop: 22, width: '100%', maxWidth: 480 }}>
         {WIZARD_ORDER.map(p => {
           const r = rows[p.id];
           const done = r.verified || (r.saved && !r.guiding);
           return (
             <Glass key={p.id} padding={14}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.md }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
                   <div style={{ fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>{p.displayName}</div>
                   {p.id === 'tavily' && !done && (
-                    <span style={{ fontFamily: font.body, fontSize: 10, fontWeight: 600, color: colors.cyan, border: `1px solid ${colors.cyan}55`, borderRadius: radius.sm, padding: '1px 6px' }}>
+                    <span style={{ fontFamily: font.body, fontSize: 10, fontWeight: 600, color: colors.cyan, border: `1px solid ${colors.cyan}55`, borderRadius: radius.sm, padding: `${space.xxs}px ${space.sm}px` }}>
                       EASIEST — NO CARD
                     </span>
                   )}
                 </div>
                 {done && <span style={{ fontSize: textSize.micro, color: colors.cyan }}>{r.verified ? '✓ Working' : '✓ Connected'}</span>}
               </div>
-              <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginTop: 2 }}>
+              <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs }}>
                 {p.description} {p.freeTierNote}
               </div>
 
               {!r.guiding && !done && (
-                <div style={{ marginTop: 10 }}>
+                <div style={{ marginTop: space.lg }}>
                   <PrimaryButton onClick={() => openKeyPage(p)} style={{ height: 38, fontSize: textSize.small }}>
                     Open the key page — I'll guide you
                   </PrimaryButton>
@@ -159,21 +159,21 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
 
               {r.guiding && (
                 <>
-                  <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: radius.md, background: `${colors.cyan}0D`, border: `1px solid ${colors.cyan}22` }}>
-                    <div style={{ fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600, color: colors.text, marginBottom: 6 }}>
+                  <div style={{ marginTop: space.lg, padding: `${space.lg}px ${space.xl}px`, borderRadius: radius.md, background: `${colors.cyan}0D`, border: `1px solid ${colors.cyan}22` }}>
+                    <div style={{ fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600, color: colors.text, marginBottom: space.sm }}>
                       On the page that just opened:
                     </div>
                     {p.setupSteps.map((s, i) => (
-                      <div key={i} style={{ display: 'flex', gap: 8, fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.7 }}>
+                      <div key={i} style={{ display: 'flex', gap: space.md, fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.7 }}>
                         <span style={{ color: colors.cyan, fontWeight: 600, flexShrink: 0 }}>{i + 1}.</span>
                         <span>{s}</span>
                       </div>
                     ))}
-                    <GhostLink onClick={() => openKeyPage(p)} style={{ fontSize: textSize.micro, marginTop: 4 }}>
+                    <GhostLink onClick={() => openKeyPage(p)} style={{ fontSize: textSize.micro, marginTop: space.xs }}>
                       Page didn't open? Click to try again ↗
                     </GhostLink>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: space.md, marginTop: space.lg }}>
                     <Input value={r.input} onChange={(v) => patch(p.id, { input: v, error: '' })} type="password" placeholder={r.saved ? '(connected — paste a new key to replace)' : 'Paste your API key here'} style={{ flex: 1 }} />
                     <Button
                       colors={colors}
@@ -199,12 +199,12 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
               )}
 
               {r.error && (
-                <div role="alert" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.danger, marginTop: 8 }}>
+                <div role="alert" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.danger, marginTop: space.md }}>
                   {r.error}
                 </div>
               )}
               {r.verify && (
-                <div role={r.verify.ok ? 'status' : 'alert'} style={{ fontFamily: font.body, fontSize: textSize.micro, color: r.verify.ok ? colors.cyan : colors.warning, marginTop: 8 }}>
+                <div role={r.verify.ok ? 'status' : 'alert'} style={{ fontFamily: font.body, fontSize: textSize.micro, color: r.verify.ok ? colors.cyan : colors.warning, marginTop: space.md }}>
                   {r.verify.ok ? '✓ ' : ''}{r.verify.message}
                   {!r.verify.ok && (
                     <>
@@ -219,7 +219,7 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
         })}
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.xxl, marginTop: space.huge }}>
         <GhostLink onClick={onBack}>Back</GhostLink>
         <PrimaryButton onClick={onAdvance}>{anySaved ? 'Continue' : 'Skip for now'}</PrimaryButton>
       </div>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { api, type PronunciationEntry, type UnresolvedPronunciation } from '../../lib/api';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Row, TextInput } from '../settings/atoms';
 import { Button } from '../common/Button';
@@ -84,8 +84,8 @@ export function PronunciationSection() {
         label="Teach a word"
         hint="Respell with real English words, the way you'd tell a person. 'per ma gent', not IPA."
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
+          <div style={{ display: 'flex', gap: space.md, flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: 120 }}>
               <TextInput value={word} onChange={setWord} placeholder="word" />
             </div>
@@ -110,7 +110,7 @@ export function PronunciationSection() {
           label="Needs a reading"
           hint="Spoken with a guess last time. Teach each once — it's remembered."
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
             {unresolved.map(item => (
               <UnresolvedRow
                 key={item.word}
@@ -125,9 +125,9 @@ export function PronunciationSection() {
       )}
       {savedWords.length > 0 && (
         <Row label="Saved" hint="Applied on the next spoken sentence.">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
             {savedWords.map(w => (
-              <div key={w} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: textSize.small, fontFamily: font.body }}>
+              <div key={w} style={{ display: 'flex', alignItems: 'center', gap: space.md, fontSize: textSize.small, fontFamily: font.body }}>
                 <span style={{ color: colors.text, fontWeight: 500 }}>{w}</span>
                 <span style={{ color: colors.textMuted }}>{saved[w].sounds_like}</span>
                 <Button
@@ -162,7 +162,7 @@ function UnresolvedRow({
 }) {
   const [like, setLike] = useState('');
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+    <div style={{ display: 'flex', gap: space.md, alignItems: 'center', flexWrap: 'wrap' }}>
       <span style={{ fontSize: textSize.small, fontFamily: font.body, color: colors.text, minWidth: 80 }}>
         {item.word}
       </span>

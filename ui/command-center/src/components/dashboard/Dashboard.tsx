@@ -200,7 +200,7 @@ export function Dashboard() {
                 '--pa-btn-pad': '5px 14px',
                 '--pa-btn-radius': `${radius.sm}px`,
                 '--pa-btn-weight': 600,
-                marginTop: 6, fontSize: textSize.micro, fontFamily: font.body,
+                marginTop: space.sm, fontSize: textSize.micro, fontFamily: font.body,
               } as CSSProperties}
             >
               Try again
@@ -436,7 +436,7 @@ export function Dashboard() {
         <div
           onClick={() => setShowPicker(true)}
           style={{
-            marginTop: 16,
+            marginTop: space.xxl,
             height: 80, borderRadius: radius.lg,
             border: `1px dashed ${colors.border}`,
             background: colors.cyanSoft,
@@ -514,7 +514,7 @@ function RemoveButton({ disabled, onClick }: { disabled: boolean; onClick: () =>
           '--pa-btn-bg-active': disabled ? colors.cyanSoft : colors.danger + '26',
           '--pa-btn-pad': '0',
           '--pa-btn-radius': '50%',
-          position: 'absolute', top: 8, right: 8, zIndex: 5,
+          position: 'absolute', top: space.md, right: space.md, zIndex: 5,
           width: 24, height: 24,
           cursor: disabled ? 'not-allowed' : 'pointer',
         } as CSSProperties}
@@ -536,7 +536,7 @@ function ResizeHandle({ onPointerDown }: { onPointerDown: (e: React.PointerEvent
           onMouseEnter={() => setHover(true)}
           onMouseLeave={() => setHover(false)}
           style={{
-            position: 'absolute', bottom: 4, right: 4, width: 22, height: 22,
+            position: 'absolute', bottom: space.xs, right: space.xs, width: 22, height: 22,
             cursor: 'nwse-resize', zIndex: 5,
             // Concentric to the card's own radius.lg corner, 4px in — the one
             // clean corner-offset relationship in this file (D4).

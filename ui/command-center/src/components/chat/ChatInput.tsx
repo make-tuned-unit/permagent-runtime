@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardR
 import { FiSend, FiLoader, FiPaperclip } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { takeWizardIntent } from '../../lib/wizardIntent';
-import { ease, font, radius } from '../../styles/tokens';
+import { ease, font, radius, space } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { AttachmentChip } from './AttachmentChip';
 import { Button } from '../common/Button';
@@ -142,7 +142,7 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
           Couldn't stop the reply — the agent may still be running. Try again.
         </div>
       )}
-      <div className="flex items-end" style={{ gap: 8 }}>
+      <div className="flex items-end" style={{ gap: space.md }}>
         <Tooltip content="Attach files">
           <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
             <Button
