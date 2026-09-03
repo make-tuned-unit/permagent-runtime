@@ -8,6 +8,7 @@ import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { faceVisuals, personInitials, safePhotoUrl } from './peopleFace';
 
+import { Tooltip } from '../common/Tooltip';
 export function PersonFace({
   name,
   photoUrl,
@@ -81,22 +82,27 @@ export function PersonFace({
   );
   if (onClick) {
     return (
-      <button
-        type="button"
-        onClick={e => { e.stopPropagation(); onClick(); }}
-        onFocus={() => onFocusChange?.(true)}
-        onBlur={() => onFocusChange?.(false)}
-        aria-label={`Open ${name}`}
-        title={name}
-        style={style}
-      >
-        {inner}
-      </button>
+      <Tooltip content={name}>
+        <button
+          type="button"
+          onClick={e => { e.stopPropagation(); onClick(); }}
+          onFocus={() => onFocusChange?.(true)}
+          onBlur={() => onFocusChange?.(false)}
+          aria-label={`Open ${name}`}
+          style={style}
+        >
+          {inner}
+        </button>
+      </Tooltip>
     );
   }
   return (
-    <div aria-label={name} title={name} style={style}>
-      {inner}
-    </div>
+    <Tooltip content={name}>
+      <span tabIndex={0} style={{ outline: 'none' }}>
+        <div aria-label={name} style={style}>
+          {inner}
+        </div>
+      </span>
+    </Tooltip>
   );
 }

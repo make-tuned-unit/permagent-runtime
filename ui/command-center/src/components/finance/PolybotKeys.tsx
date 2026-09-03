@@ -5,6 +5,7 @@ import { useTheme } from '../../styles/useTheme';
 import { Button, MIN_PENDING_MS, SUCCESS_FLASH_MS } from '../common/Button';
 import { requiredKeysSet } from './financeLabs';
 
+import { Tooltip } from '../common/Tooltip';
 export const POLYBOT_SECRET_FIELDS: Array<{
   key: string;
   label: string;
@@ -163,17 +164,20 @@ export function PolybotKeys({
                     borderRadius: radius.sm, padding: '6px 8px', outline: 'none',
                   }}
                 />
-                <Button
-                  colors={colors}
-                  variant="ghostOn"
-                  type="button"
-                  disabled={!r.input.trim()}
-                  title={!r.input.trim() ? 'Enter a value first' : undefined}
-                  onClick={() => save(f.key)}
-                  style={{ flexShrink: 0 }}
-                >
-                  Save
-                </Button>
+                <Tooltip content={!r.input.trim() ? 'Enter a value first' : undefined}>
+                  <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+                    <Button
+                      colors={colors}
+                      variant="ghostOn"
+                      type="button"
+                      disabled={!r.input.trim()}
+                      onClick={() => save(f.key)}
+                      style={{ flexShrink: 0 }}
+                    >
+                      Save
+                    </Button>
+                  </span>
+                </Tooltip>
               </div>
             )}
             {r.error && (

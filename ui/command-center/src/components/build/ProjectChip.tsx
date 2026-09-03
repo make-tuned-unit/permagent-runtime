@@ -7,6 +7,7 @@ import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { Button } from '../common/Button';
 import { launchTooltip, SUBSCRIPTION_FIRST_HINT } from '../grow/codingAgents';
 
+import { Tooltip } from '../common/Tooltip';
 const PERSONAL_ID = '00000000-0000-0000-0000-000000000001';
 
 interface Props {
@@ -78,31 +79,32 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       {/* Chip button */}
-      <Button
-        colors={colors}
-        data-testid="project-chip"
-        onClick={() => setOpen(!open)}
-        title={error ? "Couldn't load your projects" : undefined}
-        style={{
-          '--pa-btn-bg': colors.cyanSoft,
-          '--pa-btn-fg': colors.textMuted,
-          '--pa-btn-border': error ? colors.danger : colors.border,
-          '--pa-btn-bg-hover': colors.cyanGlow,
-          '--pa-btn-fg-hover': colors.text,
-          '--pa-btn-border-hover': error ? colors.danger : colors.borderHi,
-          '--pa-btn-bg-active': colors.cyanSoft,
-          '--pa-btn-pad': '0 10px',
-          '--pa-btn-radius': `${radius.sm}px`,
-          height: 28,
-          fontFamily: font.body,
-        } as CSSProperties}
-      >
-        <FiFolder size={10} />
-        <span style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {current ? current.name : 'Projects'}
-        </span>
-        <FiChevronDown size={8} />
-      </Button>
+      <Tooltip content={error ? "Couldn't load your projects" : undefined}>
+        <Button
+          colors={colors}
+          data-testid="project-chip"
+          onClick={() => setOpen(!open)}
+          style={{
+            '--pa-btn-bg': colors.cyanSoft,
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-border': error ? colors.danger : colors.border,
+            '--pa-btn-bg-hover': colors.cyanGlow,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-border-hover': error ? colors.danger : colors.borderHi,
+            '--pa-btn-bg-active': colors.cyanSoft,
+            '--pa-btn-pad': '0 10px',
+            '--pa-btn-radius': `${radius.sm}px`,
+            height: 28,
+            fontFamily: font.body,
+          } as CSSProperties}
+        >
+          <FiFolder size={10} />
+          <span style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {current ? current.name : 'Projects'}
+          </span>
+          <FiChevronDown size={8} />
+        </Button>
+      </Tooltip>
 
       {/* Dropdown */}
       {open && (
@@ -315,27 +317,28 @@ label, disabled, tooltip, onClick }: {
   // on a pointer-eventful element. Left exactly as it was; the button now
   // simply holds its resting look on hover when it is in that state.
   return (
-    <Button
-      colors={colors}
-      onClick={disabled ? undefined : onClick}
-      title={tooltip}
-      style={{
-        '--pa-btn-bg': disabled ? colors.border : colors.cyanSoft,
-        '--pa-btn-fg': disabled ? colors.textDim : colors.cyan,
-        '--pa-btn-border': disabled ? colors.border : colors.borderHi,
-        '--pa-btn-bg-hover': disabled ? colors.border : colors.cyanGlow,
-        '--pa-btn-border-hover': disabled ? colors.border : colors.cyan,
-        '--pa-btn-bg-active': disabled ? colors.border : colors.cyanSoft,
-        '--pa-btn-pad': '0 8px',
-        '--pa-btn-radius': '5px',
-        height: 24,
-        fontFamily: font.body,
-        fontSize: 10,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        opacity: disabled ? 0.5 : 1,
-      } as CSSProperties}
-    >
-      {label}
-    </Button>
+    <Tooltip content={tooltip}>
+      <Button
+        colors={colors}
+        onClick={disabled ? undefined : onClick}
+        style={{
+          '--pa-btn-bg': disabled ? colors.border : colors.cyanSoft,
+          '--pa-btn-fg': disabled ? colors.textDim : colors.cyan,
+          '--pa-btn-border': disabled ? colors.border : colors.borderHi,
+          '--pa-btn-bg-hover': disabled ? colors.border : colors.cyanGlow,
+          '--pa-btn-border-hover': disabled ? colors.border : colors.cyan,
+          '--pa-btn-bg-active': disabled ? colors.border : colors.cyanSoft,
+          '--pa-btn-pad': '0 8px',
+          '--pa-btn-radius': '5px',
+          height: 24,
+          fontFamily: font.body,
+          fontSize: 10,
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          opacity: disabled ? 0.5 : 1,
+        } as CSSProperties}
+      >
+        {label}
+      </Button>
+    </Tooltip>
   );
 }

@@ -12,6 +12,7 @@ import {
   type UseDueTodos,
 } from '../../../lib/useDueTodos';
 
+import { Tooltip } from '../../common/Tooltip';
 /**
  * Every dated to-do from every kanban board, soonest first (#todo-dashboard).
  *
@@ -163,25 +164,26 @@ function TodoRow({
           gives them. The primitive wraps its children in one span, which has no
           such width to truncate against — the row would overflow instead of
           ellipsing. Left as a raw button. */}
-      <button
-        onClick={open}
-        title={`Open on the ${todo.projectName} board`}
-        style={{
-          flex: 1, minWidth: 0, textAlign: 'left', cursor: 'pointer',
-          background: 'transparent', border: 'none', padding: 0, color: 'inherit', font: 'inherit',
-        }}
-      >
-        <div style={{
-          fontSize: 12.5, color: colors.text,
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-        }}>{todo.title}</div>
-        <div style={{
-          fontSize: 10.5, color: colors.textDim, marginTop: 2,
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-        }}>
-          {todo.projectName} · {todo.columnName}
-        </div>
-      </button>
+      <Tooltip content={`Open on the ${todo.projectName} board`}>
+        <button
+          onClick={open}
+          style={{
+            flex: 1, minWidth: 0, textAlign: 'left', cursor: 'pointer',
+            background: 'transparent', border: 'none', padding: 0, color: 'inherit', font: 'inherit',
+          }}
+        >
+          <div style={{
+            fontSize: 12.5, color: colors.text,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>{todo.title}</div>
+          <div style={{
+            fontSize: 10.5, color: colors.textDim, marginTop: 2,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {todo.projectName} · {todo.columnName}
+          </div>
+        </button>
+      </Tooltip>
 
       {editing ? (
         <input
@@ -201,53 +203,57 @@ function TodoRow({
           }}
         />
       ) : (
-        <Button
-          colors={colors}
-          variant="bare"
-          type="button"
-          onClick={() => setEditing(true)}
-          title="Change the due date"
-          style={{
-            '--pa-btn-bg': 'transparent',
-            '--pa-btn-fg': overdue ? colors.danger : colors.textMuted,
-            '--pa-btn-border': 'transparent',
-            '--pa-btn-bg-hover': colors.surfaceHi,
-            '--pa-btn-fg-hover': overdue ? colors.danger : colors.text,
-            '--pa-btn-bg-active': colors.surface,
-            '--pa-btn-pad': '2px 4px',
-            '--pa-btn-radius': `${radius.sm}px`,
-            '--pa-btn-weight': overdue ? 600 : 400,
-            fontSize: 10.5, whiteSpace: 'nowrap',
-            // Driven by the ROW's hover, not this button's — keep it inline.
-            textDecoration: hovered ? 'underline' : 'none',
-          } as CSSProperties}
-        >{relativeDueLabel(todo.dueDate, today)}</Button>
+        <Tooltip content="Change the due date">
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
+            onClick={() => setEditing(true)}
+            style={{
+              '--pa-btn-bg': 'transparent',
+              '--pa-btn-fg': overdue ? colors.danger : colors.textMuted,
+              '--pa-btn-border': 'transparent',
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-fg-hover': overdue ? colors.danger : colors.text,
+              '--pa-btn-bg-active': colors.surface,
+              '--pa-btn-pad': '2px 4px',
+              '--pa-btn-radius': `${radius.sm}px`,
+              '--pa-btn-weight': overdue ? 600 : 400,
+              fontSize: 10.5, whiteSpace: 'nowrap',
+              // Driven by the ROW's hover, not this button's — keep it inline.
+              textDecoration: hovered ? 'underline' : 'none',
+            } as CSSProperties}
+          >{relativeDueLabel(todo.dueDate, today)}</Button>
+        </Tooltip>
       )}
 
-      <Button
-        colors={colors}
-        variant="bare"
-        type="button"
-        onClick={() => todos.dismiss(todo)}
-        disabled={busy}
-        aria-label={`Dismiss ${todo.title}`}
-        title="Hide from this list — the card stays on its board"
-        style={{
-          '--pa-btn-bg': 'transparent',
-          '--pa-btn-fg': colors.textDim,
-          '--pa-btn-border': 'transparent',
-          '--pa-btn-bg-hover': colors.surfaceHi,
-          '--pa-btn-fg-hover': colors.text,
-          '--pa-btn-bg-active': colors.surface,
-          '--pa-btn-pad': '0',
-          '--pa-btn-radius': `${radius.sm}px`,
-          '--pa-btn-weight': 400,
-          width: 20, height: 20, flexShrink: 0, lineHeight: '18px',
-          fontSize: textSize.small,
-          // Revealed by the ROW's hover, not this button's — keep it inline.
-          visibility: hovered ? 'visible' : 'hidden',
-        } as CSSProperties}
-      >×</Button>
+      <Tooltip content="Hide from this list — the card stays on its board">
+        <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
+            onClick={() => todos.dismiss(todo)}
+            disabled={busy}
+            aria-label={`Dismiss ${todo.title}`}
+            style={{
+              '--pa-btn-bg': 'transparent',
+              '--pa-btn-fg': colors.textDim,
+              '--pa-btn-border': 'transparent',
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-bg-active': colors.surface,
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': `${radius.sm}px`,
+              '--pa-btn-weight': 400,
+              width: 20, height: 20, flexShrink: 0, lineHeight: '18px',
+              fontSize: textSize.small,
+              // Revealed by the ROW's hover, not this button's — keep it inline.
+              visibility: hovered ? 'visible' : 'hidden',
+            } as CSSProperties}
+          >×</Button>
+        </span>
+      </Tooltip>
     </div>
   );
 }

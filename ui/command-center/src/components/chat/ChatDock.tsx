@@ -18,6 +18,7 @@ import { useTheme } from '../../styles/useTheme';
 import { setSpeakReplies, useSpeakReplies } from '../../lib/speakReplies';
 import { duration, ease, font, radius, space } from '../../styles/tokens';
 
+import { Tooltip } from '../common/Tooltip';
 export const CHAT_DOCK_WIDTH = 384;
 
 /**
@@ -221,15 +222,16 @@ export function ChatDock() {
               the mute. Voice-first onboarding flips it on; the pref persists. */}
           <SpeakToggle />
           {isTauri && <DetachButton onDone={closeChatDock} />}
-          <Button
-            colors={colors}
-            onClick={closeChat}
-            title="Close chat"
-            aria-label="Close chat"
-            style={iconBtn(colors)}
-          >
-            <FiX size={14} />
-          </Button>
+          <Tooltip content="Close chat">
+            <Button
+              colors={colors}
+              onClick={closeChat}
+              aria-label="Close chat"
+              style={iconBtn(colors)}
+            >
+              <FiX size={14} />
+            </Button>
+          </Tooltip>
         </div>
 
         {/* The chat itself — same component as the detached window */}
@@ -353,26 +355,27 @@ function ResizeEdge({
 function DetachButton({ onDone }: { onDone: () => void }) {
   const { colors, theme } = useTheme();
   return (
-    <Button
-      colors={colors}
-      onClick={async () => {
-        onDone();
-        if (!isTauri) return true;
-        try {
-          await createChatWindow(theme);
-        } catch {
-          /* fall back to keeping the dock closed; user can reopen */
-          return false;
-        }
-        return true;
-      }}
-      title="Open chat in its own window"
-      aria-label="Open chat in its own window"
-      style={iconBtn(colors)}
-    >
-      {/* detach / pop-out glyph */}
-      <FiExternalLink size={14} />
-    </Button>
+    <Tooltip content="Open chat in its own window">
+      <Button
+        colors={colors}
+        onClick={async () => {
+          onDone();
+          if (!isTauri) return true;
+          try {
+            await createChatWindow(theme);
+          } catch {
+            /* fall back to keeping the dock closed; user can reopen */
+            return false;
+          }
+          return true;
+        }}
+        aria-label="Open chat in its own window"
+        style={iconBtn(colors)}
+      >
+        {/* detach / pop-out glyph */}
+        <FiExternalLink size={14} />
+      </Button>
+    </Tooltip>
   );
 }
 
@@ -381,19 +384,20 @@ function SpeakToggle() {
   const speaking = useSpeakReplies();
   const label = speaking ? 'Mute — replies go back to text only' : 'Speak replies aloud';
   return (
-    <Button
-      colors={colors}
-      onClick={() => setSpeakReplies(!speaking)}
-      title={label}
-      aria-label={label}
-      style={{ ...iconBtn(colors), '--pa-btn-fg': speaking ? colors.cyan : colors.textMuted } as CSSProperties}
-    >
-      {speaking ? (
-        <FiVolume2 size={14} />
-      ) : (
-        <FiVolumeX size={14} />
-      )}
-    </Button>
+    <Tooltip content={label}>
+      <Button
+        colors={colors}
+        onClick={() => setSpeakReplies(!speaking)}
+        aria-label={label}
+        style={{ ...iconBtn(colors), '--pa-btn-fg': speaking ? colors.cyan : colors.textMuted } as CSSProperties}
+      >
+        {speaking ? (
+          <FiVolume2 size={14} />
+        ) : (
+          <FiVolumeX size={14} />
+        )}
+      </Button>
+    </Tooltip>
   );
 }
 

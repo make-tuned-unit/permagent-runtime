@@ -33,6 +33,7 @@ import {
 import type { Project } from './types';
 import { GLOSSARY } from '../../lib/vocabulary';
 
+import { Tooltip } from '../common/Tooltip';
 export function VerificationApprovalPanel({ project }: { project: Project }) {
   const { colors } = useTheme();
   const rowVeil = colors.fillSubtle;
@@ -254,13 +255,16 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
         }}>
           {level === 'full' ? 'Full' : level === 'read_only' ? 'Read-only' : 'None'}
         </span>
-        <span
-          data-testid="clean-runs"
-          title={GLOSSARY.cleanRuns}
-          style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, cursor: 'help' }}
-        >
-          {data.cleanRuns} clean run{data.cleanRuns === 1 ? '' : 's'}
-        </span>
+        <Tooltip content={GLOSSARY.cleanRuns}>
+          <span tabIndex={0} style={{ outline: 'none' }}>
+            <span
+              data-testid="clean-runs"
+              style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, cursor: 'help' }}
+            >
+              {data.cleanRuns} clean run{data.cleanRuns === 1 ? '' : 's'}
+            </span>
+          </span>
+        </Tooltip>
       </div>
       <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginBottom: 12 }}>
         {privilegeLevelBlurb(level)}
@@ -356,22 +360,25 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
               }}
             >
               {token}
-              <Button
-                colors={colors}
-                variant="bare"
-                onClick={() => removeEntry(token)}
-                title={`Remove ${token}`}
-                aria-label={`Remove ${token}`}
-                disabled={saving}
-                style={{
-                  '--pa-btn-fg': colors.textDim,
-                  '--pa-btn-fg-hover': colors.danger,
-                  '--pa-btn-bg-hover': 'transparent',
-                  '--pa-btn-pad': '2px',
-                } as CSSProperties}
-              >
-                <FiTrash2 size={11} />
-              </Button>
+              <Tooltip content={`Remove ${token}`}>
+                <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+                  <Button
+                    colors={colors}
+                    variant="bare"
+                    onClick={() => removeEntry(token)}
+                    aria-label={`Remove ${token}`}
+                    disabled={saving}
+                    style={{
+                      '--pa-btn-fg': colors.textDim,
+                      '--pa-btn-fg-hover': colors.danger,
+                      '--pa-btn-bg-hover': 'transparent',
+                      '--pa-btn-pad': '2px',
+                    } as CSSProperties}
+                  >
+                    <FiTrash2 size={11} />
+                  </Button>
+                </span>
+              </Tooltip>
             </span>
           ))}
         </div>

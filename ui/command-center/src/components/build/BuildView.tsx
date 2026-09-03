@@ -18,6 +18,7 @@ import type { Project } from './useProjects';
 import { ViewHeader } from '../common/ViewHeader';
 import { Button } from '../common/Button';
 
+import { Tooltip } from '../common/Tooltip';
 // Ensure a project site_url has a scheme so the in-app browser navigates
 // instead of treating it as a search query (e.g. www.reckonize.org → https://…).
 function ensureScheme(url: string): string {
@@ -46,30 +47,31 @@ function ToggleChip({
   children: React.ReactNode;
 }) {
   return (
-    <Button
-      colors={colors}
-      type="button"
-      aria-pressed={active}
-      aria-label={label}
-      title={title}
-      onClick={onToggle}
-      style={{
-        '--pa-btn-bg': active ? colors.cyanSoft : 'transparent',
-        '--pa-btn-fg': active ? colors.text : colors.textMuted,
-        '--pa-btn-border': active ? colors.borderHi : colors.border,
-        '--pa-btn-bg-hover': active ? colors.cyanSoft : colors.surfaceHi,
-        '--pa-btn-border-hover': colors.borderHi,
-        '--pa-btn-bg-active': active ? colors.cyanSoft : colors.surfaceHi,
-        '--pa-btn-pad': '0 12px',
-        '--pa-btn-radius': `${radius.md}px`,
-        height: 30,
-        fontSize: textSize.caption,
-        gap: 6,
-        opacity: active ? 1 : 0.7,
-      } as CSSProperties}
-    >
-      {children}
-    </Button>
+    <Tooltip content={title}>
+      <Button
+        colors={colors}
+        type="button"
+        aria-pressed={active}
+        aria-label={label}
+        onClick={onToggle}
+        style={{
+          '--pa-btn-bg': active ? colors.cyanSoft : 'transparent',
+          '--pa-btn-fg': active ? colors.text : colors.textMuted,
+          '--pa-btn-border': active ? colors.borderHi : colors.border,
+          '--pa-btn-bg-hover': active ? colors.cyanSoft : colors.surfaceHi,
+          '--pa-btn-border-hover': colors.borderHi,
+          '--pa-btn-bg-active': active ? colors.cyanSoft : colors.surfaceHi,
+          '--pa-btn-pad': '0 12px',
+          '--pa-btn-radius': `${radius.md}px`,
+          height: 30,
+          fontSize: textSize.caption,
+          gap: 6,
+          opacity: active ? 1 : 0.7,
+        } as CSSProperties}
+      >
+        {children}
+      </Button>
+    </Tooltip>
   );
 }
 
@@ -209,32 +211,35 @@ export function BuildView() {
             all along. It now appears when there is progress to show, and says
             what it is measuring while it does. */}
         {hasActive && (
-          <div
-            data-testid="build-progress-rail"
-            role="progressbar"
-            aria-label={`Progress on ${activeTask?.title ?? 'the current task'}`}
-            aria-valuemin={0}
-            aria-valuemax={5}
-            aria-valuenow={progressRailStep(activeTask?.progress)}
-            title={`Step ${progressRailStep(activeTask?.progress)} of 5 — the daemon's own estimate of how far along this task is`}
-            style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-          >
-            <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.body, whiteSpace: 'nowrap' }}>
-              Step {progressRailStep(activeTask?.progress)} of 5
+          <Tooltip content={`Step ${progressRailStep(activeTask?.progress)} of 5 — the daemon's own estimate of how far along this task is`}>
+            <span tabIndex={0} style={{ outline: 'none' }}>
+              <div
+                data-testid="build-progress-rail"
+                role="progressbar"
+                aria-label={`Progress on ${activeTask?.title ?? 'the current task'}`}
+                aria-valuemin={0}
+                aria-valuemax={5}
+                aria-valuenow={progressRailStep(activeTask?.progress)}
+                style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+              >
+                <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.body, whiteSpace: 'nowrap' }}>
+                  Step {progressRailStep(activeTask?.progress)} of 5
+                </span>
+                <span style={{ display: 'flex', gap: 6 }}>
+                  {[1, 2, 3, 4, 5].map(n => {
+                    const step = progressRailStep(activeTask?.progress);
+                    return (
+                      <span key={n} style={{
+                        width: 26, height: 4, borderRadius: 2,
+                        background: n < step ? colors.success : n === step ? colors.cyan : colors.border,
+                        boxShadow: n === step ? `0 0 6px ${colors.cyanGlow}` : 'none',
+                      }} />
+                    );
+                  })}
+                </span>
+              </div>
             </span>
-            <span style={{ display: 'flex', gap: 6 }}>
-              {[1, 2, 3, 4, 5].map(n => {
-                const step = progressRailStep(activeTask?.progress);
-                return (
-                  <span key={n} style={{
-                    width: 26, height: 4, borderRadius: 2,
-                    background: n < step ? colors.success : n === step ? colors.cyan : colors.border,
-                    boxShadow: n === step ? `0 0 6px ${colors.cyanGlow}` : 'none',
-                  }} />
-                );
-              })}
-            </span>
-          </div>
+          </Tooltip>
         )}
 
         {/* Pane visibility: hide one pane to give the other the full canvas.
@@ -266,19 +271,20 @@ export function BuildView() {
             button that does nothing is worse than no button. Take over is
             real: it opens the running session in the chat dock. */}
         {hasActive && (
-          <Button
-            colors={colors}
-            variant="primary"
-            onClick={handleTakeOver}
-            title="Open this run's session in the chat dock to steer or stop it"
-            style={{
-              '--pa-btn-pad': '0 14px',
-              '--pa-btn-radius': `${radius.md}px`,
-              height: 30,
-              fontSize: textSize.caption,
-              boxShadow: `0 0 14px ${colors.cyanGlow}`,
-            } as CSSProperties}
-          >Take over</Button>
+          <Tooltip content="Open this run's session in the chat dock to steer or stop it">
+            <Button
+              colors={colors}
+              variant="primary"
+              onClick={handleTakeOver}
+              style={{
+                '--pa-btn-pad': '0 14px',
+                '--pa-btn-radius': `${radius.md}px`,
+                height: 30,
+                fontSize: textSize.caption,
+                boxShadow: `0 0 14px ${colors.cyanGlow}`,
+              } as CSSProperties}
+            >Take over</Button>
+          </Tooltip>
         )}
         </>}
       />

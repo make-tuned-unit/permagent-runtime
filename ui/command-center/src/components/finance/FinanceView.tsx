@@ -54,6 +54,7 @@ import {
   sortPicks,
 } from './financeLabs';
 
+import { Tooltip } from '../common/Tooltip';
 interface Quote {
   symbol: string;
   name?: string | null;
@@ -639,18 +640,19 @@ function CurrencyControl({
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
       <label style={{ display: 'flex', alignItems: 'center', gap: 6, ...type.label, color: colors.textMuted }}>
         Show in
-        <select
-          data-testid="finance-currency"
-          aria-label="Display currency"
-          title={GLOSSARY.displayCurrency}
-          value={money.requested}
-          onChange={(e) => onChange(e.target.value)}
-          style={{ ...inputStyle(colors), ...type.caption, padding: '4px 8px', minWidth: 0 }}
-        >
-          {DISPLAY_CURRENCIES.map((c) => (
-            <option key={c.code} value={c.code}>{c.code}</option>
-          ))}
-        </select>
+        <Tooltip content={GLOSSARY.displayCurrency}>
+          <select
+            data-testid="finance-currency"
+            aria-label="Display currency"
+            value={money.requested}
+            onChange={(e) => onChange(e.target.value)}
+            style={{ ...inputStyle(colors), ...type.caption, padding: '4px 8px', minWidth: 0 }}
+          >
+            {DISPLAY_CURRENCIES.map((c) => (
+              <option key={c.code} value={c.code}>{c.code}</option>
+            ))}
+          </select>
+        </Tooltip>
       </label>
       {money.requested !== BASE_CURRENCY && (
         <div
@@ -880,29 +882,29 @@ function LabsRow({
       </div>
       {dialog === 'polybot' && (
         <DisclaimerDialog
-          title="Turn on Polybot"
-          body={POLYBOT_DISCLAIMER}
-          confirmLabel="I understand this can lose real money"
-          colors={colors}
-          busy={busy}
-          onCancel={() => setDialog(null)}
-          onConfirm={() => {
-            void setLab(POLYBOT_ENABLED_KEY, true).then(() => setDialog(null));
-          }}
+              title="Turn on Polybot"
+              body={POLYBOT_DISCLAIMER}
+              confirmLabel="I understand this can lose real money"
+              colors={colors}
+              busy={busy}
+              onCancel={() => setDialog(null)}
+              onConfirm={() => {
+                void setLab(POLYBOT_ENABLED_KEY, true).then(() => setDialog(null));
+              }}
         />
       )}
       {dialog === 'picker' && (
         <DisclaimerDialog
-          title="Turn on Picker"
-          body={PICKER_DISCLAIMER}
-          confirmLabel="Enable Picker"
-          colors={colors}
-          busy={busy}
-          requireCheck={false}
-          onCancel={() => setDialog(null)}
-          onConfirm={() => {
-            void setLab(PICKER_ENABLED_KEY, true).then(() => setDialog(null));
-          }}
+              title="Turn on Picker"
+              body={PICKER_DISCLAIMER}
+              confirmLabel="Enable Picker"
+              colors={colors}
+              busy={busy}
+              requireCheck={false}
+              onCancel={() => setDialog(null)}
+              onConfirm={() => {
+                void setLab(PICKER_ENABLED_KEY, true).then(() => setDialog(null));
+              }}
         />
       )}
     </>
@@ -1482,15 +1484,16 @@ function PicksSection({
             it does. The app already gets this right elsewhere ("Security — from
             the Guard"), so the cross-link takes a verb and names its
             destination. */}
-        <Button
-          colors={colors}
-          type="button"
-          data-testid="picks-world-link"
-          title="Open the World view, where the Financier's panel lives"
-          onClick={() => navigateToTool('world')}
-        >
-          View in World
-        </Button>
+        <Tooltip content="Open the World view, where the Financier's panel lives">
+          <Button
+            colors={colors}
+            type="button"
+            data-testid="picks-world-link"
+            onClick={() => navigateToTool('world')}
+          >
+            View in World
+          </Button>
+        </Tooltip>
       </div>
       {/* The old caption said "your universe" even when the user had added
           nothing — in that case every row is the scanner's own ranking, so say
@@ -1628,22 +1631,25 @@ function PickRow({
           )}
         </button>
         {approved && (
-          <span
-            data-testid="pick-financier-badge"
-            title={GLOSSARY.financierApproved}
-            style={{
-              ...type.micro,
-              color: inkOnTrim(AGENT_TRIM.financier),
-              background: AGENT_TRIM.financier,
-              fontWeight: 700,
-              letterSpacing: '0.04em',
-              textTransform: 'uppercase',
-              padding: '2px 7px',
-              borderRadius: radius.pill,
-            }}
-          >
-            Agent approved
-          </span>
+          <Tooltip content={GLOSSARY.financierApproved}>
+            <span tabIndex={0} style={{ outline: 'none' }}>
+              <span
+                data-testid="pick-financier-badge"
+                style={{
+                  ...type.micro,
+                  color: inkOnTrim(AGENT_TRIM.financier),
+                  background: AGENT_TRIM.financier,
+                  fontWeight: 700,
+                  letterSpacing: '0.04em',
+                  textTransform: 'uppercase',
+                  padding: '2px 7px',
+                  borderRadius: radius.pill,
+                }}
+              >
+                Agent approved
+              </span>
+            </span>
+          </Tooltip>
         )}
         {loop && (
           // The tag IS the affordance: the reason it names is one click away,
@@ -1713,13 +1719,21 @@ function PickRow({
                   learns nothing from a number beside it, and the number is
                   precisely what the filter above it acted on. */}
               <span style={{ opacity: 0.75 }} data-testid="pick-loop-metrics">
-                <span title={GLOSSARY.icir} style={{ cursor: 'help', borderBottom: `1px dotted ${colors.border}` }}>
-                  ICIR
-                </span>
+                <Tooltip content={GLOSSARY.icir}>
+                  <span tabIndex={0} style={{ outline: 'none' }}>
+                    <span style={{ cursor: 'help', borderBottom: `1px dotted ${colors.border}` }}>
+                      ICIR
+                    </span>
+                  </span>
+                </Tooltip>
                 {' '}{fmtNum(loop.icir)} ·{' '}
-                <span title={GLOSSARY.halfLife} style={{ cursor: 'help', borderBottom: `1px dotted ${colors.border}` }}>
-                  half-life
-                </span>
+                <Tooltip content={GLOSSARY.halfLife}>
+                  <span tabIndex={0} style={{ outline: 'none' }}>
+                    <span style={{ cursor: 'help', borderBottom: `1px dotted ${colors.border}` }}>
+                      half-life
+                    </span>
+                  </span>
+                </Tooltip>
                 {' '}{loop.halfLifeDays != null ? `${loop.halfLifeDays.toFixed(1)}d` : '—'}
               </span>
             </p>

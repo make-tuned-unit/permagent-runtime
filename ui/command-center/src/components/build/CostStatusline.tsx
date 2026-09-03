@@ -8,6 +8,7 @@ import { useLiveGoals } from '../../lib/useLiveGoals';
 import { api } from '../../lib/api';
 import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 
+import { Tooltip } from '../common/Tooltip';
 /**
  * Always-on Build statusline: `$0.42 · 47k↑ 12k↓ · cache saved $0.28 · 31% ctx · <model>`
  * while chatting, or `~$0.03 · 13k tokens · +$0.0032 this turn · today $0.53 ·
@@ -66,76 +67,73 @@ export function CostStatusline() {
   const note = routeNote?.hold_note || routeNote?.routing_note;
 
   return (
-    <div
-      role="status"
-      aria-label={meter.ariaLabel}
-      // The line compresses four ideas into about forty characters — "37% ctx",
-      // "cache saved $0.12", "incl. 2 subagents". The audience is technical and
-      // the severity is low, but a term the interface invents still gets
-      // defined somewhere, and hover is the cheapest somewhere on a status bar
-      // with no room for prose.
-      title={GLOSSARY.costMeter}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 2,
-        padding: '6px 18px',
-        borderTop: `1px solid ${colors.border}`,
-        fontFamily: font.mono,
-        fontSize: textSize.micro,
-        color: colors.textMuted,
-        flexShrink: 0,
-        overflow: 'hidden',
-        whiteSpace: 'nowrap',
-      }}
-    >
-      {/* THE authoritative number: running session spend. */}
-      <span
-        style={{
-          fontWeight: 700,
-          color: colors.text,
-          fontVariantNumeric: 'tabular-nums',
-        }}
-      >
-        {meter.cost}
+    <Tooltip content={GLOSSARY.costMeter}>
+      <span tabIndex={0} style={{ outline: 'none' }}>
+        <div
+          role="status"
+          aria-label={meter.ariaLabel}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 2,
+            padding: '6px 18px',
+            borderTop: `1px solid ${colors.border}`,
+            fontFamily: font.mono,
+            fontSize: textSize.micro,
+            color: colors.textMuted,
+            flexShrink: 0,
+            overflow: 'hidden',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {/* THE authoritative number: running session spend. */}
+          <span
+            style={{
+              fontWeight: 700,
+              color: colors.text,
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {meter.cost}
+          </span>
+          {meter.segments.map((seg, i) => {
+            const isSaving = seg.startsWith('cache saved');
+            // The fail-closed estimate disclosure needs to read as a caution, not
+            // as ordinary supporting context — colors.warning exists on the theme,
+            // so use it; a theme without one would fall back to textMuted rather
+            // than inventing a color that isn't part of the design system.
+            const isEstimated = seg === 'estimated — no published price';
+            return (
+              <span key={i} style={{ display: 'inline-flex', alignItems: 'center' }}>
+                <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">
+                  ·
+                </span>
+                <span
+                  style={{
+                    color: isSaving
+                      ? colors.success
+                      : isEstimated
+                        ? (colors.warning ?? colors.textMuted)
+                        : colors.textMuted,
+                    fontVariantNumeric: 'tabular-nums',
+                  }}
+                >
+                  {seg}
+                </span>
+              </span>
+            );
+          })}
+          {note && (
+            <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+              <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">
+                ·
+              </span>
+              <span style={{ color: colors.textMuted }}>{note}</span>
+            </span>
+          )}
+          <RoleRoutingPrompt variant="compact" />
+        </div>
       </span>
-
-      {meter.segments.map((seg, i) => {
-        const isSaving = seg.startsWith('cache saved');
-        // The fail-closed estimate disclosure needs to read as a caution, not
-        // as ordinary supporting context — colors.warning exists on the theme,
-        // so use it; a theme without one would fall back to textMuted rather
-        // than inventing a color that isn't part of the design system.
-        const isEstimated = seg === 'estimated — no published price';
-        return (
-          <span key={i} style={{ display: 'inline-flex', alignItems: 'center' }}>
-            <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">
-              ·
-            </span>
-            <span
-              style={{
-                color: isSaving
-                  ? colors.success
-                  : isEstimated
-                    ? (colors.warning ?? colors.textMuted)
-                    : colors.textMuted,
-                fontVariantNumeric: 'tabular-nums',
-              }}
-            >
-              {seg}
-            </span>
-          </span>
-        );
-      })}
-      {note && (
-        <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-          <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">
-            ·
-          </span>
-          <span style={{ color: colors.textMuted }}>{note}</span>
-        </span>
-      )}
-      <RoleRoutingPrompt variant="compact" />
-    </div>
+    </Tooltip>
   );
 }

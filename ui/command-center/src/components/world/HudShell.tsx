@@ -12,6 +12,7 @@ import {
   hudTransition,
 } from './hudChrome';
 
+import { Tooltip } from '../common/Tooltip';
 // ── Tab definition ────────────────────────────────────────────────
 
 export interface HudTab {
@@ -118,15 +119,16 @@ export function HudShell({
           </span>
           {statusPill}
         </div>
-        <Button
-          colors={colors}
-          variant="bare"
-          type="button"
-          onClick={onClose}
-          title="Close (ESC)"
-          aria-label="Close"
-          style={closeVars}
-        >✕</Button>
+        <Tooltip content="Close (ESC)">
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={closeVars}
+          >✕</Button>
+        </Tooltip>
       </div>
 
       {tabs && tabs.length > 0 && (

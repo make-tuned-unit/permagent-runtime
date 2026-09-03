@@ -26,6 +26,7 @@ import { useDecisions } from '../decisions/useDecisions';
 import { DecisionInbox } from '../decisions/DecisionInbox';
 import { useBrowserNavigate } from '../../../hooks/useBrowserNavigate';
 
+import { Tooltip } from '../../common/Tooltip';
 interface JournalItem {
   id: string;
   ts: string;
@@ -370,53 +371,54 @@ function TimelineRow({ item, isLast, onOpenDecisions }: {
             : undefined;
 
   return (
-    <div
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => { setHover(false); setPressed(false); }}
-      onPointerDown={() => onClick && setPressed(true)}
-      onPointerUp={() => setPressed(false)}
-      title={onClick ? 'View evidence' : undefined}
-      style={{
-        display: 'flex', alignItems: 'center', gap: space.xl, padding: `${space.lg}px ${space.sm}px`,
-        borderBottom: isLast ? 'none' : `1px solid ${colors.border}`,
-        borderRadius: radius.sm,
-        cursor: onClick ? 'pointer' : 'default',
-        // Was `colors.cyanSoft` — every row tinting the accent on hover is
-        // exactly the "rainbow tinting" anti-slop item (D8: one tinted action
-        // per view, and it isn't this list). Neutral fillHover/fillActive
-        // instead, with real press feedback where there was none.
-        background: !onClick ? 'transparent' : pressed ? colors.fillActive : hover ? colors.fillHover : 'transparent',
-        transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}`,
-      }}
-    >
-      <div style={{
-        width: 26, height: 26, borderRadius: '50%', flexShrink: 0,
-        background: accent + '26', color: accent,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
-        <Icon size={13} />
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
+    <Tooltip content={onClick ? 'View evidence' : undefined}>
+      <div
+        onClick={onClick}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => { setHover(false); setPressed(false); }}
+        onPointerDown={() => onClick && setPressed(true)}
+        onPointerUp={() => setPressed(false)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: space.xl, padding: `${space.lg}px ${space.sm}px`,
+          borderBottom: isLast ? 'none' : `1px solid ${colors.border}`,
+          borderRadius: radius.sm,
+          cursor: onClick ? 'pointer' : 'default',
+          // Was `colors.cyanSoft` — every row tinting the accent on hover is
+          // exactly the "rainbow tinting" anti-slop item (D8: one tinted action
+          // per view, and it isn't this list). Neutral fillHover/fillActive
+          // instead, with real press feedback where there was none.
+          background: !onClick ? 'transparent' : pressed ? colors.fillActive : hover ? colors.fillHover : 'transparent',
+          transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}`,
+        }}
+      >
         <div style={{
-          fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text,
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>{item.title}</div>
-        {item.detail && (
+          width: 26, height: 26, borderRadius: '50%', flexShrink: 0,
+          background: accent + '26', color: accent,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <Icon size={13} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{
-            fontSize: textSize.micro, color: colors.textMuted, marginTop: 1,
+            fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>{item.detail}</div>
-        )}
+          }}>{item.title}</div>
+          {item.detail && (
+            <div style={{
+              fontSize: textSize.micro, color: colors.textMuted, marginTop: 1,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>{item.detail}</div>
+          )}
+        </div>
+        <span style={{
+          fontFamily: font.mono, fontSize: 10, color: colors.textDim,
+          flexShrink: 0,
+        }}>{item.actor}</span>
+        <span style={{
+          fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim,
+          flexShrink: 0, minWidth: 44, textAlign: 'right',
+        }}>{timeLabel(item.ts)}</span>
       </div>
-      <span style={{
-        fontFamily: font.mono, fontSize: 10, color: colors.textDim,
-        flexShrink: 0,
-      }}>{item.actor}</span>
-      <span style={{
-        fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim,
-        flexShrink: 0, minWidth: 44, textAlign: 'right',
-      }}>{timeLabel(item.ts)}</span>
-    </div>
+    </Tooltip>
   );
 }

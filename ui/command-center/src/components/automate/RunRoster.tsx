@@ -21,6 +21,7 @@ import { apiFetch } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
 import { useCommandCenter } from '../../lib/store';
 
+import { Tooltip } from '../common/Tooltip';
 interface RunItem {
   kind: 'worker' | 'schedule' | 'session';
   id: string;
@@ -165,14 +166,17 @@ export function RunRoster() {
                 border: `1px solid ${colors.border}`,
               }}
             >
-              <span
-                title={r.status}
-                style={{
-                  width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-                  background: dotColor(r.status),
-                  boxShadow: r.status === 'working' ? `0 0 6px ${colors.cyanGlow}` : 'none',
-                }}
-              />
+              <Tooltip content={r.status}>
+                <span tabIndex={0} style={{ outline: 'none' }}>
+                  <span
+                    style={{
+                      width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                      background: dotColor(r.status),
+                      boxShadow: r.status === 'working' ? `0 0 6px ${colors.cyanGlow}` : 'none',
+                    }}
+     />
+                </span>
+              </Tooltip>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
                   <span style={{ fontSize: 12.5, fontWeight: 600, color: colors.text, fontFamily: font.body, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -194,26 +198,27 @@ export function RunRoster() {
                 </span>
               )}
               {r.kind === 'worker' && (
-                <Button
-                  colors={colors}
-                  type="button"
-                  onClick={() => openAgentSettings(r.id)}
-                  title="Open in Settings → Agents"
-                  style={{
-                    '--pa-btn-fg': colors.cyan,
-                    '--pa-btn-border': colors.border,
-                    '--pa-btn-bg-hover': colors.surfaceHi,
-                    '--pa-btn-border-hover': colors.borderHi,
-                    '--pa-btn-pad': '3px 7px',
-                    '--pa-btn-radius': `${radius.sm}px`,
-                    fontFamily: font.body,
-                    fontSize: 10,
-                    gap: 4,
-                    flexShrink: 0,
-                  } as CSSProperties}
-                >
-                  Settings
-                </Button>
+                <Tooltip content="Open in Settings → Agents">
+                  <Button
+                    colors={colors}
+                    type="button"
+                    onClick={() => openAgentSettings(r.id)}
+                    style={{
+                      '--pa-btn-fg': colors.cyan,
+                      '--pa-btn-border': colors.border,
+                      '--pa-btn-bg-hover': colors.surfaceHi,
+                      '--pa-btn-border-hover': colors.borderHi,
+                      '--pa-btn-pad': '3px 7px',
+                      '--pa-btn-radius': `${radius.sm}px`,
+                      fontFamily: font.body,
+                      fontSize: 10,
+                      gap: 4,
+                      flexShrink: 0,
+                    } as CSSProperties}
+                  >
+                    Settings
+                  </Button>
+                </Tooltip>
               )}
               {/* Only schedules have a kill verb today — showing Stop on
                   worker/session rows made a button that did nothing
@@ -221,26 +226,27 @@ export function RunRoster() {
               {r.interruptible && r.kind === 'schedule' && (
                 // No tick: the row dropping out of "working" on the next poll is
                 // the confirmation that the run stopped.
-                <Button
-                  colors={colors}
-                  onClick={() => interrupt(r)}
-                  title="Stop this run"
-                  flashSuccess={false}
-                  style={{
-                    '--pa-btn-fg': colors.danger,
-                    '--pa-btn-border': colors.border,
-                    '--pa-btn-bg-hover': colors.surfaceHi,
-                    '--pa-btn-border-hover': colors.danger,
-                    '--pa-btn-pad': '3px 7px',
-                    '--pa-btn-radius': `${radius.sm}px`,
-                    fontFamily: font.body,
-                    fontSize: 10,
-                    gap: 4,
-                    flexShrink: 0,
-                  } as CSSProperties}
-                >
-                  <FiSquare size={9} /> Stop
-                </Button>
+                <Tooltip content="Stop this run">
+                  <Button
+                    colors={colors}
+                    onClick={() => interrupt(r)}
+                    flashSuccess={false}
+                    style={{
+                      '--pa-btn-fg': colors.danger,
+                      '--pa-btn-border': colors.border,
+                      '--pa-btn-bg-hover': colors.surfaceHi,
+                      '--pa-btn-border-hover': colors.danger,
+                      '--pa-btn-pad': '3px 7px',
+                      '--pa-btn-radius': `${radius.sm}px`,
+                      fontFamily: font.body,
+                      fontSize: 10,
+                      gap: 4,
+                      flexShrink: 0,
+                    } as CSSProperties}
+                  >
+                    <FiSquare size={9} /> Stop
+                  </Button>
+                </Tooltip>
               )}
             </div>
           ))}

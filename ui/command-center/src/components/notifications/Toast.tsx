@@ -26,6 +26,7 @@ import { useGlass } from '../common/Glass';
 import { Button } from '../common/Button';
 import type { AppNotification } from '../../lib/notifications';
 
+import { Tooltip } from '../common/Tooltip';
 /** Outer radius is the floating-glass step (D4) — the same one Tooltip uses
  *  for its bubble. The dismiss button nests inside it: its own radius is
  *  derived, not chosen, from that outer step and its inset from the edge. */
@@ -182,23 +183,24 @@ export function ToastCard({ notification, ttlMs, onDismiss, onActivate }: ToastC
           </div>
         )}
       </button>
-      <Button
-        colors={colors}
-        variant="bare"
-        onClick={(e) => { e.stopPropagation(); beginLeave(); }}
-        aria-label="Dismiss notification"
-        title="Dismiss"
-        style={{
-          '--pa-btn-fg': colors.textDim,
-          '--pa-btn-fg-hover': colors.text,
-          '--pa-btn-pad': '0',
-          '--pa-btn-radius': `${DISMISS_R}px`,
-          position: 'absolute', top: DISMISS_INSET, right: DISMISS_INSET, width: DISMISS_SIZE, height: DISMISS_SIZE,
-          fontSize: textSize.small, lineHeight: 1,
-        } as CSSProperties}
-      >
-        ×
-      </Button>
+      <Tooltip content="Dismiss">
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={(e) => { e.stopPropagation(); beginLeave(); }}
+          aria-label="Dismiss notification"
+          style={{
+            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': `${DISMISS_R}px`,
+            position: 'absolute', top: DISMISS_INSET, right: DISMISS_INSET, width: DISMISS_SIZE, height: DISMISS_SIZE,
+            fontSize: textSize.small, lineHeight: 1,
+          } as CSSProperties}
+        >
+          ×
+        </Button>
+      </Tooltip>
     </div>
   );
 }

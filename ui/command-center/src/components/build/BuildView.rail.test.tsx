@@ -92,8 +92,10 @@ describe('Build progress rail', () => {
     expect(rail.textContent).toContain('Step 3 of 5');
     expect(rail.getAttribute('aria-label')).toContain('Refactor the parser');
     expect(rail.getAttribute('aria-valuenow')).toBe('3');
-    // A shape with no words is not an instrument, whatever it is measuring.
-    expect(rail.getAttribute('title')).toBeTruthy();
+    // A shape with no words is not an instrument — the visible "Step N of 5"
+    // label (above) and the glass tip on focus both name what is being counted.
+    act(() => { (rail.parentElement as HTMLElement).focus(); });
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toMatch(/Step 3 of 5/);
   });
 
   it('says what an idle Build tab is for', async () => {

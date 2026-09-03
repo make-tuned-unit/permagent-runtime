@@ -7,6 +7,7 @@ import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 
+import { Tooltip } from '../common/Tooltip';
 function timeAgo(dateStr: string): string {
   const now = Date.now();
   const then = new Date(dateStr).getTime();
@@ -39,15 +40,16 @@ function EditableName({ value, onSave }: { value: string; onSave: (name: string)
 
   if (!editing) {
     return (
-      <span
-        className="truncate cursor-pointer transition"
-        onClick={(e) => { e.stopPropagation(); setEditing(true); }}
-        onMouseEnter={e => { e.currentTarget.style.color = colors.cyan; }}
-        onMouseLeave={e => { e.currentTarget.style.color = ''; }}
-        title="Click to rename"
-      >
-        {value}
-      </span>
+      <Tooltip content="Click to rename">
+        <span
+          className="truncate cursor-pointer transition"
+          onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+          onMouseEnter={e => { e.currentTarget.style.color = colors.cyan; }}
+          onMouseLeave={e => { e.currentTarget.style.color = ''; }}
+        >
+          {value}
+        </span>
+      </Tooltip>
     );
   }
 
@@ -173,22 +175,23 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
             <FiPlus size={12} /> New
           </Button>
           {onClose && (
-            <Button
-              colors={colors}
-              variant="bare"
-              onClick={onClose}
-              title="Close (Esc)"
-              aria-label="Close"
-              style={{
-                '--pa-btn-fg': colors.textMuted,
-                '--pa-btn-fg-hover': colors.text,
-                '--pa-btn-bg-hover': colors.border,
-                '--pa-btn-pad': '4px',
-                '--pa-btn-radius': `${radius.xs}px`,
-              } as CSSProperties}
-            >
-              <FiX size={14} />
-            </Button>
+            <Tooltip content="Close (Esc)">
+              <Button
+                colors={colors}
+                variant="bare"
+                onClick={onClose}
+                aria-label="Close"
+                style={{
+                  '--pa-btn-fg': colors.textMuted,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-bg-hover': colors.border,
+                  '--pa-btn-pad': '4px',
+                  '--pa-btn-radius': `${radius.xs}px`,
+                } as CSSProperties}
+              >
+                <FiX size={14} />
+              </Button>
+            </Tooltip>
           )}
         </div>
       </div>
@@ -281,23 +284,24 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
                 </div>
               </div>
 
-              <Button
-                colors={colors}
-                variant="bare"
-                className="opacity-0 group-hover:opacity-100"
-                onClick={(e) => { e.stopPropagation(); setConfirmDelete(s.id); }}
-                title="Delete session"
-                aria-label="Delete session"
-                style={{
-                  '--pa-btn-fg': colors.textMuted,
-                  '--pa-btn-fg-hover': colors.danger,
-                  '--pa-btn-bg-hover': 'transparent',
-                  '--pa-btn-pad': '4px',
-                  '--pa-btn-radius': `${radius.xs}px`,
-                } as CSSProperties}
-              >
-                <FiTrash2 size={12} />
-              </Button>
+              <Tooltip content="Delete session">
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  className="opacity-0 group-hover:opacity-100"
+                  onClick={(e) => { e.stopPropagation(); setConfirmDelete(s.id); }}
+                  aria-label="Delete session"
+                  style={{
+                    '--pa-btn-fg': colors.textMuted,
+                    '--pa-btn-fg-hover': colors.danger,
+                    '--pa-btn-bg-hover': 'transparent',
+                    '--pa-btn-pad': '4px',
+                    '--pa-btn-radius': `${radius.xs}px`,
+                  } as CSSProperties}
+                >
+                  <FiTrash2 size={12} />
+                </Button>
+              </Tooltip>
             </div>
           );
         })}

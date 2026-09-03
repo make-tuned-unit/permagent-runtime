@@ -11,6 +11,7 @@ import { useVoicePreview } from '../../lib/useVoices';
 import { hasSpokenKey, markReplySpoken, replyDedupeKey } from '../../lib/speakReplies';
 import type { ChatMessage } from '../../lib/store';
 
+import { Tooltip } from '../common/Tooltip';
 /** A contentless assistant message renders as a bare name-and-time bubble —
  *  which is exactly what the streaming placeholder is before its first token,
  *  sitting above the StreamingIndicator as a second empty bubble (reported
@@ -212,22 +213,23 @@ export function MessageList() {
                   <span className="text-[11px]" style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}>
                     {agentName}
                   </span>
-                  <Button
-                    colors={colors}
-                    variant="bare"
-                    onClick={() => void speak(persona?.voice_id, greeting)}
-                    title="Hear greeting"
-                    aria-label="Hear greeting"
-                    style={{
-                      '--pa-btn-fg': speaking ? colors.cyan : colors.textMuted,
-                      '--pa-btn-fg-hover': colors.cyan,
-                      '--pa-btn-bg-hover': 'transparent',
-                      '--pa-btn-pad': '0',
-                      opacity: speaking ? 1 : 0.6,
-                    } as CSSProperties}
-                  >
-                    <FiVolume2 size={13} />
-                  </Button>
+                  <Tooltip content="Hear greeting">
+                    <Button
+                      colors={colors}
+                      variant="bare"
+                      onClick={() => void speak(persona?.voice_id, greeting)}
+                      aria-label="Hear greeting"
+                      style={{
+                        '--pa-btn-fg': speaking ? colors.cyan : colors.textMuted,
+                        '--pa-btn-fg-hover': colors.cyan,
+                        '--pa-btn-bg-hover': 'transparent',
+                        '--pa-btn-pad': '0',
+                        opacity: speaking ? 1 : 0.6,
+                      } as CSSProperties}
+                    >
+                      <FiVolume2 size={13} />
+                    </Button>
+                  </Tooltip>
                 </div>
                 <div className="text-[13px] leading-relaxed whitespace-pre-wrap" style={{ fontFamily: font.body, color: colors.text }}>
                   {greeting}

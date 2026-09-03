@@ -570,14 +570,6 @@ select:focus-visible {
   font-weight: 700;
 }
 
-/* Sidebar hover tooltip — a short rise-and-fade so the label reads as attached
-   to the row being pointed at rather than appearing from nowhere. Paired with
-   a portal (see SidebarTooltip.tsx): the rail clips its own overflow. */
-@keyframes sidebarTooltipIn {
-  from { opacity: 0; transform: translateY(-50%) translateX(-4px); }
-  to   { opacity: 1; transform: translateY(-50%) translateX(0); }
-}
-
 /* Isolate xterm from Tailwind preflight (`*, ::before, ::after { box-sizing:
    border-box }` and `html { line-height: 1.5 }`). xterm measures cells with
    content-box metrics; inherited 1.5× leading makes glyphs taller than the

@@ -5,6 +5,7 @@ import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
+import { Tooltip } from '../common/Tooltip';
 /**
  * Execution trace — the last 50 events in the `useCommandCenter.events` buffer,
  * fed by BOTH runtime wires (see lib/traceEvents.ts): the global `/events` bus
@@ -67,9 +68,13 @@ export function ExecutionTrace({ onClose }: { onClose?: () => void } = {}) {
                 </span>
                 <span className="text-[11px] shrink-0" style={{ fontFamily: font.mono, color: ev.severity === 'error' ? colors.danger : colors.cyan }}>{ev.event_type}</span>
                 {summary && (
-                  <span className="text-[10px] truncate min-w-0" style={{ fontFamily: font.mono, color: colors.textMuted }} title={summary}>
-                    {summary}
-                  </span>
+                  <Tooltip content={summary}>
+                    <span tabIndex={0} style={{ outline: 'none' }}>
+                      <span className="text-[10px] truncate min-w-0" style={{ fontFamily: font.mono, color: colors.textMuted }}>
+                        {summary}
+                      </span>
+                    </span>
+                  </Tooltip>
                 )}
               </div>
             );

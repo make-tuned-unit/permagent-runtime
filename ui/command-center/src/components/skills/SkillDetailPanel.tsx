@@ -7,6 +7,7 @@ import { Button } from '../common/Button';
 import { SkillEditor } from './SkillEditor';
 import { SkillExecutionHistory } from './SkillExecutionHistory';
 
+import { Tooltip } from '../common/Tooltip';
 interface SkillDetailPanelProps {
   skill: SkillState;
 }
@@ -77,39 +78,42 @@ export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
           </span>
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          <Button
-            colors={colors}
-            variant="bare"
-            type="button"
-            onClick={() => setEditing(!editing)}
-            title="Edit skill"
-            aria-label="Edit skill"
-            style={iconVars(colors.textMuted, colors.cyan, colors.cyanSoft)}
-          >
-            <FiEdit2 size={13} />
-          </Button>
-          <Button
-            colors={colors}
-            variant="bare"
-            type="button"
-            onClick={() => setConfirmDelete(true)}
-            title="Delete skill"
-            aria-label="Delete skill"
-            style={iconVars(colors.textMuted, colors.danger, `${colors.danger}1A`)}
-          >
-            <FiTrash2 size={13} />
-          </Button>
-          <Button
-            colors={colors}
-            variant="bare"
-            type="button"
-            onClick={() => setSelectedSkillId(null)}
-            title="Close"
-            aria-label="Close skill detail"
-            style={iconVars(colors.textMuted, colors.text, 'rgba(255,255,255,0.05)')}
-          >
-            <FiX size={14} />
-          </Button>
+          <Tooltip content="Edit skill">
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => setEditing(!editing)}
+              aria-label="Edit skill"
+              style={iconVars(colors.textMuted, colors.cyan, colors.cyanSoft)}
+            >
+              <FiEdit2 size={13} />
+            </Button>
+          </Tooltip>
+          <Tooltip content="Delete skill">
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+              aria-label="Delete skill"
+              style={iconVars(colors.textMuted, colors.danger, `${colors.danger}1A`)}
+            >
+              <FiTrash2 size={13} />
+            </Button>
+          </Tooltip>
+          <Tooltip content="Close">
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => setSelectedSkillId(null)}
+              aria-label="Close skill detail"
+              style={iconVars(colors.textMuted, colors.text, 'rgba(255,255,255,0.05)')}
+            >
+              <FiX size={14} />
+            </Button>
+          </Tooltip>
         </div>
       </div>
 

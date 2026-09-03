@@ -15,6 +15,7 @@ import { stashWizardIntent } from '../../lib/wizardIntent';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
+import { Tooltip } from '../common/Tooltip';
 interface Persona {
   name: string;
   traits: string[];
@@ -193,24 +194,25 @@ export function WizardShell({ onComplete }: Props) {
               fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5, flexShrink: 0,
             } as CSSProperties}
           >{saving ? 'Retrying…' : 'Retry'}</Button>
-          <Button
-            colors={colors}
-            variant="bare"
-            type="button"
-            onClick={() => { stashWizardIntent(intent); onComplete(); }}
-            title="Enter the app anyway — your persona choices may not be saved and setup may reappear next launch"
-            style={{
-              '--pa-btn-fg': colors.textMuted,
-              '--pa-btn-fg-hover': colors.text,
-              '--pa-btn-bg-hover': 'transparent',
-              '--pa-btn-bg-active': 'transparent',
-              '--pa-btn-pad': '0',
-              '--pa-btn-radius': '0',
-              '--pa-btn-weight': 400,
-              fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5,
-              textDecoration: 'underline', flexShrink: 0,
-            } as CSSProperties}
-          >Continue anyway</Button>
+          <Tooltip content="Enter the app anyway — your persona choices may not be saved and setup may reappear next launch">
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => { stashWizardIntent(intent); onComplete(); }}
+              style={{
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-bg-active': 'transparent',
+                '--pa-btn-pad': '0',
+                '--pa-btn-radius': '0',
+                '--pa-btn-weight': 400,
+                fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5,
+                textDecoration: 'underline', flexShrink: 0,
+              } as CSSProperties}
+            >Continue anyway</Button>
+          </Tooltip>
         </div>
       )}
     </div>

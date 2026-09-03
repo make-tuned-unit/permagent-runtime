@@ -19,6 +19,7 @@ import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { Card, Project, ProjectMemory, ProjectNote } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 type ActivityItem = {
   id: string;
   kind: 'memory' | 'note' | 'task';
@@ -75,21 +76,22 @@ export function ActivityPanel({ project }: { project: Project }) {
 
   return (
     <Panel title="Recent activity" action={status === 'ready' ? (
-      <Button
-        colors={colors}
-        variant="bare"
-        onClick={load}
-        aria-label="Refresh activity"
-        title="Refresh"
-        style={{
-          '--pa-btn-fg': colors.textDim,
-          '--pa-btn-fg-hover': colors.textMuted,
-          '--pa-btn-bg-hover': 'transparent',
-          '--pa-btn-pad': '0',
-        } as CSSProperties}
-      >
-        <FiRefreshCw size={12} />
-      </Button>
+      <Tooltip content="Refresh">
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={load}
+          aria-label="Refresh activity"
+          style={{
+            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-fg-hover': colors.textMuted,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+          } as CSSProperties}
+        >
+          <FiRefreshCw size={12} />
+        </Button>
+      </Tooltip>
     ) : undefined}>
       {status === 'loading' && <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading activity…</div>}
       {status === 'error' && (

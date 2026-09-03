@@ -175,20 +175,10 @@ describe('Tooltip', () => {
   });
 });
 
-// ── Fitness: owned dirs must not reintroduce native title= tooltips ──
+// ── Fitness: components/ must not reintroduce native title= tooltips ──
 
-const OWNED_DIRS = [
-  'awareness',
-  'inspection',
-  'voice',
-  'sidebar',
-  'common',
-  'settings',
-  'history',
-  'inbox',
-];
-
-/** Component props named `title` that are headings / labels, not OS tooltips. */
+/** Component props named `title` that are headings / labels / tip strings
+ *  owned by the child — not OS hover tooltips on the host. */
 const TITLE_PROP_COMPONENTS = new Set([
   'ViewHeader',
   'DetailModal',
@@ -198,17 +188,29 @@ const TITLE_PROP_COMPONENTS = new Set([
   'Section', // Settings' grouped-inset-list header — a heading, not a tooltip.
   'WorkSection', // Agents panel's section header — same shape as Section.
   'StateBlock', // Empty/error block's title is its headline, not a tooltip.
+  'SectionTitle', // Dashboard card section heading.
+  'Panel', // Projects panel chrome heading.
+  'HudShell', // World HUD window title.
+  'LinksPanel', // Projects resources panel heading.
+  'DisclaimerDialog', // Finance opt-in dialog heading.
+  'MeetingsSection', // Person detail meeting-title form field.
+  'ToggleChip', // Build pane chip tip string (wraps Tooltip internally).
+  'IconButton', // Document viewer glyph tip string (wraps Tooltip internally).
+  'GrowthProjectRow', // Growth card row tip string (wraps Tooltip internally).
+  'LinkButton', // Person profile link tip string (wraps Tooltip internally).
 ]);
 
 /**
  * Allowlist for a11y-required titles that are NOT native hover tooltips:
  *  - `<iframe title="…">` — accessible name for the frame
  *  - `<svg><title>…</title></svg>` — accessible name for the graphic
+ *  - `<option title="…">` — OS-drawn select popup; cannot host a portal tip
  * Listed explicitly so a future `title=` cannot hide behind a vague exception.
  */
 const A11Y_TITLE_ALLOWLIST = [
   { kind: 'iframe-attr' as const, pattern: /<iframe\b[^>]*\btitle=/ },
   { kind: 'svg-title-el' as const, pattern: /<svg[\s\S]*?<title[\s>]/ },
+  { kind: 'option-attr' as const, pattern: /<option\b[^>]*\btitle=/ },
 ];
 
 const SRC_ROOT = join(process.cwd(), 'src/components');
@@ -239,24 +241,23 @@ function isComponentTitleProp(line: string, prevLines: string[]): boolean {
 function isAllowlistedA11y(line: string, fileText: string): boolean {
   for (const a of A11Y_TITLE_ALLOWLIST) {
     if (a.kind === 'iframe-attr' && a.pattern.test(line)) return true;
+    if (a.kind === 'option-attr' && a.pattern.test(line)) return true;
     if (a.kind === 'svg-title-el' && /<title[\s>]/.test(line) && /<svg/.test(fileText)) return true;
   }
   return false;
 }
 
-describe('owned dirs: zero native title= tooltips', () => {
+describe('components/: zero native title= tooltips', () => {
   it('lists the a11y allowlist so it stays intentional', () => {
     expect(A11Y_TITLE_ALLOWLIST.map(a => a.kind)).toEqual([
       'iframe-attr',
       'svg-title-el',
+      'option-attr',
     ]);
   });
 
-  it('has no raw title= left in owned component dirs (or ChatApp)', () => {
-    const files: string[] = [];
-    for (const d of OWNED_DIRS) {
-      files.push(...walkTsx(join(SRC_ROOT, d)));
-    }
+  it('has no raw title= left in components/ (or ChatApp)', () => {
+    const files: string[] = walkTsx(SRC_ROOT);
     files.push(join(CC_SRC, 'ChatApp.tsx'));
 
     const offenders: string[] = [];
@@ -278,9 +279,17 @@ describe('owned dirs: zero native title= tooltips', () => {
           if (prev.length > 4) prev.shift();
           continue;
         }
-        // Destructured defaults: `title = 'Key'` — not a JSX attribute.
-        if (/^\s*title\s*=/.test(line) && !/<\w/.test(line)) {
+        // Non-JSX: assignments, comparisons, defaults, document.title.
+        if (
+          /^\s*title\s*=/.test(line) && !/<\w/.test(line)
+          || /\b(const|let|var)\s+title\s*=/.test(line)
+          || /\btitle\s*=/.test(line) && /function\s+\w+\s*\(|\(/.test(line) && !/<\w/.test(line)
+          || /\.title\s*[=!]/.test(line)
+          || /document\.title\s*=/.test(line)
+          || /typeof\s+.*\.title/.test(line)
+        ) {
           prev.push(line);
+          if (prev.length > 4) prev.shift();
           continue;
         }
         // Interface / type fields: `title?: string` / `title: string`

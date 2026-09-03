@@ -23,6 +23,7 @@ import { decisionsClient } from './client';
 import { formatAge, withAlpha } from './format';
 import { usePersona } from '../../settings/useSettings';
 
+import { Tooltip } from '../../common/Tooltip';
 interface Props {
   inbox: ReturnType<typeof useDecisions>;
   onClose: () => void;
@@ -224,9 +225,13 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                         {g.state_binding}
                       </span>
                       {g.reason && (
-                        <span style={{ fontSize: textSize.micro, color: colors.textMuted, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.reason}>
-                          {g.reason}
-                        </span>
+                        <Tooltip content={g.reason}>
+                          <span tabIndex={0} style={{ outline: 'none' }}>
+                            <span style={{ fontSize: textSize.micro, color: colors.textMuted, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {g.reason}
+                            </span>
+                          </span>
+                        </Tooltip>
                       )}
                     </div>
                   ))}

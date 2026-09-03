@@ -6,6 +6,7 @@ import { Button } from '../common/Button';
 import { CycleTabsButton } from '../build/CycleTabsButton';
 import { CHROME_GEOM, chromeBareVars, dangerWash } from './browserChrome';
 
+import { Tooltip } from '../common/Tooltip';
 export interface BrowserTab {
   id: string;
   label: string;
@@ -118,27 +119,29 @@ export function BrowserTabs({
       </div>
       <CycleTabsButton pane="browser" onCycle={onCycleTab} />
       {onPopOut && (
+        <Tooltip content="Pop out active browser">
+          <Button
+            colors={colors}
+            variant="bare"
+            onClick={onPopOut}
+            aria-label="Pop out active browser"
+            style={{ ...railIcon(colors.text), '--pa-btn-pad': `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.chipPadX}px` } as CSSProperties}
+          >
+            <FiExternalLink size={13} />
+          </Button>
+        </Tooltip>
+      )}
+      <Tooltip content="New tab (Cmd+T)">
         <Button
           colors={colors}
           variant="bare"
-          onClick={onPopOut}
-          aria-label="Pop out active browser"
-          title="Pop out active browser"
-          style={{ ...railIcon(colors.text), '--pa-btn-pad': `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.chipPadX}px` } as CSSProperties}
+          onClick={onNewTab}
+          aria-label="New tab"
+          style={{ ...railIcon(colors.cyan), '--pa-btn-pad': `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.chipPadX + 2}px` } as CSSProperties}
         >
-          <FiExternalLink size={13} />
+          <FiPlus size={13} />
         </Button>
-      )}
-      <Button
-        colors={colors}
-        variant="bare"
-        onClick={onNewTab}
-        aria-label="New tab"
-        title="New tab (Cmd+T)"
-        style={{ ...railIcon(colors.cyan), '--pa-btn-pad': `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.chipPadX + 2}px` } as CSSProperties}
-      >
-        <FiPlus size={13} />
-      </Button>
+      </Tooltip>
     </div>
   );
 }

@@ -47,6 +47,7 @@ import { useCommandCenter } from '../../../lib/store';
 import { toast } from '../../../lib/notifications';
 import { isSafeHttpUrl } from '../../../lib/url';
 
+import { Tooltip } from '../../common/Tooltip';
 interface Props {
   decision: Decision;
   onAnswer: (id: string, body: AnswerBody) => Promise<AnswerResult>;
@@ -350,27 +351,28 @@ export function DecisionItem({
           shared goal-detail modal (#503) when the decision is goal-bound. */}
       {d.goal_title && (
         d.goal_id && d.project_id ? (
-          <Button
-            colors={colors}
-            variant="bare"
-            type="button"
-            className="hover:underline"
-            onClick={() => openGoalDetail(d.project_id!, d.goal_id!)}
-            title="View goal detail"
-            style={{
-              '--pa-btn-fg': colors.cyan,
-              '--pa-btn-fg-hover': colors.cyan,
-              '--pa-btn-bg-hover': 'transparent',
-              '--pa-btn-bg-active': 'transparent',
-              '--pa-btn-pad': '0',
-              '--pa-btn-radius': '0',
-              '--pa-btn-weight': 400,
-              display: 'flex', justifyContent: 'flex-start', marginTop: 4,
-              fontSize: textSize.micro, fontFamily: font.body,
-            } as CSSProperties}
-          >
-            Goal: {d.goal_title}
-          </Button>
+          <Tooltip content="View goal detail">
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              className="hover:underline"
+              onClick={() => openGoalDetail(d.project_id!, d.goal_id!)}
+              style={{
+                '--pa-btn-fg': colors.cyan,
+                '--pa-btn-fg-hover': colors.cyan,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-bg-active': 'transparent',
+                '--pa-btn-pad': '0',
+                '--pa-btn-radius': '0',
+                '--pa-btn-weight': 400,
+                display: 'flex', justifyContent: 'flex-start', marginTop: 4,
+                fontSize: textSize.micro, fontFamily: font.body,
+              } as CSSProperties}
+            >
+              Goal: {d.goal_title}
+            </Button>
+          </Tooltip>
         ) : (
           <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 4 }}>
             Goal: {d.goal_title}

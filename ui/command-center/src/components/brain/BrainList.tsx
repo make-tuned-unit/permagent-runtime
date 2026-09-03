@@ -11,6 +11,7 @@ import { deriveMemoryTitle, MEMORY_STALE_AFTER_DAYS } from './brainMemoryFocus';
 import { AsOf } from '../common/AsOf';
 import { MEMORY_STRENGTH } from '../../lib/vocabulary';
 
+import { Tooltip } from '../common/Tooltip';
 // ── Date formatting ──────────────────────────────────────────────────
 
 function formatDate(ts: string): string {
@@ -402,9 +403,13 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
       }}>
         {/* The same field the graph panel shows. It used to say "signal" here
             and "reinforcement" there — one number, one tab, two words. */}
-        <span title={MEMORY_STRENGTH.gloss} style={{ cursor: 'help' }}>
-          {MEMORY_STRENGTH.one} {Math.round(memory.weight * 100)}%
-        </span>
+        <Tooltip content={MEMORY_STRENGTH.gloss}>
+          <span tabIndex={0} style={{ outline: 'none' }}>
+            <span style={{ cursor: 'help' }}>
+              {MEMORY_STRENGTH.one} {Math.round(memory.weight * 100)}%
+            </span>
+          </span>
+        </Tooltip>
         {/* Read from the memory's own timestamp, never from `age`: that is a
             0..1 scene coordinate, clamped at 90 days, so every memory past the
             window shared one bucket and a three-year-old note read as merely

@@ -22,6 +22,7 @@ import { CARD_PAD, CARD_R } from './growGeometry';
 import { Button } from '../common/Button';
 import { apiFetch } from '../../lib/api';
 
+import { Tooltip } from '../common/Tooltip';
 interface FunnelStep {
   label: string;
   /** Identities (see `identity`) that reached this step in order. */
@@ -360,11 +361,15 @@ export function FunnelPanel({ projectId, colors }: { projectId: string; colors: 
                 const median = formatDuration(s.medianSecondsFromPrev);
                 return (
                   <div key={`${s.label}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
-                    <div style={{
-                      width: 140, fontSize: textSize.micro, color: colors.textMuted, textAlign: 'right',
-                      flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      fontFamily: font.mono,
-                    }} title={s.label}>{s.label}</div>
+                    <Tooltip content={s.label}>
+                      <span tabIndex={0} style={{ outline: 'none' }}>
+                        <div style={{
+                          width: 140, fontSize: textSize.micro, color: colors.textMuted, textAlign: 'right',
+                          flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          fontFamily: font.mono,
+                        }}>{s.label}</div>
+                      </span>
+                    </Tooltip>
                     <div style={{ flex: 1, height: 22, background: colors.bgDeeper, borderRadius: radius.sm, overflow: 'hidden' }}>
                       <div style={{
                         width: `${Math.max(s.sessions > 0 ? 4 : 0, (s.sessions / entered) * 100)}%`,

@@ -4,6 +4,7 @@ import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
+import { Tooltip } from '../common/Tooltip';
 export interface MenuItem {
   label: string;
   icon: React.ReactNode;
@@ -40,27 +41,28 @@ export function DashboardOverflowMenu({ items }: Props) {
 
   return (
     <div ref={menuRef} style={{ position: 'relative' }}>
-      <Button
-        colors={colors}
-        type="button"
-        onClick={() => setOpen(!open)}
-        title="More actions"
-        aria-label="More actions"
-        style={{
-          '--pa-btn-bg': colors.surface,
-          '--pa-btn-fg': colors.textMuted,
-          '--pa-btn-border': colors.border,
-          '--pa-btn-bg-hover': colors.surfaceHi,
-          '--pa-btn-fg-hover': colors.text,
-          '--pa-btn-border-hover': colors.borderHi,
-          '--pa-btn-bg-active': colors.surface,
-          '--pa-btn-pad': '0',
-          '--pa-btn-radius': `${radius.md}px`,
-          width: 28, height: 28,
-        } as CSSProperties}
-      >
-        <FiMoreVertical size={14} />
-      </Button>
+      <Tooltip content="More actions">
+        <Button
+          colors={colors}
+          type="button"
+          onClick={() => setOpen(!open)}
+          aria-label="More actions"
+          style={{
+            '--pa-btn-bg': colors.surface,
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-border': colors.border,
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-border-hover': colors.borderHi,
+            '--pa-btn-bg-active': colors.surface,
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': `${radius.md}px`,
+            width: 28, height: 28,
+          } as CSSProperties}
+        >
+          <FiMoreVertical size={14} />
+        </Button>
+      </Tooltip>
 
       {open && (
         <div style={{
