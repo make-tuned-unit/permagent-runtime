@@ -9,6 +9,7 @@ import { GrowthSparkline } from '../../grow/GrowthSparkline';
 import type { GrowthResultsData } from '../../grow/growthResults';
 import { lastCumulativeNet } from '../../grow/growthTrend';
 
+import { Tooltip } from '../../common/Tooltip';
 /**
  * Home-dashboard view of growth actions taken — fleet trend, then each project.
  *
@@ -70,9 +71,11 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
         overflow: 'hidden',
       }}
     >
-      <div onClick={openFleet} title="Open growth results" style={{ cursor: 'pointer' }}>
-        <SectionTitle title="Growth" right={measured > 0 ? `${measured} measured` : undefined} />
-      </div>
+      <Tooltip content="Open growth results">
+        <div onClick={openFleet} style={{ cursor: 'pointer' }}>
+          <SectionTitle title="Growth" right={measured > 0 ? `${measured} measured` : undefined} />
+        </div>
+      </Tooltip>
 
       {error ? (
         <EmptyNote hint="Open Grow → Results to try again">Couldn’t load growth results</EmptyNote>
@@ -95,13 +98,15 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
           </div>
 
           {trend.length > 0 && (
-            <div onClick={openFleet} title="All projects, last 12 weeks" style={{ cursor: 'pointer', marginTop: 12 }}>
-              <div style={{
-                fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
-                textTransform: 'uppercase', color: colors.textDim, marginBottom: 4,
-              }}>All projects</div>
-              <GrowthSparkline points={trend} colors={colors} height={52} />
-            </div>
+            <Tooltip content="All projects, last 12 weeks">
+              <div onClick={openFleet} style={{ cursor: 'pointer', marginTop: 12 }}>
+                <div style={{
+                  fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
+                  textTransform: 'uppercase', color: colors.textDim, marginBottom: 4,
+                }}>All projects</div>
+                <GrowthSparkline points={trend} colors={colors} height={52} />
+              </div>
+            </Tooltip>
           )}
 
           {byProject.length > 0 && (
@@ -121,34 +126,34 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
                   // which is why it needs its own hover/press feedback (D10);
                   // this row had none before.
                   <GrowthProjectRow
-                    key={row.projectId}
-                    onClick={() => openProject(row.projectId)}
-                    title={`Open ${row.projectName} results`}
-                    reduceMotion={reduceMotion}
-                    colors={colors}
-                  >
-                    <span style={{
-                      fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      minWidth: 0, flex: 1,
-                    }}>{row.projectName}</span>
-                    <span style={{
-                      fontFamily: font.mono, fontSize: 10, color: colors.textDim, flexShrink: 0,
-                    }}>
-                      {row.helped} helped
-                      {row.hindered > 0 ? ` · ${row.hindered} hindered` : ''}
-                      {net !== 0 ? ` · ${net > 0 ? '+' : ''}${net}` : ''}
-                    </span>
-                    <div style={{ width: 88, flexShrink: 0 }}>
-                      <GrowthSparkline
-                        points={row.points}
-                        colors={colors}
-                        height={22}
-                        showAxis={false}
-                        stroke={net < 0 ? colors.danger : colors.cyan}
-                      />
-                    </div>
-                  </GrowthProjectRow>
+                      key={row.projectId}
+                      onClick={() => openProject(row.projectId)}
+                      title={`Open ${row.projectName} results`}
+                      reduceMotion={reduceMotion}
+                      colors={colors}
+                    >
+                      <span style={{
+                        fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        minWidth: 0, flex: 1,
+                      }}>{row.projectName}</span>
+                      <span style={{
+                        fontFamily: font.mono, fontSize: 10, color: colors.textDim, flexShrink: 0,
+                      }}>
+                        {row.helped} helped
+                        {row.hindered > 0 ? ` · ${row.hindered} hindered` : ''}
+                        {net !== 0 ? ` · ${net > 0 ? '+' : ''}${net}` : ''}
+                      </span>
+                      <div style={{ width: 88, flexShrink: 0 }}>
+                        <GrowthSparkline
+                          points={row.points}
+                          colors={colors}
+                          height={22}
+                          showAxis={false}
+                          stroke={net < 0 ? colors.danger : colors.cyan}
+   />
+                      </div>
+                    </GrowthProjectRow>
                 );
               })}
             </div>
@@ -177,24 +182,25 @@ function GrowthProjectRow({
   const [hover, setHover] = useState(false);
   const [pressed, setPressed] = useState(false);
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => { setHover(false); setPressed(false); }}
-      onPointerDown={() => setPressed(true)}
-      onPointerUp={() => setPressed(false)}
-      style={{
-        display: 'flex', alignItems: 'center', gap: space.lg,
-        width: '100%', padding: `${space.sm}px 0`,
-        border: 'none', borderTop: `1px solid ${colors.border}`,
-        background: pressed ? colors.fillActive : hover ? colors.fillHover : 'transparent',
-        cursor: 'pointer', textAlign: 'left', borderRadius: radius.xs,
-        transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}`,
-      }}
-    >
-      {children}
-    </button>
+    <Tooltip content={title}>
+      <button
+        type="button"
+        onClick={onClick}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => { setHover(false); setPressed(false); }}
+        onPointerDown={() => setPressed(true)}
+        onPointerUp={() => setPressed(false)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: space.lg,
+          width: '100%', padding: `${space.sm}px 0`,
+          border: 'none', borderTop: `1px solid ${colors.border}`,
+          background: pressed ? colors.fillActive : hover ? colors.fillHover : 'transparent',
+          cursor: 'pointer', textAlign: 'left', borderRadius: radius.xs,
+          transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}`,
+        }}
+      >
+        {children}
+      </button>
+    </Tooltip>
   );
 }

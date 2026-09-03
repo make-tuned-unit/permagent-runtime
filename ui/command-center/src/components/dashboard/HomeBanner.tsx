@@ -13,6 +13,7 @@ import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
+import { Tooltip } from '../common/Tooltip';
 export interface HomeBannerProps {
   /** The word after the ✦, uppercase — "ECHO", "LEARN NEXT". */
   kicker: string;
@@ -78,17 +79,18 @@ export function HomeBanner({
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         {actions}
-        <Button
-          colors={colors}
-          variant="bare"
-          type="button"
-          onClick={onDismiss}
-          aria-label={dismissLabel}
-          title="Not now"
-          style={dismissBtn(colors)}
-        >
-          ✕
-        </Button>
+        <Tooltip content="Not now">
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
+            onClick={onDismiss}
+            aria-label={dismissLabel}
+            style={dismissBtn(colors)}
+          >
+            ✕
+          </Button>
+        </Tooltip>
       </div>
     </div>
   );

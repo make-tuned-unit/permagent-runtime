@@ -7,6 +7,7 @@ import { SectionTitle, EmptyNote } from '../atoms';
 import { useCommandCenter } from '../../../lib/store';
 import type { ActiveGoal } from '../../../lib/useLiveGoals';
 
+import { Tooltip } from '../../common/Tooltip';
 const STATE_LABEL: Record<string, string> = {
   ready: 'Ready',
   in_progress: 'In Progress',
@@ -56,46 +57,47 @@ const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
   const [hover, setHover] = useState(false);
   const [pressed, setPressed] = useState(false);
   return (
-    <div
-      onClick={() => openGoalDetail(goal.project_id, goal.id)}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => { setHover(false); setPressed(false); }}
-      onPointerDown={() => setPressed(true)}
-      onPointerUp={() => setPressed(false)}
-      title="View goal detail"
-      style={{
-        padding: space.xxxl, borderRadius: radius.md, cursor: 'pointer',
-        background: pressed ? colors.fillActive : hover ? colors.fillHover : colors.surface,
-        border: `1px solid ${colors.border}`,
-        boxShadow: [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
-        transform: !reduceMotion && pressed ? 'scale(0.98)' : 'scale(1)',
-        transition: reduceMotion
-          ? 'none'
-          : `background ${duration.fast}ms ${ease.out}, transform ${duration.fast}ms ${ease.out}`,
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: space.xl }}>
-        <Mobius size={36} state={mobiusState} logoMode />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{
-            fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text,
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>{goal.title}</div>
-          <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.cyan }}>
-            {goal.hold_note ? 'Held' : (STATE_LABEL[goal.state] ?? goal.state)}
-            {goal.assigned_to ? ` · ${goal.assigned_to}` : ''}
-          </div>
-          {(goal.hold_note || goal.routing_note) && (
+    <Tooltip content="View goal detail">
+      <div
+        onClick={() => openGoalDetail(goal.project_id, goal.id)}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => { setHover(false); setPressed(false); }}
+        onPointerDown={() => setPressed(true)}
+        onPointerUp={() => setPressed(false)}
+        style={{
+          padding: space.xxxl, borderRadius: radius.md, cursor: 'pointer',
+          background: pressed ? colors.fillActive : hover ? colors.fillHover : colors.surface,
+          border: `1px solid ${colors.border}`,
+          boxShadow: [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
+          transform: !reduceMotion && pressed ? 'scale(0.98)' : 'scale(1)',
+          transition: reduceMotion
+            ? 'none'
+            : `background ${duration.fast}ms ${ease.out}, transform ${duration.fast}ms ${ease.out}`,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.xl }}>
+          <Mobius size={36} state={mobiusState} logoMode />
+          <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{
-              fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted,
-              marginTop: 6, lineHeight: 1.4,
-            }}>
-              {goal.hold_note || goal.routing_note}
+              fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>{goal.title}</div>
+            <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.cyan }}>
+              {goal.hold_note ? 'Held' : (STATE_LABEL[goal.state] ?? goal.state)}
+              {goal.assigned_to ? ` · ${goal.assigned_to}` : ''}
             </div>
-          )}
+            {(goal.hold_note || goal.routing_note) && (
+              <div style={{
+                fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted,
+                marginTop: 6, lineHeight: 1.4,
+              }}>
+                {goal.hold_note || goal.routing_note}
+              </div>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </Tooltip>
   );
 }, (a, b) =>
   a.goal.id === b.goal.id

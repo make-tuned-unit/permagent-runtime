@@ -20,6 +20,7 @@ import { Button } from '../common/Button';
 import { AsOf } from '../common/AsOf';
 import { useState, useCallback, useRef, useMemo, type CSSProperties } from 'react';
 
+import { Tooltip } from '../common/Tooltip';
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 function persistAndNotify(
@@ -497,29 +498,30 @@ function RemoveButton({ disabled, onClick }: { disabled: boolean; onClick: () =>
     // do by hand — redden on hover, and only when removable — is now the
     // primitive's `--pa-btn-*-hover` pair, held at the resting values when the
     // last card can't be removed.
-    <Button
-      colors={colors}
-      variant="bare"
-      type="button"
-      onClick={e => { e.stopPropagation(); if (!disabled) onClick(); }}
-      title={disabled ? 'Dashboard needs at least one card' : 'Remove this card'}
-      aria-label="Remove this card"
-      style={{
-        '--pa-btn-bg': disabled ? colors.cyanSoft : colors.surface,
-        '--pa-btn-fg': disabled ? colors.textDim : colors.textMuted,
-        '--pa-btn-border': 'transparent',
-        '--pa-btn-bg-hover': disabled ? colors.cyanSoft : colors.danger + '26',
-        '--pa-btn-fg-hover': disabled ? colors.textDim : colors.danger,
-        '--pa-btn-bg-active': disabled ? colors.cyanSoft : colors.danger + '26',
-        '--pa-btn-pad': '0',
-        '--pa-btn-radius': '50%',
-        position: 'absolute', top: 8, right: 8, zIndex: 5,
-        width: 24, height: 24,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-      } as CSSProperties}
-    >
-      <FiX size={14} />
-    </Button>
+    <Tooltip content={disabled ? 'Dashboard needs at least one card' : 'Remove this card'}>
+      <Button
+        colors={colors}
+        variant="bare"
+        type="button"
+        onClick={e => { e.stopPropagation(); if (!disabled) onClick(); }}
+        aria-label="Remove this card"
+        style={{
+          '--pa-btn-bg': disabled ? colors.cyanSoft : colors.surface,
+          '--pa-btn-fg': disabled ? colors.textDim : colors.textMuted,
+          '--pa-btn-border': 'transparent',
+          '--pa-btn-bg-hover': disabled ? colors.cyanSoft : colors.danger + '26',
+          '--pa-btn-fg-hover': disabled ? colors.textDim : colors.danger,
+          '--pa-btn-bg-active': disabled ? colors.cyanSoft : colors.danger + '26',
+          '--pa-btn-pad': '0',
+          '--pa-btn-radius': '50%',
+          position: 'absolute', top: 8, right: 8, zIndex: 5,
+          width: 24, height: 24,
+          cursor: disabled ? 'not-allowed' : 'pointer',
+        } as CSSProperties}
+      >
+        <FiX size={14} />
+      </Button>
+    </Tooltip>
   );
 }
 
@@ -527,30 +529,33 @@ function ResizeHandle({ onPointerDown }: { onPointerDown: (e: React.PointerEvent
   const { colors, reduceMotion } = useTheme();
   const [hover, setHover] = useState(false);
   return (
-    <div
-      onPointerDown={onPointerDown}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      title="Drag to resize — wider for a row, taller for a column"
-      style={{
-        position: 'absolute', bottom: 4, right: 4, width: 22, height: 22,
-        cursor: 'nwse-resize', zIndex: 5,
-        // Concentric to the card's own radius.lg corner, 4px in — the one
-        // clean corner-offset relationship in this file (D4).
-        borderRadius: concentric(radius.lg, 4),
-        background: hover ? colors.cyanGlow : colors.cyanSoft,
-        border: `1px solid ${colors.cyan}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}`,
-      }}
-    >
-      {/* Was a hand-drawn <svg> (two diagonal strokes). Feather has no
-          resize-handle glyph, but a corner arrow is the conventional
-          substitute and IS a glyph Feather has a name for — the
-          one-icon-system gate's own test: "ask whether Feather would have
-          a word for it; if it would, use Feather's." */}
-      <FiCornerRightDown size={12} color={colors.cyan} />
-    </div>
+    <Tooltip content="Drag to resize — wider for a row, taller for a column">
+      <span tabIndex={0} style={{ outline: 'none' }}>
+        <div
+          onPointerDown={onPointerDown}
+          onMouseEnter={() => setHover(true)}
+          onMouseLeave={() => setHover(false)}
+          style={{
+            position: 'absolute', bottom: 4, right: 4, width: 22, height: 22,
+            cursor: 'nwse-resize', zIndex: 5,
+            // Concentric to the card's own radius.lg corner, 4px in — the one
+            // clean corner-offset relationship in this file (D4).
+            borderRadius: concentric(radius.lg, 4),
+            background: hover ? colors.cyanGlow : colors.cyanSoft,
+            border: `1px solid ${colors.cyan}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}`,
+          }}
+        >
+          {/* Was a hand-drawn <svg> (two diagonal strokes). Feather has no
+              resize-handle glyph, but a corner arrow is the conventional
+              substitute and IS a glyph Feather has a name for — the
+              one-icon-system gate's own test: "ask whether Feather would have
+              a word for it; if it would, use Feather's." */}
+          <FiCornerRightDown size={12} color={colors.cyan} />
+        </div>
+      </span>
+    </Tooltip>
   );
 }
 

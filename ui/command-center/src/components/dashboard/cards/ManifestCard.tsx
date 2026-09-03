@@ -8,6 +8,7 @@ import { CardIcon } from './cardIcons';
 import { AsOf } from '../../common/AsOf';
 import { Button } from '../../common/Button';
 
+import { Tooltip } from '../../common/Tooltip';
 /**
  * How long a fetch-once card's reading stays plain before its age becomes part
  * of what it says. Five minutes: long enough that opening the dashboard and
@@ -316,17 +317,20 @@ export function ManifestCard({ manifest }: Props) {
             fontFamily: font.body, fontSize: 10.5, lineHeight: 1.45, minWidth: 0,
           }}>
             {inline.map((c, i) => (
-              <span
-                key={i}
-                title={`${c.label}: ${c.value}`}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: space.xs, color: colors.textDim }}
-              >
-                <CardIcon name={c.icon} size={11} />
-                <span style={{
-                  color: c.accent ? colors.cyan : colors.textMuted, fontWeight: 500,
-                  fontVariantNumeric: 'tabular-nums',
-                }}>{c.value}</span>
-              </span>
+              <Tooltip content={`${c.label}: ${c.value}`}>
+                <span tabIndex={0} style={{ outline: 'none' }}>
+                  <span
+                    key={i}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: space.xs, color: colors.textDim }}
+                  >
+                    <CardIcon name={c.icon} size={11} />
+                    <span style={{
+                      color: c.accent ? colors.cyan : colors.textMuted, fontWeight: 500,
+                      fontVariantNumeric: 'tabular-nums',
+                    }}>{c.value}</span>
+                  </span>
+                </span>
+              </Tooltip>
             ))}
           </div>
         )}
@@ -341,28 +345,31 @@ export function ManifestCard({ manifest }: Props) {
             }}
           >
             {forecast.map((c, i) => (
-              <div
-                key={i}
-                role="listitem"
-                title={c.sub ? `${c.label}: ${c.value} · ${c.sub}` : `${c.label}: ${c.value}`}
-                style={{
-                  flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
-                  alignItems: 'center', gap: space.xs, fontFamily: font.body,
-                }}
-              >
-                <span style={{
-                  fontSize: 9.5, fontWeight: 600, letterSpacing: '0.06em',
-                  textTransform: 'uppercase', color: colors.textDim,
-                }}>{c.label}</span>
-                <CardIcon name={c.icon} size={13} />
-                <span style={{
-                  fontSize: 10.5, color: colors.textMuted, fontVariantNumeric: 'tabular-nums',
-                  whiteSpace: 'nowrap',
-                }}>{c.value}</span>
-                {c.sub && (
-                  <span style={{ fontSize: 9, color: colors.textDim, whiteSpace: 'nowrap' }}>{c.sub}</span>
-                )}
-              </div>
+              <Tooltip content={c.sub ? `${c.label}: ${c.value} · ${c.sub}` : `${c.label}: ${c.value}`}>
+                <span tabIndex={0} style={{ outline: 'none' }}>
+                  <div
+                    key={i}
+                    role="listitem"
+                    style={{
+                      flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
+                      alignItems: 'center', gap: space.xs, fontFamily: font.body,
+                    }}
+                  >
+                    <span style={{
+                      fontSize: 9.5, fontWeight: 600, letterSpacing: '0.06em',
+                      textTransform: 'uppercase', color: colors.textDim,
+                    }}>{c.label}</span>
+                    <CardIcon name={c.icon} size={13} />
+                    <span style={{
+                      fontSize: 10.5, color: colors.textMuted, fontVariantNumeric: 'tabular-nums',
+                      whiteSpace: 'nowrap',
+                    }}>{c.value}</span>
+                    {c.sub && (
+                      <span style={{ fontSize: 9, color: colors.textDim, whiteSpace: 'nowrap' }}>{c.sub}</span>
+                    )}
+                  </div>
+                </span>
+              </Tooltip>
             ))}
           </div>
         )}
