@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
-import { font, radius, type, textSize } from '../../styles/tokens';
+import { font, radius, space, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button, MIN_PENDING_MS, SUCCESS_FLASH_MS } from '../common/Button';
 import { requiredKeysSet } from './financeLabs';
@@ -110,8 +110,8 @@ export function PolybotKeys({
         const saved = Boolean(r.masked);
         const open = editing === f.key;
         return (
-          <div key={f.key} data-testid="polybot-key-row" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', minHeight: 22 }}>
+          <div key={f.key} data-testid="polybot-key-row" style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
+            <div style={{ display: 'flex', gap: space.md, alignItems: 'center', minHeight: 22 }}>
               <span style={{ ...type.caption, color: colors.text, fontWeight: 600, flex: '0 1 140px' }}>
                 {f.label}
                 {f.required ? '' : ' · optional'}
@@ -150,7 +150,7 @@ export function PolybotKeys({
               )}
             </div>
             {open && (
-              <div data-testid="polybot-key-editor" style={{ display: 'flex', gap: 6 }}>
+              <div data-testid="polybot-key-editor" style={{ display: 'flex', gap: space.sm }}>
                 <input
                   type="password"
                   autoComplete="off"
@@ -161,7 +161,7 @@ export function PolybotKeys({
                   style={{
                     flex: 1, fontFamily: font.mono, fontSize: textSize.micro, color: colors.text,
                     background: colors.inputBg, border: `1px solid ${colors.border}`,
-                    borderRadius: radius.sm, padding: '6px 8px', outline: 'none',
+                    borderRadius: radius.sm, padding: `${space.sm}px ${space.md}px`, outline: 'none',
                   }}
                 />
                 <Tooltip content={!r.input.trim() ? 'Enter a value first' : undefined}>

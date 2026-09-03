@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
-import { font, radius, type, textSize } from '../../styles/tokens';
+import { font, radius, space, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button, MIN_PENDING_MS, SUCCESS_FLASH_MS } from '../common/Button';
 import { FUNDAMENTALS_KEY } from './financeLabs';
@@ -73,7 +73,7 @@ export function FundamentalsKey({
 
   return (
     <div data-testid="fundamentals-key" style={{ display: 'flex', flexDirection: 'column', gap: compact ? 6 : 8 }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: space.md, alignItems: 'center', flexWrap: 'wrap' }}>
         <span style={{ ...type.caption, color: colors.text, fontWeight: 600 }}>
           financialdatasets.ai
         </span>
@@ -95,7 +95,7 @@ export function FundamentalsKey({
         )}
       </div>
       {editing && (
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: space.sm }}>
           <input
             type="password"
             autoComplete="off"
@@ -107,7 +107,7 @@ export function FundamentalsKey({
             style={{
               flex: 1, fontFamily: font.mono, fontSize: textSize.micro, color: colors.text,
               background: colors.inputBg, border: `1px solid ${colors.border}`,
-              borderRadius: radius.sm, padding: '6px 8px', outline: 'none', minWidth: 0,
+              borderRadius: radius.sm, padding: `${space.sm}px ${space.md}px`, outline: 'none', minWidth: 0,
             }}
           />
           <Tooltip content={!input.trim() ? 'Enter a key first' : undefined}>
