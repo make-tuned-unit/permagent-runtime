@@ -301,108 +301,106 @@ export function GrowView() {
       {/* Header + project switcher, from ViewHeader so Grow wears the same
           header as Home, Projects, Automate and Build.
 
-          THE HARD SCROLL EDGE (D11). Apple assigns `soft` to iOS and `hard`
-          "mostly used on macOS": under pinned chrome the boundary is "a linear,
-          nearly opaque boundary between pinned controls and scrolling content",
-          not a blurred gradient. The header used to be transparent over the
-          workspace gradient, so the panel's first card showed faintly through
-          it and the boundary was a hairline over a see-through bar. An opaque
-          fill plus that one hairline IS the hard edge — one per view, as the
-          rule requires, and nothing else here is doing the separating.
+          THE HARD SCROLL EDGE (D11): `surface={colors.bg}` is ViewHeader's
+          own opaque fill for this (see `hardScrollEdgeSurface` in
+          ViewHeader.tsx). The header used to be transparent over the
+          workspace gradient, so the panel's first card showed faintly
+          through it and the boundary was a hairline over a see-through bar;
+          `surface` plus that one hairline IS the hard edge — one per view.
 
-          The brand ribbon that used to sit on this wrapper is gone: a 2px
-          cyan-to-purple gradient across the header is decoration standing in
-          for hierarchy (D13) and a second tint competing with the view's one
-          accented action (D8). It said nothing the title does not. */}
-      <div style={{ flexShrink: 0, background: colors.bg, position: 'relative', zIndex: 1 }}>
-        <ViewHeader
-          title="Grow"
-          subtitle={
-            <span style={{ display: 'flex', alignItems: 'center', gap: space.lg, flexWrap: 'wrap' }}>
-              <span>Take {active ? active.name : 'your project'} to market — {agentName} drafts with the project's real context.</span>
-              {active?.siteUrl && (
-                <a href={active.siteUrl} className={LINK_CLASS} target="_blank" rel="noreferrer" style={{ color: colors.cyan }}>site ↗</a>
-              )}
-              {active?.repoUrl && (
-                <a href={active.repoUrl} className={LINK_CLASS} target="_blank" rel="noreferrer" style={{ color: colors.cyan }}>repo ↗</a>
-              )}
-              {active && (
-                <Tooltip content={`Open ${active.name} in Projects`} placement="bottom">
-                <Button
-                  colors={colors}
-                  variant="bare"
-                  type="button"
-                  onClick={openInProjects}
-                  style={{
-                    '--pa-btn-fg': colors.cyan,
-                    '--pa-btn-fg-hover': colors.cyan,
-                    '--pa-btn-bg-hover': 'transparent',
-                    '--pa-btn-pad': '0',
-                    '--pa-btn-weight': 'inherit',
-                    fontSize: 'inherit',
-                    lineHeight: 'inherit',
-                  } as CSSProperties}
-                >open project ↗</Button>
-                </Tooltip>
-              )}
-              {/* Always rendered so the count fades in rather than popping the
-                  header line around on every project change. */}
-              <span style={{
-                color: colors.textDim,
-                opacity: ctx ? 1 : 0,
-                transition: reduceMotion ? undefined : `opacity ${duration.smooth}ms ${ease.smooth}`,
-              }}>
-                {ctx && `${ctx.goals} ${ctx.goals === 1 ? 'goal' : 'goals'} · ${ctx.people} ${ctx.people === 1 ? 'person' : 'people'}`}
-              </span>
-            </span>
-          }
-          actions={<>
-        {/* VIEW axis — segmented tab toggle (mirrors the Kanban/overview toggle) */}
-        {/* The strip is the container and each tab is its child, so the tab's
-            radius is the strip's minus the strip's padding — `concentric()`,
-            not a second number picked by eye (D4). `segmentedTab` derives it
-            from the same two values. */}
-        <div role="tablist" aria-label="Grow view" style={{ display: 'flex', gap: SEGMENT_STRIP_PAD, background: colors.bgDeeper, borderRadius: SEGMENT_STRIP_RADIUS, padding: SEGMENT_STRIP_PAD }}>
-          {LENSES.map((l) => {
-            const selected = lens === l;
-            return (
-              // `role="tab"` inside a tablist: keep the element and take the
-              // shared `.pa-btn` interaction rules rather than the Button
-              // component, which would flatten the tab semantics. Nothing here
-              // is awaited, so pending/success would be wrong for it anyway.
-              <button
-                key={l}
-                className="pa-btn"
-                role="tab"
-                aria-selected={selected}
-                tabIndex={0}
-                onClick={() => setLens(l)}
-                onFocus={() => setFocusLens(l)}
-                onBlur={() => setFocusLens(null)}
+          The brand ribbon that used to sit on the old wrapper div is gone: a
+          2px cyan-to-purple gradient across the header is decoration
+          standing in for hierarchy (D13) and a second tint competing with
+          the view's one accented action (D8). It said nothing the title
+          does not. */}
+      <ViewHeader
+        surface={colors.bg}
+        title="Grow"
+        subtitle={
+          <span style={{ display: 'flex', alignItems: 'center', gap: space.lg, flexWrap: 'wrap' }}>
+            <span>Take {active ? active.name : 'your project'} to market — {agentName} drafts with the project's real context.</span>
+            {active?.siteUrl && (
+              <a href={active.siteUrl} className={LINK_CLASS} target="_blank" rel="noreferrer" style={{ color: colors.cyan }}>site ↗</a>
+            )}
+            {active?.repoUrl && (
+              <a href={active.repoUrl} className={LINK_CLASS} target="_blank" rel="noreferrer" style={{ color: colors.cyan }}>repo ↗</a>
+            )}
+            {active && (
+              <Tooltip content={`Open ${active.name} in Projects`} placement="bottom">
+              <Button
+                colors={colors}
+                variant="bare"
+                type="button"
+                onClick={openInProjects}
                 style={{
-                  ...segmentedTab(colors, selected),
-                  boxShadow: focusLens === l ? `0 0 0 2px ${colors.borderHi}` : 'none',
-                }}
-              >{LENS_LABELS[l]}</button>
-            );
-          })}
-        </div>
-        <select
-          value={pendingId ?? activeId ?? ''}
-          onChange={(e) => switchProject(e.target.value)}
-          aria-label="Select project"
-          className={FIELD_CLASS}
-          style={{ ...growField(colors), borderRadius: radius.md, fontSize: textSize.small }}
-        >
-          {/* The shared selection can point at a project Grow doesn't track.
-              An unlisted value would render the switcher blank, which reads as
-              "no project" rather than "not this one". */}
-          {activeId && !active && <option value={activeId} disabled>Not tracked here</option>}
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-          </>}
-        />
+                  '--pa-btn-fg': colors.cyan,
+                  '--pa-btn-fg-hover': colors.cyan,
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-pad': '0',
+                  '--pa-btn-weight': 'inherit',
+                  fontSize: 'inherit',
+                  lineHeight: 'inherit',
+                } as CSSProperties}
+              >open project ↗</Button>
+              </Tooltip>
+            )}
+            {/* Always rendered so the count fades in rather than popping the
+                header line around on every project change. */}
+            <span style={{
+              color: colors.textDim,
+              opacity: ctx ? 1 : 0,
+              transition: reduceMotion ? undefined : `opacity ${duration.smooth}ms ${ease.smooth}`,
+            }}>
+              {ctx && `${ctx.goals} ${ctx.goals === 1 ? 'goal' : 'goals'} · ${ctx.people} ${ctx.people === 1 ? 'person' : 'people'}`}
+            </span>
+          </span>
+        }
+        actions={<>
+      {/* VIEW axis — segmented tab toggle (mirrors the Kanban/overview toggle) */}
+      {/* The strip is the container and each tab is its child, so the tab's
+          radius is the strip's minus the strip's padding — `concentric()`,
+          not a second number picked by eye (D4). `segmentedTab` derives it
+          from the same two values. */}
+      <div role="tablist" aria-label="Grow view" style={{ display: 'flex', gap: SEGMENT_STRIP_PAD, background: colors.bgDeeper, borderRadius: SEGMENT_STRIP_RADIUS, padding: SEGMENT_STRIP_PAD }}>
+        {LENSES.map((l) => {
+          const selected = lens === l;
+          return (
+            // `role="tab"` inside a tablist: keep the element and take the
+            // shared `.pa-btn` interaction rules rather than the Button
+            // component, which would flatten the tab semantics. Nothing here
+            // is awaited, so pending/success would be wrong for it anyway.
+            <button
+              key={l}
+              className="pa-btn"
+              role="tab"
+              aria-selected={selected}
+              tabIndex={0}
+              onClick={() => setLens(l)}
+              onFocus={() => setFocusLens(l)}
+              onBlur={() => setFocusLens(null)}
+              style={{
+                ...segmentedTab(colors, selected),
+                boxShadow: focusLens === l ? `0 0 0 2px ${colors.borderHi}` : 'none',
+              }}
+            >{LENS_LABELS[l]}</button>
+          );
+        })}
       </div>
+      <select
+        value={pendingId ?? activeId ?? ''}
+        onChange={(e) => switchProject(e.target.value)}
+        aria-label="Select project"
+        className={FIELD_CLASS}
+        style={{ ...growField(colors), borderRadius: radius.md, fontSize: textSize.small }}
+      >
+        {/* The shared selection can point at a project Grow doesn't track.
+            An unlisted value would render the switcher blank, which reads as
+            "no project" rather than "not this one". */}
+        {activeId && !active && <option value={activeId} disabled>Not tracked here</option>}
+        {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+      </select>
+        </>}
+      />
 
       {projectsState === 'error' ? (
         <ErrorState

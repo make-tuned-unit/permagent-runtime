@@ -83,10 +83,10 @@ export function BootScreen({ onReady }: Props) {
   // D9: spring token, under 500ms, gated on reduce motion — a plain instant
   // cut with the setting on, same as the splash it follows.
   const fade = reduceMotion ? 'none' : `opacity ${duration.smooth}ms ${ease.smooth}`;
-  // Same Mobius reduce-motion mitigation as Splash.tsx: routing through
-  // 'idle' uses the one state Mobius.tsx already gates correctly. See
-  // LANE_LOG.md / PR body "requests for other lanes" for the underlying bug.
-  const mobiusState: MobiusState = reduceMotion ? 'idle' : (status === 'failed' ? 'sleeping' : 'calibrating');
+  // No reduce-motion routing needed here: Mobius freezes every state under
+  // the setting at the source (see the `motionDisabled` gate in Mobius.tsx),
+  // so 'calibrating'/'sleeping' are safe to use directly.
+  const mobiusState: MobiusState = status === 'failed' ? 'sleeping' : 'calibrating';
 
   return (
     <div

@@ -62,11 +62,10 @@ export function Splash({ onDone }: Props) {
         transition: fadeOut,
       }}
     >
-      {/* Reduce Motion routes through Mobius's own (already-correct) idle
-       *  gate rather than the 'thinking' loop, which does not stop cycling
-       *  frames under prefers-reduced-motion — Mobius.tsx isn't owned by this
-       *  lane; see LANE_LOG.md / PR body "requests for other lanes". */}
-      <Mobius size={180} state={reduceMotion ? 'idle' : 'thinking'} glow={1} frameStep={2} />
+      {/* Mobius freezes every state under Reduce Motion at the source, so the
+       *  'thinking' loop is safe to use directly here regardless of the
+       *  setting — see the `motionDisabled` gate in Mobius.tsx. */}
+      <Mobius size={180} state="thinking" glow={1} frameStep={2} />
 
       {/* ===== TAGLINE LOCKED =====
         * Format: "Built to grow with you. Forever."

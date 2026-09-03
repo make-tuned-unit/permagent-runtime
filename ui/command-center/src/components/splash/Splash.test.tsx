@@ -1,10 +1,9 @@
 /** @vitest-environment jsdom
  *
  * Splash — the boot logo. Covers the tagline reveal sequence, the click-to-
- * skip affordance, and the reduce-motion gate this lane's brief calls out:
- * Mobius only stops animating on its own for the `idle` state, so Splash has
- * to route through that state under reduce motion rather than trust the
- * `thinking` loop to respect the setting (it does not — see Mobius.tsx).
+ * skip affordance, and that the `thinking` loop it always renders freezes
+ * under reduce motion via Mobius's own gate (Mobius.tsx `motionDisabled`) —
+ * Splash no longer needs to route through `state="idle"` itself.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -77,13 +76,12 @@ describe('Splash', () => {
     expect(img?.getAttribute('src')).toContain('mobius/frame_000.webp');
   });
 
-  it('reduce motion: the orb is static (routed through the idle-gated state), not the thinking loop', () => {
+  it('reduce motion: the orb is static, not the thinking loop', () => {
     setReduceMotion(true);
     act(() => { root.render(<Splash onDone={() => {}} />); });
     const img = container.querySelector('img');
-    // Mobius disables animation for `idle` under reduce motion and falls back
-    // to the static `logo.webp`, which is the whole point of routing through
-    // it — see Mobius.tsx `idleDisabled`.
+    // Mobius disables animation for every state under reduce motion and
+    // falls back to the static `logo.webp` — see Mobius.tsx `motionDisabled`.
     expect(img?.getAttribute('src')).toContain('mobius/logo.webp');
   });
 
