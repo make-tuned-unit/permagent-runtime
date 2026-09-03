@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, type CSSProperties } from 'react';
 import { FiPlus, FiTrash2, FiMessageSquare, FiX } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, space } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { ConfirmDialog } from '../common/ConfirmDialog';
@@ -169,7 +169,7 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
               '--pa-btn-radius': `${radius.xs}px`,
               fontFamily: font.mono,
               fontSize: 10,
-              gap: 4,
+              gap: space.xs,
             } as CSSProperties}
           >
             <FiPlus size={12} /> New
