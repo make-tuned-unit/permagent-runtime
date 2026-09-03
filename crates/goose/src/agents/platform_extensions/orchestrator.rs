@@ -9398,6 +9398,13 @@ mod tests {
             .with_writer(move || sink.clone())
             .finish();
         let _guard = tracing::subscriber::set_default(subscriber);
+        // `tracing` caches per-callsite interest across every registered
+        // dispatcher. When tests install subscribers concurrently, a callsite
+        // first evaluated under another test's dispatcher can be cached as
+        // "not interested" and skip this thread-local one, so the capture
+        // comes back empty. Rebuilding the cache after installing the
+        // subscriber is the documented remedy.
+        tracing::callsite::rebuild_interest_cache();
         f.await;
         let bytes = buf.lock().unwrap().clone();
         String::from_utf8_lossy(&bytes).to_string()
