@@ -1,6 +1,6 @@
 import { type CSSProperties } from 'react';
 import { useTheme } from '../../styles/useTheme';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useVoices, useVoicePreview } from '../../lib/useVoices';
 import { Button } from '../common/Button';
 import { Tooltip } from '../common/Tooltip';
@@ -53,7 +53,7 @@ export function VoicePicker({
   if (!ready) {
     const downloading = !!status?.downloading || (downloadPercent > 0 && downloadPercent < 100);
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         <span style={{ color: colors.textDim, fontSize: textSize.small }}>
           Voice models aren’t downloaded yet (~353&nbsp;MB, one time). Download to enable spoken voice.
         </span>
@@ -87,7 +87,7 @@ export function VoicePicker({
   }
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: space.md, width: '100%' }}>
       <select value={effective ?? ''} onChange={e => onChange(e.target.value)} style={selectStyle(colors)}>
         {[...groups.entries()].map(([lang, vs]) => (
           <optgroup key={lang} label={lang}>
