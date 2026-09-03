@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useState, type CSSProperties } from 'react';
-import { font, radius, type, textSize } from '../../styles/tokens';
+import { font, radius, space, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
@@ -159,7 +159,7 @@ function CalendarImportNote({
   const { colors } = useTheme();
   const line = calendarImportLine(state);
   return (
-    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: space.md }}>
       <Tooltip content={line.title}>
         <span tabIndex={0} style={{ outline: 'none' }}>
           <span
@@ -191,7 +191,7 @@ function ModeToggle({ mode, onChange }: { mode: PeopleMode; onChange: (m: People
   ];
   return (
     <div style={{
-      display: 'inline-flex', gap: 2, padding: 2, borderRadius: radius.md,
+      display: 'inline-flex', gap: space.xxs, padding: space.xxs, borderRadius: radius.md,
       background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
     }}>
       {tabs.map(t => {
