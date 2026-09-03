@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { FiExternalLink, FiVolume2, FiVolumeX, FiX } from 'react-icons/fi';
 import { Button } from '../common/Button';
+import { hardScrollEdgeSurface } from '../common/ViewHeader';
 import { ChatView } from './ChatView';
 import { useCommandCenter } from '../../lib/store';
 import { createChatWindow } from '../../lib/chatWindow';
@@ -194,20 +195,22 @@ export function ChatDock() {
         {/* Dock header — detach + close.
             D11: on macOS the boundary under pinned chrome is the HARD scroll
             edge — "a linear, nearly opaque boundary between pinned controls and
-            scrolling content", not a soft gradient. Opaque header fill plus one
-            hairline, and the transcript scrolls under it. That hairline is the
-            whole boundary; everything else here is spacing (D13). */}
+            scrolling content", not a soft gradient. `hardScrollEdgeSurface`
+            (ViewHeader.tsx) is that opaque fill; the transcript scrolls under
+            it, and the border below is the one hairline that completes the
+            boundary — everything else here is spacing (D13). This header
+            isn't built from <ViewHeader> (no title/subtitle, just a label and
+            controls), so it takes the mechanic as a standalone style fragment
+            rather than the whole component. */}
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: space.md,
             padding: `${space.lg}px ${space.xl}px`,
-            background: colors.surface,
             borderBottom: `1px solid ${colors.border}`,
             flexShrink: 0,
-            position: 'relative',
-            zIndex: 1,
+            ...hardScrollEdgeSurface(colors.surface),
           }}
         >
           <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em', textTransform: 'uppercase' }}>

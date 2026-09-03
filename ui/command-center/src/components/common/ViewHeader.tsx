@@ -13,9 +13,31 @@
  * line takes `type.micro`. Nothing here hardcodes a font size — retune the ramp
  * and every view follows.
  */
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { font, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+
+/**
+ * The opaque half of D11's hard scroll edge, as a standalone style fragment.
+ *
+ * Apple: under pinned chrome the boundary on macOS is "a linear, nearly
+ * opaque boundary between pinned controls and scrolling content" — an opaque
+ * fill behind the header plus the header's own border, not a see-through bar
+ * with a hairline floating over whatever scrolls beneath it. `position:
+ * relative` + `zIndex: 1` keep that fill on top of the scrolling content it
+ * is meant to hide.
+ *
+ * `ViewHeader`'s own `surface` prop applies this to its root div. Exported
+ * separately for pinned headers that are not built from `<ViewHeader>` at
+ * all (the chat dock's own header, `ChatDock.tsx`) — same mechanic, so
+ * "views stop doing it themselves" isn't only true for `ViewHeader` callers.
+ * The fill color itself is never chosen here: it depends on what sits behind
+ * the header on that screen (`colors.bg`, `colors.surface`, a gradient
+ * stand-in, …), so callers always pass their own.
+ */
+export function hardScrollEdgeSurface(background: string): CSSProperties {
+  return { background, position: 'relative', zIndex: 1 };
+}
 
 export interface ViewHeaderProps {
   /** The view's name — always the tab you are on, so the header answers
@@ -35,9 +57,15 @@ export interface ViewHeaderProps {
   afterTitle?: ReactNode;
   /** Controls pinned to the right edge (search, buttons, indicators). */
   actions?: ReactNode;
+  /** Opaque fill that turns this header into D11's hard scroll edge — see
+   *  `hardScrollEdgeSurface`. Omit it and the header stays transparent (the
+   *  historical default), which is only correct when whatever sits behind
+   *  the header is already opaque on its own. Pass the view's own fill
+   *  (`colors.bg`, `colors.surface`, …) when content can scroll behind it. */
+  surface?: string;
 }
 
-export function ViewHeader({ title, subtitle, leading, afterTitle, actions }: ViewHeaderProps) {
+export function ViewHeader({ title, subtitle, leading, afterTitle, actions, surface }: ViewHeaderProps) {
   const { colors } = useTheme();
 
   return (
@@ -58,6 +86,7 @@ export function ViewHeader({ title, subtitle, leading, afterTitle, actions }: Vi
         // switching tabs doesn't shift the content below by a few pixels.
         minHeight: 64,
         boxSizing: 'border-box',
+        ...(surface ? hardScrollEdgeSurface(surface) : null),
       }}
     >
       {leading}
