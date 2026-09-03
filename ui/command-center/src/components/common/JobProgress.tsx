@@ -30,7 +30,7 @@
  */
 
 import { type CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from './Button';
 import type { LongRunningJob } from '../../hooks/useLongRunningJob';
@@ -63,7 +63,7 @@ export function JobProgress({ job, label, onStop, onRetry, style }: JobProgressP
   const determinate = percent !== null;
 
   const line: CSSProperties = {
-    display: 'flex', alignItems: 'center', gap: 8,
+    display: 'flex', alignItems: 'center', gap: space.md,
     fontFamily: font.body, fontSize: textSize.micro,
   };
 
@@ -73,7 +73,7 @@ export function JobProgress({ job, label, onStop, onRetry, style }: JobProgressP
       data-phase={phase}
       role="status"
       aria-live="polite"
-      style={{ display: 'flex', flexDirection: 'column', gap: 6, ...style }}
+      style={{ display: 'flex', flexDirection: 'column', gap: space.sm, ...style }}
     >
       {job.running && (
         <>
@@ -97,7 +97,7 @@ export function JobProgress({ job, label, onStop, onRetry, style }: JobProgressP
             <span style={{ fontFamily: font.mono, color: colors.textMuted, minWidth: 0 }}>
               {short([reading.stage, reading.status ?? label].filter(Boolean).join(' · '))}
             </span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: space.md, flexShrink: 0 }}>
               {determinate && (
                 <span
                   data-testid="job-progress-percent"

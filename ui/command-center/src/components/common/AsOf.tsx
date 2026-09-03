@@ -15,7 +15,7 @@
 
 import { useTheme } from '../../styles/useTheme';
 import { useFreshness, type UseFreshnessOptions } from '../../hooks/useFreshness';
-import { radius } from '../../styles/tokens';
+import { radius, space } from '../../styles/tokens';
 import { Tooltip } from './Tooltip';
 
 export interface AsOfProps extends UseFreshnessOptions {
@@ -44,7 +44,7 @@ export function AsOf({ asOf, prefix, suffix, dot, 'data-testid': testId, ...opti
     <span
       data-testid={testId}
       tabIndex={freshness.exact ? 0 : undefined}
-      style={{ color, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+      style={{ color, display: 'inline-flex', alignItems: 'center', gap: space.sm }}
     >
       {dot && freshness.stale && (
         <span

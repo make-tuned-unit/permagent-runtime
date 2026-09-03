@@ -52,7 +52,7 @@ export function StatRow({ left, sub, right }: { left: React.ReactNode; sub?: Rea
           {left}
         </div>
         {sub != null && (
-          <div style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono, marginTop: space.xxs, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {sub}
           </div>
         )}
