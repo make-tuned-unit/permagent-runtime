@@ -37,6 +37,7 @@ import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
 import { createBoundsPump } from './boundsPump';
 
+import { Tooltip } from '../common/Tooltip';
 // ── Tauri API loader (cached, no module-level mutation) ──
 
 interface TauriApi {
@@ -1210,66 +1211,76 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
               URL list we keep ourselves — that is the "real history" the 2026-07
               audit was waiting for before restoring these. */}
           <div className="flex items-center" style={{ gap: CHROME_GEOM.bookmarksGap }}>
-            <Button
-              colors={colors}
-              variant="bare"
-              onClick={() => goHistory(false)}
-              style={navIconVars}
-              title="Back"
-              aria-label="Back"
-              disabled={!navState.canGoBack}
-            >
-              <FiChevronLeft size={16} />
-            </Button>
-            <Button
-              colors={colors}
-              variant="bare"
-              onClick={() => goHistory(true)}
-              style={navIconVars}
-              title="Forward"
-              aria-label="Forward"
-              disabled={!navState.canGoForward}
-            >
-              <FiChevronRight size={16} />
-            </Button>
-            <Button
-              colors={colors}
-              variant="bare"
-              onClick={handleReload}
-              style={{ ...navIconVars, '--pa-btn-fg-hover': colors.text } as CSSProperties}
-              title="Reload (Cmd+R)"
-              aria-label="Reload"
-              disabled={!activeTab?.webviewId}
-            >
-              <FiRefreshCw size={14} className={activeTab?.loading ? 'animate-spin' : ''} />
-            </Button>
-            <Button
-              colors={colors}
-              variant="bare"
-              onClick={saveToInbox}
-              style={{
-                ...navIconVars,
-                '--pa-btn-fg':
-                  savingToInbox === 'done'
-                    ? colors.cyan
-                    : savingToInbox === 'failed'
-                      ? colors.danger
-                      : colors.textMuted,
-              } as CSSProperties}
-              title={
-                savingToInbox === 'done'
+            <Tooltip content="Back">
+              <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  onClick={() => goHistory(false)}
+                  style={navIconVars}
+                  aria-label="Back"
+                  disabled={!navState.canGoBack}
+                >
+                  <FiChevronLeft size={16} />
+                </Button>
+              </span>
+            </Tooltip>
+            <Tooltip content="Forward">
+              <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  onClick={() => goHistory(true)}
+                  style={navIconVars}
+                  aria-label="Forward"
+                  disabled={!navState.canGoForward}
+                >
+                  <FiChevronRight size={16} />
+                </Button>
+              </span>
+            </Tooltip>
+            <Tooltip content="Reload (Cmd+R)">
+              <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  onClick={handleReload}
+                  style={{ ...navIconVars, '--pa-btn-fg-hover': colors.text } as CSSProperties}
+                  aria-label="Reload"
+                  disabled={!activeTab?.webviewId}
+                >
+                  <FiRefreshCw size={14} className={activeTab?.loading ? 'animate-spin' : ''} />
+                </Button>
+              </span>
+            </Tooltip>
+            <Tooltip content={savingToInbox === 'done'
                   ? lastSavedFilename
                     ? `Saved "${lastSavedFilename}" to your inbox`
                     : 'Saved to your inbox'
                   : savingToInbox === 'failed'
                     ? 'Could not save this tab — see the console for why'
-                    : 'Save this page or document to your Downloads inbox'
-              }
-              aria-label="Save to inbox"
-              disabled={!activeTab?.webviewId || savingToInbox === 'busy'}
-            >
-              <FiInbox size={14} />
-            </Button>
+                    : 'Save this page or document to your Downloads inbox'}>
+              <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  onClick={saveToInbox}
+                  style={{
+                    ...navIconVars,
+                    '--pa-btn-fg':
+                      savingToInbox === 'done'
+                        ? colors.cyan
+                        : savingToInbox === 'failed'
+                          ? colors.danger
+                          : colors.textMuted,
+                  } as CSSProperties}
+                  aria-label="Save to inbox"
+                  disabled={!activeTab?.webviewId || savingToInbox === 'busy'}
+                >
+                  <FiInbox size={14} />
+                </Button>
+              </span>
+            </Tooltip>
           </div>
 
           {/* Address bar — opaque inset on glass (D2), concentric radius (D4). */}
