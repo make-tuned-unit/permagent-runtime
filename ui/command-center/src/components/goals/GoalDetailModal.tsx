@@ -24,7 +24,7 @@ import { useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { removeRoadmapGoal, setGoalAutoApprove, setGoalDependencies } from '../../lib/roadmapClient';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { DetailModal } from '../common/DetailModal';
@@ -322,7 +322,7 @@ export function GoalDetailModal({
           Couldn't load this goal.
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
           {card.description && (
             <div style={{
               fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.5,
@@ -353,7 +353,7 @@ export function GoalDetailModal({
                 Auto-approve
               </div>
               <label style={{
-                marginTop: 6, display: 'flex', alignItems: 'center', gap: 8,
+                marginTop: space.sm, display: 'flex', alignItems: 'center', gap: space.md,
                 fontSize: textSize.caption, color: colors.text,
                 cursor: autoApproveTogglable ? 'pointer' : 'default',
                 opacity: autoApproveTogglable ? 1 : 0.6,
@@ -369,14 +369,14 @@ export function GoalDetailModal({
                   {togglingAutoApprove ? ' — saving…' : ''}
                 </span>
               </label>
-              <div style={{ marginTop: 4, fontSize: textSize.micro, color: colors.textDim }}>
+              <div style={{ marginTop: space.xs, fontSize: textSize.micro, color: colors.textDim }}>
                 Only a verified pass auto-approves; failures still wait for you.
               </div>
               {autoApproveError && (
                 <div style={{
-                  marginTop: 6, fontSize: textSize.caption, color: colors.danger,
+                  marginTop: space.sm, fontSize: textSize.caption, color: colors.danger,
                   borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-                  background: colors.danger + '14', padding: '8px 12px',
+                  background: colors.danger + '14', padding: `${space.md}px ${space.xl}px`,
                 }}>
                   {autoApproveError}
                 </div>
@@ -388,7 +388,7 @@ export function GoalDetailModal({
           {isGoal && (
             <div>
               <div style={{
-                display: 'flex', alignItems: 'center', gap: 8,
+                display: 'flex', alignItems: 'center', gap: space.md,
                 fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
                 textTransform: 'uppercase', letterSpacing: '0.04em',
               }}>
@@ -419,7 +419,7 @@ export function GoalDetailModal({
                 )}
               </div>
               {editingDeps ? (
-                <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ marginTop: space.sm, display: 'flex', flexDirection: 'column', gap: space.sm }}>
                   {projectGoals.filter(g => g.id !== cardId).length === 0 ? (
                     <span style={{ fontSize: textSize.caption, color: colors.textDim }}>
                       No other goals in this project to depend on.
@@ -427,7 +427,7 @@ export function GoalDetailModal({
                   ) : (
                     projectGoals.filter(g => g.id !== cardId).map(g => (
                       <label key={g.id} style={{
-                        display: 'flex', alignItems: 'center', gap: 8,
+                        display: 'flex', alignItems: 'center', gap: space.md,
                         fontSize: textSize.caption, color: colors.text, cursor: 'pointer',
                       }}>
                         <input
@@ -440,7 +440,7 @@ export function GoalDetailModal({
                       </label>
                     ))
                   )}
-                  <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                  <div style={{ display: 'flex', gap: space.md, marginTop: space.xs }}>
                     <Button
                       colors={colors}
                       type="button"
@@ -470,7 +470,7 @@ export function GoalDetailModal({
                   </div>
                 </div>
               ) : (
-                <div style={{ marginTop: 6, fontSize: textSize.caption, color: colors.text }}>
+                <div style={{ marginTop: space.sm, fontSize: textSize.caption, color: colors.text }}>
                   {dependsOn.length === 0
                     ? <span style={{ color: colors.textDim }}>None — this is a root goal.</span>
                     : dependsOn.map(d => (
@@ -480,9 +480,9 @@ export function GoalDetailModal({
               )}
               {depsError && (
                 <div style={{
-                  marginTop: 6, fontSize: textSize.caption, color: colors.danger,
+                  marginTop: space.sm, fontSize: textSize.caption, color: colors.danger,
                   borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-                  background: colors.danger + '14', padding: '8px 12px',
+                  background: colors.danger + '14', padding: `${space.md}px ${space.xl}px`,
                 }}>
                   {depsError}
                 </div>
@@ -494,7 +494,7 @@ export function GoalDetailModal({
             <div style={{
               fontSize: textSize.caption, color: colors.text,
               borderRadius: radius.md, border: `1px solid ${colors.border}`,
-              background: colors.cyanSoft, padding: '8px 12px',
+              background: colors.cyanSoft, padding: `${space.md}px ${space.xl}px`,
             }}>
               Removed from the roadmap — dependents were rewired onto this goal's dependencies.
             </div>
@@ -521,7 +521,7 @@ export function GoalDetailModal({
             <div style={{
               fontSize: textSize.caption, color: colors.text,
               borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-              background: colors.danger + '14', padding: '8px 12px',
+              background: colors.danger + '14', padding: `${space.md}px ${space.xl}px`,
             }}>
               Goal cancelled — the worker was stopped.
             </div>
@@ -530,7 +530,7 @@ export function GoalDetailModal({
             <div style={{
               fontSize: textSize.caption, color: colors.danger,
               borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-              background: colors.danger + '14', padding: '8px 12px',
+              background: colors.danger + '14', padding: `${space.md}px ${space.xl}px`,
             }}>
               {cancelError}
             </div>
