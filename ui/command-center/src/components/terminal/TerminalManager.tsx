@@ -26,6 +26,7 @@ import {
   dangerWash,
 } from './terminalChrome';
 
+import { Tooltip } from '../common/Tooltip';
 export interface TerminalManagerHandle {
   createProjectTab: (
     cwd: string,
@@ -600,27 +601,29 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
         </div>
         <CycleTabsButton pane="terminal" onCycle={() => cycleTabs()} />
         {!detached && (
+          <Tooltip content="Pop out active terminal">
+            <Button
+              colors={colors}
+              variant="bare"
+              onClick={popOutActive}
+              aria-label="Pop out active terminal"
+              style={railIcon(colors.cyan, CHROME_GEOM.popOutPadX)}
+            >
+              <FiExternalLink size={13} />
+            </Button>
+          </Tooltip>
+        )}
+        <Tooltip content="New terminal (Cmd+T)">
           <Button
             colors={colors}
             variant="bare"
-            onClick={popOutActive}
-            title="Pop out active terminal"
-            aria-label="Pop out active terminal"
-            style={railIcon(colors.cyan, CHROME_GEOM.popOutPadX)}
+            onClick={handleNewTab}
+            aria-label="New terminal"
+            style={railIcon(colors.cyan, CHROME_GEOM.newTabPadX)}
           >
-            <FiExternalLink size={13} />
+            <FiPlus size={13} />
           </Button>
-        )}
-        <Button
-          colors={colors}
-          variant="bare"
-          onClick={handleNewTab}
-          title="New terminal (Cmd+T)"
-          aria-label="New terminal"
-          style={railIcon(colors.cyan, CHROME_GEOM.newTabPadX)}
-        >
-          <FiPlus size={13} />
-        </Button>
+        </Tooltip>
       </div>
 
       {/* PTY content layer — opaque theme bg; never glass (D1). Absolute
