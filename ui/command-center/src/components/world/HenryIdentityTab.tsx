@@ -7,6 +7,7 @@ import { duration, ease, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
+import { Tooltip } from '../common/Tooltip';
 // ── External link helper ─────────────────────────────────────────
 
 async function openExternal(url: string): Promise<void> {
@@ -105,14 +106,18 @@ export function HenryIdentityTab() {
               {id.name}
             </span>
             {connectivity !== 'ok' && (
-              <span style={{
-                width: 6,
-                height: 6,
-                borderRadius: radius.pill,
-                background: connectivityColor(colors, connectivity),
-                display: 'inline-block',
-                flexShrink: 0,
-              }} title={`Chain: ${connectivity}`} />
+              <Tooltip content={`Chain: ${connectivity}`}>
+                <span tabIndex={0} style={{ outline: 'none' }}>
+                  <span style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: radius.pill,
+                    background: connectivityColor(colors, connectivity),
+                    display: 'inline-block',
+                    flexShrink: 0,
+                  }} />
+                </span>
+              </Tooltip>
             )}
           </div>
           <div style={{

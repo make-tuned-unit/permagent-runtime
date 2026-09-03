@@ -10,6 +10,7 @@ import type { HudTab } from './HudShell';
 import { HenryIdentityTab } from './HenryIdentityTab';
 import { useOrchestratorName } from './shared/useOrchestratorName';
 
+import { Tooltip } from '../common/Tooltip';
 // ── Types ────────────────────────────────────────────────────────────
 
 type HenryState = 'idle' | 'in_conversation' | 'tool_call';
@@ -237,28 +238,29 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
                 {/* Ack = "seen", never approval (briefings.rs contract).
                     Wave-1 item 5: the unacked list previously grew forever —
                     no route, no button. */}
-                <Button
-                  colors={themeColors}
-                  variant="bare"
-                  type="button"
-                  title="Mark as seen"
-                  aria-label="Mark as seen"
-                  onClick={() => api.ackBriefings([b.id])
-                    .then(() => { setAckedIds((ids) => [...ids, b.id]); return true; })
-                    // The row stays and the next status load retells the truth,
-                    // so `false` keeps the button from ticking over a failure.
-                    .catch(() => false)}
-                  style={{
-                    '--pa-btn-fg': themeColors.textMuted,
-                    '--pa-btn-fg-hover': themeColors.text,
-                    '--pa-btn-bg-hover': themeColors.fillHover,
-                    '--pa-btn-pad': '2px 4px',
-                    '--pa-btn-radius': `${radius.xs}px`,
-                    marginLeft: 'auto', fontSize: textSize.micro, lineHeight: 1,
-                  } as CSSProperties}
-                >
-                  ✓
-                </Button>
+                <Tooltip content="Mark as seen">
+                  <Button
+                    colors={themeColors}
+                    variant="bare"
+                    type="button"
+                    aria-label="Mark as seen"
+                    onClick={() => api.ackBriefings([b.id])
+                      .then(() => { setAckedIds((ids) => [...ids, b.id]); return true; })
+                      // The row stays and the next status load retells the truth,
+                      // so `false` keeps the button from ticking over a failure.
+                      .catch(() => false)}
+                    style={{
+                      '--pa-btn-fg': themeColors.textMuted,
+                      '--pa-btn-fg-hover': themeColors.text,
+                      '--pa-btn-bg-hover': themeColors.fillHover,
+                      '--pa-btn-pad': '2px 4px',
+                      '--pa-btn-radius': `${radius.xs}px`,
+                      marginLeft: 'auto', fontSize: textSize.micro, lineHeight: 1,
+                    } as CSSProperties}
+                  >
+                    ✓
+                  </Button>
+                </Tooltip>
               </div>
               <div style={briefingSummaryStyle}>{b.summary}</div>
             </div>

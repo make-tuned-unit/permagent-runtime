@@ -14,6 +14,7 @@ import { ENV } from '../shared/palette';
 import { useCommandCenter, navigateToTool } from '../../../lib/store';
 import { radius } from '../../../styles/tokens';
 
+import { Tooltip } from '../../common/Tooltip';
 const ROW_Z = [0, -3.0];
 const STATION_X = [-2.4, 0, 2.4];
 const PLAQUE_Y = 2.35;
@@ -81,33 +82,34 @@ function PlaqueCard({
 
   return (
     <Html position={position} center distanceFactor={14} style={{ pointerEvents: 'none' }}>
-      <div
-        onClick={openDetail}
-        onPointerEnter={() => setHover(true)}
-        onPointerLeave={() => setHover(false)}
-        title="Open goal detail"
-        style={{
-          padding: '4px 8px',
-          borderRadius: radius.xs,
-          background: hover ? 'rgba(16, 22, 40, 0.92)' : 'rgba(10, 14, 26, 0.82)',
-          border: `1px solid ${accent}${hover ? 'aa' : '55'}`,
-          boxShadow: `0 0 ${hover ? 16 : 10}px ${accent}${hover ? '55' : '33'}`,
-          color: '#E8E4DD',
-          fontFamily: 'JetBrains Mono, monospace',
-          fontSize: 10,
-          maxWidth: 150,
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          textAlign: 'center',
-          pointerEvents: 'auto',
-          cursor: 'pointer',
-          transition: 'border-color 120ms, box-shadow 120ms, background 120ms',
-        }}
-      >
-        <span style={{ color: accent, marginRight: 5 }}>{working ? '⚒' : '◇'}</span>
-        {goal.title}
-      </div>
+      <Tooltip content="Open goal detail">
+        <div
+          onClick={openDetail}
+          onPointerEnter={() => setHover(true)}
+          onPointerLeave={() => setHover(false)}
+          style={{
+            padding: '4px 8px',
+            borderRadius: radius.xs,
+            background: hover ? 'rgba(16, 22, 40, 0.92)' : 'rgba(10, 14, 26, 0.82)',
+            border: `1px solid ${accent}${hover ? 'aa' : '55'}`,
+            boxShadow: `0 0 ${hover ? 16 : 10}px ${accent}${hover ? '55' : '33'}`,
+            color: '#E8E4DD',
+            fontFamily: 'JetBrains Mono, monospace',
+            fontSize: 10,
+            maxWidth: 150,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            textAlign: 'center',
+            pointerEvents: 'auto',
+            cursor: 'pointer',
+            transition: 'border-color 120ms, box-shadow 120ms, background 120ms',
+          }}
+        >
+          <span style={{ color: accent, marginRight: 5 }}>{working ? '⚒' : '◇'}</span>
+          {goal.title}
+        </div>
+      </Tooltip>
     </Html>
   );
 }
