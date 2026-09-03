@@ -1,7 +1,7 @@
 import { useState, useCallback, useId, type CSSProperties } from 'react';
 import { FiChevronRight, FiChevronDown, FiCheck, FiX, FiCopy } from 'react-icons/fi';
 import type { ToolCall } from '../../lib/store';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { GmailSearchResult } from './GmailSearchResult';
@@ -105,7 +105,7 @@ export function ToolResult({ call }: { call: ToolCall }) {
             ? `${radius.md}px ${radius.md}px 0 0`
             : `${radius.md}px`,
           display: 'flex', width: '100%', justifyContent: 'flex-start',
-          textAlign: 'left', gap: 8, borderWidth: 0,
+          textAlign: 'left', gap: space.md, borderWidth: 0,
           fontFamily: font.mono, fontSize: textSize.micro,
         } as CSSProperties}
       >
@@ -141,7 +141,7 @@ export function ToolResult({ call }: { call: ToolCall }) {
                 '--pa-btn-pad': '0',
                 fontFamily: font.mono,
                 fontSize: 9,
-                gap: 4,
+                gap: space.xs,
               } as CSSProperties}
             >
               {copied ? <><FiCheck size={9} style={{ color: colors.success }} /> Copied</> : <><FiCopy size={9} /> Raw JSON</>}
