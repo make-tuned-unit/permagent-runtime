@@ -541,9 +541,9 @@ describe('browser history controls', () => {
   });
 
   it('does not promise keyboard shortcuts it has not wired', () => {
-    const titles = BROWSER_TSX.match(/title="(Back|Forward)"/g) ?? [];
+    const titles = BROWSER_TSX.match(/Tooltip content="(Back|Forward)"/g) ?? [];
     expect(titles.length).toBe(2);
-    expect(BROWSER_TSX).not.toMatch(/title="Back \(Cmd|title="Forward \(Cmd/);
+    expect(BROWSER_TSX).not.toMatch(/Tooltip content="Back \(Cmd|Tooltip content="Forward \(Cmd/);
   });
 });
 

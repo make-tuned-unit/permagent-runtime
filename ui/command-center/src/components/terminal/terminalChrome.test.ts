@@ -162,11 +162,10 @@ describe('glass language on chrome only (gates 1–4, 7)', () => {
     expect(src).not.toContain('useGlass');
   });
 
-  it('keeps native title= tooltips until R3 ships a shared primitive', () => {
-    for (const name of CHROME_FILES) {
-      expect(read(name)).not.toMatch(/from ['"]\.\.\/common\/.*Tooltip/);
-    }
-    expect(read('TerminalManager.tsx')).toContain('title="New terminal (Cmd+T)"');
-    expect(read('TerminalManager.tsx')).toContain('title="Pop out active terminal"');
+  it('uses the shared Tooltip primitive on chrome tip controls', () => {
+    expect(read('TerminalManager.tsx')).toMatch(/from ['"]\.\.\/common\/Tooltip['"]/);
+    expect(read('TerminalManager.tsx')).toContain('Tooltip content="New terminal (Cmd+T)"');
+    expect(read('TerminalManager.tsx')).toContain('Tooltip content="Pop out active terminal"');
+    expect(read('TerminalManager.tsx')).not.toMatch(/\btitle="New terminal|\btitle="Pop out/);
   });
 });

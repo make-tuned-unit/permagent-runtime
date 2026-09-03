@@ -68,7 +68,7 @@ afterEach(() => {
 it('keeps the skill and says what happened when the delete fails', async () => {
   mocks.deleteSkill.mockResolvedValue(false);
   await act(async () => { root.render(<SkillDetailPanel skill={skill} />); });
-  await act(async () => { container.querySelector('[title="Delete skill"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await act(async () => { container.querySelector('[aria-label="Delete skill"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
 
   await act(async () => { buttonNamed(/^Delete$/).click(); });
   await advance(MIN_PENDING_MS + 50);
@@ -81,7 +81,7 @@ it('keeps the skill and says what happened when the delete fails', async () => {
 it('closes the panel when the delete lands', async () => {
   mocks.deleteSkill.mockResolvedValue(true);
   await act(async () => { root.render(<SkillDetailPanel skill={skill} />); });
-  await act(async () => { container.querySelector('[title="Delete skill"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await act(async () => { container.querySelector('[aria-label="Delete skill"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
 
   await act(async () => { buttonNamed(/^Delete$/).click(); });
   await advance(MIN_PENDING_MS + 50);

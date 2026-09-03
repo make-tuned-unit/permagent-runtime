@@ -158,12 +158,13 @@ describe('glass language on chrome only (gates 1–4, 7)', () => {
     expect(src).not.toContain('useGlass');
   });
 
-  it('keeps native title= tooltips until R3 ships a shared primitive', () => {
-    // No Tooltip import from components/common — that lane owns the primitive.
-    for (const name of CHROME_FILES) {
-      expect(read(name)).not.toMatch(/from ['\"]\.\.\/common\/.*Tooltip/);
-    }
-    expect(read('Browser.tsx')).toContain('title="Back"');
-    expect(read('BrowserTabs.tsx')).toContain('title="New tab (Cmd+T)"');
+  it('uses the shared Tooltip primitive on chrome tip controls', () => {
+    expect(read('Browser.tsx')).toMatch(/from ['\"]\.\.\/common\/Tooltip['\"]/);
+    expect(read('BrowserTabs.tsx')).toMatch(/from ['\"]\.\.\/common\/Tooltip['\"]/);
+    expect(read('BookmarksBar.tsx')).toMatch(/from ['\"]\.\.\/common\/Tooltip['\"]/);
+    expect(read('Browser.tsx')).toContain('Tooltip content="Back"');
+    expect(read('BrowserTabs.tsx')).toContain('Tooltip content="New tab (Cmd+T)"');
+    // No leftover native hover titles on tip-bearing hosts.
+    expect(read('Browser.tsx')).not.toMatch(/<Button[^>]*\btitle="/);
   });
 });

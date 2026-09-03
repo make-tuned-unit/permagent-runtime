@@ -95,9 +95,13 @@ describe('ProjectChip', () => {
 
     expect(container.textContent).toContain('nothing extra');
     const claude = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Claude');
-    expect(claude?.getAttribute('title') ?? '').toContain('subscription');
+    expect(claude).toBeTruthy();
+    await act(async () => { claude!.focus(); });
+    expect(document.querySelector('[role="tooltip"]')?.textContent ?? '').toContain('subscription');
     const permagent = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Permagent');
-    expect(permagent?.getAttribute('title') ?? '').toMatch(/not cheaper than Claude\/Codex/i);
+    expect(permagent).toBeTruthy();
+    await act(async () => { permagent!.focus(); });
+    expect(document.querySelector('[role="tooltip"]')?.textContent ?? '').toMatch(/not cheaper than Claude\/Codex/i);
   });
 });
 
