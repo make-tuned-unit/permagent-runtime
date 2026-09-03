@@ -26,6 +26,7 @@ import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { Project } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 type Result = { files: number; memoryKey: string };
 
 export function CodeIndexPanel({ project }: { project: Project }) {
@@ -115,33 +116,36 @@ export function CodeIndexPanel({ project }: { project: Project }) {
           </span>{' '}
           into your Brain, scoped to this project.
           {/* The code map's key, now a link back into the Brain (was inert text). */}
-          <Button
-            colors={colors}
-            variant="bare"
-            onClick={viewInBrain}
-            disabled={viewing}
-            title="View this code map in your Brain"
-            // `Button` wraps children in a `.pa-btn__label` span, which would
-            // put the truncating key in a box of its own and kill the ellipsis.
-            // `display: contents` dissolves the wrapper so the key and the icon
-            // are the button's own flex children, exactly as before.
-                        style={{
-              '--pa-btn-fg': colors.cyan,
-              '--pa-btn-bg-hover': 'transparent',
-              '--pa-btn-pad': '0',
-              '--pa-btn-weight': 'inherit',
-              marginTop: 3,
-              maxWidth: '100%',
-              gap: 5,
-              fontFamily: font.mono,
-              fontSize: 10,
-            } as CSSProperties}
-          >
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {result.memoryKey}
+          <Tooltip content="View this code map in your Brain">
+            <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+              <Button
+                colors={colors}
+                variant="bare"
+                onClick={viewInBrain}
+                disabled={viewing}
+                // `Button` wraps children in a `.pa-btn__label` span, which would
+                // put the truncating key in a box of its own and kill the ellipsis.
+                // `display: contents` dissolves the wrapper so the key and the icon
+                // are the button's own flex children, exactly as before.
+                            style={{
+                  '--pa-btn-fg': colors.cyan,
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-pad': '0',
+                  '--pa-btn-weight': 'inherit',
+                  marginTop: 3,
+                  maxWidth: '100%',
+                  gap: 5,
+                  fontFamily: font.mono,
+                  fontSize: 10,
+                } as CSSProperties}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {result.memoryKey}
+                </span>
+                <FiExternalLink size={10} style={{ flexShrink: 0 }} />
+              </Button>
             </span>
-            <FiExternalLink size={10} style={{ flexShrink: 0 }} />
-          </Button>
+          </Tooltip>
         </div>
       )}
     </Panel>

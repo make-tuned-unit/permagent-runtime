@@ -28,6 +28,7 @@ import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { Project, ProjectMemory } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 export function MemoriesPanel({ project }: { project: Project }) {
   const { colors } = useTheme();
   // White veils vanish on silver — flip to a faint graphite tint there.
@@ -81,21 +82,22 @@ export function MemoriesPanel({ project }: { project: Project }) {
             <span style={{ fontSize: 10, color: colors.textDim }}>
               {memories.length} linked
             </span>
-            <Button
-              colors={colors}
-              variant="bare"
-              onClick={load}
-              title="Refresh"
-              aria-label="Refresh memories"
-              style={{
-                '--pa-btn-fg': colors.textDim,
-                '--pa-btn-fg-hover': colors.textMuted,
-                '--pa-btn-bg-hover': 'transparent',
-                '--pa-btn-pad': '0',
-              } as CSSProperties}
-            >
-              <FiRefreshCw size={12} />
-            </Button>
+            <Tooltip content="Refresh">
+              <Button
+                colors={colors}
+                variant="bare"
+                onClick={load}
+                aria-label="Refresh memories"
+                style={{
+                  '--pa-btn-fg': colors.textDim,
+                  '--pa-btn-fg-hover': colors.textMuted,
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-pad': '0',
+                } as CSSProperties}
+              >
+                <FiRefreshCw size={12} />
+              </Button>
+            </Tooltip>
           </span>
         ) : undefined
       }
@@ -137,39 +139,40 @@ export function MemoriesPanel({ project }: { project: Project }) {
       {status === 'ready' && memories.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {memories.map(m => (
-            <button
-              key={m.id}
-              onClick={() => openInBrain(m)}
-              title="Open in Brain"
-              style={{
-                textAlign: 'left', width: '100%', cursor: 'pointer',
-                display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px',
-                borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}`,
-                color: colors.text, fontFamily: font.body, transition: 'border-color 150ms',
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                {/* Librarian description reads best; before enrichment it's null,
-                    so fall back to the raw content the Brain stored. */}
-                <div style={{
-                  fontSize: textSize.caption, color: colors.text, lineHeight: 1.5,
-                  display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-                }}>
-                  {m.description || m.content || '(empty memory)'}
+            <Tooltip content="Open in Brain">
+              <button
+                key={m.id}
+                onClick={() => openInBrain(m)}
+                style={{
+                  textAlign: 'left', width: '100%', cursor: 'pointer',
+                  display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px',
+                  borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}`,
+                  color: colors.text, fontFamily: font.body, transition: 'border-color 150ms',
+                }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  {/* Librarian description reads best; before enrichment it's null,
+                      so fall back to the raw content the Brain stored. */}
+                  <div style={{
+                    fontSize: textSize.caption, color: colors.text, lineHeight: 1.5,
+                    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                  }}>
+                    {m.description || m.content || '(empty memory)'}
+                  </div>
+                  <div style={{ fontSize: 10, color: colors.textDim, marginTop: 4, display: 'flex', gap: 8, alignItems: 'center', minWidth: 0 }}>
+                    <span style={{ flexShrink: 0 }}>{relativeTime(m.associated_at)}</span>
+                    {m.description && m.content && (
+                      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: font.mono, opacity: 0.85 }}>
+                        {m.content}
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <div style={{ fontSize: 10, color: colors.textDim, marginTop: 4, display: 'flex', gap: 8, alignItems: 'center', minWidth: 0 }}>
-                  <span style={{ flexShrink: 0 }}>{relativeTime(m.associated_at)}</span>
-                  {m.description && m.content && (
-                    <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: font.mono, opacity: 0.85 }}>
-                      {m.content}
-                    </span>
-                  )}
-                </div>
-              </div>
-              <FiExternalLink size={12} style={{ color: colors.cyan, flexShrink: 0, marginTop: 2 }} />
-            </button>
+                <FiExternalLink size={12} style={{ color: colors.cyan, flexShrink: 0, marginTop: 2 }} />
+              </button>
+            </Tooltip>
           ))}
         </div>
       )}

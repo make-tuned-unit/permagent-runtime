@@ -7,6 +7,7 @@ import { sparklinePolyline } from '../grow/growthTrend';
 import { Panel } from './Panel';
 import type { Project } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 /**
  * The Market card.
  *
@@ -215,9 +216,9 @@ export function MarketPanel({ project }: { project: Project }) {
 
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 3, fontFamily: font.mono, fontSize: 9, color: colors.textDim }}>
                   <span>{row.points} pts · {row.cadence}</span>
-                  {row.snapshotOnly && <span title="This source cannot hand over history; it accumulates one point per sweep.">snapshot-only</span>}
-                  {!row.officialSource && <span title="Not a supported API; used anyway, and said out loud.">unofficial source</span>}
-                  {row.lastError && <span style={{ color: colors.danger }} title={row.lastError}>collector error</span>}
+                  {row.snapshotOnly && <Tooltip content="This source cannot hand over history; it accumulates one point per sweep."><span tabIndex={0} style={{ outline: 'none' }}><span>snapshot-only</span></span></Tooltip>}
+                  {!row.officialSource && <Tooltip content="Not a supported API; used anyway, and said out loud."><span tabIndex={0} style={{ outline: 'none' }}><span>unofficial source</span></span></Tooltip>}
+                  {row.lastError && <Tooltip content={row.lastError}><span tabIndex={0} style={{ outline: 'none' }}><span style={{ color: colors.danger }}>collector error</span></span></Tooltip>}
                 </div>
               </div>
             );

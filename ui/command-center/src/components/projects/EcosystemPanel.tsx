@@ -9,6 +9,7 @@ import { Button } from '../common/Button';
 import { Panel } from './Panel';
 import type { Project } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 export interface ProjectIntelItem {
   id: string;
   kind: 'competitor' | 'partner' | 'adjacent';
@@ -171,25 +172,26 @@ export function EcosystemPanel({ project }: { project: Project }) {
               <div key={item.id} style={{ borderLeft: `2px solid ${colors.cyan}`, paddingLeft: 9 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                   <div style={{ color: colors.text, fontSize: textSize.caption, fontWeight: 600 }}>{item.name}</div>
-                  <Button
-                    colors={colors}
-                    variant="bare"
-                    type="button"
-                    aria-label={`Dismiss ${item.name}`}
-                    title="Dismiss"
-                    onClick={() => dismiss(item.id)}
-                    style={{
-                      '--pa-btn-fg': colors.textDim,
-                      '--pa-btn-fg-hover': colors.danger,
-                      '--pa-btn-bg-hover': 'transparent',
-                      '--pa-btn-pad': '2px',
-                      '--pa-btn-weight': 'inherit',
-                      fontSize: textSize.body,
-                      lineHeight: 1,
-                    } as CSSProperties}
-                  >
-                    ×
-                  </Button>
+                  <Tooltip content="Dismiss">
+                    <Button
+                      colors={colors}
+                      variant="bare"
+                      type="button"
+                      aria-label={`Dismiss ${item.name}`}
+                      onClick={() => dismiss(item.id)}
+                      style={{
+                        '--pa-btn-fg': colors.textDim,
+                        '--pa-btn-fg-hover': colors.danger,
+                        '--pa-btn-bg-hover': 'transparent',
+                        '--pa-btn-pad': '2px',
+                        '--pa-btn-weight': 'inherit',
+                        fontSize: textSize.body,
+                        lineHeight: 1,
+                      } as CSSProperties}
+                    >
+                      ×
+                    </Button>
+                  </Tooltip>
                 </div>
                 {item.note && <div style={{ color: colors.textMuted, fontSize: textSize.micro, marginTop: 2 }}>{item.note}</div>}
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 3, fontSize: 10 }}>

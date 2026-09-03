@@ -40,6 +40,7 @@ import {
   type StackEntry,
 } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 /** Composer state — used for both "add" and "edit" (id set = editing). */
 interface EntryForm {
   id: string | null;
@@ -347,15 +348,18 @@ export function StackPanel({ project }: { project: Project }) {
                           {entry.service_name}
                         </span>
                         {entry.identity ? (
-                          <span
-                            title="The login identity used for this service on this project"
-                            style={{
-                              fontSize: textSize.micro, color: colors.cyan, fontFamily: font.mono,
-                              overflowWrap: 'anywhere',
-                            }}
-                          >
-                            {entry.identity}
-                          </span>
+                          <Tooltip content="The login identity used for this service on this project">
+                            <span tabIndex={0} style={{ outline: 'none' }}>
+                              <span
+                                style={{
+                                  fontSize: textSize.micro, color: colors.cyan, fontFamily: font.mono,
+                                  overflowWrap: 'anywhere',
+                                }}
+                              >
+                                {entry.identity}
+                              </span>
+                            </span>
+                          </Tooltip>
                         ) : (
                           <span style={{ fontSize: textSize.micro, color: colors.textDim, fontStyle: 'italic' }}>
                             no identity recorded
@@ -371,59 +375,62 @@ export function StackPanel({ project }: { project: Project }) {
                         </div>
                       )}
                       {entry.dashboard_url && (
-                        <Button
-                          colors={colors}
-                          variant="bare"
-                          className="hover:underline"
-                          onClick={() => navigate(entry.dashboard_url!)}
-                          title={`Open ${entry.dashboard_url} in the in-app browser`}
-                          style={{
-                            '--pa-btn-fg': colors.cyan,
-                            '--pa-btn-bg-hover': 'transparent',
-                            '--pa-btn-pad': '0',
-                            '--pa-btn-weight': 600,
-                            marginTop: 4,
-                            gap: 4,
-                            fontFamily: font.body,
-                            fontSize: 10,
-                          } as CSSProperties}
-                        >
-                          Dashboard <FiExternalLink size={9} />
-                        </Button>
+                        <Tooltip content={`Open ${entry.dashboard_url} in the in-app browser`}>
+                          <Button
+                            colors={colors}
+                            variant="bare"
+                            className="hover:underline"
+                            onClick={() => navigate(entry.dashboard_url!)}
+                            style={{
+                              '--pa-btn-fg': colors.cyan,
+                              '--pa-btn-bg-hover': 'transparent',
+                              '--pa-btn-pad': '0',
+                              '--pa-btn-weight': 600,
+                              marginTop: 4,
+                              gap: 4,
+                              fontFamily: font.body,
+                              fontSize: 10,
+                            } as CSSProperties}
+                          >
+                            Dashboard <FiExternalLink size={9} />
+                          </Button>
+                        </Tooltip>
                       )}
                     </div>
-                    <Button
-                      colors={colors}
-                      variant="bare"
-                      onClick={() => startEdit(entry)}
-                      title="Edit entry"
-                      aria-label="Edit entry"
-                      style={{
-                        '--pa-btn-fg': colors.textDim,
-                        '--pa-btn-fg-hover': colors.cyan,
-                        '--pa-btn-bg-hover': 'transparent',
-                        '--pa-btn-pad': '2px',
-                        flexShrink: 0,
-                      } as CSSProperties}
-                    >
-                      <FiEdit2 size={13} />
-                    </Button>
-                    <Button
-                      colors={colors}
-                      variant="bare"
-                      onClick={() => remove(entry)}
-                      title="Remove entry"
-                      aria-label="Remove entry"
-                      style={{
-                        '--pa-btn-fg': colors.textDim,
-                        '--pa-btn-fg-hover': colors.danger,
-                        '--pa-btn-bg-hover': 'transparent',
-                        '--pa-btn-pad': '2px',
-                        flexShrink: 0,
-                      } as CSSProperties}
-                    >
-                      <FiTrash2 size={13} />
-                    </Button>
+                    <Tooltip content="Edit entry">
+                      <Button
+                        colors={colors}
+                        variant="bare"
+                        onClick={() => startEdit(entry)}
+                        aria-label="Edit entry"
+                        style={{
+                          '--pa-btn-fg': colors.textDim,
+                          '--pa-btn-fg-hover': colors.cyan,
+                          '--pa-btn-bg-hover': 'transparent',
+                          '--pa-btn-pad': '2px',
+                          flexShrink: 0,
+                        } as CSSProperties}
+                      >
+                        <FiEdit2 size={13} />
+                      </Button>
+                    </Tooltip>
+                    <Tooltip content="Remove entry">
+                      <Button
+                        colors={colors}
+                        variant="bare"
+                        onClick={() => remove(entry)}
+                        aria-label="Remove entry"
+                        style={{
+                          '--pa-btn-fg': colors.textDim,
+                          '--pa-btn-fg-hover': colors.danger,
+                          '--pa-btn-bg-hover': 'transparent',
+                          '--pa-btn-pad': '2px',
+                          flexShrink: 0,
+                        } as CSSProperties}
+                      >
+                        <FiTrash2 size={13} />
+                      </Button>
+                    </Tooltip>
                   </div>
                 ))}
               </div>

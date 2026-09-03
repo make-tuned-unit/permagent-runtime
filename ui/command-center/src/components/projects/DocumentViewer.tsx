@@ -26,6 +26,7 @@ import { Button } from '../common/Button';
 import { DetailModal } from '../common/DetailModal';
 import type { ProjectDocument } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 // ── The single dispatch point ────────────────────────────────────────────────
 
 type RendererKind = 'image' | 'pdf' | 'markdown' | 'csv' | 'text' | 'fallback';
@@ -282,24 +283,25 @@ function IconButton({ title, onClick, colors, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <Button
-      colors={colors}
-      variant="bare"
-      title={title}
-      // The only child is a glyph, so the title has to be said out loud too.
-      aria-label={title}
-      onClick={onClick}
-      style={{
-        '--pa-btn-fg': colors.textMuted,
-        '--pa-btn-fg-hover': colors.text,
-        '--pa-btn-bg-hover': 'transparent',
-        '--pa-btn-bg-active': 'transparent',
-        '--pa-btn-pad': '4px',
-        flexShrink: 0,
-      } as CSSProperties}
-    >
-      {children}
-    </Button>
+    <Tooltip content={title}>
+      <Button
+        colors={colors}
+        variant="bare"
+        // The only child is a glyph, so the title has to be said out loud too.
+        aria-label={title}
+        onClick={onClick}
+        style={{
+          '--pa-btn-fg': colors.textMuted,
+          '--pa-btn-fg-hover': colors.text,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-bg-active': 'transparent',
+          '--pa-btn-pad': '4px',
+          flexShrink: 0,
+        } as CSSProperties}
+      >
+        {children}
+      </Button>
+    </Tooltip>
   );
 }
 

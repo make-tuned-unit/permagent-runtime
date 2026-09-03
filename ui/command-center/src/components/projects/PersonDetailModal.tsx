@@ -57,6 +57,7 @@ import type { DeleteReport, MergeReport, Person, PersonActivity, PersonAssociati
 import { PersonFace } from '../people/PersonFace';
 import { MergePersonPanel } from '../people/MergePersonPanel';
 
+import { Tooltip } from '../common/Tooltip';
 /**
  * The relationships people actually record, offered by name. The graph stores
  * a free-form predicate and will take anything, so this is a set of
@@ -716,38 +717,38 @@ export function PersonDetailModal({
                 onStart={() => setAddingRelationship(true)} onCancel={() => setAddingRelationship(false)}
                 onTarget={setTargetId} onPredicate={setPredicate} onAdd={addRelationship} onRemove={removeRelationship} />
               <MeetingsSection
-                colors={colors}
-                personName={view.display_name}
-                rows={meetings}
-                projects={personProjects}
-                status={meetingsStatus}
-                adding={addingMeeting}
-                title={meetingTitle}
-                starts={meetingStarts}
-                notes={meetingNotes}
-                projectId={meetingProjectId}
-                followUp={followUp}
-                followUpAt={followUpAt}
-                followUpNote={followUpNote}
-                saving={savingMeeting}
-                onStart={() => {
-                  setAddingMeeting(true);
-                  setFollowUpAt(plusDaysLocal(meetingStarts || localDateTimeValue(), 7));
-                }}
-                onCancel={() => setAddingMeeting(false)}
-                onTitle={setMeetingTitle}
-                onStarts={v => {
-                  setMeetingStarts(v);
-                  if (followUp) setFollowUpAt(plusDaysLocal(v, 7));
-                }}
-                onNotes={setMeetingNotes}
-                onProject={setMeetingProjectId}
-                onFollowUp={setFollowUp}
-                onFollowUpAt={setFollowUpAt}
-                onFollowUpNote={setFollowUpNote}
-                onAdd={addMeeting}
-                onRetry={loadMeetings}
-                onFollowUpDone={markFollowUpDone}
+                    colors={colors}
+                    personName={view.display_name}
+                    rows={meetings}
+                    projects={personProjects}
+                    status={meetingsStatus}
+                    adding={addingMeeting}
+                    title={meetingTitle}
+                    starts={meetingStarts}
+                    notes={meetingNotes}
+                    projectId={meetingProjectId}
+                    followUp={followUp}
+                    followUpAt={followUpAt}
+                    followUpNote={followUpNote}
+                    saving={savingMeeting}
+                    onStart={() => {
+                      setAddingMeeting(true);
+                      setFollowUpAt(plusDaysLocal(meetingStarts || localDateTimeValue(), 7));
+                    }}
+                    onCancel={() => setAddingMeeting(false)}
+                    onTitle={setMeetingTitle}
+                    onStarts={v => {
+                      setMeetingStarts(v);
+                      if (followUp) setFollowUpAt(plusDaysLocal(v, 7));
+                    }}
+                    onNotes={setMeetingNotes}
+                    onProject={setMeetingProjectId}
+                    onFollowUp={setFollowUp}
+                    onFollowUpAt={setFollowUpAt}
+                    onFollowUpNote={setFollowUpNote}
+                    onAdd={addMeeting}
+                    onRetry={loadMeetings}
+                    onFollowUpDone={markFollowUpDone}
               />
               <PersonActivityTimeline colors={colors} rows={activity} status={activityStatus} onRetry={loadActivity} />
 
@@ -1080,25 +1081,26 @@ function LinkButton({ colors, label, title, onClick }: {
   onClick: () => void;
 }) {
   return (
-    <Button
-      colors={colors}
-      variant="bare"
-      className="hover:underline"
-      type="button"
-      onClick={e => { e.preventDefault(); e.stopPropagation(); onClick(); }}
-      title={title}
-      style={{
-        '--pa-btn-fg': colors.cyan,
-        '--pa-btn-bg-hover': 'transparent',
-        '--pa-btn-bg-active': 'transparent',
-        '--pa-btn-pad': '0',
-        fontSize: 'inherit', fontFamily: 'inherit',
-        gap: 4,
-      } as CSSProperties}
-    >
-      <FiExternalLink size={11} />
-      {label}
-    </Button>
+    <Tooltip content={title}>
+      <Button
+        colors={colors}
+        variant="bare"
+        className="hover:underline"
+        type="button"
+        onClick={e => { e.preventDefault(); e.stopPropagation(); onClick(); }}
+        style={{
+          '--pa-btn-fg': colors.cyan,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-bg-active': 'transparent',
+          '--pa-btn-pad': '0',
+          fontSize: 'inherit', fontFamily: 'inherit',
+          gap: 4,
+        } as CSSProperties}
+      >
+        <FiExternalLink size={11} />
+        {label}
+      </Button>
+    </Tooltip>
   );
 }
 
@@ -1123,10 +1125,10 @@ function EditForm({ colors, personName, draft, onChange }: {
               {label}
               {href && (
                 <LinkButton
-                  colors={colors}
-                  label={key === 'personal_site' ? 'Open site' : key === 'photo_url' ? 'Open image' : 'Open profile'}
-                  title={href}
-                  onClick={() => openInBrowser(href)}
+                    colors={colors}
+                    label={key === 'personal_site' ? 'Open site' : key === 'photo_url' ? 'Open image' : 'Open profile'}
+                    title={href}
+                    onClick={() => openInBrowser(href)}
                 />
               )}
             </span>

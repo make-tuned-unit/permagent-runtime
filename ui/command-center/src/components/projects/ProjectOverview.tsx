@@ -14,6 +14,7 @@ import { readBrief, readLinks, normalizeUrl, saveProjectSummary, type WorkspaceL
 import { PublishSequencePanel } from './PublishSequencePanel';
 import type { Project, BoardColumn, Card } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 // ── Project Overview ────────────────────────────────────────────────────────
 //
 // The "command-center dash" lens of the Projects tab (#471, Layer 1). A
@@ -274,26 +275,27 @@ export function WatcherInsightsPanel({ project }: { project: Project }) {
               {(i.cards ?? []).length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 5 }}>
                   {(i.cards ?? []).map(c => (
-                    <Button
-                      key={c.id}
-                      colors={colors}
-                      variant="bare"
-                      onClick={() => openCardOnBoard(project.id, c.id)}
-                      title={`Open "${c.title}" on the board`}
-                      style={{
-                        '--pa-btn-bg': colors.cyanSoft,
-                        '--pa-btn-fg': colors.cyan,
-                        '--pa-btn-bg-hover': colors.cyanSoft,
-                        '--pa-btn-bg-active': colors.cyanSoft,
-                        '--pa-btn-border-hover': colors.cyan,
-                        '--pa-btn-pad': '2px 7px',
-                        '--pa-btn-radius': `${radius.xs}px`,
-                        fontSize: 10, fontFamily: font.body, maxWidth: 260,
-                        overflow: 'hidden', whiteSpace: 'nowrap',
-                      } as CSSProperties}
-                    >
-                      {c.title}
-                    </Button>
+                    <Tooltip content={`Open "${c.title}" on the board`}>
+                      <Button
+                        key={c.id}
+                        colors={colors}
+                        variant="bare"
+                        onClick={() => openCardOnBoard(project.id, c.id)}
+                        style={{
+                          '--pa-btn-bg': colors.cyanSoft,
+                          '--pa-btn-fg': colors.cyan,
+                          '--pa-btn-bg-hover': colors.cyanSoft,
+                          '--pa-btn-bg-active': colors.cyanSoft,
+                          '--pa-btn-border-hover': colors.cyan,
+                          '--pa-btn-pad': '2px 7px',
+                          '--pa-btn-radius': `${radius.xs}px`,
+                          fontSize: 10, fontFamily: font.body, maxWidth: 260,
+                          overflow: 'hidden', whiteSpace: 'nowrap',
+                        } as CSSProperties}
+                      >
+                        {c.title}
+                      </Button>
+                    </Tooltip>
                   ))}
                 </div>
               )}

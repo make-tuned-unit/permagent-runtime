@@ -15,6 +15,7 @@ import { ViewHeader } from '../common/ViewHeader';
 import { StateBlock } from '../common/StateBlock';
 
 
+import { Tooltip } from '../common/Tooltip';
 function isProject(value: unknown): value is Project {
   if (!value || typeof value !== 'object') return false;
   const project = value as Record<string, unknown>;
@@ -1115,34 +1116,35 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
             expected to drag, so a near-miss starts a drag instead of opening a
             menu. It is now a 28px target with resting chrome and a `title`, so
             it is both hittable and identifiable before it is hovered. */}
-        <button
-          className="pa-btn"
-          data-testid={`card-menu-${card.id}`}
-          aria-label={`Card actions for ${card.title}`}
-          aria-haspopup="menu"
-          aria-expanded={showMenu}
-          title="Card actions"
-          onPointerDown={e => e.stopPropagation()}
-          onClick={e => { e.stopPropagation(); setShowMenu(m => !m); }}
-          style={{
-            '--pa-btn-bg': showMenu ? colors.surfaceHi : 'transparent',
-            '--pa-btn-fg': showMenu ? colors.text : colors.textDim,
-            '--pa-btn-border': showMenu ? colors.borderHi : colors.border,
-            '--pa-btn-bg-hover': colors.surfaceHi,
-            '--pa-btn-fg-hover': colors.text,
-            '--pa-btn-border-hover': colors.borderHi,
-            '--pa-btn-pad': '0',
-            // A floating control sitting at the card's inner corner, so its own
-            // corner is concentric with the card's (D4).
-            '--pa-btn-radius': `${CARD_CHIP_RADIUS}px`,
-            flexShrink: 0,
-            width: 28, height: 28, marginTop: -space.xs, marginRight: -space.sm,
-            lineHeight: 1, fontSize: textSize.body,
-            transition: reduceMotion ? 'none' : undefined,
-          } as CSSProperties}
-        >
-          ⋯
-        </button>
+        <Tooltip content="Card actions">
+          <button
+            className="pa-btn"
+            data-testid={`card-menu-${card.id}`}
+            aria-label={`Card actions for ${card.title}`}
+            aria-haspopup="menu"
+            aria-expanded={showMenu}
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); setShowMenu(m => !m); }}
+            style={{
+              '--pa-btn-bg': showMenu ? colors.surfaceHi : 'transparent',
+              '--pa-btn-fg': showMenu ? colors.text : colors.textDim,
+              '--pa-btn-border': showMenu ? colors.borderHi : colors.border,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-pad': '0',
+              // A floating control sitting at the card's inner corner, so its own
+              // corner is concentric with the card's (D4).
+              '--pa-btn-radius': `${CARD_CHIP_RADIUS}px`,
+              flexShrink: 0,
+              width: 28, height: 28, marginTop: -space.xs, marginRight: -space.sm,
+              lineHeight: 1, fontSize: textSize.body,
+              transition: reduceMotion ? 'none' : undefined,
+            } as CSSProperties}
+          >
+            ⋯
+          </button>
+        </Tooltip>
       </div>
       {card.description && (
         <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -1169,28 +1171,29 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
           }}
         />
       ) : dueDate ? (
-        <Button
-          colors={colors}
-          variant="bare"
-          onPointerDown={e => e.stopPropagation()}
-          onClick={e => { e.stopPropagation(); if (onSetDueDate) setEditingDue(true); }}
-          title={onSetDueDate ? 'Change the due date' : undefined}
-          style={{
-            '--pa-btn-bg': colors.cyanSoft,
-            '--pa-btn-fg': colors.cyan,
-            // Without a handler this chip is a label, not an affordance: it must
-            // not light up under the mouse as if it did something.
-            '--pa-btn-bg-hover': colors.cyanSoft,
-            '--pa-btn-bg-active': colors.cyanSoft,
-            '--pa-btn-border-hover': onSetDueDate ? colors.cyan : 'transparent',
-            '--pa-btn-pad': `1px ${space.sm}px`,
-            '--pa-btn-radius': `${CARD_CHIP_RADIUS}px`,
-            fontSize: textSize.micro, marginTop: space.xs, fontFamily: font.body,
-            cursor: onSetDueDate ? 'pointer' : 'default',
-          } as CSSProperties}
-        >
-          Due {dueDate}
-        </Button>
+        <Tooltip content={onSetDueDate ? 'Change the due date' : undefined}>
+          <Button
+            colors={colors}
+            variant="bare"
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); if (onSetDueDate) setEditingDue(true); }}
+            style={{
+              '--pa-btn-bg': colors.cyanSoft,
+              '--pa-btn-fg': colors.cyan,
+              // Without a handler this chip is a label, not an affordance: it must
+              // not light up under the mouse as if it did something.
+              '--pa-btn-bg-hover': colors.cyanSoft,
+              '--pa-btn-bg-active': colors.cyanSoft,
+              '--pa-btn-border-hover': onSetDueDate ? colors.cyan : 'transparent',
+              '--pa-btn-pad': `1px ${space.sm}px`,
+              '--pa-btn-radius': `${CARD_CHIP_RADIUS}px`,
+              fontSize: textSize.micro, marginTop: space.xs, fontFamily: font.body,
+              cursor: onSetDueDate ? 'pointer' : 'default',
+            } as CSSProperties}
+          >
+            Due {dueDate}
+          </Button>
+        </Tooltip>
       ) : null}
       {card.cardType !== 'standard' && (
         <span style={{

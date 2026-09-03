@@ -23,6 +23,7 @@ import { Panel } from './Panel';
 import { DocumentViewer, formatSize } from './DocumentViewer';
 import type { Project, ProjectDocument } from './types';
 
+import { Tooltip } from '../common/Tooltip';
 export function DocumentsPanel({ project }: { project: Project }) {
   const { colors } = useTheme();
   // White veils vanish on silver — flip to a faint graphite tint there.
@@ -216,49 +217,51 @@ export function DocumentsPanel({ project }: { project: Project }) {
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
               >
-                <Button
-                  colors={colors}
-                  variant="bare"
-                  onClick={() => setViewing(doc)}
-                  title="Open"
-                  // `contents` dissolves Button's `.pa-btn__label` wrapper so
-                  // the icon, the truncating filename and the size stay the
-                  // button's own flex row — otherwise the ellipsis is lost.
-                                    style={{
-                    '--pa-btn-fg': colors.text,
-                    '--pa-btn-bg-hover': 'transparent',
-                    '--pa-btn-fg-hover': colors.cyan,
-                    '--pa-btn-pad': '0',
-                    justifyContent: 'flex-start',
-                    textAlign: 'left',
-                    flex: 1,
-                    minWidth: 0,
-                    gap: 8,
-                    fontFamily: font.body,
-                  } as CSSProperties}
-                >
-                  <FiFile size={13} color={colors.textMuted} style={{ flexShrink: 0 }} />
-                  <span style={{ fontSize: textSize.caption, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {doc.filename}
-                  </span>
-                  <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0 }}>{formatSize(doc.size_bytes)}</span>
-                </Button>
-                <Button
-                  colors={colors}
-                  variant="bare"
-                  onClick={() => remove(doc)}
-                  title="Delete"
-                  aria-label="Delete"
-                  style={{
-                    '--pa-btn-fg': colors.textDim,
-                    '--pa-btn-fg-hover': colors.danger,
-                    '--pa-btn-bg-hover': 'transparent',
-                    '--pa-btn-pad': '2px',
-                    flexShrink: 0,
-                  } as CSSProperties}
-                >
-                  <FiTrash2 size={13} />
-                </Button>
+                <Tooltip content="Open">
+                  <Button
+                    colors={colors}
+                    variant="bare"
+                    onClick={() => setViewing(doc)}
+                    // `contents` dissolves Button's `.pa-btn__label` wrapper so
+                    // the icon, the truncating filename and the size stay the
+                    // button's own flex row — otherwise the ellipsis is lost.
+                                      style={{
+                      '--pa-btn-fg': colors.text,
+                      '--pa-btn-bg-hover': 'transparent',
+                      '--pa-btn-fg-hover': colors.cyan,
+                      '--pa-btn-pad': '0',
+                      justifyContent: 'flex-start',
+                      textAlign: 'left',
+                      flex: 1,
+                      minWidth: 0,
+                      gap: 8,
+                      fontFamily: font.body,
+                    } as CSSProperties}
+                  >
+                    <FiFile size={13} color={colors.textMuted} style={{ flexShrink: 0 }} />
+                    <span style={{ fontSize: textSize.caption, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {doc.filename}
+                    </span>
+                    <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0 }}>{formatSize(doc.size_bytes)}</span>
+                  </Button>
+                </Tooltip>
+                <Tooltip content="Delete">
+                  <Button
+                    colors={colors}
+                    variant="bare"
+                    onClick={() => remove(doc)}
+                    aria-label="Delete"
+                    style={{
+                      '--pa-btn-fg': colors.textDim,
+                      '--pa-btn-fg-hover': colors.danger,
+                      '--pa-btn-bg-hover': 'transparent',
+                      '--pa-btn-pad': '2px',
+                      flexShrink: 0,
+                    } as CSSProperties}
+                  >
+                    <FiTrash2 size={13} />
+                  </Button>
+                </Tooltip>
               </div>
             ))}
           </div>
