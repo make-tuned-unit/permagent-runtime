@@ -2,7 +2,7 @@ import { COLORS } from './constants';
 import { AGENT_TRIM } from './shared/palette';
 import { HudShell, Section } from './HudShell';
 import { Chip } from '../common/Chip';
-import { textSize } from '../../styles/tokens';
+import { space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 // The Reader — the local OCR / document-ingest pipeline (#336/#342). Unlike Henry and
@@ -39,7 +39,7 @@ export function ReaderHUD({ visible, onClose }: ReaderHUDProps) {
 
   return (
     <HudShell visible={visible} onClose={onClose} title="THE READER" statusPill={statusPill}>
-      <div style={{ padding: '4px 14px 8px' }}>
+      <div style={{ padding: `${space.xs}px 14px ${space.md}px` }}>
         <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           On-device OCR &amp; document ingest — turns dropped files into Brain memories,
           entirely on this machine.
@@ -65,7 +65,7 @@ export function ReaderHUD({ visible, onClose }: ReaderHUDProps) {
 function Bullet({ children }: { children: React.ReactNode }) {
   const { colors } = useTheme();
   return (
-    <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.7, display: 'flex', gap: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.7, display: 'flex', gap: space.md }}>
       <span style={{ color: READER_TRIM }}>·</span>
       <span>{children}</span>
     </div>

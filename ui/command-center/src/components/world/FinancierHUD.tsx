@@ -7,7 +7,7 @@ import { Button } from '../common/Button';
 import { Chip } from '../common/Chip';
 import { navigateToTool } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
-import { textSize } from '../../styles/tokens';
+import { space, textSize } from '../../styles/tokens';
 
 // The Financier — market research and the Finance tab ledger. Reports numbers;
 // never sizes a position and cannot place an order. Live state comes from the
@@ -52,7 +52,7 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
 
   return (
     <HudShell visible={visible} onClose={onClose} title="THE FINANCIER" statusPill={statusPill}>
-      <div style={{ padding: '4px 14px 8px' }}>
+      <div style={{ padding: `${space.xs}px 14px ${space.md}px` }}>
         <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           Owns the Finance tab. The Orchestrator can see the board and
           queries this desk for prices, the ledger, and Polybot. The Watcher
@@ -76,7 +76,7 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
         </div>
       </Section>
 
-      <div style={{ padding: '8px 14px 12px' }}>
+      <div style={{ padding: `${space.md}px 14px ${space.xl}px` }}>
         <Button
           colors={colors}
           variant="ghostOn"
@@ -103,7 +103,7 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
           OPEN THE FINANCE TAB
         </Button>
         {tabHint && (
-          <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 8 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.md }}>
             The Finance tab is not in this workspace yet — it is added on the next daemon start.
           </div>
         )}
@@ -115,7 +115,7 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
 function Bullet({ children }: { children: React.ReactNode }) {
   const { colors } = useTheme();
   return (
-    <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.7, display: 'flex', gap: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.7, display: 'flex', gap: space.md }}>
       <span style={{ color: FINANCIER_TRIM }}>·</span>
       <span>{children}</span>
     </div>

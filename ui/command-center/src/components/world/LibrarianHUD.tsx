@@ -3,7 +3,7 @@ import { COLORS } from './constants';
 import { api, eventsWsUrl } from '../../lib/api';
 import { wireEventType } from '../../lib/wireEvent';
 import { HudShell, Section, StatRow } from './HudShell';
-import { duration, ease, radius, textSize } from '../../styles/tokens';
+import { duration, ease, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -247,7 +247,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
   const statusPill = (
     <div style={{
       display: 'inline-block',
-      padding: '2px 8px',
+      padding: `${space.xxs}px ${space.md}px`,
       borderRadius: radius.xs,
       fontSize: textSize.micro,
       fontWeight: 700,
@@ -268,7 +268,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
       statusPill={statusPill}
     >
       {/* Phase task description */}
-      <div style={{ padding: '4px 14px 8px' }}>
+      <div style={{ padding: `${space.xs}px 14px ${space.md}px` }}>
         <span style={{ fontSize: textSize.micro, color: theme.textMuted }}>
           {status.current_task}
         </span>
@@ -278,21 +278,21 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
       {(status.current_memory || stream.tokens) && (
         <Section title="CURRENT MEMORY" trimColor={COLORS.neonAmber}>
           {status.current_memory && (
-            <div style={{ fontSize: textSize.micro, color: theme.text, marginBottom: 4 }}>
+            <div style={{ fontSize: textSize.micro, color: theme.text, marginBottom: space.xs }}>
               <span style={{ color: COLORS.neonAmber, fontWeight: 600 }}>
                 {status.current_memory.key}
               </span>
               {stream.retrying && (
-                <span style={{ color: COLORS.neonAmber, fontSize: textSize.micro, marginLeft: 8, opacity: 0.8 }}>
+                <span style={{ color: COLORS.neonAmber, fontSize: textSize.micro, marginLeft: space.md, opacity: 0.8 }}>
                   retrying…
                 </span>
               )}
               {stream.lastQuality === 'fallback' && (
-                <span style={{ color: theme.dangerStrong, fontSize: textSize.micro, marginLeft: 8 }}>
+                <span style={{ color: theme.dangerStrong, fontSize: textSize.micro, marginLeft: space.md }}>
                   low quality
                 </span>
               )}
-              <div style={{ color: theme.textMuted, marginTop: 2 }}>
+              <div style={{ color: theme.textMuted, marginTop: space.xxs }}>
                 {status.current_memory.content_preview}
               </div>
             </div>
@@ -305,7 +305,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
               maxHeight: 80,
               overflowY: 'auto',
               fontStyle: 'italic',
-              marginTop: 4,
+              marginTop: space.xs,
               lineHeight: 1.4,
             }}>
               {stream.tokens}
@@ -321,7 +321,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
         <StatRow label="Described" value={`${lt.described} (${descPct}%)`} />
         <StatRow label="Pending" value={lt.pending} />
         {/* Progress bar */}
-        <div style={{ marginTop: 6, height: 4, background: theme.fillSubtle, borderRadius: radius.xs }}>
+        <div style={{ marginTop: space.sm, height: 4, background: theme.fillSubtle, borderRadius: radius.xs }}>
           <div style={{
             height: '100%',
             width: `${descPct}%`,
@@ -361,9 +361,9 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
       )}
 
       {/* Actions */}
-      <div style={{ padding: '8px 14px 12px' }}>
+      <div style={{ padding: `${space.md}px 14px ${space.xl}px` }}>
         {runMessage && (
-          <div style={{ fontSize: textSize.micro, color: runStatus?.last_error ? theme.dangerStrong : COLORS.neonCyan, marginBottom: 6 }}>
+          <div style={{ fontSize: textSize.micro, color: runStatus?.last_error ? theme.dangerStrong : COLORS.neonCyan, marginBottom: space.sm }}>
             {runMessage}
           </div>
         )}

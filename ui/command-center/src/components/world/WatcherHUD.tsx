@@ -3,7 +3,7 @@ import { AGENT_TRIM } from './shared/palette';
 import { HudShell, Section } from './HudShell';
 import { useNudge } from './agents/watcherNudge';
 import { Chip } from '../common/Chip';
-import { textSize } from '../../styles/tokens';
+import { space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 // The Watcher (Echo, #672) — the daemon's proactive worker. It watches the
@@ -45,7 +45,7 @@ export function WatcherHUD({ visible, onClose }: WatcherHUDProps) {
 
   return (
     <HudShell visible={visible} onClose={onClose} title="THE WATCHER" statusPill={statusPill}>
-      <div style={{ padding: '4px 14px 8px' }}>
+      <div style={{ padding: `${space.xs}px 14px ${space.md}px` }}>
         <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           The proactive worker — dormant Brain threads, project news, and (with
           the Financier) overbought sell signals on stocks you already hold.
@@ -62,7 +62,7 @@ export function WatcherHUD({ visible, onClose }: WatcherHUDProps) {
 
       <Section title="LAST NUDGE" trimColor={COLORS.neonAmber}>
         {hasNudge ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
             <span style={{ fontSize: textSize.micro, color: colors.text, fontWeight: 600, lineHeight: 1.4 }}>
               {nudge.subject || nudge.kind || 'Nudge'}
             </span>
@@ -92,7 +92,7 @@ export function WatcherHUD({ visible, onClose }: WatcherHUDProps) {
 function Bullet({ children }: { children: React.ReactNode }) {
   const { colors } = useTheme();
   return (
-    <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.7, display: 'flex', gap: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.7, display: 'flex', gap: space.md }}>
       <span style={{ color: WATCHER_TRIM }}>·</span>
       <span>{children}</span>
     </div>

@@ -5,7 +5,7 @@ import { useAgentRuntimeStates } from './shared/agentStatus';
 import { HudShell, Section } from './HudShell';
 import { Chip } from '../common/Chip';
 import { api } from '../../lib/api';
-import { textSize } from '../../styles/tokens';
+import { space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 // The Steward — git repo hygiene (crate::steward + the scheduled steward.yaml
@@ -70,7 +70,7 @@ export function StewardHUD({ visible, onClose }: StewardHUDProps) {
 
   return (
     <HudShell visible={visible} onClose={onClose} title="THE STEWARD" statusPill={statusPill}>
-      <div style={{ padding: '4px 14px 8px' }}>
+      <div style={{ padding: `${space.xs}px 14px ${space.md}px` }}>
         <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           {enabled === false
             ? 'The native git-health sweep is off (Settings → Features). The weekday recipe can still file a fleet report. Either way: proposes; does not destroy, commit, or merge.'
@@ -86,7 +86,7 @@ export function StewardHUD({ visible, onClose }: StewardHUDProps) {
       </Section>
 
       <Section title="THE SAFETY CORE" trimColor={COLORS.neonAmber}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
           <span style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.5 }}>
             Destructive git ops (branch deletes, history rewrites, force
             pushes) pass a safety core written in code, not prompt — protected
@@ -102,7 +102,7 @@ export function StewardHUD({ visible, onClose }: StewardHUDProps) {
 function Bullet({ children }: { children: React.ReactNode }) {
   const { colors } = useTheme();
   return (
-    <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.7, display: 'flex', gap: 8 }}>
+    <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.7, display: 'flex', gap: space.md }}>
       <span style={{ color: STEWARD_TRIM }}>·</span>
       <span>{children}</span>
     </div>

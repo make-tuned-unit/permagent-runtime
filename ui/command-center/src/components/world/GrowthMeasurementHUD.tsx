@@ -5,7 +5,7 @@ import { useAgentRuntimeStates } from './shared/agentStatus';
 import { HudShell, Section, StatRow } from './HudShell';
 import { Chip } from '../common/Chip';
 import { apiFetch } from '../../lib/api';
-import { textSize } from '../../styles/tokens';
+import { space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { GrowthResultsData } from '../grow/growthResults';
 
@@ -82,7 +82,7 @@ export function GrowthMeasurementHUD({ visible, onClose }: GrowthMeasurementHUDP
 
   return (
     <HudShell visible={visible} onClose={onClose} title="THE GROWER" statusPill={statusPill}>
-      <div style={{ padding: '4px 14px 8px' }}>
+      <div style={{ padding: `${space.xs}px 14px ${space.md}px` }}>
         <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           Every 6 hours: verify a shipped growth action, freeze its
           before-window, then as each 7/14/28-day window closes compare after

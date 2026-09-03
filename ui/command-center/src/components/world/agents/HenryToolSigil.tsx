@@ -19,7 +19,7 @@ import { ENV } from '../shared/palette';
 import { useAgentRuntimeStates } from '../shared/agentStatus';
 import { useHenryWork } from './henryWork';
 import { getAgentPosition } from './motion';
-import { radius } from '../../../styles/tokens';
+import { radius, space } from '../../../styles/tokens';
 
 export function HenryToolSigil() {
   const groupRef = useRef<THREE.Group>(null);
@@ -42,7 +42,7 @@ export function HenryToolSigil() {
       <Html center distanceFactor={13} style={{ pointerEvents: 'none' }}>
         <div
           style={{
-            padding: '3px 9px',
+            padding: `${space.xxs}px ${space.md}px`,
             borderRadius: radius.xs,
             background: 'rgba(10, 14, 26, 0.85)',
             border: `1px solid ${ENV.neonAmber}66`,

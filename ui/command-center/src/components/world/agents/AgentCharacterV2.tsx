@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { getReduceMotion, radius, textSize } from '../../../styles/tokens';
+import { getReduceMotion, radius, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { useGlass } from '../../common/Glass';
 import { ENV, type AgentHudState } from '../shared/palette';
@@ -466,7 +466,7 @@ export function AgentCharacterV2({
             style={{
               ...nameplateGlass,
               color: colors.cyan,
-              padding: '4px 12px',
+              padding: `${space.xs}px ${space.xl}px`,
               borderRadius: radius.sm,
               fontSize: `${textSize.small}px`,
               fontFamily: 'monospace',

@@ -9,7 +9,7 @@
 import { Html } from '@react-three/drei';
 import { useMeshStatus } from '../../shared/meshStatus';
 import { ENV } from '../../shared/palette';
-import { radius } from '../../../../styles/tokens';
+import { radius, space } from '../../../../styles/tokens';
 
 export function ForumPlaque() {
   const mesh = useMeshStatus();
@@ -20,7 +20,7 @@ export function ForumPlaque() {
     <Html position={[0, 0.55, 2.6]} center distanceFactor={16} style={{ pointerEvents: 'none' }}>
       <div
         style={{
-          padding: '5px 12px',
+          padding: `${space.xs}px ${space.xl}px`,
           borderRadius: radius.xs,
           background: 'rgba(10, 14, 26, 0.85)',
           border: `1px solid ${accent}66`,
@@ -34,7 +34,7 @@ export function ForumPlaque() {
         }}
       >
         <div style={{ color: accent, fontWeight: 700 }}>THE FORUM</div>
-        <div style={{ marginTop: 2, opacity: 0.75 }}>
+        <div style={{ marginTop: space.xxs, opacity: 0.75 }}>
           {mesh.state === 'connected'
             ? `MESH ONLINE — ${mesh.peerCount} SOVEREIGN PEER${mesh.peerCount === 1 ? '' : 'S'}`
             : mesh.state === 'connecting'

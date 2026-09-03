@@ -4,7 +4,7 @@ import { HudShell, Section, StatRow } from './HudShell';
 import { Chip } from '../common/Chip';
 import { useFinanceDesk } from './financeDesk';
 import { pickerStatus } from './deskStatus';
-import { textSize } from '../../styles/tokens';
+import { space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 // The Picker — the close-scan desk that ranks tomorrow's candidates
@@ -47,7 +47,7 @@ export function PickerHUD({ visible, onClose }: PickerHUDProps) {
           : <Chip kind="static" color={pillColor}>{status.label}</Chip>
       }
     >
-      <div style={{ padding: '4px 14px 8px' }}>
+      <div style={{ padding: `${space.xs}px 14px ${space.md}px` }}>
         <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           Ranks tomorrow's candidates off the closing scan. It reports
           numbers and never sizes a position.
@@ -75,7 +75,7 @@ export function PickerHUD({ visible, onClose }: PickerHUDProps) {
             <StatRow label="Universe" value={reading.board.pickerUniverseCount} />
           )}
           {p.detail && (
-            <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginTop: 6 }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginTop: space.sm }}>
               {p.detail}
             </div>
           )}

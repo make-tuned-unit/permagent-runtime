@@ -4,7 +4,7 @@ import { HudShell, Section, StatRow } from './HudShell';
 import { Chip } from '../common/Chip';
 import { useFinanceDesk } from './financeDesk';
 import { polybotStatus } from './deskStatus';
-import { textSize } from '../../styles/tokens';
+import { space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 // Polybot — the autonomous trading process the Finance tab drives. A separate
@@ -44,7 +44,7 @@ export function PolybotHUD({ visible, onClose }: PolybotHUDProps) {
           : <Chip kind="static" color={pillColor}>{status.label}</Chip>
       }
     >
-      <div style={{ padding: '4px 14px 8px' }}>
+      <div style={{ padding: `${space.xs}px 14px ${space.md}px` }}>
         <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           A separate trading process, started and paused from the Finance tab.
           This panel reads its real state; nothing here animates, because no
@@ -71,12 +71,12 @@ export function PolybotHUD({ visible, onClose }: PolybotHUDProps) {
           )}
           {p.tradeCount != null && <StatRow label="Trades" value={p.tradeCount} />}
           {p.stale && (
-            <div style={{ fontSize: textSize.micro, color: COLORS.neonAmber, lineHeight: 1.5, marginTop: 6 }}>
+            <div style={{ fontSize: textSize.micro, color: COLORS.neonAmber, lineHeight: 1.5, marginTop: space.sm }}>
               Its numbers are {p.staleDays ?? '—'} days old — shown as history, not as today.
             </div>
           )}
           {p.detail && (
-            <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginTop: 6 }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginTop: space.sm }}>
               {p.detail}
             </div>
           )}
