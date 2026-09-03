@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
-import { font, textSize } from '../../styles/tokens';
+import { font, space, textSize } from '../../styles/tokens';
 import { formatCostMeter, type SubagentCostIncl } from '../../lib/costMeter';
 import { GLOSSARY } from '../../lib/vocabulary';
 import { useLiveGoals } from '../../lib/useLiveGoals';
@@ -75,8 +75,8 @@ export function CostStatusline() {
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: 2,
-            padding: '6px 18px',
+            gap: space.xxs,
+            padding: `${space.sm}px 18px`,
             borderTop: `1px solid ${colors.border}`,
             fontFamily: font.mono,
             fontSize: textSize.micro,

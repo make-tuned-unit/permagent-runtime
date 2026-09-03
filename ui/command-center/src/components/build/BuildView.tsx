@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, type CSSProperties } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { FiGlobe, FiTerminal } from 'react-icons/fi';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { useDashboard } from '../dashboard/useDashboard';
@@ -65,7 +65,7 @@ function ToggleChip({
           '--pa-btn-radius': `${radius.md}px`,
           height: 30,
           fontSize: textSize.caption,
-          gap: 6,
+          gap: space.sm,
           opacity: active ? 1 : 0.7,
         } as CSSProperties}
       >
@@ -176,7 +176,7 @@ export function BuildView() {
         // matches every other tab, whose header is a left-aligned title.
         afterTitle={<ProjectChip onLaunch={handleLaunch} onVisitSite={handleVisitSite} />}
         subtitle={
-          <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: space.md, minWidth: 0 }}>
             <span style={{
               width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
               background: hasActive ? colors.cyan : colors.textDim,
@@ -220,12 +220,12 @@ export function BuildView() {
                 aria-valuemin={0}
                 aria-valuemax={5}
                 aria-valuenow={progressRailStep(activeTask?.progress)}
-                style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                style={{ display: 'flex', alignItems: 'center', gap: space.md }}
               >
                 <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.body, whiteSpace: 'nowrap' }}>
                   Step {progressRailStep(activeTask?.progress)} of 5
                 </span>
-                <span style={{ display: 'flex', gap: 6 }}>
+                <span style={{ display: 'flex', gap: space.sm }}>
                   {[1, 2, 3, 4, 5].map(n => {
                     const step = progressRailStep(activeTask?.progress);
                     return (
@@ -290,7 +290,7 @@ export function BuildView() {
       />
 
       {/* Terminal + Browser side by side, resizable */}
-      <div style={{ flex: 1, minHeight: 0, padding: '12px 18px' }}>
+      <div style={{ flex: 1, minHeight: 0, padding: `${space.xl}px 18px` }}>
         <Group
           orientation="horizontal"
           key={`${buildTerminalHidden}-${buildBrowserHidden}`}
