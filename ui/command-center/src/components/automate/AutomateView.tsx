@@ -38,6 +38,7 @@ import {
   type CategoryKey,
 } from './findingCategories';
 
+import { Tooltip } from '../common/Tooltip';
 // ── Types ────────────────────────────────────────────────────────────
 
 type ScheduleRunStatus = 'ok' | 'error' | 'skipped' | 'missed';
@@ -1282,12 +1283,15 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
           </span>
         )}
         {!job.currently_running && runStatus && (
-          <span
-            title={job.last_error || undefined}
-            style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors[runStatus.token], 0.15), color: colors[runStatus.token] }}
-          >
-            {runStatus.label}
-          </span>
+          <Tooltip content={job.last_error || undefined}>
+            <span tabIndex={0} style={{ outline: 'none' }}>
+              <span
+                style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors[runStatus.token], 0.15), color: colors[runStatus.token] }}
+              >
+                {runStatus.label}
+              </span>
+            </span>
+          </Tooltip>
         )}
         <span style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: colors.cyanSoft, color: colors.cyan }}>
           {job.currently_running ? 'RUNNING' : job.paused ? 'PAUSED' : 'SCHEDULED'}
@@ -1366,24 +1370,25 @@ detail, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefaul
       overflowY: 'auto', padding: '20px 24px', flexShrink: 0,
     }}>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <Button
-          colors={colors}
-          variant="bare"
-          onClick={onClose}
-          title="Close (Esc)"
-          aria-label="Close"
-          style={{
-            '--pa-btn-fg': colors.textDim,
-            '--pa-btn-fg-hover': colors.text,
-            '--pa-btn-bg-hover': 'transparent',
-            '--pa-btn-pad': '0',
-            fontSize: 18,
-            // This × is the only thing in its row, so its box height sets the
-            // gap above the panel. `.pa-btn`'s 14px line-height would close
-            // that gap by half; keep the 1.5 the raw button inherited.
-            lineHeight: 1.5,
-          } as CSSProperties}
-        >&times;</Button>
+        <Tooltip content="Close (Esc)">
+          <Button
+            colors={colors}
+            variant="bare"
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              '--pa-btn-fg': colors.textDim,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0',
+              fontSize: 18,
+              // This × is the only thing in its row, so its box height sets the
+              // gap above the panel. `.pa-btn`'s 14px line-height would close
+              // that gap by half; keep the 1.5 the raw button inherited.
+              lineHeight: 1.5,
+            } as CSSProperties}
+          >&times;</Button>
+        </Tooltip>
       </div>
 
       {detail.kind === 'recipe' && (
@@ -1609,27 +1614,28 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
       >
         <AsOf asOf={run.createdAt} /> &middot; {run.messageCount} msgs &middot; {run.totalTokens ?? 0} tokens
       </div>
-      <Button
-        colors={colors}
-        variant="ghostOn"
-        onClick={openConversation}
-        title="Open this run's full conversation in chat"
-        style={{
-          '--pa-btn-bg': colors.cyanSoft,
-          '--pa-btn-border': colors.borderHi,
-          '--pa-btn-bg-hover': colors.cyanGlow,
-          '--pa-btn-pad': '5px 12px',
-          '--pa-btn-radius': `${radius.sm}px`,
-          '--pa-btn-weight': 600,
-          fontFamily: font.body,
-          fontSize: textSize.caption,
-          gap: 6,
-          marginBottom: 20,
-        } as CSSProperties}
-      >
-        <FiMessageSquare size={13} style={{ verticalAlign: -2 }} />
-        {' '}Open conversation
-      </Button>
+      <Tooltip content="Open this run's full conversation in chat">
+        <Button
+          colors={colors}
+          variant="ghostOn"
+          onClick={openConversation}
+          style={{
+            '--pa-btn-bg': colors.cyanSoft,
+            '--pa-btn-border': colors.borderHi,
+            '--pa-btn-bg-hover': colors.cyanGlow,
+            '--pa-btn-pad': '5px 12px',
+            '--pa-btn-radius': `${radius.sm}px`,
+            '--pa-btn-weight': 600,
+            fontFamily: font.body,
+            fontSize: textSize.caption,
+            gap: 6,
+            marginBottom: 20,
+          } as CSSProperties}
+        >
+          <FiMessageSquare size={13} style={{ verticalAlign: -2 }} />
+          {' '}Open conversation
+        </Button>
+      </Tooltip>
       {loading ? (
         <div style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading results...</div>
       ) : findings.length > 0 ? (
@@ -1674,33 +1680,34 @@ function ReferenceIdField({ id }: { id: string }) {
           wrapper would make it an inline box, where `overflow: hidden` does
           nothing and a 36-character id overflows its grid column. Keeps the
           element, takes the `.pa-btn` interaction rules. */}
-      <button
-        type="button"
-        className="pa-btn pa-btn--composite"
-        data-testid="automation-reference-id"
-        onClick={() => copy(id)}
-        title="Quote this when asking about a run — click to copy"
-        style={{
-          '--pa-btn-fg': colors.textMuted,
-          '--pa-btn-fg-hover': colors.text,
-          '--pa-btn-bg-hover': 'transparent',
-          '--pa-btn-pad': '0',
-          fontSize: textSize.caption,
-          fontFamily: font.mono,
-          gap: 6,
-          justifyContent: 'flex-start',
-          textAlign: 'left',
-          maxWidth: '100%',
-        } as CSSProperties}
-      >
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{id}</span>
-        <span style={{
-          flexShrink: 0, fontSize: 10, fontFamily: font.body,
-          color: state === 'failed' ? colors.danger : state === 'copied' ? colors.success : colors.textDim,
-        }}>
-          {state === 'copied' ? 'copied' : state === 'failed' ? "couldn't copy" : 'copy'}
-        </span>
-      </button>
+      <Tooltip content="Quote this when asking about a run — click to copy">
+        <button
+          type="button"
+          className="pa-btn pa-btn--composite"
+          data-testid="automation-reference-id"
+          onClick={() => copy(id)}
+          style={{
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            fontSize: textSize.caption,
+            fontFamily: font.mono,
+            gap: 6,
+            justifyContent: 'flex-start',
+            textAlign: 'left',
+            maxWidth: '100%',
+          } as CSSProperties}
+        >
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{id}</span>
+          <span style={{
+            flexShrink: 0, fontSize: 10, fontFamily: font.body,
+            color: state === 'failed' ? colors.danger : state === 'copied' ? colors.success : colors.textDim,
+          }}>
+            {state === 'copied' ? 'copied' : state === 'failed' ? "couldn't copy" : 'copy'}
+          </span>
+        </button>
+      </Tooltip>
     </div>
   );
 }
@@ -2235,7 +2242,7 @@ finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a
   const [confirming, setConfirming] = useState(false);
 
   if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.success, 0.05), border: `1px solid ${withAlpha(colors.success, 0.12)}` }}><span style={{ fontSize: textSize.caption, color: colors.success }}>Trashed</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: textSize.micro, color: colors.success, fontFamily: font.mono, fontVariantNumeric: 'tabular-nums' }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
-  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: textSize.caption, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={finding.error_message || undefined}>{finding.error_message || fileName}</span><Button colors={colors} onClick={() => onAction('trash', needsSecondConfirm || undefined)} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '2px 6px', fontSize: 10, flexShrink: 0 } as CSSProperties}>Retry</Button></div>;
+  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: textSize.caption, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><Tooltip content={finding.error_message || undefined}><span tabIndex={0} style={{ outline: 'none' }}><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{finding.error_message || fileName}</span></span></Tooltip><Button colors={colors} onClick={() => onAction('trash', needsSecondConfirm || undefined)} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '2px 6px', fontSize: 10, flexShrink: 0 } as CSSProperties}>Retry</Button></div>;
   if (finding.action_taken) return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: textSize.caption, color: colors.textMuted }}>Kept</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
 
   const handleTrashClick = () => {
