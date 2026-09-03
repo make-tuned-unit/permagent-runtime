@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, type CSSProperties } from 'react';
 import { FiLoader, FiZap, FiSearch, FiGrid, FiList, FiX } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, space } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { SkillCard } from './SkillCard';
@@ -174,7 +174,7 @@ export function SkillsPanel({ onClose }: { onClose?: () => void } = {}) {
                   '--pa-btn-pad': '4px 12px',
                   '--pa-btn-radius': `${radius.sm}px`,
                   '--pa-btn-weight': 600,
-                  marginTop: 4,
+                  marginTop: space.xs,
                   fontFamily: font.body,
                   fontSize: 10,
                   lineHeight: '15px',

@@ -1,7 +1,7 @@
 import { useState, type CSSProperties } from 'react';
 import { FiTrash2, FiEdit2, FiX, FiChevronDown, FiChevronRight } from 'react-icons/fi';
 import { useCommandCenter, type SkillState } from '../../lib/store';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, space } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { SkillEditor } from './SkillEditor';
@@ -221,7 +221,7 @@ export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
                   fontFamily: font.display,
                   fontSize: 10,
                   lineHeight: '15px',
-                  gap: 4,
+                  gap: space.xs,
                 } as CSSProperties}
               >
                 {showDefinition ? <FiChevronDown size={11} /> : <FiChevronRight size={11} />}
