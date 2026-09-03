@@ -93,7 +93,7 @@ function ActivityItem({ item, isLast, onOpen }: { item: RecentSession; isLast: b
           fontFamily: font.body, fontSize: 12.5, fontWeight: 500, color: colors.text,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{item.title}</div>
-        <div style={{ fontSize: 10.5, color: colors.textDim, marginTop: 1 }}>
+        <div style={{ fontSize: 10.5, color: colors.textDim, marginTop: space.xxs }}>
           {timeAgo(item.ended_at)}
         </div>
       </div>

@@ -14,7 +14,7 @@
 
 import { type CSSProperties } from 'react';
 import { FiCheck, FiEdit2 } from 'react-icons/fi';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { Button } from '../common/Button';
 
@@ -51,7 +51,7 @@ export function CustomizeButton({
       >
         {/* The primitive wraps its children in one span, so the icon and the word
             need their own row to keep the 6px they have always sat at. */}
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
           {editing ? <><FiCheck size={14} /> Done</> : <><FiEdit2 size={14} /> Customize</>}
         </span>
       </Button>

@@ -56,10 +56,10 @@ export const TodosCard = memo(function TodosCard({ todos }: Props) {
         // "nothing due" — and here the difference is "you're clear" versus
         // "you have no idea what's due". Say which one it is.
         <Centered>
-          <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: 6 }}>
+          <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: space.sm }}>
             Couldn't load your to-dos
           </div>
-          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 10 }}>{error}</div>
+          <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: space.lg }}>{error}</div>
           <Button
             colors={colors}
             type="button"
@@ -86,7 +86,7 @@ export const TodosCard = memo(function TodosCard({ todos }: Props) {
           Nothing due
         </EmptyNote>
       ) : (
-        <div style={{ flex: 1, overflowY: 'auto', marginTop: 4, marginRight: -space.md, paddingRight: space.md }}>
+        <div style={{ flex: 1, overflowY: 'auto', marginTop: space.xs, marginRight: -space.md, paddingRight: space.md }}>
           {groups.map(group => (
             <Group key={group.bucket} group={group} today={today} todos={todos} />
           ))}
@@ -112,7 +112,7 @@ function Group({ group, today, todos }: { group: DueGroup; today: string; todos:
       <div style={{
         fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.6,
         color: overdue ? colors.danger : colors.textDim,
-        fontWeight: 600, marginBottom: 6, position: 'sticky', top: 0,
+        fontWeight: 600, marginBottom: space.sm, position: 'sticky', top: 0,
         background: colors.surface, paddingBottom: space.xs,
       }}>
         {group.label} · {group.todos.length}
@@ -148,7 +148,7 @@ function TodoRow({
       onMouseLeave={() => setHovered(false)}
       style={{
         display: 'flex', alignItems: 'center', gap: space.lg,
-        padding: `${space.md}px`, marginBottom: 2,
+        padding: `${space.md}px`, marginBottom: space.xxs,
         borderRadius: radius.sm,
         // Was `colors.borderHi` — a cyan-tinted hairline reused as a hover
         // fill. Neutral `fillHover` matches D10/D8: rows get a visible hover,
@@ -177,7 +177,7 @@ function TodoRow({
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
           }}>{todo.title}</div>
           <div style={{
-            fontSize: 10.5, color: colors.textDim, marginTop: 2,
+            fontSize: 10.5, color: colors.textDim, marginTop: space.xxs,
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
           }}>
             {todo.projectName} · {todo.columnName}

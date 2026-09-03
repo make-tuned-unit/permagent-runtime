@@ -9,7 +9,7 @@
  */
 
 import { FiPlus } from 'react-icons/fi';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { DetailModal } from '../common/DetailModal';
 import type { CardRegistryEntry } from './cards/registry';
@@ -39,7 +39,7 @@ export function AddCardPicker({ registry, currentCardTypes, onSelect, onClose }:
     >
       {available.length === 0 ? (
         <div style={{
-          padding: '24px 18px', textAlign: 'center',
+          padding: `${space.huge}px 18px`, textAlign: 'center',
           fontSize: textSize.small, color: colors.textMuted,
         }}>
           All card types are already added
@@ -55,8 +55,8 @@ export function AddCardPicker({ registry, currentCardTypes, onSelect, onClose }:
             key={type}
             onClick={() => { onSelect(type); onClose(); }}
             style={{
-              display: 'flex', alignItems: 'center', gap: 12,
-              width: '100%', padding: '10px 18px',
+              display: 'flex', alignItems: 'center', gap: space.xl,
+              width: '100%', padding: `${space.lg}px 18px`,
               background: 'none', border: 'none',
               cursor: 'pointer', textAlign: 'left',
               transition: 'background 100ms ease',
@@ -73,7 +73,7 @@ export function AddCardPicker({ registry, currentCardTypes, onSelect, onClose }:
               <FiPlus size={14} style={{ color: colors.cyan }} />
             </div>
             <div style={{ minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
                 <span style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text }}>
                   {entry.name}
                 </span>
@@ -81,13 +81,13 @@ export function AddCardPicker({ registry, currentCardTypes, onSelect, onClose }:
                   <span style={{
                     fontFamily: font.body, fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
                     textTransform: 'uppercase', color: colors.cyan, background: colors.cyanSoft,
-                    padding: '1px 6px', borderRadius: radius.pill, flexShrink: 0,
+                    padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.pill, flexShrink: 0,
                   }}>
                     {entry.source}
                   </span>
                 )}
               </div>
-              <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, marginTop: 1 }}>
+              <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, marginTop: space.xxs }}>
                 {entry.description}
               </div>
             </div>

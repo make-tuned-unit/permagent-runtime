@@ -340,7 +340,7 @@ export function ManifestCard({ manifest }: Props) {
             role="list"
             aria-label="Forecast"
             style={{
-              display: 'flex', gap: space.xs, marginTop: 2, minWidth: 0,
+              display: 'flex', gap: space.xs, marginTop: space.xxs, minWidth: 0,
               borderTop: `1px solid ${colors.border}`, paddingTop: space.md,
             }}
           >
@@ -406,7 +406,7 @@ export function ManifestCard({ manifest }: Props) {
               <div key={i} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.xl, padding: `${space.sm}px 0`, borderBottom: i < cells.length - 1 ? `1px solid ${colors.border}` : 'none' }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.label}</div>
-                  {c.sub && <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, marginTop: 1 }}>{c.sub}</div>}
+                  {c.sub && <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, marginTop: space.xxs }}>{c.sub}</div>}
                 </div>
                 {c.value !== '' && c.value != null && (
                   <span style={{ fontFamily: font.body, fontSize: textSize.caption, color: c.accent ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{c.value}</span>
