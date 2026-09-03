@@ -22,6 +22,7 @@ import {
 } from './brainSearch';
 import { readViewMode, rememberViewMode, type BrainViewMode as ViewMode } from './viewMode';
 
+import { Tooltip } from '../common/Tooltip';
 const TOP_FILTERS: { key: keyof TypeFilters; label: string; shape: string }[] = [
   { key: 'person', label: 'people', shape: '●' },
   { key: 'project', label: 'projects', shape: '■' },
@@ -626,14 +627,17 @@ export function BrainView() {
                 )}
               </span>
               {selected.kind === 'memory' && selected.preview && (
-                <span
-                  title="Preview from the surface you came from — not yet enriched into the Brain graph; the text may be truncated."
-                  style={{
-                    fontFamily: font.mono, fontSize: 10, padding: '1px 5px', borderRadius: concentric(radius.sm, 3),
-                    color: colors.warning, border: `1px solid ${colors.warning}`,
-                    textTransform: 'uppercase', letterSpacing: '0.08em',
-                  }}
-                >preview — not in graph yet</span>
+                <Tooltip content="Preview from the surface you came from — not yet enriched into the Brain graph; the text may be truncated.">
+                  <span tabIndex={0} style={{ outline: 'none' }}>
+                    <span
+                      style={{
+                        fontFamily: font.mono, fontSize: 10, padding: '1px 5px', borderRadius: concentric(radius.sm, 3),
+                        color: colors.warning, border: `1px solid ${colors.warning}`,
+                        textTransform: 'uppercase', letterSpacing: '0.08em',
+                      }}
+                    >preview — not in graph yet</span>
+                  </span>
+                </Tooltip>
               )}
             </span>
 
@@ -678,28 +682,29 @@ export function BrainView() {
                 )}
 
                 {selected.kind === 'project' && projectMatch && (
-                  <Button
-                    colors={colors}
-                    variant="ghostOn"
-                    type="button"
-                    onClick={openProjectWorkspace}
-                    title={`Open ${projectMatch.name} in Projects`}
-                    style={{
-                      '--pa-btn-bg': colors.cyanSoft,
-                      '--pa-btn-fg': colors.cyan,
-                      '--pa-btn-border': colors.borderHi,
-                      '--pa-btn-bg-hover': colors.cyanGlow,
-                      '--pa-btn-border-hover': colors.borderHi,
-                      '--pa-btn-bg-active': colors.cyanSoft,
-                      '--pa-btn-pad': '6px 12px',
-                      '--pa-btn-radius': `${radius.md}px`,
-                      '--pa-btn-weight': 600,
-                      alignSelf: 'flex-start', marginBottom: 16,
-                      fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5,
-                    } as CSSProperties}
-                  >
-                    Open project →
-                  </Button>
+                  <Tooltip content={`Open ${projectMatch.name} in Projects`}>
+                    <Button
+                      colors={colors}
+                      variant="ghostOn"
+                      type="button"
+                      onClick={openProjectWorkspace}
+                      style={{
+                        '--pa-btn-bg': colors.cyanSoft,
+                        '--pa-btn-fg': colors.cyan,
+                        '--pa-btn-border': colors.borderHi,
+                        '--pa-btn-bg-hover': colors.cyanGlow,
+                        '--pa-btn-border-hover': colors.borderHi,
+                        '--pa-btn-bg-active': colors.cyanSoft,
+                        '--pa-btn-pad': '6px 12px',
+                        '--pa-btn-radius': `${radius.md}px`,
+                        '--pa-btn-weight': 600,
+                        alignSelf: 'flex-start', marginBottom: 16,
+                        fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5,
+                      } as CSSProperties}
+                    >
+                      Open project →
+                    </Button>
+                  </Tooltip>
                 )}
 
                 <div style={{ display: 'flex', gap: 18, marginTop: 'auto', paddingTop: 12, borderTop: `1px solid ${colors.border}` }}>
@@ -716,28 +721,31 @@ export function BrainView() {
                   ].map(stat => {
                     const interactive = !!stat.onClick;
                     return (
-                      <button
-                        key={stat.label}
-                        type="button"
-                        onClick={stat.onClick}
-                        disabled={!interactive}
-                        title={interactive ? `Show memories that mention ${selected.label}` : undefined}
-                        style={{
-                          textAlign: 'left', background: 'transparent', border: 'none',
-                          padding: `2px ${space.sm}px`, margin: `-2px -${space.sm}px`,
-                          cursor: interactive ? 'pointer' : 'default', borderRadius: radius.sm,
-                          transition: chipTransition,
-                        }}
-                        onMouseEnter={e => { if (interactive) (e.currentTarget as HTMLButtonElement).style.background = colors.fillHover; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; (e.currentTarget as HTMLButtonElement).style.transform = 'none'; }}
-                        onPointerDown={e => { if (interactive) { (e.currentTarget as HTMLButtonElement).style.background = colors.fillActive; (e.currentTarget as HTMLButtonElement).style.transform = 'scale(0.97)'; } }}
-                        onPointerUp={e => { if (interactive) { (e.currentTarget as HTMLButtonElement).style.background = colors.fillHover; (e.currentTarget as HTMLButtonElement).style.transform = 'none'; } }}
-                        onFocus={e => { if (interactive) (e.currentTarget as HTMLButtonElement).style.outline = `2px solid ${colors.cyan}`; }}
-                        onBlur={e => { (e.currentTarget as HTMLButtonElement).style.outline = 'none'; }}
-                      >
-                        <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, color: interactive ? colors.cyan : colors.text }}>{stat.value}</div>
-                        <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em' }}>{stat.label}</div>
-                      </button>
+                      <Tooltip content={interactive ? `Show memories that mention ${selected.label}` : undefined}>
+                        <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+                          <button
+                            key={stat.label}
+                            type="button"
+                            onClick={stat.onClick}
+                            disabled={!interactive}
+                            style={{
+                              textAlign: 'left', background: 'transparent', border: 'none',
+                              padding: `2px ${space.sm}px`, margin: `-2px -${space.sm}px`,
+                              cursor: interactive ? 'pointer' : 'default', borderRadius: radius.sm,
+                              transition: chipTransition,
+                            }}
+                            onMouseEnter={e => { if (interactive) (e.currentTarget as HTMLButtonElement).style.background = colors.fillHover; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; (e.currentTarget as HTMLButtonElement).style.transform = 'none'; }}
+                            onPointerDown={e => { if (interactive) { (e.currentTarget as HTMLButtonElement).style.background = colors.fillActive; (e.currentTarget as HTMLButtonElement).style.transform = 'scale(0.97)'; } }}
+                            onPointerUp={e => { if (interactive) { (e.currentTarget as HTMLButtonElement).style.background = colors.fillHover; (e.currentTarget as HTMLButtonElement).style.transform = 'none'; } }}
+                            onFocus={e => { if (interactive) (e.currentTarget as HTMLButtonElement).style.outline = `2px solid ${colors.cyan}`; }}
+                            onBlur={e => { (e.currentTarget as HTMLButtonElement).style.outline = 'none'; }}
+                          >
+                            <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, color: interactive ? colors.cyan : colors.text }}>{stat.value}</div>
+                            <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em' }}>{stat.label}</div>
+                          </button>
+                        </span>
+                      </Tooltip>
                     );
                   })}
                 </div>
@@ -809,26 +817,27 @@ export function BrainView() {
                             );
                           }
                           return (
-                            <Button
-                              key={id}
-                              colors={colors}
-                              variant="ghostOn"
-                              type="button"
-                              onClick={() => selectEntity(ent)}
-                              title={`View ${ent.name}`}
-                              style={{
-                                '--pa-btn-bg': colors.cyanSoft,
-                                '--pa-btn-fg': colors.cyan,
-                                '--pa-btn-border': colors.borderHi,
-                                '--pa-btn-bg-hover': colors.cyanGlow,
-                                '--pa-btn-border-hover': colors.borderHi,
-                                '--pa-btn-bg-active': colors.cyanSoft,
-                                '--pa-btn-pad': '4px 10px',
-                                '--pa-btn-radius': `${radius.pill}px`,
-                                '--pa-btn-weight': 500,
-                                fontFamily: font.body, fontSize: textSize.micro,
-                              } as CSSProperties}
-                            >{ent.name}</Button>
+                            <Tooltip content={`View ${ent.name}`}>
+                              <Button
+                                key={id}
+                                colors={colors}
+                                variant="ghostOn"
+                                type="button"
+                                onClick={() => selectEntity(ent)}
+                                style={{
+                                  '--pa-btn-bg': colors.cyanSoft,
+                                  '--pa-btn-fg': colors.cyan,
+                                  '--pa-btn-border': colors.borderHi,
+                                  '--pa-btn-bg-hover': colors.cyanGlow,
+                                  '--pa-btn-border-hover': colors.borderHi,
+                                  '--pa-btn-bg-active': colors.cyanSoft,
+                                  '--pa-btn-pad': '4px 10px',
+                                  '--pa-btn-radius': `${radius.pill}px`,
+                                  '--pa-btn-weight': 500,
+                                  fontFamily: font.body, fontSize: textSize.micro,
+                                } as CSSProperties}
+                              >{ent.name}</Button>
+                            </Tooltip>
                           );
                         })}
                       </div>
@@ -844,22 +853,28 @@ export function BrainView() {
                         memory, same tab, two vocabularies and neither defined.
                         The word and the gloss both come from the shared
                         vocabulary now, so the two surfaces cannot drift. */}
-                    <Stat
-                      label={MEMORY_STRENGTH.one}
-                      value={`${Math.round(mem.weight * 100)}%`}
-                      title={MEMORY_STRENGTH.gloss}
-                    />
+                    <Tooltip content={MEMORY_STRENGTH.gloss}>
+                      <span tabIndex={0} style={{ outline: 'none' }}>
+                        <Stat
+                          label={MEMORY_STRENGTH.one}
+                          value={`${Math.round(mem.weight * 100)}%`}
+     />
+                      </span>
+                    </Tooltip>
                     {(() => {
                       const age = formatMemoryAge(mem.timestamp);
                       return (
-                        <Stat
-                          label="recency"
-                          value={age.label}
-                          // Past the staleness threshold the age is the point:
-                          // it must not sit at the same quiet weight as "today".
-                          tone={age.stale ? 'stale' : undefined}
-                          title={mem.timestamp || undefined}
-                        />
+                        <Tooltip content={mem.timestamp || undefined}>
+                          <span tabIndex={0} style={{ outline: 'none' }}>
+                            <Stat
+                              label="recency"
+                              value={age.label}
+                              // Past the staleness threshold the age is the point:
+                              // it must not sit at the same quiet weight as "today".
+                              tone={age.stale ? 'stale' : undefined}
+     />
+                          </span>
+                        </Tooltip>
                       );
                     })()}
                   </div>
@@ -896,10 +911,13 @@ export function BrainView() {
           style={{ flex: 1, accentColor: colors.cyan }}
         />
         <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim }}>all time</span>
-        <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, opacity: 0.6 }}
-          title="Imported memories are dated by import time, not original event time">
-          *
-        </span>
+        <Tooltip content="Imported memories are dated by import time, not original event time">
+          <span tabIndex={0} style={{ outline: 'none' }}>
+            <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, opacity: 0.6 }}>
+              *
+            </span>
+          </span>
+        </Tooltip>
       </div>
     </div>
   );
@@ -914,12 +932,16 @@ function Stat({ label, value, tone, title }: {
 }) {
   const { colors } = useTheme();
   return (
-    <div style={{ textAlign: 'center' }} title={title}>
-      <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginBottom: 2, textTransform: 'uppercase' }}>{label}</div>
-      <div style={{
-        fontFamily: font.body, fontSize: textSize.small, fontWeight: 600,
-        color: tone === 'stale' ? colors.stale : colors.text,
-      }}>{value}</div>
-    </div>
+    <Tooltip content={title}>
+      <span tabIndex={0} style={{ outline: 'none' }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginBottom: 2, textTransform: 'uppercase' }}>{label}</div>
+          <div style={{
+            fontFamily: font.body, fontSize: textSize.small, fontWeight: 600,
+            color: tone === 'stale' ? colors.stale : colors.text,
+          }}>{value}</div>
+        </div>
+      </span>
+    </Tooltip>
   );
 }
