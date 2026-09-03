@@ -38,20 +38,24 @@ const HENRY_TRIM = AGENT_TRIM.henry;
 
 // ── State badge colors ──────────────────────────────────────────────
 
-const STATE_COLORS: Record<HenryState, { bg: string; text: string; border: string }> = {
-  idle: { bg: 'rgba(107, 114, 128, 0.2)', text: '#9CA3AF', border: '#4B5563' },
-  in_conversation: { bg: 'rgba(0, 213, 255, 0.12)', text: COLORS.neonCyan, border: '#0891B2' },
-  tool_call: { bg: 'rgba(255, 179, 71, 0.15)', text: COLORS.neonAmber, border: '#D97706' },
-};
+function stateColors(c: { fillSubtle: string; textMuted: string; border: string; cyanSoft: string; cyan: string; borderHi: string; staleSoft: string; warning: string }) {
+  return {
+    idle: { bg: c.fillSubtle, text: c.textMuted, border: c.border },
+    in_conversation: { bg: c.cyanSoft, text: c.cyan, border: c.borderHi },
+    tool_call: { bg: c.staleSoft, text: c.warning, border: c.warning },
+  } as const;
+}
 
 // ── Tab definitions ─────────────────────────────────────────────────
 
-const HENRY_TABS: HudTab[] = [
-  { id: 'status', label: 'STATUS', accentColor: COLORS.neonCyan },
-  { id: 'identity', label: 'IDENTITY', accentColor: '#4ADE80' },
-  { id: 'chat', label: 'CHAT', accentColor: '#FFB347', disabled: true, disabledLabel: 'SOON' },
-  { id: 'tools', label: 'TOOLS', accentColor: '#F472B6', disabled: true, disabledLabel: 'SOON' },
-];
+function henryTabs(success: string): HudTab[] {
+  return [
+    { id: 'status', label: 'STATUS', accentColor: COLORS.neonCyan },
+    { id: 'identity', label: 'IDENTITY', accentColor: success },
+    { id: 'chat', label: 'CHAT', accentColor: COLORS.neonAmber, disabled: true, disabledLabel: 'SOON' },
+    { id: 'tools', label: 'TOOLS', accentColor: AGENT_TRIM.felix, disabled: true, disabledLabel: 'SOON' },
+  ];
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -92,6 +96,7 @@ interface HenryHUDProps {
 }
 
 export function HenryHUD({ visible, onClose }: HenryHUDProps) {
+  const { colors: theme } = useTheme();
   const [status, setStatus] = useState<HenryStatus | null>(null);
   const [activeTab, setActiveTab] = useTabReset(visible, 'status');
   const orchestratorName = useOrchestratorName();
@@ -117,15 +122,16 @@ export function HenryHUD({ visible, onClose }: HenryHUDProps) {
   if (!visible) return null;
 
   const state = status ? ((status.current_state as HenryState) || 'idle') : 'idle';
-  const colors = STATE_COLORS[state] ?? STATE_COLORS.idle;
+  const colors = stateColors(theme)[state] ?? stateColors(theme).idle;
   const displayName = (status?.identity?.name ?? orchestratorName ?? 'AGENT').toUpperCase();
+  const tabs = henryTabs(theme.success);
 
   const statusPill = (
     <div style={{
       display: 'inline-block',
       padding: '2px 8px',
-      borderRadius: 3,
-      fontSize: 10,
+      borderRadius: radius.xs,
+      fontSize: textSize.micro,
       fontWeight: 700,
       letterSpacing: '0.08em',
       background: colors.bg,
@@ -142,7 +148,7 @@ export function HenryHUD({ visible, onClose }: HenryHUDProps) {
       onClose={onClose}
       title={displayName}
       statusPill={statusPill}
-      tabs={HENRY_TABS}
+      tabs={tabs}
       activeTab={activeTab}
       onTabChange={setActiveTab}
     >
@@ -157,8 +163,6 @@ export function HenryHUD({ visible, onClose }: HenryHUDProps) {
 function HenryStatusBody({ status }: { status: HenryStatus | null }) {
   // Locally hide acked briefings until the next status poll confirms.
   const [ackedIds, setAckedIds] = useState<string[]>([]);
-  // The HUD paints from the world palette; the theme is here only to feed the
-  // button primitive's variant defaults.
   const { colors: themeColors } = useTheme();
   if (!status) return null;
 
@@ -181,8 +185,8 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
         <Section title="ACTIVE SESSIONS" trimColor={HENRY_TRIM}>
           {status.active_sessions.slice(0, 3).map((s) => (
             <div key={s.id} style={{ fontSize: textSize.micro, lineHeight: 1.6 }}>
-              <span style={{ color: COLORS.primaryMarble }}>{truncate(s.name, 32)}</span>
-              <span style={{ color: '#6B7280', marginLeft: 8 }}>{relativeTime(s.started_at)}</span>
+              <span style={{ color: themeColors.text }}>{truncate(s.name, 32)}</span>
+              <span style={{ color: themeColors.textDim, marginLeft: 8 }}>{relativeTime(s.started_at)}</span>
             </div>
           ))}
         </Section>
@@ -193,13 +197,13 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
         <StatRow label="Tasks running" value={status.tasks_in_flight} />
         {status.recent_tasks.length > 0 && (
           <div style={{ marginTop: 6 }}>
-            <div style={{ fontSize: 10, color: '#6B7280', marginBottom: 3 }}>Recent:</div>
+            <div style={{ fontSize: textSize.micro, color: themeColors.textDim, marginBottom: 3 }}>Recent:</div>
             {status.recent_tasks.slice(0, 5).map((t) => (
-              <div key={t.id} style={{ fontSize: 10, lineHeight: 1.5, display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#D1D5DB', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <div key={t.id} style={{ fontSize: textSize.micro, lineHeight: 1.5, display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ color: themeColors.text, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {truncate(t.description, 30)}
                 </span>
-                <span style={{ color: t.status === 'completed' ? '#4ADE80' : '#EF4444', fontSize: 10 }}>
+                <span style={{ color: t.status === 'completed' ? themeColors.success : themeColors.dangerStrong, fontSize: textSize.micro }}>
                   {t.status === 'completed' ? '✓' : '✗'}
                 </span>
               </div>
@@ -245,9 +249,9 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
                     // so `false` keeps the button from ticking over a failure.
                     .catch(() => false)}
                   style={{
-                    '--pa-btn-fg': COLORS.marbleVeining,
-                    '--pa-btn-fg-hover': COLORS.primaryMarble,
-                    '--pa-btn-bg-hover': 'rgba(255,255,255,0.06)',
+                    '--pa-btn-fg': themeColors.textMuted,
+                    '--pa-btn-fg-hover': themeColors.text,
+                    '--pa-btn-bg-hover': themeColors.fillHover,
                     '--pa-btn-pad': '2px 4px',
                     '--pa-btn-radius': `${radius.xs}px`,
                     marginLeft: 'auto', fontSize: textSize.micro, lineHeight: 1,
@@ -308,7 +312,7 @@ const briefingSeverityStyle: React.CSSProperties = {
 };
 
 const briefingFromStyle: React.CSSProperties = {
-  fontSize: 10,
+  fontSize: textSize.micro,
   color: COLORS.marbleVeining,
 };
 

@@ -5,6 +5,7 @@ import { Chip } from '../common/Chip';
 import { useFinanceDesk } from './financeDesk';
 import { polybotStatus } from './deskStatus';
 import { textSize } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 
 // Polybot — the autonomous trading process the Finance tab drives. A separate
 // process on this machine, not a model: "running" is a fact about the box.
@@ -24,6 +25,7 @@ interface PolybotHUDProps {
 }
 
 export function PolybotHUD({ visible, onClose }: PolybotHUDProps) {
+  const { colors } = useTheme();
   const reading = useFinanceDesk(visible);
   if (!visible) return null;
 
@@ -43,7 +45,7 @@ export function PolybotHUD({ visible, onClose }: PolybotHUDProps) {
       }
     >
       <div style={{ padding: '4px 14px 8px' }}>
-        <span style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           A separate trading process, started and paused from the Finance tab.
           This panel reads its real state; nothing here animates, because no
           event reports what it is doing between reads.
@@ -52,7 +54,7 @@ export function PolybotHUD({ visible, onClose }: PolybotHUDProps) {
 
       {status.unreachable && (
         <Section title="COULDN'T READ IT" trimColor={COLORS.neonAmber}>
-          <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.5 }}>
             {reading.error ?? 'The finance board did not answer.'} That is a
             failure to ask, not a report that Polybot is off.
           </div>
@@ -74,7 +76,7 @@ export function PolybotHUD({ visible, onClose }: PolybotHUDProps) {
             </div>
           )}
           {p.detail && (
-            <div style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5, marginTop: 6 }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginTop: 6 }}>
               {p.detail}
             </div>
           )}
@@ -82,7 +84,7 @@ export function PolybotHUD({ visible, onClose }: PolybotHUDProps) {
       )}
 
       <Section title="AWAITING" trimColor={COLORS.neonAmber}>
-        <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.5 }}>
           No `agent_state_changed` is emitted for Polybot anywhere in the
           daemon, so this seat cannot yet show it working. Until one is, the
           figure stands still on purpose.

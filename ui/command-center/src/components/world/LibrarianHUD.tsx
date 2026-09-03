@@ -3,7 +3,7 @@ import { COLORS } from './constants';
 import { api, eventsWsUrl } from '../../lib/api';
 import { wireEventType } from '../../lib/wireEvent';
 import { HudShell, Section, StatRow } from './HudShell';
-import { radius, textSize } from '../../styles/tokens';
+import { duration, ease, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -37,13 +37,20 @@ interface LibrarianRunStatus {
 
 // ── Phase badge colors ───────────────────────────────────────────────
 
-const PHASE_COLORS: Record<LibrarianPhase, { bg: string; text: string; border: string }> = {
-  idle: { bg: 'rgba(107, 114, 128, 0.2)', text: '#9CA3AF', border: '#4B5563' },
-  warming: { bg: 'rgba(255, 179, 71, 0.15)', text: COLORS.neonAmber, border: '#D97706' },
-  describing: { bg: 'rgba(0, 213, 255, 0.12)', text: COLORS.neonCyan, border: '#0891B2' },
-  batch_complete: { bg: 'rgba(0, 213, 255, 0.12)', text: COLORS.neonCyan, border: '#0891B2' },
-  error: { bg: 'rgba(239, 68, 68, 0.15)', text: '#EF4444', border: '#DC2626' },
-};
+function phaseColors(c: {
+  fillSubtle: string; textMuted: string; border: string;
+  staleSoft: string; warning: string;
+  cyanSoft: string; cyan: string; borderHi: string;
+  danger: string; dangerStrong: string;
+}) {
+  return {
+    idle: { bg: c.fillSubtle, text: c.textMuted, border: c.border },
+    warming: { bg: c.staleSoft, text: c.warning, border: c.warning },
+    describing: { bg: c.cyanSoft, text: c.cyan, border: c.borderHi },
+    batch_complete: { bg: c.cyanSoft, text: c.cyan, border: c.borderHi },
+    error: { bg: `${c.dangerStrong}26`, text: c.dangerStrong, border: c.dangerStrong },
+  } as const;
+}
 
 // ── WebSocket hook for token streaming ───────────────────────────────
 
@@ -151,7 +158,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
   const [runMessage, setRunMessage] = useState<string | null>(null);
   // Named apart from the local phase palette below; the theme is here only to
   // feed the button primitive's variant defaults.
-  const { colors: themeColors } = useTheme();
+  const { colors: theme } = useTheme();
 
   const isDescribing = status?.state === 'describing' || status?.state === 'warming';
   const stream = useLibrarianTokenStream(visible && isDescribing);
@@ -233,7 +240,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
   if (!visible || !status) return null;
 
   const phase = (status.state as LibrarianPhase) || 'idle';
-  const colors = PHASE_COLORS[phase] ?? PHASE_COLORS.idle;
+  const colors = phaseColors(theme)[phase] ?? phaseColors(theme).idle;
   const { lifetime_stats: lt, session_stats: ss, schedule } = status;
   const descPct = lt.total_memories > 0 ? Math.round((lt.described / lt.total_memories) * 100) : 0;
 
@@ -241,8 +248,8 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
     <div style={{
       display: 'inline-block',
       padding: '2px 8px',
-      borderRadius: 3,
-      fontSize: 10,
+      borderRadius: radius.xs,
+      fontSize: textSize.micro,
       fontWeight: 700,
       letterSpacing: '0.08em',
       background: colors.bg,
@@ -262,7 +269,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
     >
       {/* Phase task description */}
       <div style={{ padding: '4px 14px 8px' }}>
-        <span style={{ fontSize: textSize.micro, color: '#9CA3AF' }}>
+        <span style={{ fontSize: textSize.micro, color: theme.textMuted }}>
           {status.current_task}
         </span>
       </div>
@@ -271,21 +278,21 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
       {(status.current_memory || stream.tokens) && (
         <Section title="CURRENT MEMORY" trimColor={COLORS.neonAmber}>
           {status.current_memory && (
-            <div style={{ fontSize: textSize.micro, color: '#D1D5DB', marginBottom: 4 }}>
+            <div style={{ fontSize: textSize.micro, color: theme.text, marginBottom: 4 }}>
               <span style={{ color: COLORS.neonAmber, fontWeight: 600 }}>
                 {status.current_memory.key}
               </span>
               {stream.retrying && (
-                <span style={{ color: COLORS.neonAmber, fontSize: 10, marginLeft: 8, opacity: 0.8 }}>
+                <span style={{ color: COLORS.neonAmber, fontSize: textSize.micro, marginLeft: 8, opacity: 0.8 }}>
                   retrying…
                 </span>
               )}
               {stream.lastQuality === 'fallback' && (
-                <span style={{ color: '#EF4444', fontSize: 10, marginLeft: 8 }}>
+                <span style={{ color: theme.dangerStrong, fontSize: textSize.micro, marginLeft: 8 }}>
                   low quality
                 </span>
               )}
-              <div style={{ color: '#9CA3AF', marginTop: 2 }}>
+              <div style={{ color: theme.textMuted, marginTop: 2 }}>
                 {status.current_memory.content_preview}
               </div>
             </div>
@@ -314,13 +321,13 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
         <StatRow label="Described" value={`${lt.described} (${descPct}%)`} />
         <StatRow label="Pending" value={lt.pending} />
         {/* Progress bar */}
-        <div style={{ marginTop: 6, height: 4, background: 'rgba(255,255,255,0.06)', borderRadius: 2 }}>
+        <div style={{ marginTop: 6, height: 4, background: theme.fillSubtle, borderRadius: radius.xs }}>
           <div style={{
             height: '100%',
             width: `${descPct}%`,
             background: `linear-gradient(90deg, ${COLORS.neonCyan}80, ${COLORS.neonCyan})`,
-            borderRadius: 2,
-            transition: 'width 0.5s ease',
+            borderRadius: radius.xs,
+            transition: `width ${duration.smooth}ms ${ease.smooth}`,
           }} />
         </div>
       </Section>
@@ -346,8 +353,8 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
 
       {/* Error */}
       {status.error_message && (
-        <Section title="ERROR" trimColor="#EF4444">
-          <div style={{ fontSize: textSize.micro, color: '#EF4444', wordBreak: 'break-word' }}>
+        <Section title="ERROR" trimColor={theme.dangerStrong}>
+          <div style={{ fontSize: textSize.micro, color: theme.dangerStrong, wordBreak: 'break-word' }}>
             {status.error_message}
           </div>
         </Section>
@@ -356,12 +363,12 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
       {/* Actions */}
       <div style={{ padding: '8px 14px 12px' }}>
         {runMessage && (
-          <div style={{ fontSize: 10, color: runStatus?.last_error ? '#EF4444' : COLORS.neonCyan, marginBottom: 6 }}>
+          <div style={{ fontSize: textSize.micro, color: runStatus?.last_error ? theme.dangerStrong : COLORS.neonCyan, marginBottom: 6 }}>
             {runMessage}
           </div>
         )}
         <Button
-          colors={themeColors}
+          colors={theme}
           type="button"
           onClick={handleRunNow}
           disabled={startingNow || runStatus?.running || phase === 'describing' || phase === 'warming'}

@@ -6,6 +6,7 @@ import { Chip } from '../common/Chip';
 import { councilStatus } from './deskStatus';
 import { api, type CouncilLatest } from '../../lib/api';
 import { textSize } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 
 // The Council of LLMs — every configured provider argues the same brief and a
 // chair writes the report (crate::council + council_sweep.rs).
@@ -29,6 +30,7 @@ interface CouncilHUDProps {
 }
 
 export function CouncilHUD({ visible, onClose }: CouncilHUDProps) {
+  const { colors } = useTheme();
   // null = unknown (still reading). Never claim OFF on a failed read.
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [latest, setLatest] = useState<CouncilLatest | null>(null);
@@ -64,7 +66,7 @@ export function CouncilHUD({ visible, onClose }: CouncilHUDProps) {
       statusPill={<Chip kind="static" color={COUNCIL_TRIM}>{status.label}</Chip>}
     >
       <div style={{ padding: '4px 14px 8px' }}>
-        <span style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5 }}>
+        <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           {enabled === false
             ? 'Off — enable the Council in Settings. When on, every configured provider argues the same brief and a chair writes up where they agreed and where they did not.'
             : 'Every configured provider argues the same brief; a chair writes up the consensus, the dissent, and what to do about it.'}
@@ -72,7 +74,7 @@ export function CouncilHUD({ visible, onClose }: CouncilHUDProps) {
       </div>
 
       <Section title="WHEN" trimColor={COUNCIL_TRIM}>
-        <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.5 }}>
           Sundays at 22:00, your local time — with a Monday catch-up if the
           machine was asleep. Nothing reports a session starting yet, so this
           panel states the schedule rather than watching for it.
@@ -90,13 +92,13 @@ export function CouncilHUD({ visible, onClose }: CouncilHUDProps) {
             <StatRow label="Status" value={session.status} />
             <StatRow label="Open actions" value={latest?.openActions ?? 0} />
             {report && (
-              <div style={{ fontSize: textSize.micro, color: '#D1D5DB', lineHeight: 1.5, marginTop: 6 }}>
+              <div style={{ fontSize: textSize.micro, color: colors.text, lineHeight: 1.5, marginTop: 6 }}>
                 {report.headline}
               </div>
             )}
           </>
         ) : (
-          <div style={{ fontSize: textSize.micro, color: '#9CA3AF', lineHeight: 1.5 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
             {latest === null ? 'Reading…' : 'No session on record yet.'}
           </div>
         )}

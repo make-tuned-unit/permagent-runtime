@@ -28,11 +28,15 @@
  * first visit, dismissed for good on request, per canvas. It is a caption, not
  * a dialog — it never traps focus, never covers the scene's controls, and can
  * be dismissed from the keyboard by anyone who has tabbed into it.
+ *
+ * Material: floating control over canvas content → shared glass tokens (D1).
+ * One glass plane per open/closed state; children use fillHover (D2/D10).
  */
 
 import { useCallback, useId, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { concentric, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { useGlass } from './Glass';
 import { Button } from './Button';
 import { readLegendOpen, rememberLegendOpen } from './legendMemory';
 
@@ -79,7 +83,7 @@ function Rows({ rows, palette }: { rows: LegendRow[]; palette: LegendPalette }) 
         margin: 0,
         display: 'grid',
         gridTemplateColumns: hasMarkers ? 'auto auto 1fr' : 'auto 1fr',
-        columnGap: 6,
+        columnGap: space.sm,
         rowGap: 5,
         alignItems: 'baseline',
       }}
@@ -113,6 +117,7 @@ export function CanvasLegend({
   style,
 }: CanvasLegendProps) {
   const { colors } = useTheme();
+  const glass = useGlass('glass');
   const [open, setOpen] = useState(() => readLegendOpen(canvasId));
   const panelId = useId();
 
@@ -121,18 +126,25 @@ export function CanvasLegend({
     rememberLegendOpen(canvasId, next);
   }, [canvasId]);
 
+  // Ink/accent may still come from a canvas-local palette (World scene colours);
+  // the glass plane itself always comes from the shared tokens.
   const pal: LegendPalette = {
-    bg: palette?.bg ?? colors.surface,
+    bg: palette?.bg ?? (glass.background as string) ?? colors.surface,
     border: palette?.border ?? colors.border,
     text: palette?.text ?? colors.text,
     dim: palette?.dim ?? colors.textMuted,
     accent: palette?.accent ?? colors.cyan,
   };
 
+  const panelPadX = space.xl;
+  const panelPadY = space.lg;
+  const panelRadius = radius.glass;
+  const chipRadius = concentric(panelRadius, panelPadY);
+
   const anchor: CSSProperties = {
     position: 'absolute',
-    bottom: 16,
-    left: 16,
+    bottom: space.xxl,
+    left: space.xxl,
     zIndex: 12,
     fontFamily: font.body,
     fontSize: textSize.micro,
@@ -144,10 +156,11 @@ export function CanvasLegend({
     '--pa-btn-fg': pal.dim,
     '--pa-btn-fg-hover': pal.accent,
     '--pa-btn-border': 'transparent',
-    '--pa-btn-bg-hover': `${pal.accent}1f`,
+    '--pa-btn-bg-hover': colors.fillHover,
+    '--pa-btn-bg-active': colors.fillActive,
     '--pa-btn-border-hover': 'transparent',
-    '--pa-btn-pad': '2px 6px',
-    '--pa-btn-radius': `${radius.xs}px`,
+    '--pa-btn-pad': `${2}px ${space.sm}px`,
+    '--pa-btn-radius': `${chipRadius > 0 ? chipRadius : radius.xs}px`,
     fontFamily: font.mono,
     fontSize: textSize.micro,
     letterSpacing: '0.08em',
@@ -167,10 +180,14 @@ export function CanvasLegend({
           onClick={() => set(true)}
           style={{
             ...controlVars,
-            '--pa-btn-bg': pal.bg,
+            ...glass,
+            // Button paints via --pa-btn-bg; feed it the glass fill so the
+            // filter and translucent background travel together.
+            '--pa-btn-bg': (glass.background as string) ?? colors.surface,
             '--pa-btn-border': pal.border,
-            '--pa-btn-pad': '4px 10px',
-            backdropFilter: 'blur(8px)',
+            '--pa-btn-pad': `${space.xs}px ${space.lg}px`,
+            '--pa-btn-radius': `${panelRadius}px`,
+            boxShadow: glass.boxShadow,
           } as CSSProperties}
         >
           {title}
@@ -200,15 +217,17 @@ export function CanvasLegend({
         ...anchor,
         maxWidth: 330,
         display: 'grid',
-        gap: 8,
-        padding: '10px 12px',
-        background: pal.bg,
+        gap: space.md,
+        padding: `${panelPadY}px ${panelPadX}px`,
+        ...glass,
+        // Prefer theme glass fill over a caller palette bg that may be opaque
+        // (would kill the blur). Callers that need scene ink pass text/dim/accent.
+        background: (glass.background as string) ?? pal.bg,
         border: `1px solid ${pal.border}`,
-        borderRadius: radius.md,
-        backdropFilter: 'blur(10px)',
+        borderRadius: panelRadius,
       }}
     >
-      <header style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <header style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
         <span style={{
           fontFamily: font.mono,
           fontSize: textSize.micro,

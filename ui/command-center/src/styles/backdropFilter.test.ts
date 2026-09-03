@@ -39,23 +39,20 @@ const OWNERS = ['styles/tokens.ts', 'components/common/Glass.tsx'];
  * that matters — the list can only get shorter.
  *
  * Nothing here is endorsed. It is a debt register with names on it.
+ *
+ * R16 (world HUD chrome) paid off HudShell, WorldView (Agora return),
+ * WorldHUD, AgentPicker, AgentCharacterV2 nameplate, and CanvasLegend —
+ * those entries are gone. Remaining world/** glass belongs to other surfaces.
  */
 const LANE_OWNED: Record<string, { max: number; lane: string }> = {
-  // World is a parallel design system (~140 hex literals, never calls
-  // useTheme). Its HUD chrome is also the one place in the app that could
-  // legitimately justify Apple's Clear variant, over the 3D scene — which is a
-  // judgement to make against a real backdrop, on that screen, not here.
-  'components/world/HudShell.tsx': { max: 1, lane: 'R16 world HUD chrome' },
-  'components/world/WorldView.tsx': { max: 1, lane: 'R16 world HUD chrome' },
-  'components/world/WorldHUD.tsx': { max: 2, lane: 'R16 world HUD chrome' },
-  'components/world/AgentPicker.tsx': { max: 2, lane: 'R16 world HUD chrome' },
-  'components/world/agents/AgentCharacterV2.tsx': { max: 1, lane: 'R16 world HUD chrome' },
   // Brain's cluster (was 8, including its own local `glass` object) is GONE:
   // R13 converted BrainView.tsx and BrainList.tsx to `glassSurface()` / the
   // theme's `glass` tokens as part of the screen's Liquid Glass pass.
-  // Canvas overlay legend, shared by the world and brain canvases. It follows
-  // whichever of those two lands first; it is not a screen of its own.
-  'components/common/CanvasLegend.tsx': { max: 2, lane: 'R13/R16 canvas overlays' },
+  // World HUD chrome (HudShell, WorldView, WorldHUD, AgentPicker,
+  // AgentCharacterV2 nameplate) is GONE: R16 put the HUD panels on the glass
+  // tokens — the one place glass over content is correct, the canvas being the
+  // content. CanvasLegend's two are GONE with it: the shared canvas overlay
+  // legend draws on the glass tokens, so it no longer needs a hand-rolled entry.
   // PersonDetailModal's two are GONE (R12): the drawer was a hand-rolled
   // second modal, and it is a `DetailModal placement="contained"` now — a
   // modal body is content by Apple's own list, so it is simply opaque.
@@ -63,6 +60,9 @@ const LANE_OWNED: Record<string, { max: number; lane: string }> = {
   // MeetingRecorder's two are GONE (R4' voice surfaces): the floating panel
   // takes `glassSurface()`, and the picker modal — a modal BODY, which is
   // content by Apple's own list — is simply opaque, over the theme's `veil`.
+  //
+  // R16 paid off world HUD chrome + CanvasLegend (HudShell, WorldHUD,
+  // AgentPicker, WorldView Agora return, AgentCharacterV2 nameplate).
 };
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
