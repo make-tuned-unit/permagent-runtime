@@ -24,6 +24,7 @@ import { PeopleDirectory } from './PeopleDirectory';
 import { PeopleGraph } from './PeopleGraphCanvas';
 import { matchPendingPerson } from './personNavigation';
 
+import { Tooltip } from '../common/Tooltip';
 type PeopleMode = 'graph' | 'list';
 const MODE_KEY = 'permagent-people-mode';
 
@@ -159,17 +160,20 @@ function CalendarImportNote({
   const line = calendarImportLine(state);
   return (
     <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-      <span
-        data-testid="people-calendar-note"
-        title={line.title}
-        style={{
-          ...type.micro,
-          color: line.tone === 'warning' ? colors.warning : colors.textMuted,
-          cursor: line.title ? 'help' : undefined,
-        }}
-      >
-        {line.text}
-      </span>
+      <Tooltip content={line.title}>
+        <span tabIndex={0} style={{ outline: 'none' }}>
+          <span
+            data-testid="people-calendar-note"
+            style={{
+              ...type.micro,
+              color: line.tone === 'warning' ? colors.warning : colors.textMuted,
+              cursor: line.title ? 'help' : undefined,
+            }}
+          >
+            {line.text}
+          </span>
+        </span>
+      </Tooltip>
       {line.retry && (
         <Button colors={colors} type="button" flashSuccess={false} onClick={onRetry}>
           Retry
