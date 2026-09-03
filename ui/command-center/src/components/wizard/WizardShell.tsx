@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from 'react';
-import { duration, ease, radius, space, textSize } from '../../styles/tokens';
+import { duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { ProgressDots, BackChevron } from './atoms';
 import { MomentWelcome } from './MomentWelcome';
@@ -12,7 +12,6 @@ import { MomentWebSearch } from './MomentWebSearch';
 import { MomentChat } from './MomentChat';
 import { api, apiFetch } from '../../lib/api';
 import { stashWizardIntent } from '../../lib/wizardIntent';
-import { font, space } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 import { Tooltip } from '../common/Tooltip';
