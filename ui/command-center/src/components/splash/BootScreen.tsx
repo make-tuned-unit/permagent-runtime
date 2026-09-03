@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { duration, ease, font, textSize } from '../../styles/tokens';
+import { duration, ease, font, space, textSize } from '../../styles/tokens';
 import { Mobius, type MobiusState } from '../mobius/Mobius';
 import { useTheme } from '../../styles/useTheme';
 import { TITLEBAR_HEIGHT } from '../../lib/windowChrome';
@@ -100,7 +100,7 @@ export function BootScreen({ onReady }: Props) {
       }}
     >
       <Mobius size={120} state={mobiusState} glow={status === 'failed' ? 0 : 1} />
-      <div style={{ marginTop: 24, textAlign: 'center', maxWidth: 320 }}>
+      <div style={{ marginTop: space.huge, textAlign: 'center', maxWidth: 320 }}>
         <p style={{
           fontFamily: font.display, fontSize: textSize.body, fontWeight: 600,
           color: colors.text,
@@ -110,13 +110,13 @@ export function BootScreen({ onReady }: Props) {
         {copy.sub && (
           <p style={{
             fontFamily: font.body, fontSize: textSize.small, fontWeight: 400,
-            color: colors.textMuted, marginTop: 8,
+            color: colors.textMuted, marginTop: space.md,
           }}>
             {copy.sub}
           </p>
         )}
         {status === 'failed' && (
-          <div style={{ marginTop: 16, display: 'flex', justifyContent: 'center' }}>
+          <div style={{ marginTop: space.xxl, display: 'flex', justifyContent: 'center' }}>
             <Button colors={colors} variant="primary" onClick={() => setRetryKey(k => k + 1)}>
               Retry
             </Button>
