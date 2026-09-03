@@ -22,17 +22,13 @@ import { fileURLToPath } from 'node:url';
 const FINANCE_DIR = fileURLToPath(new URL('../components/finance', import.meta.url));
 
 /**
- * The one documented exception: a fixed dark ink for legibility on
- * `AGENT_TRIM.financier`'s fixed gold badge fill. `world/shared/palette.ts`
- * is FROZEN and theme-independent (identity trim, never repainted by state or
- * theme), so there is no theme token this could derive from — the same
- * situation `colors.textOnCyan` solves for the flat cyan fill, just with no
- * generic "ink on a bright identity-trim fill" token minted yet. Named once,
- * at module scope, with a comment, in `FinanceView.tsx`'s
- * `FINANCIER_BADGE_INK` — not sprinkled. A real request for a generic token
- * is filed in this lane's PR body (R11 -> A1c/tokens).
+ * No documented exceptions remain: the one hand-picked value this allow-list
+ * carried — `#3d2e0a`, ink for `AGENT_TRIM.financier`'s gold badge fill — is
+ * now derived at call time by `inkOnTrim()` (styles/tokens.ts, added
+ * 2026-09-02 at this lane's request) rather than hand-typed in FinanceView.
+ * `inkOnTrim(AGENT_TRIM.financier)` reproduces the same value.
  */
-const ALLOWED_HEX = new Set(['#3d2e0a']);
+const ALLOWED_HEX = new Set<string>([]);
 
 function financeFiles(): string[] {
   const out: string[] = [];
@@ -126,7 +122,7 @@ describe('finance screen — zero hardcoded colors (R11, design gate 1)', () => 
     ).toEqual([]);
   });
 
-  it('names its one exception with a reason, so the allow-list cannot grow silently', () => {
-    expect(ALLOWED_HEX.size, 'this test\'s hex allow-list grew — every entry needs the same kind of comment FinanceView.tsx has for #3d2e0a').toBe(1);
+  it('keeps zero hex exceptions — a new one needs the same kind of comment #3d2e0a used to have', () => {
+    expect(ALLOWED_HEX.size).toBe(0);
   });
 });

@@ -37,6 +37,16 @@ import { Tooltip } from '../common/Tooltip';
      `<ConfirmDialog title>` — those are headings, not hover tips.
    - `<iframe title>` / `<svg><title>` — required accessible names (allowlisted
      in `Tooltip.test.tsx`).
+   - `<option title>` (#1180) — **cannot** be wrapped. A `<select>`'s open
+     list is drawn by the OS/browser outside the page's own paint tree, so a
+     portalled, positioned bubble like `TooltipBubble` has nowhere over an
+     `<option>` to render — there is no DOM node inside that native popup for
+     a React portal to target. Native `title=` is the only per-option hover
+     hint the platform offers; leave it as a raw attribute (see
+     `grow/ActionCard.tsx`'s `<option title={a.tooltip}>` for a real example).
+     If a directory carrying one of these adopts the `Tooltip.test.tsx` fitness
+     gate, allowlist it the way the gate already allowlists `<iframe>` /
+     `<svg><title>` rather than trying to convert it.
 
 ## Codemod (semi-automated)
 

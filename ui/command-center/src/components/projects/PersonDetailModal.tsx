@@ -49,6 +49,7 @@ import { navigateToTool, useCommandCenter } from '../../lib/store';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { TITLEBAR_HEIGHT } from '../../lib/windowChrome';
 import { Button } from '../common/Button';
 import { Chip } from '../common/Chip';
 import { DetailModal } from '../common/DetailModal';
@@ -1159,8 +1160,6 @@ function EditForm({ colors, personName, draft, onChange }: {
  *  thing in it (a datetime input beside its label) and narrow enough that the
  *  board or the graph it opens over is still legible beside it. */
 const DOCK_WIDTH = 400;
-/** The app's titlebar. The overlay dock starts below it rather than under it. */
-const TITLEBAR_INSET = 28;
 
 /**
  * Where the person panel sits — and, after R12, the only thing this file still
@@ -1200,7 +1199,10 @@ function PersonDetailDock({ variant, children }: {
     <div
       data-testid="person-detail-panel"
       style={{
-        position: 'fixed', top: TITLEBAR_INSET, right: 0, bottom: 0,
+        // The overlay dock starts below the titlebar band rather than under
+        // it. `TITLEBAR_HEIGHT` (lib/windowChrome.ts) IS `shell.titlebar`
+        // (#1173) — the one source for that geometry, not a re-guessed local.
+        position: 'fixed', top: TITLEBAR_HEIGHT, right: 0, bottom: 0,
         width: DOCK_WIDTH, zIndex: 80,
       }}
     >

@@ -13,7 +13,7 @@ import { font, radius, space, tabularNums, textSize, type } from '../../styles/t
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Tooltip } from '../common/Tooltip';
-import { Card, SectionLabel, StatRow } from '../settings/atoms';
+import { Card, SectionLabel, StatRow } from '../common/Card';
 import { bandColor, bandLabel, formatTokens, formatUsd, timeAgo } from '../settings/format';
 
 export function SpendPanel() {

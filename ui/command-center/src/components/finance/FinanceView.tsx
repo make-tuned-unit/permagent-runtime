@@ -8,7 +8,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
-import { concentric, duration, ease, font, radius, tabularNums, type, textSize } from '../../styles/tokens';
+import { concentric, duration, ease, font, inkOnTrim, radius, tabularNums, type, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { api, apiFetch, uploadFinanceStatement } from '../../lib/api';
@@ -337,18 +337,6 @@ interface DailyPick {
   model?: string | null;
   candidateCount: number;
 }
-
-/**
- * A fixed dark ink for legibility on `AGENT_TRIM.financier`'s fixed gold
- * badge fill. `world/shared/palette.ts` is FROZEN and theme-independent
- * (identity trim, never repainted by state or theme), so there is no theme
- * token this could derive from — the same situation `colors.textOnCyan`
- * solves for the flat cyan fill, just with no generic "ink on a bright
- * identity-trim fill" token minted yet (request: A1c/tokens). Named once
- * here, with this comment, rather than inlined — the finance color fitness
- * test (styles/financeColors.test.ts) allow-lists exactly this one literal.
- */
-const FINANCIER_BADGE_INK = '#3d2e0a';
 
 const POLL_MS = 60_000;
 /** How often a running Picker scan is asked whether it is done. */
@@ -1645,7 +1633,7 @@ function PickRow({
             title={GLOSSARY.financierApproved}
             style={{
               ...type.micro,
-              color: FINANCIER_BADGE_INK,
+              color: inkOnTrim(AGENT_TRIM.financier),
               background: AGENT_TRIM.financier,
               fontWeight: 700,
               letterSpacing: '0.04em',

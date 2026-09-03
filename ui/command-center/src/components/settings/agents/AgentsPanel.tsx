@@ -6,8 +6,9 @@
  */
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
-import { Chip, H1, Row, Section } from '../atoms';
+import { Chip, Row, Section } from '../atoms';
 import { Button } from '../../common/Button';
+import { H1 } from '../../common/H1';
 import { Toggle } from '../../common/Toggle';
 import {
   availabilityLabel,

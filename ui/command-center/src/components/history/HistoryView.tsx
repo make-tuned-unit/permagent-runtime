@@ -34,7 +34,7 @@ import { useTheme } from '../../styles/useTheme';
 import { useNotifications } from '../../lib/notifications';
 import { Button } from '../common/Button';
 import { Tooltip } from '../common/Tooltip';
-import { H1 } from '../settings/atoms';
+import { H1 } from '../common/H1';
 import { SessionsList } from '../sessions/SessionsList';
 import { InboxPanel } from '../inbox/InboxPanel';
 import { ExecutionTrace } from '../trace/ExecutionTrace';

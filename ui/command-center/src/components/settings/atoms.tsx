@@ -1,6 +1,6 @@
 import { Children, Fragment, isValidElement } from 'react';
 import type { CSSProperties } from 'react';
-import { concentric, font, radius, space, textSize, type } from '../../styles/tokens';
+import { font, radius, space, textSize, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
@@ -88,30 +88,8 @@ export function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'm
   );
 }
 
-/**
- * The pane title. `type.title` rather than a hand-typed 24px: the ramp's
- * `title` is 20/26/600 at -0.01em, which is the macOS large-title proportion
- * for a dense window, and the 24 it replaced was an off-ramp size that existed
- * only here.
- *
- * Left-aligned, and the subtitle sits at a readable measure — Tahoe's
- * typography is *"bolder and left-aligned"*, and centered body copy is now the
- * un-Apple choice (WWDC25/356).
- */
-export function H1({ children, sub }: { children: React.ReactNode; sub?: string }) {
-  const { colors } = useTheme();
-  return (
-    <div style={{ marginBottom: space.huge }}>
-      <div style={{ ...type.title, fontFamily: font.display, color: colors.text }}>{children}</div>
-      {sub && (
-        <div style={{
-          fontSize: textSize.small, color: colors.textMuted,
-          marginTop: space.sm, maxWidth: 620, lineHeight: 1.45,
-        }}>{sub}</div>
-      )}
-    </div>
-  );
-}
+/** `H1` graduated to `components/common/H1.tsx` (#1177, #1185) — imported
+ *  wherever the old settings pane title is still needed. */
 
 /**
  * Give every direct child of a group the group's own padding.
@@ -302,58 +280,8 @@ export function Kbd({ children }: { children: React.ReactNode }) {
   );
 }
 
-// ── Card primitives (migrated from the Governance surface when its panels
-//    were folded into Settings) — shared by the Spend / Sovereignty / Models
-//    panes so their data-dense views read as one surface. ─────────────────
-
-/** Outer padding of a `Card`. Named because `StatRow` derives its own corner
- *  from it: `r_inner = r_outer - padding` (WWDC25/356). */
-const CARD_PAD = space.xxl;
-
-export function Card({ children }: { children: React.ReactNode }) {
-  const { colors } = useTheme();
-  return (
-    <div style={{
-      borderRadius: radius.lg,
-      background: colors.surface,
-      border: `1px solid ${colors.border}`,
-      padding: CARD_PAD,
-    }}>
-      {children}
-    </div>
-  );
-}
-
-export function SectionLabel({ children }: { children: React.ReactNode }) {
-  const { colors } = useTheme();
-  return <div style={{ ...type.label, fontFamily: font.body, color: colors.textDim }}>{children}</div>;
-}
-
-/** A labeled row: primary text + optional sub-line on the left, a value node on
- *  the right. Its corner is concentric with the `Card` it sits in. */
-export function StatRow({ left, sub, right }: { left: React.ReactNode; sub?: React.ReactNode; right: React.ReactNode }) {
-  const { colors } = useTheme();
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: space.xl,
-      padding: `${space.lg}px ${space.xl}px`,
-      borderRadius: concentric(radius.lg, CARD_PAD),
-      background: colors.fillSubtle,
-    }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {left}
-        </div>
-        {sub != null && (
-          <div style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {sub}
-          </div>
-        )}
-      </div>
-      <div style={{ flexShrink: 0 }}>{right}</div>
-    </div>
-  );
-}
+// `Card`, `SectionLabel` and `StatRow` graduated to `components/common/Card.tsx`
+// (#1177, #1185) — `history/SpendPanel` needed them from outside `settings/`.
 
 export function SaveButton({ onClick, disabled, saving }: {
   onClick: () => void; disabled: boolean; saving: boolean;

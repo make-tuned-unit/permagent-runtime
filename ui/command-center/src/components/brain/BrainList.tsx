@@ -474,9 +474,15 @@ function EntityRow({ entity, selected, onClick }: {
       onFocus={e => { (e.currentTarget as HTMLDivElement).style.outline = `2px solid ${colors.cyan}`; }}
       onBlur={e => { (e.currentTarget as HTMLDivElement).style.outline = 'none'; }}
     >
+      {/* `minWidth`, not `width` (#1171 silver screenshot): a fixed width let
+          a long type name ("ORGANIZATION") overflow the box, and since the
+          box is anchored `flex-end`, the overflow ran past its own left
+          edge — pushing the leading dot off the row. `minWidth` keeps every
+          short type name aligned at the same column while letting a longer
+          one grow the box instead of spilling out of it. */}
       <span style={{
         display: 'inline-flex', alignItems: 'center', gap: 6,
-        flexShrink: 0, width: 62, justifyContent: 'flex-end',
+        flexShrink: 0, minWidth: 62, justifyContent: 'flex-end',
       }}>
         <span aria-hidden style={{
           width: 6, height: 6, borderRadius: radius.pill, background: typeColor, flexShrink: 0,
