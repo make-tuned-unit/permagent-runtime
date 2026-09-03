@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import type { CSSProperties } from 'react';
 import { FiChevronRight, FiFolder, FiMessageSquare, FiSearch } from 'react-icons/fi';
-import { concentric, duration, ease, font, radius, textSize } from '../../styles/tokens';
+import { concentric, duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
 import { useGlass } from '../common/Glass';
@@ -667,7 +667,7 @@ export function AutomateView() {
                 onChange={e => setSearch(e.target.value)}
                 placeholder="Filter..."
                 style={{
-                  width: 180, padding: '5px 10px', borderRadius: radius.sm,
+                  width: 180, padding: `${space.xs}px ${space.lg}px`, borderRadius: radius.sm,
                   background: colors.surface, border: `1px solid ${colors.border}`,
                   color: colors.text, fontSize: textSize.caption, fontFamily: font.mono, outline: 'none',
                 }}
@@ -709,7 +709,7 @@ export function AutomateView() {
           </>}
         />
 
-        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '20px 32px 40px' }}>
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: `${space.xxxl}px 32px 40px` }}>
 
         {/* Live run roster — everything at work right now, at a glance */}
         <RunRoster />
@@ -718,9 +718,9 @@ export function AutomateView() {
             "Review result" opens the run detail (findings / report) directly. */}
         {completionToast && (
           <div style={{
-            marginBottom: 16, padding: '10px 16px', borderRadius: radius.md,
+            marginBottom: space.xxl, padding: `${space.lg}px ${space.xxl}px`, borderRadius: radius.md,
             background: withAlpha(colors.success, 0.1), border: `1px solid ${withAlpha(colors.success, 0.25)}`,
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.xl,
           }}>
             <span style={{ fontSize: textSize.small, color: colors.success, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               &#10003; "{completionToast.name}" completed.
@@ -760,7 +760,7 @@ export function AutomateView() {
         {/* Run-now failure banner (surfaced, not swallowed) */}
         {runError && (
           <div style={{
-            marginBottom: 16, padding: '10px 16px', borderRadius: radius.md,
+            marginBottom: space.xxl, padding: `${space.lg}px ${space.xxl}px`, borderRadius: radius.md,
             background: withAlpha(colors.danger, 0.1), border: `1px solid ${withAlpha(colors.danger, 0.25)}`,
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           }}>
@@ -785,17 +785,17 @@ export function AutomateView() {
         {/* Truly-empty invitation */}
         {trulyEmpty && jobs.length === 0 && (
           <div style={{
-            padding: '32px 28px', borderRadius: radius.lg, marginBottom: 24,
+            padding: '32px 28px', borderRadius: radius.lg, marginBottom: space.huge,
             background: colors.surface, border: `1px solid ${colors.border}`, textAlign: 'center',
           }}>
-            <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, marginBottom: 8 }}>
+            <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, marginBottom: space.md }}>
               Your agent can do a lot already
             </div>
             <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, maxWidth: 420, margin: '0 auto' }}>
               Try asking {agentName} to summarize your Downloads folder — if you like the result,
               ask to remember how. Skills appear here when you save them.
             </div>
-            <div style={{ marginTop: 16, display: 'flex', gap: 12, justifyContent: 'center' }}>
+            <div style={{ marginTop: space.xxl, display: 'flex', gap: space.xl, justifyContent: 'center' }}>
               <Button
                 colors={colors}
                 variant="primary"
@@ -819,7 +819,7 @@ export function AutomateView() {
                 '--pa-btn-pad': '0',
                 fontFamily: font.body,
                 fontSize: textSize.micro,
-                marginTop: 12,
+                marginTop: space.xl,
               } as CSSProperties}
             >or browse what your agent can do &rarr;</Button>
           </div>
@@ -852,7 +852,7 @@ export function AutomateView() {
                 No runs yet. History appears here once an {AUTOMATION.one} runs — use "Run Now" on one to try it.
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxs }}>
                 {allRuns.map(run => {
                   const displayName = jobNameMap.get(run.jobId) || run.jobId;
                   return (
@@ -875,7 +875,7 @@ export function AutomateView() {
                         '--pa-btn-pad': '8px 12px',
                         '--pa-btn-radius': `${radius.sm}px`,
                         fontFamily: font.body,
-                        gap: 10,
+                        gap: space.lg,
                         width: '100%',
                         justifyContent: 'flex-start',
                         textAlign: 'left',
@@ -911,7 +911,7 @@ export function AutomateView() {
                   : `No ${AUTOMATION.many} yet. Click "+ Create ${AUTOMATION.one}" to schedule your first one.`}
               </div>
             ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: space.xl }}>
                 {filteredJobs.filter(j => !j.currently_running).map(job => (
                   <RecipeCard key={job.id} job={job} onRunNow={handleRunNow} onPause={handlePause}
                     onUnpause={handleUnpause} onDelete={handleDelete} onKill={handleKill}
@@ -930,35 +930,35 @@ export function AutomateView() {
             <div style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading...</div>
           ) : filteredSkills.length === 0 && filteredProposals.length === 0 ? (
             <div style={{
-              padding: '20px 24px', borderRadius: radius.lg,
+              padding: `${space.xxxl}px ${space.huge}px`, borderRadius: radius.lg,
               background: withAlpha(colors.purple, 0.04), border: `1px solid ${withAlpha(colors.purple, 0.12)}`,
             }}>
               <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6 }}>
                 When you repeat tasks, {agentName} notices patterns and offers to save them.
                 Your first skill will appear here.
               </div>
-              <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: 8 }}>
+              <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: space.md }}>
                 Try asking {agentName} to do something twice — like "summarize my Downloads folder"
                 — and you'll be offered a way to remember how.
               </div>
             </div>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: space.xl }}>
               {/* Proposal cards first (amber) */}
               {filteredProposals.map(proposal => (
                 <div key={proposal.argument_shape_hash} style={{
-                  padding: '16px 20px', borderRadius: radius.lg,
+                  padding: `${space.xxl}px ${space.xxxl}px`, borderRadius: radius.lg,
                   background: withAlpha(colors.warning, 0.04), border: `1px solid ${withAlpha(colors.warning, 0.2)}`,
                 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.sm }}>
                     <div style={{ width: 8, height: 8, borderRadius: '50%', background: colors.warning }} />
                     <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{proposal.description}</div>
-                    <span style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors.warning, 0.15), color: colors.warning }}>PROPOSED</span>
+                    <span style={{ fontSize: 10, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: withAlpha(colors.warning, 0.15), color: colors.warning }}>PROPOSED</span>
                   </div>
-                  <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>
+                  <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: space.md }}>
                     Seen {proposal.occurrence_count} time{proposal.occurrence_count !== 1 ? 's' : ''} using {proposal.tool_used}
                   </div>
-                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
                     {/* `saveProposal` now resolves `false` on failure, so the
                         tick is honest: it appears only for a skill the daemon
                         actually created, and a rejected save says so below
@@ -1024,16 +1024,16 @@ export function AutomateView() {
                       onFocus={e => { e.currentTarget.style.borderColor = colors.borderHi; e.currentTarget.style.boxShadow = `0 0 0 2px ${colors.cyanGlow}`; }}
                       onBlur={e => { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.boxShadow = 'none'; }}
                       style={{
-                        padding: '16px 20px', borderRadius: radius.lg, cursor: 'pointer', outline: 'none',
+                        padding: `${space.xxl}px ${space.xxxl}px`, borderRadius: radius.lg, cursor: 'pointer', outline: 'none',
                         background: colors.surface, border: `1px solid ${colors.border}`,
                         transition: springTransition('border-color', 'background', 'box-shadow'),
                       }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.sm }}>
                         <div style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor }} />
                         <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{skill.name}</div>
-                        <span style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: tierBg, color: tierFg }}>{tier}</span>
+                        <span style={{ fontSize: 10, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: tierBg, color: tierFg }}>{tier}</span>
                       </div>
-                      {skill.description && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>{skill.description}</div>}
+                      {skill.description && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: space.md }}>{skill.description}</div>}
                       <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
                         Used {uses} time{uses !== 1 ? 's' : ''} &middot; {skill.status}
                       </div>
@@ -1092,7 +1092,7 @@ export function AutomateView() {
                   textAlign: 'left',
                 } as CSSProperties}
               >Hide &uarr;</button>
-              <div id="automate-installed-list" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              <div id="automate-installed-list" style={{ display: 'flex', flexWrap: 'wrap', gap: space.md }}>
                 {filteredExtensions.map(ext => {
                   const isSelected = detail?.kind === 'extension' && detail.ext.name === ext.name;
                   return (
@@ -1120,7 +1120,7 @@ export function AutomateView() {
                         textAlign: 'left',
                       } as CSSProperties}
                     >
-                      <div style={{ fontWeight: 600, marginBottom: 2 }}>{ext.display_name}</div>
+                      <div style={{ fontWeight: 600, marginBottom: space.xxs }}>{ext.display_name}</div>
                       <div style={{ fontSize: 10, color: colors.textDim, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ext.description}</div>
                     </Button>
                   );
@@ -1157,12 +1157,12 @@ function Section({ title, count, accentColor, collapsed, children }: {
   const { colors } = useTheme();
   return (
     <div style={{ marginBottom: 28 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.md, marginBottom: space.xl }}>
         <div style={{ fontSize: 10, fontWeight: 700, fontFamily: font.mono, letterSpacing: '0.08em', textTransform: 'uppercase', color: accentColor || colors.textDim }}>
           {title}
         </div>
         {!collapsed && count > 0 && (
-          <span style={{ fontSize: 10, fontFamily: font.mono, color: colors.textDim, padding: '1px 6px', borderRadius: radius.sm, background: colors.border }}>
+          <span style={{ fontSize: 10, fontFamily: font.mono, color: colors.textDim, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: colors.border }}>
             {count}
           </span>
         )}
@@ -1191,8 +1191,8 @@ function SectionState({ kind, message, onRetry }: {
   }
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-      padding: '12px 16px', borderRadius: radius.md,
+      display: 'flex', alignItems: 'center', gap: space.xl, flexWrap: 'wrap',
+      padding: `${space.xl}px ${space.xxl}px`, borderRadius: radius.md,
       background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.2)}`,
     }}>
       <span style={{ fontSize: textSize.caption, color: colors.danger, flex: 1, minWidth: 0 }}>{message}</span>
@@ -1266,19 +1266,19 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
       onFocus={e => { if (!selected) e.currentTarget.style.borderColor = colors.borderHi; e.currentTarget.style.boxShadow = `0 0 0 2px ${colors.cyanGlow}`; }}
       onBlur={e => { if (!selected) e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.boxShadow = 'none'; }}
       style={{
-      padding: '16px 20px', borderRadius: radius.lg, cursor: 'pointer', outline: 'none',
+      padding: `${space.xxl}px ${space.xxxl}px`, borderRadius: radius.lg, cursor: 'pointer', outline: 'none',
       background: selected ? withAlpha(colors.cyan, 0.04) : colors.surface,
       border: `1px solid ${selected ? colors.borderHi : colors.border}`,
       transition: springTransition('border-color', 'background', 'box-shadow'),
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.sm }}>
         <div style={{
           width: 8, height: 8, borderRadius: '50%', background: statusColor, flexShrink: 0,
           boxShadow: job.currently_running ? `0 0 8px ${statusColor}` : 'none',
         }} />
         <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
         {job.version && (
-          <span style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: colors.border, color: colors.textDim }}>
+          <span style={{ fontSize: 10, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: colors.border, color: colors.textDim }}>
             v{job.version}
           </span>
         )}
@@ -1286,24 +1286,24 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
           <Tooltip content={job.last_error || undefined}>
             <span tabIndex={0} style={{ outline: 'none' }}>
               <span
-                style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors[runStatus.token], 0.15), color: colors[runStatus.token] }}
+                style={{ fontSize: 10, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: withAlpha(colors[runStatus.token], 0.15), color: colors[runStatus.token] }}
               >
                 {runStatus.label}
               </span>
             </span>
           </Tooltip>
         )}
-        <span style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: colors.cyanSoft, color: colors.cyan }}>
+        <span style={{ fontSize: 10, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: colors.cyanSoft, color: colors.cyan }}>
           {job.currently_running ? 'RUNNING' : job.paused ? 'PAUSED' : 'SCHEDULED'}
         </span>
       </div>
-      {desc && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' } as React.CSSProperties}>{desc}</div>}
-      <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginBottom: 10 }}>
+      {desc && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: space.md, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' } as React.CSSProperties}>{desc}</div>}
+      <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginBottom: space.lg }}>
         {schedule} &middot; {job.last_run ? `Ran ${timeAgo(job.last_run)}` : 'Never run yet'}
         {!!job.run_count && <> &middot; {job.run_count} run{job.run_count === 1 ? '' : 's'}</>}
         {hasUpdate && <> &middot; <span style={{ color: colors.warning }}>Update available</span></>}
       </div>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
+      <div style={{ display: 'flex', gap: space.sm, flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
         {job.currently_running ? (
           // No tick on Stop: the run leaving "RUNNING" is the confirmation.
           <Button colors={colors} onClick={() => onKill(job.id)} flashSuccess={false} style={actionVars(colors, 'danger')}>Stop</Button>
@@ -1367,9 +1367,9 @@ detail, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefaul
       width: '50%', minWidth: 480, maxWidth: 640, height: '100%',
       ...material,
       borderLeft: `1px solid ${colors.borderHi}`,
-      overflowY: 'auto', padding: '20px 24px', flexShrink: 0,
+      overflowY: 'auto', padding: `${space.xxxl}px ${space.huge}px`, flexShrink: 0,
     }}>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: space.xl }}>
         <Tooltip content="Close (Esc)">
           <Button
             colors={colors}
@@ -1417,14 +1417,14 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
   const hasUpdate = job.starter_id && job.user_customized && job.embedded_version && job.version !== job.embedded_version;
   return (
     <>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.xxl }}>
         <div style={{ width: 10, height: 10, borderRadius: '50%', background: statusColor, boxShadow: job.currently_running ? `0 0 8px ${statusColor}` : 'none' }} />
         <div style={{ fontSize: 18, fontWeight: 600, fontFamily: font.display }}>{name}</div>
         {job.version && <span style={{ fontSize: textSize.micro, fontFamily: font.mono, color: colors.textDim }}>v{job.version}</span>}
       </div>
-      {job.description && <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, marginBottom: 16 }}>{job.description}</div>}
+      {job.description && <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, marginBottom: space.xxl }}>{job.description}</div>}
       {hasUpdate && (
-        <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: radius.md, background: withAlpha(colors.warning, 0.08), border: `1px solid ${withAlpha(colors.warning, 0.2)}`, fontSize: textSize.caption, color: colors.warning }}>
+        <div style={{ marginBottom: space.xxl, padding: `${space.lg}px ${space.xxl}px`, borderRadius: radius.md, background: withAlpha(colors.warning, 0.08), border: `1px solid ${withAlpha(colors.warning, 0.2)}`, fontSize: textSize.caption, color: colors.warning }}>
           Update available (v{job.embedded_version}). Reset to default to apply.
         </div>
       )}
@@ -1442,11 +1442,11 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
         <ReferenceIdField id={job.id} />
       </div>
       {job.last_status === 'error' && job.last_error && (
-        <div style={{ marginBottom: 20, padding: '8px 12px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, fontSize: textSize.micro, color: colors.danger, fontFamily: font.mono, wordBreak: 'break-word' }}>
+        <div style={{ marginBottom: space.xxxl, padding: `${space.md}px ${space.xl}px`, borderRadius: radius.sm, background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, fontSize: textSize.micro, color: colors.danger, fontFamily: font.mono, wordBreak: 'break-word' }}>
           Last error: {job.last_error}
         </div>
       )}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: space.md, flexWrap: 'wrap' }}>
         {job.currently_running ? (
           <Button colors={colors} onClick={() => onKill(job.id)} flashSuccess={false} style={actionVars(colors, 'danger')}>Stop</Button>
         ) : (
@@ -1470,17 +1470,17 @@ function ExtensionDetail({ ext }: { ext: ExtensionInfo }) {
   const { colors } = useTheme();
   return (
     <>
-      <div style={{ fontSize: 18, fontWeight: 600, fontFamily: font.display, marginBottom: 8 }}>{ext.display_name}</div>
-      <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, marginBottom: 16 }}>{ext.description}</div>
+      <div style={{ fontSize: 18, fontWeight: 600, fontFamily: font.display, marginBottom: space.md }}>{ext.display_name}</div>
+      <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, marginBottom: space.xxl }}>{ext.description}</div>
       <MetaField label="Type" value={ext.type} />
-      <div style={{ marginTop: 16 }}>
-        <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', color: colors.textDim, marginBottom: 6, letterSpacing: '0.05em' }}>
+      <div style={{ marginTop: space.xxl }}>
+        <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', color: colors.textDim, marginBottom: space.sm, letterSpacing: '0.05em' }}>
           Tools provided
         </div>
         {ext.available_tools.length > 0 ? (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm }}>
             {ext.available_tools.map(t => (
-              <span key={t} style={{ fontSize: textSize.micro, fontFamily: font.mono, padding: '3px 8px', borderRadius: radius.sm, background: colors.border, color: colors.textMuted }}>{t}</span>
+              <span key={t} style={{ fontSize: textSize.micro, fontFamily: font.mono, padding: `${space.xxs}px ${space.md}px`, borderRadius: radius.sm, background: colors.border, color: colors.textMuted }}>{t}</span>
             ))}
           </div>
         ) : (
@@ -1601,7 +1601,7 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
 
   return (
     <>
-      <div style={{ fontSize: 18, fontWeight: 600, fontFamily: font.display, marginBottom: 4 }}>{displayName}</div>
+      <div style={{ fontSize: 18, fontWeight: 600, fontFamily: font.display, marginBottom: space.xs }}>{displayName}</div>
       {/* Every other time on this page is relative — "2h ago" in Recent
           Activity, "Last Run 2h ago" in the meta grid — and this one line was
           an absolute `toLocaleString()`. On the detail panel you open FROM one
@@ -1610,7 +1610,7 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
           still a hover away. */}
       <div
         data-testid="run-detail-when"
-        style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, marginBottom: 12, fontVariantNumeric: 'tabular-nums' }}
+        style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, marginBottom: space.xl, fontVariantNumeric: 'tabular-nums' }}
       >
         <AsOf asOf={run.createdAt} /> &middot; {run.messageCount} msgs &middot; {run.totalTokens ?? 0} tokens
       </div>
@@ -1628,8 +1628,8 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
             '--pa-btn-weight': 600,
             fontFamily: font.body,
             fontSize: textSize.caption,
-            gap: 6,
-            marginBottom: 20,
+            gap: space.sm,
+            marginBottom: space.xxxl,
           } as CSSProperties}
         >
           <FiMessageSquare size={13} style={{ verticalAlign: -2 }} />
@@ -1672,7 +1672,7 @@ function ReferenceIdField({ id }: { id: string }) {
   const { state, copy } = useCopyToClipboard();
   return (
     <div>
-      <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', color: colors.textDim, marginBottom: 2, letterSpacing: '0.05em' }}>
+      <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', color: colors.textDim, marginBottom: space.xxs, letterSpacing: '0.05em' }}>
         Reference ID
       </div>
       {/* Same reason as the Recent Activity row: the UUID truncates because it
@@ -1693,7 +1693,7 @@ function ReferenceIdField({ id }: { id: string }) {
             '--pa-btn-pad': '0',
             fontSize: textSize.caption,
             fontFamily: font.mono,
-            gap: 6,
+            gap: space.sm,
             justifyContent: 'flex-start',
             textAlign: 'left',
             maxWidth: '100%',
@@ -1716,7 +1716,7 @@ function MetaField({ label, value, mono }: { label: string; value: string; mono?
   const { colors } = useTheme();
   return (
     <div>
-      <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', color: colors.textDim, marginBottom: 2, letterSpacing: '0.05em' }}>{label}</div>
+      <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', color: colors.textDim, marginBottom: space.xxs, letterSpacing: '0.05em' }}>{label}</div>
       <div style={{ fontSize: textSize.caption, color: colors.textMuted, fontFamily: mono ? font.mono : font.body }}>{value}</div>
     </div>
   );
@@ -1788,7 +1788,7 @@ export function DeleteAutomationControl({ name, onDelete }: {
   // The sentence and any failure take a whole line of their own (the action
   // rows wrap), so the question is readable rather than squeezed between buttons.
   const line: React.CSSProperties = {
-    flexBasis: '100%', fontSize: textSize.micro, fontFamily: font.body, lineHeight: 1.5, marginTop: 2,
+    flexBasis: '100%', fontSize: textSize.micro, fontFamily: font.body, lineHeight: 1.5, marginTop: space.xxs,
   };
 
   return (
@@ -1834,7 +1834,7 @@ function ReportToggle({ text, createdAt, tokens }: { text: string; createdAt: st
   const { colors } = useTheme();
   const [open, setOpen] = useState(false);
   return (
-    <div style={{ marginTop: 16 }}>
+    <div style={{ marginTop: space.xxl }}>
       {/* Disclosure: its whole job is to open the report below it, so it keeps
           the element and the aria-expanded that names its state, and takes the
           shared `.pa-btn` interaction rules instead of a primitive whose
@@ -1849,7 +1849,7 @@ function ReportToggle({ text, createdAt, tokens }: { text: string; createdAt: st
           '--pa-btn-fg-hover': colors.text,
           '--pa-btn-bg-hover': 'transparent',
           '--pa-btn-pad': '8px 0',
-          gap: 8,
+          gap: space.md,
           justifyContent: 'flex-start',
           fontSize: textSize.micro,
           fontFamily: font.body,
@@ -1859,7 +1859,7 @@ function ReportToggle({ text, createdAt, tokens }: { text: string; createdAt: st
           style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: springTransition('transform') }} />
         View full report &middot; <AsOf asOf={createdAt} /> &middot; {tokens ?? 0} tokens
       </button>
-      {open && <div style={{ maxHeight: 400, overflowY: 'auto', marginTop: 4 }}><RenderedReport text={text} /></div>}
+      {open && <div style={{ maxHeight: 400, overflowY: 'auto', marginTop: space.xs }}><RenderedReport text={text} /></div>}
     </div>
   );
 }
@@ -1872,14 +1872,14 @@ function RenderedReport({ text }: { text: string }) {
   while (i < lines.length) {
     const line = lines[i];
     if (!line.trim()) { i++; continue; }
-    if (line.startsWith('# ')) { elements.push(<div key={i} style={{ fontSize: textSize.heading, fontWeight: 700, fontFamily: font.display, color: colors.text, marginTop: 16, marginBottom: 8 }}>{renderInline(line.slice(2), colors)}</div>); i++; continue; }
-    if (line.startsWith('## ')) { elements.push(<div key={i} style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, color: colors.text, marginTop: 14, marginBottom: 6 }}>{renderInline(line.slice(3), colors)}</div>); i++; continue; }
-    if (line.startsWith('### ')) { elements.push(<div key={i} style={{ fontSize: textSize.small, fontWeight: 600, color: colors.cyan, marginTop: 12, marginBottom: 4 }}>{renderInline(line.slice(4), colors)}</div>); i++; continue; }
+    if (line.startsWith('# ')) { elements.push(<div key={i} style={{ fontSize: textSize.heading, fontWeight: 700, fontFamily: font.display, color: colors.text, marginTop: space.xxl, marginBottom: space.md }}>{renderInline(line.slice(2), colors)}</div>); i++; continue; }
+    if (line.startsWith('## ')) { elements.push(<div key={i} style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, color: colors.text, marginTop: 14, marginBottom: space.sm }}>{renderInline(line.slice(3), colors)}</div>); i++; continue; }
+    if (line.startsWith('### ')) { elements.push(<div key={i} style={{ fontSize: textSize.small, fontWeight: 600, color: colors.cyan, marginTop: space.xl, marginBottom: space.xs }}>{renderInline(line.slice(4), colors)}</div>); i++; continue; }
     if (line.match(/^---+$/)) { elements.push(<hr key={i} style={{ border: 'none', borderTop: `1px solid ${colors.border}`, margin: '12px 0' }} />); i++; continue; }
-    if (line.startsWith('```')) { const codeLines: string[] = []; i++; while (i < lines.length && !lines[i].startsWith('```')) { codeLines.push(lines[i]); i++; } i++; elements.push(<pre key={`code-${i}`} style={{ padding: '10px 12px', borderRadius: radius.sm, background: colors.bgDeeper, border: `1px solid ${colors.border}`, fontSize: textSize.micro, fontFamily: font.mono, color: colors.textMuted, overflow: 'auto', margin: '6px 0', lineHeight: 1.5 }}>{codeLines.join('\n')}</pre>); continue; }
-    if (line.match(/^\s*-\s/)) { const bl: string[] = []; while (i < lines.length && lines[i].match(/^\s*-\s/)) { bl.push(lines[i].replace(/^\s*-\s/, '')); i++; } elements.push(<div key={`b-${i}`} style={{ margin: '4px 0 4px 4px' }}>{bl.map((b, j) => <div key={j} style={{ display: 'flex', gap: 8, marginBottom: 3, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}><span style={{ color: colors.cyan, flexShrink: 0, marginTop: 1 }}>&#8226;</span><span>{renderInline(b, colors)}</span></div>)}</div>); continue; }
-    if (line.match(/^\d+\.\s/)) { const nl: string[] = []; while (i < lines.length && lines[i].match(/^\d+\.\s/)) { nl.push(lines[i].replace(/^\d+\.\s/, '')); i++; } elements.push(<div key={`n-${i}`} style={{ margin: '4px 0 4px 4px' }}>{nl.map((n, j) => <div key={j} style={{ display: 'flex', gap: 8, marginBottom: 3, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}><span style={{ color: colors.textDim, flexShrink: 0, fontFamily: font.mono, fontSize: textSize.micro, minWidth: 16 }}>{j + 1}.</span><span>{renderInline(n, colors)}</span></div>)}</div>); continue; }
-    elements.push(<div key={i} style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.6, marginBottom: 4 }}>{renderInline(line, colors)}</div>); i++;
+    if (line.startsWith('```')) { const codeLines: string[] = []; i++; while (i < lines.length && !lines[i].startsWith('```')) { codeLines.push(lines[i]); i++; } i++; elements.push(<pre key={`code-${i}`} style={{ padding: `${space.lg}px ${space.xl}px`, borderRadius: radius.sm, background: colors.bgDeeper, border: `1px solid ${colors.border}`, fontSize: textSize.micro, fontFamily: font.mono, color: colors.textMuted, overflow: 'auto', margin: '6px 0', lineHeight: 1.5 }}>{codeLines.join('\n')}</pre>); continue; }
+    if (line.match(/^\s*-\s/)) { const bl: string[] = []; while (i < lines.length && lines[i].match(/^\s*-\s/)) { bl.push(lines[i].replace(/^\s*-\s/, '')); i++; } elements.push(<div key={`b-${i}`} style={{ margin: '4px 0 4px 4px' }}>{bl.map((b, j) => <div key={j} style={{ display: 'flex', gap: space.md, marginBottom: space.xxs, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}><span style={{ color: colors.cyan, flexShrink: 0, marginTop: space.xxs }}>&#8226;</span><span>{renderInline(b, colors)}</span></div>)}</div>); continue; }
+    if (line.match(/^\d+\.\s/)) { const nl: string[] = []; while (i < lines.length && lines[i].match(/^\d+\.\s/)) { nl.push(lines[i].replace(/^\d+\.\s/, '')); i++; } elements.push(<div key={`n-${i}`} style={{ margin: '4px 0 4px 4px' }}>{nl.map((n, j) => <div key={j} style={{ display: 'flex', gap: space.md, marginBottom: space.xxs, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}><span style={{ color: colors.textDim, flexShrink: 0, fontFamily: font.mono, fontSize: textSize.micro, minWidth: 16 }}>{j + 1}.</span><span>{renderInline(n, colors)}</span></div>)}</div>); continue; }
+    elements.push(<div key={i} style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.6, marginBottom: space.xs }}>{renderInline(line, colors)}</div>); i++;
   }
   return <div>{elements}</div>;
 }
@@ -1890,7 +1890,7 @@ function renderInline(text: string, colors: { text: string; cyan: string; border
     const bold = remaining.match(/^(.*?)\*\*(.+?)\*\*(.*)/s);
     if (bold) { if (bold[1]) parts.push(<span key={key++}>{bold[1]}</span>); parts.push(<strong key={key++} style={{ color: colors.text, fontWeight: 600 }}>{bold[2]}</strong>); remaining = bold[3]; continue; }
     const code = remaining.match(/^(.*?)`(.+?)`(.*)/s);
-    if (code) { if (code[1]) parts.push(<span key={key++}>{code[1]}</span>); parts.push(<code key={key++} style={{ fontFamily: font.mono, fontSize: textSize.micro, padding: '1px 4px', borderRadius: radius.xs, background: colors.border, color: colors.cyan }}>{code[2]}</code>); remaining = code[3]; continue; }
+    if (code) { if (code[1]) parts.push(<span key={key++}>{code[1]}</span>); parts.push(<code key={key++} style={{ fontFamily: font.mono, fontSize: textSize.micro, padding: `${space.xxs}px ${space.xs}px`, borderRadius: radius.xs, background: colors.border, color: colors.cyan }}>{code[2]}</code>); remaining = code[3]; continue; }
     parts.push(<span key={key++}>{remaining}</span>); break;
   }
   return parts.length === 1 ? parts[0] : <>{parts}</>;
@@ -1995,20 +1995,20 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
   const lifetimeLine = lifetimeRecoveryLine(lifetime);
 
   return (
-    <div style={{ marginTop: 12 }}>
+    <div style={{ marginTop: space.xl }}>
       <div style={{
-        padding: '20px 24px', borderRadius: radius.lg, marginBottom: 20,
+        padding: `${space.xxxl}px ${space.huge}px`, borderRadius: radius.lg, marginBottom: space.xxxl,
         background: allActioned ? `linear-gradient(135deg, ${withAlpha(colors.success, 0.12)}, ${withAlpha(colors.success, 0.04)})` : `linear-gradient(135deg, ${withAlpha(colors.cyan, 0.1)}, ${withAlpha(colors.purple, 0.06)})`,
         border: `1px solid ${allActioned ? withAlpha(colors.success, 0.25) : colors.borderHi}`,
       }}>
         <div style={{ fontSize: 22, fontWeight: 700, fontFamily: font.display, color: allActioned ? colors.success : colors.text }}>
           {recoveryHeadline(allActioned, totalRecovered, totalPendingBytes)}
         </div>
-        <div style={{ fontSize: textSize.small, color: colors.textMuted, marginTop: 4 }}>
+        <div style={{ fontSize: textSize.small, color: colors.textMuted, marginTop: space.xs }}>
           {allActioned ? `All ${findings.length} items cleaned.` : `${totalPending} items across ${groups.size} locations.`}
         </div>
         {lifetimeLine && (
-          <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: 6, fontVariantNumeric: 'tabular-nums' }}>
+          <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: space.sm, fontVariantNumeric: 'tabular-nums' }}>
             {lifetimeLine}
           </div>
         )}
@@ -2032,7 +2032,7 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
         {/* The sweep outlives its dialog: a clean run closes the dialog, and
             this is where the run gets to say what it actually did. */}
         {!previewGroup && (
-          <JobProgress job={sweep} label="Cleanup sweep" style={{ marginTop: 12 }} />
+          <JobProgress job={sweep} label="Cleanup sweep" style={{ marginTop: space.xl }} />
         )}
       </div>
       {previewGroup && (() => {
@@ -2048,7 +2048,7 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
           />
         );
       })()}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
         {Array.from(groups.entries()).map(([groupName, items]) => {
           const pending = items.filter(f => !f.action_taken);
           const pendingBytes = pending.reduce((s, f) => s + f.size_bytes, 0);
@@ -2057,7 +2057,7 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
           const allDone = pending.length === 0;
           return (
             <div key={groupName} style={{ borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${allDone ? withAlpha(colors.success, 0.2) : colors.border}`, background: allDone ? withAlpha(colors.success, 0.03) : colors.surface }}>
-              <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div style={{ padding: `${space.xxl}px ${space.xxxl}px`, display: 'flex', alignItems: 'center', gap: 14 }}>
                 {/* Disclosure: the folder tile opens and closes the item list
                     below it and does nothing else, so it keeps the element and
                     the aria pairing, and takes the `.pa-btn` rules. It had no
@@ -2081,9 +2081,9 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
                 </button>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display, color: allDone ? colors.success : colors.text }}>{groupName}</div>
-                  <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: 2 }}>{allDone ? `Cleaned — ${formatBytes(groupRecovered)}` : `${pending.length} items · ${formatBytes(pendingBytes)}`}</div>
+                  <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: space.xxs }}>{allDone ? `Cleaned — ${formatBytes(groupRecovered)}` : `${pending.length} items · ${formatBytes(pendingBytes)}`}</div>
                 </div>
-                {allDone ? <div style={{ padding: '8px 16px', borderRadius: radius.md, background: withAlpha(colors.success, 0.1), color: colors.success, fontSize: textSize.caption, fontWeight: 600 }}>Done</div> : (
+                {allDone ? <div style={{ padding: `${space.md}px ${space.xxl}px`, borderRadius: radius.md, background: withAlpha(colors.success, 0.1), color: colors.success, fontSize: textSize.caption, fontWeight: 600 }}>Done</div> : (
                   <Button
                     colors={colors}
                     variant="primary"
@@ -2117,7 +2117,7 @@ function CategoryBadge({ category }: { category: CategoryKey }) {
   const { colors } = useTheme();
   const color = categoryColor(category, colors);
   return (
-    <span style={{ fontSize: 9, fontFamily: font.mono, padding: '1px 6px', borderRadius: radius.sm, background: withAlpha(color, 0.15), color, flexShrink: 0, whiteSpace: 'nowrap' }}>
+    <span style={{ fontSize: 9, fontFamily: font.mono, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.sm, background: withAlpha(color, 0.15), color, flexShrink: 0, whiteSpace: 'nowrap' }}>
       {CATEGORY_LABELS[category]}
     </span>
   );
@@ -2153,13 +2153,13 @@ pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, sweep }: 
   const regenerableBytes = regenerablePending.reduce((s, f) => s + f.size_bytes, 0);
 
   return (
-    <div style={{ marginBottom: 16, borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${colors.borderHi}`, background: colors.bgDeeper }}>
-      <div style={{ padding: '16px 20px', borderBottom: `1px solid ${colors.border}` }}>
+    <div style={{ marginBottom: space.xxl, borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${colors.borderHi}`, background: colors.bgDeeper }}>
+      <div style={{ padding: `${space.xxl}px ${space.xxxl}px`, borderBottom: `1px solid ${colors.border}` }}>
         <div style={{ fontSize: textSize.body, fontWeight: 600, fontFamily: font.display }}>
           Review — {eligible.length} item{eligible.length === 1 ? '' : 's'}, {formatBytes(totalBytes)} total
         </div>
         {breakdown.length > 0 && (
-          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3 }}>
+          <div style={{ marginTop: space.md, display: 'flex', flexDirection: 'column', gap: space.xxs }}>
             {breakdown.map(b => (
               <div key={b.category} style={{ display: 'flex', justifyContent: 'space-between', fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono }}>
                 <span style={{ color: categoryColor(b.category, colors) }}>{b.label}</span>
@@ -2169,7 +2169,7 @@ pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, sweep }: 
           </div>
         )}
         {regenerablePending.length > 0 && (
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, cursor: 'pointer' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: space.md, marginTop: space.xl, cursor: 'pointer' }}>
             <input
               type="checkbox"
               checked={includeRegenerable}
@@ -2183,21 +2183,21 @@ pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, sweep }: 
         )}
       </div>
       {excluded.length > 0 && (
-        <div style={{ padding: '12px 20px', borderBottom: `1px solid ${colors.border}`, maxHeight: 220, overflowY: 'auto' }}>
-          <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '0.05em', color: colors.textDim, marginBottom: 8 }}>
+        <div style={{ padding: `${space.xl}px ${space.xxxl}px`, borderBottom: `1px solid ${colors.border}`, maxHeight: 220, overflowY: 'auto' }}>
+          <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '0.05em', color: colors.textDim, marginBottom: space.md }}>
             Excluded — will not be removed
           </div>
           {excluded.map(f => {
             const category = categoryOf(f);
             return (
               <div key={f.id} style={{ padding: '6px 0', borderTop: `1px solid ${colors.border}` }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
                   <CategoryBadge category={category} />
                   <span style={{ fontSize: textSize.caption, color: colors.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.path}</span>
                   <span style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono, flexShrink: 0 }}>{formatBytes(f.size_bytes)}</span>
                 </div>
                 {f.consequence && (
-                  <div style={{ fontSize: textSize.micro, color: colors.danger, marginTop: 3, marginLeft: 2 }}>{f.consequence}</div>
+                  <div style={{ fontSize: textSize.micro, color: colors.danger, marginTop: space.xxs, marginLeft: space.xxs }}>{f.consequence}</div>
                 )}
               </div>
             );
@@ -2205,13 +2205,13 @@ pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, sweep }: 
         </div>
       )}
       {sweep.phase !== 'idle' && (
-        <div style={{ padding: '10px 20px' }}>
+        <div style={{ padding: `${space.lg}px ${space.xxxl}px` }}>
           {/* Retry is the Move button below — a second one here would be two
               answers to "how do I try again". */}
           <JobProgress job={sweep} label="Cleanup sweep" onRetry={null} />
         </div>
       )}
-      <div style={{ padding: '12px 20px', display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: `1px solid ${colors.border}` }}>
+      <div style={{ padding: `${space.xl}px ${space.xxxl}px`, display: 'flex', gap: space.md, justifyContent: 'flex-end', borderTop: `1px solid ${colors.border}` }}>
         <Button colors={colors} onClick={onCancel} style={actionVars(colors)}>Cancel</Button>
         {/* The work runs in the caller's sweep, not in this click, so the
             in-flight state arrives on the job — same shape as a form submit.
@@ -2241,9 +2241,9 @@ finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a
   const needsSecondConfirm = requiresSecondConfirm(finding);
   const [confirming, setConfirming] = useState(false);
 
-  if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.success, 0.05), border: `1px solid ${withAlpha(colors.success, 0.12)}` }}><span style={{ fontSize: textSize.caption, color: colors.success }}>Trashed</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: textSize.micro, color: colors.success, fontFamily: font.mono, fontVariantNumeric: 'tabular-nums' }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
-  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: textSize.caption, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><Tooltip content={finding.error_message || undefined}><span tabIndex={0} style={{ outline: 'none' }}><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{finding.error_message || fileName}</span></span></Tooltip><Button colors={colors} onClick={() => onAction('trash', needsSecondConfirm || undefined)} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '2px 6px', fontSize: 10, flexShrink: 0 } as CSSProperties}>Retry</Button></div>;
-  if (finding.action_taken) return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: textSize.caption, color: colors.textMuted }}>Kept</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
+  if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.lg}px`, borderRadius: radius.sm, background: withAlpha(colors.success, 0.05), border: `1px solid ${withAlpha(colors.success, 0.12)}` }}><span style={{ fontSize: textSize.caption, color: colors.success }}>Trashed</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: textSize.micro, color: colors.success, fontFamily: font.mono, fontVariantNumeric: 'tabular-nums' }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
+  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.lg}px`, borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: textSize.caption, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><Tooltip content={finding.error_message || undefined}><span tabIndex={0} style={{ outline: 'none' }}><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{finding.error_message || fileName}</span></span></Tooltip><Button colors={colors} onClick={() => onAction('trash', needsSecondConfirm || undefined)} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '2px 6px', fontSize: 10, flexShrink: 0 } as CSSProperties}>Retry</Button></div>;
+  if (finding.action_taken) return <div style={{ display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.lg}px`, borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: textSize.caption, color: colors.textMuted }}>Kept</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
 
   const handleTrashClick = () => {
     if (needsSecondConfirm) { setConfirming(true); return; }
@@ -2251,28 +2251,28 @@ finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 10px', borderRadius: radius.sm, background: colors.surface, border: `1px solid ${colors.border}`, marginTop: 4 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm, padding: `${space.md}px ${space.lg}px`, borderRadius: radius.sm, background: colors.surface, border: `1px solid ${colors.border}`, marginTop: space.xs }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
             <div style={{ fontSize: textSize.caption, fontWeight: 500, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</div>
             <CategoryBadge category={category} />
           </div>
-          <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>{formatBytes(finding.size_bytes)}{finding.age_days != null && <> &middot; {finding.age_days}d old</>}</div>
+          <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginTop: space.xxs, fontVariantNumeric: 'tabular-nums' }}>{formatBytes(finding.size_bytes)}{finding.age_days != null && <> &middot; {finding.age_days}d old</>}</div>
           {(category === 'in_use' || category === 'managed_by_macos') && finding.consequence && (
-            <div style={{ fontSize: textSize.micro, color: categoryColor(category, colors), marginTop: 3 }}>{finding.consequence}</div>
+            <div style={{ fontSize: textSize.micro, color: categoryColor(category, colors), marginTop: space.xxs }}>{finding.consequence}</div>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+        <div style={{ display: 'flex', gap: space.xs, flexShrink: 0 }}>
           <Button colors={colors} onClick={handleTrashClick} disabled={loading} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '3px 8px', '--pa-btn-weight': 600, fontSize: 10 } as CSSProperties}>{loading ? '...' : 'Trash'}</Button>
           <Button colors={colors} onClick={() => onAction('keep')} disabled={loading} style={{ ...actionVars(colors), '--pa-btn-pad': '3px 8px', fontSize: 10 } as CSSProperties}>Keep</Button>
         </div>
       </div>
       {confirming && (
-        <div style={{ padding: '10px 12px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.25)}` }}>
-          <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600, marginBottom: 4 }}>Are you sure?</div>
-          {finding.consequence && <div style={{ fontSize: textSize.caption, color: colors.danger, marginBottom: 8 }}>{finding.consequence}</div>}
-          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+        <div style={{ padding: `${space.lg}px ${space.xl}px`, borderRadius: radius.sm, background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.25)}` }}>
+          <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600, marginBottom: space.xs }}>Are you sure?</div>
+          {finding.consequence && <div style={{ fontSize: textSize.caption, color: colors.danger, marginBottom: space.md }}>{finding.consequence}</div>}
+          <div style={{ display: 'flex', gap: space.sm, justifyContent: 'flex-end' }}>
             <Button colors={colors} onClick={() => setConfirming(false)} style={{ ...actionVars(colors), '--pa-btn-pad': '3px 10px' } as CSSProperties}>Cancel</Button>
             <Button
               colors={colors}
@@ -2359,7 +2359,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
     { id: 'interval', label: 'Interval' },
   ];
   const fieldStyle = {
-    width: '100%', padding: '8px 12px', borderRadius: radius.sm, background: colors.surface,
+    width: '100%', padding: `${space.md}px ${space.xl}px`, borderRadius: radius.sm, background: colors.surface,
     border: `1px solid ${colors.border}`, color: colors.text, fontSize: textSize.small, fontFamily: font.body,
     outline: 'none', boxSizing: 'border-box' as const,
   };
@@ -2379,23 +2379,23 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
     >
       <>
 
-        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>What should we call this?</label>
+        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: space.sm }}>What should we call this?</label>
         <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g., Weekly Cleanup" style={{
-          width: '100%', padding: '8px 12px', borderRadius: radius.sm, background: colors.surface,
+          width: '100%', padding: `${space.md}px ${space.xl}px`, borderRadius: radius.sm, background: colors.surface,
           border: `1px solid ${colors.border}`, color: colors.text, fontSize: textSize.small, fontFamily: font.body,
-          outline: 'none', marginBottom: 16, boxSizing: 'border-box',
+          outline: 'none', marginBottom: space.xxl, boxSizing: 'border-box',
         }} />
 
-        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>What should the agent do?</label>
+        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: space.sm }}>What should the agent do?</label>
         <textarea value={prompt} onChange={e => setPrompt(e.target.value)}
           placeholder="Scan my Downloads folder for files older than 30 days..." rows={4} style={{
-            width: '100%', padding: '8px 12px', borderRadius: radius.sm, background: colors.surface,
+            width: '100%', padding: `${space.md}px ${space.xl}px`, borderRadius: radius.sm, background: colors.surface,
             border: `1px solid ${colors.border}`, color: colors.text, fontSize: textSize.small, fontFamily: font.body,
-            outline: 'none', resize: 'vertical', marginBottom: 16, boxSizing: 'border-box',
+            outline: 'none', resize: 'vertical', marginBottom: space.xxl, boxSizing: 'border-box',
           }} />
 
-        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>When should it run?</label>
-        <div style={{ display: 'flex', gap: 4, marginBottom: 12, background: colors.surface, borderRadius: radius.sm, padding: 3, border: `1px solid ${colors.border}` }}>
+        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: space.sm }}>When should it run?</label>
+        <div style={{ display: 'flex', gap: space.xs, marginBottom: space.xl, background: colors.surface, borderRadius: radius.sm, padding: space.xxs, border: `1px solid ${colors.border}` }}>
           {/* D4: the one legitimately concentric pair on this screen — a tab
               sits flush inside the segmented control's own padding, so its
               radius is DERIVED from the container's, not a second number
@@ -2425,31 +2425,31 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
 
         {kind === 'cron' && (
           <>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs, marginBottom: space.xl }}>
               {CRON_PRESETS.map((preset, i) => (
-                <label key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '4px 0' }}>
+                <label key={i} style={{ display: 'flex', alignItems: 'center', gap: space.md, cursor: 'pointer', padding: '4px 0' }}>
                   <input type="radio" name="cron" checked={selectedPreset === i} onChange={() => setSelectedPreset(i)} style={{ accentColor: colors.cyan }} />
                   <span style={{ fontSize: textSize.small, color: selectedPreset === i ? colors.text : colors.textMuted }}>{preset.label}</span>
                 </label>
               ))}
             </div>
             {selectedPreset === CRON_PRESETS.length - 1 && (
-              <div style={{ marginBottom: 12 }}>
+              <div style={{ marginBottom: space.xl }}>
                 <input value={customCron} onChange={e => setCustomCron(e.target.value)} placeholder="0 9 * * 1-5" style={{ ...fieldStyle, fontFamily: font.mono }} />
-                {customCron.trim() && <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 4, fontFamily: font.mono }}>Preview: {cronToEnglish(customCron)}</div>}
+                {customCron.trim() && <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs, fontFamily: font.mono }}>Preview: {cronToEnglish(customCron)}</div>}
               </div>
             )}
           </>
         )}
 
         {kind === 'once' && (
-          <div style={{ marginBottom: 12 }}>
+          <div style={{ marginBottom: space.xl }}>
             <input type="datetime-local" value={atLocal} onChange={e => setAtLocal(e.target.value)} style={{ ...fieldStyle, fontFamily: font.mono }} />
           </div>
         )}
 
         {kind === 'interval' && (
-          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          <div style={{ display: 'flex', gap: space.md, marginBottom: space.xl }}>
             <input type="number" min={1} value={intervalValue} onChange={e => setIntervalValue(e.target.value)} style={{ ...fieldStyle, width: 100 }} />
             <select value={intervalUnit} onChange={e => setIntervalUnit(e.target.value as typeof intervalUnit)} style={{ ...fieldStyle, flex: 1 }}>
               <option value="minutes">minutes</option>
@@ -2460,15 +2460,15 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
         )}
 
         {kind !== 'interval' && (
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>Timezone (optional)</label>
+          <div style={{ marginBottom: space.xl }}>
+            <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: space.sm }}>Timezone (optional)</label>
             <input value={tz} onChange={e => setTz(e.target.value)} placeholder="UTC, +05:30, -08:00" style={{ ...fieldStyle, fontFamily: font.mono }} />
           </div>
         )}
 
-        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>Retries on failure</label>
-        <input type="number" min={0} max={10} value={maxRetries} onChange={e => setMaxRetries(e.target.value)} style={{ ...fieldStyle, marginBottom: 4 }} />
-        <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 16 }}>0 = no retry. If retries are exhausted, the job is escalated to your Decision Inbox.</div>
+        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: space.sm }}>Retries on failure</label>
+        <input type="number" min={0} max={10} value={maxRetries} onChange={e => setMaxRetries(e.target.value)} style={{ ...fieldStyle, marginBottom: space.xs }} />
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: space.xxl }}>0 = no retry. If retries are exhausted, the job is escalated to your Decision Inbox.</div>
 
       </>
     </FormModal>
