@@ -420,27 +420,30 @@ export function FirstPartyAnalyticsPanel({
             return (
               <div style={{ display: 'flex', alignItems: 'flex-end', gap: 1, height: 48 }}>
                 {days.map((d) => (
-                  <div
-                    key={d.day}
-                    title={d.pageviews > 0
+                  <Tooltip content={d.pageviews > 0
                       ? `${d.day}: ${d.pageviews} pageviews · ${d.visitors} devices`
-                      : `${d.day}: no traffic`}
-                    style={{
-                      flex: 1, minWidth: 2,
-                      // A zero day is a hairline, not a bar — visibly empty
-                      // rather than a misleading minimum-height stub.
-                      height: d.pageviews > 0 ? `${Math.max(8, (d.pageviews / max) * 100)}%` : '1px',
-                      // Solid, like every other bar on this screen. A vertical
-                      // gradient down a 2px column encodes nothing and is the
-                      // "rainbow tinting" the anti-slop list names.
-                      background: d.pageviews > 0 ? colors.cyan : colors.border,
-                      // No radius. These bars are 2px wide at thirty days in a
-                      // 320px panel: a 1px rounding is invisible at that scale
-                      // and is not a step on the scale either — decoration
-                      // standing in for nothing (D13).
-                      opacity: d.pageviews > 0 ? 0.9 : 1,
-                    }}
-                  />
+                      : `${d.day}: no traffic`}>
+                    <span tabIndex={0} style={{ outline: 'none' }}>
+                      <div
+                        key={d.day}
+                        style={{
+                          flex: 1, minWidth: 2,
+                          // A zero day is a hairline, not a bar — visibly empty
+                          // rather than a misleading minimum-height stub.
+                          height: d.pageviews > 0 ? `${Math.max(8, (d.pageviews / max) * 100)}%` : '1px',
+                          // Solid, like every other bar on this screen. A vertical
+                          // gradient down a 2px column encodes nothing and is the
+                          // "rainbow tinting" the anti-slop list names.
+                          background: d.pageviews > 0 ? colors.cyan : colors.border,
+                          // No radius. These bars are 2px wide at thirty days in a
+                          // 320px panel: a 1px rounding is invisible at that scale
+                          // and is not a step on the scale either — decoration
+                          // standing in for nothing (D13).
+                          opacity: d.pageviews > 0 ? 0.9 : 1,
+                        }}
+     />
+                    </span>
+                  </Tooltip>
                 ))}
               </div>
             );

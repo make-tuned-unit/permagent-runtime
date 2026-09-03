@@ -215,17 +215,21 @@ function PillarCard({
           {saved.metrics && saved.metrics.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm, marginTop: 'auto' }}>
               {saved.metrics.map((m, i) => (
-                <span key={i} title={m.label} style={{
-                  // Chips must never exceed the card: wrap long label·value
-                  // pairs inside the pill instead of bleeding across the grid.
-                  fontSize: textSize.micro, fontFamily: font.mono, lineHeight: 1.4,
-                  maxWidth: '100%', overflowWrap: 'anywhere',
-                  color: colors.cyan, background: colors.cyanSoft,
-                  border: `1px solid ${colors.borderHi}`, borderRadius: CARD_INNER_R,
-                  padding: `${space.xs}px ${space.md}px`,
-                }}>
-                  <span style={{ color: colors.textMuted }}>{m.label} · </span>{m.value}
-                </span>
+                <Tooltip content={m.label}>
+                  <span tabIndex={0} style={{ outline: 'none' }}>
+                    <span key={i} style={{
+                      // Chips must never exceed the card: wrap long label·value
+                      // pairs inside the pill instead of bleeding across the grid.
+                      fontSize: textSize.micro, fontFamily: font.mono, lineHeight: 1.4,
+                      maxWidth: '100%', overflowWrap: 'anywhere',
+                      color: colors.cyan, background: colors.cyanSoft,
+                      border: `1px solid ${colors.borderHi}`, borderRadius: CARD_INNER_R,
+                      padding: `${space.xs}px ${space.md}px`,
+                    }}>
+                      <span style={{ color: colors.textMuted }}>{m.label} · </span>{m.value}
+                    </span>
+                  </span>
+                </Tooltip>
               ))}
             </div>
           )}
