@@ -20,7 +20,7 @@
  */
 
 import { useState, type CSSProperties } from 'react';
-import { font, textSize } from '../../styles/tokens';
+import { font, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { useDecisions } from '../dashboard/decisions/useDecisions';
@@ -45,7 +45,7 @@ export function ChatPendingDecisions({ overlay = false }: { overlay?: boolean })
         flexShrink: 0,
         display: 'flex',
         flexDirection: 'column',
-        gap: 8,
+        gap: space.md,
         padding: overlay ? 0 : '8px 12px 0',
         maxHeight: overlay ? 220 : 180,
         overflowY: 'auto',
@@ -59,7 +59,7 @@ export function ChatPendingDecisions({ overlay = false }: { overlay?: boolean })
       <div
         data-testid="chat-decisions-source"
         style={{
-          display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap',
+          display: 'flex', alignItems: 'baseline', gap: space.md, flexWrap: 'wrap',
           fontFamily: font.body, fontSize: 10, color: colors.textDim,
         }}
       >

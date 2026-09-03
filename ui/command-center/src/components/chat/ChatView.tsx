@@ -12,6 +12,7 @@ import { VoiceOrb } from '../voice/VoiceOrb';
 import { ChatPendingDecisions } from './ChatPendingDecisions';
 import { DiscussNotice } from './DiscussNotice';
 import { useTheme } from '../../styles/useTheme';
+import { space } from '../../styles/tokens';
 
 export function ChatView() {
   const { colors } = useTheme();
@@ -98,9 +99,9 @@ export function ChatView() {
         <div
           style={{
             position: 'absolute',
-            left: 12,
-            right: 12,
-            bottom: 24,
+            left: space.xl,
+            right: space.xl,
+            bottom: space.huge,
             zIndex: 70,
           }}
         >
