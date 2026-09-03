@@ -9,6 +9,7 @@ import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
+import { Tooltip } from '../common/Tooltip';
 function MessageBubbleInner({ message }: { message: ChatMessage }) {
   const { colors } = useTheme();
   const agentName = useCommandCenter(s => s.agentName);
@@ -46,33 +47,34 @@ function MessageBubbleInner({ message }: { message: ChatMessage }) {
           </span>
 
           {canCopy && (
-            <Button
-              colors={colors}
-              variant="bare"
-              type="button"
-              onClick={handleCopy}
-              aria-label="Copy message"
-              title="Copy message"
-              // Dim rather than hidden. A hover-only control is the house
-              // pattern for code blocks, but the report here was "I have to
-              // select it and then copy" — an affordance nobody found. It has
-              // to be visible without knowing to hover for it. The dim-to-full
-              // is expressed in CSS rather than by JS mouse handlers writing to
-              // `currentTarget.style`, which is what the primitive replaces.
-              className={`ml-auto shrink-0 ${copyState === 'idle' ? 'opacity-[0.55] hover:opacity-100' : 'opacity-100'}`}
-              style={{
-                '--pa-btn-fg': copyState === 'failed' ? colors.danger : copyState === 'copied' ? colors.success : colors.textDim,
-                '--pa-btn-bg-hover': 'transparent',
-                '--pa-btn-pad': '0',
-                fontFamily: font.mono,
-                fontSize: 10,
-                gap: 4,
-              } as CSSProperties}
-            >
-              {copyState === 'copied' ? <><FiCheck size={11} /> Copied</>
-                : copyState === 'failed' ? <><FiAlertCircle size={11} /> Copy failed</>
-                : <FiCopy size={11} />}
-            </Button>
+            <Tooltip content="Copy message">
+              <Button
+                colors={colors}
+                variant="bare"
+                type="button"
+                onClick={handleCopy}
+                aria-label="Copy message"
+                // Dim rather than hidden. A hover-only control is the house
+                // pattern for code blocks, but the report here was "I have to
+                // select it and then copy" — an affordance nobody found. It has
+                // to be visible without knowing to hover for it. The dim-to-full
+                // is expressed in CSS rather than by JS mouse handlers writing to
+                // `currentTarget.style`, which is what the primitive replaces.
+                className={`ml-auto shrink-0 ${copyState === 'idle' ? 'opacity-[0.55] hover:opacity-100' : 'opacity-100'}`}
+                style={{
+                  '--pa-btn-fg': copyState === 'failed' ? colors.danger : copyState === 'copied' ? colors.success : colors.textDim,
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-pad': '0',
+                  fontFamily: font.mono,
+                  fontSize: 10,
+                  gap: 4,
+                } as CSSProperties}
+              >
+                {copyState === 'copied' ? <><FiCheck size={11} /> Copied</>
+                  : copyState === 'failed' ? <><FiAlertCircle size={11} /> Copy failed</>
+                  : <FiCopy size={11} />}
+              </Button>
+            </Tooltip>
           )}
 
           {/* Announced to screen readers, which cannot see the icon swap above.

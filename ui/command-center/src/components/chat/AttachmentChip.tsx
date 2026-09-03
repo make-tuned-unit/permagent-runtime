@@ -4,6 +4,7 @@ import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 
+import { Tooltip } from '../common/Tooltip';
 interface AttachmentChipProps {
   filename: string;
   onRemove: () => void;
@@ -18,22 +19,23 @@ export function AttachmentChip({ filename, onRemove }: AttachmentChipProps) {
     >
       <FiFile size={12} className="shrink-0" style={{ color: colors.textMuted }} />
       <span className="truncate">{filename}</span>
-      <Button
-        colors={colors}
-        variant="bare"
-        onClick={onRemove}
-        aria-label={`Remove ${filename}`}
-        title="Remove attachment"
-        className="shrink-0 ml-0.5"
-        style={{
-          '--pa-btn-fg': colors.textMuted,
-          '--pa-btn-fg-hover': colors.danger,
-          '--pa-btn-bg-hover': 'transparent',
-          '--pa-btn-pad': '0',
-        } as CSSProperties}
-      >
-        <FiX size={12} />
-      </Button>
+      <Tooltip content="Remove attachment">
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={onRemove}
+          aria-label={`Remove ${filename}`}
+          className="shrink-0 ml-0.5"
+          style={{
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-fg-hover': colors.danger,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+          } as CSSProperties}
+        >
+          <FiX size={12} />
+        </Button>
+      </Tooltip>
     </div>
   );
 }
