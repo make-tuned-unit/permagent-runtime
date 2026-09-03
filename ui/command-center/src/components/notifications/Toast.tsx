@@ -178,7 +178,7 @@ export function ToastCard({ notification, ttlMs, onDismiss, onActivate }: ToastC
           {notification.title}
         </div>
         {notification.body && (
-          <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 2 }}>
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs }}>
             {notification.body}
           </div>
         )}
