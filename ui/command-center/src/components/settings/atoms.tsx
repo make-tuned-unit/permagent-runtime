@@ -82,7 +82,7 @@ export function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'm
   };
   const s = styles[state];
   return (
-    <span style={{ fontSize: textSize.micro, fontWeight: 600, padding: '2px 8px', borderRadius: radius.pill, background: s.bg, color: s.text }}>
+    <span style={{ fontSize: textSize.micro, fontWeight: 600, padding: `${space.xxs}px ${space.md}px`, borderRadius: radius.pill, background: s.bg, color: s.text }}>
       {s.label}
     </span>
   );
@@ -271,7 +271,7 @@ export function Kbd({ children }: { children: React.ReactNode }) {
   const { colors } = useTheme();
   return (
     <span style={{
-      display: 'inline-block', padding: '2px 7px',
+      display: 'inline-block', padding: `${space.xxs}px ${space.sm}px`,
       fontFamily: font.mono, fontSize: textSize.micro, color: colors.text,
       background: colors.fillSubtle,
       border: `1px solid ${colors.border}`,

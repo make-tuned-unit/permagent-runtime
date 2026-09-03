@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { api } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 
 /**
@@ -100,7 +100,7 @@ export function DevRootsSection() {
   const remove = (p: string) => persist(roots.filter(x => x !== p));
 
   const rowStyle: React.CSSProperties = {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.xl,
     padding: '8px 0', borderBottom: `1px solid ${colors.border}`,
   };
   const pathStyle: React.CSSProperties = {
@@ -119,7 +119,7 @@ export function DevRootsSection() {
 
   return (
     <div>
-      <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, marginBottom: 10, maxWidth: 620, lineHeight: 1.6 }}>
+      <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, marginBottom: space.lg, maxWidth: 620, lineHeight: 1.6 }}>
         Used to find your projects, reclaim disk space from old build caches, and
         open the right checkout. With nothing set here those features fall back to
         guessing, and a wrong guess doesn't fail loudly — it just finds nothing.
@@ -130,7 +130,7 @@ export function DevRootsSection() {
       )}
 
       {!loading && roots.length === 0 && (
-        <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.warning, marginBottom: 8 }}>
+        <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.warning, marginBottom: space.md }}>
           Nothing set — features that look for your code are guessing right now.
         </div>
       )}
@@ -144,7 +144,7 @@ export function DevRootsSection() {
 
       {discovered.length > 0 && (
         <div style={{ marginTop: 14 }}>
-          <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginBottom: 4 }}>
+          <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginBottom: space.xs }}>
             Also found on this machine (a git repository was actually detected in each):
           </div>
           {discovered.map(p => (
@@ -156,7 +156,7 @@ export function DevRootsSection() {
         </div>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.md, marginTop: 14 }}>
         <input
           value={input}
           onChange={e => { setInput(e.target.value); setNote(null); }}
@@ -195,7 +195,7 @@ export function DevRootsSection() {
         <div
           role={note.kind === 'error' ? 'alert' : 'status'}
           style={{
-            fontFamily: font.body, fontSize: textSize.micro, marginTop: 8,
+            fontFamily: font.body, fontSize: textSize.micro, marginTop: space.md,
             color: note.kind === 'error' ? colors.danger : note.kind === 'warn' ? colors.warning : colors.cyan,
           }}
         >{note.text}</div>

@@ -40,7 +40,7 @@ export const AGENTS_WITH_SETTINGS = new Set(['strix', 'watcher', 'librarian', 'c
 const inputStyle = (colors: ReturnType<typeof useTheme>['colors']): CSSProperties => ({
   width: 260, fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
   background: colors.inputBg, border: `1px solid ${colors.border}`,
-  borderRadius: radius.sm, padding: '6px 10px', outline: 'none',
+  borderRadius: radius.sm, padding: `${space.sm}px ${space.lg}px`, outline: 'none',
 });
 
 // ── The Guard ───────────────────────────────────────────────────────────────
@@ -309,10 +309,10 @@ export function LibrarianScheduleSettings() {
               onChange={e => change({ duration_minutes: Math.max(15, Math.min(720, parseInt(e.target.value) || 15)) })}
               style={{ ...selectStyle(colors), minWidth: 100, width: 'auto' }}
             />
-            <span style={{ fontSize: textSize.micro, color: colors.textDim, marginLeft: 6 }}>min</span>
+            <span style={{ fontSize: textSize.micro, color: colors.textDim, marginLeft: space.sm }}>min</span>
           </Row>
           <Row label="Model" hint="Ollama model used by the Librarian. Installed models only.">
-            <span style={{ fontSize: textSize.small, color: colors.text, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: textSize.small, color: colors.text, display: 'flex', alignItems: 'center', gap: space.md }}>
               <select
                 style={{ ...selectStyle(colors), width: 'auto', minWidth: 160 }}
                 value={schedule.model}
