@@ -5,6 +5,7 @@ import { useTheme } from '../../styles/useTheme';
 import { Button, MIN_PENDING_MS, SUCCESS_FLASH_MS } from '../common/Button';
 import { FUNDAMENTALS_KEY } from './financeLabs';
 
+import { Tooltip } from '../common/Tooltip';
 export function FundamentalsKey({
   compact = false,
   onChanged,
@@ -109,17 +110,20 @@ export function FundamentalsKey({
               borderRadius: radius.sm, padding: '6px 8px', outline: 'none', minWidth: 0,
             }}
           />
-          <Button
-            colors={colors}
-            variant="ghostOn"
-            type="button"
-            disabled={!input.trim()}
-            title={!input.trim() ? 'Enter a key first' : undefined}
-            onClick={() => save()}
-            style={{ flexShrink: 0 }}
-          >
-            Save
-          </Button>
+          <Tooltip content={!input.trim() ? 'Enter a key first' : undefined}>
+            <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
+              <Button
+                colors={colors}
+                variant="ghostOn"
+                type="button"
+                disabled={!input.trim()}
+                onClick={() => save()}
+                style={{ flexShrink: 0 }}
+              >
+                Save
+              </Button>
+            </span>
+          </Tooltip>
         </div>
       )}
       {error && (
