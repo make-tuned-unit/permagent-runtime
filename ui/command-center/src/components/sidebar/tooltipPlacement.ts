@@ -1,3 +1,4 @@
+import { space } from '../../styles/tokens';
 /**
  * Where a sidebar hover label may render without ever touching the native
  * browser surface — the replacement for the bounds-subtraction that #1068
@@ -19,7 +20,7 @@
  * the tooltip reads that rect and places ITSELF to guarantee no overlap.
  *
  * THE GEOMETRY IS TIGHTER THAN IT LOOKS. `BuildView` wraps the terminal /
- * browser split in `padding: '12px 18px'`, so with the terminal hidden and
+ * browser split in `padding: `${space.xl}px 18px``, so with the terminal hidden and
  * the rail collapsed (`Sidebar.tsx` `W = shell.rail.collapsed`, 76 since the
  * rail went full-height and had to contain the traffic lights) the browser's
  * native rect starts at only 76 + 18 = 94px — a handful of pixels past a
