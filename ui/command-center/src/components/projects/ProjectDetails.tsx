@@ -1,4 +1,4 @@
-import { font } from '../../styles/tokens';
+import { font, space } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { ActivityPanel } from './ActivityPanel';
 import { CodeIndexPanel } from './CodeIndexPanel';
@@ -36,9 +36,9 @@ export function ProjectDetails({ project, onProjectUpdated }: {
   const { colors, gradient } = useTheme();
   return (
     <div style={{ flex: 1, overflow: 'auto', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(280px, .8fr)', gap: 16, padding: '20px 24px', alignItems: 'start' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(280px, .8fr)', gap: space.xxl, padding: `${space.xxxl}px ${space.huge}px`, alignItems: 'start' }}>
         {/* LEFT — the project's own material */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, minWidth: 0 }}>
           {/* Stack organizer (#512): services + login identity, reference-only. */}
           <StackPanel project={project} />
           {/* Verification approval ladder: the allowlist + earned privilege
@@ -52,7 +52,7 @@ export function ProjectDetails({ project, onProjectUpdated }: {
         </div>
 
         {/* RIGHT — who and what it connects to */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, minWidth: 0 }}>
           <PeoplePanel project={project} />
           <EcosystemPanel project={project} />
           {/* Directly beneath Ecosystem, because they are one concept: every

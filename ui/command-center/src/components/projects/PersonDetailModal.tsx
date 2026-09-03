@@ -756,7 +756,7 @@ export function PersonDetailModal({
                 <div style={{
                   fontSize: textSize.caption, color: colors.danger,
                   borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-                  background: colors.danger + '14', padding: '8px 12px',
+                  background: colors.danger + '14', padding: `${space.md}px ${space.xl}px`,
                 }}>
                   {error}
                 </div>
@@ -782,9 +782,9 @@ function MergeResultCard({ colors, report, undoing, undoReport, undoError, onUnd
 }) {
   return (
     <div style={{
-      display: 'flex', flexDirection: 'column', gap: 6,
+      display: 'flex', flexDirection: 'column', gap: space.sm,
       borderRadius: radius.md, border: `1px solid ${colors.cyan}`,
-      background: colors.cyanSoft, padding: '10px 12px',
+      background: colors.cyanSoft, padding: `${space.lg}px ${space.xl}px`,
     }}>
       <div style={{ fontSize: textSize.caption, color: colors.text }}>{report.summary}</div>
       {undoReport ? (
@@ -792,13 +792,13 @@ function MergeResultCard({ colors, report, undoing, undoReport, undoError, onUnd
           Undone — restored {undoReport.restored_name} ({undoReport.meetings_restored} meeting{undoReport.meetings_restored === 1 ? '' : 's'},{' '}
           {undoReport.project_links_restored} project link{undoReport.project_links_restored === 1 ? '' : 's'}).
           {undoReport.not_reverted.length > 0 && (
-            <div style={{ marginTop: 4 }}>
+            <div style={{ marginTop: space.xs }}>
               Not reverted: {undoReport.not_reverted.join(', ')}
             </div>
           )}
         </div>
       ) : (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
           <Button colors={colors} onClick={onUndo} pending={undoing} disabled={undoing} style={miniVars(colors)}>
             {undoing ? 'Undoing…' : 'Undo merge'}
           </Button>
@@ -826,9 +826,9 @@ function DeleteWarningCard({ colors, name, meetingsCount, projectsCount, deletin
 }) {
   return (
     <div style={{
-      display: 'flex', flexDirection: 'column', gap: 8,
+      display: 'flex', flexDirection: 'column', gap: space.md,
       borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-      background: colors.danger + '14', padding: '10px 12px',
+      background: colors.danger + '14', padding: `${space.lg}px ${space.xl}px`,
     }}>
       <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>
         Delete {name}? This can't be undone.
@@ -841,7 +841,7 @@ function DeleteWarningCard({ colors, name, meetingsCount, projectsCount, deletin
         {' '}for {name}.
       </div>
       {error && <div style={{ fontSize: textSize.micro, color: colors.danger }}>{error}</div>}
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: space.md }}>
         <Button colors={colors} onClick={onCancel} disabled={deleting} style={ghostVars(colors)}>Keep</Button>
         <Button colors={colors} onClick={onConfirm} pending={deleting} disabled={deleting} style={dangerVars(colors)}>
           {deleting ? 'Deleting…' : `Confirm delete ${name}`}
@@ -860,7 +860,7 @@ function DeletedCard({ colors, report, onClose }: {
   onClose: () => void;
 }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
       <div style={{ fontSize: textSize.small, color: colors.text }}>
         Deleted {report.display_name}: {report.meetings_deleted} meeting{report.meetings_deleted === 1 ? '' : 's'},{' '}
         {report.project_links_deleted} project link{report.project_links_deleted === 1 ? '' : 's'},{' '}
@@ -870,9 +870,9 @@ function DeletedCard({ colors, report, onClose }: {
       {report.retained.length > 0 && (
         <div style={{
           fontSize: textSize.micro, color: colors.textMuted, borderRadius: radius.md,
-          border: `1px solid ${colors.border}`, padding: '8px 10px',
+          border: `1px solid ${colors.border}`, padding: `${space.md}px ${space.lg}px`,
         }}>
-          <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 4 }}>
+          <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: space.xs }}>
             What stays put
           </div>
           {report.retained.map((line, i) => <div key={i}>{line}</div>)}
@@ -908,12 +908,12 @@ function PersonProjects({ colors, rows, status, onRetry, onOpen }: {
 }) {
   return (
     <section data-testid="person-projects">
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 7 }}>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: space.sm }}>
         <SectionLabel colors={colors}>Projects</SectionLabel>
       </div>
       {status === 'loading' && rows.length === 0 && <Small colors={colors}>Loading projects…</Small>}
       {status === 'error' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
           <Small colors={colors}>Couldn't load this person's projects.</Small>
           <Button colors={colors} onClick={onRetry} style={miniVars(colors)}>Try again</Button>
         </div>
@@ -923,7 +923,7 @@ function PersonProjects({ colors, rows, status, onRetry, onOpen }: {
       )}
       {rows.length > 0 && (
         <>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm }}>
             {rows.map(row => (
               <Chip
                 key={row.project_id}
@@ -943,7 +943,7 @@ function PersonProjects({ colors, rows, status, onRetry, onOpen }: {
               says so, and this is the surface you land on from it, so the two
               have to agree. Only when the list actually loaded: a failed fetch
               gets the message above, never a claim about the picture. */}
-          <div data-testid="person-projects-cluster" style={{ marginTop: 6 }}>
+          <div data-testid="person-projects-cluster" style={{ marginTop: space.sm }}>
             <Small colors={colors}>
               {rows.length > 1
                 ? `In the People graph they bridge these ${rows.length} groups.`
@@ -963,19 +963,19 @@ function RelatedPeople({ colors, rows, people, status, adding, targetId, predica
   onAdd: () => void; onRemove: (r: PersonRelationship) => void;
 }) {
   return <section>
-    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 7 }}>
+    <div style={{ display: 'flex', alignItems: 'center', marginBottom: space.sm }}>
       <SectionLabel colors={colors}>Related people</SectionLabel><span style={{ flex: 1 }} />
       {!adding && <Button colors={colors} aria-label="Add related person" onClick={onStart} style={miniVars(colors)}><FiPlus size={12} />Add</Button>}
     </div>
     {status === 'loading' && <Small colors={colors}>Loading relationships…</Small>}
     {status === 'error' && <Small colors={colors}>Couldn't load relationships.</Small>}
     {status === 'ready' && rows.length === 0 && !adding && <Small colors={colors}>No related people yet.</Small>}
-    {rows.map(row => <div key={`${row.from_entity_uuid}-${row.to_entity_uuid}-${row.predicate}`} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${colors.border}` }}>
+    {rows.map(row => <div key={`${row.from_entity_uuid}-${row.to_entity_uuid}-${row.predicate}`} style={{ display: 'flex', gap: space.md, alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${colors.border}` }}>
       <span style={{ color: colors.text, fontSize: textSize.caption, fontWeight: 600 }}>{row.other_person.display_name}</span>
       <span style={{ color: colors.textDim, fontSize: textSize.micro }}>{row.predicate.replace(/_/g, ' ')}</span><span style={{ flex: 1 }} />
       <Button colors={colors} variant="bare" aria-label={`Remove ${row.other_person.display_name} relationship`} onClick={() => onRemove(row)} style={iconVars(colors)}><FiTrash2 size={12} /></Button>
     </div>)}
-    {adding && <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6, marginTop: 8 }}>
+    {adding && <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: space.sm, marginTop: space.md }}>
       <select aria-label="Related person" value={targetId} onChange={e => onTarget(e.target.value)} style={control(colors)}><option value="">Choose person…</option>{people.map(p => <option key={p.entity_uuid} value={p.entity_uuid}>{p.display_name}</option>)}</select>
       {/* The field used to be an empty box whose only hint was the raw graph
           predicate, `related_to` — a schema token asked of the user as though
@@ -993,7 +993,7 @@ function RelatedPeople({ colors, rows, people, status, adding, targetId, predica
       <datalist id="person-relationship-predicates">
         {RELATIONSHIP_PREDICATES.map(p => <option key={p.value} value={p.value} label={p.label} />)}
       </datalist>
-      <div style={{ display: 'flex', gap: 4 }}><Button colors={colors} onClick={onCancel} style={miniVars(colors)}>Cancel</Button><Button colors={colors} onClick={onAdd} disabled={!targetId || !predicate.trim()} style={miniVars(colors)}>Add</Button></div>
+      <div style={{ display: 'flex', gap: space.xs }}><Button colors={colors} onClick={onCancel} style={miniVars(colors)}>Cancel</Button><Button colors={colors} onClick={onAdd} disabled={!targetId || !predicate.trim()} style={miniVars(colors)}>Add</Button></div>
     </div>}
   </section>;
 }
@@ -1009,28 +1009,28 @@ function MeetingsSection({ colors, personName, rows, projects, status, adding, t
   onAdd: () => void; onRetry: () => void; onFollowUpDone: (m: PersonMeeting) => void;
 }) {
   return <section>
-    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 7 }}>
+    <div style={{ display: 'flex', alignItems: 'center', marginBottom: space.sm }}>
       <SectionLabel colors={colors}>Meetings</SectionLabel><span style={{ flex: 1 }} />
       {!adding && <Button colors={colors} aria-label="Log a meeting" onClick={onStart} style={miniVars(colors)}><FiPlus size={12} />Add</Button>}
     </div>
     {status === 'loading' && <Small colors={colors}>Loading meetings…</Small>}
     {status === 'error' && <Small colors={colors}>Couldn't load meetings. <Button colors={colors} variant="bare" className="hover:underline" onClick={onRetry} style={linkVars(colors)}>Retry</Button></Small>}
     {status === 'ready' && rows.length === 0 && !adding && <Small colors={colors}>No meetings logged yet. Add one to put it on their profile and Apple Calendar.</Small>}
-    {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: 8, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}>
-      <span style={{ color: colors.cyan, marginTop: 2 }}><FiCalendar size={12} /></span>
+    {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: space.md, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}>
+      <span style={{ color: colors.cyan, marginTop: space.xxs }}><FiCalendar size={12} /></span>
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>{row.title}</div>
         <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>{fmtTime(row.starts_at)}{row.calendar_synced ? ' · Calendar' : ''}{row.calendar_uid ? ' · from iCal' : ''}</div>
         {row.notes ? <div style={{ fontSize: textSize.micro, color: colors.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.notes}</div> : null}
         {row.follow_up_at && !row.follow_up_done && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.md, marginTop: space.xs }}>
             <span style={{ fontSize: textSize.micro, color: colors.cyan }}>Follow up {fmtTime(row.follow_up_at)}{row.follow_up_note ? ` · ${row.follow_up_note}` : ''}</span>
             <Button colors={colors} aria-label="Mark follow-up done" onClick={() => onFollowUpDone(row)} style={miniVars(colors)}><FiCheck size={12} />Done</Button>
           </div>
         )}
       </div>
     </div>)}
-    {adding && <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+    {adding && <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm, marginTop: space.md }}>
       <input aria-label="Meeting title" value={title} onChange={e => onTitle(e.target.value)} placeholder={`Meeting with ${personName}`} style={control(colors)} />
       <input aria-label="Meeting time" type="datetime-local" value={starts} onChange={e => onStarts(e.target.value)} style={control(colors)} />
       {projects.length > 0 && (
@@ -1040,7 +1040,7 @@ function MeetingsSection({ colors, personName, rows, projects, status, adding, t
         </select>
       )}
       <textarea aria-label="Meeting notes" value={notes} onChange={e => onNotes(e.target.value)} placeholder="What you covered" rows={3} style={{ ...control(colors), resize: 'vertical' }} />
-      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: textSize.caption, color: colors.text }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: space.md, fontSize: textSize.caption, color: colors.text }}>
         <input aria-label="Schedule a follow-up" type="checkbox" checked={followUp} onChange={e => onFollowUp(e.target.checked)} />
         Follow up in a week
       </label>
@@ -1050,7 +1050,7 @@ function MeetingsSection({ colors, personName, rows, projects, status, adding, t
           <input aria-label="Follow-up note" value={followUpNote} onChange={e => onFollowUpNote(e.target.value)} placeholder="Send recap, check in…" style={control(colors)} />
         </>
       )}
-      <div style={{ display: 'flex', gap: 4 }}>
+      <div style={{ display: 'flex', gap: space.xs }}>
         <Button colors={colors} onClick={onCancel} style={miniVars(colors)}>Cancel</Button>
         <Button colors={colors} onClick={onAdd} pending={saving} disabled={saving || !starts} style={miniVars(colors)}>{saving ? 'Saving…' : 'Log meeting'}</Button>
       </div>
@@ -1064,12 +1064,12 @@ function PersonActivityTimeline({ colors, rows, status, onRetry }: { colors: Ret
     {status === 'loading' && <Small colors={colors}>Loading activity…</Small>}
     {status === 'error' && <Small colors={colors}>Couldn't load activity. <Button colors={colors} variant="bare" className="hover:underline" onClick={onRetry} style={linkVars(colors)}>Retry</Button></Small>}
     {status === 'ready' && rows.length === 0 && <Small colors={colors}>No activity referencing this person yet.</Small>}
-    {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: 8, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}><span style={{ color: colors.cyan, marginTop: 2 }}>{icon(row.kind)}</span><div style={{ minWidth: 0 }}><div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>{row.title}</div><div style={{ fontSize: textSize.micro, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.detail}</div><div style={{ fontSize: 10, color: colors.textDim }}>{fmtTime(row.timestamp)}</div></div></div>)}
+    {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: space.md, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}><span style={{ color: colors.cyan, marginTop: space.xxs }}>{icon(row.kind)}</span><div style={{ minWidth: 0 }}><div style={{ fontSize: textSize.caption, color: colors.text, fontWeight: 600 }}>{row.title}</div><div style={{ fontSize: textSize.micro, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.detail}</div><div style={{ fontSize: 10, color: colors.textDim }}>{fmtTime(row.timestamp)}</div></div></div>)}
   </section>;
 }
 
 function SectionLabel({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '.04em' }}>{children}</div>; }
-function Small({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 6 }}>{children}</div>; }
+function Small({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.sm }}>{children}</div>; }
 
 /** A profile link rendered as a button: clicking navigates the in-app browser
  *  on the Build tab. Not an <a href>, deliberately — an anchor would hand the
@@ -1094,7 +1094,7 @@ function LinkButton({ colors, label, title, onClick }: {
           '--pa-btn-bg-active': 'transparent',
           '--pa-btn-pad': '0',
           fontSize: 'inherit', fontFamily: 'inherit',
-          gap: 4,
+          gap: space.xs,
         } as CSSProperties}
       >
         <FiExternalLink size={11} />
@@ -1112,13 +1112,13 @@ function EditForm({ colors, personName, draft, onChange }: {
 }) {
   const openInBrowser = useBrowserNavigate();
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.xl }}>
       {EDITABLE_FIELDS.map(({ key, label, multiline, placeholder, link }) => {
         const href = link ? safeLink(draft[key]) : null;
         return (
-          <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
             <span style={{
-              display: 'flex', alignItems: 'center', gap: 8,
+              display: 'flex', alignItems: 'center', gap: space.md,
               fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
               textTransform: 'uppercase', letterSpacing: '0.04em',
             }}>
@@ -1215,7 +1215,7 @@ function PersonDetailDock({ variant, children }: {
 
 function inputStyle(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
   return {
-    fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
+    fontSize: textSize.caption, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.md,
     background: colors.fillSubtle, border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none', width: '100%',
     boxSizing: 'border-box',
@@ -1223,7 +1223,7 @@ function inputStyle(colors: ReturnType<typeof useTheme>['colors']): React.CSSPro
 }
 
 function control(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
-  return { ...inputStyle(colors), padding: '5px 7px' };
+  return { ...inputStyle(colors), padding: `${space.xs}px ${space.sm}px` };
 }
 
 /**

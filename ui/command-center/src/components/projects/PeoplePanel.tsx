@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -126,7 +126,7 @@ export function PeoplePanel({ project }: { project: Project }) {
       )}
 
       {associateError && (
-        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>
           {associateError}
         </div>
       )}
@@ -134,7 +134,7 @@ export function PeoplePanel({ project }: { project: Project }) {
       {status === 'loading' ? (
         <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading people…</div>
       ) : status === 'error' ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
           <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load people.</span>
           <Button
             colors={colors}
@@ -156,7 +156,7 @@ export function PeoplePanel({ project }: { project: Project }) {
       ) : people.length === 0 ? (
         <div style={{ fontSize: textSize.micro, color: colors.textDim }}>No people associated yet.</div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
           {people.map(p => (
             <Button
               key={p.entity_uuid}
@@ -181,7 +181,7 @@ export function PeoplePanel({ project }: { project: Project }) {
                 '--pa-btn-weight': 'inherit',
                 alignItems: 'baseline',
                 justifyContent: 'flex-start',
-                gap: 8,
+                gap: space.md,
                 textAlign: 'left',
                 width: '100%',
                 fontFamily: font.body,
@@ -199,7 +199,7 @@ export function PeoplePanel({ project }: { project: Project }) {
         </div>
       )}
       {meetings.length > 0 && (
-        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ marginTop: space.xl, display: 'flex', flexDirection: 'column', gap: space.xs }}>
           <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '.04em' }}>
             Meetings
           </div>
@@ -244,28 +244,28 @@ function AssociatePicker({ colors, excludeIds, onPick }: {
   const candidates = results.filter(p => !excludeIds.has(p.entity_uuid));
 
   return (
-    <div style={{ marginBottom: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div style={{ marginBottom: space.lg, display: 'flex', flexDirection: 'column', gap: space.sm }}>
       <input
         autoFocus
         value={query}
         onChange={e => setQuery(e.target.value)}
         placeholder="Search people…"
         style={{
-          fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
+          fontSize: textSize.caption, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.md,
           background: colors.fillSubtle, border: `1px solid ${colors.border}`,
           color: colors.text, fontFamily: font.body, outline: 'none',
         }}
       />
       {status === 'loading' ? (
-        <div style={{ fontSize: textSize.micro, color: colors.textDim, padding: '2px 2px' }}>Searching…</div>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, padding: `${space.xxs}px ${space.xxs}px` }}>Searching…</div>
       ) : status === 'error' ? (
-        <div style={{ fontSize: textSize.micro, color: colors.danger, padding: '2px 2px' }}>Couldn't search the directory.</div>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, padding: `${space.xxs}px ${space.xxs}px` }}>Couldn't search the directory.</div>
       ) : candidates.length === 0 ? (
-        <div style={{ fontSize: textSize.micro, color: colors.textDim, padding: '2px 2px' }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textDim, padding: `${space.xxs}px ${space.xxs}px` }}>
           {results.length === 0 ? 'No people in the directory.' : 'No more to add.'}
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 240, overflowY: 'auto' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxs, maxHeight: 240, overflowY: 'auto' }}>
           {candidates.map(p => (
             <Button
               key={p.entity_uuid}
@@ -282,7 +282,7 @@ function AssociatePicker({ colors, excludeIds, onPick }: {
                 '--pa-btn-weight': 'inherit',
                 alignItems: 'baseline',
                 justifyContent: 'flex-start',
-                gap: 8,
+                gap: space.md,
                 textAlign: 'left',
                 width: '100%',
                 fontFamily: font.body,

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, type CSSProperties, type ReactNode } from 'react';
 import { FiLink, FiTerminal, FiTrendingUp } from 'react-icons/fi';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { apiFetch, api } from '../../lib/api';
@@ -73,13 +73,13 @@ export function ProjectOverview({ project, onProjectUpdated }: {
     }}>
       <div style={{
         display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(0, 1fr)',
-        gap: 16, padding: '20px 24px', alignItems: 'start',
+        gap: space.xxl, padding: `${space.xxxl}px ${space.huge}px`, alignItems: 'start',
       }}>
         {/* LEFT — what this is, and what just happened.
             The records themselves (stack, documents, notes, memories, people,
             ecosystem, links, code index) live in the Details lens — see the
             ProjectDetails header for the ruled division. */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, minWidth: 0 }}>
           <SummaryPanel project={project} onProjectUpdated={onProjectUpdated} />
           <StrixFindingsPanel project={project} />
           <WatcherInsightsPanel project={project} />
@@ -88,7 +88,7 @@ export function ProjectOverview({ project, onProjectUpdated }: {
         </div>
 
         {/* RIGHT — where it stands, and what's next */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, minWidth: 0 }}>
           {/* Build → Grow bridge: take the finished work to market. */}
           <Button
             colors={colors}
@@ -103,7 +103,7 @@ export function ProjectOverview({ project, onProjectUpdated }: {
               '--pa-btn-radius': `${radius.lg}px`,
               '--pa-btn-weight': 600,
               fontFamily: font.body, fontSize: textSize.small,
-              gap: 8,
+              gap: space.md,
             } as CSSProperties}
           >
             <FiTrendingUp size={15} color={colors.cyan} />
@@ -181,7 +181,7 @@ function SummaryPanel({ project, onProjectUpdated }: {
       </div>
 
       {editing ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.md, marginTop: space.md }}>
           <label style={fieldLabel(colors)}>
             Description
             <input
@@ -209,19 +209,19 @@ function SummaryPanel({ project, onProjectUpdated }: {
         <>
           <div style={{
             fontSize: textSize.caption, color: project.description ? colors.textMuted : colors.textDim,
-            marginTop: 6, lineHeight: 1.55,
+            marginTop: space.sm, lineHeight: 1.55,
           }}>
             {project.description || 'No description yet.'}
           </div>
           {brief ? (
             <div style={{
-              fontSize: textSize.caption, color: colors.text, marginTop: 10, lineHeight: 1.6,
-              whiteSpace: 'pre-wrap', borderTop: `1px solid ${colors.border}`, paddingTop: 10,
+              fontSize: textSize.caption, color: colors.text, marginTop: space.lg, lineHeight: 1.6,
+              whiteSpace: 'pre-wrap', borderTop: `1px solid ${colors.border}`, paddingTop: space.lg,
             }}>
               {brief}
             </div>
           ) : (
-            <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: 10 }}>
+            <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.lg }}>
               No brief yet — Edit to add one.
             </div>
           )}
@@ -264,16 +264,16 @@ export function WatcherInsightsPanel({ project }: { project: Project }) {
   if (insights.length === 0) return null;
   return (
     <Panel title="From the Watcher">
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
         {insights.map(i => (
-          <div key={i.created_at} style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
+          <div key={i.created_at} style={{ display: 'flex', gap: space.lg, alignItems: 'baseline' }}>
             <span style={{ color: colors.purpleBright, fontSize: textSize.micro, flexShrink: 0, lineHeight: '18px' }}>◆</span>
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.55 }}>{i.text}</div>
               {/* The cards the observation is about. Without these the reader
                   is told something stalled and given no way to reach it. */}
               {(i.cards ?? []).length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 5 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm, marginTop: space.xs }}>
                   {(i.cards ?? []).map(c => (
                     <Tooltip content={`Open "${c.title}" on the board`}>
                       <Button
@@ -299,7 +299,7 @@ export function WatcherInsightsPanel({ project }: { project: Project }) {
                   ))}
                 </div>
               )}
-              <div style={{ fontSize: 10, color: colors.textDim, marginTop: 4 }}>{formatDate(i.created_at)}</div>
+              <div style={{ fontSize: 10, color: colors.textDim, marginTop: space.xs }}>{formatDate(i.created_at)}</div>
             </div>
           </div>
         ))}
@@ -383,9 +383,9 @@ function StrixFindingsPanel({ project }: { project: Project }) {
   const shown = findings.slice(0, STRIX_SHOWN);
   return (
     <Panel title="Security — from the Guard">
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.xl }}>
         {shown.map(f => (
-          <div key={f.id} style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
+          <div key={f.id} style={{ display: 'flex', gap: space.lg, alignItems: 'baseline' }}>
             <span style={{
               fontSize: 9, fontWeight: 700, letterSpacing: 0.6, flexShrink: 0,
               textTransform: 'uppercase', color: severityColor(f.severity),
@@ -395,13 +395,13 @@ function StrixFindingsPanel({ project }: { project: Project }) {
             </span>
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: textSize.caption, color: colors.text, lineHeight: 1.5 }}>{f.title}</div>
-              <div style={{ fontSize: 10, color: colors.textDim, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 10, color: colors.textDim, marginTop: space.xxs, display: 'flex', gap: space.md, flexWrap: 'wrap' }}>
                 {f.cwe && <span>{f.cwe}</span>}
                 {f.location && <span style={{ fontFamily: font.mono }}>{f.location}</span>}
                 <span>{formatDate(f.found_at)}</span>
               </div>
               {f.remediation && (
-                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 3, lineHeight: 1.5 }}>
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs, lineHeight: 1.5 }}>
                   {f.remediation}
                 </div>
               )}
@@ -434,9 +434,9 @@ function KeyFactsPanel({ project }: { project: Project }) {
 
   return (
     <Panel title="Key facts">
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         {facts.map(f => (
-          <div key={f.label} style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+          <div key={f.label} style={{ display: 'flex', alignItems: 'baseline', gap: space.lg }}>
             <span style={{ fontSize: textSize.micro, color: colors.textDim, width: 88, flexShrink: 0 }}>{f.label}</span>
             <span style={{ fontSize: textSize.caption, color: colors.text, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {f.value}
@@ -448,12 +448,12 @@ function KeyFactsPanel({ project }: { project: Project }) {
             the path. */}
         {project.rootPath && <RootPathRow project={project} />}
         {project.tags.length > 0 && (
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: space.lg }}>
             <span style={{ fontSize: textSize.micro, color: colors.textDim, width: 88, flexShrink: 0 }}>Tags</span>
-            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: space.xs, flexWrap: 'wrap' }}>
               {project.tags.map((tag, ti) => (
                 <span key={`${tag}-${ti}`} style={{
-                  fontSize: 10, padding: '1px 6px', borderRadius: radius.xs,
+                  fontSize: 10, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.xs,
                   background: chipVeil, color: colors.textDim,
                 }}>
                   {tag}
@@ -499,15 +499,15 @@ function RootPathRow({ project }: { project: Project }) {
   };
 
   return (
-    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: space.lg }}>
       <span style={{ fontSize: textSize.micro, color: colors.textDim, width: 88, flexShrink: 0 }}>Root path</span>
-      <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: space.sm }}>
         <Mono>
           <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {rootPath}
           </span>
         </Mono>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: space.sm }}>
           <Button
             colors={colors}
             variant="ghostOn"
@@ -612,7 +612,7 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
   if (editing) {
     return (
       <Panel title={title}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
           <label style={fieldLabel(colors)}>
             Website
             <input value={draftSite} onChange={e => setDraftSite(e.target.value)}
@@ -623,10 +623,10 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
             <input value={draftRepo} onChange={e => setDraftRepo(e.target.value)}
               placeholder="github.com/you/repo" disabled={saving} style={fieldInput(colors)} />
           </label>
-          <div style={{ ...fieldLabel(colors), display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ ...fieldLabel(colors), display: 'flex', flexDirection: 'column', gap: space.sm }}>
             Other links
             {draftLinks.map((l, i) => (
-              <div key={i} style={{ display: 'flex', gap: 6 }}>
+              <div key={i} style={{ display: 'flex', gap: space.sm }}>
                 <input value={l.label} placeholder="Label" disabled={saving} aria-label={`Link ${i + 1} label`}
                   onChange={e => setDraftLinks(ls => ls.map((x, xi) => xi === i ? { ...x, label: e.target.value } : x))}
                   style={{ ...fieldInput(colors), width: 90, flexShrink: 0 }} />
@@ -672,7 +672,7 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
           No links yet — Edit to add website, repo, or social links.
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
           {links.map((link, li) => (
             <Button
               key={`${link.label}-${li}`}
@@ -686,7 +686,7 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
                 '--pa-btn-fg': colors.text,
                 '--pa-btn-pad': '7px 9px',
                 '--pa-btn-radius': `${radius.sm}px`,
-                gap: 8, textAlign: 'left', justifyContent: 'flex-start',
+                gap: space.md, textAlign: 'left', justifyContent: 'flex-start',
                 fontFamily: font.body, fontSize: textSize.caption, width: '100%',
               } as CSSProperties}
             >
@@ -754,7 +754,7 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
       ) : total === 0 ? (
         <div style={{ fontSize: textSize.micro, color: colors.textDim }}>No tasks yet.</div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
           {ordered.map(col => {
             const colCards = cards
               .filter(c => c.columnId === col.id && !c.archivedAt)
@@ -762,7 +762,7 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
             if (colCards.length === 0) return null;
             return (
               <div key={col.id}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, marginBottom: space.xs }}>
                   <span style={{ fontSize: 10, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     {col.name}
                   </span>
@@ -770,7 +770,7 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
                     {colCards.length}
                   </span>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxs }}>
                   {colCards.map(card => {
                     const isGoal = card.cardType === 'goal';
                     return (
@@ -782,10 +782,10 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
                         onClick={isGoal ? () => onOpenGoal(card.id) : undefined}
                         onKeyDown={isGoal ? e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenGoal(card.id); } } : undefined}
                         style={{
-                          fontSize: textSize.caption, padding: '4px 8px', borderRadius: radius.sm,
+                          fontSize: textSize.caption, padding: `${space.xs}px ${space.md}px`, borderRadius: radius.sm,
                           background: rowVeil,
                           color: colors.text, cursor: isGoal ? 'pointer' : 'default',
-                          display: 'flex', alignItems: 'center', gap: 6,
+                          display: 'flex', alignItems: 'center', gap: space.sm,
                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         }}
                         onMouseEnter={e => { if (isGoal) (e.currentTarget as HTMLElement).style.background = colors.cyanSoft; }}
@@ -830,7 +830,7 @@ function panelActionVars(colors: ThemeColors): CSSProperties {
 
 function fieldLabel(colors: ThemeColors): React.CSSProperties {
   return {
-    display: 'flex', flexDirection: 'column', gap: 4,
+    display: 'flex', flexDirection: 'column', gap: space.xs,
     fontSize: 10, fontWeight: 600, color: colors.textDim,
     textTransform: 'uppercase', letterSpacing: '0.05em',
   };
@@ -840,7 +840,7 @@ function fieldInput(colors: ThemeColors): React.CSSProperties {
   return {
     fontSize: textSize.caption, fontFamily: font.body, color: colors.text,
     background: colors.fillSubtle, border: `1px solid ${colors.border}`,
-    borderRadius: radius.sm, padding: '6px 8px', outline: 'none',
+    borderRadius: radius.sm, padding: `${space.sm}px ${space.md}px`, outline: 'none',
     textTransform: 'none', letterSpacing: 'normal', fontWeight: 400,
   };
 }
@@ -855,13 +855,13 @@ function EditControls({ saving, error, onSave, onCancel }: {
 }) {
   const { colors } = useTheme();
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
       {error && (
         <div role="alert" style={{ fontSize: textSize.micro, color: colors.danger }}>
           Couldn't save: {error}
         </div>
       )}
-      <div style={{ display: 'flex', gap: 6 }}>
+      <div style={{ display: 'flex', gap: space.sm }}>
         {/* The work runs in the caller's `onSave`, so the in-flight state is
             handed in rather than awaited off the click. */}
         <Button
@@ -914,7 +914,7 @@ function StatusPill({ status }: { status: string }) {
   return (
     <span style={{
       fontSize: 10, fontWeight: 600, textTransform: 'capitalize',
-      padding: '1px 8px', borderRadius: radius.xs, color,
+      padding: `${space.xxs}px ${space.md}px`, borderRadius: radius.xs, color,
       background: colors.fillHover, border: `1px solid ${color}33`,
     }}>
       {status}

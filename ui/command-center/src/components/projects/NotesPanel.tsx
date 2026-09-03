@@ -25,7 +25,7 @@ import { FiTrash2, FiMic, FiSquare, FiLoader, FiExternalLink, FiCopy, FiCheck, F
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { useDictation } from '../../hooks/useDictation';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -184,13 +184,13 @@ export function NotesPanel({ project }: { project: Project }) {
       action={<span style={{ fontSize: 10, color: colors.textDim }}>{notes.length} note{notes.length !== 1 ? 's' : ''}</span>}
     >
       {/* Composer */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: notes.length ? 10 : 0 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm, marginBottom: notes.length ? 10 : 0 }}>
         <input
           value={title}
           onChange={e => setTitle(e.target.value)}
           placeholder="Title (optional)"
           style={{
-            fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
+            fontSize: textSize.caption, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.md,
             background: colors.inputBg, border: `1px solid ${colors.border}`,
             color: colors.text, fontFamily: font.body, outline: 'none',
           }}
@@ -205,12 +205,12 @@ export function NotesPanel({ project }: { project: Project }) {
           placeholder="Write a note… it lands in your project's Brain."
           rows={3}
           style={{
-            fontSize: textSize.caption, padding: '7px 9px', borderRadius: radius.md, resize: 'vertical', minHeight: 56,
+            fontSize: textSize.caption, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.md, resize: 'vertical', minHeight: 56,
             background: colors.inputBg, border: `1px solid ${colors.border}`,
             color: colors.text, fontFamily: font.body, lineHeight: 1.5, outline: 'none',
           }}
         />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
           <Button
             colors={colors}
             variant="ghostOn"
@@ -268,7 +268,7 @@ export function NotesPanel({ project }: { project: Project }) {
       </div>
 
       {(error || dictationError) && (
-        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error || dictationError}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>{error || dictationError}</div>
       )}
 
       {status === 'loading' && (
@@ -276,7 +276,7 @@ export function NotesPanel({ project }: { project: Project }) {
       )}
 
       {status === 'error' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
           <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load notes.</span>
           <Button
             colors={colors}
@@ -298,7 +298,7 @@ export function NotesPanel({ project }: { project: Project }) {
       )}
 
       {status === 'ready' && notes.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
           {notes.map(note => {
             const isOpen = expanded.has(note.id);
             return (
@@ -324,7 +324,7 @@ export function NotesPanel({ project }: { project: Project }) {
                   onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpanded(note.id); } }}
                   tabIndex={0}
                   style={{
-                    display: 'flex', alignItems: 'center', gap: 7, padding: '8px 10px',
+                    display: 'flex', alignItems: 'center', gap: space.sm, padding: `${space.md}px ${space.lg}px`,
                     cursor: 'pointer', userSelect: 'none',
                   }}
                 >
@@ -389,7 +389,7 @@ export function NotesPanel({ project }: { project: Project }) {
                       {note.body}
                     </div>
                     {note.memory_key && (
-                      <div style={{ marginTop: 4 }}>
+                      <div style={{ marginTop: space.xs }}>
                         <Tooltip content="View this note in your Brain">
                           <Button
                             colors={colors}
@@ -404,7 +404,7 @@ export function NotesPanel({ project }: { project: Project }) {
                               '--pa-btn-bg-hover': 'transparent',
                               '--pa-btn-pad': '0',
                               '--pa-btn-weight': 600,
-                              gap: 4,
+                              gap: space.xs,
                               fontFamily: font.body,
                               fontSize: 10,
                             } as CSSProperties}

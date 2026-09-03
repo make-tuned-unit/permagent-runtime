@@ -16,7 +16,7 @@ import { FiFile, FiTrash2, FiUploadCloud } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { projectMemoryPreview } from '../brain/brainMemoryFocus';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -161,8 +161,8 @@ export function DocumentsPanel({ project }: { project: Project }) {
           onClick={() => fileInput.current?.click()}
           onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.current?.click(); } }}
           style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            padding: '10px 12px', marginBottom: docs.length ? 8 : 0, cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: space.md,
+            padding: `${space.lg}px ${space.xl}px`, marginBottom: docs.length ? 8 : 0, cursor: 'pointer',
             borderRadius: radius.md, fontSize: textSize.micro,
             color: dragging ? colors.cyan : colors.textDim,
             border: `1px dashed ${dragging ? colors.cyan : colors.border}`,
@@ -175,7 +175,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
         </div>
 
         {error && (
-          <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error}</div>
+          <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>{error}</div>
         )}
 
         {status === 'loading' && (
@@ -183,7 +183,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
         )}
 
         {status === 'error' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
             <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load documents.</span>
             <Button
               colors={colors}
@@ -205,12 +205,12 @@ export function DocumentsPanel({ project }: { project: Project }) {
         )}
 
         {status === 'ready' && docs.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
             {docs.map(doc => (
               <div
                 key={doc.id}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px',
+                  display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.md}px`,
                   borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}`,
                   transition: 'border-color 150ms',
                 }}
@@ -234,7 +234,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
                       textAlign: 'left',
                       flex: 1,
                       minWidth: 0,
-                      gap: 8,
+                      gap: space.md,
                       fontFamily: font.body,
                     } as CSSProperties}
                   >

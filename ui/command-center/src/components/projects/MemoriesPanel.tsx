@@ -22,7 +22,7 @@ import { FiExternalLink, FiRefreshCw } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { projectMemoryPreview } from '../brain/brainMemoryFocus';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -78,7 +78,7 @@ export function MemoriesPanel({ project }: { project: Project }) {
       title="Memories"
       action={
         status === 'ready' ? (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: space.md }}>
             <span style={{ fontSize: 10, color: colors.textDim }}>
               {memories.length} linked
             </span>
@@ -107,7 +107,7 @@ export function MemoriesPanel({ project }: { project: Project }) {
       )}
 
       {status === 'error' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
           <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load memories.</span>
           <Button
             colors={colors}
@@ -137,7 +137,7 @@ export function MemoriesPanel({ project }: { project: Project }) {
       )}
 
       {status === 'ready' && memories.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
           {memories.map(m => (
             <Tooltip content="Open in Brain">
               <button
@@ -145,7 +145,7 @@ export function MemoriesPanel({ project }: { project: Project }) {
                 onClick={() => openInBrain(m)}
                 style={{
                   textAlign: 'left', width: '100%', cursor: 'pointer',
-                  display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px',
+                  display: 'flex', alignItems: 'flex-start', gap: space.md, padding: `${space.md}px ${space.lg}px`,
                   borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}`,
                   color: colors.text, fontFamily: font.body, transition: 'border-color 150ms',
                 }}
@@ -161,7 +161,7 @@ export function MemoriesPanel({ project }: { project: Project }) {
                   }}>
                     {m.description || m.content || '(empty memory)'}
                   </div>
-                  <div style={{ fontSize: 10, color: colors.textDim, marginTop: 4, display: 'flex', gap: 8, alignItems: 'center', minWidth: 0 }}>
+                  <div style={{ fontSize: 10, color: colors.textDim, marginTop: space.xs, display: 'flex', gap: space.md, alignItems: 'center', minWidth: 0 }}>
                     <span style={{ flexShrink: 0 }}>{relativeTime(m.associated_at)}</span>
                     {m.description && m.content && (
                       <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: font.mono, opacity: 0.85 }}>
@@ -170,7 +170,7 @@ export function MemoriesPanel({ project }: { project: Project }) {
                     )}
                   </div>
                 </div>
-                <FiExternalLink size={12} style={{ color: colors.cyan, flexShrink: 0, marginTop: 2 }} />
+                <FiExternalLink size={12} style={{ color: colors.cyan, flexShrink: 0, marginTop: space.xxs }} />
               </button>
             </Tooltip>
           ))}

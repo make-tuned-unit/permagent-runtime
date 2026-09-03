@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
-import { font, textSize } from '../../styles/tokens';
+import { font, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { sparklinePolyline } from '../grow/growthTrend';
@@ -156,13 +156,13 @@ export function MarketPanel({ project }: { project: Project }) {
         </div>
       )}
       {status === 'ready' && !data?.noSeriesBound && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xl }}>
           {data?.rows.map(row => {
             const poly = row.history.length > 1 ? sparklinePolyline(row.history, VIEW_W, VIEW_H) : null;
             const forecastable = row.verdict === 'forecastable' && row.forecast;
             return (
-              <div key={row.seriesId} style={{ borderLeft: `2px solid ${forecastable ? colors.cyan : colors.border}`, paddingLeft: 9 }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+              <div key={row.seriesId} style={{ borderLeft: `2px solid ${forecastable ? colors.cyan : colors.border}`, paddingLeft: space.md }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.md }}>
                   <div style={{ color: colors.text, fontSize: textSize.caption, fontWeight: 600 }}>{row.subject}</div>
                   <div style={{ color: colors.textMuted, fontSize: 10 }}>{row.sourceLabel}</div>
                 </div>
@@ -175,7 +175,7 @@ export function MarketPanel({ project }: { project: Project }) {
                     height={VIEW_H}
                     role="img"
                     aria-label={`${row.subject} ${row.sourceLabel}, last ${row.history.length} points`}
-                    style={{ marginTop: 4 }}
+                    style={{ marginTop: space.xs }}
                   >
                     <polyline
                       points={poly}
@@ -191,7 +191,7 @@ export function MarketPanel({ project }: { project: Project }) {
 
                 {forecastable && row.forecast ? (
                   <>
-                    <div style={{ color: colors.text, fontSize: textSize.micro, marginTop: 3 }}>
+                    <div style={{ color: colors.text, fontSize: textSize.micro, marginTop: space.xxs }}>
                       {row.direction ?? '—'}
                       {row.forecast.p10.length > 0 && (
                         <span style={{ color: colors.textMuted }}>
@@ -201,7 +201,7 @@ export function MarketPanel({ project }: { project: Project }) {
                       )}
                     </div>
                     {/* The method label is never optional and never hidden. */}
-                    <div style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, marginTop: 2 }}>
+                    <div style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, marginTop: space.xxs }}>
                       method: {row.forecast.methodLabel}
                       {row.forecast.maseVsBaseline != null && (
                         <> · MASE {row.forecast.maseVsBaseline.toFixed(2)}× baseline over {row.forecast.folds} folds</>
@@ -209,12 +209,12 @@ export function MarketPanel({ project }: { project: Project }) {
                     </div>
                   </>
                 ) : (
-                  <div style={{ color: colors.textMuted, fontSize: textSize.micro, marginTop: 3 }}>
+                  <div style={{ color: colors.textMuted, fontSize: textSize.micro, marginTop: space.xxs }}>
                     {refusalText(row)}
                   </div>
                 )}
 
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 3, fontFamily: font.mono, fontSize: 9, color: colors.textDim }}>
+                <div style={{ display: 'flex', gap: space.md, alignItems: 'center', marginTop: space.xxs, fontFamily: font.mono, fontSize: 9, color: colors.textDim }}>
                   <span>{row.points} pts · {row.cadence}</span>
                   {row.snapshotOnly && <Tooltip content="This source cannot hand over history; it accumulates one point per sweep."><span tabIndex={0} style={{ outline: 'none' }}><span>snapshot-only</span></span></Tooltip>}
                   {!row.officialSource && <Tooltip content="Not a supported API; used anyway, and said out loud."><span tabIndex={0} style={{ outline: 'none' }}><span>unofficial source</span></span></Tooltip>}

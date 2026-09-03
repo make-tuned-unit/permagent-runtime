@@ -4,7 +4,7 @@
 
 import type { ReactNode } from 'react';
 import { useTheme } from '../../styles/useTheme';
-import { radius, textSize } from '../../styles/tokens';
+import { radius, space, textSize } from '../../styles/tokens';
 
 export function Panel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   const { colors } = useTheme();
@@ -18,9 +18,9 @@ export function Panel({ title, action, children }: { title: string; action?: Rea
   return (
     <section style={{
       background: veil, border: `1px solid ${colors.border}`,
-      borderRadius: radius.lg, padding: '14px 16px',
+      borderRadius: radius.lg, padding: `14px ${space.xxl}px`,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: space.lg }}>
         <span style={{
           fontSize: textSize.micro, fontWeight: 600, color: colors.textMuted,
           textTransform: 'uppercase', letterSpacing: '0.06em', flex: 1,

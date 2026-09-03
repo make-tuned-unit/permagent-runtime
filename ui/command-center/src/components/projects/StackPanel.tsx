@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiEdit2, FiExternalLink, FiPlus, FiTrash2, FiX } from 'react-icons/fi';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
@@ -163,7 +163,7 @@ export function StackPanel({ project }: { project: Project }) {
   };
 
   const inputStyle: React.CSSProperties = {
-    fontSize: textSize.caption, padding: '6px 9px', borderRadius: radius.md,
+    fontSize: textSize.caption, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.md,
     background: colors.inputBg, border: `1px solid ${colors.border}`,
     color: colors.text, fontFamily: font.body, outline: 'none',
   };
@@ -186,7 +186,7 @@ export function StackPanel({ project }: { project: Project }) {
               '--pa-btn-bg-hover': 'transparent',
               '--pa-btn-pad': '0',
               '--pa-btn-weight': 600,
-              gap: 4,
+              gap: space.xs,
               fontFamily: font.body,
               fontSize: textSize.micro,
             } as CSSProperties}
@@ -204,7 +204,7 @@ export function StackPanel({ project }: { project: Project }) {
               '--pa-btn-bg-hover': 'transparent',
               '--pa-btn-pad': '0',
               '--pa-btn-weight': 600,
-              gap: 4,
+              gap: space.xs,
               fontFamily: font.body,
               fontSize: textSize.micro,
             } as CSSProperties}
@@ -217,11 +217,11 @@ export function StackPanel({ project }: { project: Project }) {
       {/* Composer (add or edit) */}
       {form && (
         <div style={{
-          display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10,
-          padding: '10px', borderRadius: radius.md, background: rowVeil,
+          display: 'flex', flexDirection: 'column', gap: space.sm, marginBottom: space.lg,
+          padding: space.lg, borderRadius: radius.md, background: rowVeil,
           border: `1px solid ${colors.borderHi}`,
         }}>
-          <div style={{ display: 'flex', gap: 6 }}>
+          <div style={{ display: 'flex', gap: space.sm }}>
             <input
               value={form.serviceName}
               onChange={e => setForm({ ...form, serviceName: e.target.value })}
@@ -258,7 +258,7 @@ export function StackPanel({ project }: { project: Project }) {
             placeholder='Notes — e.g. "free tier, 2 projects max"'
             style={inputStyle}
           />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
             <Button
               colors={colors}
               variant="ghostOn"
@@ -284,7 +284,7 @@ export function StackPanel({ project }: { project: Project }) {
       )}
 
       {error && (
-        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error}</div>
+        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: space.md }}>{error}</div>
       )}
 
       {status === 'loading' && (
@@ -292,7 +292,7 @@ export function StackPanel({ project }: { project: Project }) {
       )}
 
       {status === 'error' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
           <span style={{ fontSize: textSize.micro, color: colors.danger }}>Couldn't load the stack.</span>
           <Button
             colors={colors}
@@ -321,21 +321,21 @@ export function StackPanel({ project }: { project: Project }) {
       )}
 
       {status === 'ready' && groups.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
           {groups.map(group => (
             <div key={group.category}>
               <div style={{
                 fontSize: 10, fontWeight: 600, color: colors.textDim,
-                textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4,
+                textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: space.xs,
               }}>
                 {STACK_CATEGORY_LABELS[group.category]}
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
                 {group.entries.map(entry => (
                   <div
                     key={entry.id}
                     style={{
-                      display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px',
+                      display: 'flex', alignItems: 'flex-start', gap: space.md, padding: `${space.md}px ${space.lg}px`,
                       borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}`,
                       transition: 'border-color 150ms',
                     }}
@@ -343,7 +343,7 @@ export function StackPanel({ project }: { project: Project }) {
                     onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
                   >
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md, flexWrap: 'wrap' }}>
                         <span style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text }}>
                           {entry.service_name}
                         </span>
@@ -369,7 +369,7 @@ export function StackPanel({ project }: { project: Project }) {
                       {entry.notes && (
                         <div style={{
                           fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5,
-                          marginTop: 2, overflowWrap: 'anywhere',
+                          marginTop: space.xxs, overflowWrap: 'anywhere',
                         }}>
                           {entry.notes}
                         </div>
@@ -386,8 +386,8 @@ export function StackPanel({ project }: { project: Project }) {
                               '--pa-btn-bg-hover': 'transparent',
                               '--pa-btn-pad': '0',
                               '--pa-btn-weight': 600,
-                              marginTop: 4,
-                              gap: 4,
+                              marginTop: space.xs,
+                              gap: space.xs,
                               fontFamily: font.body,
                               fontSize: 10,
                             } as CSSProperties}

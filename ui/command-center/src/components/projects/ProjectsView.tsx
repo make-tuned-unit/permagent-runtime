@@ -301,7 +301,7 @@ projects, onOpenProject, onStatusChange }: {
         subtitle={`${active.length} active — drag a card onto Paused or Archived below to shelve it`}
       />
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '18px 24px' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: `18px ${space.huge}px` }}>
         {/* ACTIVE — the page. Responsive grid, drop target for reactivation. */}
         <div
           onDragOver={(e) => handleDragOver(e, 'active')}
@@ -310,9 +310,9 @@ projects, onOpenProject, onStatusChange }: {
           style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-            gap: 12,
+            gap: space.xl,
             borderRadius: radius.lg,
-            padding: 4,
+            padding: space.xs,
             border: dragOverCol === 'active' ? `1px solid ${colors.borderHi}` : '1px solid transparent',
             background: dragOverCol === 'active' ? colors.cyanSoft : 'transparent',
             transition: 'all 150ms',
@@ -372,7 +372,7 @@ projects, onOpenProject, onStatusChange }: {
                   '--pa-btn-fg-hover': colors.text,
                   '--pa-btn-bg-hover': 'transparent',
                   '--pa-btn-pad': '9px 14px',
-                  width: '100%', gap: 8, justifyContent: 'flex-start',
+                  width: '100%', gap: space.md, justifyContent: 'flex-start',
                   fontFamily: font.body,
                 } as CSSProperties}
               >
@@ -383,7 +383,7 @@ projects, onOpenProject, onStatusChange }: {
                 <span style={{ fontSize: textSize.micro, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                   {col.label}
                 </span>
-                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: radius.md }}>
+                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: `${space.xxs}px ${space.sm}px`, borderRadius: radius.md }}>
                   {colProjects.length}
                 </span>
                 {!isOpen && colProjects.length > 0 && (
@@ -397,7 +397,7 @@ projects, onOpenProject, onStatusChange }: {
                 <div id={shelfId} style={{
                   display: 'grid',
                   gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-                  gap: 10, padding: '4px 12px 12px',
+                  gap: space.lg, padding: `${space.xs}px ${space.xl}px ${space.xl}px`,
                 }}>
                   {colProjects.map(project => (
                     <ProjectCard
@@ -410,7 +410,7 @@ projects, onOpenProject, onStatusChange }: {
                 </div>
               )}
               {isOpen && colProjects.length === 0 && (
-                <div id={shelfId} style={{ padding: '4px 14px 12px', fontSize: textSize.micro, color: colors.textDim }}>Empty.</div>
+                <div id={shelfId} style={{ padding: `${space.xs}px 14px ${space.xl}px`, fontSize: textSize.micro, color: colors.textDim }}>Empty.</div>
               )}
             </div>
           );
@@ -441,7 +441,7 @@ project, onOpen, onDragStart }: {
       onClick={onOpen}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
       style={{
-        padding: '10px 12px', borderRadius: radius.md,
+        padding: `${space.lg}px ${space.xl}px`, borderRadius: radius.md,
         background: colors.surface,
         border: `1px solid ${colors.border}`,
         cursor: 'pointer',
@@ -452,9 +452,9 @@ project, onOpen, onDragStart }: {
       onFocus={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
       onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
         {isPersonal && (
-          <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: radius.xs, background: colors.cyanSoft, color: colors.cyan, fontWeight: 600 }}>
+          <span style={{ fontSize: 10, padding: `${space.xxs}px ${space.xs}px`, borderRadius: radius.xs, background: colors.cyanSoft, color: colors.cyan, fontWeight: 600 }}>
             DEFAULT
           </span>
         )}
@@ -463,14 +463,14 @@ project, onOpen, onDragStart }: {
         </span>
       </div>
       {project.description && (
-        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xs, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {project.description}
         </div>
       )}
       {project.tags.length > 0 && (
-        <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: space.xs, marginTop: space.sm, flexWrap: 'wrap' }}>
           {project.tags.slice(0, 3).map((tag, ti) => (
-            <span key={`${tag}-${ti}`} style={{ fontSize: 10, padding: '1px 5px', borderRadius: radius.xs, background: tagVeil, color: colors.textDim }}>
+            <span key={`${tag}-${ti}`} style={{ fontSize: 10, padding: `${space.xxs}px ${space.xs}px`, borderRadius: radius.xs, background: tagVeil, color: colors.textDim }}>
               {tag}
             </span>
           ))}
@@ -1147,7 +1147,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
         </Tooltip>
       </div>
       {card.description && (
-        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {card.description}
         </div>
       )}
@@ -1165,7 +1165,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
             if (e.key === 'Escape') setEditingDue(false);
           }}
           style={{
-            marginTop: 5, fontSize: textSize.micro, padding: `2px ${space.xs}px`, width: '100%', boxSizing: 'border-box',
+            marginTop: space.xs, fontSize: textSize.micro, padding: `${space.xxs}px ${space.xs}px`, width: '100%', boxSizing: 'border-box',
             borderRadius: CARD_CHIP_RADIUS, border: `1px solid ${colors.border}`,
             background: colors.surface, color: colors.text,
           }}
@@ -1210,7 +1210,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
           role="menu"
           onPointerDown={e => e.stopPropagation()}
           style={{
-            position: 'absolute', top: '100%', right: 0, marginTop: 2, zIndex: 10,
+            position: 'absolute', top: '100%', right: 0, marginTop: space.xxs, zIndex: 10,
             // Menu chrome is the floating control layer — the one place on this
             // board glass belongs. `useGlass` carries its own rim and hairline,
             // so only the elevation step is added on top; it collapses to an
