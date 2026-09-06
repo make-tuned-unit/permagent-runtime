@@ -1092,12 +1092,12 @@ async fn run_markdown_checks(files: &[PathBuf], timeout_secs: u64) -> CheckOutco
                 ));
             }
             if let Some(start) = line.find("](") {
-                let destination = &line[start + 2..];
-                if !destination.contains(')')
-                    || destination[..destination.find(')').unwrap_or(0)]
-                        .trim()
-                        .is_empty()
-                {
+                let destination = line.get(start + 2..).unwrap_or("");
+                let inside_parens = destination
+                    .split_once(')')
+                    .map(|(inside, _)| inside)
+                    .unwrap_or("");
+                if !destination.contains(')') || inside_parens.trim().is_empty() {
                     findings.push(format!(
                         "{}:{}: inline link has an empty or unterminated destination",
                         path.display(),

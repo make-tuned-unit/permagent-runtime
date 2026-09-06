@@ -1368,7 +1368,8 @@ pub fn list_active_harness_runs() -> Vec<HarnessRunSnapshot> {
             })
             .map(snapshot_harness_run)
             .collect();
-        runs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        // Newest first.
+        runs.sort_by_key(|run| std::cmp::Reverse(run.updated_at));
         runs
     })
 }

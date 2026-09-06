@@ -319,34 +319,6 @@ fn unloaded_status_guidance(listening: Option<bool>) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod status_tests {
-    use super::{listener_probe_result, unloaded_status_guidance};
-
-    #[test]
-    fn failed_listener_probe_is_not_an_absent_listener() {
-        assert_eq!(listener_probe_result(Some(0), false), Some(true));
-        assert_eq!(listener_probe_result(Some(1), false), Some(false));
-        assert_eq!(listener_probe_result(Some(1), true), None);
-        assert_eq!(listener_probe_result(None, false), None);
-    }
-
-    #[test]
-    fn desktop_owned_listener_is_not_reported_as_a_stopped_daemon() {
-        let guidance = unloaded_status_guidance(Some(true));
-        assert!(guidance.contains("desktop app"));
-        assert!(guidance.contains("verify its identity"));
-        assert!(!guidance.contains("Run `permagent start`"));
-    }
-
-    #[test]
-    fn unavailable_probe_does_not_recommend_a_duplicate_start() {
-        assert!(unloaded_status_guidance(None).contains("unknown"));
-        assert!(!unloaded_status_guidance(None).contains("Run `permagent start`"));
-        assert!(unloaded_status_guidance(Some(false)).contains("Run `permagent start`"));
-    }
-}
-
 pub fn handle_logs(err: bool) -> Result<()> {
     let logs = logs_dir();
     let file = if err {
@@ -400,4 +372,32 @@ pub fn handle_open() -> Result<()> {
         .context("failed to open browser")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::{listener_probe_result, unloaded_status_guidance};
+
+    #[test]
+    fn failed_listener_probe_is_not_an_absent_listener() {
+        assert_eq!(listener_probe_result(Some(0), false), Some(true));
+        assert_eq!(listener_probe_result(Some(1), false), Some(false));
+        assert_eq!(listener_probe_result(Some(1), true), None);
+        assert_eq!(listener_probe_result(None, false), None);
+    }
+
+    #[test]
+    fn desktop_owned_listener_is_not_reported_as_a_stopped_daemon() {
+        let guidance = unloaded_status_guidance(Some(true));
+        assert!(guidance.contains("desktop app"));
+        assert!(guidance.contains("verify its identity"));
+        assert!(!guidance.contains("Run `permagent start`"));
+    }
+
+    #[test]
+    fn unavailable_probe_does_not_recommend_a_duplicate_start() {
+        assert!(unloaded_status_guidance(None).contains("unknown"));
+        assert!(!unloaded_status_guidance(None).contains("Run `permagent start`"));
+        assert!(unloaded_status_guidance(Some(false)).contains("Run `permagent start`"));
+    }
 }

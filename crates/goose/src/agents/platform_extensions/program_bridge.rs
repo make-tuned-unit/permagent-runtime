@@ -2369,8 +2369,8 @@ mod tests {
         let pool = bridge_pool().await;
         let program = chain_program();
         let a = mapped_goal(&pool, "a", "triage", &[], &program).await;
-        let b = mapped_goal(&pool, "b", "triage", &[a.id.clone()], &program).await;
-        let c = mapped_goal(&pool, "c", "triage", &[b.id.clone()], &program).await;
+        let b = mapped_goal(&pool, "b", "triage", std::slice::from_ref(&a.id), &program).await;
+        let c = mapped_goal(&pool, "c", "triage", std::slice::from_ref(&b.id), &program).await;
         mark_complete(&pool, &a).await;
         let manifest = serde_yaml::to_string(&program).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -2387,7 +2387,7 @@ mod tests {
             .unwrap();
         assert_eq!(applied.status, HandoffStatus::Applied);
         assert_eq!(applied.dispatched, 1);
-        assert_eq!(seen.lock().unwrap().as_slice(), &[b.id.clone()]);
+        assert_eq!(seen.lock().unwrap().as_slice(), std::slice::from_ref(&b.id));
 
         let replay = apply_handoff_with_dispatch(&pool, first, Some(&hook))
             .await
@@ -2429,8 +2429,8 @@ mod tests {
         // it a manifest, so the claim is only replayable when registration
         // embedded one on the card.
         let a = mapped_goal(&pool, "a", "triage", &[], &program).await;
-        let b = mapped_goal(&pool, "b", "triage", &[a.id.clone()], &program).await;
-        let c = mapped_goal(&pool, "c", "triage", &[b.id.clone()], &program).await;
+        let b = mapped_goal(&pool, "b", "triage", std::slice::from_ref(&a.id), &program).await;
+        let c = mapped_goal(&pool, "c", "triage", std::slice::from_ref(&b.id), &program).await;
         // Go through the real approval + registration path. Hand-stamping the
         // card metadata reaches pending_dispatch but not a claim the
         // maintenance tick may settle: consumption re-checks live Council
@@ -2509,7 +2509,7 @@ mod tests {
             orchestrator::reconcile_pending_registered_dispatches(&pool, Some(&hook)).await;
         assert_eq!(recovered.auto_dispatched, 1);
         assert_eq!(recovered.approval_required, 0);
-        assert_eq!(seen.lock().unwrap().as_slice(), &[b.id.clone()]);
+        assert_eq!(seen.lock().unwrap().as_slice(), std::slice::from_ref(&b.id));
 
         // The maintenance trigger sees no pending claim after the exact
         // transition is applied, so a replay cannot start B twice.
@@ -2524,8 +2524,8 @@ mod tests {
         let pool = bridge_pool().await;
         let program = chain_program();
         let a = mapped_goal(&pool, "a", "triage", &[], &program).await;
-        let b = mapped_goal(&pool, "b", "triage", &[a.id.clone()], &program).await;
-        let c = mapped_goal(&pool, "c", "triage", &[b.id.clone()], &program).await;
+        let b = mapped_goal(&pool, "b", "triage", std::slice::from_ref(&a.id), &program).await;
+        let c = mapped_goal(&pool, "c", "triage", std::slice::from_ref(&b.id), &program).await;
         for (card, council_node_id) in [(&a, "a"), (&b, "b"), (&c, "c")] {
             let current = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
             let mut metadata = current.metadata_json.as_object().cloned().unwrap();
@@ -2678,7 +2678,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(response.status, HandoffStatus::Applied);
-        assert_eq!(seen.lock().unwrap().as_slice(), &[b.id.clone()]);
+        assert_eq!(seen.lock().unwrap().as_slice(), std::slice::from_ref(&b.id));
         let a_after = cards::get_card(&pool, &a.id).await.unwrap().unwrap();
         assert_eq!(
             a_after
@@ -2765,8 +2765,8 @@ mod tests {
         let pool = bridge_pool().await;
         let program = chain_program();
         let a = mapped_goal(&pool, "a", "triage", &[], &program).await;
-        let b = mapped_goal(&pool, "b", "triage", &[a.id.clone()], &program).await;
-        let _c = mapped_goal(&pool, "c", "triage", &[b.id.clone()], &program).await;
+        let b = mapped_goal(&pool, "b", "triage", std::slice::from_ref(&a.id), &program).await;
+        let _c = mapped_goal(&pool, "c", "triage", std::slice::from_ref(&b.id), &program).await;
         mark_complete(&pool, &a).await;
         let request = ProgramHandoffRequest {
             source_goal_id: a.id.clone(),
@@ -2806,7 +2806,7 @@ mod tests {
         program.nodes[2].depends_on = vec!["a".to_string(), "b".to_string()];
         program.nodes[2].approval = ApprovalPolicy::Human;
         let a = mapped_goal(&pool, "a", "triage", &[], &program).await;
-        let b = mapped_goal(&pool, "b", "triage", &[a.id.clone()], &program).await;
+        let b = mapped_goal(&pool, "b", "triage", std::slice::from_ref(&a.id), &program).await;
         let c = mapped_goal(
             &pool,
             "c",
@@ -2854,7 +2854,7 @@ mod tests {
             .unwrap();
         assert_eq!(retried.status, HandoffStatus::Applied);
         assert!(retried.approval_required.is_empty());
-        assert_eq!(seen.lock().unwrap().as_slice(), &[b.id.clone()]);
+        assert_eq!(seen.lock().unwrap().as_slice(), std::slice::from_ref(&b.id));
         assert!(!seen.lock().unwrap().contains(&c.id));
 
         // C depends on B as well as A, so the approval gate becomes eligible
@@ -2893,8 +2893,8 @@ mod tests {
         let pool = bridge_pool().await;
         let program = chain_program();
         let a = mapped_goal(&pool, "a", "triage", &[], &program).await;
-        let b = mapped_goal(&pool, "b", "triage", &[a.id.clone()], &program).await;
-        let _c = mapped_goal(&pool, "c", "triage", &[b.id.clone()], &program).await;
+        let b = mapped_goal(&pool, "b", "triage", std::slice::from_ref(&a.id), &program).await;
+        let _c = mapped_goal(&pool, "c", "triage", std::slice::from_ref(&b.id), &program).await;
         mark_complete(&pool, &a).await;
         add_tag(&pool, PERSONAL_PROJECT_ID, "roadmap_paused")
             .await
@@ -2933,8 +2933,8 @@ mod tests {
         let pool = bridge_pool().await;
         let program = chain_program();
         let a = mapped_goal(&pool, "a", "triage", &[], &program).await;
-        let _b = mapped_goal(&pool, "b", "triage", &[a.id.clone()], &program).await;
-        let _c = mapped_goal(&pool, "c", "triage", &[_b.id.clone()], &program).await;
+        let _b = mapped_goal(&pool, "b", "triage", std::slice::from_ref(&a.id), &program).await;
+        let _c = mapped_goal(&pool, "c", "triage", std::slice::from_ref(&_b.id), &program).await;
         mark_complete(&pool, &a).await;
         let request = ProgramHandoffRequest {
             source_goal_id: a.id,

@@ -363,6 +363,9 @@ pub fn gate_decision_request(
 /// settled-spend gate, this wording keeps settled dollars, active holds, and
 /// the requested worst-case bound separate; an authorization hold is never
 /// misreported as money already spent.
+// Every argument is a distinct piece of settlement evidence; collapsing them
+// into a struct would only move the same fields behind one more name.
+#[allow(clippy::too_many_arguments)]
 pub fn reservation_gate_decision_request(
     scope: BudgetScope,
     settled_usd: f64,

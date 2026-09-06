@@ -184,7 +184,7 @@ impl Pacing {
     fn is_due(&self, project_id: &str, now: Instant) -> bool {
         self.next_due
             .get(project_id)
-            .map_or(true, |(due, _)| now >= *due)
+            .is_none_or(|(due, _)| now >= *due)
     }
 
     fn current_interval(&self, project_id: &str) -> Duration {

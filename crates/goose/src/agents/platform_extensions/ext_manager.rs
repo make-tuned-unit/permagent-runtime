@@ -1179,8 +1179,9 @@ mod tests {
         let mut cursor = 0;
         for beat in fixture["ordered_beats"].as_array().unwrap() {
             let beat = beat.as_str().unwrap();
-            let relative = rendered[cursor..]
-                .find(beat)
+            let relative = rendered
+                .get(cursor..)
+                .and_then(|rest| rest.find(beat))
                 .unwrap_or_else(|| panic!("missing or out-of-order story beat: {beat}"));
             cursor += relative + beat.len();
         }

@@ -75,7 +75,6 @@ use axum::{
 };
 use permagent::download_manager::{get_download_manager, DownloadProgress, DownloadStatus};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::Arc;
 
@@ -1065,13 +1064,13 @@ fn cancel_streaming_stt_worker(
 }
 
 fn streaming_worker_is_available(worker: Option<&tokio::task::JoinHandle<()>>) -> bool {
-    worker.map_or(true, |worker| worker.is_finished())
+    worker.is_none_or(|worker| worker.is_finished())
 }
 
 type BatchSttTask = tokio::task::JoinHandle<anyhow::Result<String>>;
 
 fn batch_worker_is_available(worker: Option<&BatchSttTask>) -> bool {
-    worker.map_or(true, |worker| worker.is_finished())
+    worker.is_none_or(|worker| worker.is_finished())
 }
 
 fn native_stt_workers_are_available(
@@ -1802,7 +1801,6 @@ async fn handle_voice_socket(
     let mut streaming_event_rx: Option<tokio::sync::mpsc::Receiver<StreamingSttEvent>> = None;
     let mut streaming_gate: Option<StreamingSttGate> = None;
     let mut streaming_worker: Option<tokio::task::JoinHandle<()>> = None;
-    let mut streaming_blocked = false;
     let mut pending_stream_partial: Option<String> = None;
     let mut streaming_output_closed = false;
     let mut streaming_failed = false;
@@ -1845,10 +1843,10 @@ async fn handle_voice_socket(
     tracing::info!(target: "permagentd::voice", "Entering message loop");
     'voice_loop: while let Some(result) = if let Some(message) = deferred_message.take() {
         Some(Ok(message))
-    } else if streaming_event_rx.is_some() && !streaming_output_closed {
-        let event_rx = streaming_event_rx
-            .as_mut()
-            .expect("stream receiver present");
+    } else if let Some(event_rx) = streaming_event_rx
+        .as_mut()
+        .filter(|_| !streaming_output_closed)
+    {
         tokio::select! {
             event = event_rx.recv() => {
                 match event {
@@ -1937,7 +1935,7 @@ async fn handle_voice_socket(
                             batch_worker = None;
                         }
                         client_sample_rate = sample_rate.unwrap_or(16000).max(1);
-                        streaming_blocked = !native_stt_workers_are_available(
+                        let streaming_blocked = !native_stt_workers_are_available(
                             streaming_worker.as_ref(),
                             batch_worker.as_ref(),
                         );
@@ -2211,17 +2209,16 @@ async fn handle_voice_socket(
                             }
                         }
 
-                        if speaker_admitted {
-                            if flush_pending_stream_partial(
+                        if speaker_admitted
+                            && flush_pending_stream_partial(
                                 &mut pending_stream_partial,
                                 &mut socket,
                             )
                             .await
                             .is_err()
-                            {
-                                socket_close_reason = "stream_partial_send_disconnected";
-                                break 'voice_loop;
-                            }
+                        {
+                            socket_close_reason = "stream_partial_send_disconnected";
+                            break 'voice_loop;
                         }
 
                         let streamed_transcript = if !streaming_failed {
@@ -3532,7 +3529,7 @@ async fn stream_reply_with_tts(
             Ok(sessions) => sessions,
             Err(error) => {
                 ctx.telemetry.log_outcome("session_lookup_error");
-                return Err(error.into());
+                return Err(error);
             }
         };
         match sessions.first().map(|s| s.id.clone()) {
@@ -3667,7 +3664,7 @@ async fn stream_reply_with_tts(
         Ok(stream) => stream,
         Err(error) => {
             ctx.telemetry.log_outcome("llm_provider_error");
-            return Err(error.into());
+            return Err(error);
         }
     };
     tracing::info!(
@@ -3979,7 +3976,7 @@ async fn stream_reply_with_tts(
                     }
                     Some(Err(error)) => {
                         ctx.telemetry.log_outcome("llm_stream_error");
-                        return Err(error.into());
+                        return Err(error);
                     }
                     Some(Ok(_)) => {
                         // Tool results land here. Drain on the next loop turn

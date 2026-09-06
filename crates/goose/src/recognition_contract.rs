@@ -151,21 +151,11 @@ pub struct RecognitionProvenance {
 
 /// A bounded confidence estimate. The score is never authoritative without a
 /// declared basis and timestamp; `None` means no estimate was made.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Uncertainty {
     pub score: Option<f64>,
     pub basis: Option<String>,
     pub as_of: Option<String>,
-}
-
-impl Default for Uncertainty {
-    fn default() -> Self {
-        Self {
-            score: None,
-            basis: None,
-            as_of: None,
-        }
-    }
 }
 
 /// Explicit user/environment correction. `revision` is the causal ordering

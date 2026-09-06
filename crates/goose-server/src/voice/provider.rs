@@ -228,10 +228,6 @@ impl StreamingSttGate {
         self.cancelled = true;
         self.pending_partial = None;
     }
-
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
 }
 
 /// Speech-to-text provider.

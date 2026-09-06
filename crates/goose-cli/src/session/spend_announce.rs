@@ -180,10 +180,7 @@ impl HarnessRunTelemetry {
         {
             return;
         }
-        let incoming_verdict = observation
-            .verdict
-            .as_deref()
-            .map(|v| bounded_telemetry_text(v));
+        let incoming_verdict = observation.verdict.as_deref().map(bounded_telemetry_text);
         let incoming_pass = incoming_verdict.as_deref() == Some("pass");
         let current_pass = state.verification_verdict.as_deref() == Some("pass");
         // A passing receipt is terminal for this run projection. Detached or
@@ -239,7 +236,7 @@ impl HarnessRunTelemetry {
         if state
             .result
             .as_deref()
-            .map_or(true, |current| precedence(result) > precedence(current))
+            .is_none_or(|current| precedence(result) > precedence(current))
         {
             state.result = Some(result.to_string());
         }
@@ -422,6 +419,7 @@ pub async fn announce_now(session_id: &str, final_turn: bool) {
 /// Announce one structured harness snapshot without waiting. The run id is
 /// created once by [`start_harness_heartbeat`] and carried through every beat
 /// and the terminal update, so resumed sessions remain separate invocations.
+#[allow(clippy::too_many_arguments)]
 fn announce_harness_run(
     run_id: &str,
     session_id: &str,
@@ -452,6 +450,7 @@ fn announce_harness_run(
 /// The terminal state is awaited during a headless command's normal cleanup,
 /// mirroring [`announce_now`]: a detached task is otherwise dropped as the
 /// command exits.
+#[allow(clippy::too_many_arguments)]
 async fn announce_harness_run_now(
     run_id: &str,
     session_id: &str,
@@ -658,6 +657,7 @@ impl HarnessRunAnnouncement {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_with_parent(
         run_id: &str,
         session_id: &str,

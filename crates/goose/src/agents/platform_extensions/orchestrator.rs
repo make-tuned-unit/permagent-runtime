@@ -484,6 +484,9 @@ async fn materialize_roadmap_transaction(
 /// durable budget identity is copied into each materialized card so later
 /// auto-dispatches remain attributable even after the approving session is no
 /// longer live.
+// Every argument is a distinct piece of settlement evidence; collapsing them
+// into a struct would only move the same fields behind one more name.
+#[allow(clippy::too_many_arguments)]
 async fn materialize_roadmap_transaction_with_budget(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     project_id: &str,
@@ -4814,6 +4817,11 @@ pub async fn promote_and_dispatch_dependents(
 }
 
 /// [`promote_and_dispatch_dependents`] with an injected dispatcher (tests).
+/// Currently unused: the dispatch-recovery work moved its callers onto the
+/// registered-program seam. Kept as the injection point rather than deleted,
+/// because it is the only way a test can observe dependent promotion without a
+/// live dispatcher.
+#[allow(dead_code)]
 pub(crate) async fn promote_and_dispatch_dependents_with(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     project_id: &str,
@@ -10586,7 +10594,10 @@ mod tests {
             reconcile_in_progress_goals_with_dispatch(&pool, &None, Some(&dispatcher)).await;
 
         assert_eq!(report.requeued_no_charge, 1);
-        assert_eq!(seen.lock().unwrap().as_slice(), &[card.id.clone()]);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            std::slice::from_ref(&card.id)
+        );
         assert_eq!(state_of(&pool, &card.id).await, "in_progress");
     }
 
