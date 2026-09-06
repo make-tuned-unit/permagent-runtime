@@ -315,9 +315,12 @@ fn is_process_spawn(code: &str) -> bool {
 
 fn has_zero_arg_spawn(code: &str) -> bool {
     let mut offset = 0;
-    while let Some(relative) = code[offset..].find(".spawn") {
+    // `get` rather than a slice index: every offset here lands on an ASCII
+    // boundary today, but a panic in the inventory scanner would take out the
+    // whole dispatch audit for one stray byte.
+    while let Some(relative) = code.get(offset..).and_then(|rest| rest.find(".spawn")) {
         let start = offset + relative + ".spawn".len();
-        let rest = code[start..].trim_start();
+        let rest = code.get(start..).unwrap_or("").trim_start();
         if rest.starts_with("()") {
             return true;
         }
@@ -415,8 +418,10 @@ fn parse_marker(line: &str) -> Result<ParsedMarker, String> {
         .to_ascii_lowercase()
         .find(MARKER_PREFIX)
         .ok_or_else(|| "dispatch marker prefix missing".to_string())?;
-    let raw = line[start..].trim().to_string();
-    let fields: Vec<(&str, &str)> = raw[MARKER_PREFIX.len()..]
+    let raw = line.get(start..).unwrap_or("").trim().to_string();
+    let fields: Vec<(&str, &str)> = raw
+        .get(MARKER_PREFIX.len()..)
+        .unwrap_or("")
         .split_whitespace()
         .filter_map(|part| part.split_once('='))
         .collect();
@@ -514,8 +519,9 @@ fn mask_comments_and_literals(source: &str) -> String {
             if j < bytes.len() && bytes[j] == b'"' {
                 let hashes = j - i - 1;
                 let closing = format!("\"{}", "#".repeat(hashes));
-                let end = source[j + 1..]
-                    .find(&closing)
+                let end = source
+                    .get(j + 1..)
+                    .and_then(|rest| rest.find(&closing))
                     .map(|offset| j + 1 + offset + closing.len())
                     .unwrap_or(bytes.len());
                 for byte in &bytes[i..end] {
