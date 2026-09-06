@@ -1,4 +1,4 @@
-import { type CSSProperties } from 'react';
+import { useEffect, type CSSProperties } from 'react';
 import { useTheme } from '../../styles/useTheme';
 import { font, radius, textSize } from '../../styles/tokens';
 import { useVoices, useVoicePreview } from '../../lib/useVoices';
@@ -39,13 +39,26 @@ const btnVars = (colors: C): CSSProperties => ({
 export function VoicePicker({
   value,
   onChange,
+  seedDefault = false,
 }: {
   value: string | null;
   onChange: (v: string | null) => void;
+  /** Onboarding opts into persisting the visible default; Settings preserves null as intentional. */
+  seedDefault?: boolean;
 }) {
   const { colors } = useTheme();
   const { voices, ready, loading, status, downloadPercent, downloadError, startDownload } = useVoices();
   const { preview, playingId, error: previewError } = useVoicePreview();
+
+  // Seed bf_emma when nothing is selected yet (falls back to first available).
+  const effective = value ?? (voices.some(v => v.id === 'bf_emma') ? 'bf_emma' : (voices[0]?.id ?? null));
+
+  // Keep the visible default and the persisted onboarding persona in sync when
+  // explicitly requested. Settings uses null intentionally for inherited/default
+  // voice behavior and must not write merely by opening the picker.
+  useEffect(() => {
+    if (seedDefault && ready && !value && effective) onChange(effective);
+  }, [effective, onChange, ready, seedDefault, value]);
 
   if (loading) return <span style={{ color: colors.textDim, fontSize: textSize.small }}>Loading voices…</span>;
 
@@ -74,9 +87,6 @@ export function VoicePicker({
       </div>
     );
   }
-
-  // Seed bf_emma when nothing is selected yet (falls back to first available).
-  const effective = value ?? (voices.some(v => v.id === 'bf_emma') ? 'bf_emma' : (voices[0]?.id ?? null));
 
   const groups = new Map<string, typeof voices>();
   for (const v of voices) {

@@ -28,7 +28,7 @@ vi.mock('../lib/api', () => ({
 }));
 
 // Imported AFTER the mock is registered (vi.mock is hoisted above imports).
-import { shouldActOnFrame, routeGlobalFrame } from './useAppNavigate';
+import { hydrateHarnessOnGlobalConnection, shouldActOnFrame, routeGlobalFrame } from './useAppNavigate';
 import { useCommandCenter } from '../lib/store';
 import { _resetTraceDedupe } from '../lib/traceEvents';
 
@@ -189,5 +189,16 @@ describe('routeGlobalFrame — replayed frames are recorded, never acted on', ()
     expect(useCommandCenter.getState().events.map(e => e.event_type)).toEqual(['agent_state_changed']);
     expect(h.navigate).not.toHaveBeenCalled();
     expect(h.launch).not.toHaveBeenCalled();
+  });
+});
+
+describe('global reconnect → Build hydration', () => {
+  it('invokes the store hydration action once per global connection boundary', () => {
+    const original = useCommandCenter.getState().hydrateCodingHarness;
+    const hydrate = vi.fn();
+    useCommandCenter.setState({ hydrateCodingHarness: hydrate });
+    hydrateHarnessOnGlobalConnection();
+    expect(hydrate).toHaveBeenCalledTimes(1);
+    useCommandCenter.setState({ hydrateCodingHarness: original });
   });
 });

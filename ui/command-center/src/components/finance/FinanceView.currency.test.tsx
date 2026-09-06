@@ -23,7 +23,10 @@ vi.mock('../../lib/api', () => ({
   },
 }));
 
-vi.mock('../../lib/store', () => ({ navigateToTool: vi.fn() }));
+vi.mock('../../lib/store', () => ({
+  navigateToTool: vi.fn(),
+  useCommandCenter: vi.fn((selector: (state: { financeRev: number }) => unknown) => selector({ financeRev: 0 })),
+}));
 
 import { FinanceView } from './FinanceView';
 import { DISPLAY_CURRENCY_KEY, FX_ENDPOINT } from './displayCurrency';

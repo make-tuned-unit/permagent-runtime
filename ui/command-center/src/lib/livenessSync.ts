@@ -50,7 +50,7 @@
 import { useCommandCenter } from './store';
 import { wireEventType } from './wireEvent';
 import { frameReplayed } from '../components/world/shared/worldEvents';
-import type { CodingSpend } from './costMeter';
+import { parseBudgetProjection, type CodingSpend } from './costMeter';
 
 /** Trailing-debounce window per event kind (ms). */
 export const LIVENESS_DEBOUNCE_MS = 250;
@@ -93,10 +93,11 @@ const REFRESH_BY_TYPE: Record<string, (event: unknown) => void> = {
   finance_changed: () => useCommandCenter.getState().bumpFinance(),
 };
 
-/** Coerce one wire field to a finite number, else 0 — this is untrusted wire
- *  data, and a `NaN`/`undefined` spend must never propagate into a `$` render. */
-function num(v: unknown): number {
-  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+/** Coerce one wire field to a finite non-negative number, else null. Null is
+ *  deliberate: an unavailable wire value must never become a false `$0.00`. */
+function num(v: unknown): number | null {
+  if (v === null) return null;
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
 }
 
 /** Coerce one wire field to a string, else null — mirrors `num` for the
@@ -108,27 +109,41 @@ function str(v: unknown): string | null {
 /** snake_case wire payload → camelCase {@link CodingSpend}, defensively — the
  *  rest of the UI's API types are camelCase, so the conversion happens once,
  *  here, at the /events boundary rather than leaking snake_case downstream. */
-function toCodingSpend(payload: unknown): CodingSpend {
+function toCodingSpend(payload: unknown): CodingSpend | null {
   const p = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
-  return {
-    sessionId: str(p.session_id) ?? '',
-    turnUsd: num(p.turn_usd),
-    sessionUsd: num(p.session_usd),
-    todayUsd: num(p.today_usd),
-    totalTokens: num(p.total_tokens),
+  const sessionId = str(p.session_id);
+  if (!sessionId) return null;
+  const hasBudget = Object.prototype.hasOwnProperty.call(p, 'budget');
+  const budget = hasBudget ? parseBudgetProjection(p.budget) : undefined;
+  const identityMismatch = Boolean(budget && budget.rootSessionId !== sessionId);
+  const canonicalUnavailable = hasBudget && (!budget || identityMismatch);
+  const spend: CodingSpend = {
+    sessionId,
+    turnUsd: canonicalUnavailable ? null : num(p.turn_usd),
+    sessionUsd: canonicalUnavailable ? null : num(p.session_usd),
+    todayUsd: canonicalUnavailable ? null : num(p.today_usd),
+    totalTokens: canonicalUnavailable ? null : num(p.total_tokens),
     provider: str(p.provider),
     model: str(p.model),
     workingDir: str(p.working_dir),
     estimated: p.estimated === true,
     finalTurn: p.final_turn === true,
+    // Keep an explicit unavailable harness state when a frame carries a
+    // malformed/mismatched canonical extension. This prevents a live harness
+    // from falling through to the browser chat account while still refusing
+    // to treat the bad payload as authoritative.
+    ...(hasBudget ? { budgetStatus: budget && !identityMismatch ? 'available' as const : 'unavailable' as const } : {}),
   };
+  if (budget && !identityMismatch) spend.budget = budget;
+  return spend;
 }
 
 /** The liveness event kinds whose PAYLOAD is applied directly to the store,
  *  with no debounce — see the module doc comment for why this lane exists. */
 const APPLY_BY_TYPE: Record<string, (payload: unknown) => void> = {
   session_spend_changed: (payload) => {
-    useCommandCenter.getState().setCodingSpend(toCodingSpend(payload));
+    const spend = toCodingSpend(payload);
+    if (spend) useCommandCenter.getState().setCodingSpend(spend);
   },
 };
 

@@ -12,6 +12,7 @@ const PRESETS = [
 ];
 
 interface Props {
+  active?: boolean;
   onAdvance: (traits: string[], tone: string) => void;
   onBack: () => void;
 }

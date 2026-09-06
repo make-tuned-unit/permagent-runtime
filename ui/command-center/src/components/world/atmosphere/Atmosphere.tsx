@@ -11,7 +11,7 @@ import { DOME_HEIGHT } from '../constants';
 import { getReduceMotion } from '../../../styles/tokens';
 import { tickAmbience, getAmbienceLevel, setAmbienceFrozen } from './ambience';
 import { startWorldSignals } from './worldSignals';
-import { getTimeOfDay, startTimeOfDay } from './timeOfDay';
+import { daylightAmount, getTimeOfDay, startTimeOfDay } from './timeOfDay';
 import { MouthShaft } from './MouthShaft';
 import { Water } from './Water';
 import { NightAmbience } from './NightAmbience';
@@ -100,6 +100,8 @@ const _keyTarget = new THREE.Color(LIGHT.key);
 let _lastKeyHex = '';
 
 function Lighting() {
+  const scene = useThree(s => s.scene);
+  const sky = useMemo(() => ({ day: new THREE.Color('#527D78'), night: new THREE.Color(ENV.deepVoid), target: new THREE.Color() }), []);
   const keyRef = useRef<THREE.DirectionalLight>(null);
   const fillRef = useRef<THREE.DirectionalLight>(null);
   const ambientRef = useRef<THREE.AmbientLight>(null);
@@ -120,6 +122,9 @@ function Lighting() {
     // clock that briefly regresses), a bare `Math.min(1, dt * 0.8)` would let
     // a negative factor through and drive `lerp` backward past its target.
     const k = THREE.MathUtils.clamp(dt * 0.8, 0, 1);
+    sky.target.copy(sky.night).lerp(sky.day, daylightAmount(tod));
+    if (scene.background instanceof THREE.Color) scene.background.lerp(sky.target, k);
+    if (scene.fog) scene.fog.color.lerp(sky.target, k);
     key.color.lerp(_keyTarget, k);
     key.intensity = THREE.MathUtils.damp(key.intensity, tod.keyIntensity, 0.8, dt);
     fill.intensity = THREE.MathUtils.damp(fill.intensity, tod.fillIntensity, 0.8, dt);
@@ -486,6 +491,7 @@ export function Atmosphere() {
       {/* Depth atmosphere — exponential fog for natural falloff (bible §1:
           density 0.012 base; the Antechamber biases it +0.004 on approach,
           see AntechamberFogBias above). */}
+      <color attach="background" args={[ENV.deepVoid]} />
       <fogExp2 attach="fog" args={[ENV.deepVoid, 0.012]} />
       <AntechamberFogBias />
     </>

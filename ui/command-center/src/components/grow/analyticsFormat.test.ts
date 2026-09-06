@@ -5,7 +5,12 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { drainFreshness, DRAIN_STALE_MS } from './analyticsFormat';
+import {
+  dailyAnalyticsSeries,
+  drainFreshness,
+  DRAIN_STALE_MS,
+  linearTrendline,
+} from './analyticsFormat';
 
 const NOW = new Date('2026-08-10T12:00:00Z');
 const at = (msAgo: number) => new Date(NOW.getTime() - msAgo).toISOString();
@@ -37,5 +42,34 @@ describe('drainFreshness', () => {
 
   it('treats a clock-skewed future timestamp as just now, never negative', () => {
     expect(drainFreshness(at(-5 * 60_000), NOW)).toEqual({ label: 'drained just now', stale: false });
+  });
+});
+
+describe('dailyAnalyticsSeries', () => {
+  it('fills missing days using UTC dates, independent of local timezone', () => {
+    const series = dailyAnalyticsSeries(
+      [{ day: '2026-03-07', pageviews: 4, visitors: 2 }],
+      3,
+      new Date('2026-03-09T00:15:00Z'),
+    );
+
+    expect(series.map((day) => day.day)).toEqual(['2026-03-07', '2026-03-08', '2026-03-09']);
+    expect(series.map((day) => day.pageviews)).toEqual([4, 0, 0]);
+  });
+
+  it('does not let a fractional or negative period produce an invalid range', () => {
+    expect(dailyAnalyticsSeries([], 2.9, new Date('2026-01-03T12:00:00Z'))).toHaveLength(2);
+    expect(dailyAnalyticsSeries([], -1, new Date('2026-01-03T12:00:00Z'))).toEqual([]);
+  });
+});
+
+describe('linearTrendline', () => {
+  it('captures a rising direction across the series', () => {
+    expect(linearTrendline([1, 3, 5])).toEqual({ slope: 2, intercept: 1, start: 1, end: 5 });
+  });
+
+  it('returns a flat line for a single point and null for no points', () => {
+    expect(linearTrendline([7])).toEqual({ slope: 0, intercept: 7, start: 7, end: 7 });
+    expect(linearTrendline([])).toBeNull();
   });
 });

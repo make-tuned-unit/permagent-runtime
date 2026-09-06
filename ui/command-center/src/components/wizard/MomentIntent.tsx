@@ -12,23 +12,24 @@ const PLACEHOLDERS = [
 ];
 
 interface Props {
+  active?: boolean;
   intent: string;
   setIntent: (v: string) => void;
   onAdvance: () => void;
   onBack: () => void;
 }
 
-export function MomentIntent({ intent, setIntent, onAdvance }: Props) {
+export function MomentIntent({ active = true, intent, setIntent, onAdvance }: Props) {
   const { reduceMotion } = useTheme();
   const [placeholderIdx, setPlaceholderIdx] = useState(0);
 
   // Rotate the example placeholder — but hold still if the user asked to reduce
   // motion (the cycling text is decorative, not information the user needs).
   useEffect(() => {
-    if (reduceMotion) return;
+    if (!active || reduceMotion) return;
     const id = setInterval(() => setPlaceholderIdx(i => (i + 1) % PLACEHOLDERS.length), 4000);
     return () => clearInterval(id);
-  }, [reduceMotion]);
+  }, [active, reduceMotion]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', position: 'relative' }}>

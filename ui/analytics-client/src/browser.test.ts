@@ -32,6 +32,24 @@ afterEach(() => {
 });
 
 describe('page lifecycle', () => {
+  it('captures the full document referrer on a pageview beacon', async () => {
+    Object.defineProperty(document, 'referrer', {
+      configurable: true,
+      value: 'https://www.reddit.com/r/example/comments/abc/thread?utm_source=x',
+    });
+    const r = recorder();
+    const tracker = createTracker({
+      endpoint: '/collect',
+      batchSize: 1,
+      transport: r.transport,
+      reportDrops: false,
+    });
+    tracker.trackPageview('/pricing');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.calls[0]!.body.r).toBe('https://www.reddit.com/r/example/comments/abc/thread?utm_source=x');
+    expect(r.calls[0]!.body.referrer).toBe('https://www.reddit.com/r/example/comments/abc/thread?utm_source=x');
+  });
+
   it('flushes what is queued when the page is hidden, marked as unloading', async () => {
     const r = recorder();
     const tracker = createTracker({

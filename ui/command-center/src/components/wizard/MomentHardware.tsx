@@ -6,6 +6,7 @@ import { PrimaryButton, GhostLink, Glass, Particles, Select, type SelectOption }
 import { Mobius } from '../mobius/Mobius';
 import { api } from '../../lib/api';
 import { recommendModel, compatibleModels, MODEL_TIERS, type ModelTier, MIN_RAM_GB } from '../../lib/modelTiers';
+import { safeWizardError } from './wizardErrors';
 
 type Phase = 'scanning' | 'recommend' | 'downloading' | 'skipped' | 'ready' | 'error';
 
@@ -17,6 +18,7 @@ interface HardwareInfo {
 }
 
 interface Props {
+  active?: boolean;
   onAdvance: () => void;
   onBack: () => void;
 }
@@ -25,7 +27,7 @@ function formatGB(bytes: number): number {
   return Math.round(bytes / (1024 * 1024 * 1024));
 }
 
-export function MomentHardware({ onAdvance }: Props) {
+export function MomentHardware({ active = true, onAdvance }: Props) {
   const { colors, theme } = useTheme();
   // Progress track: a white wash is invisible on silver — flip to graphite.
   const trackVeil = theme === 'silver' ? 'rgba(30,37,48,0.08)' : 'rgba(255,255,255,0.06)';
@@ -43,14 +45,22 @@ export function MomentHardware({ onAdvance }: Props) {
   const [ollamaStarting, setOllamaStarting] = useState(false);
   const autoStartTried = useRef(false);
   const pullAbortRef = useRef<(() => void) | null>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const scanGenerationRef = useRef(0);
+  const statusGenerationRef = useRef(0);
+  const operationGenerationRef = useRef(0);
 
   // Phase 1: Scan hardware (re-runs when Retry bumps the nonce)
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
+    const generation = ++scanGenerationRef.current;
+    const current = () => !cancelled && activeRef.current && scanGenerationRef.current === generation;
     (async () => {
       try {
         const info = await api.getSystemInfo();
-        if (cancelled) return;
+        if (!current()) return;
         const ramBytes = info.total_ram_bytes || 0;
         const hw: HardwareInfo = {
           cpuBrand: info.cpu_brand || info.architecture || 'Unknown',
@@ -62,36 +72,44 @@ export function MomentHardware({ onAdvance }: Props) {
 
         const rec = recommendModel(ramBytes);
         setRecommended(rec);
-        if (rec) setSelectedModel(rec.model);
+        // Re-entry/retry must not erase a model the user selected in the
+        // advanced picker while this mounted Moment was temporarily hidden.
+        if (rec) setSelectedModel(current => current || rec.model);
 
         // Check Ollama status
         try {
           const status = await api.getOllamaStatus();
+          if (!current()) return;
           setOllamaReachable(status.reachable);
           if (rec && status.installed.some(m => m.name.startsWith(rec.model.split(':')[0]) && m.name.includes(rec.model.split(':')[1]))) {
             setModelInstalled(true);
           }
         } catch {
+          if (!current()) return;
           setOllamaReachable(false);
         }
 
+        if (!current()) return;
         setPhase('recommend');
       } catch (e) {
-        if (!cancelled) {
+        if (current()) {
           setErrorMsg(e instanceof Error ? e.message : 'Failed to read system info');
           setPhase('error');
         }
       }
     })();
-    return () => { cancelled = true; };
-  }, [scanNonce]);
+    return () => {
+      cancelled = true;
+      if (scanGenerationRef.current === generation) scanGenerationRef.current++;
+    };
+  }, [active, scanNonce]);
 
   // One-click (#381): when Ollama is unreachable, try to start it ourselves
   // (installed-but-not-running is the common case) and poll status — the user
   // never has to hit a re-check button. The install panel only appears once
   // the auto-start window has passed with no server coming up.
   useEffect(() => {
-    if (phase !== 'recommend' || ollamaReachable !== false) return;
+    if (!active || phase !== 'recommend' || ollamaReachable !== false) return;
     let cancelled = false;
     let polls = 0;
     if (!autoStartTried.current) {
@@ -110,26 +128,32 @@ export function MomentHardware({ onAdvance }: Props) {
           return;
         }
       } catch { /* keep polling */ }
-      if (polls >= 8) setOllamaStarting(false); // ~16s: assume not installed
+      if (!cancelled && polls >= 8) setOllamaStarting(false); // ~16s: assume not installed
     }, 2000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [phase, ollamaReachable]);
+  }, [active, phase, ollamaReachable]);
 
   // Ready: auto-advance after a beat — the success state should not need a
   // click, but the button stays for the impatient.
   useEffect(() => {
-    if (phase !== 'ready') return;
-    const t = setTimeout(onAdvance, 1600);
+    if (!active || phase !== 'ready') return;
+    const t = setTimeout(() => {
+      if (activeRef.current) onAdvance();
+    }, 1600);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase]);
+  }, [active, phase]);
 
   // Check if selected model is installed when selection changes
   useEffect(() => {
-    if (!selectedModel || ollamaReachable === null) return;
+    if (!active || !selectedModel || ollamaReachable === null) return;
+    let cancelled = false;
+    const generation = ++statusGenerationRef.current;
+    const current = () => !cancelled && activeRef.current && statusGenerationRef.current === generation;
     (async () => {
       try {
         const status = await api.getOllamaStatus();
+        if (!current()) return;
         const installed = status.installed.some(m => {
           const sel = selectedModel.split(':');
           return m.name.startsWith(sel[0]) && m.name.includes(sel[1] || '');
@@ -137,14 +161,33 @@ export function MomentHardware({ onAdvance }: Props) {
         setModelInstalled(installed);
       } catch { /* ignore */ }
     })();
-  }, [selectedModel, ollamaReachable]);
+    return () => {
+      cancelled = true;
+      if (statusGenerationRef.current === generation) statusGenerationRef.current++;
+    };
+  }, [active, selectedModel, ollamaReachable]);
+
+  // A Back navigation must not leave a native model pull or auto-start poll
+  // running in an invisible step. Preserve the selected model/progress, but
+  // return to the recommendation screen so re-entry has an honest restart
+  // affordance instead of a completed-looking orphaned promise.
+  useEffect(() => {
+    if (active) return;
+    pullAbortRef.current?.();
+    pullAbortRef.current = null;
+    operationGenerationRef.current++;
+    setOllamaStarting(false);
+    setPhase(current => current === 'downloading' ? 'recommend' : current);
+  }, [active]);
 
   const handleSetup = async () => {
-    if (!ollamaReachable) return;
+    if (!activeRef.current || !ollamaReachable) return;
+    const operation = ++operationGenerationRef.current;
+    const current = () => activeRef.current && operationGenerationRef.current === operation;
 
     if (modelInstalled) {
       // Already have the model, just apply config
-      if (await applyConfig(selectedModel, true)) setPhase('ready');
+      if (await applyConfig(selectedModel, true, current) && current()) setPhase('ready');
       return;
     }
 
@@ -153,46 +196,55 @@ export function MomentHardware({ onAdvance }: Props) {
     setPullProgress(0);
     setPullStatus('Starting download...');
 
-    const { promise, abort } = api.pullOllamaModel(selectedModel, (data) => {
-      if (data.status) setPullStatus(data.status);
-      if (data.total && data.completed) {
-        setPullProgress(Math.round((data.completed / data.total) * 100));
-      }
-    });
-    pullAbortRef.current = abort;
-
+    let abort: (() => void) | undefined;
     try {
-      await promise;
-      if (await applyConfig(selectedModel, true)) setPhase('ready');
+      const pull = api.pullOllamaModel(selectedModel, (data) => {
+        if (!current()) return;
+        if (data.status) setPullStatus(data.status);
+        if (data.total && data.completed) {
+          setPullProgress(Math.round((data.completed / data.total) * 100));
+        }
+      });
+      abort = pull.abort;
+      pullAbortRef.current = abort;
+      await pull.promise;
+      if (await applyConfig(selectedModel, true, current) && current()) setPhase('ready');
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') {
+      if (current() && (e as Error).name !== 'AbortError') {
         setErrorMsg(e instanceof Error ? e.message : 'Download failed');
         setPhase('error');
       }
+    } finally {
+      if (pullAbortRef.current === abort) pullAbortRef.current = null;
     }
   };
 
   const handleSkip = async () => {
-    await applyConfig('', false);
-    setPhase('skipped');
+    if (!activeRef.current) return;
+    const operation = ++operationGenerationRef.current;
+    const current = () => activeRef.current && operationGenerationRef.current === operation;
+    await applyConfig('', false, current);
+    if (current()) setPhase('skipped');
   };
 
   /** Persist the Librarian schedule. Setup failures surface as the error
    *  phase (a silent catch here would let the wizard claim the Librarian is
    *  configured when it isn't); the skip path stays best-effort. */
-  async function applyConfig(model: string, enabled: boolean): Promise<boolean> {
+  async function applyConfig(model: string, enabled: boolean, isCurrent: () => boolean): Promise<boolean> {
+    if (!isCurrent()) return false;
     try {
       // Fetch current schedule to preserve other fields
-      const current = await api.getLibrarianSchedule();
+      const schedule = await api.getLibrarianSchedule();
+      if (!isCurrent()) return false;
       await api.setLibrarianSchedule({
-        ...current,
+        ...schedule,
         enabled,
-        model: model || current.model,
+        model: model || schedule.model,
       });
-      return true;
+      return isCurrent();
     } catch (e) {
-      console.error('Failed to save Librarian config:', e);
-      if (enabled) {
+      console.error('Failed to save Librarian config:', safeWizardError(e, 'Librarian configuration save failed'));
+      if (enabled && isCurrent()) {
         setErrorMsg(e instanceof Error ? e.message : 'Failed to save Librarian settings');
         setPhase('error');
       }

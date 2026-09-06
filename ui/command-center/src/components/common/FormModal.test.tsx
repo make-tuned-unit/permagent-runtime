@@ -19,6 +19,7 @@ import { act } from 'react-dom/test-utils';
 
 import { FormModal, type FormModalProps } from './FormModal';
 import { MIN_PENDING_MS } from './Button';
+import { getThemedColors } from '../../styles/tokens';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -70,6 +71,12 @@ function render(props: Partial<FormModalProps> = {}) {
   };
   act(() => root.render(<FormModal {...full} />));
   return full;
+}
+
+function asRendered(color: string): string {
+  const probe = document.createElement('span');
+  probe.style.color = color;
+  return probe.style.color;
 }
 
 it('inherits the dialog floor rather than re-implementing it', () => {
@@ -165,11 +172,18 @@ it('clears a stale failure when the user tries again', async () => {
   expect(container.querySelector('[role="alert"]')).toBeNull();
 });
 
-it('says why the submit is disabled instead of just dimming it', () => {
+it('says why the submit is disabled with readable explanatory contrast', () => {
   render({ submitDisabled: true, disabledReason: 'Give the automation a name first.' });
-  expect(buttonLabelled('Create').disabled).toBe(true);
-  expect(buttonLabelled('Create').getAttribute('title')).toBe('Give the automation a name first.');
+  const submit = buttonLabelled('Create');
+  expect(submit.disabled).toBe(true);
+  expect(submit.getAttribute('title')).toBe('Give the automation a name first.');
   expect(container.textContent).toContain('Give the automation a name first.');
+  const reason = Array.from(container.querySelectorAll('div')).find(
+    el => el.textContent === 'Give the automation a name first.' && el.style.marginTop === '12px',
+  ) as HTMLDivElement | undefined;
+  expect(reason).toBeDefined();
+  expect(reason!.style.color).toBe(asRendered(getThemedColors().textMuted));
+  expect(reason!.style.color).not.toBe(asRendered(getThemedColors().textDim));
 });
 
 it('makes Cancel a peer of the submit, and blocks it mid-flight', async () => {

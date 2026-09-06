@@ -17,6 +17,7 @@ import { progressRailStep } from '../../lib/buildProgress';
 import type { Project } from './useProjects';
 import { ViewHeader } from '../common/ViewHeader';
 import { Button } from '../common/Button';
+import { CouncilEscalation } from './CouncilEscalation';
 
 // Ensure a project site_url has a scheme so the in-app browser navigates
 // instead of treating it as a search query (e.g. www.reckonize.org → https://…).
@@ -282,6 +283,8 @@ export function BuildView() {
         )}
         </>}
       />
+
+      <CouncilEscalation />
 
       {/* Terminal + Browser side by side, resizable */}
       <div style={{ flex: 1, minHeight: 0, padding: '12px 18px' }}>

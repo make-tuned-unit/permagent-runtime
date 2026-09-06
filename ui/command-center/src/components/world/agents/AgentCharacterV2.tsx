@@ -14,6 +14,7 @@ import { getAgentRuntimeStates } from '../shared/agentStatus';
 import type { AgentIdentity } from './roster';
 import { getMotion } from './motion';
 import { createAgentRig } from './rig';
+import { loadBlenderArmor, type BlenderArmor } from './blenderArmor';
 import {
   BONE_NAMES,
   POSES,
@@ -50,6 +51,12 @@ const LOOK_DAMP = 6;
 
 const LABEL_ON_DIST = 18;
 const LABEL_OFF_DIST = 20; // hysteresis so the label doesn't strobe at the boundary
+
+declare global {
+  interface Window {
+    __worldAgentScreens?: Record<string, { client: [number, number]; ndcZ: number }>;
+  }
+}
 
 // Shared hover-ring resources (created once, app lifetime).
 let hoverRingGeo: THREE.RingGeometry | null = null;
@@ -105,6 +112,7 @@ export function AgentCharacterV2({
   onClick,
 }: AgentCharacterProps) {
   const groupRef = useRef<THREE.Group>(null);
+  const screenScratch = useRef(new THREE.Vector3());
   const [labelOn, setLabelOn] = useState(false);
   // Stable per-agent phase (idPhase.ts) — the fix for seven agents breathing/
   // swaying/blinking in lockstep off the one shared r3f clock. Derived from the
@@ -117,19 +125,31 @@ export function AgentCharacterV2({
   // Damped look-at state (yaw/pitch), persisted across frames outside React.
   const look = useRef({ yaw: 0, pitch: 0 });
 
+  const [armor, setArmor] = useState<BlenderArmor | null>(null);
+  useEffect(() => {
+    let mounted = true;
+    setArmor(null);
+    loadBlenderArmor(identity.id).then(
+      value => { if (mounted) setArmor(value); },
+      () => { console.warn('[world] Authored character unavailable; retaining live procedural rig'); },
+    );
+    return () => { mounted = false; };
+  }, [identity.id]);
+
   const rig = useMemo(
     () =>
       createAgentRig({
         trimColor: identity.trimColor,
         weathering: identity.weathering,
         crown: identity.isHenry,
+        armor,
         // Every roster id maps to a signature-gear variant (rig.gearChunks);
         // 'librarian'/'henry' additionally keep their tablet/presence extras.
         variant: (['henry', 'librarian', 'reader', 'watcher', 'steward', 'strix', 'financier'].includes(identity.id)
           ? identity.id
           : null) as import('./rig').RigVariant,
       }),
-    [identity],
+    [identity, armor],
   );
   useEffect(() => () => rig.dispose(), [rig]);
 
@@ -182,6 +202,18 @@ export function AgentCharacterV2({
     // ── Position + heading from the motion store ──
     g.position.set(m.x, m.y, m.z);
     g.rotation.y = m.heading;
+    if (import.meta.env.DEV && typeof window !== 'undefined') {
+      const projected = screenScratch.current.set(m.x, m.y + 1.2, m.z).project(r3f.camera);
+      const rect = r3f.gl.domElement.getBoundingClientRect();
+      const screens = (window.__worldAgentScreens ??= {});
+      screens[identity.id] = {
+        client: [
+          rect.left + (projected.x + 1) * rect.width / 2,
+          rect.top + (1 - projected.y) * rect.height / 2,
+        ],
+        ndcZ: projected.z,
+      };
+    }
 
     // ── Resolve target pose ──
     // The pure state→body mapping (poses.resolvePose, unit-tested): tending is a

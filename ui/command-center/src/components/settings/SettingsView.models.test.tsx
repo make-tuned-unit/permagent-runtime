@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
-import { act } from 'react-dom/test-utils';
+import { act } from 'react';
 
 // Every api method ModelsPanel is allowed to touch. Anything else — notably
 // the retired getWorkers / GET /api/agent/workers — throws on access, so a
@@ -11,6 +11,7 @@ const allowed = vi.hoisted(() => ({
   getConfig: vi.fn(),
   readConfig: vi.fn(),
   upsertConfig: vi.fn(),
+  setModelRoute: vi.fn(),
   getOllamaStatus: vi.fn(),
   getLibrarianSchedule: vi.fn(),
   setLibrarianSchedule: vi.fn(),
@@ -32,6 +33,29 @@ vi.mock('../../lib/api', () => ({
   }),
 }));
 
+// The provider-first chooser has its own interaction suite. These settings
+// tests exercise the pair persistence contract without depending on the
+// picker's search/expansion DOM.
+vi.mock('./ProviderModelPicker', () => ({
+  ProviderModelPicker: ({ onChange, onUseSession, 'aria-label': label }: {
+    onChange: (value: { provider: string; model: string }) => void;
+    onUseSession?: () => void;
+    'aria-label'?: string;
+  }) => {
+    const voice = label?.startsWith('Voice');
+    return <div>
+      <button
+        type="button"
+        data-testid={`choose-${voice ? 'voice' : label?.toLowerCase().split(' ')[0]}`}
+        onClick={() => onChange(voice
+          ? { provider: 'minimax', model: 'MiniMax-M2.7-highspeed' }
+          : { provider: 'anthropic', model: 'claude-sonnet-5' })}
+      >Choose configured model</button>
+      {onUseSession && <button type="button" onClick={onUseSession}>Use session model</button>}
+    </div>;
+  },
+}));
+
 import { ModelsPanel } from './SettingsView';
 import { FEATURE_ROWS } from './features/features';
 
@@ -47,6 +71,7 @@ beforeEach(() => {
   allowed.getConfig.mockReset().mockResolvedValue({ config: {}, effective_goose_mode: 'auto' } as never);
   allowed.readConfig.mockReset().mockResolvedValue(null as never);
   allowed.upsertConfig.mockReset().mockResolvedValue({} as never);
+  allowed.setModelRoute.mockReset().mockResolvedValue({} as never);
   allowed.getOllamaStatus.mockReset().mockResolvedValue({ reachable: false } as never);
   allowed.getLibrarianSchedule.mockReset().mockResolvedValue(null as never);
   allowed.getPacks.mockReset().mockResolvedValue({
@@ -77,25 +102,14 @@ function toggles(): HTMLButtonElement[] {
 }
 
 // ── Chat / Voice / Harness role table helpers ────────────────────────────
-// All three rows now carry inputs and a Save button, so nothing here indexes
-// into "every Save button on the pane": each row is scoped by its data-testid.
-// Chat and Harness share RoleModelRow's placeholders; Voice has its own, since
-// it resolves through voice_model.rs rather than model_roles.rs.
+// All three rows use the shared provider-first picker and are scoped by their
+// data-testid; there are no independently editable half-pairs anymore.
 
 /** The scoping wrapper for one role row. */
 function roleRow(role: 'chat' | 'voice' | 'harness'): HTMLElement {
   const el = container.querySelector(`[data-testid="role-row-${role}"]`);
   if (!el) throw new Error(`no ${role} role row rendered`);
   return el as HTMLElement;
-}
-
-/** The Save button belonging to ONE row. */
-function rowSave(role: 'chat' | 'voice' | 'harness'): HTMLButtonElement {
-  const btn = Array.from(roleRow(role).querySelectorAll('button')).find(
-    b => b.textContent === 'Save' || b.textContent === 'Saving...',
-  );
-  if (!btn) throw new Error(`no Save button in the ${role} row`);
-  return btn as HTMLButtonElement;
 }
 
 /** `allowed.readConfig` keyed by config key; anything not listed answers
@@ -111,21 +125,10 @@ function mockSessionModel(provider: string, model: string) {
   } as never);
 }
 
-function providerInputs(): HTMLInputElement[] {
-  return Array.from(container.querySelectorAll('input[placeholder="provider"]')) as HTMLInputElement[];
-}
-function modelInputs(): HTMLInputElement[] {
-  return Array.from(
-    container.querySelectorAll('input[placeholder="model id, or session / off / none"]'),
-  ) as HTMLInputElement[];
-}
-
-async function setInput(el: HTMLInputElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-  await act(async () => {
-    setter.call(el, value);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  });
+function choose(role: 'chat' | 'voice' | 'harness'): HTMLButtonElement {
+  const button = roleRow(role).querySelector(`[data-testid="choose-${role}"]`);
+  if (!button) throw new Error(`no model chooser in the ${role} row`);
+  return button as HTMLButtonElement;
 }
 
 describe('ModelsPanel Chat/Voice/Harness role table', () => {
@@ -167,23 +170,18 @@ describe('ModelsPanel Chat/Voice/Harness role table', () => {
     expect(roleRow('voice').textContent).not.toContain('claude-sonnet-5');
   });
 
-  it('warns on a half-configured pair and writes nothing', async () => {
+  it('does not expose independently editable provider/model half-pairs', async () => {
     await mount(vi.fn());
-    await setInput(providerInputs()[0], 'anthropic');
-    // model left blank — a half pair, not "anthropic" as a session shorthand.
-    await act(async () => { rowSave('chat').click(); });
-    expect(container.textContent).toContain('provider and model must be set together, or neither');
-    expect(allowed.upsertConfig).not.toHaveBeenCalled();
+    expect(roleRow('chat').querySelector('input[placeholder="provider"]')).toBeNull();
+    expect(roleRow('chat').querySelector('input[placeholder^="model id"]')).toBeNull();
+    expect(allowed.setModelRoute).not.toHaveBeenCalled();
   });
 
-  it('writes both keys when both boxes are filled', async () => {
+  it('writes both keys from one configured-model selection', async () => {
     await mount(vi.fn());
-    await setInput(providerInputs()[0], 'anthropic');
-    await setInput(modelInputs()[0], 'claude-sonnet-5');
-    await act(async () => { rowSave('chat').click(); });
-    expect(allowed.upsertConfig).toHaveBeenCalledTimes(2);
-    expect(allowed.upsertConfig).toHaveBeenNthCalledWith(1, 'chat_provider', 'anthropic');
-    expect(allowed.upsertConfig).toHaveBeenNthCalledWith(2, 'chat_model', 'claude-sonnet-5');
+    await act(async () => { choose('chat').click(); });
+    expect(allowed.setModelRoute).toHaveBeenCalledOnce();
+    expect(allowed.setModelRoute).toHaveBeenCalledWith('chat', 'anthropic', 'claude-sonnet-5');
   });
 
   it('renders the Harness row as running on the session model when harness_model is "session"', async () => {
@@ -287,30 +285,9 @@ describe('ModelsPanel role routing', () => {
  * it for these two).
  */
 describe('ModelsPanel voice model row', () => {
-  // The voice editor moved from a standalone Row into the Chat/Voice/Harness
-  // table (one concept, one place), so every query here scopes to that row —
-  // there are now three Save buttons on the pane and the first is Chat's.
-  function providerInput(): HTMLInputElement {
-    return roleRow('voice').querySelector('input[placeholder="custom_deepseek"]') as HTMLInputElement;
-  }
-  function modelInput(): HTMLInputElement {
-    return roleRow('voice').querySelector(
-      'input[placeholder="deepseek-chat"]',
-    ) as HTMLInputElement;
-  }
-  async function typeInto(input: HTMLInputElement, value: string) {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
-    await act(async () => {
-      setter.call(input, value);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-  }
-  function saveButton(): HTMLButtonElement {
-    return rowSave('voice');
-  }
   function sessionButton(): HTMLButtonElement {
     return Array.from(roleRow('voice').querySelectorAll('button')).find(
-      b => b.textContent === 'Use the session model',
+      b => b.textContent === 'Use session model',
     ) as HTMLButtonElement;
   }
 
@@ -337,28 +314,23 @@ describe('ModelsPanel voice model row', () => {
     expect(roleRow('voice').textContent).toContain('session model');
   });
 
-  it('does not write either key just from mounting or typing', async () => {
+  it('does not write either key just from mounting', async () => {
     await mount(vi.fn());
-    await typeInto(providerInput(), 'minimax');
-    expect(allowed.upsertConfig).not.toHaveBeenCalled();
+    expect(allowed.setModelRoute).not.toHaveBeenCalled();
   });
 
-  it('Save writes both voice_provider and voice_model', async () => {
+  it('one configured-model selection writes both voice keys', async () => {
     await mount(vi.fn());
-    await typeInto(providerInput(), 'minimax');
-    await typeInto(modelInput(), 'MiniMax-M2.7-highspeed');
-    await act(async () => { saveButton().click(); });
+    await act(async () => { choose('voice').click(); });
 
-    expect(allowed.upsertConfig).toHaveBeenCalledWith('voice_provider', 'minimax');
-    expect(allowed.upsertConfig).toHaveBeenCalledWith('voice_model', 'MiniMax-M2.7-highspeed');
+    expect(allowed.setModelRoute).toHaveBeenCalledWith('voice', 'minimax', 'MiniMax-M2.7-highspeed');
   });
 
-  it('"Use the session model" writes only voice_model, to session', async () => {
+  it('"Use session model" clears the provider and writes the session sentinel', async () => {
     await mount(vi.fn());
     await act(async () => { sessionButton().click(); });
 
-    expect(allowed.upsertConfig).toHaveBeenCalledWith('voice_model', 'session');
-    const keysWritten = allowed.upsertConfig.mock.calls.map(c => c[0]);
-    expect(keysWritten).toEqual(['voice_model']);
+    expect(allowed.setModelRoute).toHaveBeenCalledOnce();
+    expect(allowed.setModelRoute).toHaveBeenCalledWith('voice', '', 'session');
   });
 });

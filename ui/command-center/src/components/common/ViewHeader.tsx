@@ -47,6 +47,10 @@ export function ViewHeader({ title, subtitle, leading, afterTitle, actions }: Vi
         display: 'flex',
         alignItems: 'center',
         gap: 12,
+        // A docked chat pane can leave a top-level view only a few hundred
+        // pixels wide. Let title/actions form a second row instead of
+        // allowing controls to paint outside the workspace.
+        flexWrap: 'wrap',
         padding: '16px 24px',
         borderBottom: `1px solid ${colors.border}`,
         // The bar is a fixed sibling ABOVE the scroll container, never inside
@@ -68,7 +72,7 @@ export function ViewHeader({ title, subtitle, leading, afterTitle, actions }: Vi
           across a gap. */}
       <div
         data-testid="view-title-block"
-        style={{ minWidth: 0, flex: afterTitle ? '0 1 auto' : 1 }}
+        style={{ minWidth: 0, flex: afterTitle ? '0 1 auto' : '1 1 220px' }}
       >
         <div
           data-testid="view-title"
@@ -93,7 +97,7 @@ export function ViewHeader({ title, subtitle, leading, afterTitle, actions }: Vi
       {afterTitle && <div style={{ flex: 1 }} />}
 
       {actions && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flex: '0 1 auto', minWidth: 0, maxWidth: '100%', flexWrap: 'wrap' }}>
           {actions}
         </div>
       )}

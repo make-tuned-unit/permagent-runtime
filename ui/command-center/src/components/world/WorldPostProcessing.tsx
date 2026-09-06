@@ -2,6 +2,7 @@ import { useEffect, useRef, useSyncExternalStore, type RefObject } from 'react';
 import { useThree } from '@react-three/fiber';
 import { Bloom, EffectComposer, Noise } from '@react-three/postprocessing';
 import { BlendFunction, type EffectComposer as EffectComposerImpl } from 'postprocessing';
+import { WORLD_GRAIN_OPACITY } from './constants';
 
 // W4-owned (bible §7/§8). Bloom is the FIRST cut if the frame budget fails;
 // Noise is cheap and stays. The dev-only toggles below exist so perf evidence
@@ -76,7 +77,7 @@ export function WorldPostProcessing() {
     return (
       <>
         <EffectComposer ref={composerRef} multisampling={0}>
-          <Noise premultiply blendFunction={BlendFunction.ADD} opacity={0.12} />
+          <Noise premultiply blendFunction={BlendFunction.ADD} opacity={WORLD_GRAIN_OPACITY} />
         </EffectComposer>
         <ComposerDprSync composerRef={composerRef} />
       </>
@@ -109,7 +110,7 @@ export function WorldPostProcessing() {
           luminanceThreshold={0.4}
           luminanceSmoothing={0.4}
         />
-        <Noise premultiply blendFunction={BlendFunction.ADD} opacity={0.12} />
+        <Noise premultiply blendFunction={BlendFunction.ADD} opacity={WORLD_GRAIN_OPACITY} />
       </EffectComposer>
       <ComposerDprSync composerRef={composerRef} />
     </>

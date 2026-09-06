@@ -17,6 +17,7 @@ import {
   type PtySessionInfo,
 } from './terminalReattach';
 import { createClaimSet } from '../../lib/claimSet';
+import { ProviderModelPicker } from '../settings/ProviderModelPicker';
 
 export interface TerminalManagerHandle {
   createProjectTab: (
@@ -52,6 +53,19 @@ export interface TerminalTab {
   supervisedSessionId?: string;
   followUpInput?: string;
   growthAction?: { projectId: string; actionId: string };
+}
+
+/** Only the Permagent interactive harness can accept a cross-provider model
+ * command. Other terminal tabs own provider-specific processes. */
+export function isPermagentInteractiveHarness(tab: TerminalTab | null | undefined): boolean {
+  if (!tab?.sessionId) return false;
+  const command = tab.initialCommand?.trim() ?? '';
+  // Launches may use the bundled absolute binary path or put harmless global
+  // flags before `run`; token presence is more durable than one exact string.
+  return /(?:^|\/)permagent(?:\s|$)/.test(command)
+    && /(?:^|\s)run(?:\s|$)/.test(command)
+    && /(?:^|\s)--recipe(?:=|\s+)permagent-coding(?:\s|$)/.test(command)
+    && /(?:^|\s)--interactive(?:\s|$)/.test(command);
 }
 
 let tabCounter = 0;
@@ -190,6 +204,12 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
   const [closingTabId, setClosingTabId] = useState<string | null>(null);
   // Drop-to-CC-terminal (#557): visual state while a file is dragged over the pane.
   const [dropActive, setDropActive] = useState(false);
+  const [modelSwitchRequest, setModelSwitchRequest] = useState<{ sessionId: string; provider: string; model: string } | null>(null);
+  const [terminalModelSelections, setTerminalModelSelections] = useState<Record<string, { provider: string; model: string }>>({});
+  const modelSwitchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const modelSwitchRequestRef = useRef(modelSwitchRequest);
+  modelSwitchRequestRef.current = modelSwitchRequest;
+  const modelOutputTail = useRef<Record<string, string>>({});
   const rootRef = useRef<HTMLDivElement>(null);
   const killPtyRef = useRef<(sessionId: string) => Promise<void>>();
 
@@ -208,6 +228,53 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
   activeTabIdRef.current = activeTabId;
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0] ?? null;
+  const canSwitchTerminalModel = isPermagentInteractiveHarness(activeTab);
+
+  useEffect(() => () => {
+    if (modelSwitchTimer.current) clearTimeout(modelSwitchTimer.current);
+  }, []);
+
+  const sendTerminalModel = useCallback(async ({ provider, model }: { provider: string; model: string }) => {
+    const target = tabsRef.current.find(tab => tab.id === activeTabIdRef.current);
+    if (!isPermagentInteractiveHarness(target) || !target?.sessionId) return;
+    const sessionId = target.sessionId;
+    const request = { sessionId, provider, model };
+    setModelSwitchRequest(request);
+    modelSwitchRequestRef.current = request;
+    modelOutputTail.current[sessionId] = '';
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('write_to_pty', { sessionId, data: `/model ${provider}/${model}\r` });
+      // Writing to the PTY only proves delivery. The CLI validates the route
+      // and prints the authoritative result, so this status remains a request
+      // and the picker does not falsely mark the model active.
+      if (modelSwitchTimer.current) clearTimeout(modelSwitchTimer.current);
+      modelSwitchTimer.current = setTimeout(() => {
+        if (modelSwitchRequestRef.current?.sessionId === sessionId) setModelSwitchRequest(null);
+      }, 3000);
+    } catch (err) {
+      // The CLI owns success/error rendering. A failed write is intentionally
+      // silent here so the UI never claims that the model changed.
+      if (modelSwitchRequestRef.current?.sessionId === sessionId) setModelSwitchRequest(null);
+      console.error('[terminal] model switch injection failed:', err);
+    }
+  }, []);
+
+  const handleTerminalModelOutput = useCallback((sessionId: string, data: string) => {
+    const request = modelSwitchRequestRef.current;
+    if (!request || request.sessionId !== sessionId) return;
+    const previous = modelOutputTail.current[sessionId] ?? '';
+    const plain = `${previous}${data}`
+      .replace(/\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g, '')
+      .slice(-800);
+    modelOutputTail.current[sessionId] = plain;
+    const confirmation = `Harness model switched for this session only: ${request.provider}/${request.model}.`;
+    if (!plain.includes(confirmation)) return;
+    setTerminalModelSelections(prev => ({ ...prev, [sessionId]: { provider: request.provider, model: request.model } }));
+    setModelSwitchRequest(null);
+    if (modelSwitchTimer.current) clearTimeout(modelSwitchTimer.current);
+  }, []);
 
   const cycleTabs = useCallback((backwards = false) => {
     const nextId = nextPaneTabId(
@@ -536,6 +603,25 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
           ))}
         </div>
         <CycleTabsButton pane="terminal" onCycle={() => cycleTabs()} />
+        {canSwitchTerminalModel && (
+          <div className="flex items-center gap-1 px-1" data-testid="terminal-model-control">
+            <div style={{ width: 220, maxWidth: '35vw' }}>
+              <ProviderModelPicker
+                value={activeTab?.sessionId
+                  ? terminalModelSelections[activeTab.sessionId] ?? { provider: null, model: null }
+                  : { provider: null, model: null }}
+                onChange={(value) => { void sendTerminalModel(value); }}
+                compact
+                aria-label="Choose terminal provider and model"
+              />
+            </div>
+            {modelSwitchRequest?.sessionId === activeTab?.sessionId && (
+              <span aria-live="polite" style={{ color: colors.textDim, fontFamily: font.mono, fontSize: textSize.micro, whiteSpace: 'nowrap' }}>
+                requested {modelSwitchRequest.provider}/{modelSwitchRequest.model}
+              </span>
+            )}
+          </div>
+        )}
         {!detached && (
           <Button
             colors={colors}
@@ -580,6 +666,7 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
               onSessionSpawned={(sid) => handleSessionSpawned(tab.id, sid)}
               onTitleChange={(title) => handleTitleChange(tab.id, title)}
               onCwdChange={(cwd) => handleCwdChange(tab.id, cwd)}
+              onPtyData={(data) => tab.sessionId && handleTerminalModelOutput(tab.sessionId, data)}
               cwd={tab.cwd}
               initialCommand={tab.initialCommand}
               supervisedSessionId={tab.supervisedSessionId}

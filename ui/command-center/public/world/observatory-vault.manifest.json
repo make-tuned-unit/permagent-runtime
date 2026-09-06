@@ -1,0 +1,13 @@
+{
+  "schema": "permagent.world-asset.v1",
+  "asset": "observatory-vault.glb",
+  "authoring": "Blender",
+  "metersPerUnit": 1,
+  "runtimeUp": "Y",
+  "meshes": 6,
+  "triangles": 141456,
+  "bytes": 4692432,
+  "materials": 6,
+  "meshDoorwayDegrees": 225,
+  "liveState": false
+}

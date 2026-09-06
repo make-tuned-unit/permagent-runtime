@@ -10,7 +10,7 @@ fully completed agent turns are classified separately rather than being folded
 into one misleading "incomplete" bucket.
 
 Metrics per turn (all measured server-side, from tracing timestamps):
-  audio_s                — length of the captured utterance (client-reported).
+    audio_s                — length of the captured utterance (client-reported).
   stt_ms                 — time to transcribe the utterance (Moonshine).
   speech_end_to_stream_ms — "recording stopped" until the reply stream is
                              ready: speaker gate + STT + correction + context,
@@ -27,7 +27,10 @@ Metrics per turn (all measured server-side, from tracing timestamps):
   n_sentences              — number of spoken sentences synthesized.
 
 Latency percentiles use audible agent turns only. Enrollment and rejected
-speakers are never allowed to distort them.
+speakers are never allowed to distort them. New structured daemon events also
+report aggregate PCM health (never samples or transcript content), STT outcome,
+socket epoch, and terminal outcome. That lets the report distinguish no-agent
+turns from provider/TTS failures without weakening the legacy log parser.
 
 Usage: python3 scripts/voice-latency-report.py [logfile] [--markdown] [--json]
 Default logfile: ~/.permagent/logs/daemon-sidecar.log
@@ -74,6 +77,8 @@ METRICS = [
 @dataclass
 class Turn:
     index: int
+    turn_id: Optional[str] = None
+    socket_epoch: Optional[str] = None
     start: Optional[str] = None
     audio_s: Optional[float] = None
     stt_ms: Optional[int] = None
@@ -88,10 +93,17 @@ class Turn:
     speaker_score: Optional[float] = None
     speaker_gate_ms: Optional[int] = None
     stt_empty: bool = False
+    stt_outcome: Optional[str] = None
+    capture_health: Optional[str] = None
+    empty_reason: Optional[str] = None
+    terminal_outcome: Optional[str] = None
+    provider_started: bool = False
     _max_sentence_seen: int = field(default=0, repr=False)
 
     @property
     def complete(self) -> bool:
+        if self.terminal_outcome is not None:
+            return self.terminal_outcome in {"reply_sent", "complete"}
         return self.total_ms is not None
 
     @property
@@ -102,6 +114,10 @@ class Turn:
     def status(self) -> str:
         if self.kind == "enrollment":
             return "enrollment"
+        if self.terminal_outcome:
+            if self.terminal_outcome in {"reply_sent", "complete"}:
+                return "complete"
+            return self.terminal_outcome
         if self.speaker_outcome in {"reject", "early_reject", "unavailable", "early_unavailable"}:
             return "rejected"
         if self.stt_empty:
@@ -115,9 +131,26 @@ class Turn:
         return "incomplete"
 
 
+def field_value(message: str, name: str) -> Optional[str]:
+    """Read a tracing key-value field without depending on field ordering."""
+    match = re.search(rf"\b{re.escape(name)}=(?:\"([^\"]*)\"|([^\s]+))", message)
+    if not match:
+        return None
+    return match.group(1) if match.group(1) is not None else match.group(2)
+
+
+def int_field(message: str, name: str) -> Optional[int]:
+    value = field_value(message, name)
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
+
+
 def parse_turns(path: str) -> list[Turn]:
     turns: list[Turn] = []
     cur: Optional[Turn] = None
+    modern_by_turn: dict[str, Turn] = {}
     enrolling = False
 
     def close(t: Optional[Turn]):
@@ -142,6 +175,46 @@ def parse_turns(path: str) -> list[Turn]:
                 continue
             if RE_ENROLL_END.search(msg):
                 enrolling = False
+                continue
+
+            # New daemon events are keyed by an opaque per-process turn ID.
+            # They intentionally carry aggregates only; the report does not
+            # recover or retain PCM/transcript content.
+            event = field_value(msg, "event")
+            turn_id = field_value(msg, "turn_id")
+            if event and turn_id and event in {
+                "voice_latency_stage",
+                "voice_capture_health",
+                "voice_latency_summary",
+            }:
+                modern = modern_by_turn.get(turn_id)
+                if modern is None:
+                    modern = Turn(index=len(turns) + 1, start=ts, turn_id=turn_id)
+                    modern_by_turn[turn_id] = modern
+                    turns.append(modern)
+                modern.socket_epoch = field_value(msg, "socket_epoch") or modern.socket_epoch
+                if event == "voice_latency_stage":
+                    stage = field_value(msg, "stage")
+                    if stage == "capture_complete":
+                        duration = int_field(msg, "capture_duration_ms")
+                        if duration is not None:
+                            modern.audio_s = duration / 1000.0
+                    elif stage == "stt_complete":
+                        modern.stt_ms = int_field(msg, "stt_ms") or modern.stt_ms
+                        modern.stt_outcome = field_value(msg, "stt_outcome") or modern.stt_outcome
+                        modern.stt_empty = modern.stt_outcome == "empty"
+                    elif stage == "provider_started":
+                        modern.provider_started = True
+                    elif stage == "llm_ttft":
+                        modern.ttft_ms = int_field(msg, "stage_duration_ms") or modern.ttft_ms
+                elif event == "voice_capture_health":
+                    modern.capture_health = field_value(msg, "capture_health")
+                else:
+                    modern.terminal_outcome = field_value(msg, "outcome")
+                    modern.empty_reason = field_value(msg, "empty_reason")
+                    modern.stt_ms = int_field(msg, "stt_ms") or modern.stt_ms
+                    modern.first_audio_ms = int_field(msg, "first_audio_ms") or modern.first_audio_ms
+                    modern.total_ms = int_field(msg, "total_ms") or modern.total_ms
                 continue
 
             if (rs := RE_REC_START.search(msg)):
@@ -232,6 +305,38 @@ def summarize(turns: list[Turn]) -> dict:
             and t.audio_s >= 59.5
             and t.stt_ms is not None
         ),
+        # The split is intentionally terminal-outcome based: a provider is not
+        # blamed for a turn which never passed STT/speaker gating.
+        "n_no_agent_invoked": sum(
+            (
+                t.terminal_outcome
+                in {
+                    "capture_rejected_short",
+                    "capture_rejected_malformed",
+                    "empty_stt",
+                    "stt_error",
+                    "stt_task_panic",
+                    "speaker_rejected",
+                    "speaker_rejected_early",
+                    "speaker_gate_unavailable",
+                }
+            )
+            # Legacy logs predate the summary event. Empty STT and a speaker
+            # reject were already definitive pre-agent exits, so retain that
+            # truthful classification rather than reporting a misleading zero.
+            or (
+                t.terminal_outcome is None
+                and (
+                    t.stt_empty
+                    or t.speaker_outcome
+                    in {"reject", "early_reject", "unavailable", "early_unavailable"}
+                )
+            )
+            for t in agent
+        ),
+        "n_agent_invoked_no_audio": sum(
+            t.provider_started and not t.audible and not t.complete for t in agent
+        ),
     }
     for metric in METRICS:
         vals = [getattr(t, metric) for t in audible if getattr(t, metric) is not None]
@@ -245,7 +350,7 @@ def summarize(turns: list[Turn]) -> dict:
     return summary
 
 
-TURN_COLS = ["#", "start", "kind", "audio_s", "speaker", "gate_ms", "stt_ms",
+TURN_COLS = ["#", "start", "kind", "audio_s", "capture_health", "stt", "terminal", "speaker", "gate_ms", "stt_ms",
              "speech_end_to_stream_ms", "ttft_ms", "1st_sentence_tts_ms",
              "1st_audio_ms", "total_ms", "sentences", "status"]
 STAT_COLS = ["metric", "n", "min", "median", "p90", "max"]
@@ -261,7 +366,9 @@ def turn_row(t: Turn) -> list[str]:
     speaker = t.speaker_outcome or "-"
     if t.speaker_score is not None:
         speaker += f"/{t.speaker_score:.3f}"
-    return [str(t.index), t.start or "-", t.kind, fmt(t.audio_s, 1), speaker,
+    stt = t.stt_outcome or ("empty" if t.stt_empty else "-")
+    return [str(t.index), t.start or "-", t.kind, fmt(t.audio_s, 1), t.capture_health or "-", stt,
+            t.terminal_outcome or "-", speaker,
             fmt(t.speaker_gate_ms), fmt(t.stt_ms), fmt(t.speech_end_to_stream_ms),
             fmt(t.ttft_ms), fmt(t.first_sentence_tts_ms),
             fmt(t.first_audio_ms), fmt(t.total_ms), fmt(t.n_sentences),
@@ -297,6 +404,10 @@ def print_report(turns: list[Turn], summary: dict, markdown: bool):
     print(
         f"empty STT: {summary['n_empty_stt']}   abandoned: {summary['n_abandoned']}   "
         f">=10s captures: {summary['n_long_captures']}   >=30s captures: {summary['n_30s_captures']}"
+    )
+    print(
+        f"no agent invoked: {summary['n_no_agent_invoked']}   "
+        f"agent invoked, no audio: {summary['n_agent_invoked_no_audio']}"
     )
     print()
     print_table(STAT_COLS, [stat_row(m, summary[m]) for m in METRICS], markdown)

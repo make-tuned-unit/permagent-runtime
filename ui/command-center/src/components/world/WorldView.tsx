@@ -1,9 +1,10 @@
 import { Suspense, useState, useCallback, useEffect, useMemo, useRef, type CSSProperties } from 'react';
-import { Canvas, useThree, useFrame } from '@react-three/fiber';
+import { Canvas, useThree } from '@react-three/fiber';
 import { AdaptiveEvents, PerformanceMonitor, usePerformanceMonitor } from '@react-three/drei';
 import * as THREE from 'three';
-import type { CameraMode, AgentState } from './types';
-import { COLORS, STATIONS } from './constants';
+import type { CameraMode } from './types';
+import { useSelectedAgentProxy } from './useSelectedAgentProxy';
+import { COLORS, STATIONS, WORLD_ORBIT_POSITION } from './constants';
 import { navigateToTool, useCommandCenter, type ToolType } from '../../lib/store';
 import { createPedestalNavController, worldNavAllowed, type PedestalNavController } from './pedestalNav';
 import { WorldSceneContent } from './WorldScene';
@@ -32,7 +33,7 @@ import { getReduceMotion, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { TourMode } from './camera/TourMode';
-import { createFrameClock, stepFrameClock, type FrameClock } from './frameClock';
+import { createFrameClock, stepFrameClock, worldFrameDue, type FrameClock } from './frameClock';
 
 // DEV-ONLY: window.__worldDev harness for ambience evidence (no-op in prod).
 installDevHarness();
@@ -127,44 +128,6 @@ function AgentEvidenceHooks() {
   return null;
 }
 
-// Bridges the autonomous V2 motion store to the (W4-owned) camera's third-person follow.
-// The V2 agents move themselves; this proxies the selected agent's LIVE position into the
-// AgentState shape the camera reads, refreshed each frame. When zoomed in (third-person),
-// arrow keys / WASD drive the selected agent via nudgeAgent — manual control overrides the
-// agent's autonomous walk while the user holds the keys (see motion.ts nudgeAgent).
-function useSelectedAgentProxy(selectedAgentId: string | null): AgentState | null {
-  const ref = useRef<AgentState | null>(null);
-  useFrame(() => {
-    if (!selectedAgentId) {
-      ref.current = null;
-      return;
-    }
-    const pos = getAgentPosition(selectedAgentId);
-    const id = ROSTER.find((r) => r.id === selectedAgentId);
-    if (!pos || !id) {
-      ref.current = null;
-      return;
-    }
-    if (!ref.current || ref.current.id !== selectedAgentId) {
-      ref.current = {
-        id: id.id,
-        name: id.name,
-        role: id.role,
-        position: { x: pos.x, y: pos.y, z: pos.z },
-        activity: 'idle',
-        currentStation: null,
-        togaTrimColor: id.trimColor,
-        isHenry: id.isHenry,
-      };
-    } else {
-      ref.current.position.x = pos.x;
-      ref.current.position.y = pos.y;
-      ref.current.position.z = pos.z;
-    }
-  });
-  return ref.current;
-}
-
 // The World is ambience, not a game. It has no reason to render at whatever
 // rate the panel happens to refresh at — on a ProMotion display that is 120
 // frames a second of a marble hall standing still, on a machine that is always
@@ -182,8 +145,6 @@ function useSelectedAgentProxy(selectedAgentId: string | null): AgentState | nul
 // frame arriving at 33.2ms against a 33.3ms budget gets skipped, the next one
 // lands at 66.6ms, and a 30Hz panel renders at 15fps. Allowing a frame that is
 // within a few milliseconds of due costs nothing and removes the cliff.
-const TARGET_FPS = 30;
-const FRAME_TOLERANCE_MS = 4;
 
 function FrameCap({ active }: { active: boolean }) {
   const advance = useThree((s) => s.advance);
@@ -197,12 +158,11 @@ function FrameCap({ active }: { active: boolean }) {
   if (clockRef.current === null) clockRef.current = createFrameClock();
   useEffect(() => {
     if (!active) return;
-    const minDelta = 1000 / TARGET_FPS - FRAME_TOLERANCE_MS;
     let last = -Infinity;
     let handle = 0;
     const tick = (now: number) => {
       handle = requestAnimationFrame(tick);
-      if (now - last < minDelta) return;
+      if (!worldFrameDue(now, last)) return;
       last = now;
       advance(stepFrameClock(clockRef.current!, now));
     };
@@ -223,11 +183,8 @@ function FrameCap({ active }: { active: boolean }) {
 // PerformanceMonitor's factor and is the only thing that calls setDpr.
 //
 // Bounds are expressed against the monitor's own observed refresh rate rather
-// than as absolute fps, because the target here is not 60: the frame cap above
-// holds us at 30, and this machine's display refreshes at 30Hz anyway. An
-// absolute lower bound of 40fps — drei's default — would read a perfectly
-// healthy capped scene as permanently failing and grind the resolution down to
-// nothing.
+// than as absolute fps. World now targets 60; a genuinely 30 Hz display must
+// not be mistaken for GPU overload and have its resolution ground down.
 const MIN_DPR = 0.75;
 const MAX_DPR = 1.5;
 
@@ -341,6 +298,9 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   const adaptiveDprEnabled = !reduceMotion && !(import.meta.env.DEV && devDprOverride());
 
   const handleSelectAgent = useCallback((id: string) => {
+    if (import.meta.env.DEV && typeof window !== 'undefined') {
+      (window as unknown as { __worldLastAgentClick?: string }).__worldLastAgentClick = id;
+    }
     if (id === 'henry') {
       setActiveHud('henry');
     } else if (id === 'librarian') {
@@ -393,6 +353,21 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   // arc (#306): the sovereign agent descends into the portal, dissolves into
   // code, and the camera dives through the membrane into the collective mind.
   const [focusPoint, setFocusPoint] = useState<[number, number, number] | null>(null);
+  // R3F dispatches OrbitControls' final pointer change in the same browser
+  // turn as the station click. Defer focus activation by one frame so that
+  // final change is not mistaken for a user interruption; later drags still
+  // cancel an active glide immediately.
+  const focusFrameRef = useRef<number | null>(null);
+  const scheduleFocusPoint = useCallback((point: [number, number, number]) => {
+    if (focusFrameRef.current !== null) cancelAnimationFrame(focusFrameRef.current);
+    focusFrameRef.current = requestAnimationFrame(() => {
+      focusFrameRef.current = null;
+      setFocusPoint(point);
+    });
+  }, []);
+  useEffect(() => () => {
+    if (focusFrameRef.current !== null) cancelAnimationFrame(focusFrameRef.current);
+  }, []);
   const agoraPhase = useAgoraPhase();
   // Pending pedestal→tab navigation (C2): the controller owns the glide timer.
   // It cancels on a new station click, on unmount, and — because App keeps
@@ -408,6 +383,9 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
     });
   }
   const handleClickStation = useCallback((id: string) => {
+    if (import.meta.env.DEV && typeof window !== 'undefined') {
+      (window as unknown as { __worldLastStationClick?: string }).__worldLastStationClick = id;
+    }
     setHoveredStation(id);
     pedestalNavRef.current?.cancel();
     if (id === 'forum-portal') {
@@ -418,16 +396,16 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
         { x: Math.cos(a) * 13.6, y: 0, z: Math.sin(a) * 13.6, facing: a },
       ]);
       enterAgora();
-      setFocusPoint([...AGORA_CENTER]);
+      scheduleFocusPoint([...AGORA_CENTER]);
       return;
     }
     const station = STATIONS.find((s) => s.id === id);
-    if (station) setFocusPoint([...station.position] as [number, number, number]);
+    if (station) scheduleFocusPoint([...station.position] as [number, number, number]);
     // Launchpad: glide toward the pedestal, then land on its product tab. The Lab
     // pedestal has no tab (absent from STATION_TOOL) — it stays glide-only.
     const tool = STATION_TOOL[id];
     if (tool) pedestalNavRef.current?.schedule(tool);
-  }, []);
+  }, [scheduleFocusPoint]);
   const handleFocusDone = useCallback(() => setFocusPoint(null), []);
   // C2: keep the controller's visibility current — going hidden (workspace
   // switch or overlay open) cancels any pending pedestal landing — and clear
@@ -512,7 +490,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   }
 
   return (
-    <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative', background: COLORS.deepVoid }}>
+    <div ref={containerRef} data-world-active={import.meta.env.DEV ? String(canvasActive) : undefined} style={{ width: '100%', height: '100%', position: 'relative', background: COLORS.deepVoid }}>
       <Suspense fallback={<LoadingShimmer />}>
         <Canvas
           // Bible §8 item 3: explicit PCF — `shadows="soft"` is deprecated in
@@ -527,7 +505,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
           // loop and simply does not run while `canvasActive` is false.
           frameloop="never"
           camera={{
-            position: [20, 15, 20],
+            position: WORLD_ORBIT_POSITION,
             fov: 50,
             near: 0.1,
             far: 500,

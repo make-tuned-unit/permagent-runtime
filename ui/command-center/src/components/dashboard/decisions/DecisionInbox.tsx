@@ -123,7 +123,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
           className="hover:underline"
           onClick={openHistory}
           style={{
-            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-fg': colors.textMuted,
             '--pa-btn-fg-hover': colors.text,
             '--pa-btn-bg-hover': 'transparent',
             '--pa-btn-bg-active': 'transparent',
@@ -141,7 +141,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
           {view === 'history' ? (
             <HistoryList items={history} failed={historyError} onRetry={loadHistory} />
           ) : loading && !data ? (
-            <div style={{ padding: '48px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
+            <div style={{ padding: '48px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textMuted }}>
               Checking with {agentName}…
             </div>
           ) : error && !data ? (
@@ -152,7 +152,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
               <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: 4 }}>
                 Couldn't reach the decision inbox.
               </div>
-              <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: 14 }}>
+              <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginBottom: 14 }}>
                 This is a connection problem, not an empty inbox.
               </div>
               {/* No success tick: `refresh` swallows its own failure, so a
@@ -189,7 +189,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                 fontSize: textSize.heading, margin: '0 auto 10px',
               }}>✓</div>
               <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: 4 }}>No decisions needed.</div>
-              <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
+              <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>
                 {goals} goal{goals === 1 ? '' : 's'} in flight.
               </div>
             </div>
@@ -318,7 +318,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                   {tier1Open && (
                     <div id={tier1Id}>
                       {history === null ? (
-                        <div style={{ padding: '10px 18px 10px 36px', fontSize: textSize.caption, color: colors.textDim }}>
+                        <div style={{ padding: '10px 18px 10px 36px', fontSize: textSize.caption, color: colors.textMuted }}>
                           Loading…
                         </div>
                       ) : (
@@ -397,7 +397,7 @@ function HistoryList({ items, failed, onRetry }: {
   }
   if (items === null) {
     return (
-      <div style={{ padding: '32px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
+      <div style={{ padding: '32px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textMuted }}>
         Loading…
       </div>
     );

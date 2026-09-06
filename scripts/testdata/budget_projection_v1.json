@@ -1,0 +1,66 @@
+{
+  "taskId": "<taskId>",
+  "rootSessionId": "<rootSessionId>",
+  "task": {
+    "cap": {
+      "softUsd": 0.0,
+      "gateUsd": 0.9,
+      "hardUsd": 1.0,
+      "source": "current_budget_config"
+    },
+    "settledUsd": 0.0,
+    "heldUsd": 0.0,
+    "unknownUsd": 0.75,
+    "effectiveUsedUsd": 0.75,
+    "remainingUsd": 0.25,
+    "band": "unknown",
+    "completeness": "partial",
+    "error": null
+  },
+  "session": {
+    "cap": {
+      "softUsd": 0.0,
+      "gateUsd": 0.9,
+      "hardUsd": 1.0,
+      "source": "current_budget_config"
+    },
+    "settledUsd": 0.0,
+    "heldUsd": 0.0,
+    "unknownUsd": 0.75,
+    "effectiveUsedUsd": 0.75,
+    "remainingUsd": 0.25,
+    "band": "unknown",
+    "completeness": "partial",
+    "error": null
+  },
+  "taskBilling": {
+    "billingClass": "paid_api",
+    "provider": null,
+    "model": null,
+    "callId": null,
+    "isEstimated": null,
+    "observedAt": null,
+    "source": "cost_reservations"
+  },
+  "sessionBilling": {
+    "billingClass": "paid_api",
+    "provider": null,
+    "model": null,
+    "callId": null,
+    "isEstimated": null,
+    "observedAt": null,
+    "source": "cost_reservations"
+  },
+  "provenance": {
+    "version": "budget-projection.v1",
+    "asOf": "<asOf>",
+    "completeness": "partial",
+    "sources": [
+      "sessions",
+      "cost_ledger",
+      "cost_reservations",
+      "current_budget_config"
+    ],
+    "error": null
+  }
+}

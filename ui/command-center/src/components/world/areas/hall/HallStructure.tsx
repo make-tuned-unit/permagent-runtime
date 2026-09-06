@@ -2,7 +2,7 @@
 // station pedestals (threshold markers), orbital arcs, light shaft.
 // Moved verbatim from WorldScene.tsx in the bible §5 skeleton split (W1).
 
-import { useRef, useMemo } from 'react';
+import { useLayoutEffect, useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Float } from '@react-three/drei';
 import * as THREE from 'three';
@@ -11,6 +11,8 @@ import { isPunchedAngle } from '../zones';
 import { HallDetail } from './HallDetail';
 import { HallInlay } from './HallInlay';
 import { TaskDais } from './TaskDais';
+import { BlenderVault } from './BlenderVault';
+import { InstancedProp, type InstanceTransform } from '../../shared/instancing';
 // W4 reactivity seam (bible §7): the colonnade veins brighten with the live
 // working-agent count. The driving signal stays in the atmosphere lane; this is
 // the one cross-lane read W4 flagged in its PR for W1 awareness.
@@ -285,31 +287,7 @@ function StationPedestals({
   onHoverStation: (id: string | null) => void;
   onClickStation: (id: string) => void;
 }) {
-  return (
-    <group>
-      {STATIONS.map((station) => (
-        <StationPedestal
-          key={station.id}
-          station={station}
-          onHover={onHoverStation}
-          onClick={onClickStation}
-        />
-      ))}
-    </group>
-  );
-}
-
-function StationPedestal({
-  station,
-  onHover,
-  onClick,
-}: {
-  station: (typeof STATIONS)[number];
-  onHover: (id: string | null) => void;
-  onClick: (id: string) => void;
-}) {
-  const isPortal = station.iconType === 'portal';
-  const pedestalHeight = isPortal ? 2 : 1.5;
+  const layout = useMemo(buildStationPedestalLayout, []);
   const stoneMat = useMemo(
     () => new THREE.MeshLambertMaterial({ map: makeStoneTexture('#aeb4c0', 6) }),
     []
@@ -318,40 +296,169 @@ function StationPedestal({
     () => new THREE.MeshLambertMaterial({ map: makeStoneTexture('#8e94a2') }),
     []
   );
+  const ringMat = useMemo(
+    () => new THREE.MeshBasicMaterial({ color: COLORS.neonCyan, transparent: true, opacity: 0.5 }),
+    []
+  );
 
+  return (
+    <group>
+      <InstancedProp
+        name="hall.station.pedestals"
+        geometry={layout.pedestalGeometry}
+        material={stoneMat}
+        transforms={layout.pedestals}
+        castShadow
+      />
+      <InstancedProp
+        name="hall.station.plinths"
+        geometry={layout.plinthGeometry}
+        material={plinthMat}
+        transforms={layout.plinths}
+      />
+      <InstancedProp
+        name="hall.station.caps"
+        geometry={layout.capGeometry}
+        material={plinthMat}
+        transforms={layout.caps}
+      />
+      <InstancedProp
+        name="hall.station.rings"
+        geometry={layout.ringGeometry}
+        material={ringMat}
+        transforms={layout.rings}
+      />
+      <StationInteractionTargets
+        geometry={layout.interactionGeometry}
+        transforms={layout.interactionTargets}
+        onHover={onHoverStation}
+        onClick={onClickStation}
+      />
+      {STATIONS.map((station) => (
+        <StationPedestal
+          key={station.id}
+          station={station}
+        />
+      ))}
+    </group>
+  );
+}
+
+interface StationPedestalLayout {
+  ids: string[];
+  pedestals: InstanceTransform[];
+  plinths: InstanceTransform[];
+  caps: InstanceTransform[];
+  rings: InstanceTransform[];
+  interactionTargets: InstanceTransform[];
+  pedestalGeometry: THREE.CylinderGeometry;
+  plinthGeometry: THREE.CylinderGeometry;
+  capGeometry: THREE.CylinderGeometry;
+  ringGeometry: THREE.RingGeometry;
+  interactionGeometry: THREE.CylinderGeometry;
+}
+
+/** Static station transforms stay separate from interaction identity. */
+export function buildStationPedestalLayout(): StationPedestalLayout {
+  const pedestalHeight = 1.5;
+  return {
+    ids: STATIONS.map((station) => station.id),
+    pedestals: STATIONS.map(({ position }) => ({ position: [position[0], pedestalHeight / 2, position[2]] })),
+    plinths: STATIONS.map(({ position }) => ({ position: [position[0], 0.1, position[2]] })),
+    caps: STATIONS.map(({ position }) => ({ position: [position[0], pedestalHeight + 0.06, position[2]] })),
+    rings: STATIONS.map(({ position }) => ({
+      position: [position[0], pedestalHeight + 0.01, position[2]],
+      rotation: [-Math.PI / 2, 0, 0],
+    })),
+    interactionTargets: STATIONS.map(({ position }) => ({ position: [position[0], 1.4, position[2]] })),
+    pedestalGeometry: new THREE.CylinderGeometry(0.6, 0.8, pedestalHeight, 6),
+    plinthGeometry: new THREE.CylinderGeometry(0.95, 1.05, 0.2, 6),
+    capGeometry: new THREE.CylinderGeometry(0.78, 0.62, 0.14, 6),
+    ringGeometry: new THREE.RingGeometry(0.4, 0.6, 32),
+    // One transparent raycast volume covers the pedestal and floating icon,
+    // retaining parent-group click/hover reach without four duplicate meshes.
+    interactionGeometry: new THREE.CylinderGeometry(1.1, 1.1, 3.4, 8),
+  };
+}
+
+export function stationIdForInstance(ids: readonly string[], instanceId: number | undefined): string | null {
+  return instanceId === undefined || instanceId < 0 || instanceId >= ids.length ? null : ids[instanceId];
+}
+
+function StationInteractionTargets({
+  geometry,
+  transforms,
+  onHover,
+  onClick,
+}: {
+  geometry: THREE.CylinderGeometry;
+  transforms: InstanceTransform[];
+  onHover: (id: string | null) => void;
+  onClick: (id: string) => void;
+}) {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const material = useMemo(
+    () => new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, colorWrite: false, depthWrite: false }),
+    []
+  );
+  useLayoutEffect(() => {
+    const mesh = ref.current;
+    if (!mesh) return;
+    const object = new THREE.Object3D();
+    transforms.forEach((transform, index) => {
+      object.position.set(...transform.position);
+      object.rotation.set(...(transform.rotation ?? [0, 0, 0]));
+      object.scale.setScalar(1);
+      object.updateMatrix();
+      mesh.setMatrixAt(index, object.matrix);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [transforms]);
+
+  const stationIds = STATIONS.map((station) => station.id);
+  return (
+    <instancedMesh
+      ref={ref}
+      args={[geometry, material, transforms.length]}
+      onPointerOver={(event) => {
+        event.stopPropagation();
+        const id = stationIdForInstance(stationIds, event.instanceId);
+        if (id) {
+          document.body.style.cursor = 'pointer';
+          onHover(id);
+        }
+      }}
+      onPointerOut={(event) => {
+        event.stopPropagation();
+        document.body.style.cursor = 'auto';
+        onHover(null);
+      }}
+      onClick={(event) => {
+        event.stopPropagation();
+        const id = stationIdForInstance(stationIds, event.instanceId);
+        if (id) onClick(id);
+      }}
+    />
+  );
+}
+
+function StationPedestal({
+  station,
+}: {
+  station: (typeof STATIONS)[number];
+}) {
+  const isPortal = station.iconType === 'portal';
+  const pedestalHeight = isPortal ? 2 : 1.5;
   return (
     <group
       position={station.position}
-      onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; onHover(station.id); }}
-      onPointerOut={(e) => { e.stopPropagation(); document.body.style.cursor = 'auto'; onHover(null); }}
-      onClick={(e) => { e.stopPropagation(); onClick(station.id); }}
     >
-      {/* Pedestal */}
-      <mesh castShadow position-y={pedestalHeight / 2}>
-        <cylinderGeometry args={[0.6, 0.8, pedestalHeight, isPortal ? 8 : 6]} />
-        <primitive object={stoneMat} attach="material" />
-      </mesh>
-      {/* Base plinth + torus molding */}
-      <mesh position-y={0.1}>
-        <cylinderGeometry args={[0.95, 1.05, 0.2, isPortal ? 8 : 6]} />
-        <primitive object={plinthMat} attach="material" />
-      </mesh>
-      {/* Cap molding under the icon */}
-      <mesh position-y={pedestalHeight + 0.06}>
-        <cylinderGeometry args={[0.78, 0.62, 0.14, isPortal ? 8 : 6]} />
-        <primitive object={plinthMat} attach="material" />
-      </mesh>
       {/* Floating icon */}
       <Float speed={2} rotationIntensity={0.3} floatIntensity={0.5}>
         <group position-y={pedestalHeight + 1.2}>
           <StationIcon type={station.iconType} />
         </group>
       </Float>
-      {/* Pedestal glow ring */}
-      <mesh rotation-x={-Math.PI / 2} position-y={pedestalHeight + 0.01}>
-        <ringGeometry args={[0.4, 0.6, 32]} />
-        <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.5} />
-      </mesh>
     </group>
   );
 }
@@ -435,11 +542,9 @@ export function HallStructure({
     <>
       <Platform />
       <RotundaFloor />
-      <Columns />
-      <Dome />
-      {/* Second layer of architectural detail — entablature, fluting, dome ribs,
-          floor inlay, platform rim (areas/hall/HallDetail.tsx). */}
-      <HallDetail />
+      {/* Only the static shell is Blender-authored. Live props, anchors,
+          station navigation and agent/state animation remain unchanged. */}
+      <BlenderVault fallback={<><Columns /><Dome /><HallDetail /></>} />
       {/* Engraved circuit-node inlay (instanced) + the omphalos: the rotunda's
           reactive heart, breathing with REAL Brain events (HallInlay.tsx). */}
       <HallInlay />

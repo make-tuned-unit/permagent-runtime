@@ -743,12 +743,14 @@ export function createAgentRig(opts: {
   /** Signature-gear variant; 'librarian' also gets the describe tablet and
    *  'henry' the presence light. */
   variant?: RigVariant;
+  /** Authored armor replaces three geometry channels, not live state/poses. */
+  armor?: Pick<RigGeometries, 'metal' | 'trim' | 'visor'> | null;
 }): AgentRig {
-  const geos = getRigGeometries({
+  const geos = { ...getRigGeometries({
     weathering: opts.weathering,
     crown: opts.crown,
     variant: opts.variant ?? null,
-  });
+  }), ...opts.armor };
   const shared = getSharedMats();
   const bones = buildBones();
   const skeleton = new THREE.Skeleton(bones.list);
@@ -778,6 +780,7 @@ export function createAgentRig(opts: {
   });
 
   const root = new THREE.Group();
+  root.userData.blenderArmor = !!opts.armor;
   root.add(bones.byName.root);
 
   const makeMesh = (geo: THREE.BufferGeometry, mat: THREE.Material, castShadow = false) => {

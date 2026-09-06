@@ -31,7 +31,7 @@ export function StateBlock({ tone, title, detail, onRetry, compact }: {
     }}>
       <div style={{ fontSize: textSize.small, fontWeight: 600, color: accent }}>{title}</div>
       {detail && (
-        <div style={{ fontSize: textSize.micro, color: colors.textDim, maxWidth: 320, lineHeight: 1.5 }}>
+        <div style={{ fontSize: textSize.micro, color: colors.textMuted, maxWidth: 320, lineHeight: 1.5 }}>
           {detail}
         </div>
       )}

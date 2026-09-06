@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { createFrameClock, stepFrameClock, MAX_FRAME_STEP_S } from './frameClock';
+import { createFrameClock, stepFrameClock, MAX_FRAME_STEP_S, worldFrameDue, WORLD_TARGET_FPS } from './frameClock';
 
 /** Old (buggy) baseline logic, kept ONLY to demonstrate the regression this
  * file guards against — this is what FrameCap did before the fix: capture
@@ -28,6 +28,13 @@ function deltas(values: number[]): number[] {
 }
 
 describe('frameClock', () => {
+  it('allows every 60 Hz frame without wasting 120 Hz renders', () => {
+    expect(WORLD_TARGET_FPS).toBe(60);
+    expect(worldFrameDue(16.5, 0)).toBe(true);
+    expect(worldFrameDue(8.33, 0)).toBe(false);
+    expect(worldFrameDue(33.3, 0)).toBe(true);
+    expect(worldFrameDue(0, -Infinity)).toBe(true);
+  });
   it('starts at 0 and does not advance on the very first step', () => {
     const clock = createFrameClock();
     expect(stepFrameClock(clock, 1000)).toBe(0);

@@ -18,6 +18,7 @@ import { DropZone } from './components/chat/DropZone';
 import { NotificationHost } from './components/notifications/NotificationHost';
 import { toast } from './lib/notifications';
 import { VersionSkewBanner } from './components/version/VersionSkewBanner';
+import { StateBlock } from './components/common/StateBlock';
 import { api, fileToBase64 } from './lib/api';
 import { createChatWindow } from './lib/chatWindow';
 import type { LayoutNode } from './lib/store';
@@ -26,11 +27,29 @@ import { getOpenOnLaunch } from './lib/openOnLaunch';
 import { useVersionSkew } from './hooks/useVersionSkew';
 import { onRepaintRegain, forceCompositorRepaint } from './lib/repaintOnRegain';
 
-function MainContent() {
+type StartupConfigResult = 'app' | 'wizard' | 'malformed';
+
+/**
+ * `/config` is a typed object response. A missing wizard flag is a legitimate
+ * first-run config (the backend omits unset keys); a non-object config or a
+ * non-boolean flag is a broken response and must not silently open onboarding.
+ */
+export function classifyStartupConfig(payload: unknown): StartupConfigResult {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return 'malformed';
+  const config = (payload as { config?: unknown }).config;
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return 'malformed';
+  const wizardComplete = (config as Record<string, unknown>).wizard_complete;
+  if (wizardComplete !== undefined && typeof wizardComplete !== 'boolean') return 'malformed';
+  return wizardComplete === true ? 'app' : 'wizard';
+}
+
+export function MainContent() {
   const activePanel = useCommandCenter(s => s.activePanel);
   const activeWorkspaceId = useCommandCenter(s => s.activeWorkspaceId);
   const workspaces = useCommandCenter(s => s.workspaces);
   const workspacesLoaded = useCommandCenter(s => s.workspacesLoaded);
+  const workspacesError = useCommandCenter(s => s.workspacesError);
+  const loadWorkspaces = useCommandCenter(s => s.loadWorkspaces);
 
   const showSettings = activePanel === 'settings';
   // Skills Library renders as a labeled overlay so accepting a skill proposal
@@ -51,11 +70,17 @@ function MainContent() {
   }
 
   if (!activeWorkspaceId && !showSettings && !showSkills) {
-    return (
-      <div className="flex h-full items-center justify-center text-dark-muted text-xs font-mono">
-        No workspaces available
-      </div>
-    );
+    if (workspacesError) {
+      return (
+        <StateBlock
+          tone="error"
+          title="Couldn't load workspaces."
+          detail="The daemon did not return the workspace list. This is a connection problem, not an empty workspace list."
+          onRetry={() => { void loadWorkspaces(); }}
+        />
+      );
+    }
+    return <StateBlock tone="empty" title="No workspaces available" detail="Create a workspace to get started." />;
   }
 
   // Render ALL workspaces simultaneously, hiding inactive ones.
@@ -134,7 +159,8 @@ function App() {
     })();
   }, [theme, themePref, gradient.shell]);
 
-  const [phase, setPhase] = useState<'splash' | 'loading' | 'wizard' | 'app'>('splash');
+  const [phase, setPhase] = useState<'splash' | 'loading' | 'unavailable' | 'wizard' | 'app'>('splash');
+  const [startupFailure, setStartupFailure] = useState<'connection' | 'malformed' | null>(null);
 
   // Install the bundled dictation model on first run so the mic "just works"
   // offline, with no download and no setup. Resolves the bundled Whisper model
@@ -177,6 +203,7 @@ function App() {
   useEffect(() => {
     if (phase !== 'loading') return;
     let cancelled = false;
+    setStartupFailure(null);
     // Retry getConfig — the daemon may still be starting after a reinstall.
     // Without retry, a transient connection failure sends us to the wizard
     // even though wizard_complete=true in ~/.permagent/config.yaml.
@@ -186,10 +213,15 @@ function App() {
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         if (cancelled) return;
         try {
-          const config: any = await api.getConfig();
+          const config: unknown = await api.getConfig();
           if (cancelled) return;
-          const wizardDone = config?.config?.wizard_complete === true;
-          setPhase(wizardDone ? 'app' : 'wizard');
+          const result = classifyStartupConfig(config);
+          if (result === 'malformed') {
+            setStartupFailure('malformed');
+            setPhase('unavailable');
+          } else {
+            setPhase(result);
+          }
           return;
         } catch {
           if (attempt < maxAttempts) {
@@ -197,7 +229,10 @@ function App() {
           }
         }
       }
-      if (!cancelled) setPhase('wizard');
+      if (!cancelled) {
+        setStartupFailure('connection');
+        setPhase('unavailable');
+      }
     })();
     return () => { cancelled = true; };
   }, [phase]);
@@ -296,6 +331,21 @@ function App() {
     return <div style={{ background: gradient.shell, width: '100vw', height: '100vh', paddingTop: 28 }} />;
   }
 
+  if (phase === 'unavailable') {
+    return (
+      <div style={{ background: gradient.shell, width: '100vw', height: '100vh', paddingTop: 28 }}>
+        <StateBlock
+          tone="error"
+          title={startupFailure === 'malformed' ? 'The daemon returned an invalid configuration.' : 'Permagent is unavailable.'}
+          detail={startupFailure === 'malformed'
+            ? 'The daemon answered, but its startup configuration was not valid. Try again after checking the daemon.'
+            : 'The command center could not connect to the daemon. This is not a first-run state.'}
+          onRetry={() => setPhase('loading')}
+        />
+      </div>
+    );
+  }
+
   if (phase === 'wizard') {
     return <WizardShell onComplete={() => { setPhase('app'); loadWorkspaces(); loadSkills(); }} />;
   }
@@ -309,7 +359,7 @@ function App() {
       <div className="flex flex-1 min-h-0">
         <Sidebar />
         <main className="flex-1 min-w-0 overflow-hidden relative">
-          <DropZone onDrop={handleDrop} disabled={!!(activeWorkspace && (hasToolType(activeWorkspace.layoutJson, 'world') || hasToolType(activeWorkspace.layoutJson, 'memory')))}>
+          <DropZone zoneId="workspace-chat-fallback" onDrop={handleDrop} disabled={!!(activeWorkspace && (hasToolType(activeWorkspace.layoutJson, 'world') || hasToolType(activeWorkspace.layoutJson, 'memory')))}>
             <MainContent />
           </DropZone>
         </main>

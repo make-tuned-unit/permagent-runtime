@@ -14,13 +14,14 @@ interface Persona {
 }
 
 interface Props {
+  active?: boolean;
   persona: Persona;
   setPersona: (p: Persona) => void;
   onAdvance: () => void;
   onBack: () => void;
 }
 
-export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
+export function MomentMeet({ active = true, persona, setPersona, onAdvance }: Props) {
   const { colors } = useTheme();
   const [editName, setEditName] = useState(false);
   const [newTrait, setNewTrait] = useState('');
@@ -156,7 +157,7 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
           <label style={{ fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>
             Voice
           </label>
-          <VoicePicker value={persona.voiceId} onChange={v => updateField('voiceId', v)} />
+          {active && <VoicePicker seedDefault value={persona.voiceId} onChange={v => updateField('voiceId', v)} />}
         </div>
 
         {/* Greeting */}

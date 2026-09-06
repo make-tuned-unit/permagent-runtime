@@ -18,6 +18,8 @@
 // rig stays active under reduceMotion (the per-frame damp only eases the
 // 30s-cadence retargets, it does not animate).
 
+import { getTheme, onThemeChange } from '../../../styles/tokens';
+
 export type DayPhase = 'night' | 'dawn' | 'day' | 'dusk';
 
 export interface TimeOfDayState {
@@ -147,7 +149,23 @@ function realHours(): number {
 }
 
 function sampleNow(): void {
-  current = sampleTimeOfDay(overrideHours ?? realHours());
+  current = overrideHours !== null ? sampleTimeOfDay(overrideHours)
+    : sampleAppearanceTime(realHours(), getTheme() === 'silver');
+}
+
+/** Existing resolved appearance is authoritative, including live OS changes.
+ * Keep real dawn/dusk nuance only when it agrees with the selected appearance.
+ * No second preference, geolocation, network request or sunrise service.
+ */
+export function sampleAppearanceTime(hours: number, light: boolean): TimeOfDayState {
+  const phase = phaseOf(hours);
+  const daylight = phase === 'day' || phase === 'dawn';
+  return sampleTimeOfDay(daylight === light ? hours : light ? 12 : 0);
+}
+
+/** Shared daylight amount for the open conservatory sky and matching fog. */
+export function daylightAmount(state: TimeOfDayState): number {
+  return Math.max(0, Math.min(1, (1 - state.starOpacity) / .72));
 }
 
 /** Zero-alloc getter for useFrame consumers. */
@@ -161,9 +179,11 @@ export function startTimeOfDay(): () => void {
   started = true;
   sampleNow();
   timer = setInterval(sampleNow, SAMPLE_MS);
+  const stopTheme = onThemeChange(sampleNow);
   return () => {
     started = false;
     if (timer) clearInterval(timer);
+    stopTheme();
   };
 }
 

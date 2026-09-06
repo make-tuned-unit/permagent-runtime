@@ -440,6 +440,13 @@ export interface BrowserTabSet {
   createdAt: string;
 }
 
+export interface BrowserHistoryEntry {
+  url: string;
+  title: string;
+  lastVisited: string;
+  visitCount: number;
+}
+
 export interface PermagentEvent {
   id: string;
   type: string;
@@ -909,6 +916,59 @@ export interface BudgetPatch {
   task?: Partial<Ceilings>;
 }
 
+/** Versioned read-time projection from Spectral. Numeric optionals are
+ * intentionally nullable: null means the canonical source was unavailable or
+ * invalid; numeric zero is an authoritative empty aggregate. */
+export type ProjectionCompleteness = 'complete' | 'partial' | 'unknown';
+export type ProjectionBand = 'ok' | 'soft' | 'gate' | 'hard' | 'unknown';
+
+export interface BudgetCapTriplet {
+  softUsd: number | null;
+  gateUsd: number | null;
+  hardUsd: number | null;
+  source: string;
+}
+
+export interface BudgetScopeProjection {
+  cap: BudgetCapTriplet;
+  settledUsd: number | null;
+  heldUsd: number | null;
+  unknownUsd: number | null;
+  effectiveUsedUsd: number | null;
+  remainingUsd: number | null;
+  band: ProjectionBand | null;
+  completeness: ProjectionCompleteness;
+  error: string | null;
+}
+
+export interface BillingEvidence {
+  billingClass: string | null;
+  provider: string | null;
+  model: string | null;
+  callId: string | null;
+  isEstimated: boolean | null;
+  observedAt: string | null;
+  source: string;
+}
+
+export interface BudgetProjectionProvenance {
+  version: 'budget-projection.v1';
+  asOf: string;
+  completeness: ProjectionCompleteness;
+  sources: string[];
+  error: string | null;
+}
+
+export interface BudgetProjection {
+  taskId: string | null;
+  rootSessionId: string;
+  task: BudgetScopeProjection;
+  session: BudgetScopeProjection;
+  taskBilling: BillingEvidence;
+  sessionBilling: BillingEvidence;
+  provenance: BudgetProjectionProvenance;
+}
+
 export interface CouncilSeat {
   provider: string;
   display_name: string;
@@ -967,6 +1027,66 @@ export interface CouncilLatest {
   report: CouncilReport | null;
   positions: CouncilPosition[];
   openActions: number;
+}
+
+export interface HarnessCouncilRecommendation {
+  recommended: boolean;
+  reason: string;
+  signals: string[];
+}
+
+export interface HarnessVerification {
+  command: string;
+  verdict: string | null;
+}
+
+export interface HarnessPendingGate {
+  requestId: string;
+  toolName: string;
+  tier: string | null;
+}
+
+export interface HarnessRunView {
+  runId: string;
+  sessionId: string;
+  project: string;
+  promptTitle: string;
+  promptDigest: string;
+  taskVersion: string | null;
+  envelopeId: string | null;
+  promptContext: string | null;
+  councilRecommendation: HarnessCouncilRecommendation;
+  dagNodes: string[];
+  dependencies: string[];
+  activeNode: string | null;
+  worker: string | null;
+  provider: string | null;
+  model: string | null;
+  billingClass: string | null;
+  tier: string | null;
+  routingReason: string | null;
+  status: 'queued' | 'running' | 'verifying' | 'waiting_gate' | 'succeeded' | 'failed' | 'cancelled';
+  declaredVerification: HarnessVerification | null;
+  lastVerification: HarnessVerification | null;
+  verificationAttempts: number | null;
+  verificationVerdict: string | null;
+  pendingGate: HarnessPendingGate | null;
+  retryCount: number | null;
+  toolCalls: number | null;
+  gateAttempts: number | null;
+  evidence: string | null;
+  result: string | null;
+  parentRunId: string | null;
+  /** Durable session identity; distinct from the optional run-id graph link. */
+  parentSessionId: string | null;
+  startedAt: string;
+  updatedAt: string;
+  elapsedMs: number;
+  tokens: number | null;
+  spendUsd: number | null;
+  /** Canonical read-time budget projection; legacy scalar fields above are not
+   * budget authority and must never fill this when it is unavailable. */
+  budget: BudgetProjection;
 }
 
 export const api = {
@@ -1066,6 +1186,7 @@ export const api = {
     text: string,
     images?: Array<{ data: string; mime_type: string }>,
     appContext?: AppContextPayload,
+    attachmentIds: string[] = [],
   ): Promise<{ request_id: string }> => {
     // uuidV4, not crypto.randomUUID: companion devices reach the hub over
     // plain-HTTP tailnet URLs (insecure origin), where randomUUID is undefined
@@ -1083,6 +1204,9 @@ export const api = {
     };
     if (appContext) {
       body.app_context = appContext;
+    }
+    if (attachmentIds.length > 0) {
+      body.attachment_ids = attachmentIds;
     }
     const result = await apiFetch<{ request_id: string }>(
       `/sessions/${encodeURIComponent(sessionId)}/reply`,
@@ -1249,8 +1373,29 @@ export const api = {
       body: JSON.stringify({ key, value, is_secret: isSecret ?? false }),
     }),
 
+  /** Persist a complete role route in one guarded config-file write. */
+  setModelRoute: (role: 'chat' | 'voice' | 'harness', provider: string, model: string) =>
+    apiFetch<unknown>('/config/model-route', {
+      method: 'POST',
+      body: JSON.stringify({ role, provider, model }),
+    }),
+
   getCouncilLatest: () =>
     apiFetch<CouncilLatest>('/api/council/latest'),
+
+  getActiveHarnessRuns: () =>
+    apiFetch<HarnessRunView[]>('/api/coding-sessions/harness-runs'),
+
+  getHarnessRunHistory: () =>
+    apiFetch<HarnessRunView[]>('/api/coding-sessions/harness-runs/history'),
+
+  /** One explicit click approves one Council pass; it does not enable the
+   *  recurring weekly Council setting. */
+  conveneCouncil: (question: string, project?: string) =>
+    apiFetch<{ accepted: boolean; message: string }>('/api/council/convene', {
+      method: 'POST',
+      body: JSON.stringify({ question, project, approved: true }),
+    }),
 
   getCouncilMembers: () =>
     apiFetch<CouncilMembers>('/api/council/members'),
@@ -1380,7 +1525,7 @@ export const api = {
     }>>('/config/providers'),
 
   getProviderModels: (name: string) =>
-    apiFetch<string[]>(`/config/providers/${encodeURIComponent(name)}/models`).catch(() => []),
+    apiFetch<string[]>(`/config/providers/${encodeURIComponent(name)}/models`),
 
   reloadConfig: () =>
     apiFetch<{ provider: string; keyTail: string }>('/config/reload', { method: 'POST' }),
@@ -1755,6 +1900,15 @@ export const api = {
     apiFetch<{ tabSets: BrowserTabSet[] }>('/api/browser/tab-sets', {
       method: 'PUT',
       body: JSON.stringify({ tabSets }),
+    }),
+
+  getBrowserHistory: () =>
+    apiFetch<{ entries: BrowserHistoryEntry[] }>('/api/browser/history'),
+
+  recordBrowserHistory: (entry: BrowserHistoryEntry) =>
+    apiFetch<{ entries: BrowserHistoryEntry[] }>('/api/browser/history', {
+      method: 'POST',
+      body: JSON.stringify(entry),
     }),
 
   // Downloads inbox (#392/#393) — files that landed in ~/.permagent/inbox via the

@@ -2,33 +2,39 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { FiUpload } from 'react-icons/fi';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import { setDropHandlers } from '../../lib/native-drag-drop';
+import { registerDropZone } from '../../lib/native-drag-drop';
 
 interface DropZoneProps {
   onDrop: (files: File[]) => void;
   children: React.ReactNode;
   disabled?: boolean;
+  zoneId?: string;
+  priority?: number;
 }
 
-export function DropZone({ onDrop, children, disabled = false }: DropZoneProps) {
+export function DropZone({ onDrop, children, disabled = false, zoneId = 'chat-surface-drop', priority = 0 }: DropZoneProps) {
   const { colors } = useTheme();
   const [dragging, setDragging] = useState(false);
   const counter = useRef(0);
+  const rootRef = useRef<HTMLDivElement>(null);
   const onDropRef = useRef(onDrop);
   onDropRef.current = onDrop;
 
   useEffect(() => {
     if (disabled) return;
-    setDropHandlers({
+    return registerDropZone({
+      id: zoneId,
+      getElement: () => rootRef.current,
+      priority,
       onEnter: () => setDragging(true),
       onLeave: () => setDragging(false),
-      onDrop: (files) => {
+      onDrop: async (_paths, readFiles) => {
         setDragging(false);
-        onDropRef.current(files);
+        const files = await readFiles();
+        if (files.length > 0) onDropRef.current(files);
       },
     });
-    return () => setDropHandlers(null);
-  }, [disabled]);
+  }, [disabled, priority, zoneId]);
 
   const isFileDrag = (e: React.DragEvent) => e.dataTransfer.types.includes('Files');
 
@@ -64,6 +70,7 @@ export function DropZone({ onDrop, children, disabled = false }: DropZoneProps) 
 
   return (
     <div
+      ref={rootRef}
       className="relative h-full"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}

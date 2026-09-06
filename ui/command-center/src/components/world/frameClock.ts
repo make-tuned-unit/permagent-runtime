@@ -29,6 +29,13 @@
  * THREE.MathUtils.damp's exp(lambda * dt) misbehave. */
 export const MAX_FRAME_STEP_S = 0.1;
 
+/** Visible World targets 60 Hz; hidden canvases remain completely paused. */
+export const WORLD_TARGET_FPS = 60;
+export const WORLD_FRAME_TOLERANCE_MS = 2;
+export function worldFrameDue(now: number, last: number): boolean {
+  return now - last >= 1000 / WORLD_TARGET_FPS - WORLD_FRAME_TOLERANCE_MS;
+}
+
 export interface FrameClock {
   /** Total elapsed seconds to hand to r3f's advance(). Monotonic — only ever
    * increases, no matter how long a gap between step() calls was. */

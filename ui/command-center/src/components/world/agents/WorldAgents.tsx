@@ -53,7 +53,12 @@ export function WorldAgents({ hoveredAgent, onHoverAgent, onSelectAgent }: World
             hudState={hudFor(identity.id)}
             hovered={hoveredAgent === identity.id}
             hoveredAgentId={hoveredAgent}
-            onPointerOver={() => onHoverAgent(identity.id)}
+            onPointerOver={() => {
+              if (import.meta.env.DEV && typeof window !== 'undefined') {
+                (window as unknown as { __worldLastAgentHover?: string }).__worldLastAgentHover = identity.id;
+              }
+              onHoverAgent(identity.id);
+            }}
             onPointerOut={() => onHoverAgent(null)}
             onClick={() => onSelectAgent(identity.id)}
           />

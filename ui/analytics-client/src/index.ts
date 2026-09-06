@@ -46,6 +46,8 @@ export interface AnalyticsBeacon {
    *  utm_* from an allowlist. */
   p: string;
   r: string | null;
+  /** Descriptive alias for integrations that do not use the compact wire key. */
+  referrer?: string | null;
   n: string | null;
   d: EventProperties | null;
   s: string | null;
@@ -551,6 +553,7 @@ export function createTracker(options: TrackerOptions): Tracker {
           k: 'pv',
           p: path ?? currentPath(),
           r: referrer ?? (isBrowser() ? document.referrer || null : null),
+          referrer: referrer ?? (isBrowser() ? document.referrer || null : null),
           n: null,
           d: null,
           s: sessionId,

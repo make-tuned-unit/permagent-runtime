@@ -1,12 +1,14 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, GhostLink, Input, Glass, Particles, WizardHeading, WizardSubhead } from './atoms';
 import { api } from '../../lib/api';
+import { safeWizardError } from './wizardErrors';
 
 interface Props {
+  active?: boolean;
   personaName?: string;
   onAdvance: () => void;
   onBack: () => void;
@@ -47,7 +49,7 @@ export function mergeRoots(confirmed: string[], discovered: string[]): {
  * shown with its full path so confirming is a reading task rather than an act of
  * faith.
  */
-export function MomentCode({ personaName, onAdvance, onBack }: Props) {
+export function MomentCode({ active = true, personaName, onAdvance, onBack }: Props) {
   const { colors } = useTheme();
   const who = personaName?.trim() || 'your agent';
 
@@ -60,26 +62,39 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
   const [checking, setChecking] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [scanError, setScanError] = useState('');
+  const [scanNonce, setScanNonce] = useState(0);
+  const loadedRef = useRef(false);
 
   useEffect(() => {
+    if (!active || loadedRef.current) return;
+    loadedRef.current = true;
     let alive = true;
     (async () => {
       try {
         const r = await api.getDevRoots();
         if (!alive) return;
+        setScanError('');
         setHome(r.home);
         const { candidates, preselected } = mergeRoots(r.confirmed, r.discovered);
         setCandidates(candidates);
         setChosen(new Set(preselected));
-      } catch {
-        // A failed scan is not a reason to block setup — the manual field below
-        // still works, and it is the honest path anyway.
+      } catch (e) {
+        if (alive) setScanError(e instanceof Error ? e.message : 'Could not scan for repositories.');
       } finally {
         if (alive) setLoading(false);
       }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [active, scanNonce]);
+
+  const retryScan = () => {
+    if (!active) return;
+    loadedRef.current = false;
+    setScanError('');
+    setLoading(true);
+    setScanNonce(n => n + 1);
+  };
 
   const toggle = (p: string) =>
     setChosen(prev => {
@@ -108,7 +123,7 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
       return r.exists;
     } catch (e) {
       setCheck({ resolved: raw, exists: false, has_repositories: false });
-      console.error('dev-root check failed:', e);
+      console.error('dev-root check failed:', safeWizardError(e, 'repository path check failed'));
       return false;
     } finally {
       setChecking(false);
@@ -150,7 +165,19 @@ export function MomentCode({ personaName, onAdvance, onBack }: Props) {
           </div>
         )}
 
-        {!loading && candidates.length === 0 && (
+        {!loading && scanError && (
+          <Glass padding={14}>
+            <div role="alert" style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.danger }}>
+              I couldn't scan for repositories{scanError ? ` (${scanError})` : ''}.
+            </div>
+            <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginTop: 4 }}>
+              You can retry, add a folder manually, or skip and set this up later in Settings.
+            </div>
+            <GhostLink onClick={retryScan} style={{ marginTop: 8 }}>Retry scan</GhostLink>
+          </Glass>
+        )}
+
+        {!loading && !scanError && candidates.length === 0 && (
           <Glass padding={14}>
             <div style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.text }}>
               I looked under {home || 'your home folder'} and didn't find any git

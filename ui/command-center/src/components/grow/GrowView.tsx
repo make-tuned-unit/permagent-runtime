@@ -20,10 +20,11 @@ import { ViewHeader } from '../common/ViewHeader';
 import { Button } from '../common/Button';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import type { Project } from '../projects/types';
-import { FiCalendar, FiEdit3, FiLoader, FiShare2, FiTarget, FiUsers, FiZap } from 'react-icons/fi';
+import { FiCalendar, FiEdit3, FiExternalLink, FiLoader, FiShare2, FiTarget, FiUsers, FiZap } from 'react-icons/fi';
 import type { IconType } from 'react-icons';
 import { FunnelPanel } from './FunnelPanel';
-import { drainFreshness } from './analyticsFormat';
+import { dailyAnalyticsSeries, drainFreshness } from './analyticsFormat';
+import { DailyPageviewsChart } from './DailyPageviewsChart';
 import {
   fromDatetimeLocalValue,
   groupPostsByDay,
@@ -357,6 +358,7 @@ interface FirstPartyStats {
   byDay: { day: string; pageviews: number; visitors: number }[];
   topPages: { name: string; count: number }[];
   topReferrers: { name: string; count: number }[];
+  topReferrerLinks?: { name: string; count: number }[];
   topEvents: { name: string; count: number }[];
   topSources: { name: string; count: number }[];
   topCampaigns: { name: string; count: number }[];
@@ -669,7 +671,7 @@ export function GrowView() {
           }
           actions={<>
         {/* VIEW axis — segmented tab toggle (mirrors the Kanban/overview toggle) */}
-        <div role="tablist" aria-label="Grow view" style={{ display: 'flex', gap: 2, background: colors.bgDeeper, borderRadius: radius.md, padding: 2 }}>
+        <div role="tablist" aria-label="Grow view" style={{ display: 'flex', flex: '1 1 260px', minWidth: 0, maxWidth: '100%', overflowX: 'auto', gap: 2, background: colors.bgDeeper, borderRadius: radius.md, padding: 2 }}>
           {LENSES.map((l) => {
             const selected = lens === l;
             return (
@@ -688,6 +690,7 @@ export function GrowView() {
                 onBlur={() => setFocusLens(null)}
                 style={{
                   ...segmentedTab(colors, selected),
+                  flexShrink: 0,
                   boxShadow: focusLens === l ? `0 0 0 2px ${colors.borderHi}` : 'none',
                 }}
               >{LENS_LABELS[l]}</button>
@@ -699,6 +702,7 @@ export function GrowView() {
           onChange={(e) => switchProject(e.target.value)}
           aria-label="Select project"
           style={{
+            flex: '0 1 180px', minWidth: 120, maxWidth: '100%', boxSizing: 'border-box',
             background: colors.bgDeeper, color: colors.text, border: `1px solid ${colors.border}`,
             borderRadius: radius.md, padding: '6px 10px', fontSize: textSize.small, fontFamily: font.body,
           }}
@@ -3714,6 +3718,7 @@ function FirstPartyAnalyticsPanel({
   stats: FirstPartyStats | null;
   onRefresh: () => void;
 }) {
+  const openInBrowser = useCommandCenter((state) => state.openInBrowser);
   const [setup, setSetup] = useState<FirstPartySetup | null>(null);
   const [setupState, setSetupState] = useState<LoadState>('loading');
   const [ingestBase, setIngestBase] = useState('');
@@ -4031,46 +4036,10 @@ function FirstPartyAnalyticsPanel({
 
       {receiving && stats && (
         <>
-          {/* Daily pageviews across the WHOLE window.
-              byDay only returns days that have traffic, so plotting it directly
-              gave one full-width bar per active day, every one at 100% height —
-              a solid colour block that carried no information at all. Padding
-              the window with zero-days turns it back into a real shape: two
-              busy days out of thirty should look like two spikes, not a wall. */}
-          {(() => {
-            const byDay = new Map(stats.byDay.map((d) => [d.day, d]));
-            const days: { day: string; pageviews: number; visitors: number }[] = [];
-            for (let i = stats.periodDays - 1; i >= 0; i--) {
-              const dt = new Date();
-              dt.setDate(dt.getDate() - i);
-              const key = dt.toISOString().slice(0, 10);
-              days.push(byDay.get(key) ?? { day: key, pageviews: 0, visitors: 0 });
-            }
-            const max = Math.max(1, ...days.map((d) => d.pageviews));
-            return (
-              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 1, height: 48 }}>
-                {days.map((d) => (
-                  <div
-                    key={d.day}
-                    title={d.pageviews > 0
-                      ? `${d.day}: ${d.pageviews} pageviews · ${d.visitors} devices`
-                      : `${d.day}: no traffic`}
-                    style={{
-                      flex: 1, minWidth: 2,
-                      // A zero day is a hairline, not a bar — visibly empty
-                      // rather than a misleading minimum-height stub.
-                      height: d.pageviews > 0 ? `${Math.max(8, (d.pageviews / max) * 100)}%` : '1px',
-                      background: d.pageviews > 0
-                        ? `linear-gradient(180deg, ${colors.cyan}, ${colors.purple})`
-                        : colors.border,
-                      borderRadius: 1,
-                      opacity: d.pageviews > 0 ? 0.9 : 1,
-                    }}
-                  />
-                ))}
-              </div>
-            );
-          })()}
+          <DailyPageviewsChart
+            days={dailyAnalyticsSeries(stats.byDay, stats.periodDays ?? 30)}
+            colors={colors}
+          />
           {/* Headline figures, each labelled for what it actually is. */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10 }}>
             {([
@@ -4132,6 +4101,34 @@ function FirstPartyAnalyticsPanel({
               </div>
             ))}
           </div>
+          {(stats.topReferrerLinks ?? []).length > 0 && (
+            <div style={{ marginTop: 12 }} data-testid="referred-chatter">
+              <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4 }}>
+                Referred chatter
+              </div>
+              <div style={{ display: 'grid', gap: 4 }}>
+                {(stats.topReferrerLinks ?? []).slice(0, 10).map((referrer) => (
+                  <Button
+                    key={referrer.name}
+                    colors={colors}
+                    variant="bare"
+                    type="button"
+                    onClick={() => openInBrowser(referrer.name)}
+                    title={`Open ${referrer.name} in Build browser`}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+                      border: 0, background: 'transparent', padding: '3px 0', cursor: 'pointer',
+                      color: colors.cyan, fontFamily: font.body, fontSize: textSize.micro,
+                    }}
+                  >
+                    <FiExternalLink size={11} aria-hidden="true" />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{referrer.name}</span>
+                    <span style={{ fontFamily: font.mono, color: colors.text }}>{referrer.count.toLocaleString()}</span>
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
         </>
       )}
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { font, textSize } from '../../styles/tokens';
 import { useCommandCenter } from '../../lib/store';
 import { Mobius } from '../mobius/Mobius';
@@ -71,27 +71,40 @@ const KEY_HELP: Record<string, { url: string; label: string; steps: string[] }> 
 };
 
 interface Props {
+  active?: boolean;
   onAdvance: (provider: string, apiKey: string) => void;
 }
 
-export function MomentWelcome({ onAdvance }: Props) {
+export function MomentWelcome({ active = true, onAdvance }: Props) {
   const { colors } = useTheme();
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const providerRef = useRef('anthropic');
+  const submitGenerationRef = useRef(0);
   const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
   const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
-  useEffect(() => { pushOverlay(); return () => { popOverlay(); }; }, [pushOverlay, popOverlay]);
+  useEffect(() => {
+    if (!active) return;
+    pushOverlay();
+    return () => { popOverlay(); };
+  }, [active, pushOverlay, popOverlay]);
 
   const [provider, setProvider] = useState('anthropic');
   const [key, setKey] = useState('');
   const [validating, setValidating] = useState(false);
   const [error, setError] = useState('');
   const [showHelp, setShowHelp] = useState(false);
+  useEffect(() => { providerRef.current = provider; }, [provider]);
   // Read-back (2026-07 wiring audit): if the wizard re-opens after an
   // interrupted run, a provider key may already be stored — show that instead
   // of a blank field that implies nothing was saved.
   const [configured, setConfigured] = useState<Set<string>>(new Set());
   useEffect(() => {
+    if (!active) return;
+    let alive = true;
     api.getProviders()
       .then(ps => {
+        if (!alive) return;
         const names = ps.filter(p => p.is_configured).map(p => p.name);
         if (names.length === 0) return;
         setConfigured(new Set(names));
@@ -99,7 +112,13 @@ export function MomentWelcome({ onAdvance }: Props) {
         if (def && PROVIDERS.some(o => o.value === def.name)) setProvider(def.name);
       })
       .catch(() => { /* fresh install or daemon still starting — nothing to read back */ });
-  }, []);
+    return () => { alive = false; };
+  }, [active]);
+
+  // Invalidate pending saves when this mounted step is hidden/re-entered.
+  useEffect(() => {
+    if (!active) submitGenerationRef.current++;
+  }, [active]);
 
   // A password manager that is installed AND unlocked right now. Offered, never
   // required: the wizard must not stall because someone has `op` on their PATH.
@@ -108,10 +127,13 @@ export function MomentWelcome({ onAdvance }: Props) {
   const [useReference, setUseReference] = useState(false);
   const [reference, setReference] = useState('');
   useEffect(() => {
+    if (!active) return;
+    let alive = true;
     api.getSecretSources()
-      .then(r => setManager(suggestedManager(r.backends)))
+      .then(r => { if (alive) setManager(suggestedManager(r.backends)); })
       .catch(() => { /* no manager offer — the keychain path is unchanged */ });
-  }, []);
+    return () => { alive = false; };
+  }, [active]);
   const managerKind = manager?.id === 'bitwarden' ? 'bitwarden' : 'onepassword';
   const referenceSpec = useReference
     ? buildSpec(managerKind as SourceKind, reference)
@@ -124,13 +146,19 @@ export function MomentWelcome({ onAdvance }: Props) {
     || (useReference ? !!referenceSpec && 'spec' in referenceSpec : key.trim().length > 8);
 
   const handleSubmit = async () => {
-    if (!canContinue) return;
+    if (!active || !canContinue) return;
+    const submittedProvider = provider;
+    const generation = ++submitGenerationRef.current;
+    const current = () => activeRef.current
+      && submitGenerationRef.current === generation
+      && providerRef.current === submittedProvider;
     setValidating(true);
     setError('');
     try {
       // Store the key and set provider
       const providerMeta = await api.getProviders();
-      const match = providerMeta.find(p => p.name === provider);
+      if (!current()) return;
+      const match = providerMeta.find(p => p.name === submittedProvider);
       const secretKey = match?.metadata.config_keys.find(k => k.secret);
       if (secretKey && useReference && referenceSpec && 'spec' in referenceSpec && referenceSpec.spec) {
         // Prove the reference RESOLVES before committing to it. Onboarding is
@@ -138,6 +166,7 @@ export function MomentWelcome({ onAdvance }: Props) {
         // would finish the wizard believing they were set up and hit an
         // unexplained provider error on their first message.
         const probe = await api.testSecretSource(secretKey.name, referenceSpec.spec);
+        if (!current()) return;
         if (!probe.ok) {
           setError(probe.error || `Couldn't read that reference from ${manager?.displayName}.`);
           setValidating(false);
@@ -147,17 +176,29 @@ export function MomentWelcome({ onAdvance }: Props) {
       } else if (secretKey && key.trim()) {
         await api.upsertConfig(secretKey.name, key.trim(), true);
       }
+      if (!current()) return;
       const defaultModel = match?.metadata.default_model || '';
       if (defaultModel) {
-        await api.setProvider(provider, defaultModel);
+        await api.setProvider(submittedProvider, defaultModel);
       } else {
-        await api.upsertConfig('GOOSE_PROVIDER', provider);
+        await api.upsertConfig('GOOSE_PROVIDER', submittedProvider);
       }
-      onAdvance(provider, key);
+      // Configuration writes are not readiness proof. The daemon's bounded
+      // provider check validates the stored key/reference and endpoint before
+      // onboarding claims the provider is ready. The backend only constructs
+      // the provider on its blocking pool; it does not issue chat inference.
+      await api.checkProvider(submittedProvider);
+      if (!current()) return;
+      // Do not retain provider credentials in the mounted wizard after they
+      // have been persisted. The shell keeps prior steps mounted so Back can
+      // preserve non-secret choices, but secrets must not survive navigation.
+      setKey('');
+      setReference('');
+      onAdvance(submittedProvider, '');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to configure provider');
+      if (current()) setError(e instanceof Error ? e.message : 'Failed to configure provider');
     } finally {
-      setValidating(false);
+      if (current()) setValidating(false);
     }
   };
 
@@ -166,15 +207,33 @@ export function MomentWelcome({ onAdvance }: Props) {
       <Particles density={24} />
       <Mobius size={160} state="idle" />
 
-      <h1 style={{ fontFamily: font.display, fontSize: 28, fontWeight: 700, color: colors.text, margin: '32px 0 10px', letterSpacing: '-0.02em' }}>
+      <p style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, margin: '24px 0 8px' }}>
         Welcome to Permagent
+      </p>
+      <h1 style={{ fontFamily: font.display, fontSize: textSize.display, fontWeight: 700, color: colors.text, margin: '0 24px 12px', letterSpacing: '-0.02em', textAlign: 'center' }}>
+        A companion. Built around you.
       </h1>
-      <p style={{ fontFamily: font.body, fontSize: textSize.body, color: colors.textMuted, marginBottom: 32, textAlign: 'center', maxWidth: 380 }}>
-        Connect a model provider to power your agent. You can change this later in Settings.
+      <p style={{ fontFamily: font.body, fontSize: textSize.body, color: colors.textMuted, margin: '0 24px 28px', textAlign: 'center', maxWidth: 420, lineHeight: 1.6 }}>
+        A place to think, create, and remember what matters. Choose a model to get started — you can change it anytime.
       </p>
 
-      <div style={{ width: 360, display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <Select value={provider} onChange={setProvider} options={PROVIDERS} />
+      <div style={{ width: 'min(360px, calc(100% - 48px))', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <Select
+          value={provider}
+          onChange={next => {
+            providerRef.current = next;
+            submitGenerationRef.current++;
+            setProvider(next);
+            // Never carry a credential or secret-manager reference across
+            // providers. A key typed for A must not be submitted for B.
+            setKey('');
+            setReference('');
+            setUseReference(false);
+            setValidating(false);
+            setError('');
+          }}
+          options={PROVIDERS}
+        />
         {!isLocal && !useReference && (
           <Input
             value={key}
@@ -207,7 +266,7 @@ export function MomentWelcome({ onAdvance }: Props) {
         )}
         {!isLocal && alreadyConfigured && (
           <p style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.success, margin: 0 }}>
-            ✓ This provider is already connected — continue, or paste a new key to replace it.
+            ✓ Configuration is already saved — continue, or paste a new key to replace it.
           </p>
         )}
         {error && <p style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.danger, margin: 0 }}>{error}</p>}

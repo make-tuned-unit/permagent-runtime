@@ -8,6 +8,30 @@ import { useLiveGoals } from '../../lib/useLiveGoals';
 import { api } from '../../lib/api';
 import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 
+function budgetTitle(codingSpend: ReturnType<typeof useCommandCenter.getState>['codingSpend']): string {
+  const budget = codingSpend?.budget;
+  if (!budget) return GLOSSARY.costMeter;
+  const format = (value: number | null) => value === null ? 'unavailable' : `$${value.toFixed(2)}`;
+  const cap = budget.session.cap;
+  const evidence = [
+    budget.sessionBilling.billingClass,
+    budget.sessionBilling.provider,
+    budget.sessionBilling.model,
+  ].filter(Boolean).join(' / ') || 'unavailable';
+  return [
+    `Budget projection ${budget.provenance.version}`,
+    `session used ${format(budget.session.effectiveUsedUsd)}`,
+    `session settled ${format(budget.session.settledUsd)}`,
+    `remaining ${format(budget.session.remainingUsd)}`,
+    `cap soft/gate/hard ${format(cap.softUsd)}/${format(cap.gateUsd)}/${format(cap.hardUsd)}`,
+    `billing ${evidence}`,
+    `task used ${format(budget.task.effectiveUsedUsd)}`,
+    `task settled ${format(budget.task.settledUsd)}`,
+    `sources ${budget.provenance.sources.join(', ') || 'unavailable'}`,
+    `as of ${budget.provenance.asOf}`,
+  ].join(' · ');
+}
+
 /**
  * Always-on Build statusline: `$0.42 · 47k↑ 12k↓ · cache saved $0.28 · 31% ctx · <model>`
  * while chatting, or `~$0.03 · 13k tokens · +$0.0032 this turn · today $0.53 ·
@@ -31,11 +55,19 @@ export function CostStatusline() {
   const { colors } = useTheme();
   const liveTokens = useCommandCenter((s) => s.liveTokens);
   const codingSpend = useCommandCenter((s) => s.codingSpend);
+  const codingHarnessHydration = useCommandCenter((s) => s.codingHarnessHydration);
   const chatSessionId = useCommandCenter((s) => s.chatSessionId);
   const { goals } = useLiveGoals();
-  const [subagents, setSubagents] = useState<SubagentCostIncl | null>(null);
+  const [subagentRollup, setSubagents] = useState<{
+    sessionId: string;
+    value: SubagentCostIncl;
+  } | null>(null);
 
   const rollupSessionId = codingSpend?.sessionId ?? chatSessionId;
+  // Scope async evidence to its source before rendering, including the render
+  // before the new session's effect runs. Old child costs are never new costs.
+  const subagents = subagentRollup?.sessionId === rollupSessionId
+    ? subagentRollup.value : null;
 
   useEffect(() => {
     if (!rollupSessionId) {
@@ -51,7 +83,10 @@ export function CostStatusline() {
           setSubagents(null);
           return;
         }
-        setSubagents({ count: cost.perChild.length, totalUsd: cost.childrenTotal });
+        setSubagents({
+          sessionId: rollupSessionId,
+          value: { count: cost.perChild.length, totalUsd: cost.childrenTotal },
+        });
       })
       .catch(() => {
         if (!cancelled) setSubagents(null);
@@ -61,7 +96,7 @@ export function CostStatusline() {
     };
   }, [rollupSessionId, liveTokens?.accumulatedCostUsd, codingSpend?.sessionUsd]);
 
-  const meter = formatCostMeter(liveTokens, codingSpend, subagents);
+  const meter = formatCostMeter(liveTokens, codingSpend, subagents, codingHarnessHydration);
   const routeNote = goals.find((g) => g.routing_note || g.hold_note);
   const note = routeNote?.hold_note || routeNote?.routing_note;
 
@@ -74,7 +109,7 @@ export function CostStatusline() {
       // the severity is low, but a term the interface invents still gets
       // defined somewhere, and hover is the cheapest somewhere on a status bar
       // with no room for prose.
-      title={GLOSSARY.costMeter}
+      title={budgetTitle(codingSpend)}
       style={{
         display: 'flex',
         alignItems: 'center',

@@ -5,6 +5,8 @@
 
 import { describe, expect, it } from 'vitest';
 import { ensureMotion, getMotion, advanceMotion, nudgeAgent, setPath } from './motion';
+import { DAIS } from './daisBus';
+import { PLATFORM_RADIUS } from '../constants';
 
 const MEZZ_Y = 10.15; // roster.MEZZ_Y — the mezzanine floor height
 const RING_R = 15.2; // roster.MEZZ_RADIUS — the walk ring
@@ -51,10 +53,28 @@ describe('ring-locked vertical clamp (#105)', () => {
   it('does not pin a free-roaming agent to any height', () => {
     // On the ground (y=0, inside the rotunda edge) surface-follow keeps it at 0,
     // proving the ring-lock clamp doesn't apply to non-locked agents.
-    ensureMotion('free-ground', { x: 2, y: 0, z: 0 }, null);
+    ensureMotion('free-ground', { x: 4, y: 0, z: 0 }, null);
     const m = getMotion('free-ground')!;
     advanceMotion(0.016);
     expect(m.ringLockY).toBeNull();
     expect(m.y).toBe(0);
+  });
+});
+
+describe('authored Rotunda surface contact', () => {
+  it('keeps feet on the real dais and its approach step', () => {
+    ensureMotion('dais-contact', { x: 0, y: 0, z: 0 }, null);
+    ensureMotion('step-contact', { x: DAIS.radius + .3, y: 0, z: 0 }, null);
+    advanceMotion(.016);
+    expect(getMotion('dais-contact')!.y).toBe(DAIS.topY);
+    expect(getMotion('step-contact')!.y).toBe(.14);
+  });
+  it('makes the expanded promenade walkable while keeping the outer edge safe', () => {
+    ensureMotion('promenade', { x: 23, y: 0, z: 0 }, null);
+    nudgeAgent('promenade', .2, 0);
+    expect(getMotion('promenade')!.x).toBeGreaterThan(23);
+    expect(getMotion('promenade')!.y).toBe(0);
+    nudgeAgent('promenade', 100, 0);
+    expect(Math.hypot(getMotion('promenade')!.x, getMotion('promenade')!.z)).toBeLessThan(PLATFORM_RADIUS);
   });
 });

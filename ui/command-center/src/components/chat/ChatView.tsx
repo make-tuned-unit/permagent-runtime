@@ -12,6 +12,7 @@ import { VoiceOrb } from '../voice/VoiceOrb';
 import { ChatPendingDecisions } from './ChatPendingDecisions';
 import { DiscussNotice } from './DiscussNotice';
 import { useTheme } from '../../styles/useTheme';
+import { DropZone } from './DropZone';
 
 export function ChatView() {
   const { colors } = useTheme();
@@ -63,7 +64,8 @@ export function ChatView() {
   const voiceOverlay = Boolean(voiceConversation && !chatWindowOpen);
 
   return (
-    <div className="relative flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
+    <DropZone zoneId="chat-dock-drop" priority={20} onDrop={(files) => chatInputRef.current?.addFiles(files)}>
+      <div className="relative flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
       <div
         className="flex items-center justify-between px-4 py-2.5"
         style={{ borderBottom: `1px solid ${colors.border}` }}
@@ -107,6 +109,7 @@ export function ChatView() {
           <ChatPendingDecisions overlay />
         </div>
       )}
-    </div>
+      </div>
+    </DropZone>
   );
 }

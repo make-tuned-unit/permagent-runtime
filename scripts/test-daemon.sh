@@ -47,6 +47,7 @@
 #   scripts/test-daemon.sh --release                # release, all
 #   scripts/test-daemon.sh --release voice::speak   # release, filtered
 #   TEST_DAEMON_PROFILE=release scripts/test-daemon.sh voice::speak
+#   scripts/test-daemon.sh --lib projection        # only the focused lib gate
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -65,36 +66,49 @@ TARGET_DIR="$(cargo metadata --no-deps --format-version 1 2>/dev/null \
 # Profile first, filter second. The profile may arrive as an argument or in the
 # environment; anything else in $1 is a cargo test filter, exactly as before.
 PROFILE="${TEST_DAEMON_PROFILE:-debug}"
-case "${1:-}" in
-  --release|release) PROFILE="release"; shift ;;
-  --debug|debug)     PROFILE="debug";   shift ;;
-esac
+TEST_SCOPE=(--lib --tests)
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --release|release) PROFILE="release"; shift ;;
+    --debug|debug)     PROFILE="debug"; shift ;;
+    --lib)            TEST_SCOPE=(--lib); shift ;;
+    *) break ;;
+  esac
+done
 case "$PROFILE" in
-  debug)   CARGO_PROFILE_FLAG=() ;;
-  release) CARGO_PROFILE_FLAG=(--release) ;;
+  debug)   CARGO_PROFILE_FLAG="" ;;
+  release) CARGO_PROFILE_FLAG="--release" ;;
   *) echo "[test-daemon] unknown profile '$PROFILE' (use debug or release)" >&2; exit 2 ;;
 esac
 
 PROFILE_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$ROOT/target}}/$PROFILE"
 FILTER="${1:-}"
+if [[ $# -gt 1 || "$FILTER" == --* ]]; then
+  echo "[test-daemon] expected [--release|--debug] [--lib] [test-filter]" >&2
+  exit 2
+fi
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   # Only macOS needs the signing dance; elsewhere plain cargo works.
-  exec cargo test -p permagent-daemon "${CARGO_PROFILE_FLAG[@]}" --lib --tests ${FILTER:+"$FILTER"}
+  exec cargo test -p permagent-daemon ${CARGO_PROFILE_FLAG:+"$CARGO_PROFILE_FLAG"} "${TEST_SCOPE[@]}" ${FILTER:+"$FILTER"}
 fi
 
 echo "[test-daemon] building test binary ($PROFILE)…"
-cargo build -p permagent-daemon "${CARGO_PROFILE_FLAG[@]}" --tests
+cargo test -p permagent-daemon ${CARGO_PROFILE_FLAG:+"$CARGO_PROFILE_FLAG"} "${TEST_SCOPE[@]}" --no-run ${FILTER:+"$FILTER"}
 
 echo "[test-daemon] ad-hoc signing dylibs in $PROFILE_DIR"
 shopt -s nullglob
 signed=0
 for dylib in "$PROFILE_DIR"/libsherpa-onnx-c-api.dylib "$PROFILE_DIR"/libonnxruntime*.dylib; do
-  codesign --force --sign - "$dylib" >/dev/null 2>&1 && signed=$((signed + 1))
+  [[ -f "$dylib" ]] || continue
+  codesign --force --sign - "$dylib"
+  codesign --verify --strict "$dylib"
+  signed=$((signed + 1))
 done
 shopt -u nullglob
 if [[ "$signed" -eq 0 ]]; then
-  echo "[test-daemon] WARN: no dylibs found in $PROFILE_DIR — build may not have run" >&2
+  echo "[test-daemon] ERROR: no dylibs found in $PROFILE_DIR" >&2
+  exit 1
 fi
 echo "[test-daemon] signed $signed dylib(s)"
 
@@ -103,4 +117,4 @@ echo "[test-daemon] signed $signed dylib(s)"
 export DYLD_LIBRARY_PATH="$PROFILE_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 
 echo "[test-daemon] running tests in $PROFILE${FILTER:+ (filter: $FILTER)}"
-exec cargo test -p permagent-daemon "${CARGO_PROFILE_FLAG[@]}" --lib --tests ${FILTER:+"$FILTER"}
+exec cargo test -p permagent-daemon ${CARGO_PROFILE_FLAG:+"$CARGO_PROFILE_FLAG"} "${TEST_SCOPE[@]}" ${FILTER:+"$FILTER"}

@@ -248,6 +248,13 @@ export function routeGlobalFrame(
   }
 }
 
+/** One-shot Build recovery seam invoked by each global-events connection. Kept
+ * exported so reconnect wiring can be regression-tested without opening a
+ * real browser WebSocket in node. */
+export function hydrateHarnessOnGlobalConnection(): void {
+  void useCommandCenter.getState().hydrateCodingHarness();
+}
+
 /**
  * Subscribes to the daemon's global event bus (/events WebSocket).
  * When an AppNavigate event arrives LIVE, navigates the UI to the specified
@@ -379,6 +386,10 @@ export function useAppNavigate() {
       // but never acted on (see shouldActOnFrame).
       const connectionEpoch = Date.now();
       ws = new WebSocket(url);
+      // The global events socket is the reconnect boundary for Build too.
+      // Rehydrate the durable active harness projection once per connection;
+      // spend frames remain the live path and no polling is introduced.
+      hydrateHarnessOnGlobalConnection();
 
       ws.onmessage = (ev) => {
         try {

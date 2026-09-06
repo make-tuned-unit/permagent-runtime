@@ -9,7 +9,146 @@
  * that runs in production — real frame in, rendered `$` out, nothing stubbed.
  */
 
-import type { SSEEvent, TokenState } from './api';
+import type {
+  BillingEvidence,
+  BudgetCapTriplet,
+  BudgetProjection,
+  BudgetScopeProjection,
+  ProjectionBand,
+  ProjectionCompleteness,
+  SSEEvent,
+  TokenState,
+} from './api';
+
+const PROJECTION_VERSION = 'budget-projection.v1' as const;
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function finiteOrNull(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
+  return value;
+}
+
+function nullableString(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  return typeof value === 'string' ? value : undefined;
+}
+
+function requiredString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function completeness(value: unknown): ProjectionCompleteness | null {
+  return value === 'complete' || value === 'partial' || value === 'unknown' ? value : null;
+}
+
+function band(value: unknown): ProjectionBand | null | undefined {
+  if (value === null) return null;
+  return value === 'ok' || value === 'soft' || value === 'gate'
+    || value === 'hard' || value === 'unknown' ? value : undefined;
+}
+
+function parseCap(value: unknown): BudgetCapTriplet | null {
+  const cap = record(value);
+  if (!cap) return null;
+  const softUsd = finiteOrNull(cap.softUsd);
+  const gateUsd = finiteOrNull(cap.gateUsd);
+  const hardUsd = finiteOrNull(cap.hardUsd);
+  const source = requiredString(cap.source);
+  if (softUsd === undefined || gateUsd === undefined || hardUsd === undefined || !source) return null;
+  // A partially present cap is unavailable, never a zero ceiling.
+  if (softUsd === null || gateUsd === null || hardUsd === null) {
+    if (softUsd !== null || gateUsd !== null || hardUsd !== null) return null;
+  } else if (softUsd > gateUsd || gateUsd > hardUsd) {
+    return null;
+  }
+  return { softUsd, gateUsd, hardUsd, source };
+}
+
+function parseScope(value: unknown): BudgetScopeProjection | null {
+  const scope = record(value);
+  if (!scope) return null;
+  const cap = parseCap(scope.cap);
+  const settledUsd = finiteOrNull(scope.settledUsd);
+  const heldUsd = finiteOrNull(scope.heldUsd);
+  const unknownUsd = finiteOrNull(scope.unknownUsd);
+  const effectiveUsedUsd = finiteOrNull(scope.effectiveUsedUsd);
+  const remainingUsd = finiteOrNull(scope.remainingUsd);
+  const parsedBand = band(scope.band);
+  const parsedCompleteness = completeness(scope.completeness);
+  const error = nullableString(scope.error);
+  if (!cap || settledUsd === undefined || heldUsd === undefined || unknownUsd === undefined
+    || effectiveUsedUsd === undefined || remainingUsd === undefined || parsedBand === undefined
+    || !parsedCompleteness || error === undefined) return null;
+  return {
+    cap, settledUsd, heldUsd, unknownUsd, effectiveUsedUsd, remainingUsd,
+    band: parsedBand, completeness: parsedCompleteness, error,
+  };
+}
+
+function parseBilling(value: unknown): BillingEvidence | null {
+  const billing = record(value);
+  if (!billing) return null;
+  const billingClass = nullableString(billing.billingClass);
+  const provider = nullableString(billing.provider);
+  const model = nullableString(billing.model);
+  const callId = nullableString(billing.callId);
+  const isEstimated = billing.isEstimated === null
+    ? null
+    : typeof billing.isEstimated === 'boolean' ? billing.isEstimated : undefined;
+  const observedAt = nullableString(billing.observedAt);
+  const source = requiredString(billing.source);
+  if (billingClass === undefined || provider === undefined || model === undefined
+    || callId === undefined || isEstimated === undefined || observedAt === undefined || !source) return null;
+  if (observedAt !== null && !Number.isFinite(Date.parse(observedAt))) return null;
+  return { billingClass, provider, model, callId, isEstimated, observedAt, source };
+}
+
+/** Strict runtime guard for the daemon's versioned canonical projection.
+ * Invalid identity, version, null semantics, or non-finite numbers return null
+ * so callers can render unavailable instead of fabricating a zero. */
+export function parseBudgetProjection(value: unknown): BudgetProjection | null {
+  const projection = record(value);
+  if (!projection || projection.provenance === undefined) return null;
+  const taskId = !Object.prototype.hasOwnProperty.call(projection, 'taskId')
+    ? undefined
+    : projection.taskId === null
+      ? null
+      : typeof projection.taskId === 'string' && projection.taskId.trim().length > 0
+        ? projection.taskId
+        : undefined;
+  const rootSessionId = requiredString(projection.rootSessionId);
+  const task = parseScope(projection.task);
+  const session = parseScope(projection.session);
+  const taskBilling = parseBilling(projection.taskBilling);
+  const sessionBilling = parseBilling(projection.sessionBilling);
+  const provenance = record(projection.provenance);
+  const version = provenance ? provenance.version : undefined;
+  const asOf = provenance ? provenance.asOf : undefined;
+  const provenanceCompleteness = provenance ? completeness(provenance.completeness) : null;
+  const sources = provenance?.sources;
+  const provenanceError = nullableString(provenance?.error);
+  if (taskId === undefined || !rootSessionId || !task || !session || !taskBilling || !sessionBilling
+    || version !== PROJECTION_VERSION || typeof asOf !== 'string'
+    || !Number.isFinite(Date.parse(asOf)) || !provenanceCompleteness
+    || !Array.isArray(sources) || !sources.every(source => typeof source === 'string' && source.length > 0)
+    || provenanceError === undefined) return null;
+  return {
+    taskId, rootSessionId, task, session, taskBilling, sessionBilling,
+    provenance: {
+      version: PROJECTION_VERSION,
+      asOf,
+      completeness: provenanceCompleteness,
+      sources: [...sources],
+      error: provenanceError,
+    },
+  };
+}
 
 /**
  * Pull the live token + cost state off any SSE frame that carries one (Message /
@@ -57,10 +196,10 @@ export interface SubagentCostIncl {
  */
 export interface CodingSpend {
   sessionId: string;
-  turnUsd: number;
-  sessionUsd: number;
-  todayUsd: number;
-  totalTokens: number;
+  turnUsd: number | null;
+  sessionUsd: number | null;
+  todayUsd: number | null;
+  totalTokens: number | null;
   provider: string | null;
   model: string | null;
   workingDir: string | null;
@@ -73,6 +212,11 @@ export interface CodingSpend {
   /** True on the session's closing announcement — the total is final, not
    *  merely the value between two turns. */
   finalTurn: boolean;
+  /** Canonical projection, when supplied by B5.3. Legacy events omit this. */
+  budget?: BudgetProjection;
+  /** Set when hydration observed an active run but its canonical projection
+   * was unavailable/unknown. This suppresses chat-account substitution. */
+  budgetStatus?: 'available' | 'unknown' | 'unavailable';
 }
 
 /** Rendered statusline model. `cost` is THE authoritative number; `segments`
@@ -85,6 +229,57 @@ export interface CostMeterModel {
   segments: string[];
   /** Screen-reader summary. */
   ariaLabel: string;
+}
+
+export type CodingHarnessHydration = 'initial' | 'active' | 'none' | 'unavailable';
+
+function fmtNullableUsd(value: number | null): string {
+  return value === null ? 'unavailable' : fmtUsd(value);
+}
+
+function appendScopeSegments(
+  segments: string[],
+  aria: string[],
+  label: string,
+  scope: BudgetScopeProjection,
+): void {
+  const used = ` ${label} used ${fmtNullableUsd(scope.effectiveUsedUsd)}`;
+  const settled = `${label} settled ${fmtNullableUsd(scope.settledUsd)}`;
+  const remaining = `${label} remaining ${fmtNullableUsd(scope.remainingUsd)}`;
+  segments.push(settled, used.trim(), remaining);
+  aria.push(settled, used.trim(), remaining);
+  if (scope.heldUsd !== null && scope.heldUsd > 0) {
+    const held = `${label} held ${fmtUsd(scope.heldUsd)}`;
+    segments.push(held);
+    aria.push(held);
+  }
+  if (scope.unknownUsd !== null && scope.unknownUsd > 0) {
+    const unknown = `${label} unknown ${fmtUsd(scope.unknownUsd)}`;
+    segments.push(unknown);
+    aria.push(unknown);
+  }
+  if (scope.band === 'unknown' || scope.completeness === 'unknown') {
+    segments.push(`${label} budget unknown`);
+    aria.push(`${label} budget status unknown`);
+  }
+}
+
+function appendBillingSegment(
+  segments: string[],
+  aria: string[],
+  label: string,
+  billing: BillingEvidence,
+): void {
+  const evidence = [billing.billingClass, billing.provider, billing.model]
+    .filter((part): part is string => Boolean(part)).join(' / ');
+  if (!evidence) return;
+  const text = `${label} billing ${evidence}`;
+  segments.push(text);
+  aria.push(text);
+  if (billing.isEstimated === true) {
+    segments.push(`${label} estimated`);
+    aria.push(`${label} billing is estimated`);
+  }
 }
 
 function appendSubagentSegment(
@@ -114,18 +309,67 @@ export function formatCostMeter(
   tokens: TokenState | null,
   coding: CodingSpend | null = null,
   subagents: SubagentCostIncl | null = null,
+  harnessHydration: CodingHarnessHydration = 'initial',
 ): CostMeterModel {
+  if (!coding && harnessHydration === 'unavailable') {
+    return {
+      cost: '—',
+      segments: ['Budget unavailable'],
+      ariaLabel: 'Budget unavailable; harness spend is not currently readable',
+    };
+  }
+  if (!coding && !tokens && harnessHydration === 'none') {
+    return {
+      cost: '—',
+      segments: ['No active harness'],
+      ariaLabel: 'No active coding harness',
+    };
+  }
   if (coding) {
-    const sessionCost = fmtUsd(coding.sessionUsd);
+    if (coding.budget) {
+      const sessionScope = coding.budget.session;
+      const sessionCost = fmtNullableUsd(sessionScope.effectiveUsedUsd);
+      const cost = sessionScope.effectiveUsedUsd === null ? '—' : fmtUsd(sessionScope.effectiveUsedUsd);
+      const segments: string[] = [];
+      const aria: string[] = [`Session cost ${sessionCost}`];
+      appendScopeSegments(segments, aria, 'session', sessionScope);
+      appendScopeSegments(segments, aria, 'task', coding.budget.task);
+      appendBillingSegment(segments, aria, 'session', coding.budget.sessionBilling);
+      appendBillingSegment(segments, aria, 'task', coding.budget.taskBilling);
+      if (coding.budget.provenance.error) {
+        segments.push('projection unavailable');
+        aria.push(`projection error ${coding.budget.provenance.error}`);
+      }
+      if (harnessHydration === 'unavailable' || coding.budgetStatus === 'unavailable') {
+        segments.push('projection unavailable — last known');
+        aria.push('projection unavailable; showing last known harness spend');
+      }
+      if (coding.finalTurn) {
+        segments.push('session ended');
+        aria.push('session ended');
+      }
+      appendSubagentSegment(segments, aria, subagents);
+      return { cost, segments, ariaLabel: aria.join(', ') };
+    }
+
+    if (coding.budgetStatus === 'unknown' || coding.budgetStatus === 'unavailable') {
+      const label = coding.budgetStatus === 'unknown' ? 'Budget unknown' : 'Budget unavailable';
+      const segments = [label];
+      const aria = [label];
+      appendSubagentSegment(segments, aria, subagents);
+      return { cost: '—', segments, ariaLabel: aria.join(', ') };
+    }
+
+    const sessionCost = coding.sessionUsd === null ? 'unavailable' : fmtUsd(coding.sessionUsd);
     // A fail-closed estimate rendered as a plain "$" reads as a bill the
     // harness actually charged — the `~` is the difference between "this is
     // what it cost" and "this is the worst case we're guarding against".
     const cost = coding.estimated ? `~${sessionCost}` : sessionCost;
-    const todayCost = fmtUsd(coding.todayUsd);
+    const todayCost = coding.todayUsd === null ? 'unavailable' : fmtUsd(coding.todayUsd);
 
     const segments: string[] = [
-      `${fmtTokens(coding.totalTokens)} tokens`,
-      `+${fmtUsd(coding.turnUsd)} this turn`,
+      `${coding.totalTokens === null ? 'unavailable' : fmtTokens(coding.totalTokens)} tokens`,
+      `+${coding.turnUsd === null ? 'unavailable' : fmtUsd(coding.turnUsd)} this turn`,
       `today ${todayCost}`,
     ];
     const aria: string[] = [`Session cost ${sessionCost}`, `today ${todayCost}`];

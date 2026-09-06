@@ -13,6 +13,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
+import restartProjection from '../../../../../scripts/testdata/budget_projection_v1.json';
+
+const { getActiveHarnessRuns } = vi.hoisted(() => ({ getActiveHarnessRuns: vi.fn() }));
 
 vi.mock('../../lib/useLiveGoals', () => ({
   useLiveGoals: () => ({ goals: [], activeCount: 0, loaded: true, refresh: () => {} }),
@@ -20,6 +23,7 @@ vi.mock('../../lib/useLiveGoals', () => ({
 
 vi.mock('../../lib/api', () => ({
   api: {
+    getActiveHarnessRuns,
     getSessionCost: vi.fn(async () => ({
       own: 0.42,
       childrenTotal: 0.17,
@@ -62,6 +66,10 @@ function resetStore() {
       model: '',
     },
     codingSpend: null,
+    codingSpendLastKnown: null,
+    codingHarnessHydration: 'initial',
+    codingHarnessRunId: null,
+    codingHarnessRevision: 0,
     chatSessionId: 'parent-1',
   });
 }
@@ -121,6 +129,24 @@ describe('CostStatusline', () => {
     expect(costSpan?.textContent).toBe('$0.03');
   });
 
+  it('renders hydration unavailable instead of substituting browser chat cost', async () => {
+    useCommandCenter.setState({
+      liveTokens: {
+        inputTokens: 1, outputTokens: 1, totalTokens: 2,
+        accumulatedInputTokens: 100, accumulatedOutputTokens: 100,
+        accumulatedTotalTokens: 200, costUsd: 99, accumulatedCostUsd: 99,
+        cacheSavingsUsd: 0, contextPercent: null, model: 'chat-model',
+      },
+      codingSpend: null,
+      codingHarnessHydration: 'unavailable',
+    });
+    await act(async () => {
+      root!.render(<CostStatusline />);
+    });
+    expect(container!.textContent).toContain('Budget unavailable');
+    expect(container!.textContent).not.toContain('$99.00');
+  });
+
   it('shows incl. N subagents $X when the parent cost rollup has children', async () => {
     await act(async () => {
       root!.render(<CostStatusline />);
@@ -133,5 +159,64 @@ describe('CostStatusline', () => {
     expect(api.getSessionCost).toHaveBeenCalledWith('parent-1');
     expect(container!.textContent).toContain('incl. 2 subagents $0.17');
     expect(container!.textContent).toContain('$0.42');
+  });
+
+  it('does not attribute the previous session child rollup to a new session while loading', async () => {
+    await act(async () => { root!.render(<CostStatusline />); });
+    expect(container!.textContent).toContain('incl. 2 subagents $0.17');
+    let finish!: (value: Awaited<ReturnType<typeof api.getSessionCost>>) => void;
+    vi.mocked(api.getSessionCost).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => { useCommandCenter.setState({ chatSessionId: 'parent-2' }); });
+    expect(container!.textContent).not.toContain('incl. 2 subagents $0.17');
+    await act(async () => { finish({ own: 1, childrenTotal: 0.5, perChild: [{ sessionId: 'new-child', costUsd: 0.5 }] }); });
+    expect(container!.textContent).toContain('incl. 1 subagent $0.50');
+  });
+
+  it('renders the Rust restart-ledger golden identically through events and reload hydration', async () => {
+    // Rust's real reopened-ledger test asserts this same fixture in full.
+    // Only nondeterministic identities/time are replaced on both sides.
+    const budget = {
+      ...restartProjection,
+      rootSessionId: 'restarted-harness',
+      taskId: 'restarted-task',
+      provenance: { ...restartProjection.provenance, asOf: '2026-09-05T12:00:00Z' },
+    };
+    vi.mocked(api.getSessionCost).mockResolvedValue({ own: 0, childrenTotal: 0, perChild: [] });
+    await act(async () => {
+      root!.render(<CostStatusline />);
+      applyLivenessFrame({
+        id: 'restart-golden-event', type: 'session_spend_changed',
+        timestamp: '2026-09-05T12:00:00Z',
+        payload: {
+          session_id: budget.rootSessionId, budget,
+          session_usd: 0, turn_usd: 0, today_usd: 0, total_tokens: 0,
+          provider: null, model: null, working_dir: '/tmp/fixture',
+          estimated: false, final_turn: false,
+        },
+      }, Date.parse('2026-09-05T11:59:00Z'));
+    });
+    expect(useCommandCenter.getState().codingSpend?.budget).toEqual(budget);
+    const eventText = container!.textContent;
+    expect(eventText).toContain('$0.75');
+    expect(eventText).toContain('session unknown $0.75');
+    expect(eventText).toContain('session remaining $0.25');
+    expect(eventText).toContain('session budget unknown');
+
+    getActiveHarnessRuns.mockResolvedValueOnce([{
+      runId: 'restarted-run', sessionId: budget.rootSessionId,
+      project: '/tmp/fixture', status: 'waiting_gate',
+      updatedAt: budget.provenance.asOf, tokens: 0,
+      provider: null, model: null, budget,
+    }]);
+    await act(async () => {
+      useCommandCenter.setState({
+        codingSpend: null, codingSpendLastKnown: null,
+        codingHarnessRunId: null, codingHarnessHydration: 'initial',
+      });
+      await useCommandCenter.getState().hydrateCodingHarness();
+    });
+    expect(container!.textContent).toBe(eventText);
+    expect(useCommandCenter.getState().codingHarnessRunId).toBe('restarted-run');
+    expect(useCommandCenter.getState().codingSpend?.budget).toEqual(budget);
   });
 });

@@ -114,6 +114,22 @@ describe('handleDragDropPayload routing', () => {
     expect(seen).toEqual([['/tmp/b.txt']]);
   });
 
+  it('gives the scoped Chat dock precedence over the workspace fallback', async () => {
+    const workspace = vi.fn();
+    const dock = vi.fn();
+    registerDropZone(zoneAt('workspace-chat-fallback', { left: 0, top: 0, right: 400, bottom: 400 }, {
+      priority: 0, onDrop: workspace,
+    }));
+    registerDropZone(zoneAt('chat-dock-drop', { left: 0, top: 0, right: 400, bottom: 400 }, {
+      priority: 20, onDrop: dock,
+    }));
+
+    await handleDragDropPayload({ type: 'drop', paths: ['/tmp/dock.png'], position: { x: 40, y: 40 } });
+
+    expect(dock).toHaveBeenCalledWith(['/tmp/dock.png'], expect.any(Function));
+    expect(workspace).not.toHaveBeenCalled();
+  });
+
   it('drives enter/leave overlays on the zone under the cursor, switching as it moves between panes', async () => {
     const terminalEnter = vi.fn();
     const terminalLeave = vi.fn();

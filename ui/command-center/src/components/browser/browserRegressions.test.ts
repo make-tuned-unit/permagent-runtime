@@ -410,6 +410,22 @@ describe('browser event-source contract', () => {
     const opens = BROWSER_TSX.split('openUrlRef.current(').length - 1;
     expect(opens).toBe(2); // the popup listener and the OAuth listener
   });
+
+  it('reports the previous main-frame URL as the navigation referrer', () => {
+    // Referrer belongs to the tab we are leaving, not an iframe URL or the
+    // destination. This is the breadcrumb analytics uses to join a click to
+    // the browser session without reading page content.
+    expect(BROWSER_TSX).toMatch(/referrer:\s*navTab\?\.url\s*\|\|\s*''/);
+  });
+
+  it('keeps address input autocomplete, autocorrect, capitalization and spellcheck off', () => {
+    const inputStart = BROWSER_TSX.indexOf('<input');
+    const addressInput = BROWSER_TSX.slice(inputStart, BROWSER_TSX.indexOf('/>', inputStart) + 2);
+    expect(addressInput).toContain('autoComplete="off"');
+    expect(addressInput).toContain('autoCapitalize="none"');
+    expect(addressInput).toContain('autoCorrect="off"');
+    expect(addressInput).toContain('spellCheck={false}');
+  });
 });
 
 // ── 9. Popup clicks become in-app tabs, not silent drops ────────────────────

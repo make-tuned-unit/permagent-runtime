@@ -768,7 +768,7 @@ pub async fn create_browser_webview(
 ) -> Result<String, String> {
     let id = WEBVIEW_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let label = format!("browser-{id}");
-    let parsed_url: url::Url = url.parse().map_err(|e| format!("Invalid URL: {e}"))?;
+    let parsed_url = guard_browser_url(&url)?;
     let webview_url = WebviewUrl::External(parsed_url);
 
     let owner = window_label.unwrap_or_else(|| "main".to_string());
@@ -1020,7 +1020,7 @@ pub async fn navigate_browser(
     webview_id: String,
     url: String,
 ) -> Result<(), String> {
-    let parsed: url::Url = url.parse().map_err(|e| format!("Invalid URL: {e}"))?;
+    let parsed = guard_browser_url(&url)?;
     let webview = app
         .get_webview(&webview_id)
         .ok_or_else(|| "Webview not found".to_string())?;
@@ -1028,6 +1028,18 @@ pub async fn navigate_browser(
         .navigate(parsed)
         .map_err(|e| format!("Navigation failed: {e}"))?;
     Ok(())
+}
+
+/// The renderer can be driven by persisted state, deep links, or an agent,
+/// so the native command is the final URL trust boundary. Build browser tabs
+/// are web-only: never hand WebKit `javascript:`, `file:`, `data:`, or custom
+/// schemes even if a caller bypasses the normal address-bar normalization.
+fn guard_browser_url(raw: &str) -> Result<url::Url, String> {
+    let parsed: url::Url = raw.parse().map_err(|e| format!("Invalid URL: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!("Only http(s) browser URLs are allowed, got {}", parsed.scheme()));
+    }
+    Ok(parsed)
 }
 
 #[tauri::command]
@@ -1065,15 +1077,37 @@ pub async fn hide_browser(app: AppHandle, webview_id: String) -> Result<(), Stri
 
 #[tauri::command]
 pub async fn close_browser(app: AppHandle, webview_id: String) -> Result<(), String> {
-    app.state::<BrowserSessions>()
-        .0
-        .lock()
-        .unwrap()
-        .remove(&webview_id);
-    if let Some(webview) = app.get_webview(&webview_id) {
-        webview.close().map_err(|e| format!("Close failed: {e}"))?;
+    let Some(webview) = app.get_webview(&webview_id) else {
+        // The native child is already gone; forgetting the stale registry
+        // entry is the only safe cleanup in this case.
+        app.state::<BrowserSessions>().0.lock().unwrap().remove(&webview_id);
+        eprintln!("[permagent-app] browser close: {webview_id} already absent");
+        return Ok(());
+    };
+
+    // Stop media before asking WebKit to tear down the child. This is
+    // intentionally best-effort: a page can be mid-navigation, but a close
+    // failure must never leave a playing YouTube document hidden behind the
+    // shell. Clearing the document also releases media/session resources that
+    // otherwise outlive the React tab.
+    let _ = webview.eval(
+        "try { window.stop(); document.querySelectorAll('video,audio').forEach(function(m){m.pause();m.removeAttribute('src');m.load();}); } catch (_) {}",
+    );
+    match webview.close() {
+        Ok(()) => {
+            app.state::<BrowserSessions>().0.lock().unwrap().remove(&webview_id);
+            eprintln!("[permagent-app] browser close: {webview_id} media stop requested and webview closed");
+            Ok(())
+        }
+        Err(e) => {
+            // Keep BrowserSessions authoritative on failure so the orphan
+            // reaper can retry it. Removing this entry first was the source of
+            // silent audio survivors: the UI forgot the child while WebKit did
+            // not actually close it.
+            eprintln!("[permagent-app] browser close FAILED: {webview_id}: {e}");
+            Err(format!("Close failed: {e}"))
+        }
     }
-    Ok(())
 }
 
 /// Child browser webviews are `browser-0`, `browser-1`, … from
@@ -1169,6 +1203,9 @@ pub async fn reap_orphan_browsers(
             let _ = webview.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
                 -10000.0, -10000.0,
             )));
+            let _ = webview.eval(
+                "try { window.stop(); document.querySelectorAll('video,audio').forEach(function(m){m.pause();m.removeAttribute('src');m.load();}); } catch (_) {}",
+            );
             if let Err(e) = webview.close() {
                 eprintln!("[permagent-app] reap: close {label} failed: {e}");
                 continue;
@@ -1891,6 +1928,62 @@ mod tests {
 
     fn parse_url(s: &str) -> url::Url {
         s.parse().expect("test URL must parse")
+    }
+
+    #[test]
+    fn browser_navigation_accepts_only_http_schemes() {
+        assert!(guard_browser_url("https://example.com/thread").is_ok());
+        for unsafe_url in ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,hi"] {
+            assert!(guard_browser_url(unsafe_url).is_err(), "accepted {unsafe_url}");
+        }
+    }
+
+    #[test]
+    fn close_path_stops_media_and_keeps_registry_on_failure() {
+        let src = include_str!("browser.rs");
+        let close = src
+            .split("pub async fn close_browser")
+            .nth(1)
+            .and_then(|tail| tail.split("/// Child browser webviews").next())
+            .expect("close_browser body");
+        assert!(close.contains("querySelectorAll('video,audio')"));
+        assert!(close.contains("browser close FAILED"));
+        assert!(close.contains("Err(format!(\"Close failed"));
+        // The registry removal must be in the success arm, after close().
+        let close_pos = close.find("match webview.close()").unwrap();
+        let remove_pos = close[close_pos..]
+            .find(".remove(&webview_id)")
+            .map(|p| p + close_pos)
+            .unwrap();
+        assert!(remove_pos > close_pos, "registry was forgotten before close");
+    }
+
+    #[test]
+    fn close_transition_requests_media_teardown_before_native_close() {
+        let src = include_str!("browser.rs");
+        let close = src
+            .split("pub async fn close_browser")
+            .nth(1)
+            .and_then(|tail| tail.split("/// Child browser webviews").next())
+            .expect("close_browser body");
+        let teardown_pos = close
+            .find("window.stop()")
+            .expect("close must stop the document before native teardown");
+        let close_pos = close
+            .find("match webview.close()")
+            .expect("close must report the native transition result");
+        assert!(
+            teardown_pos < close_pos,
+            "media teardown must be requested before native webview close"
+        );
+        assert!(
+            close.contains("querySelectorAll('video,audio')"),
+            "close must pause and unload media elements"
+        );
+        assert!(
+            close.contains("browser close FAILED"),
+            "failed native close must remain observable for retry/reaper handling"
+        );
     }
 
     #[test]

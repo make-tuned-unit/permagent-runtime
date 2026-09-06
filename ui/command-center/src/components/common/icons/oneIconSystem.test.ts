@@ -43,6 +43,10 @@ const DRAWINGS: Record<string, { count: number; why: string }> = {
     count: 1,
     why: 'the cumulative helped/hindered polyline — a data graphic',
   },
+  'components/grow/DailyPageviewsChart.tsx': {
+    count: 1,
+    why: 'the daily pageviews bars and fitted trendline — a data graphic',
+  },
   'components/projects/MarketPanel.tsx': {
     count: 1,
     why: 'the per-row market history series — a data graphic',

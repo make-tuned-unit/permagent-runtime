@@ -67,6 +67,8 @@ interface TerminalProps {
   onSessionSpawned?: (sessionId: string) => void;
   onTitleChange?: (title: string) => void;
   onCwdChange?: (cwd: string) => void;
+  /** Verbatim PTY output for small, session-scoped control acknowledgements. */
+  onPtyData?: (data: string) => void;
   cwd?: string;
   initialCommand?: string;
   /** S2 (#428): supervised loop session id (`sup-<uuid>`) — passed to
@@ -79,7 +81,7 @@ interface TerminalProps {
   isVisible: boolean;
 }
 
-export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChange, cwd, initialCommand, supervisedSessionId, followUpInput, growthAction, isVisible }: TerminalProps) {
+export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChange, onPtyData, cwd, initialCommand, supervisedSessionId, followUpInput, growthAction, isVisible }: TerminalProps) {
   const { theme, colors } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
@@ -90,6 +92,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   const onSessionSpawnedRef = useRef(onSessionSpawned);
   const onTitleChangeRef = useRef(onTitleChange);
   const onCwdChangeRef = useRef(onCwdChange);
+  const onPtyDataRef = useRef(onPtyData);
   const cwdRef = useRef(cwd);
   const initialCommandRef = useRef(initialCommand);
   const supervisedSessionIdRef = useRef(supervisedSessionId);
@@ -106,6 +109,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   onSessionSpawnedRef.current = onSessionSpawned;
   onTitleChangeRef.current = onTitleChange;
   onCwdChangeRef.current = onCwdChange;
+  onPtyDataRef.current = onPtyData;
   cwdRef.current = cwd;
   initialCommandRef.current = initialCommand;
   supervisedSessionIdRef.current = supervisedSessionId;
@@ -324,6 +328,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         write: (data) => {
           if (replayUpTo === null) { held.push({ data, seq: pendingSeq }); return; }
           term.write(data);
+          onPtyDataRef.current?.(data);
           // Readiness for the follow-up paste (createFollowUpDelivery) is
           // read off these same bytes — feed the identical verbatim chunk.
           followUpDeliveryRef.current?.onData(data);
@@ -342,6 +347,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
           // missing chunk is not.
           if (chunk.seq !== undefined && upTo !== null && chunk.seq <= upTo) continue;
           term.write(chunk.data);
+          onPtyDataRef.current?.(chunk.data);
           followUpDeliveryRef.current?.onData(chunk.data);
         }
         held.length = 0;
@@ -393,6 +399,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
             }) as { data: string; seq: number };
             if (!cancelled && replay?.data) {
               term.write(replay.data);
+              onPtyDataRef.current?.(replay.data);
               followUpDeliveryRef.current?.onData(replay.data);
             }
             if (!cancelled) releaseHeld(replay?.seq ?? null);

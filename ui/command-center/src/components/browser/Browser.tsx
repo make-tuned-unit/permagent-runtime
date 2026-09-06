@@ -30,6 +30,8 @@ import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
 import { createBoundsPump } from './boundsPump';
 import { reserveFromLeft } from './reservedRect';
+import { api as browserApi, type BrowserHistoryEntry } from '../../lib/api';
+import { historySuggestions, recordHistory } from './historyLogic';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
 
@@ -125,6 +127,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   const [urlInput, setUrlInput] = useState('');
   const [api, setApi] = useState<TauriApi | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1.0);
+  const [history, setHistory] = useState<BrowserHistoryEntry[]>([]);
   const urlInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -291,6 +294,17 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     getTauriApi().then((resolved) => {
       setApi(resolved);
     });
+  }, []);
+
+  // Address suggestions use the same daemon-persisted browser state as
+  // bookmarks and tab sets. Loading is best-effort: a down daemon must not
+  // make the browser address field unusable.
+  useEffect(() => {
+    let cancelled = false;
+    browserApi.getBrowserHistory()
+      .then((response) => { if (!cancelled) setHistory(response.entries); })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, []);
 
   // ── Persist CONTINUOUSLY, not on unmount ──
@@ -706,24 +720,32 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     // Listen for OAuth completion to close the OAuth tab
     let unlistenOAuthComplete: (() => void) | null = null;
     api.listen('browser_oauth_complete', () => {
-      // Find and close any tab with an OAuth URL
-      setTabs((prev) => {
-        const oauthTab = prev.find(
+      // Close the native child before removing the OAuth tab, using the same
+      // authoritative ordering as a user-confirmed tab close.
+      void (async () => {
+        const oauthTab = tabsRef.current.find(
           (t) => t.url.includes('accounts.google.com') || t.label.startsWith('OAuth:'),
         );
         if (oauthTab?.webviewId && apiRef.current) {
-          apiRef.current.invoke('close_browser', { webviewId: oauthTab.webviewId }).catch(() => {});
+          try {
+            await apiRef.current.invoke('close_browser', { webviewId: oauthTab.webviewId });
+          } catch (error) {
+            console.error('[browser] OAuth close failed; retaining tab:', error);
+            return;
+          }
         }
-        const remaining = prev.filter(
-          (t) => !t.url.includes('accounts.google.com') && !t.label.startsWith('OAuth:'),
-        );
-        if (remaining.length === 0) {
-          const newTab = createTab();
-          setActiveTabId(newTab.id);
-          return [newTab];
-        }
-        return remaining;
-      });
+        setTabs((prev) => {
+          const remaining = prev.filter(
+            (t) => !t.url.includes('accounts.google.com') && !t.label.startsWith('OAuth:'),
+          );
+          if (remaining.length === 0) {
+            const newTab = createTab();
+            setActiveTabId(newTab.id);
+            return [newTab];
+          }
+          return remaining;
+        });
+      })();
     }).then((fn) => {
       unlistenOAuthComplete = fn;
     });
@@ -741,6 +763,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     async (url: string, label?: string) => {
       if (!apiRef.current) return;
       if (isPlaceholderUrl(url)) return;
+      if (!/^https?:\/\//i.test(url)) return;
 
       const rect = containerRef.current?.getBoundingClientRect();
       const tab = createTab();
@@ -764,10 +787,16 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
         tab.loading = false;
       }
 
+      if (tab.webviewId) {
+        const nextHistory = recordHistory(history, url, tab.label);
+        setHistory(nextHistory);
+        browserApi.recordBrowserHistory(nextHistory.find((entry) => entry.url === url)!).catch(() => {});
+      }
+
       setTabs((prev) => [...prev, tab]);
       setActiveTabId(tab.id);
     },
-    [ownerWindowLabel],
+    [history, ownerWindowLabel],
   );
   openUrlRef.current = handleOpenUrl;
 
@@ -816,6 +845,9 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
                 : t,
             ),
           );
+          const nextHistory = recordHistory(history, normalized, extractTitle(normalized));
+          setHistory(nextHistory);
+          browserApi.recordBrowserHistory(nextHistory.find((entry) => entry.url === normalized)!).catch(() => {});
           return true;
         } catch (err) {
           console.error('Navigate failed:', err);
@@ -848,6 +880,9 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
                 : t,
             ),
           );
+          const nextHistory = recordHistory(history, normalized, extractTitle(normalized));
+          setHistory(nextHistory);
+          browserApi.recordBrowserHistory(nextHistory.find((entry) => entry.url === normalized)!).catch(() => {});
           return true;
         } catch (err) {
           console.error('Create webview failed:', err);
@@ -855,7 +890,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
         }
       }
     },
-    [tabs, activeTabId, ownerWindowLabel],
+    [tabs, activeTabId, history, ownerWindowLabel],
   );
 
   const handleNewTab = useCallback(() => {
@@ -865,38 +900,50 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     setTimeout(() => urlInputRef.current?.focus(), 50);
   }, []);
 
-  const handleCloseTab = useCallback((tabId: string, e?: React.MouseEvent) => {
+  const handleCloseTab = useCallback(async (tabId: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
-
-    setClosingTabId((prev) => {
-      if (prev === tabId) {
-        // Double-click to confirm close
-        setTabs((prevTabs) => {
-          const tab = prevTabs.find((t) => t.id === tabId);
-          if (tab?.webviewId && apiRef.current) {
-            // Activity: browser session ended
-            emitActivity(apiRef.current, 'browser_session_ended', { tab_id: tab.id });
-            apiRef.current.invoke('close_browser', { webviewId: tab.webviewId }).catch(() => {});
-          }
-          const next = prevTabs.filter((t) => t.id !== tabId);
-          if (next.length === 0) {
-            const newTab = createTab();
-            setActiveTabId(newTab.id);
-            return [newTab];
-          }
-          if (tabId === activeTabIdRef.current) {
-            const idx = prevTabs.findIndex((t) => t.id === tabId);
-            const nextActive = next[Math.min(idx, next.length - 1)];
-            setActiveTabId(nextActive.id);
-          }
-          return next;
-        });
-        return null;
-      }
+    if (closingTabId !== tabId) {
+      setClosingTabId(tabId);
       setTimeout(() => setClosingTabId((p) => (p === tabId ? null : p)), 2000);
-      return tabId;
+      return;
+    }
+
+    // Close the native child first. Removing the React tab before this await
+    // used to hide a failed close, leaving media playing in a webview the UI
+    // no longer knew how to address.
+    const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
+    if (tab?.webviewId && apiRef.current) {
+      try {
+        await apiRef.current.invoke('close_browser', { webviewId: tab.webviewId });
+        emitActivity(apiRef.current, 'browser_session_ended', { tab_id: tab.id });
+      } catch (error) {
+        console.error('[browser] close failed; tab retained for retry:', error);
+        emitActivity(apiRef.current, 'browser_session_close_failed', {
+          tab_id: tab.id,
+          webview_id: tab.webviewId,
+          error: String(error),
+        });
+        setClosingTabId(null);
+        return;
+      }
+    }
+
+    setTabs((prevTabs) => {
+      const next = prevTabs.filter((candidate) => candidate.id !== tabId);
+      if (next.length === 0) {
+        const newTab = createTab();
+        setActiveTabId(newTab.id);
+        return [newTab];
+      }
+      if (tabId === activeTabIdRef.current) {
+        const idx = prevTabs.findIndex((candidate) => candidate.id === tabId);
+        const nextActive = next[Math.min(idx, next.length - 1)];
+        setActiveTabId(nextActive.id);
+      }
+      return next;
     });
-  }, []);
+    setClosingTabId(null);
+  }, [closingTabId]);
 
   const handleSelectTab = useCallback(
     (tabId: string) => {
@@ -1196,10 +1243,20 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
             onChange={(e) => { urlDirtyRef.current = true; setUrlInput(e.target.value); }}
             onKeyDown={handleUrlKeyDown}
             onFocus={(e) => e.target.select()}
+            autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            list={`browser-history-${ownerWindowLabel}`}
             placeholder="Search or enter URL..."
             className="browser-url-input flex-1 bg-transparent text-xs py-1.5 pr-3 outline-none"
             style={{ fontFamily: font.mono, color: colors.text }}
           />
+          <datalist id={`browser-history-${ownerWindowLabel}`}>
+            {historySuggestions(history, urlInput).map((entry) => (
+              <option key={entry.url} value={entry.url}>{entry.title}</option>
+            ))}
+          </datalist>
           <style>{`.browser-url-input::placeholder { color: ${colors.textMuted}; opacity: 0.6; }`}</style>
         </div>
       </div>

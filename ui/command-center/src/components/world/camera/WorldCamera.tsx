@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import type { CameraMode, AgentState } from '../types';
 import { useTourActive } from './tourState';
 import { getReduceMotion } from '../../../styles/tokens';
+import { WORLD_ORBIT_POSITION, WORLD_ORBIT_TARGET, WORLD_ORBIT_MAX_DISTANCE } from '../constants';
 
 interface WorldCameraProps {
   mode: CameraMode;
@@ -16,8 +17,8 @@ interface WorldCameraProps {
   onFocusDone: () => void;
 }
 
-const ORBIT_POSITION = new THREE.Vector3(20, 15, 20);
-const ORBIT_TARGET = new THREE.Vector3(0, 2, 0);
+const ORBIT_POSITION = new THREE.Vector3(...WORLD_ORBIT_POSITION);
+const ORBIT_TARGET = new THREE.Vector3(...WORLD_ORBIT_TARGET);
 const AUTO_ROTATE_DELAY = 5000;
 const TRANSITION_DURATION = 1.5;
 
@@ -290,9 +291,9 @@ export function WorldCamera({
       ref={controlsRef}
       args={[camera, gl.domElement]}
       // Wheel-zoom range (nav-bug #2): intentional — 8m keeps the camera outside the
-      // colonnade, 50m frames the whole crown + Mesh portal. Confirmed reads as designed.
+      // close detail; the expanded limit frames the new 51m Rotunda and portal.
       minDistance={8}
-      maxDistance={50}
+      maxDistance={WORLD_ORBIT_MAX_DISTANCE}
       minPolarAngle={0.2}
       maxPolarAngle={Math.PI / 2 - 0.1}
       enableDamping

@@ -43,6 +43,7 @@ import { DecisionInbox } from '../dashboard/decisions/DecisionInbox';
 import { summarizeDecisions } from '../dashboard/decisions/summary';
 import { getOpenOnLaunch, setOpenOnLaunch, OPEN_ON_LAUNCH_OPTIONS, type OpenOnLaunch } from '../../lib/openOnLaunch';
 import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
+import { ProviderModelPicker } from './ProviderModelPicker';
 
 // The PreviewBadge/PreviewNotice machinery (2026-07-10 audit) is gone: every
 // preview-only control has been either wired to real state or removed
@@ -713,66 +714,39 @@ function computeRoleEffective(
  *  ModelsPanel instead, because it resolves through voice_model.rs, whose
  *  precedence differs (see the comment on that row). */
 function RoleModelRow({
-  label, testId, hint, providerKey, modelKey, provider, model,
+  label, testId, hint, role, modelKey, provider, model,
   sessionProvider, sessionModel, onSaved,
 }: {
-  label: string; testId: string; hint: string; providerKey: string; modelKey: string;
+  label: string; testId: string; hint: string; role: 'chat' | 'harness'; modelKey: string;
   provider: string | null; model: string | null;
   sessionProvider: string | null; sessionModel: string | null;
   onSaved: (provider: string | null, model: string | null) => void;
 }) {
   const { colors } = useThemeHook();
-  const [providerInput, setProviderInput] = useState(provider ?? '');
-  const [modelInput, setModelInput] = useState(model ?? '');
-  const [warn, setWarn] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Reflect a config load (or another surface's write) that lands after this
-  // row already mounted with empty/stale inputs.
-  useEffect(() => { setProviderInput(provider ?? ''); }, [provider]);
-  useEffect(() => { setModelInput(model ?? ''); }, [model]);
+  const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const latestSave = useRef(0);
 
   const effective = computeRoleEffective(provider, model, sessionProvider, sessionModel, modelKey);
 
-  const handleSave = async () => {
-    const p = providerInput.trim();
-    const m = modelInput.trim();
-    setWarn(false);
+  const savePair = (p: string, m: string) => {
+    const request = ++latestSave.current;
     setError(null);
-    const bothEmpty = p === '' && m === '';
-    const bothSet = p !== '' && m !== '';
-    const pDisable = p !== '' && isRoleDisableValue(p);
-    const mDisable = m !== '' && isRoleDisableValue(m);
-    if (!bothEmpty && !bothSet && !pDisable && !mDisable) {
-      // Exactly one filled, and it is not a session/off/none shorthand — a
-      // half pair. Warn and write nothing (mirrors HalfConfigured).
-      setWarn(true);
-      return;
-    }
-    setSaving(true);
-    try {
-      if (bothEmpty) {
-        // Both cleared: write both keys empty rather than leaving one behind.
-        await api.upsertConfig(providerKey, '');
-        await api.upsertConfig(modelKey, '');
-        onSaved(null, null);
-      } else if (bothSet) {
-        await api.upsertConfig(providerKey, p);
-        await api.upsertConfig(modelKey, m);
-        onSaved(p, m);
-      } else {
-        // Exactly one filled and it is a disable shorthand (e.g. provider =
-        // "session", model left blank) — write just that key.
-        if (p !== '') await api.upsertConfig(providerKey, p);
-        if (m !== '') await api.upsertConfig(modelKey, m);
-        onSaved(p || null, m || null);
+    // Preserve click order across rapid reselection. Each queued request is a
+    // single daemon-side config transaction for the complete pair.
+    const pending = saveQueue.current
+      .catch(() => undefined)
+      .then(() => api.setModelRoute(role, p, m));
+    saveQueue.current = pending;
+    void pending.then(() => {
+      if (request === latestSave.current) onSaved(p || null, m || null);
+    }).catch(err => {
+      if (request === latestSave.current) {
+        setError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
       }
-    } catch (err) {
-      setError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    setSaving(false);
+    });
   };
+  const useSession = () => savePair('', 'session');
 
   return (
     <Row label={label} hint={hint}>
@@ -785,29 +759,8 @@ function RoleModelRow({
           </span>
         )}
       </div>
-      {warn && (
-        <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>
-          provider and model must be set together, or neither
-        </div>
-      )}
       {error && <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{error}</div>}
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <div style={{ width: 160 }}>
-          <TextInput
-            value={providerInput}
-            onChange={v => { setProviderInput(v); setWarn(false); }}
-            placeholder="provider"
-          />
-        </div>
-        <div style={{ flex: 1 }}>
-          <TextInput
-            value={modelInput}
-            onChange={v => { setModelInput(v); setWarn(false); }}
-            placeholder="model id, or session / off / none"
-          />
-        </div>
-        <SaveButton onClick={() => { void handleSave(); }} disabled={saving} saving={saving} />
-      </div>
+      <ProviderModelPicker value={{ provider, model }} sessionActive={isRoleDisableValue(model ?? '') || isRoleDisableValue(provider ?? '')} onChange={v => savePair(v.provider, v.model)} onUseSession={useSession} aria-label={`${label} provider and model`} />
       </div>
     </Row>
   );
@@ -847,10 +800,9 @@ export function ModelsPanel({ goto }: PanelProps) {
   // model", never as a side effect of loading the panel.
   const [voiceProvider, setVoiceProvider] = useState<string | null>(null);
   const [voiceModel, setVoiceModel] = useState<string | null>(null);
-  const [voiceProviderInput, setVoiceProviderInput] = useState('');
-  const [voiceModelInput, setVoiceModelInput] = useState('');
-  const [voiceSaving, setVoiceSaving] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const voiceSaveQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const latestVoiceSave = useRef(0);
   useEffect(() => {
     let active = true;
     Promise.all([api.readConfig('voice_provider'), api.readConfig('voice_model')])
@@ -860,45 +812,28 @@ export function ModelsPanel({ goto }: PanelProps) {
         const model = typeof m === 'string' ? m : null;
         setVoiceProvider(provider);
         setVoiceModel(model);
-        setVoiceProviderInput(provider ?? '');
-        setVoiceModelInput(model ?? '');
       })
       .catch(() => {});
     return () => { active = false; };
   }, []);
-  const saveVoiceModel = () => {
-    const prevProvider = voiceProvider;
-    const prevModel = voiceModel;
-    const nextProvider = voiceProviderInput;
-    const nextModel = voiceModelInput;
-    setVoiceProvider(nextProvider);
-    setVoiceModel(nextModel);
+  const saveVoiceRoute = (provider: string, model: string) => {
+    const request = ++latestVoiceSave.current;
     setVoiceError(null);
-    setVoiceSaving(true);
-    Promise.all([
-      api.upsertConfig('voice_provider', nextProvider),
-      api.upsertConfig('voice_model', nextModel),
-    ])
-      .catch(err => {
-        setVoiceProvider(prevProvider);
-        setVoiceModel(prevModel);
-        setVoiceProviderInput(prevProvider ?? '');
-        setVoiceModelInput(prevModel ?? '');
+    const pending = voiceSaveQueue.current
+      .catch(() => undefined)
+      .then(() => api.setModelRoute('voice', provider, model));
+    voiceSaveQueue.current = pending;
+    void pending.then(() => {
+      if (request !== latestVoiceSave.current) return;
+      setVoiceProvider(provider || null);
+      setVoiceModel(model || null);
+    }).catch(err => {
+      if (request === latestVoiceSave.current) {
         setVoiceError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
-      })
-      .finally(() => setVoiceSaving(false));
-  };
-  const useSessionVoiceModel = () => {
-    const prevModel = voiceModel;
-    setVoiceModel('session');
-    setVoiceModelInput('session');
-    setVoiceError(null);
-    api.upsertConfig('voice_model', 'session').catch(err => {
-      setVoiceModel(prevModel);
-      setVoiceModelInput(prevModel ?? '');
-      setVoiceError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+      }
     });
   };
+  const useSessionVoiceModel = () => saveVoiceRoute('', 'session');
 
   // Chat / Harness role table (crates/goose/src/config/model_roles.rs). Voice
   // is the third row of the same table but keeps its OWN state above, because
@@ -919,88 +854,6 @@ export function ModelsPanel({ goto }: PanelProps) {
     }).catch(() => {});
     return () => { active = false; };
   }, [configRev]);
-
-  // Strix — the security sweep loop (crate::strix). The daemon re-reads
-  // `strix_enabled` every tick, so a flip here takes effect at the next tick
-  // without a restart.
-  const [strix, setStrix] = useState<boolean | null>(null);
-  const [strixError, setStrixError] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    api.readConfig('strix_enabled')
-      .then(r => { if (active) setStrix(r === true); })
-      .catch(() => { if (active) setStrix(false); });
-    return () => { active = false; };
-  }, [configRev]);
-  const saveStrix = (v: boolean) => {
-    const prev = strix;
-    setStrix(v);
-    setStrixError(null);
-    api.upsertConfig('strix_enabled', v).catch(err => {
-      setStrix(prev);
-      setStrixError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  };
-  // Sweep cadence (strix_sweep_hours) — each sweep is a real agentic scan of
-  // every active project on the user's API credits, so the cadence is theirs
-  // to set. Daemon default is daily; changes apply within ~15 minutes.
-  const [strixHours, setStrixHours] = useState<number>(24);
-  const [strixDockerSsh, setStrixDockerSsh] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    api.readConfig('strix_sweep_hours')
-      .then(r => {
-        const v = Number(r);
-        if (active && Number.isFinite(v) && v > 0) setStrixHours(v);
-      })
-      .catch(() => { /* unset — daemon default (24h) applies */ });
-    api.readConfig('strix_docker_ssh')
-      .then(r => {
-        if (active && typeof r === 'string' && r.trim()) setStrixDockerSsh(r.trim());
-      })
-      .catch(() => { /* unset — scans locally */ });
-    return () => { active = false; };
-  }, [configRev]);
-  const saveStrixHours = (v: number) => {
-    const prev = strixHours;
-    setStrixHours(v);
-    setStrixError(null);
-    api.upsertConfig('strix_sweep_hours', v).catch(err => {
-      setStrixHours(prev);
-      setStrixError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  };
-
-  // The Watcher (daemon proactive.rs) — teachability keys. `watcher_topics` =
-  // subjects to follow (relevant by the user's say-so); `watcher_muted_subjects`
-  // = subjects never to nudge about. Comma-separated in the UI, stored as
-  // string arrays; the daemon re-reads both on every news check.
-  const [watcherTopics, setWatcherTopics] = useState<string>('');
-  const [watcherMuted, setWatcherMuted] = useState<string>('');
-  const [watcherError, setWatcherError] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    api.readConfig('watcher_topics')
-      .then(r => { if (active && Array.isArray(r)) setWatcherTopics((r as string[]).join(', ')); })
-      .catch(() => { /* unset — no topics taught yet */ });
-    api.readConfig('watcher_muted_subjects')
-      .then(r => { if (active && Array.isArray(r)) setWatcherMuted((r as string[]).join(', ')); })
-      .catch(() => { /* unset — nothing muted */ });
-    // Deliberately NOT keyed on `configRev`, unlike every other read in this
-    // panel: these two states ARE the text inputs' `value`, so a refetch
-    // triggered by an unrelated key changing would overwrite whatever the user
-    // was halfway through typing. Losing a draft to a background refresh is a
-    // worse bug than the staleness it would fix, and these fields save on blur
-    // anyway.
-    return () => { active = false; };
-  }, []);
-  const saveWatcherList = (key: 'watcher_topics' | 'watcher_muted_subjects', raw: string) => {
-    setWatcherError(null);
-    const list = raw.split(',').map(s => s.trim()).filter(Boolean);
-    api.upsertConfig(key, list).catch(err => {
-      setWatcherError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  };
 
   // Poll Ollama status while panel is visible
   useEffect(() => {
@@ -1037,13 +890,13 @@ export function ModelsPanel({ goto }: PanelProps) {
           for the precedence this mirrors. */}
       <Section
         title="Chat, Voice and Harness"
-        sub="Which model runs each job. Set both boxes together, or neither — a stray half pair is treated as unset. Type session, off, or none in either box to pin a job back to the session model above."
+        sub="Which model runs each job. Choose a configured provider to expand its available models, or use the explicit session-model action to follow the current session."
       >
         <RoleModelRow
           label="Chat"
           testId="role-row-chat"
           hint="typed turns in the Command Center"
-          providerKey="chat_provider"
+          role="chat"
           modelKey="chat_model"
           provider={chatCfg?.provider ?? null}
           model={chatCfg?.model ?? null}
@@ -1064,24 +917,7 @@ export function ModelsPanel({ goto }: PanelProps) {
             </div>
             {voiceError && <div style={{ fontSize: textSize.micro, color: colors.danger, marginBottom: 8 }}>{voiceError}</div>}
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <div style={{ width: 160 }}>
-                <TextInput
-                  value={voiceProviderInput}
-                  onChange={setVoiceProviderInput}
-                  placeholder={DEFAULT_VOICE_PROVIDER_ID}
-                  mono
-                />
-              </div>
-              <div style={{ flex: 1 }}>
-                <TextInput
-                  value={voiceModelInput}
-                  onChange={setVoiceModelInput}
-                  placeholder={DEFAULT_VOICE_MODEL_ID}
-                  mono
-                />
-              </div>
-              <SaveButton onClick={saveVoiceModel} disabled={voiceSaving} saving={voiceSaving} />
-              <Button colors={colors} style={ghost(colors)} onClick={useSessionVoiceModel}>Use the session model</Button>
+              <ProviderModelPicker value={{ provider: voiceProvider, model: voiceModel }} sessionActive={VOICE_DISABLE_VALUES.has((voiceModel ?? '').toLowerCase()) || VOICE_DISABLE_VALUES.has((voiceProvider ?? '').toLowerCase())} onChange={v => saveVoiceRoute(v.provider, v.model)} onUseSession={useSessionVoiceModel} aria-label="Voice provider and model" />
             </div>
           </div>
         </Row>
@@ -1089,7 +925,7 @@ export function ModelsPanel({ goto }: PanelProps) {
           label="Harness"
           testId="role-row-harness"
           hint="the coding harness in the Build tab"
-          providerKey="harness_provider"
+          role="harness"
           modelKey="harness_model"
           provider={harnessCfg?.provider ?? null}
           model={harnessCfg?.model ?? null}

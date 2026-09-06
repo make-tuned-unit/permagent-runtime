@@ -19,6 +19,9 @@ FIXTURE = os.path.join(ROOT, "testdata", "voice_20260827_empty_60s.txt")
 BACKGROUND_FIXTURE = os.path.join(
     ROOT, "testdata", "voice_20260827_enrollment_and_background.txt"
 )
+STRUCTURED_FIXTURE = os.path.join(
+    ROOT, "testdata", "voice_structured_observability.txt"
+)
 REPORT = os.path.join(ROOT, "voice-latency-report.py")
 
 # Recorded 2026-08-27 morning complete-turn median. Later nodes must stay ≤ this.
@@ -91,6 +94,39 @@ def main() -> int:
         return 1
     if summary["speech_end_to_stream_ms"]["median"] != 621:
         print("FAIL: speech_end_to_stream metric lost its real semantics", file=sys.stderr)
+        return 1
+
+    # Structured telemetry is the current daemon format. It must make the
+    # 16:04 class of no-response turn distinguishable without retaining PCM or
+    # transcript text, and it must not blame the provider before it is invoked.
+    structured = report.parse_turns(STRUCTURED_FIXTURE)
+    if len(structured) != 3:
+        print(f"FAIL: expected 3 structured turns, got {len(structured)}", file=sys.stderr)
+        return 1
+    empty, reply, malformed = structured
+    if (empty.capture_health, empty.stt_outcome, empty.empty_reason, empty.status) != (
+        "near_silent_pcm",
+        "empty",
+        "near_silent_pcm",
+        "empty_stt",
+    ):
+        print(f"FAIL: empty-STT evidence lost: {empty!r}", file=sys.stderr)
+        return 1
+    if not reply.provider_started or reply.status != "complete" or reply.socket_epoch != "8":
+        print(f"FAIL: sent-reply lifecycle lost: {reply!r}", file=sys.stderr)
+        return 1
+    if (malformed.capture_health, malformed.status) != (
+        "malformed_pcm",
+        "capture_rejected_malformed",
+    ):
+        print(f"FAIL: malformed PCM classification lost: {malformed!r}", file=sys.stderr)
+        return 1
+    structured_summary = report.summarize(structured)
+    if structured_summary["n_no_agent_invoked"] != 2:
+        print(f"FAIL: expected two no-agent turns, got {structured_summary!r}", file=sys.stderr)
+        return 1
+    if structured_summary["n_agent_invoked_no_audio"] != 0:
+        print(f"FAIL: reply turn was incorrectly treated as no-audio: {structured_summary!r}", file=sys.stderr)
         return 1
 
     n6 = os.path.join(ROOT, "check_kitchen_voice_n6.py")

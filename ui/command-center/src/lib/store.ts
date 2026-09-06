@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import { api, apiFetch, extractText, extractThinking, fileToBase64, hasToolActivity, readerIngest } from './api';
 import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
-import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
-import { costFromFrame, type CodingSpend } from './costMeter';
+import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState, HarnessRunView } from './api';
+import { costFromFrame, parseBudgetProjection, type CodingSpend } from './costMeter';
 import { maybeSpeakReply, replyDedupeKey } from './speakReplies';
 import { readLiveConversation } from './voiceHandoff';
 import { appendTraceRecord, sessionFrameToRecord } from './traceEvents';
@@ -198,6 +198,9 @@ interface CommandCenterStore {
   workspaces: WorkspaceState[];
   activeWorkspaceId: string | null;
   workspacesLoaded: boolean;
+  /** True when the latest workspace load failed. A failed fetch must not be
+   *  rendered as a successful empty workspace list. */
+  workspacesError: boolean;
   loadWorkspaces: () => Promise<void>;
   /**
    * #629 multi-client liveness: refetch the workspace LIST (layouts, names)
@@ -298,7 +301,14 @@ interface CommandCenterStore {
    * momentarily idle.
    */
   codingSpend: CodingSpend | null;
+  codingSpendLastKnown: CodingSpend | null;
+  codingHarnessHydration: 'initial' | 'active' | 'none' | 'unavailable';
   setCodingSpend: (spend: CodingSpend) => void;
+  /** Active harness identity used to prevent chat-account substitution. Null
+   * means the one-shot active-run read found no live harness. */
+  codingHarnessRunId: string | null;
+  codingHarnessRevision: number;
+  hydrateCodingHarness: () => Promise<void>;
   sendMessage: (text: string, files?: File[]) => Promise<void>;
   /** Interrupt the in-flight turn: POST /sessions/{id}/cancel with the active
    *  request_id. Returns true when the daemon confirmed a live request was
@@ -660,6 +670,7 @@ const RECONNECT_MAX_MS = 30000;
  *  constructing the EventSource): a newer connect/disconnect bumps the epoch,
  *  and a stale in-flight connect aborts instead of opening a duplicate SSE. */
 let _sseConnectEpoch = 0;
+let _codingHydrationGeneration = 0;
 
 /** Pull a toolRequest's name/args, tolerating the daemon's tool_result_serde
  *  wrapper `{ status, value:{ name, arguments } }` as well as a flat shape.
@@ -832,6 +843,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   workspaces: [],
   activeWorkspaceId: null,
   workspacesLoaded: false,
+  workspacesError: false,
 
   loadWorkspaces: async () => {
     try {
@@ -850,9 +862,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         })),
         activeWorkspaceId: active.workspaceId || (workspaces.length > 0 ? workspaces[0].id : null),
         workspacesLoaded: true,
+        workspacesError: false,
       });
     } catch {
-      set({ workspacesLoaded: true });
+      // Keep any last-known list and active workspace. A transient daemon
+      // failure is not evidence that the user has no workspaces; the shell
+      // renders an explicit retry state when there is no list to preserve.
+      set({ workspacesLoaded: true, workspacesError: true });
     }
   },
 
@@ -874,11 +890,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           activeWorkspaceId: activeStillExists
             ? s.activeWorkspaceId
             : (mapped.length > 0 ? mapped[0].id : null),
+          workspacesError: false,
         };
       });
     } catch {
       // Transient refetch failure: keep the current (possibly stale) layouts —
       // never blank a working screen over a liveness refresh.
+      set({ workspacesError: true });
     }
   },
 
@@ -1090,7 +1108,154 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   isStreaming: false,
   liveTokens: null,
   codingSpend: null,
-  setCodingSpend: (spend) => set({ codingSpend: spend }),
+  codingSpendLastKnown: null,
+  codingHarnessHydration: 'initial',
+  codingHarnessRunId: null,
+  // Monotonic local revision lets a one-shot hydration result avoid erasing a
+  // live spend frame that landed while the HTTP request was in flight.
+  codingHarnessRevision: 0,
+  setCodingSpend: (spend) => set(s => {
+    const previous = s.codingSpend;
+    const previousAsOf = previous?.budget?.provenance.asOf;
+    const nextAsOf = spend.budget?.provenance.asOf;
+    // Provenance timestamps order retries within one durable session. They do
+    // not order independent harness sessions: a new session may legitimately
+    // start with an older provider timestamp.
+    if (previous?.sessionId === spend.sessionId
+      && previousAsOf && nextAsOf && Date.parse(nextAsOf) < Date.parse(previousAsOf)) return s;
+    // A malformed canonical frame after a valid one is not permission to
+    // replace the amount with an old scalar. Keep the last-known projection
+    // separately and mark the visible state stale/unavailable.
+    if (spend.budgetStatus === 'unavailable' && !spend.budget
+      && previous?.budget && previous.sessionId === spend.sessionId) {
+      return {
+        codingSpend: { ...previous, budgetStatus: 'unavailable' },
+        codingSpendLastKnown: previous,
+        codingHarnessHydration: 'unavailable',
+        codingHarnessRevision: s.codingHarnessRevision + 1,
+      };
+    }
+    if (previous && previous.sessionId === spend.sessionId) {
+      // A terminal announcement is authoritative; late non-terminal frames
+      // (including replayed frames from an older daemon) cannot reopen it.
+      if (previous.finalTurn && !spend.finalTurn) return s;
+      // A legacy frame with no canonical projection must not erase a validated
+      // projection by turning it back into scalar-only spend.
+      if (previous.budget && !spend.budget) return s;
+    } else if (previous?.budget && !spend.budget && spend.budgetStatus !== 'unavailable') {
+      // Canonical harness state cannot be replaced by a legacy scalar frame,
+      // even if an old session id is replayed after a newer run is active.
+      return s;
+    }
+    return {
+      codingSpend: spend,
+      codingSpendLastKnown: spend.budget ? spend : s.codingSpendLastKnown,
+      codingHarnessHydration: spend.budgetStatus === 'unavailable' ? 'unavailable' : 'active',
+      // Keep the durable run id learned during hydration when a live spend
+      // frame for that same session arrives; events intentionally carry only
+      // the ledger session id.
+      codingHarnessRunId: previous?.sessionId === spend.sessionId && s.codingHarnessRunId
+        ? s.codingHarnessRunId : spend.sessionId,
+      codingHarnessRevision: s.codingHarnessRevision + 1,
+    };
+  }),
+  hydrateCodingHarness: async () => {
+    const generation = ++_codingHydrationGeneration;
+    const requestRevision = get().codingHarnessRevision;
+    try {
+      const runs = await api.getActiveHarnessRuns();
+      // Never allow an older reconnect response to replace a newer request or
+      // frame. Active runs are a bounded list; choose the newest valid identity.
+      if (generation !== _codingHydrationGeneration || requestRevision !== get().codingHarnessRevision) return;
+      const candidates = runs
+        .filter((run): run is HarnessRunView => Boolean(
+          run && typeof run.runId === 'string' && run.runId.trim()
+            && typeof run.sessionId === 'string' && run.sessionId.trim()
+            && Number.isFinite(Date.parse(run.updatedAt)),
+        ))
+        .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+      const run = candidates[0];
+      if (!run) {
+        const current = get().codingSpend;
+        set({
+          // A terminal announcement remains visible as terminal evidence after
+          // the active-TTL endpoint naturally stops returning it. An empty
+          // active list is never a zero-spend run.
+          codingSpend: current?.finalTurn ? current : null,
+          codingHarnessRunId: current?.finalTurn ? get().codingHarnessRunId : null,
+          codingHarnessHydration: 'none',
+          codingHarnessRevision: get().codingHarnessRevision + 1,
+        });
+        return;
+      }
+
+      const budget = parseBudgetProjection((run as unknown as { budget?: unknown }).budget);
+      const finalTurn = run.status === 'succeeded' || run.status === 'failed' || run.status === 'cancelled';
+      const base: CodingSpend = {
+        sessionId: run.sessionId,
+        turnUsd: null,
+        sessionUsd: null,
+        todayUsd: null,
+        totalTokens: typeof run.tokens === 'number' && Number.isFinite(run.tokens) && run.tokens >= 0
+          ? run.tokens : null,
+        provider: typeof run.provider === 'string' ? run.provider : null,
+        model: typeof run.model === 'string' ? run.model : null,
+        workingDir: run.project || null,
+        estimated: false,
+        finalTurn,
+        budgetStatus: budget ? 'available' : 'unavailable',
+      };
+      if (budget) {
+        if (budget.rootSessionId !== run.sessionId) {
+          base.budgetStatus = 'unavailable';
+        } else {
+          base.budget = budget;
+          base.sessionUsd = budget.session.effectiveUsedUsd;
+          base.estimated = budget.sessionBilling.isEstimated === true;
+          base.provider = budget.sessionBilling.provider ?? base.provider;
+          base.model = budget.sessionBilling.model ?? base.model;
+          if (budget.provenance.completeness === 'unknown'
+            || budget.session.completeness === 'unknown'
+            || budget.session.band === 'unknown') {
+            base.budgetStatus = 'unknown';
+          }
+        }
+      }
+      const current = get().codingSpend;
+      if (base.budgetStatus === 'unavailable' && current?.budget && current.sessionId === run.sessionId) {
+        set({
+          codingSpend: { ...current, budgetStatus: 'unavailable' },
+          codingSpendLastKnown: current,
+          codingHarnessHydration: 'unavailable',
+          codingHarnessRunId: run.runId,
+          codingHarnessRevision: get().codingHarnessRevision + 1,
+        });
+        return;
+      }
+      set({
+        codingSpend: base,
+        codingSpendLastKnown: budget ? base : get().codingSpendLastKnown,
+        codingHarnessHydration: base.budgetStatus === 'unavailable' ? 'unavailable' : 'active',
+        codingHarnessRunId: run.runId,
+        codingHarnessRevision: get().codingHarnessRevision + 1,
+      });
+    } catch {
+      if (generation !== _codingHydrationGeneration || requestRevision !== get().codingHarnessRevision) return;
+      // Initial 503 is an explicit unavailable harness state, not permission
+      // to fall through to browser chat spend. A known projection remains as
+      // last-known evidence and is rendered stale by the statusline.
+      const current = get().codingSpend;
+      const lastKnown = get().codingSpendLastKnown;
+      set({
+        codingHarnessHydration: 'unavailable',
+        codingSpend: current
+          ? { ...current, budgetStatus: 'unavailable' }
+          : null,
+        codingSpendLastKnown: lastKnown ?? current,
+        codingHarnessRevision: get().codingHarnessRevision + 1,
+      });
+    }
+  },
   _activeRequestId: null,
 
   /**
@@ -1144,9 +1309,26 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     // the agent can still SEE them. Documents previously died silently on drop.
     let images: Array<{ data: string; mime_type: string }> | undefined;
     const digests: Array<{ name: string; summary: string; recall_query: string; ocr: boolean }> = [];
+    // Keep a durable server-side identity for every dropped file. References
+    // remain visible in text, while attachment_ids binds them atomically to
+    // the persisted request/message for later turns and OCR retries.
+    const attachmentRefs: Array<{ id: string; filename: string }> = [];
+    const attachmentWarnings: string[] = [];
     if (files && files.length > 0) {
       console.log('[send] total files:', files.length,
         'types:', files.map(f => `${f.name}(type="${f.type}")`));
+      try {
+        const uploaded = await api.uploadAttachments(sessionId, files);
+        attachmentRefs.push(...uploaded.attachments.map(a => ({ id: a.id, filename: a.filename })));
+      } catch (err) {
+        // Upload is additive: retain the existing Reader/inline-image
+        // fail-open behavior when an older daemon has no upload route, but do
+        // not make the durability loss invisible to either user or agent.
+        console.error('[attachments] upload failed; continuing without durable refs:', err);
+        attachmentWarnings.push(
+          '⚠️ Durable attachment upload failed; attached content is available for this turn only.',
+        );
+      }
       const visualImages: File[] = [];
       for (const f of files) {
         const isImage = f.type.startsWith('image/');
@@ -1166,6 +1348,16 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
               summary: d.summary,
               recall_query: d.recall_query,
               ocr: isImage,
+            });
+          } else if (isImage && d.is_visual) {
+            // Keep the fallback explicit when Vision found no usable text;
+            // otherwise Henry receives only pixels with no indication that OCR
+            // was attempted or why the image is being passed through.
+            digests.push({
+              name: f.name,
+              summary: '(no readable text detected; inspect the attached image visually)',
+              recall_query: '',
+              ocr: true,
             });
           }
         } catch (err) {
@@ -1223,7 +1415,11 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     // Fold any Reader digests into the outgoing text. Screenshots send the
     // full OCR; documents send a gist + recall handle.
     let outgoingText = text;
-    if (digests.length > 0) {
+    const attachmentBlock = attachmentRefs.length > 0
+      ? attachmentRefs.map(a => `📎 ${a.filename} [attachment:${a.id}]`).join('\n')
+      : '';
+    const attachmentWarningBlock = attachmentWarnings.join('\n');
+    if (digests.length > 0 || attachmentBlock || attachmentWarningBlock) {
       const block = digests
         .map(d => {
           const body = d.ocr ? `OCR:\n${d.summary}` : d.summary;
@@ -1232,9 +1428,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
             : `📎 ${d.name} — ${body}`;
         })
         .join('\n');
+      const combinedBlock = [attachmentBlock, attachmentWarningBlock, block].filter(Boolean).join('\n');
       // Replace the bare "(file upload)" placeholder ChatInput sends for
       // file-only messages; otherwise append.
-      outgoingText = !text || text === '(file upload)' ? block : `${text}\n\n${block}`;
+      outgoingText = !text || text === '(file upload)' ? combinedBlock : `${text}\n\n${combinedBlock}`;
     }
 
     // Add user message to chat — includes inline images for rendering in the bubble
@@ -1270,7 +1467,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     try {
       // Fire-and-forget: the turn streams on the SSE channel. Capture the
       // request_id it returns so the Stop button can cancel THIS turn.
-      const { request_id } = await api.sendReply(sessionId, outgoingText, images, appContext);
+      const { request_id } = await api.sendReply(
+        sessionId,
+        outgoingText,
+        images,
+        appContext,
+        attachmentRefs.map(attachment => attachment.id),
+      );
       set({ _activeRequestId: request_id });
     } catch (err) {
       console.error('[send] api.sendReply FAILED:', err);

@@ -12,17 +12,19 @@ interface Persona {
 }
 
 interface Props {
+  active?: boolean;
   persona: Persona;
   onComplete: () => void;
 }
 
-export function MomentChat({ persona, onComplete }: Props) {
+export function MomentChat({ active = true, persona, onComplete }: Props) {
   const { colors, reduceMotion } = useTheme();
   const [streamed, setStreamed] = useState('');
   const [done, setDone] = useState(false);
   const streamRef = useRef<ReturnType<typeof setInterval>>();
 
   useEffect(() => {
+    if (!active) return;
     const greeting = persona.greeting || `Hello! I'm ${persona.name}. How can I help you today?`;
     // Reduce-motion: present the greeting whole rather than typing it out.
     if (reduceMotion) { setStreamed(greeting); setDone(true); return; }
@@ -38,7 +40,7 @@ export function MomentChat({ persona, onComplete }: Props) {
       }
     }, 28);
     return () => clearInterval(streamRef.current);
-  }, [persona, reduceMotion]);
+  }, [active, persona, reduceMotion]);
 
   const isSpeaking = !done;
 
@@ -64,7 +66,7 @@ export function MomentChat({ persona, onComplete }: Props) {
             <span style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted }}>
               {/* "Typing", not "Speaking" — this greeting is typed on screen;
                   no audio plays here (2026-07 wiring audit). */}
-              {isSpeaking ? 'Typing...' : 'Online'}
+              {isSpeaking ? 'Typing...' : 'Preview'}
             </span>
           </div>
         </div>

@@ -21,12 +21,20 @@ import { Agora, PortalStream } from './areas/forum/Agora';
 import { Atmosphere, DistantGrid } from './atmosphere/Atmosphere';
 import { LegacyFurniture } from './props/legacy/WorldFurniture';
 import { PerfSampler } from './shared/perf';
+import { isTourActive } from './camera/tourState';
 
 declare global {
   interface Window {
     __worldDebug?: {
       setCam: (pos: [number, number, number], look: [number, number, number]) => void;
       clearCam: () => void;
+      cameraSnapshot?: () => { position: [number, number, number] };
+      projectWorldPoint?: (point: [number, number, number]) => {
+        client: [number, number];
+        ndcZ: number;
+      };
+      tourActive?: () => boolean;
+      assetStats?: () => { vaults: number; authoredAgents: number };
     };
   }
 }
@@ -38,6 +46,8 @@ declare global {
 // sampler reads them. No effect in production builds.
 function WorldDevHooks() {
   const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
+  const scene = useThree((s) => s.scene);
   const override = useRef<{ active: boolean; pos: THREE.Vector3; look: THREE.Vector3 }>({
     active: false,
     pos: new THREE.Vector3(),
@@ -55,11 +65,36 @@ function WorldDevHooks() {
       clearCam: () => {
         o.active = false;
       },
+      cameraSnapshot: () => ({
+        position: [camera.position.x, camera.position.y, camera.position.z],
+      }),
+      projectWorldPoint: (point) => {
+        camera.updateMatrixWorld();
+        camera.updateProjectionMatrix();
+        const projected = new THREE.Vector3(point[0], point[1], point[2]).project(camera);
+        const rect = gl.domElement.getBoundingClientRect();
+        return {
+          client: [
+            rect.left + (projected.x + 1) * rect.width / 2,
+            rect.top + (1 - projected.y) * rect.height / 2,
+          ],
+          ndcZ: projected.z,
+        };
+      },
+      tourActive: () => isTourActive(),
+      assetStats: () => {
+        let vaults = 0, authoredAgents = 0;
+        scene.traverse(object => {
+          if (object.userData.blenderVault) vaults++;
+          if (object.userData.blenderArmor) authoredAgents++;
+        });
+        return { vaults, authoredAgents };
+      },
     };
     return () => {
       delete window.__worldDebug;
     };
-  }, []);
+  }, [scene]);
 
   // Runs after OrbitControls (priority -1) so the override wins.
   // No per-frame allocations.

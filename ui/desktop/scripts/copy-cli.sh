@@ -52,8 +52,13 @@ echo "CLI sidecar copied: $DST ($(du -h "$DST" | cut -f1))"
 
 # A sidecar Tauri cannot execute is the same defect this script fixes, one
 # level down — so prove the staged file actually runs before calling it staged.
-if ! "$DST" --version >/dev/null 2>&1; then
+# Keep the smoke check hermetic: CI/sandbox users may not be allowed to create
+# ~/.permagent/logs, and a denied log directory must not masquerade as a broken
+# binary.
+SMOKE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/permagent-cli-smoke.XXXXXX")
+trap 'rm -rf "$SMOKE_ROOT"' EXIT
+if ! PERMAGENT_PATH_ROOT="$SMOKE_ROOT" "$DST" --version >/dev/null 2>&1; then
   echo "ERROR: staged CLI at $DST does not execute (--version failed)" >&2
   exit 1
 fi
-echo "Staged CLI reports: $("$DST" --version 2>&1 | tr -d '\n')"
+echo "Staged CLI reports: $(PERMAGENT_PATH_ROOT="$SMOKE_ROOT" "$DST" --version 2>&1 | tr -d '\n')"

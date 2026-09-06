@@ -150,7 +150,7 @@ export function FormModal({
       {submitDisabled && disabledReason && !failure && (
         <div style={{
           marginTop: 12, fontFamily: font.body, ...type.caption,
-          color: colors.textDim, lineHeight: 1.5,
+          color: colors.textMuted, lineHeight: 1.5,
         }}>
           {disabledReason}
         </div>

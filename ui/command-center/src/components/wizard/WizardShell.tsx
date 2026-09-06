@@ -12,6 +12,7 @@ import { MomentWebSearch } from './MomentWebSearch';
 import { MomentChat } from './MomentChat';
 import { api, apiFetch } from '../../lib/api';
 import { stashWizardIntent } from '../../lib/wizardIntent';
+import { safeWizardError } from './wizardErrors';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
@@ -104,7 +105,7 @@ export function WizardShell({ onComplete }: Props) {
       // Surfaced (2026-07 wiring audit): the old catch logged to the console
       // and completed anyway — persona silently lost AND wizard_complete never
       // written, so the whole wizard reappeared on next launch unexplained.
-      console.error('Failed to save persona:', e);
+      console.error('Failed to save persona:', safeWizardError(e, 'persona save failed'));
       setSaveError(e instanceof Error ? e.message : String(e));
       setSaving(false);
       // `false` is the Button primitive's "it failed": the retry must not tick
@@ -119,14 +120,14 @@ export function WizardShell({ onComplete }: Props) {
   };
 
   const moments = [
-    <MomentWelcome key="welcome" onAdvance={handleProviderDone} />,
-    <MomentHardware key="hardware" onAdvance={handleHardwareDone} onBack={back} />,
-    <MomentCalibration key="calibration" onAdvance={handleCalibrationDone} onBack={back} />,
-    <MomentIntent key="intent" intent={intent} setIntent={setIntent} onAdvance={handleIntentDone} onBack={back} />,
-    <MomentCode key="code" personaName={persona.name} onAdvance={handleCodeDone} onBack={back} />,
-    <MomentMeet key="meet" persona={persona} setPersona={setPersona} onAdvance={handleMeetDone} onBack={back} />,
-    <MomentWebSearch key="websearch" personaName={persona.name} onAdvance={handleWebSearchDone} onBack={back} />,
-    <MomentChat key="chat" persona={persona} onComplete={handleComplete} />,
+    <MomentWelcome key="welcome" active={step === 0} onAdvance={handleProviderDone} />,
+    <MomentHardware key="hardware" active={step === 1} onAdvance={handleHardwareDone} onBack={back} />,
+    <MomentCalibration key="calibration" active={step === 2} onAdvance={handleCalibrationDone} onBack={back} />,
+    <MomentIntent key="intent" active={step === 3} intent={intent} setIntent={setIntent} onAdvance={handleIntentDone} onBack={back} />,
+    <MomentCode key="code" active={step === 4} personaName={persona.name} onAdvance={handleCodeDone} onBack={back} />,
+    <MomentMeet key="meet" active={step === 5} persona={persona} setPersona={setPersona} onAdvance={handleMeetDone} onBack={back} />,
+    <MomentWebSearch key="websearch" active={step === 6} personaName={persona.name} onAdvance={handleWebSearchDone} onBack={back} />,
+    <MomentChat key="chat" active={step === 7} persona={persona} onComplete={handleComplete} />,
   ];
 
   return (
@@ -155,9 +156,10 @@ export function WizardShell({ onComplete }: Props) {
           <div key={i} style={{
             position: 'absolute', inset: 0,
             opacity: i === step ? 1 : 0,
+            visibility: i === step ? 'visible' : 'hidden',
             pointerEvents: i === step ? 'auto' : 'none',
             transition: reduceMotion ? 'none' : `opacity ${duration.slow}ms ${ease.out}`,
-          }}>
+          }} aria-hidden={i !== step} {...(i === step ? {} : { inert: '' })}>
             {moment}
           </div>
         ))}

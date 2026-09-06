@@ -318,6 +318,17 @@ async function connect(): Promise<void> {
               kind?: string; message?: string; subject?: string;
               url?: string; link?: string; source_url?: string;
             };
+            if (p.kind === 'council_suggestion') {
+              if (prefs.echo) {
+                push({
+                  kind: 'echo',
+                  title: 'Council review suggested',
+                  body: p.message ?? 'This Build request may benefit from a multi-model plan.',
+                  target: 'build',
+                });
+              }
+              break;
+            }
             // The Watcher delivers the Financier's holding signal. Click
             // opens Finance. Copy is a sell *signal*, never an order.
             if (p.kind === 'rsi_heat' || p.kind === 'sell_signal') {

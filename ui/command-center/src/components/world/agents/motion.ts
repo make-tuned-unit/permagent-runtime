@@ -9,6 +9,8 @@
 
 import { STAIR, MEZZ_INNER_R, MEZZ_OUTER_R, MEZZ_HEIGHT } from '../areas/hall/MezzanineLibrary';
 import type { Engagement } from './poses';
+import { DAIS } from './daisBus';
+import { PLATFORM_RADIUS } from '../constants';
 
 export type { Engagement } from './poses';
 
@@ -51,7 +53,7 @@ const TURN_RATE = 8; // rad/s damping factor
 // the mezzanine ring (y=MEZZ_HEIGHT). An agent's Y tracks whichever it's on, so it can
 // walk UP the stairs (autonomous OR third-person puppeted) — and it can't walk off the
 // rotunda edge into the void. The ring-locked Librarian keeps its own projection.
-const EDGE_R = 14.2;
+const EDGE_R = PLATFORM_RADIUS - 1.2;
 const STAIR_FLOOR_Y = 5;
 const STAIR_HALF_W = 1.4; // half the step width (steps ~2.6 wide)
 const STAIR_START = STAIR.gapCenter - STAIR.arcSpan; // bottom-of-stairs angle
@@ -72,6 +74,12 @@ function surfaceYAt(x: number, z: number, currentY: number): number {
   const sy = stairHeightAt(r, Math.atan2(z, x));
   if (!Number.isNaN(sy) && Math.abs(currentY - sy) < CLIMB_TOL) return sy; // on the stairs
   if (r >= MEZZ_INNER_R && r <= MEZZ_OUTER_R && currentY > STAIR_FLOOR_Y) return MEZZ_HEIGHT;
+  // The same actual platform used by TaskDais, including its low approach
+  // step. Previously floor-follow erased the dais waypoint height and buried
+  // Henry's lower legs in the stone, especially obvious with authored armor.
+  const daisR = Math.hypot(x - DAIS.x, z - DAIS.z);
+  if (daisR <= DAIS.radius) return DAIS.topY;
+  if (daisR <= DAIS.radius + .65) return .14;
   return 0; // ground
 }
 

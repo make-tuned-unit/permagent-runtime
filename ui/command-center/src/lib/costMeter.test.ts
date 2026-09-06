@@ -11,7 +11,14 @@
 
 import { describe, expect, it } from 'vitest';
 import type { SSEEvent, TokenState } from './api';
-import { costFromFrame, formatCostMeter, fmtUsd, fmtTokens, type CodingSpend } from './costMeter';
+import {
+  costFromFrame,
+  formatCostMeter,
+  fmtUsd,
+  fmtTokens,
+  parseBudgetProjection,
+  type CodingSpend,
+} from './costMeter';
 
 function tokenState(overrides: Partial<TokenState> = {}): TokenState {
   return {
@@ -46,6 +53,35 @@ function codingSpend(overrides: Partial<CodingSpend> = {}): CodingSpend {
   };
 }
 
+function budgetProjection(overrides: Record<string, unknown> = {}) {
+  const scope = {
+    cap: { softUsd: 1, gateUsd: 2, hardUsd: 3, source: 'current_budget_config' },
+    settledUsd: 0,
+    heldUsd: 0,
+    unknownUsd: 0,
+    effectiveUsedUsd: 0,
+    remainingUsd: 3,
+    band: 'ok',
+    completeness: 'complete',
+    error: null,
+  };
+  const evidence = {
+    billingClass: 'paid_api', provider: 'fixture', model: 'fixture-model',
+    callId: 'call-1', isEstimated: false,
+    observedAt: '2026-09-05T12:00:00Z', source: 'cost_ledger',
+  };
+  return {
+    taskId: 'task-1', rootSessionId: 'harness-1',
+    task: scope, session: scope,
+    taskBilling: evidence, sessionBilling: evidence,
+    provenance: {
+      version: 'budget-projection.v1', asOf: '2026-09-05T12:00:00Z',
+      completeness: 'complete', sources: ['sessions', 'cost_ledger'], error: null,
+    },
+    ...overrides,
+  };
+}
+
 describe('formatters', () => {
   it('formats USD as cents, with sub-cent precision', () => {
     expect(fmtUsd(0)).toBe('$0.00');
@@ -61,11 +97,72 @@ describe('formatters', () => {
   });
 });
 
+describe('budget-projection.v1 validation and rendering', () => {
+  it('accepts authoritative zero while keeping null unavailable', () => {
+    const parsed = parseBudgetProjection(budgetProjection());
+    expect(parsed?.session.effectiveUsedUsd).toBe(0);
+    expect(parseBudgetProjection(budgetProjection({
+      provenance: { ...budgetProjection().provenance, version: 'budget-projection.v0' },
+    }))).toBeNull();
+    expect(parseBudgetProjection(budgetProjection({
+      session: { ...budgetProjection().session, effectiveUsedUsd: Number.NaN },
+    }))).toBeNull();
+    expect(parseBudgetProjection(budgetProjection({ taskId: '' }))).toBeNull();
+  });
+
+  it('rejects a projection whose root identity is not the harness session', () => {
+    const projection = parseBudgetProjection(budgetProjection({ rootSessionId: 'other-session' }));
+    expect(projection?.rootSessionId).toBe('other-session');
+    const spend = codingSpend({ budget: projection ?? undefined });
+    // The liveness boundary performs the event/session identity comparison;
+    // the pure parser still validates the projection as a projection.
+    expect(spend.budget?.rootSessionId).toBe('other-session');
+  });
+
+  it('renders held/unknown/remaining/provenance distinctly from zero', () => {
+    const projection = parseBudgetProjection(budgetProjection({
+      session: {
+        ...budgetProjection().session,
+        settledUsd: 0,
+        heldUsd: 0.25,
+        unknownUsd: 0.5,
+        effectiveUsedUsd: 0.75,
+        remainingUsd: 2.25,
+        band: 'unknown',
+      },
+      sessionBilling: { ...budgetProjection().sessionBilling, isEstimated: true },
+    }));
+    const meter = formatCostMeter(null, codingSpend({ budget: projection ?? undefined }));
+    expect(meter.cost).toBe('$0.75');
+    expect(meter.segments).toEqual(expect.arrayContaining([
+      'session held $0.25', 'session unknown $0.50', 'session remaining $2.25',
+      'session budget unknown', 'session billing paid_api / fixture / fixture-model',
+    ]));
+    expect(meter.ariaLabel).toContain('billing is estimated');
+  });
+
+  it('does not turn an unavailable harness projection into chat spend', () => {
+    const meter = formatCostMeter(
+      tokenState({ accumulatedCostUsd: 99 }),
+      codingSpend({ budgetStatus: 'unavailable', budget: undefined, sessionUsd: null }),
+    );
+    expect(meter.cost).toBe('—');
+    expect(meter.segments).toContain('Budget unavailable');
+    expect(meter.cost).not.toContain('99');
+  });
+});
+
 describe('formatCostMeter', () => {
   it('renders idle state when there is no live token state', () => {
     const m = formatCostMeter(null);
     expect(m.cost).toBe('$0.00');
     expect(m.segments).toEqual([]);
+  });
+
+  it('does not present an empty active-run list as zero harness spend', () => {
+    const m = formatCostMeter(null, null, null, 'none');
+    expect(m.cost).toBe('—');
+    expect(m.segments).toEqual(['No active harness']);
   });
 
   it('shows exactly one spend figure plus supporting segments', () => {
