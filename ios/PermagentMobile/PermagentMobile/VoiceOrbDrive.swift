@@ -24,6 +24,16 @@
 
 import Foundation
 
+/// Fixed iPhone voice-screen geometry. Kept beside the tested orb contract so
+/// layout regressions can run in the Foundation-only unit-test target without
+/// pulling SwiftUI/AVFoundation into that target.
+enum VoiceConversationLayout {
+    static let orbDiameter: CGFloat = 300
+    static let assistantChatHeight: CGFloat = 150
+    static let liveTranscriptHeight: CGFloat = 82
+    static let captionControlGap: CGFloat = 6
+}
+
 enum VoiceOrbDrive {
     struct Bands: Equatable {
         var low: Double

@@ -99,7 +99,7 @@ struct AgentsView: View {
             }
             .padding()
         }
-        .background(ChatSurface.bg.ignoresSafeArea())
+        .background { AppBackdrop() }
         .navigationTitle("Agents at work")
         .refreshable { await load() }
         .task { await load() }

@@ -24,11 +24,12 @@ struct ActivityRow: Decodable, Identifiable {
 /// Springy press affordance shared by every tappable card — the card gives
 /// slightly under the finger, so "this is a door" needs no chevron lecture.
 struct PressableCard: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
             .opacity(configuration.isPressed ? 0.92 : 1)
-            .animation(.spring(response: 0.28, dampingFraction: 0.7), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }
 
@@ -47,16 +48,16 @@ struct HomeView: View {
                     RaisedCard {
                         HStack(spacing: 10) {
                             Circle()
-                                .fill(snap.healthy == false ? Brand.danger : ChatSurface.spark)
+                                .fill(snap.healthy == nil ? Brand.textMuted : (snap.healthy == false ? Brand.danger : Brand.cyanInk))
                                 .frame(width: 9, height: 9)
                                 .shadow(color: Brand.cyanGlow, radius: snap.healthy == false ? 0 : 6)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(snap.healthy == false ? "Hub unreachable" : "Hub online")
+                                Text(DesignPolicy.hubStatus(snap.healthy))
                                     .font(.brandHeadline)
                                     .foregroundStyle(ChatSurface.text)
-                                Text(snap.healthy == false
+                                Text(snap.healthy == nil ? "Checking the connection to your Mac…" : snap.healthy == false
                                      ? "Check that your Mac is awake and on the tailnet."
-                                     : "Your Mac is holding the fort — Brain, models, and memory all live.")
+                                     : "Connected to your Mac. Your workspace is within reach.")
                                     .font(.brandCaption)
                                     .foregroundStyle(ChatSurface.muted)
                             }
@@ -68,7 +69,7 @@ struct HomeView: View {
                     HStack(spacing: 14) {
                         statTile("Decisions", value: snap.decisionsPending, accent: Brand.violet,
                                  hint: "waiting for you", destination: .decisions)
-                        statTile("In flight", value: snap.goalsActive, accent: ChatSurface.spark,
+                        statTile("In flight", value: snap.goalsActive, accent: Brand.cyanInk,
                                  hint: "goals running", destination: .goals)
                     }
 
@@ -160,7 +161,7 @@ struct HomeView: View {
                 }
                 .padding()
             }
-            .background(ChatSurface.bg.ignoresSafeArea())
+            .background { AppBackdrop() }
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top, spacing: 0) { pageHeader }
             .refreshable { await load() }
@@ -178,9 +179,9 @@ struct HomeView: View {
                 .foregroundStyle(ChatSurface.text)
             Spacer()
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 6)
-        .padding(.bottom, 8)
+        .padding(.horizontal, DesignPolicy.pageHeaderHorizontalPadding)
+        .padding(.top, DesignPolicy.pageHeaderTopPadding)
+        .padding(.bottom, DesignPolicy.pageHeaderBottomPadding)
         .background(ChatSurface.bg)
     }
 

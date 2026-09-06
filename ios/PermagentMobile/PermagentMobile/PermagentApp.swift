@@ -14,6 +14,9 @@ struct PermagentApp: App {
     @State private var splashDone = false
 
     init() {
+        #if DEBUG
+        if DesignPreview.enabled { return }
+        #endif
         // WatchConnectivity may launch the phone app in the background while
         // the screen is locked. Install and activate the delegate before any
         // SwiftUI view task or pairing bootstrap is allowed to run.
@@ -24,15 +27,25 @@ struct PermagentApp: App {
         WindowGroup {
             ZStack {
                 ChatSurface.bg.ignoresSafeArea()
+                #if DEBUG
+                if let preview = DesignPreview.screen {
+                    DesignPreviewRoot(screen: preview)
+                } else if session.isPaired {
+                    MainTabs().environmentObject(session)
+                } else {
+                    PairingView().environmentObject(session)
+                }
+                #else
                 if session.isPaired {
                     MainTabs().environmentObject(session)
                 } else {
                     PairingView().environmentObject(session)
                 }
+                #endif
                 // Splash sits OVER the real UI rather than gating it, so
                 // `bootstrap()` (Keychain read, hub reconnect) runs during the
                 // 2.5s instead of after it — the animation costs no launch time.
-                if !splashDone {
+                if !splashDone && !isDesignPreview {
                     SplashView { splashDone = true }
                         .transition(.opacity)
                         .zIndex(1)
@@ -44,13 +57,46 @@ struct PermagentApp: App {
             // both palettes are already in place. The tab bar (and every
             // stock control) tints to the spark accent.
             .tint(ChatSurface.spark)
-            .task { await session.bootstrap() }
+            .task { if !isDesignPreview { await session.bootstrap() } }
             .fullScreenCover(isPresented: $route.showVoice) {
                 VoiceView()
             }
         }
     }
+
+    private var isDesignPreview: Bool {
+        #if DEBUG
+        DesignPreview.enabled
+        #else
+        false
+        #endif
+    }
 }
+
+#if DEBUG
+private struct DesignPreviewRoot: View {
+    let screen: String
+    var body: some View {
+        Group {
+            switch screen {
+            case "voice": VoiceView()
+            case "models": NavigationStack { ModelPickerView() }
+            case "control": ControlHubView()
+            default: ChatView()
+            }
+        }
+        .allowsHitTesting(false)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Text("DESIGN PREVIEW · SAMPLE DATA")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(Brand.textMuted)
+                .padding(4)
+                .background(Brand.deepVoid)
+                .accessibilityLabel("Design preview, sample data, controls disabled")
+        }
+    }
+}
+#endif
 
 @MainActor
 final class HubSession: ObservableObject {

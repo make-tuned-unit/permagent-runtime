@@ -90,6 +90,13 @@ struct VoiceVAD {
         /// Trailing silence that aborts an uncommitted (noise-only) turn.
         /// Nothing was said, so there is no pause to protect. Was 650 ms.
         var abortSilenceMs: Double = 500
+        /// Small margin above the learned room floor used for onset hysteresis.
+        /// The floor is bounded and this margin never replaces the calibrated
+        /// route preset entirely, so quiet built-in-mic speech remains audible.
+        var noiseFloorMargin: Float = 0.0015
+        /// Enable slow noise-floor learning while the engine is ready. Learning
+        /// never runs while recording, so speech cannot raise its own gate.
+        var adaptiveNoiseFloor = true
 
         init() {}
     }
@@ -107,6 +114,7 @@ struct VoiceVAD {
         static let silenceMs = "voice.vad.silenceMs"
         static let quickSilenceMs = "voice.vad.quickSilenceMs"
         static let quickTurnSpeechMs = "voice.vad.quickTurnSpeechMs"
+        static let noiseFloorMargin = "voice.vad.noiseFloorMargin"
     }
 
     /// Accepted range for an overridden trailing-silence window. The floor is
@@ -117,6 +125,7 @@ struct VoiceVAD {
 
     /// Accepted range for the quick/long classifier.
     static let quickTurnOverrideRange: ClosedRange<Double> = 1_000...20_000
+    static let noiseFloorMarginOverrideRange: ClosedRange<Double> = 0.0005...0.005
 
     /// Apply any `voice.vad.*` overrides present in `defaults` on top of
     /// `base`, clamping each to its accepted range. An absent or non-numeric
@@ -134,6 +143,9 @@ struct VoiceVAD {
         if let v = read(DefaultsKey.quickTurnSpeechMs, quickTurnOverrideRange) {
             c.quickTurnSpeechMs = v
         }
+        if let v = read(DefaultsKey.noiseFloorMargin, noiseFloorMarginOverrideRange) {
+            c.noiseFloorMargin = Float(v)
+        }
         // A quick window longer than the long window would invert the whole
         // point of the two tiers; hold the invariant regardless of input.
         c.quickSilenceMs = min(c.quickSilenceMs, c.silenceMs)
@@ -146,6 +158,16 @@ struct VoiceVAD {
 
     enum Action: Equatable { case none, beginTurn, endTurn, interrupt }
 
+    /// Counters safe to emit to os.Logger: no microphone samples, transcript,
+    /// or words are retained. The engine uses this for local latency debugging.
+    struct TurnMetrics: Equatable {
+        let elapsedMs: Double
+        let voicedMs: Double
+        let frameCount: Int
+        let voicedFrameCount: Int
+        let noiseFloorRMS: Float
+    }
+
     let config: Config
     private(set) var heardSpeech = false
     private var lastVoice: TimeInterval = 0
@@ -154,6 +176,34 @@ struct VoiceVAD {
     private var onsetStreak = 0
     private var lastStep: TimeInterval = 0
     private var voicedAccumMs: Double = 0
+    private var frameCount = 0
+    private var voicedFrameCount = 0
+    private var noiseFloorRMS: Float = 0
+    private var noiseFloorSamples = 0
+
+    var metrics: TurnMetrics {
+        let now = max(lastStep, turnStart)
+        return TurnMetrics(
+            elapsedMs: max(0, (now - turnStart) * 1_000),
+            voicedMs: max(0, voicedAccumMs),
+            frameCount: frameCount,
+            voicedFrameCount: voicedFrameCount,
+            noiseFloorRMS: noiseFloorRMS
+        )
+    }
+
+    /// Effective thresholds expose the adaptive layer for diagnostics/tests.
+    /// Both are bounded by the route calibration; they cannot turn a quiet
+    /// room into an unresponsive microphone.
+    var effectiveOnset: Float {
+        guard config.adaptiveNoiseFloor, noiseFloorSamples > 0 else { return config.onset }
+        return max(config.onset, min(config.onset * 1.35, noiseFloorRMS + config.noiseFloorMargin))
+    }
+
+    var effectiveKeepalive: Float {
+        guard config.adaptiveNoiseFloor, noiseFloorSamples > 0 else { return config.keepalive }
+        return max(config.keepalive, min(config.keepalive * 1.25, noiseFloorRMS * 1.05))
+    }
 
     init(config: Config = Config()) {
         self.config = config
@@ -175,15 +225,18 @@ struct VoiceVAD {
         bargeStreak = 0
         onsetStreak = 0
         voicedAccumMs = 0
+        frameCount = 0
+        voicedFrameCount = 0
     }
 
-    /// Clear per-turn state when a turn ends for any reason outside `step`
+    /// Clear endpoint state when a turn ends for any reason outside `step`
     /// (push-to-talk release, the hands-free toggle ending a live turn).
+    /// Counters remain available until the next turn so the engine can emit a
+    /// privacy-safe completion metric after the stop action.
     mutating func noteTurnEnded() {
         heardSpeech = false
         bargeStreak = 0
         onsetStreak = 0
-        voicedAccumMs = 0
     }
 
     // ── Route-aware presets ─────────────────────────────────────────────────
@@ -261,10 +314,12 @@ struct VoiceVAD {
         now: TimeInterval,
         voiceLike: Bool = true
     ) -> Action {
+        guard rms.isFinite, rms >= 0, now.isFinite else { return .none }
+        if phase == .ready { learnNoiseFloor(rms: rms, voiceLike: voiceLike) }
         switch phase {
         case .ready:
             bargeStreak = 0
-            if rms > config.onset && voiceLike {
+            if rms > effectiveOnset && voiceLike {
                 onsetStreak += 1
                 if onsetStreak >= config.onsetFrames {
                     onsetStreak = 0
@@ -273,18 +328,22 @@ struct VoiceVAD {
                     turnStart = now
                     lastStep = now
                     voicedAccumMs = 0
+                    frameCount = 0
+                    voicedFrameCount = 0
                     return .beginTurn
                 }
             } else {
                 onsetStreak = 0
             }
         case .listening:
+            frameCount += 1
             let frameMs = lastStep > 0 ? (now - lastStep) * 1_000 : 85
             lastStep = now
-            if rms > config.keepalive && voiceLike {
+            if rms > effectiveKeepalive && voiceLike {
                 heardSpeech = true
                 lastVoice = now
                 voicedAccumMs += frameMs
+                voicedFrameCount += 1
             }
             let silentMs = (now - lastVoice) * 1_000
             let turnMs = (now - turnStart) * 1_000
@@ -326,6 +385,24 @@ struct VoiceVAD {
             break
         }
         return .none
+    }
+
+    private mutating func learnNoiseFloor(rms: Float, voiceLike: Bool) {
+        guard config.adaptiveNoiseFloor else { return }
+        // A frame that looks like voice is never allowed into the baseline.
+        // The upper bound also keeps a loud fan/music bed from ratcheting the
+        // threshold indefinitely; the spectral veto remains the authority for
+        // broadband noise.
+        guard !voiceLike || rms <= config.onset else { return }
+        let sample = min(rms, 0.010)
+        if noiseFloorSamples == 0 {
+            // Start at the route's calibrated keepalive instead of trusting a
+            // single frame (a knock/fan transient must not raise the gate).
+            noiseFloorRMS = min(config.keepalive, sample)
+        } else {
+            noiseFloorRMS += (sample - noiseFloorRMS) * 0.08
+        }
+        noiseFloorSamples += 1
     }
 }
 

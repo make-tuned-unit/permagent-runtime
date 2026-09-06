@@ -58,7 +58,6 @@
 		336AFAC211E2D1C99E32CB2A /* DictateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99F34E2381968F13A858F14A /* DictateView.swift */; };
 		34107F4F6CB8A90E06B04BFB /* mobius_32.webp in Resources */ = {isa = PBXBuildFile; fileRef = DFD325F2AFCC1504F4FADE8C /* mobius_32.webp */; };
 		35639B5AA14214FCA92D561C /* MeetingUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B150CAEF7EF145516B4E342 /* MeetingUploader.swift */; };
-		35DD8F8724AABC3DE0D4C7E4 /* DesignPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A30D53E21A79D099E53FD5D9 /* DesignPolicyTests.swift */; };
 		3763765877E4B418D2CE5E66 /* mobius_72.webp in Resources */ = {isa = PBXBuildFile; fileRef = F83E5EC31CC02070F9A63CAC /* mobius_72.webp */; };
 		389CCEEEE3C95E4B8E3A0D3F /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E26A800CF1D4790CE5DA10 /* Theme.swift */; };
 		3BC8C5AC70FB3597D2221D26 /* mobius_69.webp in Resources */ = {isa = PBXBuildFile; fileRef = B6F0018258AE31DA3C2066AA /* mobius_69.webp */; };
@@ -98,7 +97,6 @@
 		6A3BB4A07F35C86B6D1A61EE /* VoiceAudioRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE48F560CD9EF78FE2426709 /* VoiceAudioRoute.swift */; };
 		6A99352AA4544CCCE87F62AC /* mobius_30.webp in Resources */ = {isa = PBXBuildFile; fileRef = F69A3E36CE477B9F8F117D5E /* mobius_30.webp */; };
 		6B8EEC13095E9F2F6C02965A /* mobius_62.webp in Resources */ = {isa = PBXBuildFile; fileRef = D5FC5C685CBD279DABF0DF1D /* mobius_62.webp */; };
-		7219EB8F6F16327D314F360A /* ModelSwitchFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E7272C87F066B416D0CC2AF /* ModelSwitchFeedback.swift */; };
 		7252CEB45C5C6557601BB12A /* mobius_31.webp in Resources */ = {isa = PBXBuildFile; fileRef = A50E726E7A7F3E738039E437 /* mobius_31.webp */; };
 		74121FE658DFF52EFD481487 /* MobiusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E42505E2B61F537431E47F2D /* MobiusView.swift */; };
 		741BE5AD00A14F1204CF1E7E /* AppRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = A177DAA80FF4D08BDDF21F17 /* AppRoute.swift */; };
@@ -186,7 +184,6 @@
 		B4549FC45562D1ACB58CB061 /* mobius_11.webp in Resources */ = {isa = PBXBuildFile; fileRef = 79B624DD50B28C932A809D4D /* mobius_11.webp */; };
 		B579F2361368D7C62FF7B48F /* VoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4BD3E1B6A179219E2AC1FDD /* VoiceView.swift */; };
 		B5C6E18DF7EBBB4E22DA6345 /* mobius_31.webp in Resources */ = {isa = PBXBuildFile; fileRef = A50E726E7A7F3E738039E437 /* mobius_31.webp */; };
-		B6D459A254D363CC611E2D44 /* DesignPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1934B9F05B210FC760E9604 /* DesignPolicy.swift */; };
 		B6DD907A727FE746A2750E11 /* mobius_71.webp in Resources */ = {isa = PBXBuildFile; fileRef = 9DB85BFD1C09686A08BB5040 /* mobius_71.webp */; };
 		B73C63B88616B56F42522D85 /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */; };
 		B83B0931CB251E62924D6795 /* VoiceVADTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03ECD1FBD23E34DDAA6C60F4 /* VoiceVADTests.swift */; };
@@ -206,7 +203,6 @@
 		C2368CCD1EFFF6542A477C7B /* mobius_23.webp in Resources */ = {isa = PBXBuildFile; fileRef = 032DBBA07506A4CB030698CA /* mobius_23.webp */; };
 		C338F7F7A94CC26220AFFC51 /* VoiceVAD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EEE1C8D68C52C00634826E5 /* VoiceVAD.swift */; };
 		C443E4C76B83445AB7AA24AA /* PermagentWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F6D4BD4322DC4ED7E202147 /* PermagentWatchApp.swift */; };
-		C46E1E536B8A654CDAD551DA /* DesignPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1934B9F05B210FC760E9604 /* DesignPolicy.swift */; };
 		C4C3538EF6C1D49FD838839F /* mobius_21.webp in Resources */ = {isa = PBXBuildFile; fileRef = CC8E4CBB923FAD453492F9C1 /* mobius_21.webp */; };
 		C54BCA6F7089504728ACC202 /* mobius_12.webp in Resources */ = {isa = PBXBuildFile; fileRef = DDF0E03807AA1E9E3F8D7E72 /* mobius_12.webp */; };
 		C5BCD758953BD9E35770CD89 /* mobius_68.webp in Resources */ = {isa = PBXBuildFile; fileRef = 75732F55A6BED9FB899F2904 /* mobius_68.webp */; };
@@ -220,7 +216,6 @@
 		CEDBB2339402826A2B473F06 /* mobius_17.webp in Resources */ = {isa = PBXBuildFile; fileRef = 0E09A773F32ADCF97CFBED6B /* mobius_17.webp */; };
 		CEF87751516CE567C7C8A055 /* mobius_00.webp in Resources */ = {isa = PBXBuildFile; fileRef = 47E3F47D43EBBE98C02C0DCD /* mobius_00.webp */; };
 		CF541B0AF5800AEAF39CB337 /* mobius_71.webp in Resources */ = {isa = PBXBuildFile; fileRef = 9DB85BFD1C09686A08BB5040 /* mobius_71.webp */; };
-		CF8CBF31DEB412E67D731A65 /* ModelSwitchFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E7272C87F066B416D0CC2AF /* ModelSwitchFeedback.swift */; };
 		D0869F4465AF6B0372722BC6 /* mobius_24.webp in Resources */ = {isa = PBXBuildFile; fileRef = 1BD65746168153E4927EA4BF /* mobius_24.webp */; };
 		D18A6856EBE158DF068E24E4 /* mobius_20.webp in Resources */ = {isa = PBXBuildFile; fileRef = E37A4053643D2CE4973B3F69 /* mobius_20.webp */; };
 		D50689448A84AD9315336677 /* mobius_23.webp in Resources */ = {isa = PBXBuildFile; fileRef = 032DBBA07506A4CB030698CA /* mobius_23.webp */; };
@@ -229,7 +224,6 @@
 		D608E7CD8B4A393517D8122E /* mobius_36.webp in Resources */ = {isa = PBXBuildFile; fileRef = DF52D5387FB44B148544B0D6 /* mobius_36.webp */; };
 		D6203DCC175CF8AF5BD5D154 /* mobius_52.webp in Resources */ = {isa = PBXBuildFile; fileRef = 96E3CD59C334F2231416D963 /* mobius_52.webp */; };
 		D682D818041EF6C48B45057F /* mobius_56.webp in Resources */ = {isa = PBXBuildFile; fileRef = 0789D585C4E32C8367B4D9DF /* mobius_56.webp */; };
-		D70896C840A21BB0D40E3C7B /* DesignPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1934B9F05B210FC760E9604 /* DesignPolicy.swift */; };
 		D76E4B067E18EAFFBE9BEBE2 /* mobius_48.webp in Resources */ = {isa = PBXBuildFile; fileRef = 1FE3E488DA41183B5847860E /* mobius_48.webp */; };
 		DB09BBD764DCC5DB777B651F /* mobius_34.webp in Resources */ = {isa = PBXBuildFile; fileRef = 2D057DD50738AF82B6EEFAFB /* mobius_34.webp */; };
 		DB4A27124E3346A970AC0023 /* mobius_38.webp in Resources */ = {isa = PBXBuildFile; fileRef = E23860BBA6F6F24F415A6348 /* mobius_38.webp */; };
@@ -246,7 +240,6 @@
 		ECF5EC83531D45AF4CD8ED41 /* mobius_68.webp in Resources */ = {isa = PBXBuildFile; fileRef = 75732F55A6BED9FB899F2904 /* mobius_68.webp */; };
 		ED6CA95E1CE3940CDEAA4AEE /* mobius_67.webp in Resources */ = {isa = PBXBuildFile; fileRef = 820E69821F1CA3B0E87C82F3 /* mobius_67.webp */; };
 		ED7266FCD98B69F29431DA6B /* VoiceClipboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19DCB4DF670238B7E8AA2B61 /* VoiceClipboard.swift */; };
-		EDC17044D1983C0DA9DB2BA9 /* ModelSwitchFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CA478C76258E34D3553C906 /* ModelSwitchFeedbackTests.swift */; };
 		EDD58962CBEF7739EEE508DB /* mobius_09.webp in Resources */ = {isa = PBXBuildFile; fileRef = 9BD4017C1B5025C7532A43B7 /* mobius_09.webp */; };
 		EDEC276A65B5B05EC2C2E4D2 /* mobius_55.webp in Resources */ = {isa = PBXBuildFile; fileRef = A1562D9A5A48D2C6D7E5DE38 /* mobius_55.webp */; };
 		EFA9D07C186F566994683B7E /* mobius_36.webp in Resources */ = {isa = PBXBuildFile; fileRef = DF52D5387FB44B148544B0D6 /* mobius_36.webp */; };
@@ -333,7 +326,6 @@
 		62C3A4C5A4A0A00406133931 /* MeetingCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingCapture.swift; sourceTree = "<group>"; };
 		66F5167580C5CEA1594823BA /* VoiceIdle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceIdle.swift; sourceTree = "<group>"; };
 		6BA8E11A706A9BB0AA4D27D7 /* mobius_65.webp */ = {isa = PBXFileReference; path = mobius_65.webp; sourceTree = "<group>"; };
-		6E7272C87F066B416D0CC2AF /* ModelSwitchFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSwitchFeedback.swift; sourceTree = "<group>"; };
 		6F04A0A4A5E3D5490ADCF447 /* SchedulesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchedulesView.swift; sourceTree = "<group>"; };
 		6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOrbView.swift; sourceTree = "<group>"; };
 		703C34CF2F95143E83461EBD /* mobius_05.webp */ = {isa = PBXFileReference; path = mobius_05.webp; sourceTree = "<group>"; };
@@ -348,7 +340,6 @@
 		8371B38D78B810EDE35E0120 /* mobius_46.webp */ = {isa = PBXFileReference; path = mobius_46.webp; sourceTree = "<group>"; };
 		8694CAB5B48EE233EE1B6617 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		87D915FC199267FC631F862F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		8CA478C76258E34D3553C906 /* ModelSwitchFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSwitchFeedbackTests.swift; sourceTree = "<group>"; };
 		8F97923677E193EC119FAB68 /* NotesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesView.swift; sourceTree = "<group>"; };
 		9194A1942B76D48DFDDC4F52 /* mobius_37.webp */ = {isa = PBXFileReference; path = mobius_37.webp; sourceTree = "<group>"; };
 		92F5A8A5633ED54576A243D3 /* mobius_74.webp */ = {isa = PBXFileReference; path = mobius_74.webp; sourceTree = "<group>"; };
@@ -368,7 +359,6 @@
 		A1562D9A5A48D2C6D7E5DE38 /* mobius_55.webp */ = {isa = PBXFileReference; path = mobius_55.webp; sourceTree = "<group>"; };
 		A177DAA80FF4D08BDDF21F17 /* AppRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRoute.swift; sourceTree = "<group>"; };
 		A2929017C0AB57BB453FE479 /* mobius_61.webp */ = {isa = PBXFileReference; path = mobius_61.webp; sourceTree = "<group>"; };
-		A30D53E21A79D099E53FD5D9 /* DesignPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignPolicyTests.swift; sourceTree = "<group>"; };
 		A344629E2ADF70E9DAC9675C /* mobius_33.webp */ = {isa = PBXFileReference; path = mobius_33.webp; sourceTree = "<group>"; };
 		A50E726E7A7F3E738039E437 /* mobius_31.webp */ = {isa = PBXFileReference; path = mobius_31.webp; sourceTree = "<group>"; };
 		AA0EDD200AC9AB1D53EB3754 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
@@ -418,7 +408,6 @@
 		E9E7E684F0381A55C80FDCF7 /* mobius_27.webp */ = {isa = PBXFileReference; path = mobius_27.webp; sourceTree = "<group>"; };
 		EDD0EC686BC293BA0C44B42B /* mobius_44.webp */ = {isa = PBXFileReference; path = mobius_44.webp; sourceTree = "<group>"; };
 		EE1056C318BBC7C0F5755D94 /* mobius_43.webp */ = {isa = PBXFileReference; path = mobius_43.webp; sourceTree = "<group>"; };
-		F1934B9F05B210FC760E9604 /* DesignPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignPolicy.swift; sourceTree = "<group>"; };
 		F2500EEA5FF92FB9A6C15CAB /* SplashView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplashView.swift; sourceTree = "<group>"; };
 		F29247F9621E9DE2137A0C10 /* mobius_57.webp */ = {isa = PBXFileReference; path = mobius_57.webp; sourceTree = "<group>"; };
 		F2C357BC721A2F9D99617979 /* mobius_73.webp */ = {isa = PBXFileReference; path = mobius_73.webp; sourceTree = "<group>"; };
@@ -536,9 +525,7 @@
 			isa = PBXGroup;
 			children = (
 				CEAB4D45CE7CAF7281A46AE0 /* ChatStreamTests.swift */,
-				A30D53E21A79D099E53FD5D9 /* DesignPolicyTests.swift */,
 				C32B302BDEB6B73D2B6E807F /* MeetingQueueTests.swift */,
-				8CA478C76258E34D3553C906 /* ModelSwitchFeedbackTests.swift */,
 				957EDF882E6F3C9CAECC8537 /* VoiceAudioRouteTests.swift */,
 				B5407AD47762AA65113F31F1 /* VoiceClipboardTests.swift */,
 				AD512F7F85B836E356B1401F /* VoiceEnrollTests.swift */,
@@ -547,7 +534,8 @@
 				03ECD1FBD23E34DDAA6C60F4 /* VoiceVADTests.swift */,
 				D46B905B07E656000B2C7C2D /* WatchBridgeTests.swift */,
 			);
-			path = PermagentMobileTests;
+			name = PermagentMobileTests;
+			path = ../PermagentMobileTests;
 			sourceTree = "<group>";
 		};
 		4A4F8C5EB1DA6638A3805CC0 /* PermagentMobile */ = {
@@ -560,7 +548,6 @@
 				9C4D37D5C1C8C7AA951A2D50 /* ChatHistorySheet.swift */,
 				5B6B8D36D573BDC32A82690D /* ChatStream.swift */,
 				4002AFFA392F4F378F587763 /* ControlHub.swift */,
-				F1934B9F05B210FC760E9604 /* DesignPolicy.swift */,
 				99F34E2381968F13A858F14A /* DictateView.swift */,
 				A05A9CB2151AAE411F5FA801 /* FeaturesView.swift */,
 				5F08F07F303B94889E794863 /* HomeView.swift */,
@@ -572,7 +559,6 @@
 				7D945F77D2AEFEF7C1BFEDF5 /* MeetingView.swift */,
 				E42505E2B61F537431E47F2D /* MobiusView.swift */,
 				E08AFB4AE75FC1E977EF1630 /* ModelPickerView.swift */,
-				6E7272C87F066B416D0CC2AF /* ModelSwitchFeedback.swift */,
 				8F97923677E193EC119FAB68 /* NotesView.swift */,
 				27F090C554069B3A53A77509 /* Permagent.icon */,
 				C775F55DDB9DE14F8D4323E6 /* PermagentApp.swift */,
@@ -594,7 +580,8 @@
 				A36A8EB49E49D7487ABB25A9 /* Fonts */,
 				4775D8B42E1952BE602D3725 /* MobiusFrames */,
 			);
-			path = PermagentMobile;
+			name = PermagentMobile;
+			path = ../PermagentMobile;
 			sourceTree = "<group>";
 		};
 		74001AAA1BB7B06D388B7ED6 /* PermagentWatch */ = {
@@ -607,7 +594,8 @@
 				CC9B6164EBAB50D9736F3C32 /* WatchRecorder.swift */,
 				E7EF886D29687F28A5C42F89 /* WatchRelay.swift */,
 			);
-			path = PermagentWatch;
+			name = PermagentWatch;
+			path = ../PermagentWatch;
 			sourceTree = "<group>";
 		};
 		A36A8EB49E49D7487ABB25A9 /* Fonts */ = {
@@ -636,7 +624,8 @@
 				B7163912C0C1992977ED3F8F /* TalkToAgentIntent.swift */,
 				FCB035E6A98D76903318959E /* WatchBridge.swift */,
 			);
-			path = Shared;
+			name = Shared;
+			path = ../Shared;
 			sourceTree = "<group>";
 		};
 		E6B2462D39D1E1E555A169B8 = {
@@ -953,7 +942,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				785B62280BF3739F07F72D01 /* AppRoute.swift in Sources */,
-				B6D459A254D363CC611E2D44 /* DesignPolicy.swift in Sources */,
 				80B15C16D322544301287066 /* MobiusView.swift in Sources */,
 				C443E4C76B83445AB7AA24AA /* PermagentWatchApp.swift in Sources */,
 				7899B4D912822426A2C06F81 /* TalkToAgentIntent.swift in Sources */,
@@ -978,7 +966,6 @@
 				A308C9F7DEC7CC68DE4380BB /* ChatHistorySheet.swift in Sources */,
 				237D5E5B42F6A7DC3D25EF53 /* ChatStream.swift in Sources */,
 				E7443621280D39788C3B75AA /* ControlHub.swift in Sources */,
-				C46E1E536B8A654CDAD551DA /* DesignPolicy.swift in Sources */,
 				336AFAC211E2D1C99E32CB2A /* DictateView.swift in Sources */,
 				42A1D64914A2EEC2AC65F0DC /* FeaturesView.swift in Sources */,
 				969E272CC336191295B24887 /* HomeView.swift in Sources */,
@@ -989,7 +976,6 @@
 				CE2DD16F7155CFED6F820AD0 /* MeetingView.swift in Sources */,
 				74121FE658DFF52EFD481487 /* MobiusView.swift in Sources */,
 				935D68C6F3150B93748E1239 /* ModelPickerView.swift in Sources */,
-				7219EB8F6F16327D314F360A /* ModelSwitchFeedback.swift in Sources */,
 				9B082791DC9A6835AEF5B8CB /* NotesView.swift in Sources */,
 				8F94851B95D12EF04506A591 /* PermagentApp.swift in Sources */,
 				FF4CA05E39094AB9DAD35A01 /* PronunciationView.swift in Sources */,
@@ -1018,12 +1004,8 @@
 			files = (
 				BDE803D3E14E594782A0E0CA /* ChatStream.swift in Sources */,
 				04ACE51338886772B88EDA45 /* ChatStreamTests.swift in Sources */,
-				D70896C840A21BB0D40E3C7B /* DesignPolicy.swift in Sources */,
-				35DD8F8724AABC3DE0D4C7E4 /* DesignPolicyTests.swift in Sources */,
 				88F99B5A0BE069F15BECBB00 /* MeetingQueue.swift in Sources */,
 				541565E03C8E5DC34D3D2663 /* MeetingQueueTests.swift in Sources */,
-				CF8CBF31DEB412E67D731A65 /* ModelSwitchFeedback.swift in Sources */,
-				EDC17044D1983C0DA9DB2BA9 /* ModelSwitchFeedbackTests.swift in Sources */,
 				6A3BB4A07F35C86B6D1A61EE /* VoiceAudioRoute.swift in Sources */,
 				A8D51BBFC267E33C888276AE /* VoiceAudioRouteTests.swift in Sources */,
 				ED7266FCD98B69F29431DA6B /* VoiceClipboard.swift in Sources */,

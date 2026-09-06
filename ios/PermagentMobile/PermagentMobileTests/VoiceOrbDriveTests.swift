@@ -148,4 +148,124 @@ final class VoiceOrbDriveTests: XCTestCase {
             XCTAssertTrue(b.low.isFinite && b.mid.isFinite && b.high.isFinite)
         }
     }
+
+    // ── VOICE SCREEN LAYOUT ────────────────────────────────────────────────
+
+    /// The orb is the stable primary affordance. Conversation text may be
+    /// bounded, but it must never trigger the old 144-pt compact orb branch.
+    func testConversationLayoutKeepsTheFullSizeOrb() {
+        XCTAssertEqual(VoiceConversationLayout.orbDiameter, 300)
+    }
+
+    /// Live user captions have their own lower band, separate from the
+    /// assistant's scroll/highlight transcript above the orb.
+    func testConversationLayoutReservesBottomLiveTranscriptBand() {
+        XCTAssertGreaterThan(VoiceConversationLayout.liveTranscriptHeight, 0)
+        XCTAssertGreaterThan(
+            VoiceConversationLayout.assistantChatHeight,
+            VoiceConversationLayout.liveTranscriptHeight,
+            "assistant chat should have the larger scrollable text band"
+        )
+        XCTAssertEqual(VoiceConversationLayout.captionControlGap, 6)
+    }
+
+    /// A `.dataConsumed` callback can arrive before the speaker has rendered
+    /// the buffer, which made reply_end transition to ready while audio was
+    /// still queued. The playback contract must wait for audible drain.
+    func testPlaybackDrainWaitsForAudiblePlayback() {
+        XCTAssertTrue(VoicePlaybackDrainPolicy.waitsForPlayback)
+    }
+
+    func testStalePlaybackCompletionCannotDrainANewReply() {
+        var epoch = VoicePlaybackEpoch()
+        let oldReply = epoch.value
+        epoch.advance()
+        XCTAssertFalse(epoch.accepts(oldReply))
+        XCTAssertTrue(epoch.accepts(epoch.value))
+    }
+
+    // ── SOCKET LIFECYCLE ───────────────────────────────────────────────────
+
+    /// Route filtering handles speakerphone echo before this policy runs;
+    /// anything reaching cancellation is a confirmed barge and is immediate.
+    func testRouteApprovedAutomaticBargeCancelsImmediately() {
+        XCTAssertEqual(
+            VoiceReplyCancellationPolicy.plan(
+                source: .automaticBargeIn,
+                replyEnded: false
+            ),
+            .immediate,
+            "a route-approved barge must cancel without an arbitrary grace delay"
+        )
+        XCTAssertEqual(
+            VoiceReplyCancellationPolicy.plan(
+                source: .automaticBargeIn,
+                replyEnded: true
+            ),
+            .localOnly
+        )
+    }
+
+    /// A user tapping the orb is an explicit cancellation and must retain the
+    /// old immediate-cancel behavior, independent of reply completion state.
+    func testExplicitInterruptReconnectsImmediately() {
+        XCTAssertEqual(
+            VoiceReplyCancellationPolicy.plan(
+                source: .explicitUser,
+                replyEnded: false
+            ),
+            .immediate
+        )
+        XCTAssertEqual(
+            VoiceReplyCancellationPolicy.plan(
+                source: .explicitUser,
+                replyEnded: true
+            ),
+            .immediate
+        )
+    }
+
+    func testCanceledReplyRejectsLateAudioAndNextTurnGetsFreshGeneration() {
+        var lifecycle = VoiceReplyLifecycle()
+        lifecycle.beginTurn()
+        let canceledGeneration = lifecycle.generation
+        XCTAssertTrue(lifecycle.acceptsAudio)
+
+        XCTAssertEqual(
+            lifecycle.requestCancellation(
+                source: .automaticBargeIn,
+                replyEnded: false
+            ),
+            .immediate
+        )
+        XCTAssertEqual(lifecycle.phase, .complete)
+        XCTAssertFalse(lifecycle.acceptsAudio, "confirmed barge must fence late PCM")
+
+        lifecycle.receiveReplyEnd()
+        XCTAssertEqual(lifecycle.phase, .complete)
+        XCTAssertFalse(lifecycle.acceptsAudio)
+
+        lifecycle.beginTurn()
+        XCTAssertGreaterThan(lifecycle.generation, canceledGeneration)
+        XCTAssertEqual(lifecycle.phase, .active)
+        XCTAssertTrue(lifecycle.acceptsAudio)
+    }
+
+    func testReconnectInvalidatesOldReplyBeforeFreshCapture() {
+        var lifecycle = VoiceReplyLifecycle()
+        lifecycle.beginTurn()
+        let oldGeneration = lifecycle.generation
+        _ = lifecycle.requestCancellation(
+            source: .explicitUser,
+            replyEnded: false
+        )
+        lifecycle.invalidate()
+        XCTAssertEqual(lifecycle.phase, .idle)
+        XCTAssertGreaterThan(lifecycle.generation, oldGeneration)
+        XCTAssertFalse(lifecycle.acceptsAudio)
+
+        lifecycle.beginTurn()
+        XCTAssertTrue(lifecycle.acceptsAudio)
+        XCTAssertGreaterThan(lifecycle.generation, oldGeneration)
+    }
 }

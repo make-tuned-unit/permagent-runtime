@@ -165,6 +165,10 @@ final class VoiceVADTests: XCTestCase {
         d.set(1_500.0, forKey: VoiceVAD.DefaultsKey.quickSilenceMs)
         let inverted = VoiceVAD.applyingDefaults(.init(), defaults: d)
         XCTAssertLessThanOrEqual(inverted.quickSilenceMs, inverted.silenceMs)
+
+        d.set(99.0, forKey: VoiceVAD.DefaultsKey.noiseFloorMargin)
+        let margin = VoiceVAD.applyingDefaults(.init(), defaults: d).noiseFloorMargin
+        XCTAssertEqual(margin, Float(VoiceVAD.noiseFloorMarginOverrideRange.upperBound))
     }
 
     /// A tuned window must reach the live VAD through the route chooser, not
@@ -178,6 +182,38 @@ final class VoiceVADTests: XCTestCase {
         XCTAssertEqual(c.silenceMs, 650)
         XCTAssertEqual(c.onset, VoiceVAD.builtInMicConfig.onset,
                        "the override must not disturb the route preset's thresholds")
+    }
+
+    func testNoiseFloorRaisesOnsetOnlyWithinBoundedHysteresis() {
+        var vad = VoiceVAD(config: VoiceVAD.builtInMicConfig)
+        var now: TimeInterval = 100
+        // Broadband room noise is eligible for the baseline, but cannot open
+        // a turn because the spectral veto is false.
+        for _ in 0..<20 {
+            _ = vad.step(rms: 0.0075, phase: .ready, now: now, voiceLike: false)
+            now += 0.085
+        }
+        XCTAssertGreaterThan(vad.effectiveOnset, VoiceVAD.builtInMicConfig.onset)
+        XCTAssertLessThanOrEqual(vad.effectiveOnset, VoiceVAD.builtInMicConfig.onset * 1.35)
+        // A quiet-but-real built-in-mic voice remains below the adaptive cap
+        // and opens after the normal two-frame hysteresis.
+        XCTAssertEqual(vad.step(rms: 0.009, phase: .ready, now: now), .none)
+        now += 0.085
+        XCTAssertEqual(vad.step(rms: 0.009, phase: .ready, now: now), .beginTurn)
+    }
+
+    func testTurnMetricsContainCountersOnlyAndSurviveExplicitStop() {
+        var vad = VoiceVAD()
+        var now: TimeInterval = 200
+        beginTurn(&vad, rms: 0.03, at: &now)
+        XCTAssertNil(run(&vad, rms: 0.03, phase: .listening, duration: 1, from: &now))
+        let beforeStop = vad.metrics
+        vad.noteTurnEnded()
+        XCTAssertGreaterThan(beforeStop.frameCount, 0)
+        XCTAssertGreaterThan(beforeStop.voicedFrameCount, 0)
+        XCTAssertEqual(vad.metrics.frameCount, beforeStop.frameCount)
+        XCTAssertEqual(vad.metrics.voicedFrameCount, beforeStop.voicedFrameCount)
+        XCTAssertGreaterThanOrEqual(vad.metrics.noiseFloorRMS, 0)
     }
 
     /// A LONG turn (dictation-length voiced duration) keeps the patient

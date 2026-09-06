@@ -60,7 +60,7 @@ struct NotesView: View {
             }
             .padding()
         }
-        .background(ChatSurface.bg.ignoresSafeArea())
+        .background { AppBackdrop() }
         .navigationTitle("Notes")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {

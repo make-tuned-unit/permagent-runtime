@@ -101,6 +101,9 @@ enum VoiceAudioRoute {
     /// Best practice (2026 duplex agents): stop immediately on a real barge,
     /// never on his own echo. Headphones keep AEC and never ignore.
     static let speakerPlaybackBargeFloor: Float = 0.05
+    /// During a recent zero-RMS tap gap, mic energy above this is enough
+    /// evidence to preserve a deliberate speakerphone interruption.
+    static let speakerPlaybackGapUserFloor: Float = 0.06
     /// The playback tap is measured before loudspeaker → room → microphone
     /// attenuation. Live traces put 0.2 playback near 0.03 mic echo; comparing
     /// the two values directly required an impossible shout over the digital
@@ -110,10 +113,17 @@ enum VoiceAudioRoute {
     static func ignoreBargeIn(
         speakerphone: Bool,
         playbackRms: Float,
-        micRms: Float = 0
+        micRms: Float = 0,
+        playbackRecentlyObserved: Bool = false
     ) -> Bool {
         guard speakerphone else { return false }
-        guard playbackRms > speakerPlaybackBargeFloor else { return false }
+        // A zero-RMS tap callback can be the gap between two scheduled TTS
+        // buffers. While the tap is still recent, remain conservative on the
+        // echo-prone built-in speaker path; with no recent playback evidence,
+        // allow a real user barge to interrupt.
+        if playbackRms <= speakerPlaybackBargeFloor {
+            return playbackRecentlyObserved && micRms <= speakerPlaybackGapUserFloor
+        }
         let expectedEcho = playbackRms * speakerPlaybackToMicGain
         let floor = max(speakerPlaybackBargeFloor, expectedEcho * 1.75)
         return micRms <= floor

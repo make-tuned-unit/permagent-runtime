@@ -218,7 +218,7 @@ struct DictateView: View {
             // this screen follows the chat's design language) — the serif
             // heading below is the page title, so the system bar hides on
             // THIS view only; pushed views (NotesView) keep their own bars.
-            .background(ChatSurface.bg.ignoresSafeArea())
+            .background { AppBackdrop() }
             .toolbar(.hidden, for: .navigationBar)
             .sensoryFeedback(.impact(weight: .medium), trigger: recordTaps)
             .sensoryFeedback(.success, trigger: savedCount)

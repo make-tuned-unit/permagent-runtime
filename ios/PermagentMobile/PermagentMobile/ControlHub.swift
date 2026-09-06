@@ -31,7 +31,7 @@ struct ControlHubView: View {
                             accent: Brand.violet)
 
                     hubLink(destination: ModelPickerView(),
-                            icon: "cpu",
+                            icon: "slider.horizontal.3",
                             title: "Model",
                             subtitle: "Switch the chat model — any provider with a saved key",
                             accent: ChatSurface.spark)
@@ -49,7 +49,7 @@ struct ControlHubView: View {
                             accent: ChatSurface.spark)
 
                     hubLink(destination: VoiceIdentityView(),
-                            icon: "waveform.badge.person.crop",
+                            icon: DesignPolicy.voiceIdentitySymbol,
                             title: "Voice identity",
                             subtitle: "Set, redo, or forget whose voice your agent answers",
                             accent: Brand.violet)
@@ -57,7 +57,7 @@ struct ControlHubView: View {
                 }
                 .padding()
             }
-            .background(ChatSurface.bg.ignoresSafeArea())
+            .background { AppBackdrop() }
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top, spacing: 0) { pageHeader }
         }
@@ -71,9 +71,9 @@ struct ControlHubView: View {
                 .foregroundStyle(ChatSurface.text)
             Spacer()
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 6)
-        .padding(.bottom, 8)
+        .padding(.horizontal, DesignPolicy.pageHeaderHorizontalPadding)
+        .padding(.top, DesignPolicy.pageHeaderTopPadding)
+        .padding(.bottom, DesignPolicy.pageHeaderBottomPadding)
         .background(ChatSurface.bg)
     }
 

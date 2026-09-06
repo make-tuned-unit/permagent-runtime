@@ -64,7 +64,7 @@ struct MeetingView: View {
             .padding(.vertical, 18)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ChatSurface.bg.ignoresSafeArea())
+        .background { AppBackdrop() }
         .navigationTitle("Meeting")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $pickingProjectFor) { target in projectPicker(for: target) }

@@ -78,7 +78,7 @@ struct SchedulesView: View {
             }
             .padding()
         }
-        .background(ChatSurface.bg.ignoresSafeArea())
+        .background { AppBackdrop() }
         .navigationTitle("Automations")
         .refreshable { await load() }
         .task { await load() }

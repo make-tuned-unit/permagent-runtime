@@ -20,6 +20,9 @@ actor APIClient {
     }
 
     func loadSavedPairing() {
+        #if DEBUG
+        if DesignPreview.enabled { return }
+        #endif
         if config == nil { config = KeychainStore.load() }
     }
 

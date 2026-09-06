@@ -169,6 +169,7 @@ targets:
       - path: PermagentMobile/VoiceOrbView.swift
       - path: PermagentMobile/VoiceOrbDrive.swift
       - path: PermagentMobile/Theme.swift
+      - path: PermagentMobile/DesignPolicy.swift
       - path: PermagentMobile/MobiusFrames
       - path: PermagentMobile/Fonts
     settings:
@@ -234,6 +235,7 @@ targets:
       - path: PermagentMobileTests
       - path: PermagentMobile/VoiceVAD.swift
       - path: PermagentMobile/VoiceAudioRoute.swift
+      - path: PermagentMobile/VoiceProtocolTypes.swift
       # The orb's motion targets and the silent-idle classifier — both
       # Foundation-only, so they belong here rather than in a UI test.
       - path: PermagentMobile/VoiceIdle.swift
@@ -241,6 +243,8 @@ targets:
       - path: PermagentMobile/VoiceClipboard.swift
       - path: PermagentMobile/VoiceEnroll.swift
       - path: PermagentMobile/ChatStream.swift
+      - path: PermagentMobile/ModelSwitchFeedback.swift
+      - path: PermagentMobile/DesignPolicy.swift
       # The meeting recorder's durable queue. Foundation-only on purpose, so
       # the state machine that decides when audio may be deleted is tested
       # here — without a microphone, a hub, or the app target.

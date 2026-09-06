@@ -8,7 +8,12 @@
 //            binary frames: raw Float32 LE mono PCM @ 16 kHz
 //            {"type":"stop"}
 //   server → {"type":"transcript","text":…}
+//            {"type":"transcript_partial","text":…} while STT is active
 //            {"type":"reply_start"}
+//            {"type":"audio_segment","segment_id":"…","text":"…",
+//             "sample_rate":24000,"duration_ms":1234,
+//             "word_timings":[{"word":"…","start_ms":0,"end_ms":240,
+//                              "start_utf16":0,"end_utf16":3}]}
 //            binary frames: Float32 LE mono PCM @ 24 kHz (queued, played in order)
 //            {"type":"clipboard","text":…}  copy on this device as soon as the
 //            tool runs (often mid-turn, before confirmation audio). Write the
@@ -37,6 +42,103 @@
 import SwiftUI
 import AVFoundation
 import UIKit
+import QuartzCore
+import OSLog
+
+// MARK: - Voice transcript/playback protocol helpers
+
+struct VoiceReplyHighlight: Equatable {
+    let segmentID: String
+    let word: String
+    let range: NSRange
+}
+
+/// UIKit owns the scrolling here because SwiftUI's `Text` cannot expose the
+/// on-screen rect of one attributed substring. Keeping one text view lets us
+/// scroll the active word into view instead of jumping a long answer straight
+/// to its bottom as soon as playback starts.
+private struct VoiceReplyTranscriptView: UIViewRepresentable {
+    let text: String
+    let highlight: NSRange?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    final class Coordinator {
+        var renderedText = ""
+        var renderedFontSize: CGFloat = 0
+        var highlightedRange = NSRange(location: NSNotFound, length: 0)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.backgroundColor = .clear
+        view.isEditable = false
+        view.isSelectable = false
+        view.isScrollEnabled = true
+        view.showsVerticalScrollIndicator = false
+        view.textContainerInset = UIEdgeInsets(top: 2, left: 0, bottom: 2, right: 0)
+        view.textContainer.lineFragmentPadding = 0
+        view.adjustsFontForContentSizeCategory = true
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        let fullRange = NSRange(location: 0, length: (text as NSString).length)
+        let bodyFont = UIFontMetrics(forTextStyle: .body).scaledFont(
+            for: UIFont(name: "Inter-Regular", size: 17) ?? UIFont.systemFont(ofSize: 17),
+            compatibleWith: view.traitCollection)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .left
+        paragraph.paragraphSpacing = 12
+        let baseAttributes: [NSAttributedString.Key: Any] = [
+            .font: bodyFont,
+            .foregroundColor: UIColor(Brand.text),
+            .paragraphStyle: paragraph,
+        ]
+
+        if context.coordinator.renderedText != text || context.coordinator.renderedFontSize != bodyFont.pointSize {
+            view.attributedText = NSAttributedString(string: text, attributes: baseAttributes)
+            context.coordinator.renderedText = text
+            context.coordinator.renderedFontSize = bodyFont.pointSize
+            context.coordinator.highlightedRange = NSRange(location: NSNotFound, length: 0)
+        }
+
+        let requested = highlight.flatMap { range -> NSRange? in
+            guard range.location >= 0, range.length > 0,
+                  range.location <= fullRange.length,
+                  range.length <= fullRange.length - range.location else { return nil }
+            return range
+        } ?? NSRange(location: NSNotFound, length: 0)
+
+        guard requested != context.coordinator.highlightedRange else { return }
+        let old = context.coordinator.highlightedRange
+        if old.location != NSNotFound, NSMaxRange(old) <= fullRange.length {
+            view.textStorage.addAttributes(baseAttributes, range: old)
+        }
+        if requested.location != NSNotFound {
+            view.textStorage.addAttributes([
+                .font: UIFont(name: "Inter-Bold", size: bodyFont.pointSize) ?? UIFont.boldSystemFont(ofSize: bodyFont.pointSize),
+                .foregroundColor: UIColor(Brand.cyanInk),
+            ], range: requested)
+            view.layoutIfNeeded()
+            let glyphRect = view.layoutManager.boundingRect(
+                forGlyphRange: requested, in: view.textContainer
+            ).offsetBy(dx: view.textContainerInset.left, dy: view.textContainerInset.top)
+            let visibleRect = view.bounds.insetBy(dx: 0, dy: max(12, view.bounds.height * 0.15))
+            if !visibleRect.intersects(glyphRect) {
+                if UIAccessibility.isReduceMotionEnabled {
+                    UIView.performWithoutAnimation { view.scrollRangeToVisible(requested) }
+                } else {
+                    view.scrollRangeToVisible(requested)
+                }
+            }
+        }
+        context.coordinator.highlightedRange = requested
+        view.accessibilityLabel = "Agent reply"
+        view.accessibilityValue = text
+    }
+}
 
 // ── Mic pipe: input-format buffers → 16 kHz mono Float32 frames ──────────────
 // Lives on the audio tap thread only (serial), so the converter needs no lock.
@@ -149,7 +251,17 @@ final class VoiceEngine: ObservableObject {
 
     @Published private(set) var state: ConvState = .idle
     @Published private(set) var transcript = ""
+    /// Provisional STT text while the hub is still decoding the capture.
+    /// `transcript` supersedes this as soon as the final frame arrives.
+    @Published private(set) var transcriptPartial = ""
     @Published private(set) var reply = ""
+    /// A completed turn may have no assistant reply (empty STT, a transport
+    /// loss, or a server error). Keep it visible until the next turn so the
+    /// screen never looks like it is still listening without feedback.
+    @Published private(set) var turnFeedback: VoiceTurnFeedback = .none
+    /// The word whose PCM is currently being rendered by AVAudioPlayerNode.
+    /// This is deliberately nil between turns and after the final buffer drains.
+    @Published private(set) var replyHighlight: VoiceReplyHighlight?
     /// Last paste-ready body from a `clipboard` frame — retappable if the
     /// automatic pasteboard write raced a switch to Notes.
     @Published private(set) var lastClipboard: String?
@@ -192,6 +304,10 @@ final class VoiceEngine: ObservableObject {
     /// Raw playback RMS while the agent is speaking — gates barge-in on speaker
     /// so his own voice from the same speaker is not treated as an interrupt.
     private var playbackRms: Float = 0
+    /// The tap can report a short zero-RMS gap between TTS buffers. Keep that
+    /// observation separate from the RMS value so speakerphone VAD does not
+    /// mistake the gap for a confirmed user barge.
+    private var playbackTapAt: CFTimeInterval?
     private var identityQuietGate = VoiceIdentityQuietGate()
 
     private var sessionId = ""
@@ -208,6 +324,43 @@ final class VoiceEngine: ObservableObject {
     )!
     private var pendingBuffers = 0
     private var replyEnded = false
+    /// Fences server frames after interruption/reconnect. This is separate
+    /// from the AVAudioPlayerNode epoch because a late WebSocket frame can
+    /// otherwise revive `.speaking` after local playback was canceled.
+    private var replyLifecycle = VoiceReplyLifecycle()
+    /// Completion callbacks from a prior player generation may arrive after a
+    /// route change/reconnect. They must never drain a new reply's counter.
+    private var playbackGeneration = VoicePlaybackEpoch()
+    private var transcriptBuffer = VoiceTranscriptBuffer()
+    /// Metadata frames are queued in wire order and paired one-for-one with
+    /// the next binary frame. An old hub simply leaves this queue empty.
+    private struct PendingReplySegment {
+        // Malformed or timing-incompatible metadata remains queued so its
+        // corresponding PCM frame can still play, but must not participate in
+        // duration/highlight calculations.
+        let segment: VoiceReplySegment?
+        let displayRange: NSRange
+    }
+    private var pendingReplySegments: [PendingReplySegment] = []
+    private var replySegmentQueue = VoiceReplySegmentQueue()
+    private var timingDisabledForReply = false
+    private struct PlaybackItem {
+        let segment: VoiceReplySegment?
+        let displayRange: NSRange
+        let startSeconds: Double
+        let durationSeconds: Double
+    }
+    private var playbackItems: [PlaybackItem] = []
+    private var scheduledAudioSeconds: Double = 0
+    private var playbackStartedAt: CFTimeInterval?
+    private var playbackHighlightTask: Task<Void, Never>?
+    private var replySegmentRanges: [(segmentID: String, text: String, range: NSRange)] = []
+    private var replyTextAuthoritative = false
+    private let voiceLogger = Logger(subsystem: "com.permagent.mobile", category: "voice")
+    private var captureStartedAt: CFTimeInterval?
+    private var replyWaitStartedAt: CFTimeInterval?
+    private var firstAudioLogged = false
+    private var transcriptLogged = false
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -275,8 +428,10 @@ final class VoiceEngine: ObservableObject {
     }
 
     func stop() {
+        endCaptureMetrics(reason: "stop")
         active = false
         connectEpoch += 1
+        replyLifecycle.invalidate()
         if let routeObserver {
             NotificationCenter.default.removeObserver(routeObserver)
             self.routeObserver = nil
@@ -285,9 +440,10 @@ final class VoiceEngine: ObservableObject {
         wsTask = nil
         routeApplyTask?.cancel()
         routeApplyTask = nil
+        resetReplyPlayback()
         teardownGraph()
-        pendingBuffers = 0
         playbackRms = 0
+        playbackTapAt = nil
         level = 0
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         state = .idle
@@ -295,6 +451,77 @@ final class VoiceEngine: ObservableObject {
         enrollPrompt = nil
         enrollHave = 0
         teachWord = nil
+    }
+
+    #if DEBUG
+    func prepareDesignPreview() {
+        state = .ready
+        transcript = "Help me turn this idea into something extraordinary."
+        reply = "Let's make something meaningful.\n\nI'll keep the details in view, connect the right tools, and work through it with you."
+    }
+    #endif
+
+    private func resetReplyPlayback() {
+        playbackGeneration.advance()
+        playbackHighlightTask?.cancel()
+        playbackHighlightTask = nil
+        playbackStartedAt = nil
+        replyWaitStartedAt = nil
+        playbackItems.removeAll(keepingCapacity: true)
+        pendingReplySegments.removeAll(keepingCapacity: true)
+        replySegmentQueue.reset()
+        timingDisabledForReply = false
+        scheduledAudioSeconds = 0
+        pendingBuffers = 0
+        replyEnded = false
+        replyHighlight = nil
+    }
+
+    private func resetReplyForTurn() {
+        resetReplyPlayback()
+        replyLifecycle.beginTurn()
+        reply = ""
+        replyTextAuthoritative = false
+        replySegmentRanges.removeAll(keepingCapacity: true)
+    }
+
+    private var captureRouteLabel: String {
+        Self.usingExternalOutput() ? "external" : "speakerphone"
+    }
+
+    private func beginCaptureMetrics() {
+        captureStartedAt = CACurrentMediaTime()
+        replyWaitStartedAt = nil
+        firstAudioLogged = false
+        transcriptLogged = false
+        voiceLogger.info("voice_capture_begin route=\(self.captureRouteLabel, privacy: .public) vp=\(self.captureUsesVoiceProcessing, privacy: .public) onset=\(self.vad.effectiveOnset, privacy: .public) keepalive=\(self.vad.effectiveKeepalive, privacy: .public)")
+    }
+
+    private func endCaptureMetrics(reason: String) {
+        guard let started = captureStartedAt else { return }
+        let now = CACurrentMediaTime()
+        let elapsed = max(0, (now - started) * 1_000)
+        let metrics = vad.metrics
+        voiceLogger.info(
+            "voice_capture_end reason=\(reason, privacy: .public) route=\(self.captureRouteLabel, privacy: .public) duration_ms=\(elapsed, privacy: .public) frames=\(metrics.frameCount, privacy: .public) voiced_frames=\(metrics.voicedFrameCount, privacy: .public) noise_floor_rms=\(metrics.noiseFloorRMS, privacy: .public)"
+        )
+        captureStartedAt = nil
+        replyWaitStartedAt = reason == "stop" ? nil : now
+    }
+
+    private func logFirstAudioIfNeeded() {
+        guard !firstAudioLogged, let started = replyWaitStartedAt else { return }
+        firstAudioLogged = true
+        let latency = max(0, (CACurrentMediaTime() - started) * 1_000)
+        voiceLogger.info("voice_first_audio_ms=\(latency, privacy: .public) route=\(self.captureRouteLabel, privacy: .public)")
+        replyWaitStartedAt = nil
+    }
+
+    private func logTranscriptIfNeeded() {
+        guard !transcriptLogged, let started = replyWaitStartedAt else { return }
+        transcriptLogged = true
+        let latency = max(0, (CACurrentMediaTime() - started) * 1_000)
+        voiceLogger.info("voice_final_transcript_ms=\(latency, privacy: .public) route=\(self.captureRouteLabel, privacy: .public)")
     }
 
     // ── Audio graph ──────────────────────────────────────────────────────────
@@ -551,6 +778,11 @@ final class VoiceEngine: ObservableObject {
         guard !rebuildingGraph else { return }
         rebuildingGraph = true
         defer { rebuildingGraph = false }
+        // A route rebuild stops AVAudioPlayerNode without invoking every
+        // scheduled-buffer completion. Drop the old playback timeline first,
+        // otherwise a highlight task and pending-buffer count can survive with
+        // no node left to drain them.
+        resetReplyPlayback()
         teardownGraph()
         try buildGraph()
     }
@@ -568,8 +800,14 @@ final class VoiceEngine: ObservableObject {
     /// a barge-in.
     private func handlePlaybackLevel(rawRms: Float, orbLevel: Float) {
         playbackRms = rawRms
+        playbackTapAt = CACurrentMediaTime()
         guard state == .speaking else { return }
         level = orbLevel
+    }
+
+    private var playbackRecentlyObserved: Bool {
+        guard state == .speaking, let playbackTapAt else { return false }
+        return CACurrentMediaTime() - playbackTapAt < 0.35
     }
 
     /// Rolling pre-roll of the most recent mic frames, kept while NOT
@@ -657,9 +895,18 @@ final class VoiceEngine: ObservableObject {
             if VoiceAudioRoute.ignoreBargeIn(
                 speakerphone: !Self.usingExternalOutput(),
                 playbackRms: playbackRms,
-                micRms: rms
-            ) { break }
-            interrupt()
+                micRms: rms,
+                playbackRecentlyObserved: playbackRecentlyObserved
+            ) {
+                voiceLogger.info(
+                    "voice_barge_ignored route=speakerphone playback_recent=\(self.playbackRecentlyObserved, privacy: .public) playback_rms=\(self.playbackRms, privacy: .public) mic_rms=\(rms, privacy: .public)"
+                )
+                // VoiceVAD clears its barge streak when it emits .interrupt;
+                // returning here re-arms hands-free without touching the
+                // active socket or playback queue.
+                break
+            }
+            interrupt(source: .automaticBargeIn)
         case .none: break
         }
     }
@@ -689,8 +936,11 @@ final class VoiceEngine: ObservableObject {
     /// stamped, by whichever path got here.
     private func enterListening() {
         guard state == .ready, wsTask != nil else { return }
+        transcriptBuffer.reset()
         transcript = ""
-        reply = ""
+        transcriptPartial = ""
+        resetReplyForTurn()
+        turnFeedback = .none
         notice = nil
         sendText(#"{"type":"start","sample_rate":16000}"#)
         // Flush the lead-in BEFORE any live frame, so the hub hears the word
@@ -703,24 +953,33 @@ final class VoiceEngine: ObservableObject {
             wsTask?.send(.data(frame)) { _ in }
         }
         state = .listening
+        beginCaptureMetrics()
     }
 
     func endTurn() {
         guard state == .listening else { return }
+        endCaptureMetrics(reason: "user_stop")
         vad.noteTurnEnded()
+        let socketEpoch = connectEpoch
+        let socket = wsTask
+        level = 0
+        state = .thinking
+        armThinkingWatchdog()
+        let turnEpoch = thinkingEpoch
         // The stop send used to discard its error: a failed send left the
         // daemon recording forever and this client in .thinking with no exit.
-        wsTask?.send(.string(#"{"type":"stop"}"#)) { [weak self] error in
+        socket?.send(.string(#"{"type":"stop"}"#)) { [weak self] error in
             guard error != nil else { return }
             Task { @MainActor [weak self] in
-                guard let self, self.state == .thinking else { return }
+                guard let self,
+                      self.connectEpoch == socketEpoch,
+                      socket === self.wsTask,
+                      self.thinkingEpoch == turnEpoch,
+                      self.state == .thinking else { return }
                 self.notice = "Connection hiccup — try that again."
                 self.state = .ready
             }
         }
-        level = 0
-        state = .thinking
-        armThinkingWatchdog()
     }
 
     /// `.thinking` has no natural exit if the daemon parks (tool approval
@@ -740,20 +999,40 @@ final class VoiceEngine: ObservableObject {
         }
     }
 
-    /// Barge-in: silence is instant (playback torn down first), then the turn is
-    /// cancelled daemon-side by reconnecting a fresh socket — the close sets the
-    /// handler's cancellation flag so it stops synthesizing further sentences.
+    /// An explicit orb tap tears playback down and cancels the daemon
+    /// immediately. Automatic VAD candidates that look like speaker echo are
+    /// filtered before this method; a confirmed barge cancels immediately.
     func interrupt() {
-        guard state == .speaking || state == .thinking else { return }
-        playerNode?.stop()
-        pendingBuffers = 0
-        replyEnded = false
-        level = 0
-        reconnect()
+        interrupt(source: .explicitUser)
     }
 
-    private func reconnect() {
+    private func interrupt(source: VoiceReplyInterruptSource) {
+        guard state == .speaking || state == .thinking else { return }
+        let plan = replyLifecycle.requestCancellation(source: source, replyEnded: replyEnded)
+        voiceLogger.info(
+            "voice_reply_interrupt source=\(String(describing: source), privacy: .public) route=\(self.captureRouteLabel, privacy: .public) reply_ended=\(self.replyEnded, privacy: .public) pending_buffers=\(self.pendingBuffers, privacy: .public) playback_generation=\(self.playbackGeneration.value, privacy: .public)"
+        )
+        switch plan {
+        case .localOnly:
+            resetReplyPlayback()
+            playerNode?.stop()
+            level = 0
+            state = .ready
+        case .immediate:
+            resetReplyPlayback()
+            playerNode?.stop()
+            level = 0
+            reconnect(reason: "explicit_interrupt")
+        }
+    }
+
+    private func reconnect(reason: String) {
+        voiceLogger.info(
+            "voice_socket_reconnect reason=\(reason, privacy: .public) reply_ended=\(self.replyEnded, privacy: .public) pending_buffers=\(self.pendingBuffers, privacy: .public) playback_generation=\(self.playbackGeneration.value, privacy: .public)"
+        )
         connectEpoch += 1
+        replyLifecycle.invalidate()
+        resetReplyPlayback()
         wsTask?.cancel(with: .goingAway, reason: nil)
         wsTask = nil
         state = .connecting
@@ -763,14 +1042,17 @@ final class VoiceEngine: ObservableObject {
     // ── WebSocket ────────────────────────────────────────────────────────────
 
     private func connect() async {
+        let epoch = connectEpoch
         state = .connecting
         guard let config = await APIClient.shared.currentConfig(),
               var comps = URLComponents(url: config.baseURL, resolvingAgainstBaseURL: false)
         else {
+            guard epoch == connectEpoch, active else { return }
             state = .failed("Not paired with a hub yet — pair from Settings → Devices on your Mac first.")
             active = false
             return
         }
+        guard epoch == connectEpoch, active else { return }
         comps.scheme = comps.scheme == "https" ? "wss" : "ws"
         comps.path = "/voice"
         comps.queryItems = [
@@ -783,7 +1065,6 @@ final class VoiceEngine: ObservableObject {
             active = false
             return
         }
-        let epoch = connectEpoch
         let task = URLSession.shared.webSocketTask(with: url)
         task.maximumMessageSize = VoiceTransport.maximumIncomingMessageBytes
         wsTask = task
@@ -809,19 +1090,66 @@ final class VoiceEngine: ObservableObject {
     }
 
     private func handleDisconnect() {
+        voiceLogger.info(
+            "voice_socket_disconnect transport=1 state=\(String(describing: self.state), privacy: .public) reply_ended=\(self.replyEnded, privacy: .public) pending_buffers=\(self.pendingBuffers, privacy: .public)"
+        )
         wsTask = nil
+        replyLifecycle.invalidate()
+        resetReplyPlayback()
         playerNode?.stop()
-        pendingBuffers = 0
         guard active else { return }
         state = .connecting
-        notice = "Reconnecting to your hub…"
+        turnFeedback = .connectionLost
+        notice = turnFeedback.message
         let epoch = connectEpoch
         Task {
             try? await Task.sleep(for: .seconds(2))
             guard self.active, epoch == self.connectEpoch else { return }
-            self.notice = nil
             await self.connect()
         }
+    }
+
+    private func appendReplySegment(_ segment: VoiceReplySegment) -> NSRange {
+        guard !segment.text.isEmpty else {
+            let location = (reply as NSString).length
+            return NSRange(location: location, length: 0)
+        }
+        let separator = reply.isEmpty ? "" : (reply.hasSuffix("\n\n") ? "" : "\n\n")
+        reply += separator + segment.text
+        let location = ((reply as NSString).length - (segment.text as NSString).length)
+        let range = NSRange(location: location, length: (segment.text as NSString).length)
+        replySegmentRanges.append((segmentID: segment.segmentID, text: segment.text, range: range))
+        return range
+    }
+
+    /// `reply_text` is the durable, complete answer. Re-find segment text in
+    /// it so a hub that normalizes whitespace/punctuation still highlights the
+    /// correct UTF-16 range.
+    private func remapReplySegmentRanges() {
+        let nsReply = reply as NSString
+        var searchLocation = 0
+        replySegmentRanges = replySegmentRanges.map { item in
+            let needle = item.text as NSString
+            guard needle.length > 0, searchLocation <= nsReply.length else { return item }
+            let found = nsReply.range(of: needle as String, options: [], range: NSRange(location: searchLocation, length: nsReply.length - searchLocation))
+            guard found.location != NSNotFound else { return item }
+            searchLocation = found.location + found.length
+            return (segmentID: item.segmentID, text: item.text, range: found)
+        }
+        playbackItems = playbackItems.map { item in
+            guard let segment = item.segment,
+                  let mapped = replySegmentRanges.first(where: {
+                      $0.segmentID == segment.segmentID && $0.text == segment.text
+                  }) else { return item }
+            return PlaybackItem(segment: segment, displayRange: mapped.range,
+                                startSeconds: item.startSeconds,
+                                durationSeconds: item.durationSeconds)
+        }
+    }
+
+    private func segmentRange(for segment: VoiceReplySegment) -> NSRange {
+        replySegmentRanges.first(where: { $0.segmentID == segment.segmentID && $0.text == segment.text })?.range
+            ?? NSRange(location: 0, length: 0)
     }
 
     private struct ServerMsg: Decodable {
@@ -829,6 +1157,12 @@ final class VoiceEngine: ObservableObject {
         let text: String?
         let message: String?
         let sample_rate: Int?
+        let segment_id: VoiceWireSegmentID?
+        let duration_ms: Int?
+        let outcome: String?
+        let words: [VoiceReplyWordTiming]?
+        let word_timings: [VoiceReplyWordTiming]?
+        let timings: [VoiceReplyWordTiming]?
         let word: String?
         let have: Int?
         let need: Int?
@@ -837,6 +1171,17 @@ final class VoiceEngine: ObservableObject {
         let available: Bool?
         let downloading: Bool?
         let reason: String?
+
+        var replySegment: VoiceReplySegment? {
+            guard (type == "audio_segment" || type == "reply_segment"), let segmentID = segment_id?.value else { return nil }
+            return VoiceReplySegment(
+                segmentID: segmentID,
+                text: text ?? "",
+                sampleRate: sample_rate ?? 24_000,
+                durationMS: duration_ms ?? 0,
+                words: words ?? word_timings ?? timings ?? []
+            )
+        }
     }
 
     private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
@@ -846,14 +1191,57 @@ final class VoiceEngine: ObservableObject {
                   let msg = try? JSONDecoder().decode(ServerMsg.self, from: data) else { return }
             switch msg.type {
             case "ready":
-                state = .ready
-            case "transcript":
+                turnFeedback = .none
                 notice = nil
-                transcript = msg.text ?? ""
+                state = .ready
+            case "transcript_partial":
+                transcriptBuffer.acceptPartial(msg.text ?? "")
+                transcriptPartial = transcriptBuffer.partial
+            case "turn_outcome":
+                replyLifecycle.receiveTerminalWithoutReply()
+                // New daemons make short/empty/STT-failed turns explicit
+                // before their legacy `idle` frame. Older daemons take the
+                // existing `error`/`idle` paths below, so this is additive.
+                switch (msg.outcome ?? "").lowercased() {
+                case "empty_stt", "capture_rejected_short":
+                    turnFeedback = .emptyCapture
+                case "capture_rejected_malformed":
+                    turnFeedback = .error("Microphone data was invalid — try again.")
+                case "disconnected", "capture_disconnected":
+                    turnFeedback = .connectionLost
+                default:
+                    turnFeedback = .error(msg.reason ?? msg.message ?? "Voice stopped — try again.")
+                }
+                notice = turnFeedback.message
+                if state == .thinking || state == .listening || state == .speaking {
+                    state = .ready
+                }
+            case "transcript":
+                turnFeedback = .none
+                notice = nil
+                transcriptBuffer.acceptFinal(msg.text ?? "")
+                transcript = transcriptBuffer.final
+                transcriptPartial = ""
+                logTranscriptIfNeeded()
             case "reply_start":
                 if state == .thinking || state == .ready { state = .thinking }
+            case "audio_segment", "reply_segment":
+                guard replyLifecycle.acceptsAudio else { break }
+                guard let segment = msg.replySegment else { break }
+                let timingOrderOK = replySegmentQueue.acceptMetadata(segmentID: segment.segmentID)
+                if !timingOrderOK { timingDisabledForReply = true }
+                let range = replyTextAuthoritative ? segmentRange(for: segment) : appendReplySegment(segment)
+                let usable = !timingDisabledForReply && segment.sampleRate == Int(playbackFormat.sampleRate)
+                    && segment.hasValidTimings && range.length > 0
+                pendingReplySegments.append(PendingReplySegment(
+                    segment: usable ? segment : nil,
+                    displayRange: usable ? range : NSRange(location: 0, length: 0)
+                ))
             case "reply_text":
+                guard replyLifecycle.acceptsAudio else { break }
                 reply = msg.text ?? ""
+                replyTextAuthoritative = true
+                remapReplySegmentRanges()
             case "clipboard":
                 if let body = msg.text, !body.isEmpty {
                     lastClipboard = body
@@ -923,6 +1311,7 @@ final class VoiceEngine: ObservableObject {
                 // The server's learned identity check rejected this capture.
                 // Require actual quiet before hands-free re-arms or the same
                 // ambient talker immediately opens another recording.
+                endCaptureMetrics(reason: "speaker_rejected")
                 vad.noteTurnEnded()
                 identityQuietGate.lock()
                 preRoll.removeAll(keepingCapacity: true)
@@ -933,10 +1322,12 @@ final class VoiceEngine: ObservableObject {
                 }
             case "reply_end":
                 replyEnded = true
+                replyLifecycle.receiveReplyEnd()
                 if pendingBuffers == 0, state == .speaking || state == .thinking {
                     finishSpeaking()
                 }
             case "idle":
+                replyLifecycle.receiveTerminalWithoutReply()
                 // Empty / too-short capture — back to ready, no toast.
                 // Rejected speaker-print is the same path. Enrollment idle
                 // opens the next sentence; pronunciation teach still wins.
@@ -955,18 +1346,21 @@ final class VoiceEngine: ObservableObject {
                     state = .ready
                     enterListening()
                 } else if state == .thinking || state == .listening || state == .speaking {
-                    notice = nil
+                    if turnFeedback == .none { notice = nil }
                     state = .ready
                 }
             case "error":
+                replyLifecycle.receiveTerminalWithoutReply()
                 if VoiceIdle.isTransientEmptyTurn(msg.message) {
-                    notice = nil
+                    turnFeedback = .emptyCapture
+                    notice = turnFeedback.message
                     if state == .thinking || state == .listening || state == .speaking {
                         state = .ready
                     }
                     break
                 }
-                notice = msg.message ?? "Voice error"
+                turnFeedback = .error(msg.message ?? "Voice stopped — try again.")
+                notice = turnFeedback.message
                 // Transient recovery on a live socket, like the web hook: return
                 // to ready after a beat so a too-short press can't wedge a turn.
                 if state == .thinking || state == .listening || state == .speaking {
@@ -975,7 +1369,6 @@ final class VoiceEngine: ObservableObject {
                         try? await Task.sleep(for: .seconds(2))
                         guard epoch == self.connectEpoch, self.wsTask != nil else { return }
                         if self.state == .thinking || self.state == .listening {
-                            self.notice = nil
                             self.state = .ready
                         }
                     }
@@ -997,6 +1390,12 @@ final class VoiceEngine: ObservableObject {
     // ── Playback: schedule 24 kHz Float32 chunks in arrival order ────────────
 
     private func playChunk(_ data: Data) {
+        guard replyLifecycle.acceptsAudio else {
+            voiceLogger.info(
+                "voice_audio_frame_dropped lifecycle=\(String(describing: self.replyLifecycle.phase), privacy: .public) generation=\(self.replyLifecycle.generation, privacy: .public) bytes=\(data.count, privacy: .public)"
+            )
+            return
+        }
         let n = data.count / MemoryLayout<Float>.size
         guard n > 0, let player = playerNode,
               let buf = AVAudioPCMBuffer(pcmFormat: playbackFormat, frameCapacity: AVAudioFrameCount(n))
@@ -1008,10 +1407,25 @@ final class VoiceEngine: ObservableObject {
         // unwrapping it crashes the app in the middle of the agent speaking;
         // dropping one buffer is the correct trade.
         guard let channels = buf.floatChannelData else { return }
+        logFirstAudioIfNeeded()
         data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
             memcpy(channels[0], base, n * MemoryLayout<Float>.size)
         }
+        // Metadata is consumed only here, immediately before its PCM is
+        // scheduled. This pairs each ordered frame with exactly one buffer;
+        // old hubs leave the queue empty and continue to play normally.
+        let pending = pendingReplySegments.isEmpty ? nil : pendingReplySegments.removeFirst()
+        let framingOK = replySegmentQueue.consumePCM()
+        let fallbackDuration = Double(n) / playbackFormat.sampleRate
+        let duration = max(0.001, pending?.segment?.durationSeconds ?? fallbackDuration)
+        playbackItems.append(PlaybackItem(
+            segment: framingOK ? pending?.segment : nil,
+            displayRange: framingOK ? (pending?.displayRange ?? NSRange(location: 0, length: 0)) : NSRange(location: 0, length: 0),
+            startSeconds: scheduledAudioSeconds,
+            durationSeconds: duration
+        ))
+        scheduledAudioSeconds += duration
         // No per-chunk level pulse here: chunks arrive far ahead of playback,
         // so they are the wrong clock for the orb. The player tap installed in
         // startAudio() drives `level` from the audio actually being heard.
@@ -1020,18 +1434,101 @@ final class VoiceEngine: ObservableObject {
         // Same inherited-isolation trap as the mic tap above: this completion
         // runs on an audio thread, and without @Sendable it would carry a
         // main-actor check that traps the moment a TTS buffer finishes.
-        player.scheduleBuffer(buf) { @Sendable [weak self] in
+        // Use dataPlayedBack rather than AVAudioPlayerNode's dataConsumed
+        // default: consumed means the node accepted the buffer, not that the
+        // speaker rendered it. reply_end must not reopen capture while queued
+        // speech is still inaudible.
+        let generation = playbackGeneration.value
+        player.scheduleBuffer(
+            buf,
+            completionCallbackType: VoicePlaybackDrainPolicy.waitsForPlayback
+                ? .dataPlayedBack
+                : .dataConsumed
+        ) { @Sendable [weak self] _ in
             guard let self else { return }
-            Task { @MainActor in self.bufferDrained() }
+            Task { @MainActor in self.bufferDrained(generation: generation) }
         }
-        if !player.isPlaying { player.play() }
+        if !player.isPlaying {
+            playbackStartedAt = CACurrentMediaTime()
+            voiceLogger.info(
+                "voice_playback_start generation=\(generation, privacy: .public) queued_buffers=\(self.pendingBuffers, privacy: .public)"
+            )
+            player.play()
+            startPlaybackHighlighting()
+        }
     }
 
-    private func bufferDrained() {
+    private func startPlaybackHighlighting() {
+        playbackHighlightTask?.cancel()
+        let epoch = connectEpoch
+        playbackHighlightTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.connectEpoch == epoch, self.state == .speaking,
+                      let elapsed = self.playbackElapsed() else { return }
+                self.updateReplyHighlight(elapsed: elapsed)
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+    }
+
+    private func playbackElapsed() -> TimeInterval? {
+        if let player = playerNode, let render = player.lastRenderTime,
+           let time = player.playerTime(forNodeTime: render),
+           time.sampleRate > 0, time.sampleTime >= 0 {
+            return Double(time.sampleTime) / time.sampleRate
+        }
+        guard let started = playbackStartedAt else { return nil }
+        return CACurrentMediaTime() - started
+    }
+
+    private func updateReplyHighlight(elapsed: TimeInterval) {
+        guard elapsed.isFinite, elapsed >= 0,
+              let item = playbackItems.first(where: {
+                  elapsed >= $0.startSeconds && elapsed < $0.startSeconds + $0.durationSeconds
+              }), let segment = item.segment,
+              let index = voiceReplyWordIndex(
+                  at: Int(max(0, elapsed - item.startSeconds) * 1_000), in: segment
+              ) else {
+            replyHighlight = nil
+            return
+        }
+        let ranges = segment.displayRanges()
+        guard index < ranges.count, ranges[index].length > 0 else {
+            replyHighlight = nil
+            return
+        }
+        let globalRange = NSRange(
+            location: item.displayRange.location + ranges[index].location,
+            length: ranges[index].length
+        )
+        let next = VoiceReplyHighlight(
+            segmentID: segment.segmentID,
+            word: segment.words[index].word,
+            range: globalRange
+        )
+        if replyHighlight != next { replyHighlight = next }
+    }
+
+    private func stopPlaybackHighlighting() {
+        playbackHighlightTask?.cancel()
+        playbackHighlightTask = nil
+        playbackStartedAt = nil
+        playbackItems.removeAll(keepingCapacity: true)
+        pendingReplySegments.removeAll(keepingCapacity: true)
+        scheduledAudioSeconds = 0
+        replyHighlight = nil
+    }
+
+    private func bufferDrained(generation: Int) {
+        guard playbackGeneration.accepts(generation) else { return }
         pendingBuffers = max(0, pendingBuffers - 1)
         if pendingBuffers == 0 {
             level = 0
             playbackRms = 0
+            playbackTapAt = nil
+            voiceLogger.info(
+                "voice_playback_drained generation=\(self.playbackGeneration.value, privacy: .public) reply_ended=\(self.replyEnded, privacy: .public)"
+            )
             if replyEnded && state == .speaking {
                 finishSpeaking()
             }
@@ -1040,6 +1537,7 @@ final class VoiceEngine: ObservableObject {
 
     /// After his line finishes: if a word is on the Orb, open the mic.
     private func finishSpeaking() {
+        stopPlaybackHighlighting()
         state = .ready
         if teachWord != nil {
             enterListening()
@@ -1176,78 +1674,151 @@ private struct BlobOrb: View {
 // ── The screen ───────────────────────────────────────────────────────────────
 
 struct VoiceView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     /// An already-resolved hub session, when the caller has one. `nil` means
     /// "resolve it yourself" — see `VoiceEngine.start(sessionId:)`.
     var sessionId: String? = nil
     @Environment(\.dismiss) private var dismiss
     @StateObject private var engine = VoiceEngine()
     @State private var pressing = false
+    @State private var showingModelPicker = false
+    @State private var showingAgentControls = false
+    @ObservedObject private var modelSelection = ModelSelectionStore.shared
 
     var body: some View {
         ZStack {
-            Brand.deepVoid.ignoresSafeArea()
-            Brand.shell.ignoresSafeArea()
+            AppBackdrop()
 
             VStack(spacing: 0) {
                 header
-                Spacer()
 
-                // The particle sphere, shared with the desktop conversation
-                // view (VoiceOrbView ← VoiceOrb.tsx). Replaces the old
-                // breathing-rings BlobOrb, which made the same product read
-                // as two different apps mid-conversation.
-                VoiceOrbView(
-                    level: Double(engine.level),
-                    speaking: engine.state == .speaking,
-                    thinking: engine.state == .thinking,
-                    listening: engine.state == .listening
-                        || (engine.state == .ready && engine.handsFree)
-                        || engine.teachWord != nil,
-                    teachWord: engine.teachWord
-                )
-                    .onTapGesture {
-                        if engine.teachWord != nil { return }
-                        engine.interrupt()
+                GeometryReader { geometry in
+                    ScrollView {
+                        VStack(spacing: 12) {
+                            assistantConversation
+                            Spacer(minLength: 0)
+                            orb(diameter: VoiceConversationLayout.orbDiameter)
+                            status
+                            voicePromptBand
+                            ChatDecisionStrip()
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(minHeight: geometry.size.height)
                     }
-                    .accessibilityLabel(orbAccessibility)
-                    .accessibilityAddTraits(.isButton)
+                    .scrollIndicators(.hidden)
+                }
 
-                Text(statusLine)
-                    .font(.brandLabel)
-                    .foregroundStyle(statusColor)
-                    .padding(.top, 26)
-                    .animation(Motion.ease, value: engine.state)
-
-                conversationText
-                    .padding(.top, 14)
-
-                ChatDecisionStrip()
-                    .padding(.top, 12)
-
-                Spacer()
-                controls
+                liveTranscript.padding(.top, 12)
+                controls.padding(.top, VoiceConversationLayout.captionControlGap)
             }
             .padding(.horizontal, 24)
         }
-        .task { await engine.start(sessionId: sessionId) }
+        .task {
+            #if DEBUG
+            if DesignPreview.enabled {
+                engine.prepareDesignPreview()
+                return
+            }
+            #endif
+            await modelSelection.refresh(scope: .voice)
+            await engine.start(sessionId: sessionId)
+        }
         .onDisappear { engine.stop() }
+        .sheet(isPresented: $showingModelPicker) {
+            NavigationStack {
+                ModelPickerView(scope: .voice)
+            }
+            .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showingAgentControls) {
+            NavigationStack {
+                AgentsView()
+            }
+            .presentationDetents([.medium, .large])
+        }
     }
 
     // ── Chrome ───────────────────────────────────────────────────────────────
 
+    private func orb(diameter: CGFloat) -> some View {
+        // The particle sphere, shared with the desktop conversation view
+        // (VoiceOrbView ← VoiceOrb.tsx). Voice conversation keeps the product
+        // diameter fixed; text is bounded in its own bands instead.
+        VoiceOrbView(
+            level: Double(engine.level),
+            speaking: engine.state == .speaking,
+            thinking: engine.state == .thinking,
+            listening: engine.state == .listening
+                || (engine.state == .ready && engine.handsFree)
+                || engine.teachWord != nil,
+            teachWord: engine.teachWord,
+            diameter: diameter
+        )
+        .onTapGesture {
+            if engine.teachWord != nil { return }
+            engine.interrupt()
+        }
+        .accessibilityLabel(orbAccessibility)
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private var status: some View {
+        Text(statusLine)
+            .font(.brandLabel)
+            .foregroundStyle(statusColor)
+            .padding(.top, 4)
+            .animation(Motion.ease, value: engine.state)
+    }
+
     private var header: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("VOICE").font(.brandLabel).foregroundStyle(Brand.cyanInk)
-                Text(AgentIdentity.shared.displayName).font(.brandTitle).foregroundStyle(Brand.text)
+            Button {
+                showingAgentControls = true
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Voice").font(.brandCaption).foregroundStyle(Brand.textMuted)
+                    HStack(spacing: 6) {
+                        Text(AgentIdentity.shared.displayName)
+                            .font(.brandTitle)
+                            .foregroundStyle(Brand.text)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(Brand.textMuted)
+                    }
+                }
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open \(AgentIdentity.shared.displayName) agent controls")
+            .accessibilityHint("Shows active and background agents.")
             Spacer()
+            Button {
+                showingModelPicker = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 17, weight: .semibold))
+                    if !modelSelection.voiceModel.isEmpty {
+                        Text(modelSelection.voiceModel)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: 130)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                    }
+                }
+                .foregroundStyle(Brand.text)
+                .frame(minWidth: 38, minHeight: 38)
+                .padding(.horizontal, modelSelection.voiceModel.isEmpty ? 0 : 8)
+            }
+            .glassChrome(in: Capsule(), interactive: true)
+            .accessibilityLabel(modelSelection.accessibilityLabel(scope: .voice))
+            .accessibilityHint("Applies to the next spoken turn.")
             Button {
                 engine.stop()
                 dismiss()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Brand.text)
                     .frame(width: 38, height: 38)
             }
@@ -1257,40 +1828,52 @@ struct VoiceView: View {
         .padding(.top, 16)
     }
 
-    private var conversationText: some View {
-        VStack(spacing: 10) {
-            if let word = engine.teachWord {
-                Text(word)
-                    .font(.brandTitle)
-                    .foregroundStyle(Brand.text)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Brand.surfaceHi, in: Capsule())
+    private var assistantConversation: some View {
+        Group {
+            if !engine.reply.isEmpty {
+                VoiceReplyTranscriptView(text: engine.reply, highlight: engine.replyHighlight?.range)
+                    .frame(height: VoiceConversationLayout.assistantChatHeight)
+                    .accessibilityLabel("Agent reply")
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: engine.reply.isEmpty ? 34 : VoiceConversationLayout.assistantChatHeight)
+        .padding(.horizontal, 8)
+        .animation(Motion.ease, value: engine.reply)
+    }
+
+    /// Status, teaching, and enrollment prompts stay independent from the
+    /// durable assistant reply. A late error must remain visible even when an
+    /// earlier reply is still on screen, and teach/enroll guidance must not be
+    /// hidden by the reply transcript.
+    private var voicePromptBand: some View {
+        VStack(spacing: 4) {
+            if let word = engine.teachWord, !word.isEmpty {
+                Text("Say \(word)")
+                    .font(.brandCaption.weight(.semibold))
+                    .foregroundStyle(Brand.cyanInk)
                     .accessibilityLabel("Say \(word)")
             }
-            if !engine.transcript.isEmpty {
-                Text(engine.transcript)
+            if let prompt = engine.enrollPrompt, !prompt.isEmpty {
+                Text(prompt)
                     .font(.brandCaption)
-                    .foregroundStyle(Brand.textMuted)
+                    .foregroundStyle(Brand.text)
                     .multilineTextAlignment(.center)
-                    .lineLimit(3)
+                    .accessibilityLabel("Enrollment prompt")
             }
-            if !engine.reply.isEmpty {
-                ScrollView {
-                    Text(engine.reply)
-                        .font(.brandBody)
-                        .foregroundStyle(Brand.text)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity)
-                }
-                .frame(maxHeight: 220)
-            }
-            if let notice = engine.notice {
+            if let notice = engine.notice, !notice.isEmpty {
                 Text(notice)
                     .font(.brandCaption)
                     .foregroundStyle(Brand.warning)
                     .multilineTextAlignment(.center)
+                    .accessibilityLabel("Voice status")
+            }
+            if case .failed(let why) = engine.state {
+                Text(why)
+                    .font(.brandCaption)
+                    .foregroundStyle(Brand.danger)
+                    .multilineTextAlignment(.center)
+                    .accessibilityLabel("Voice unavailable")
             }
             if engine.lastClipboard != nil {
                 Button("Copy again") {
@@ -1299,17 +1882,47 @@ struct VoiceView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(Brand.cyanInk)
             }
-            if case .failed(let why) = engine.state {
-                Text(why)
-                    .font(.brandCaption)
-                    .foregroundStyle(Brand.danger)
-                    .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: 34, maxHeight: 96)
+        .padding(.horizontal, 8)
+        .animation(Motion.ease, value: engine.notice)
+        .animation(Motion.ease, value: engine.teachWord)
+        .animation(Motion.ease, value: engine.enrollPrompt)
+    }
+
+    private var liveTranscript: some View {
+        Group {
+            if !engine.transcript.isEmpty || !engine.transcriptPartial.isEmpty {
+                VStack(spacing: 3) {
+                    ScrollView {
+                    Text(engine.transcript.isEmpty ? engine.transcriptPartial : engine.transcript)
+                        .font(.inter(18))
+                        .italic()
+                        .foregroundStyle(engine.transcript.isEmpty ? Brand.textMuted : Brand.text)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity)
+                    }
+                    .scrollIndicators(.hidden)
+                    if engine.transcript.isEmpty && !engine.transcriptPartial.isEmpty {
+                        Text("Transcribing…")
+                            .font(.caption2)
+                            .foregroundStyle(Brand.textMuted)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("What you said")
+                .accessibilityValue(engine.transcript.isEmpty ? engine.transcriptPartial : engine.transcript)
             }
         }
-        .frame(minHeight: 90, alignment: .top)
-        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity)
+        .frame(height: DesignPolicy.voiceCaptionHeight(accessibilitySize: dynamicTypeSize.isAccessibilitySize), alignment: .bottom)
         .animation(Motion.ease, value: engine.transcript)
-        .animation(Motion.ease, value: engine.reply)
+        .animation(Motion.ease, value: engine.transcriptPartial)
     }
 
     private var controls: some View {
@@ -1322,22 +1935,21 @@ struct VoiceView: View {
             } label: {
                 HStack(spacing: 7) {
                     Image(systemName: engine.handsFree ? "waveform.badge.mic" : "hand.raised.fill")
-                        .font(.caption.weight(.semibold))
-                    Text(engine.handsFree ? "Hands-free on — \(AgentIdentity.shared.nameCapitalized) is listening" : "Go hands-free")
-                        .font(.caption.weight(.semibold))
+                        .font(.system(size: 18, weight: .semibold))
+                    Text(engine.handsFree ? "Hands-free" : "Enable hands-free")
+                        .font(.subheadline.weight(.medium))
                 }
-                .foregroundStyle(engine.handsFree ? Brand.onAccent : Brand.textMuted)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(engine.handsFree ? AnyShapeStyle(Brand.cyan) : AnyShapeStyle(Color.clear))
-                .clipShape(Capsule())
+                .foregroundStyle(engine.handsFree ? Brand.cyanInk : Brand.textMuted)
+                .padding(.horizontal, 22)
+                .frame(minHeight: DesignPolicy.controlSize)
             }
             .glassChrome(in: Capsule(), interactive: true)
             .disabled(!interactable)
+            .accessibilityLabel(engine.handsFree ? "Hands-free enabled. Tap to switch to push to talk." : "Enable hands-free voice.")
             .animation(Motion.ease, value: engine.handsFree)
 
         }
-        .padding(.bottom, 34)
+        .padding(.bottom, 12)
     }
 
     private var pushToTalkButton: some View {
@@ -1380,6 +1992,9 @@ struct VoiceView: View {
     }
 
     private var statusLine: String {
+        if case .emptyCapture = engine.turnFeedback { return "DIDN’T CATCH THAT — TRY AGAIN" }
+        if case .connectionLost = engine.turnFeedback { return "RECONNECTING TO YOUR HUB…" }
+        if case .error = engine.turnFeedback { return "VOICE STOPPED — TRY AGAIN" }
         if engine.teachWord != nil {
             switch engine.state {
             case .speaking: return "PLACING A WORD ON THE ORB"

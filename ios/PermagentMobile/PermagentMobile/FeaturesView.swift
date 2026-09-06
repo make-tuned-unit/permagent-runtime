@@ -103,7 +103,7 @@ struct FeaturesView: View {
             }
             .padding()
         }
-        .background(ChatSurface.bg.ignoresSafeArea())
+        .background { AppBackdrop() }
         .navigationTitle("Features")
         .task { await load() }
     }

@@ -172,8 +172,45 @@ final class VoiceAudioRouteTests: XCTestCase {
         )
     }
 
+    func testSpeakerphoneRecentPlaybackGapStaysConservative() {
+        XCTAssertTrue(
+            VoiceAudioRoute.ignoreBargeIn(
+                speakerphone: true,
+                playbackRms: 0,
+                micRms: 0.035,
+                playbackRecentlyObserved: true
+            ),
+            "a zero-RMS callback during a live TTS gap can still be speaker echo"
+        )
+        XCTAssertFalse(
+            VoiceAudioRoute.ignoreBargeIn(
+                speakerphone: true,
+                playbackRms: 0,
+                micRms: 0.08,
+                playbackRecentlyObserved: true
+            ),
+            "a clearly louder user signal must interrupt even during a gap"
+        )
+        XCTAssertFalse(
+            VoiceAudioRoute.ignoreBargeIn(
+                speakerphone: true,
+                playbackRms: 0,
+                micRms: 0.035,
+                playbackRecentlyObserved: false
+            ),
+            "without recent playback evidence, a real barge remains possible"
+        )
+    }
+
     func testHeadphonesNeverIgnoreBargeBecauseOfSpeakerPlayback() {
-        XCTAssertFalse(VoiceAudioRoute.ignoreBargeIn(speakerphone: false, playbackRms: 0.9, micRms: 0.03))
+        XCTAssertFalse(
+            VoiceAudioRoute.ignoreBargeIn(
+                speakerphone: false,
+                playbackRms: 0.9,
+                micRms: 0.03,
+                playbackRecentlyObserved: true
+            )
+        )
     }
 
     func testIncomingVoiceFrameLimitCarriesTheObservedLongChunk() {

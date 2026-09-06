@@ -98,7 +98,7 @@ struct PronunciationView: View {
             }
             .padding()
         }
-        .background(ChatSurface.bg.ignoresSafeArea())
+        .background { AppBackdrop() }
         .navigationTitle("Pronunciation")
         .task { await reload() }
         .refreshable { await reload() }

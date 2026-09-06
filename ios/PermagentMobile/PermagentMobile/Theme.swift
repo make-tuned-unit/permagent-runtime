@@ -205,16 +205,11 @@ enum ChatSurface {
 
 // ── Typography ───────────────────────────────────────────────────────────────
 // One ramp, mirroring `type` in tokens.ts role for role and px for pt. The
-// scale previously used Dynamic Type styles (.subheadline, .caption2), which
-// meant every size differed from the desktop app — `brandBody` rendered at 15pt
-// against the web's 14, `brandDisplay` at 30 against 32. Brand alignment across
-// the two clients is the reason these are now fixed sizes.
+// base sizes preserve the desktop brand ratios, while semantic scaling
+// respects the operator's preferred reading size on each device.
 //
-// TRADE-OFF, deliberate: fixed sizes do not scale with the user's Dynamic Type
-// setting. That is the cost of matching the desktop ramp exactly. If
-// accessibility scaling is wanted back, wrap call sites in @ScaledMetric rather
-// than reverting these to text styles — that keeps the ratios while restoring
-// scaling, whereas text styles reintroduce the drift.
+// Base sizes retain the brand ramp; relative custom fonts scale with Dynamic
+// Type. Matching desktop pixel sizes must not disable the phone's accessibility.
 //
 // TYPEFACES ARE NOW THE REAL BRAND FONTS, bundled in PermagentMobile/Fonts/
 // and registered via UIAppFonts in project.yml (Info.plist is generated —
@@ -237,26 +232,26 @@ extension Font {
     /// Display face — tokens.ts font.display (Manrope 600/700/800).
     static func manrope(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
         switch weight {
-        case .bold: return .custom("Manrope-Bold", fixedSize: size)
-        case .heavy, .black: return .custom("Manrope-ExtraBold", fixedSize: size)
-        default: return .custom("Manrope-SemiBold", fixedSize: size)
+        case .bold: return .custom("Manrope-Bold", size: size, relativeTo: .title2)
+        case .heavy, .black: return .custom("Manrope-ExtraBold", size: size, relativeTo: .title2)
+        default: return .custom("Manrope-SemiBold", size: size, relativeTo: .title2)
         }
     }
     /// Body face — tokens.ts font.body (Inter 400/500/600/700).
     static func inter(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         switch weight {
-        case .medium: return .custom("Inter-Medium", fixedSize: size)
-        case .semibold: return .custom("Inter-SemiBold", fixedSize: size)
-        case .bold, .heavy, .black: return .custom("Inter-Bold", fixedSize: size)
-        default: return .custom("Inter-Regular", fixedSize: size)
+        case .medium: return .custom("Inter-Medium", size: size, relativeTo: .body)
+        case .semibold: return .custom("Inter-SemiBold", size: size, relativeTo: .body)
+        case .bold, .heavy, .black: return .custom("Inter-Bold", size: size, relativeTo: .body)
+        default: return .custom("Inter-Regular", size: size, relativeTo: .body)
         }
     }
     /// Mono face — tokens.ts font.mono (JetBrains Mono 400/500). Model ids,
     /// paths, keys — mirror the desktop's mono usage.
     static func jetbrainsMono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         switch weight {
-        case .medium, .semibold, .bold: return .custom("JetBrainsMono-Medium", fixedSize: size)
-        default: return .custom("JetBrainsMono-Regular", fixedSize: size)
+        case .medium, .semibold, .bold: return .custom("JetBrainsMono-Medium", size: size, relativeTo: .caption)
+        default: return .custom("JetBrainsMono-Regular", size: size, relativeTo: .caption)
         }
     }
 
@@ -283,11 +278,11 @@ extension Font {
     static let brandLabel = Font.inter(11, weight: .semibold)
 
     /// Chat prose — the assistant's answers in the brand body face.
-    static let chatProse = Font.inter(16.5)
+    static let chatProse = Font.inter(17)
     /// The empty-state greeting — large, display face, quiet.
     static let chatGreeting = Font.manrope(28)
     /// User messages — the sender's own words, slightly smaller.
-    static let chatUser = Font.inter(15.5)
+    static let chatUser = Font.inter(17)
 }
 
 /// Tabular figures — the iOS mirror of `tabularNums` in tokens.ts. Digits stop
@@ -406,17 +401,50 @@ extension View {
     /// Brand chrome material for floating controls (VoiceView close button,
     /// hands-free pill): real Liquid Glass on iOS 26+ — interactive glass
     /// responds to touch with the native morph — ultraThinMaterial before.
-    @ViewBuilder
     func glassChrome<S: Shape>(in shape: S, interactive: Bool = false) -> some View {
-        #if os(iOS)
-        if #available(iOS 26.0, *) {
-            self.glassEffect(interactive ? Glass.regular.interactive() : .regular, in: shape)
+        modifier(AccessibleGlassChrome(shape: shape, interactive: interactive))
+    }
+}
+
+private struct AccessibleGlassChrome<S: Shape>: ViewModifier {
+    let shape: S
+    let interactive: Bool
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if DesignPolicy.opaqueChrome(reduceTransparency: reduceTransparency, increasedContrast: contrast == .increased) {
+            content.background(ChatSurface.raised, in: shape)
+                .overlay(shape.stroke(Brand.textMuted.opacity(0.5), lineWidth: 1))
         } else {
-            self.background(.ultraThinMaterial, in: shape)
+            #if os(iOS)
+            if #available(iOS 26.0, *) {
+                content.glassEffect(interactive ? Glass.regular.interactive() : .regular, in: shape)
+            } else {
+                content.background(.regularMaterial, in: shape)
+            }
+            #else
+            content.background(.regularMaterial, in: shape)
+            #endif
         }
-        #else
-        self.background(.ultraThinMaterial, in: shape)
-        #endif
+    }
+}
+
+/// Static ambient light gives the glass context without a continuously
+/// rendering backdrop or any animation competing with the agent's orb.
+struct AppBackdrop: View {
+    var body: some View {
+        ZStack {
+            Brand.deepVoid
+            RadialGradient(colors: [Brand.cyan.opacity(0.055), .clear],
+                           center: .topLeading, startRadius: 0, endRadius: 470)
+            RadialGradient(colors: [Brand.violet.opacity(0.065), .clear],
+                           center: .bottomTrailing, startRadius: 0, endRadius: 430)
+        }
+        .ignoresSafeArea()
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
     }
 }
 
@@ -435,11 +463,12 @@ struct RaisedCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 10, content: content)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
-            .background(ChatSurface.raised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .background(ChatSurface.raised, in: RoundedRectangle(cornerRadius: DesignPolicy.cardRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .strokeBorder(ChatSurface.border, lineWidth: 1)
+                    .strokeBorder(ChatSurface.border, lineWidth: 0.5)
             )
+            .shadow(color: Brand.cardShadow.opacity(0.22), radius: 12, y: 5)
     }
 }
 

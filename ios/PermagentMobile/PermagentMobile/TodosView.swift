@@ -111,7 +111,7 @@ struct TodosView: View {
             }
             .padding()
         }
-        .background(ChatSurface.bg.ignoresSafeArea())
+        .background { AppBackdrop() }
         .navigationTitle("To-dos")
         .refreshable { await load() }
         .task { await load() }

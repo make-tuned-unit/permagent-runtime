@@ -359,9 +359,9 @@ struct InboxView: View {
                 .foregroundStyle(ChatSurface.text)
             Spacer()
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 6)
-        .padding(.bottom, 8)
+        .padding(.horizontal, DesignPolicy.pageHeaderHorizontalPadding)
+        .padding(.top, DesignPolicy.pageHeaderTopPadding)
+        .padding(.bottom, DesignPolicy.pageHeaderBottomPadding)
         .background(ChatSurface.bg)
     }
 
@@ -654,6 +654,8 @@ struct ChatView: View {
     /// Dictation into the composer — records here, transcribes on the hub.
     @StateObject private var dictation = DictationRecorder()
     @State private var transcribing = false
+    @State private var showingModelPicker = false
+    @ObservedObject private var modelSelection = ModelSelectionStore.shared
     /// Owns the keyboard. Without this there was no way to put it away: it
     /// covered the tab bar, so the user could neither leave chat nor reach the
     /// send button's row — reported 2026-08-05.
@@ -741,7 +743,7 @@ struct ChatView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                ChatSurface.bg.ignoresSafeArea()
+                AppBackdrop()
                 VStack(spacing: 0) {
                     header
                     ScrollViewReader { proxy in
@@ -785,6 +787,12 @@ struct ChatView: View {
                     Task { await openSession(id) }
                 }
             }
+            .sheet(isPresented: $showingModelPicker) {
+                NavigationStack {
+                    ModelPickerView(scope: .chat)
+                }
+                .presentationDetents([.medium, .large])
+            }
             // Tactile: a light tap when you send.
             .sensoryFeedback(.impact(weight: .light), trigger: sentCount)
             // The hub finishes the turn whether or not this device is
@@ -799,7 +807,10 @@ struct ChatView: View {
             // Cold launch: put the ongoing conversation back on screen. A
             // reply that finished while the app was closed is simply THERE —
             // and one still running shows the catching-up row until it lands.
-            .task { await initialRestore() }
+            .task {
+                await modelSelection.refresh(scope: .chat)
+                await initialRestore()
+            }
         }
     }
 
@@ -816,11 +827,23 @@ struct ChatView: View {
                 Image(systemName: "line.3.horizontal")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(ChatSurface.text)
-                    .frame(width: 38, height: 38)
-                    .background(ChatSurface.raised, in: Circle())
-                    .overlay(Circle().strokeBorder(ChatSurface.border, lineWidth: 1))
+                    .frame(width: DesignPolicy.controlSize, height: DesignPolicy.controlSize)
+                    .glassChrome(in: Circle(), interactive: true)
             }
             .accessibilityLabel("Past conversations")
+
+            Spacer()
+
+            Button { showingModelPicker = true } label: {
+                HStack(spacing: 6) {
+                    Text(identity.nameCapitalized).font(.brandHeadline)
+                    Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                }
+                .foregroundStyle(ChatSurface.text)
+                .frame(minHeight: DesignPolicy.controlSize)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(identity.nameCapitalized), model settings")
 
             Spacer()
 
@@ -834,9 +857,8 @@ struct ChatView: View {
                 Image(systemName: "square.and.pencil")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(ChatSurface.text)
-                    .frame(width: 38, height: 38)
-                    .background(ChatSurface.raised, in: Circle())
-                    .overlay(Circle().strokeBorder(ChatSurface.border, lineWidth: 1))
+                    .frame(width: DesignPolicy.controlSize, height: DesignPolicy.controlSize)
+                    .glassChrome(in: Circle(), interactive: true)
             }
             .disabled(messages.isEmpty && sessionId == nil)
             .accessibilityLabel("New conversation")
@@ -849,7 +871,8 @@ struct ChatView: View {
     /// Centered spark + a quiet serif greeting, sized to the hour.
     private var emptyState: some View {
         SparkEmptyState(line: ChatGreeting.forHour(Calendar.current.component(.hour, from: Date())))
-            .padding(.top, 150)
+            .padding(.top, 100)
+            .padding(.bottom, 28)
     }
 
     /// Shown while a reply is finishing on the hub without a live stream here.
@@ -936,15 +959,29 @@ struct ChatView: View {
                     Image(systemName: "plus")
                         .font(.system(size: 16, weight: .medium))
                         .foregroundStyle(ChatSurface.text)
-                        .frame(width: 34, height: 34)
-                        .background(ChatSurface.control, in: Circle())
+                        .frame(width: DesignPolicy.controlSize, height: DesignPolicy.controlSize)
                 }
-                Text(identity.nameCapitalized)
+                Button {
+                    showingModelPicker = true
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(modelSelection.chatModel.isEmpty
+                            ? "Choose model"
+                            : modelSelection.chatModel)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(ChatSurface.muted)
                     .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
+                    .frame(minHeight: DesignPolicy.controlSize)
                     .background(ChatSurface.control, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(modelSelection.accessibilityLabel(scope: .chat))
+                .accessibilityHint("Applies to the next chat turn.")
                 Spacer()
                 // The trailing control is one slot with two jobs: talk to
                 // Henry when there is nothing to send, send when there is.
@@ -956,7 +993,7 @@ struct ChatView: View {
                         Image(systemName: "arrow.up")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(ChatSurface.onSpark)
-                            .frame(width: 34, height: 34)
+                            .frame(width: DesignPolicy.controlSize, height: DesignPolicy.controlSize)
                             .background(ChatSurface.spark, in: Circle())
                     }
                     .disabled(!canSend)
@@ -969,7 +1006,7 @@ struct ChatView: View {
                         Image(systemName: "waveform")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(ChatSurface.onSpark)
-                            .frame(width: 34, height: 34)
+                            .frame(width: DesignPolicy.controlSize, height: DesignPolicy.controlSize)
                             .background(ChatSurface.spark, in: Circle())
                     }
                     .disabled(dictation.isRecording)
@@ -979,14 +1016,9 @@ struct ChatView: View {
             }
         }
         .animation(Motion.ease, value: hasDraft)
-        .padding(14)
-        .background(ChatSurface.raised)
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(ChatSurface.border, lineWidth: 1)
-        )
-        .padding(.horizontal, 12)
+        .padding(16)
+        .glassChrome(in: RoundedRectangle(cornerRadius: DesignPolicy.composerRadius, style: .continuous))
+        .padding(.horizontal, 16)
         .padding(.bottom, 8)
     }
 
@@ -1006,7 +1038,7 @@ struct ChatView: View {
                         .foregroundStyle(dictation.isRecording ? Brand.onDanger : ChatSurface.text)
                 }
             }
-            .frame(width: 34, height: 34)
+            .frame(width: DesignPolicy.controlSize, height: DesignPolicy.controlSize)
             .background(dictation.isRecording ? AnyShapeStyle(Brand.danger) : AnyShapeStyle(ChatSurface.control), in: Circle())
         }
         .disabled(transcribing)
