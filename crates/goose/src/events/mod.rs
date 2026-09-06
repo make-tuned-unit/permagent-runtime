@@ -426,6 +426,13 @@ pub enum PermagentEventType {
     /// Emitted from `finance_ledger`, the single writer both the Finance HTTP
     /// routes and the agent's `platform__finance` tools go through.
     FinanceChanged,
+    /// A file landed in the Downloads inbox (`POST /api/inbox`, the in-app
+    /// browser's download bridge). Distinct from `ProjectChanged`'s
+    /// `"documents"` change, which fires when a file is later *routed*
+    /// somewhere — this fires on arrival, before the user has chosen a
+    /// destination, so the Downloads pane can toast even for a file nobody
+    /// has routed yet.
+    InboxFileReceived,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────
@@ -1058,6 +1065,28 @@ pub fn project_changed(project_id: &str, change: &str) -> PermagentEvent {
         serde_json::json!({
             "project_id": project_id,
             "change": change,
+        }),
+    )
+}
+
+/// A file landed in the Downloads inbox. `size_bytes` and `source_host` are
+/// best-effort context for the toast (source_host is the download's origin
+/// hostname when known, e.g. "example.com" from `original_url`); `status` is
+/// the row's initial lifecycle state (`received`) so a client never has to
+/// guess it. No disk path, no content — the row is the durable record.
+pub fn inbox_file_received(
+    filename: &str,
+    size_bytes: Option<i64>,
+    source_host: Option<&str>,
+    status: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::InboxFileReceived,
+        serde_json::json!({
+            "filename": filename,
+            "size_bytes": size_bytes,
+            "source_host": source_host,
+            "status": status,
         }),
     )
 }

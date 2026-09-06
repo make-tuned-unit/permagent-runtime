@@ -25,7 +25,12 @@ vi.mock('../../lib/api', () => ({
 
 vi.mock('../../lib/store', () => ({
   navigateToTool: vi.fn(),
-  useCommandCenter: vi.fn((selector: (state: { financeRev: number }) => unknown) => selector({ financeRev: 0 })),
+  // FinanceView reads `financeRev` (bumped by livenessSync on finance_changed)
+  // only to re-trigger its poll effect, so a stable value is enough — but run
+  // the selector rather than returning a bare 0, so this mock fails loudly if
+  // the component starts selecting something else.
+  useCommandCenter: vi.fn((selector: (state: { financeRev: number }) => unknown) =>
+    selector({ financeRev: 0 })),
 }));
 
 import { FinanceView } from './FinanceView';

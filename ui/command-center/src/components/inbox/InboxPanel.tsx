@@ -46,6 +46,18 @@ interface PendingPick {
 
 type RowResult = { ok: boolean; text: string };
 
+/** Per-(file, destination) result key — a Brain failure must not overwrite a
+ *  Project success (or vice versa) on the same row when both were sent. */
+function resultKey(fileId: string, destination: RouteDestination): string {
+  return `${fileId}:${destination}`;
+}
+
+const DESTINATION_LABEL: Record<RouteDestination, string> = {
+  brain: 'the Brain',
+  project: 'the project',
+  scheduler: 'the post scheduler',
+};
+
 /**
  * Downloads inbox (#392/#393/#395) — the files that landed in
  * ~/.permagent/inbox via the in-app browser download flow, with explicit
@@ -120,14 +132,17 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
   // into a row message rather than rethrowing, so without this the button that
   // triggered it would tick "done" over the top of "Could not route …".
   const sendTo = useCallback(async (file: InboxFile, destination: RouteDestination, projectId?: string) => {
-    if (needsProject(destination) && !projectId) return false; // picker enforces this; belt-and-braces
+    if (needsProject(destination) && !projectId) return; // picker enforces this; belt-and-braces
+    const key = resultKey(file.id, destination);
     setBusyId(file.id);
-    setResults(r => { const { [file.id]: _drop, ...rest } = r; return rest; });
+    // Clear only THIS destination's prior result — a Brain retry must not
+    // wipe a Project success already showing on the same row.
+    setResults(r => { const { [key]: _drop, ...rest } = r; return rest; });
     try {
       const resp = await routeInboxFile(file.id, destination, projectId);
       const projectName = projects?.find(p => p.id === projectId)?.name;
       setFiles(fs => (fs ?? []).map(f => (f.id === file.id ? resp.file : f)));
-      setResults(r => ({ ...r, [file.id]: { ok: true, text: describeRouteResult(resp, projectName) } }));
+      setResults(r => ({ ...r, [key]: { ok: true, text: describeRouteResult(resp, projectName) } }));
       setPick(null);
       if (destination === 'brain' && resp.memory_key) {
         focusBrainMemory({
@@ -135,11 +150,10 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
           preview: resp.summary ? { text: resp.summary, description: file.filename } : null,
         });
       }
-      return true;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setResults(r => ({ ...r, [file.id]: { ok: false, text: `Could not route ${file.filename}: ${msg}` } }));
-      return false;
+      const dest = DESTINATION_LABEL[destination];
+      setResults(r => ({ ...r, [key]: { ok: false, text: `Could not send ${file.filename} to ${dest}: ${msg}` } }));
     } finally {
       setBusyId(null);
     }
@@ -221,7 +235,12 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
               const busy = busyId === f.id;
               const routable = canRoute(f.status) && !busy;
               const rowPick = pick?.fileId === f.id ? pick : null;
-              const result = results[f.id];
+              // Every destination this row has been sent to keeps its own
+              // result — a later Brain failure must not erase an earlier
+              // Project success on the same row (#3).
+              const rowResults = (['brain', 'project', 'scheduler'] as const)
+                .map(dest => ({ dest, result: results[resultKey(f.id, dest)] }))
+                .filter((r): r is { dest: RouteDestination; result: RowResult } => Boolean(r.result));
               return (
                 <div key={f.id} style={{ borderRadius: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
                   <div style={{ display: 'grid', gridTemplateColumns: COLS, gap: 12, alignItems: 'center', padding: '12px 12px 4px' }}>
@@ -244,12 +263,19 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                     {actionBtn(busy ? 'Sending…' : 'Brain', 'The Reader reads it and stores the text in your Brain', () => sendTo(f, 'brain'), !routable)}
                     {actionBtn('Project…', 'File it as a document on a project', () => openPicker(f, 'project'), !routable, rowPick?.destination === 'project')}
                     {actionBtn('Post…', 'Draft it as a social post card on a project board', () => openPicker(f, 'scheduler'), !routable, rowPick?.destination === 'scheduler')}
-                    {result && (
-                      <span style={{ fontSize: textSize.micro, color: result.ok ? colors.textMuted : colors.danger, marginLeft: 6 }}>
-                        {result.text}
-                      </span>
-                    )}
                   </div>
+                  {rowResults.length > 0 && (
+                    // One line per destination this file was sent to (#3) — a
+                    // Brain failure must not hide an earlier Project success,
+                    // and every line names the destination it is about.
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '0 12px 10px' }}>
+                      {rowResults.map(({ dest, result }) => (
+                        <span key={dest} style={{ fontSize: textSize.micro, color: result.ok ? colors.textMuted : colors.danger }}>
+                          {result.text}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   {rowPick && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px 12px' }}>
                       <select

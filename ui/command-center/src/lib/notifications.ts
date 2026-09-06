@@ -37,7 +37,8 @@ export type NotificationKind =
   | 'librarian'
   | 'initiative'
   | 'echo'
-  | 'system';
+  | 'system'
+  | 'download';
 
 export const KIND_LABELS: Record<NotificationKind, string> = {
   decision: 'Decisions need you',
@@ -47,6 +48,7 @@ export const KIND_LABELS: Record<NotificationKind, string> = {
   initiative: 'Initiative proposals',
   echo: 'The Watcher',
   system: 'System messages',
+  download: 'Downloads',
 };
 
 const DEFAULT_PREFS: Record<NotificationKind, boolean> = {
@@ -57,6 +59,7 @@ const DEFAULT_PREFS: Record<NotificationKind, boolean> = {
   initiative: true,
   echo: true,
   system: true,
+  download: true,
 };
 
 const PREFS_KEY = 'permagent-notification-prefs';
@@ -299,6 +302,34 @@ async function connect(): Promise<void> {
               }
               default:
                 break;
+            }
+            break;
+          }
+          case 'inbox_file_received': {
+            // #6 download feedback: a file landing in the Downloads inbox now
+            // announces itself instead of only being discoverable by opening
+            // Settings → Inbox and looking. NOTE: NotificationHost toasts are
+            // currently fixed-position with no pushBrowserOverlay, so a toast
+            // can render invisibly under an open in-app browser tab — that
+            // whole problem belongs to a separate Apple-design toast-rework
+            // lane; this only makes the toast exist and be correct.
+            if (prefs.download) {
+              const p = (evt.payload ?? {}) as {
+                filename?: string;
+                size_bytes?: number | null;
+                source_host?: string | null;
+              };
+              const filename = p.filename ?? 'A file';
+              const from = p.source_host ? ` from ${p.source_host}` : '';
+              push({
+                kind: 'download',
+                title: 'New download',
+                body: `${filename} landed in your inbox${from}`,
+                onActivate: () => {
+                  useCommandCenter.getState().setActivePanel('settings');
+                  useCommandCenter.getState().setPendingSettingsSection('inbox');
+                },
+              });
             }
             break;
           }
