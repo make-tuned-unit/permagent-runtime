@@ -1,0 +1,53 @@
+# Machine-readable baseline for the bounded evaluation loop.
+# Missing evidence is explicitly unrated; it is never promoted to a pass.
+schema: 1
+as_of: 2026-09-04
+source: crates/permagent-eval
+policy:
+  promotion_statuses: [Excellent, Good, Poor, Unrated]
+  missing_evidence: Unrated
+  single_smoke_can_promote: false
+areas:
+  safety_trust:
+    status: Good
+    evidence: "Exact project-bound approval, atomic/replay-safe roadmap materialization, structured verification-before-completion, and reviewer enforcement tests"
+    sample: "local deterministic trust gates plus independent transaction review"
+  dag_enforcement:
+    status: Good
+    evidence: "bounded iteration loop and evidence-gated master-program controller reject invalid graphs, asymmetric edges, missing gate receipts, replay, and empty frontiers"
+    sample: "142 evaluator tests; 10 master-program controller tests"
+  verification_integrity:
+    status: Good
+    evidence: "oracle overlay plus authoritative structured verifier receipts; plaintext PASS, sparse results, and stale failure heartbeats cannot advance or regress a proven pass"
+    sample: "23 after-turn tests, 27 CLI telemetry tests, structured verifier producer tests"
+  observability:
+    status: Good
+    evidence: "durable restart-safe snapshots now carry authoritative verifier evidence, typed timeout/failure outcomes, deduplicated runtime counters, exact project/Spectral context attribution, and distinct parent-session lineage"
+    sample: "local deterministic producer/consumer gates, daemon compile, and Command Center typecheck; held-out three-run qualification still pending"
+  cost_routing:
+    status: Unrated
+    evidence: "no paired provider sweep in this baseline"
+    sample: null
+  token_efficiency:
+    status: Unrated
+    evidence: "token fields are instrumented, but no graduated treatment has been measured"
+    sample: null
+  latency:
+    status: Poor
+    evidence: "retained fizzbuzz smoke took 102 seconds"
+    sample: "0/1 local smoke"
+  cheap_model_usability:
+    status: Poor
+    evidence: "qwen25-16k stopped after a denied direct write and did not create a roadmap"
+    sample: "0/1 local smoke"
+  coding_success:
+    status: Unrated
+    evidence: "one failed smoke cannot establish a general coding success rate"
+    sample: "0/1 local smoke"
+graduation:
+  status: Hold
+  reasons:
+    - "paired sample is below the 30-run confidence floor"
+    - "no treatment has passed the configured DAG, pass-rate, and efficiency gates"
+    - "authoritative observability producers pass locally, but no three-run held-out completeness streak has been collected"
+    - "task-budget continuity and exactly-once child-spend reconciliation are the active program frontier"

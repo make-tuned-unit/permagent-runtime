@@ -1,0 +1,88 @@
+schema: 1
+program_id: voice-ux-reliability-2026-09-04
+objective: >-
+  Deliver a Claude-informed but Permagent-native iOS voice conversation with
+  visible user speech, synchronized readable replies, actionable model controls,
+  terminal no-response diagnostics, and fresh device evidence.
+terminal_node: v7_master_acceptance
+nodes:
+  - id: v0_evidence_lock
+    child_dag: docs/orchestrator/MASTER_VOICE_UX_RELIABILITY_DAG_2026-09-04.md#v0--evidence-lock-and-stale-build-audit
+    status: passed
+    depends_on: []
+    next_on_pass: [v1_component_contract, v2_capture_stt_observability]
+    entry_gate: [screenshots logs source and running binary are available]
+    exit_gate: [claims are classified and the 16:04 incident is reconciled]
+    worker_policy: cheapest capable read-only evidence worker
+
+  - id: v1_component_contract
+    child_dag: docs/orchestrator/MASTER_VOICE_UX_RELIABILITY_DAG_2026-09-04.md#v1--claude-informed-visualcomponent-contract
+    status: passed
+    depends_on: [v0_evidence_lock]
+    next_on_pass: [v3_transcript_visibility, v4_reply_sync, v5_model_affordance]
+    entry_gate: [V0 evidence lock passed]
+    exit_gate: [state matrix component ownership accessibility and visual fixtures are reviewable]
+    worker_policy: least expensive UI contract worker with integrator review
+
+  - id: v2_capture_stt_observability
+    child_dag: docs/orchestrator/MASTER_VOICE_UX_RELIABILITY_DAG_2026-09-04.md#v2--capture--stt-observability-and-no-response-diagnosis
+    status: passed
+    depends_on: [v0_evidence_lock]
+    next_on_pass: [v3_transcript_visibility, v4_reply_sync, v3b_partial_stt_producer, v6_rebuild_device_e2e]
+    entry_gate: [V0 evidence lock passed and no paid provider call is required]
+    exit_gate: [each capture has privacy-safe health stages one terminal outcome and deterministic tests]
+    worker_policy: Rust-capable observability worker with independent review
+
+  - id: v3_transcript_visibility
+    child_dag: docs/orchestrator/MASTER_VOICE_UX_RELIABILITY_DAG_2026-09-04.md#v3--user-transcript-visibility-partial--final
+    status: passed
+    depends_on: [v1_component_contract, v2_capture_stt_observability]
+    next_on_pass: [v3b_partial_stt_producer, v6_rebuild_device_e2e]
+    entry_gate: [component contract and transcript event contract passed]
+    exit_gate: [partial final empty error and disconnect transcript states pass XCTest]
+    worker_policy: Swift-capable surgical UI worker
+
+  - id: v3b_partial_stt_producer
+    child_dag: docs/orchestrator/MASTER_VOICE_UX_RELIABILITY_DAG_2026-09-04.md#v3b--incremental-stt-producer-gap
+    status: active
+    depends_on: [v2_capture_stt_observability, v3_transcript_visibility]
+    next_on_pass: [v6_rebuild_device_e2e]
+    entry_gate: [audit confirmed iOS partial consumer exists but daemon remains batch-only]
+    exit_gate: [bounded supported STT producer emits generation-scoped partials, final replaces partial, cancellation disconnect and privacy regressions pass]
+    worker_policy: existing runtime worker with no new provider or unapproved paid calls
+
+  - id: v4_reply_sync
+    child_dag: docs/orchestrator/MASTER_VOICE_UX_RELIABILITY_DAG_2026-09-04.md#v4--spoken-reply-transcript-word-highlight-and-autoscroll
+    status: passed
+    depends_on: [v1_component_contract, v2_capture_stt_observability]
+    next_on_pass: [v6_rebuild_device_e2e]
+    entry_gate: [component contract and timing event contract passed]
+    exit_gate: [deterministic timing highlighting queue remap and reset fixtures pass; device accessibility stays in V6]
+    worker_policy: Swift-capable protocol and rendering worker
+
+  - id: v5_model_affordance
+    child_dag: docs/orchestrator/MASTER_VOICE_UX_RELIABILITY_DAG_2026-09-04.md#v5--functional-identitymodel-affordance-and-icon-pass
+    status: passed
+    depends_on: [v1_component_contract]
+    next_on_pass: [v6_rebuild_device_e2e]
+    entry_gate: [capsule action and icon contract passed]
+    exit_gate: [provider model picker is actionable scoped accessible and next-turn stable]
+    worker_policy: least expensive qualified Swift UI worker
+
+  - id: v6_rebuild_device_e2e
+    child_dag: docs/orchestrator/MASTER_VOICE_UX_RELIABILITY_DAG_2026-09-04.md#v6--rebuild-daemonapp-freshness-and-device-e2e-gate
+    status: planned
+    depends_on: [v2_capture_stt_observability, v3_transcript_visibility, v3b_partial_stt_producer, v4_reply_sync, v5_model_affordance]
+    next_on_pass: [v7_master_acceptance]
+    entry_gate: [V2 through V5 receipts and focused tests passed]
+    exit_gate: [fresh daemon and app device matrix screenshots logs and latency evidence pass]
+    worker_policy: integrator plus real-device verification
+
+  - id: v7_master_acceptance
+    child_dag: docs/orchestrator/MASTER_VOICE_UX_RELIABILITY_DAG_2026-09-04.md#v7--master-acceptance-and-handoff
+    status: planned
+    depends_on: [v6_rebuild_device_e2e]
+    next_on_pass: []
+    entry_gate: [fresh device E2E receipt passed]
+    exit_gate: [all transcript reply control reliability and evidence claims are satisfied]
+    worker_policy: independent evidence integrator

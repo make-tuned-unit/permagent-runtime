@@ -1,0 +1,74 @@
+schema: 1
+program_id: spectral-operator-learning-v1
+objective: >-
+  Audit and surgically integrate consented operator feedback, activity outcomes,
+  recall usefulness and recognition through existing Spectral APIs, enabling
+  evidence-backed personalization with one or many models, without parallel
+  memory stores, permission expansion or incomplete platform wiring.
+terminal_node: s7_qualification
+nodes:
+  - id: s0_audit
+    child_dag: docs/orchestrator/SPECTRAL_LEARNING_SUBDAGS.md#s0-audit
+    status: passed
+    depends_on: []
+    next_on_pass: [s1_contracts]
+    entry_gate: [operator authorized parallel audit and implementation program]
+    exit_gate: [actual Spectral API and end-to-end data paths mapped, baseline unknowns and shared ownership recorded]
+    worker_policy: low-cost read-only worker and root review
+  - id: s1_contracts
+    child_dag: docs/orchestrator/SPECTRAL_LEARNING_SUBDAGS.md#s1-contracts
+    status: active
+    depends_on: [s0_audit]
+    next_on_pass: [s2_episodes]
+    entry_gate: [audit reviewed and existing API reuse confirmed]
+    exit_gate: [consent retention attribution and correction contracts frozen, regression fixtures and compatible rollback specified]
+    worker_policy: cheapest qualified contract worker with independent privacy review
+  - id: s2_episodes
+    child_dag: docs/orchestrator/SPECTRAL_LEARNING_SUBDAGS.md#s2-episodes
+    status: planned
+    depends_on: [s1_contracts]
+    next_on_pass: [s3_feedback]
+    entry_gate: [affected files exclusively assigned and contracts approved]
+    exit_gate: [activity contribution and outcome join through existing durable IDs, duplicate restart and isolation tests pass]
+    worker_policy: low-cost systems worker with targeted regression tests
+  - id: s3_feedback
+    child_dag: docs/orchestrator/SPECTRAL_LEARNING_SUBDAGS.md#s3-feedback
+    status: planned
+    depends_on: [s2_episodes]
+    next_on_pass: [s4_recall]
+    entry_gate: [episode attribution and retention verified]
+    exit_gate: [consented feedback reaches Spectral with provenance, observation inference and explicit correction remain distinct]
+    worker_policy: low-cost platform workers with disjoint path scopes
+  - id: s4_recall
+    child_dag: docs/orchestrator/SPECTRAL_LEARNING_SUBDAGS.md#s4-recall
+    status: planned
+    depends_on: [s3_feedback]
+    next_on_pass: [s5_adaptation]
+    entry_gate: [feedback and correction path verified]
+    exit_gate: [actual injected recall linked to outcomes without automatic truth reinforcement, contradiction forgetting and recognition tests pass]
+    worker_policy: qualified low-cost Spectral integration worker
+  - id: s5_adaptation
+    child_dag: docs/orchestrator/SPECTRAL_LEARNING_SUBDAGS.md#s5-adaptation
+    status: planned
+    depends_on: [s4_recall]
+    next_on_pass: [s6_operator_ui]
+    entry_gate: [held-out baseline and rollback policy frozen]
+    exit_gate: [single and multi-model behavior adapts within permissions, measured improvement and model-change regressions verified]
+    worker_policy: low-cost deterministic evaluator then bounded qualified-model trials
+  - id: s6_operator_ui
+    child_dag: docs/orchestrator/SPECTRAL_LEARNING_SUBDAGS.md#s6-operator-ui
+    status: planned
+    depends_on: [s5_adaptation]
+    next_on_pass: [s7_qualification]
+    entry_gate: [adaptation has auditable source evidence and revocation semantics]
+    exit_gate: [macOS iOS and watchOS supported journeys fully wired, inspect correct forget and revoke survive reconnect]
+    worker_policy: low-cost platform specialists with root integration review
+  - id: s7_qualification
+    child_dag: docs/orchestrator/SPECTRAL_LEARNING_SUBDAGS.md#s7-qualification
+    status: planned
+    depends_on: [s6_operator_ui]
+    next_on_pass: []
+    entry_gate: [all required regression and end-to-end evidence retained]
+    exit_gate: [exact-build longitudinal and adversarial qualification passes, rollback and limitations approved]
+    worker_policy: independent evidence reviewer and release integrator
+    approval: human

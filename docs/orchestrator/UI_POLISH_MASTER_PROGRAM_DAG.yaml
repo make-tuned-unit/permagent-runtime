@@ -1,0 +1,188 @@
+schema: 1
+program_id: permagent-suite-polish-v1
+objective: >-
+  Research native-quality Mac apps and methodically polish every Permagent
+  surface using existing components, then carry one identity through iOS and
+  watchOS without losing capabilities, accessibility, privacy or performance.
+terminal_node: u19_suite_acceptance
+nodes:
+  - id: u0_research
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u0-research
+    status: passed
+    depends_on: []
+    next_on_pass: [u1_inventory]
+    entry_gate: [operator authorized parallel research and planning]
+    exit_gate: ["Research links and limitations recorded; root reviews design hypotheses"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Primary-source pattern research and original Permagent direction"
+
+  - id: u1_inventory
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u1-inventory
+    status: passed
+    depends_on: [u0_research]
+    next_on_pass: [u2_shared_system]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Every discovered surface and supported capability mapped with no unexplained omission"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Inventory all routes overlays native surfaces and capability producers"
+
+  - id: u2_shared_system
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u2-shared-system
+    status: active
+    depends_on: [u1_inventory]
+    next_on_pass: [u3_shell]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Shared primitive regressions pass; day night accessibility and dense layouts reviewed"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Refine existing tokens and primitives using representative screens"
+
+  - id: u3_shell
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u3-shell
+    status: planned
+    depends_on: [u2_shared_system]
+    next_on_pass: [u4_home, u5_chat, u6_build, u7_projects, u8_people, u9_grow, u10_finance, u11_automate, u12_brain, u13_world, u14_settings, u15_secondary]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Keyboard focus resizing shortcuts and permission recovery journeys pass"]
+    worker_policy: "Root direction and review; cheapest qualified worker. macOS shell navigation windows and onboarding"
+
+  - id: u4_home
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u4-home
+    status: planned
+    depends_on: [u3_shell]
+    next_on_pass: [u16_macos_acceptance]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Primary actions and approval consequences visible with durable outcomes"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Home and Decisions including all details and empty states"
+
+  - id: u5_chat
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u5-chat
+    status: planned
+    depends_on: [u3_shell]
+    next_on_pass: [u16_macos_acceptance]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Model identity transcript controls attachments and recovery use real state"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Chat voice attachments history and detached conversations"
+
+  - id: u6_build
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u6-build
+    status: planned
+    depends_on: [u3_shell]
+    next_on_pass: [u16_macos_acceptance]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Model switching task visibility navigation media teardown and cost states verified"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Build terminal editor browser workers and Council"
+
+  - id: u7_projects
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u7-projects
+    status: planned
+    depends_on: [u3_shell]
+    next_on_pass: [u16_macos_acceptance]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Object actions and task evidence discoverable; existing execution authority preserved"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Projects goals roadmaps artifacts and detail dialogs"
+
+  - id: u8_people
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u8-people
+    status: planned
+    depends_on: [u3_shell]
+    next_on_pass: [u16_macos_acceptance]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Identity navigation editing and empty failure states verified"]
+    worker_policy: "Root direction and review; cheapest qualified worker. People relationships and every nested person screen"
+
+  - id: u9_grow
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u9-grow
+    status: planned
+    depends_on: [u3_shell]
+    next_on_pass: [u16_macos_acceptance]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Narrow split layout charts provenance and safe source navigation verified"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Grow all subtabs reports referrals and analytics"
+
+  - id: u10_finance
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u10-finance
+    status: planned
+    depends_on: [u3_shell]
+    next_on_pass: [u16_macos_acceptance]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Data freshness units authority and failure states remain explicit"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Finance all nested tools charts accounts and dialogs"
+
+  - id: u11_automate
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u11-automate
+    status: planned
+    depends_on: [u3_shell]
+    next_on_pass: [u16_macos_acceptance]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Create inspect pause cancel and result journeys use existing engine"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Automate recipes schedules skills tools and execution detail"
+
+  - id: u12_brain
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u12-brain
+    status: planned
+    depends_on: [u3_shell]
+    next_on_pass: [u16_macos_acceptance]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Spectral provenance privacy and supported inspect correct forget flows verified"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Brain memory recognition sources and correction controls"
+
+  - id: u13_world
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u13-world
+    status: planned
+    depends_on: [u3_shell]
+    next_on_pass: [u16_macos_acceptance]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Authored solarpunk identity preserved with motion accessibility and native performance"]
+    worker_policy: "Root direction and review; cheapest qualified worker. World interface and all existing interaction overlays"
+
+  - id: u14_settings
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u14-settings
+    status: planned
+    depends_on: [u3_shell]
+    next_on_pass: [u16_macos_acceptance]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Configured capabilities discoverable with persisted settings and truthful errors"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Every Settings category subsection and dialog"
+
+  - id: u15_secondary
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u15-secondary
+    status: planned
+    depends_on: [u3_shell]
+    next_on_pass: [u16_macos_acceptance]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Inventory has no unassigned or unverified macOS rows including hidden states"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Notifications search command palette downloads and remaining surfaces"
+
+  - id: u16_macos_acceptance
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u16-macos-acceptance
+    status: planned
+    depends_on: [u4_home, u5_chat, u6_build, u7_projects, u8_people, u9_grow, u10_finance, u11_automate, u12_brain, u13_world, u14_settings, u15_secondary]
+    next_on_pass: [u17_ios]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Exact-build macOS journeys accessibility performance and coverage pass"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Integrated macOS visual functional and native acceptance"
+
+  - id: u17_ios
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u17-ios
+    status: planned
+    depends_on: [u16_macos_acceptance]
+    next_on_pass: [u18_watchos]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["All iOS inventory rows and physical-device journeys verified with native layouts"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Apply accepted identity across every iOS screen"
+
+  - id: u18_watchos
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u18-watchos
+    status: planned
+    depends_on: [u17_ios]
+    next_on_pass: [u19_suite_acceptance]
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["Watch interactions accessibility offline states and phone handoff verified"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Apply identity across every watchOS screen and handoff"
+
+  - id: u19_suite_acceptance
+    child_dag: docs/orchestrator/UI_POLISH_SUBDAGS.md#u19-suite-acceptance
+    status: planned
+    depends_on: [u18_watchos]
+    next_on_pass: []
+    entry_gate: [predecessor receipt reviewed and affected paths assigned]
+    exit_gate: ["All inventory rows have evidence and rollback; no capability or regression gap"]
+    worker_policy: "Root direction and review; cheapest qualified worker. Cross-platform release qualification"
+    approval: human

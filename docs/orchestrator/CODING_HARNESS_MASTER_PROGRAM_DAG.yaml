@@ -1,0 +1,108 @@
+schema: 1
+program_id: coding-harness-excellence-v1
+objective: >-
+  Advance the Permagent coding harness from measured weaknesses to retained
+  Excellent qualification without gaps, parallel memory systems, fabricated
+  evidence, uncontrolled spend, or repeated unchanged verification.
+terminal_node: p9_release_qualification
+nodes:
+  - id: p0_baseline_and_contracts
+    child_dag: docs/orchestrator/CODING_HARNESS_PERFORMANCE_DAG.md
+    status: passed
+    depends_on: []
+    next_on_pass: [p1_durable_instrumentation]
+    entry_gate: [existing deterministic evaluator]
+    exit_gate: [versioned run schema, honest baseline scorecard]
+    worker_policy: cheapest graduated deterministic worker
+
+  - id: p1_durable_instrumentation
+    child_dag: docs/orchestrator/CODING_HARNESS_INSTRUMENTATION_DAG_2.md
+    status: passed
+    depends_on: [p0_baseline_and_contracts]
+    next_on_pass: [p2_authoritative_runtime_evidence]
+    entry_gate: [run and context schemas frozen]
+    exit_gate: [restart-safe ledger, runtime counters, exact Spectral attribution]
+    worker_policy: parallel cheap specialists plus independent integrator
+
+  - id: p2_authoritative_runtime_evidence
+    child_dag: docs/orchestrator/CODING_HARNESS_AUTHORITATIVE_EVIDENCE_DAG_3.md
+    status: passed
+    depends_on: [p1_durable_instrumentation]
+    next_on_pass: [p3_atomic_approval_and_verification]
+    entry_gate: [instrumentation DAG 2 deterministic gates pass]
+    exit_gate: [verifier evidence, typed timeout, parent-child attribution all authoritative]
+    worker_policy: parallel cheap specialists plus independent integrator
+
+  - id: p3_atomic_approval_and_verification
+    child_dag: docs/orchestrator/CODING_HARNESS_EXCELLENCE_DAG.md#e1--trust-and-dag-invariants
+    status: passed
+    depends_on: [p2_authoritative_runtime_evidence]
+    next_on_pass: [p4_task_budget_boundary]
+    entry_gate: [complete authoritative run evidence]
+    exit_gate: [approval consumption and roadmap creation are one recoverable transaction]
+    worker_policy: high-reliability trust worker with independent verifier
+
+  - id: p4_task_budget_boundary
+    child_dag: docs/orchestrator/CODING_HARNESS_TASK_BUDGET_DAG_4.md
+    status: active
+    depends_on: [p3_atomic_approval_and_verification]
+    next_on_pass: [p5_capability_and_cost_routing]
+    entry_gate: [atomic trust boundary]
+    exit_gate: [continuations cannot reset task spend; child spend reconciles once]
+    worker_policy: cheapest graduated systems worker
+
+  - id: p5_capability_and_cost_routing
+    child_dag: docs/orchestrator/CODING_HARNESS_ROUTING_DAG_5.md
+    status: planned
+    depends_on: [p4_task_budget_boundary]
+    next_on_pass: [p6_recovery_fault_injection]
+    entry_gate: [durable task budget identity]
+    exit_gate: [deterministic cheapest-capable routing matrix passes]
+    worker_policy: cheap routing analyst plus capable integrator
+
+  - id: p6_recovery_fault_injection
+    child_dag: docs/orchestrator/CODING_HARNESS_EXCELLENCE_DAG.md#e4--recovery-and-long-running-reliability
+    status: planned
+    depends_on: [p5_capability_and_cost_routing]
+    next_on_pass: [p7_multiworker_orchestration]
+    entry_gate: [routing and metering are authoritative]
+    exit_gate: [restart, timeout, rate-limit, verifier-loop, and duplicate-effect faults pass]
+    worker_policy: graduated reliability specialist
+
+  - id: p7_multiworker_orchestration
+    child_dag: docs/orchestrator/CODING_HARNESS_EXCELLENCE_DAG.md#e5--multi-worker-orchestration
+    status: planned
+    depends_on: [p6_recovery_fault_injection]
+    next_on_pass: [p7b_continual_defect_loop]
+    entry_gate: [fault recovery passes]
+    exit_gate: [parallel workers preserve write scopes, dependencies, evidence, and cost]
+    worker_policy: cheapest qualified node workers with strong integrator only when required
+
+  - id: p7b_continual_defect_loop
+    child_dag: docs/orchestrator/CODING_HARNESS_EVAL_LOOP.md#exceptional-state-defect-graph
+    status: planned
+    depends_on: [p7_multiworker_orchestration]
+    next_on_pass: [p8_heldout_qualification]
+    entry_gate: [all functional program nodes pass focused and integrated verification]
+    exit_gate: [defect lifecycle closes and reopens deterministically, three consecutive frozen-slice iterations qualify with no unresolved P0 or P1]
+    worker_policy: cheapest graduated evaluator plus independent verifier for promotion
+
+  - id: p8_heldout_qualification
+    child_dag: docs/orchestrator/CODING_HARNESS_HELDOUT_QUALIFICATION.md
+    status: planned
+    depends_on: [p7b_continual_defect_loop]
+    next_on_pass: [p9_release_qualification]
+    entry_gate: [all deterministic and local smokes pass]
+    exit_gate: [three distinct complete held-out qualifications rate every area Excellent]
+    worker_policy: fixed paired evaluation workers
+    approval: spend_cap
+
+  - id: p9_release_qualification
+    child_dag: docs/orchestrator/CODING_HARNESS_EXCELLENCE_DAG.md#e8--release-or-rollback
+    status: planned
+    depends_on: [p8_heldout_qualification]
+    next_on_pass: []
+    entry_gate: [three-run held-out Excellent streak]
+    exit_gate: [rollback rehearsed and exact release evidence approved]
+    worker_policy: independent release integrator
+    approval: human

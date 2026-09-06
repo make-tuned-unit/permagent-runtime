@@ -1,0 +1,74 @@
+schema: 1
+program_id: permagent-companion-integration-v1
+objective: >-
+  Harden the existing local-first Permagent companion through six integrated
+  improvement DAGs, using Spectral recognition memory and existing runtime
+  scheduling, with permission-bounded computer control, operator-visible
+  consequences, regression evidence, and earned revocable autonomy.
+terminal_node: c7_release_journeys
+nodes:
+  - id: c0_evidence_and_ownership
+    child_dag: docs/orchestrator/PERMAGENT_COMPANION_PROGRAM.md#c0-evidence-and-ownership
+    status: passed
+    depends_on: []
+    next_on_pass: [c1_boundary_reliability]
+    entry_gate: [operator approved six-area improvement scope]
+    exit_gate: [existing DAG ownership and unresolved evidence mapped, baseline and platform journey matrix frozen]
+    worker_policy: low-cost inventory worker and root integration review
+  - id: c1_boundary_reliability
+    child_dag: docs/orchestrator/PERMAGENT_COMPANION_IMPROVEMENT_SUBDAGS.md#c1-boundary-reliability
+    status: active
+    depends_on: [c0_evidence_and_ownership]
+    next_on_pass: [c2_authoritative_product_state]
+    entry_gate: [ownership and baseline frozen]
+    exit_gate: [inherited B5 and B6 evidence reconciled, combined fault fixtures prevent duplicate or unauthorized effects]
+    worker_policy: cheapest qualified systems worker with independent trust review
+  - id: c2_authoritative_product_state
+    child_dag: docs/orchestrator/PERMAGENT_COMPANION_IMPROVEMENT_SUBDAGS.md#c2-authoritative-product-state
+    status: planned
+    depends_on: [c1_boundary_reliability]
+    next_on_pass: [c3_worker_and_memory_contract]
+    entry_gate: [durable lifecycle and failure contracts verified]
+    exit_gate: [backend event and UI state agree through reconnect, macOS iOS and watchOS capability journeys verified]
+    worker_policy: low-cost platform specialists with disjoint paths and integration review
+  - id: c3_worker_and_memory_contract
+    child_dag: docs/orchestrator/PERMAGENT_COMPANION_IMPROVEMENT_SUBDAGS.md#c3-worker-and-memory-contract
+    status: planned
+    depends_on: [c2_authoritative_product_state]
+    next_on_pass: [c4_local_first_routing]
+    entry_gate: [operator can observe and cancel authoritative work]
+    exit_gate: [bounded workers execute validated node packets, Spectral recognition correction and isolation regressions pass]
+    worker_policy: low-cost context and assignment workers with root contract review
+  - id: c4_local_first_routing
+    child_dag: docs/orchestrator/PERMAGENT_COMPANION_IMPROVEMENT_SUBDAGS.md#c4-local-first-routing
+    status: planned
+    depends_on: [c3_worker_and_memory_contract]
+    next_on_pass: [c5_bounded_verification]
+    entry_gate: [worker role acceptance and privacy contracts frozen]
+    exit_gate: [actual routes and billing attributed, local-first qualification and fallback consent tests pass]
+    worker_policy: low-cost routing worker with bounded configured-model trials
+  - id: c5_bounded_verification
+    child_dag: docs/orchestrator/PERMAGENT_COMPANION_IMPROVEMENT_SUBDAGS.md#c5-bounded-verification
+    status: planned
+    depends_on: [c4_local_first_routing]
+    next_on_pass: [c6_plan_and_trust_consistency]
+    entry_gate: [routing trials have bounded attempts and authoritative evidence]
+    exit_gate: [stale vacuous and repeated unchanged verification rejected, proportional verification preserves regression detection]
+    worker_policy: low-cost deterministic test worker and independent promotion review
+  - id: c6_plan_and_trust_consistency
+    child_dag: docs/orchestrator/PERMAGENT_COMPANION_IMPROVEMENT_SUBDAGS.md#c6-plan-and-trust-consistency
+    status: planned
+    depends_on: [c5_bounded_verification]
+    next_on_pass: [c7_release_journeys]
+    entry_gate: [verification freshness and retry rules proven]
+    exit_gate: [DAG UI and reports reconcile to retained evidence, operator-scoped trust is explainable revocable and cannot authorize itself]
+    worker_policy: low-cost projection worker with security and identity integration review
+  - id: c7_release_journeys
+    child_dag: docs/orchestrator/PERMAGENT_COMPANION_PROGRAM.md#c7-release-journeys
+    status: planned
+    depends_on: [c6_plan_and_trust_consistency]
+    next_on_pass: []
+    entry_gate: [all six child DAGs have complete integration evidence]
+    exit_gate: [exact-build cross-device journeys and rollback pass, limitations and operator consequences approved]
+    worker_policy: independent integrator using retained evidence and real-device checks
+    approval: human

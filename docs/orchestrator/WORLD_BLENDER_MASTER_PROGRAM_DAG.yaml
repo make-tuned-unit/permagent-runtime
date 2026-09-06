@@ -1,0 +1,57 @@
+schema: 1
+program_id: permagent-blender-world-v1
+objective: >-
+  Author a grand intricate Rotunda and distinct inhabitants in Blender while
+  preserving real work interactions, existing animation contracts, safe navigation
+  and sustained 60fps in the shipped macOS World.
+terminal_node: w5_native_release
+nodes:
+  - id: w0_audit
+    child_dag: docs/orchestrator/WORLD_BLENDER_DAG_2026-09-05.md
+    status: passed
+    depends_on: []
+    next_on_pass: [w1_authored_assets]
+    entry_gate: [operator requested Blender World and root creative ownership]
+    exit_gate: [Blender executable verified, active renderer and live behavior inspected]
+    worker_policy: root Astra owns art and architecture
+  - id: w1_authored_assets
+    child_dag: assets/world/README.md
+    status: passed
+    depends_on: [w0_audit]
+    next_on_pass: [w2_live_binding]
+    entry_gate: [existing coordinate and material contracts identified]
+    exit_gate: [editable Blender sources saved, bounded self-contained GLBs exported]
+    worker_policy: root Astra authors environment and twelve character variants
+  - id: w2_live_binding
+    child_dag: docs/orchestrator/WORLD_BLENDER_DAG_2026-09-05.md
+    status: passed
+    depends_on: [w1_authored_assets]
+    next_on_pass: [w3_visual_motion]
+    entry_gate: [export metadata and materials verified]
+    exit_gate: [existing skeleton deformation regression passes, twelve authored agents and vault observed loaded, fallback tests pass]
+    worker_policy: root implementation and deterministic regression gates
+  - id: w3_visual_motion
+    child_dag: docs/orchestrator/WORLD_BLENDER_DAG_2026-09-05.md
+    status: passed
+    depends_on: [w2_live_binding]
+    next_on_pass: [w4_performance_and_build]
+    entry_gate: [authored assets bound without replacing live state]
+    exit_gate: [close and wide visual review, meaningful event-driven interaction and walking checks, reduced-motion and hidden-tab checks]
+    worker_policy: root creative review with existing scene evidence hooks
+  - id: w4_performance_and_build
+    child_dag: docs/orchestrator/WORLD_BLENDER_DAG_2026-09-05.md
+    status: passed
+    depends_on: [w3_visual_motion]
+    next_on_pass: [w5_native_release]
+    entry_gate: [visual and interaction regressions pass]
+    exit_gate: [sustained 60fps measurements include camera motion, under 300 draws and 500k triangles at accepted view, exact GLBs included in production bundle]
+    worker_policy: cheaper worker batches static geometry with root review
+  - id: w5_native_release
+    child_dag: docs/orchestrator/WORLD_BLENDER_DAG_2026-09-05.md
+    status: planned
+    depends_on: [w4_performance_and_build]
+    next_on_pass: []
+    entry_gate: [full application build and rollback checks pass]
+    exit_gate: [native WKWebView 60fps and operator journeys verified, installed artifact freshness recorded]
+    worker_policy: root integration and exact-device evidence
+    approval: human

@@ -1,0 +1,76 @@
+schema: 1
+program_id: permagent-improvement-portfolio-2026-09-04
+objective: >-
+  Keep the approved coding-harness, voice, companion, Spectral learning,
+  World and suite-polish programs moving through dependency-ready work, without sharing write
+  scopes or declaring acceptance without their child-program receipts.
+terminal_node: portfolio_acceptance
+nodes:
+  - id: coding_harness_program
+    child_dag: docs/orchestrator/CODING_HARNESS_MASTER_PROGRAM_DAG.yaml
+    status: active
+    depends_on: []
+    next_on_pass: [portfolio_acceptance]
+    entry_gate: [coding program manifest validates and exposes a frontier]
+    exit_gate: [coding program reaches its release qualification with all areas Excellent]
+    worker_policy: cheapest qualified DAG workers with independent integration
+
+  - id: voice_reliability_program
+    child_dag: docs/orchestrator/VOICE_UX_RELIABILITY_MASTER_PROGRAM_DAG.yaml
+    status: active
+    depends_on: []
+    next_on_pass: [portfolio_acceptance]
+    entry_gate: [voice program manifest validates and exposes a frontier]
+    exit_gate: [voice program reaches fresh-device master acceptance]
+    worker_policy: parallel UI and daemon specialists with serialized shared files
+
+  - id: companion_program
+    child_dag: docs/orchestrator/PERMAGENT_COMPANION_MASTER_PROGRAM_DAG.yaml
+    status: active
+    depends_on: []
+    next_on_pass: [portfolio_acceptance]
+    entry_gate: [companion master validates and audit receipt is reviewed]
+    exit_gate: [companion master reaches cross-platform acceptance with exact receipts]
+    worker_policy: dependency-ready bounded workers reuse shared harness and memory receipts
+
+  - id: spectral_learning_program
+    child_dag: docs/orchestrator/SPECTRAL_LEARNING_MASTER_PROGRAM_DAG.yaml
+    status: active
+    depends_on: []
+    next_on_pass: [portfolio_acceptance]
+    entry_gate: [existing Spectral integration and ownership reviewed]
+    exit_gate: [Spectral learning master passes privacy and recognition verification without a parallel memory store]
+    worker_policy: existing Spectral APIs only with isolated regression fixtures
+
+  - id: world_program
+    child_dag: docs/orchestrator/WORLD_BLENDER_MASTER_PROGRAM_DAG.yaml
+    status: active
+    depends_on: []
+    next_on_pass: [portfolio_acceptance]
+    entry_gate: [operator-approved Blender art scope and root ownership]
+    exit_gate: [World master reaches installed native performance and journey acceptance]
+    worker_policy: root Astra owns art with bounded independent verification workers
+
+  - id: portfolio_acceptance
+    child_dag: docs/orchestrator/PERMAGENT_IMPROVEMENT_PORTFOLIO_DAG.yaml#portfolio-acceptance
+    status: planned
+    depends_on: [coding_harness_program, voice_reliability_program, companion_program, spectral_learning_program, world_program, suite_polish_program]
+    next_on_pass: []
+    entry_gate: [all six child programs passed with exact receipts]
+    exit_gate: [cross-program regression checks and evidence index pass]
+    worker_policy: independent final integrator
+
+  - id: suite_polish_program
+    child_dag: docs/orchestrator/UI_POLISH_MASTER_PROGRAM_DAG.yaml
+    status: active
+    depends_on: []
+    next_on_pass: [portfolio_acceptance]
+    entry_gate: [operator authorized parallel research and whole-suite polish planning]
+    exit_gate: [macOS then iOS then watchOS polish passes with exhaustive capability and surface evidence]
+    worker_policy: root design and independent review with cheaper bounded inventory and implementation workers
+
+# Portfolio acceptance
+#
+# This manifest records portfolio dependencies, not proof of a live scheduler
+# or running workers. Runtime dispatch requires approved goal bindings and
+# verified gate receipts; durable work state remains in existing goal stores.
