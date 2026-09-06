@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use std::sync::OnceLock;
 
+use crate::agents::reply_parts::AccountedFastCompletion;
 use crate::agents::types::SharedProvider;
 use crate::config::paths::Paths;
 use crate::config::GooseMode;
@@ -240,6 +241,7 @@ impl AdversaryInspector {
 
     async fn consult_llm(
         &self,
+        session_id: &str,
         tool_description: &str,
         original_task: &str,
         recent_messages: &[String],
@@ -290,17 +292,22 @@ impl AdversaryInspector {
         )];
         let conversation = Conversation::new_unvalidated(check_messages);
 
-        let model_config = provider.get_model_config();
-        let (response, _usage) = provider
-            .complete(
-                &model_config,
-                "",
-                system_prompt,
-                conversation.messages(),
-                &[],
-            )
+        let manager = std::sync::Arc::new(crate::session::SessionManager::instance());
+        let session = manager
+            .get_session(session_id, false)
             .await
-            .map_err(|e| anyhow::anyhow!("Adversary LLM call failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Adversary session unavailable: {e}"))?;
+        let (response, _usage) = AccountedFastCompletion::complete_accounted(
+            manager,
+            session,
+            provider,
+            system_prompt,
+            conversation.messages(),
+            &[],
+            false,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Adversary LLM call failed: {}", e))?;
 
         let output: String = response
             .content
@@ -388,6 +395,7 @@ impl ToolInspector for AdversaryInspector {
 
             match self
                 .consult_llm(
+                    _session_id,
                     &tool_description,
                     &original_task,
                     &recent_messages,
@@ -454,6 +462,14 @@ mod tests {
     use rmcp::object;
     use std::sync::Arc;
     use tokio::sync::Mutex;
+
+    #[test]
+    fn adversary_inspector_cannot_bypass_shared_paid_dispatch_boundary() {
+        let source = include_str!("adversary_inspector.rs");
+        let direct_call = [".", "complete("].concat();
+        assert!(source.contains("complete_accounted"));
+        assert!(!source.contains(&direct_call));
+    }
 
     #[test]
     fn test_parse_with_tools_frontmatter() {

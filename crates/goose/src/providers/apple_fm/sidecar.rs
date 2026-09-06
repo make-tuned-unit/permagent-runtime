@@ -251,6 +251,7 @@ impl Sidecar {
             // can see what it said.
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
+            // permagent-dispatch: seam=apple_fm_sidecar_v1 class=excluded reason=on_device authority=typed_local_provider
             .spawn()
             .map_err(|e| AppleFmError::Sidecar(format!("could not start {:?}: {}", path, e)))?;
 

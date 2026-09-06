@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
 
-use crate::context_mgmt::compact_messages;
+use crate::context_mgmt::compact_messages_accounted;
 use crate::conversation::message::{Message, SystemNotificationType};
 use crate::recipe::build_recipe::build_recipe_from_template_with_positional_params;
 
@@ -94,13 +94,16 @@ impl Agent {
         let session = manager.get_session(session_id, true).await?;
         let conversation = session
             .conversation
+            .as_ref()
             .ok_or_else(|| anyhow!("Session has no conversation"))?;
 
-        let (compacted_conversation, usage) = compact_messages(
-            self.provider().await?.as_ref(),
+        let provider = self.provider().await?;
+        let accounting = self.accounted_fast_completion(&session, provider, true);
+        let (compacted_conversation, usage) = compact_messages_accounted(
             session_id,
             &conversation,
             true, // is_manual_compact
+            accounting.as_ref(),
         )
         .await?;
 
@@ -108,8 +111,9 @@ impl Agent {
             .replace_conversation(session_id, &compacted_conversation)
             .await?;
 
-        self.update_session_metrics(session_id, session.schedule_id, &usage, true)
-            .await?;
+        // The explicit physical attempt was atomically settled before the
+        // compacted history replaces the old conversation.
+        let _ = usage;
 
         Ok(Some(Message::assistant().with_system_notification(
             SystemNotificationType::InlineMessage,

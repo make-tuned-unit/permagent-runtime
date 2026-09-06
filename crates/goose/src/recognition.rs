@@ -20,6 +20,7 @@
 //! Spectral's own precursor `retrieval_events`.
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -206,6 +207,23 @@ async fn persist_recognition(
 }
 
 impl PendingRecognition {
+    /// The durable join key for this in-flight recognition event.
+    ///
+    /// The contract adapter exposes this existing identifier without taking
+    /// ownership of the pending write-back handle.
+    pub fn retrieval_id(&self) -> &str {
+        &self.retrieval_id
+    }
+
+    /// Wait until the detached INSERT has committed. Reply producers use this
+    /// bounded admission point before settlement so the durable join row is
+    /// normally present when provider attribution is written.
+    pub async fn wait_persisted(&self) -> bool {
+        let mut persisted = self.persisted.clone();
+        let completed = persisted.wait_for(|done| *done).await.is_ok();
+        completed
+    }
+
     /// After the assistant reply ends, conservatively detect exact normalized
     /// five-word overlap with injected memory content and persist the cited ids.
     /// The join and overlap scan both run in this detached task, never inline on
@@ -665,8 +683,21 @@ pub fn spawn_log_tool_event(
 #[derive(Debug, Clone)]
 pub struct RecognitionSeen {
     pub retrieved_at: String,
+    pub session_id: Option<String>,
     pub outcome_kind: Option<String>,
     pub outcome_polarity: Option<String>,
+    pub provider_invocation_ids: Option<Vec<String>>,
+    pub attribution_status: Option<String>,
+    pub provider_invocations: Vec<ProviderInvocationSeen>,
+}
+
+/// Provider/model facts resolved from the authoritative cost ledger for one
+/// referenced physical invocation. Missing optional fields stay missing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderInvocationSeen {
+    pub invocation_id: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
 }
 
 impl RecognitionSeen {
@@ -675,6 +706,144 @@ impl RecognitionSeen {
     pub fn was_bounced(&self) -> bool {
         self.outcome_polarity.as_deref() == Some("Negative")
     }
+}
+
+/// Maximum number of physical provider invocations retained on one recall
+/// row. The IDs are references only; authoritative provider/model/session
+/// facts remain in `cost_ledger`.
+pub const MAX_PROVIDER_INVOCATION_REFS: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderAttributionWrite {
+    Recorded,
+    Duplicate,
+    Partial,
+    Unavailable,
+    CrossSession,
+}
+
+/// Attach a settled provider call reference to its recall row. The writer is
+/// fail-closed on identity: it first resolves the call in `cost_ledger`, then
+/// requires that ledger session and recall session match. Missing rows are an
+/// explicit unavailable gap; no provider/model identity is copied here.
+pub async fn record_provider_invocation_reference(
+    pool: &Pool<Sqlite>,
+    retrieval_id: &str,
+    session_id: &str,
+    invocation_id: &str,
+) -> Result<ProviderAttributionWrite, sqlx::Error> {
+    if retrieval_id.trim().is_empty()
+        || session_id.trim().is_empty()
+        || invocation_id.trim().is_empty()
+    {
+        return Ok(ProviderAttributionWrite::Unavailable);
+    }
+
+    // The append is a read-modify-write of one JSON reference list. Acquire
+    // SQLite's write lock before reading it so concurrent provider completions
+    // cannot both observe the same list and lose one invocation ID.
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let ledger_session: Option<String> =
+        sqlx::query_scalar("SELECT session_id FROM cost_ledger WHERE call_id = ? LIMIT 1")
+            .bind(invocation_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+    let Some(ledger_session) = ledger_session else {
+        return Ok(ProviderAttributionWrite::Unavailable);
+    };
+
+    let row: Option<(Option<String>, String)> = sqlx::query_as(
+        "SELECT provider_invocation_ids, attribution_status
+           FROM recognition_events
+          WHERE retrieval_id = ? AND session_id = ?",
+    )
+    .bind(retrieval_id)
+    .bind(session_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if ledger_session != session_id {
+        if row.is_some() {
+            sqlx::query(
+                "UPDATE recognition_events
+                    SET attribution_status = 'partial', attribution_observed_at = ?
+                  WHERE retrieval_id = ? AND session_id = ?",
+            )
+            .bind(now_iso())
+            .bind(retrieval_id)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        return Ok(ProviderAttributionWrite::CrossSession);
+    }
+
+    let Some((raw_ids, status)) = row else {
+        return Ok(ProviderAttributionWrite::Unavailable);
+    };
+    let mut ids: Vec<String> = match raw_ids.as_deref() {
+        None | Some("") => Vec::new(),
+        Some(raw) => match serde_json::from_str(raw) {
+            Ok(ids) => ids,
+            Err(_) => {
+                sqlx::query(
+                    "UPDATE recognition_events
+                        SET attribution_status = 'partial', attribution_observed_at = ?
+                      WHERE retrieval_id = ? AND session_id = ?",
+                )
+                .bind(now_iso())
+                .bind(retrieval_id)
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                return Ok(ProviderAttributionWrite::Partial);
+            }
+        },
+    };
+
+    if ids.iter().any(|id| id == invocation_id) {
+        tx.commit().await?;
+        return Ok(ProviderAttributionWrite::Duplicate);
+    }
+    if ids.len() >= MAX_PROVIDER_INVOCATION_REFS {
+        sqlx::query(
+            "UPDATE recognition_events
+                SET attribution_status = 'partial', attribution_observed_at = ?
+              WHERE retrieval_id = ? AND session_id = ?",
+        )
+        .bind(now_iso())
+        .bind(retrieval_id)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(ProviderAttributionWrite::Partial);
+    }
+
+    ids.push(invocation_id.to_string());
+    let next_status = if status == "partial" {
+        "partial"
+    } else {
+        "observed"
+    };
+    sqlx::query(
+        "UPDATE recognition_events
+            SET provider_invocation_ids = ?, attribution_status = ?,
+                attribution_observed_at = ?
+          WHERE retrieval_id = ? AND session_id = ?",
+    )
+    .bind(serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string()))
+    .bind(next_status)
+    .bind(now_iso())
+    .bind(retrieval_id)
+    .bind(session_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(ProviderAttributionWrite::Recorded)
 }
 
 /// Count recognition events for a session within the last `within_secs` (the
@@ -710,7 +879,8 @@ pub async fn recent_recognition_count(
 pub async fn seen_observation(pool: &Pool<Sqlite>, query: &str) -> Option<RecognitionSeen> {
     use sqlx::Row;
     let row = sqlx::query(
-        "SELECT retrieved_at, outcome_kind, outcome_polarity
+        "SELECT retrieved_at, session_id, outcome_kind, outcome_polarity,
+                provider_invocation_ids, attribution_status
            FROM recognition_events
           WHERE query = ?
           ORDER BY retrieved_at DESC
@@ -721,10 +891,90 @@ pub async fn seen_observation(pool: &Pool<Sqlite>, query: &str) -> Option<Recogn
     .await
     .ok()
     .flatten()?;
+    let raw_provider_invocation_ids = row
+        .try_get::<Option<String>, _>("provider_invocation_ids")
+        .ok()
+        .flatten();
+    let mut provider_invocation_ids = None;
+    let mut attribution_status = row
+        .try_get::<Option<String>, _>("attribution_status")
+        .ok()
+        .flatten();
+    let session_id = row
+        .try_get::<Option<String>, _>("session_id")
+        .ok()
+        .flatten();
+    let mut provider_invocations = Vec::new();
+    if let Some(raw) = raw_provider_invocation_ids.as_deref() {
+        match serde_json::from_str::<Vec<String>>(raw) {
+            Ok(ids) => {
+                let overflowed = ids.len() > MAX_PROVIDER_INVOCATION_REFS;
+                let ids: Vec<String> = ids.into_iter().take(MAX_PROVIDER_INVOCATION_REFS).collect();
+                provider_invocation_ids = Some(ids.clone());
+                if ids.is_empty() && attribution_status.as_deref() == Some("observed") {
+                    attribution_status = Some("partial".into());
+                }
+                if !ids.is_empty() {
+                    let mut resolved = 0usize;
+                    if let Some(session_id) =
+                        session_id.as_deref().filter(|id| !id.trim().is_empty())
+                    {
+                        let joined =
+                            sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
+                                "SELECT c.call_id, c.provider, c.model
+                               FROM json_each(?) AS refs
+                               LEFT JOIN cost_ledger AS c
+                                 ON c.call_id = refs.value AND c.session_id = ?
+                              LIMIT 8",
+                            )
+                            .bind(raw)
+                            .bind(session_id)
+                            .fetch_all(pool)
+                            .await;
+                        if let Ok(rows) = joined {
+                            for (call_id, provider, model) in rows {
+                                if let Some(call_id) = call_id {
+                                    resolved += 1;
+                                    provider_invocations.push(ProviderInvocationSeen {
+                                        invocation_id: call_id,
+                                        provider,
+                                        model,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    if overflowed {
+                        attribution_status = Some("partial".into());
+                    } else if resolved != ids.len() {
+                        attribution_status = Some(
+                            if resolved == 0 {
+                                "unavailable"
+                            } else {
+                                "partial"
+                            }
+                            .into(),
+                        );
+                    }
+                } else if overflowed {
+                    attribution_status = Some("partial".into());
+                }
+            }
+            Err(_) => {
+                attribution_status = Some("partial".into());
+            }
+        }
+    } else if attribution_status.as_deref() == Some("observed") {
+        attribution_status = Some("partial".into());
+    }
     Some(RecognitionSeen {
         retrieved_at: row.get("retrieved_at"),
+        session_id,
         outcome_kind: row.get("outcome_kind"),
         outcome_polarity: row.get("outcome_polarity"),
+        provider_invocation_ids,
+        attribution_status,
+        provider_invocations,
     })
 }
 
@@ -901,6 +1151,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(tool, 0, "old tool event pruned");
+
+        // Maintenance is idempotent: a later pass cannot remove the fresh
+        // row or imply that a consent withdrawal deletes unrelated evidence.
+        let again = prune_recognition_instrumentation(&pool, RECOGNITION_RETENTION_DAYS)
+            .await
+            .unwrap();
+        assert_eq!(
+            again, 0,
+            "pruning is idempotent after expired rows are removed"
+        );
     }
 
     #[tokio::test]
@@ -1459,6 +1719,456 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn producer_contract_adapter_preserves_existing_join_ids() {
+        let pool = test_pool().await;
+        let pending = spawn_persist_recognition(
+            pool.clone(),
+            ctx("sess-contract"),
+            "contract fixture".into(),
+            "cascade".into(),
+            vec![("memory-contract".into(), 0.8, 0)],
+            vec![],
+        );
+        let observation = crate::recognition_contract::observation_from_pending(
+            &pending,
+            Some("sess-contract".into()),
+            "query_recall",
+            "2026-09-05T12:00:00Z",
+        );
+        assert!(observation.validate().is_ok());
+        let retrieval_id = observation
+            .provenance
+            .retrieval_id
+            .clone()
+            .expect("contract keeps the existing retrieval join key");
+
+        pending.verdict_handle().record("recognized", 0.5).await;
+        let row = sqlx::query(
+            "SELECT retrieval_id, session_id, recognition_verdict
+               FROM recognition_events WHERE retrieval_id = ?",
+        )
+        .bind(&retrieval_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.get::<String, _>("retrieval_id"), retrieval_id);
+        assert_eq!(row.get::<String, _>("session_id"), "sess-contract");
+        assert_eq!(
+            row.get::<Option<String>, _>("recognition_verdict")
+                .as_deref(),
+            Some("recognized")
+        );
+    }
+
+    #[tokio::test]
+    async fn seen_adapter_preserves_unattributed_then_observed_outcome() {
+        let pool = test_pool().await;
+        let query = "outcome adapter fixture";
+        persist_recognition_with_id(
+            &pool,
+            "outcome-adapter",
+            &ctx("sess-outcome"),
+            query,
+            "cascade",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let seen = seen_observation(&pool, query)
+            .await
+            .expect("row is visible");
+        let unknown = crate::recognition_contract::outcome_from_seen(&seen);
+        assert!(unknown.outcome_kind.is_none());
+        assert!(unknown.outcome_polarity.is_none());
+        assert!(!unknown.bounced);
+        assert_eq!(unknown.provider_invocation_ids, Some(Vec::new()));
+        assert_eq!(unknown.attribution_status.as_deref(), Some("unavailable"));
+
+        sqlx::query(
+            "UPDATE recognition_events
+                SET outcome_kind = 'TaskResolved', outcome_polarity = 'Positive'
+              WHERE retrieval_id = 'outcome-adapter'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let seen = seen_observation(&pool, query)
+            .await
+            .expect("updated row is visible");
+        let observed = crate::recognition_contract::outcome_from_seen(&seen);
+        assert_eq!(observed.outcome_kind.as_deref(), Some("TaskResolved"));
+        assert_eq!(observed.outcome_polarity.as_deref(), Some("Positive"));
+        assert!(!observed.bounced);
+    }
+
+    #[tokio::test]
+    async fn provider_reference_writer_dedupes_and_rejects_cross_session() {
+        let pool = test_pool().await;
+        persist_recognition_with_id(
+            &pool,
+            "attribution-row",
+            &ctx("sess-attribution"),
+            "fixture",
+            "cascade",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        persist_recognition_with_id(
+            &pool,
+            "cross-session-row",
+            &ctx("sess-attribution"),
+            "fixture-cross",
+            "cascade",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        for (call_id, session_id) in [
+            ("call-one", "sess-attribution"),
+            ("call-two", "sess-attribution"),
+            ("call-three", "sess-attribution"),
+            ("call-cross", "sess-other"),
+        ] {
+            sqlx::query(
+                "INSERT INTO cost_ledger (call_id, ts, session_id)
+                 VALUES (?, '2026-09-05T12:00:00Z', ?)",
+            )
+            .bind(call_id)
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(
+            record_provider_invocation_reference(
+                &pool,
+                "attribution-row",
+                "sess-attribution",
+                "call-one",
+            )
+            .await
+            .unwrap(),
+            ProviderAttributionWrite::Recorded
+        );
+        assert_eq!(
+            record_provider_invocation_reference(
+                &pool,
+                "attribution-row",
+                "sess-attribution",
+                "call-one",
+            )
+            .await
+            .unwrap(),
+            ProviderAttributionWrite::Duplicate
+        );
+        let (left, right) = tokio::join!(
+            record_provider_invocation_reference(
+                &pool,
+                "attribution-row",
+                "sess-attribution",
+                "call-two",
+            ),
+            record_provider_invocation_reference(
+                &pool,
+                "attribution-row",
+                "sess-attribution",
+                "call-three",
+            ),
+        );
+        assert_eq!(left.unwrap(), ProviderAttributionWrite::Recorded);
+        assert_eq!(right.unwrap(), ProviderAttributionWrite::Recorded);
+        let ids: String = sqlx::query_scalar(
+            "SELECT provider_invocation_ids FROM recognition_events
+              WHERE retrieval_id = 'attribution-row'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(serde_json::from_str::<Vec<String>>(&ids).unwrap().len(), 3);
+        let seen = seen_observation(&pool, "fixture")
+            .await
+            .expect("multi-call attribution row is readable");
+        assert_eq!(seen.attribution_status.as_deref(), Some("observed"));
+        assert_eq!(seen.provider_invocations.len(), 3);
+
+        assert_eq!(
+            record_provider_invocation_reference(
+                &pool,
+                "cross-session-row",
+                "sess-attribution",
+                "call-cross",
+            )
+            .await
+            .unwrap(),
+            ProviderAttributionWrite::CrossSession
+        );
+        let status: String = sqlx::query_scalar(
+            "SELECT attribution_status FROM recognition_events
+              WHERE retrieval_id = 'cross-session-row'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(status, "partial");
+        let seen = seen_observation(&pool, "fixture-cross")
+            .await
+            .expect("cross-session row is readable");
+        assert!(seen.provider_invocations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn provider_reference_writer_marks_overflow_and_unknown() {
+        let pool = test_pool().await;
+        persist_recognition_with_id(
+            &pool,
+            "overflow-row",
+            &ctx("sess-overflow"),
+            "overflow",
+            "cascade",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        for index in 0..=MAX_PROVIDER_INVOCATION_REFS {
+            let call_id = format!("overflow-call-{index}");
+            sqlx::query(
+                "INSERT INTO cost_ledger (call_id, ts, session_id)
+                 VALUES (?, '2026-09-05T12:00:00Z', 'sess-overflow')",
+            )
+            .bind(&call_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let status = record_provider_invocation_reference(
+                &pool,
+                "overflow-row",
+                "sess-overflow",
+                &call_id,
+            )
+            .await
+            .unwrap();
+            if index == MAX_PROVIDER_INVOCATION_REFS {
+                assert_eq!(status, ProviderAttributionWrite::Partial);
+            } else {
+                assert_eq!(status, ProviderAttributionWrite::Recorded);
+            }
+        }
+        let (ids, status): (String, String) = sqlx::query_as(
+            "SELECT provider_invocation_ids, attribution_status
+               FROM recognition_events WHERE retrieval_id = 'overflow-row'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(serde_json::from_str::<Vec<String>>(&ids).unwrap().len(), 8);
+        assert_eq!(status, "partial");
+
+        assert_eq!(
+            record_provider_invocation_reference(
+                &pool,
+                "overflow-row",
+                "sess-overflow",
+                "missing-call",
+            )
+            .await
+            .unwrap(),
+            ProviderAttributionWrite::Unavailable
+        );
+
+        persist_recognition_with_id(
+            &pool,
+            "malformed-attribution",
+            &ctx("sess-malformed"),
+            "malformed",
+            "cascade",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE recognition_events SET provider_invocation_ids = 'not-json'
+              WHERE retrieval_id = 'malformed-attribution'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO cost_ledger (call_id, ts, session_id)
+             VALUES ('malformed-call', '2026-09-05T12:00:00Z', 'sess-malformed')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            record_provider_invocation_reference(
+                &pool,
+                "malformed-attribution",
+                "sess-malformed",
+                "malformed-call",
+            )
+            .await
+            .unwrap(),
+            ProviderAttributionWrite::Partial
+        );
+        let seen = seen_observation(&pool, "malformed")
+            .await
+            .expect("malformed attribution row is readable");
+        assert_eq!(seen.attribution_status.as_deref(), Some("partial"));
+        assert!(seen.provider_invocations.is_empty());
+
+        persist_recognition_with_id(
+            &pool,
+            "unresolved-attribution",
+            &ctx("sess-unresolved"),
+            "unresolved",
+            "cascade",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE recognition_events
+                SET provider_invocation_ids = '[\"missing-ref\"]',
+                    attribution_status = 'observed'
+              WHERE retrieval_id = 'unresolved-attribution'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let seen = seen_observation(&pool, "unresolved")
+            .await
+            .expect("unresolved attribution row is readable");
+        assert_eq!(seen.attribution_status.as_deref(), Some("unavailable"));
+        assert!(seen.provider_invocations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn duplicate_replay_keeps_one_existing_recognition_row() {
+        let pool = test_pool().await;
+        let retrieval_id = "duplicate-contract";
+        persist_recognition_with_id(
+            &pool,
+            retrieval_id,
+            &ctx("sess-duplicate"),
+            "fixture",
+            "cascade",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        assert!(persist_recognition_with_id(
+            &pool,
+            retrieval_id,
+            &ctx("sess-duplicate"),
+            "fixture",
+            "cascade",
+            &[],
+            &[],
+        )
+        .await
+        .is_err());
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM recognition_events WHERE retrieval_id = ?")
+                .bind(retrieval_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn reopened_file_db_preserves_contract_join_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recognition-restart.sqlite");
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect(&url)
+            .await
+            .unwrap();
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+        persist_recognition_with_id(
+            &pool,
+            "restart-contract",
+            &ctx("sess-restart"),
+            "fixture",
+            "cascade",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO cost_ledger (call_id, ts, session_id, provider, model)
+             VALUES ('restart-call', '2026-09-05T12:00:00Z', 'sess-restart', 'fixture-provider', 'fixture-model')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            record_provider_invocation_reference(
+                &pool,
+                "restart-contract",
+                "sess-restart",
+                "restart-call",
+            )
+            .await
+            .unwrap(),
+            ProviderAttributionWrite::Recorded
+        );
+        pool.close().await;
+
+        let reopened = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect(&url)
+            .await
+            .unwrap();
+        crate::session::spectral_schema::apply_recognition_schema(&reopened)
+            .await
+            .unwrap();
+
+        let (session, ids, status): (String, String, String) = sqlx::query_as(
+            "SELECT session_id, provider_invocation_ids, attribution_status
+               FROM recognition_events WHERE retrieval_id = 'restart-contract'",
+        )
+        .fetch_one(&reopened)
+        .await
+        .unwrap();
+        assert_eq!(session, "sess-restart");
+        assert_eq!(ids, "[\"restart-call\"]");
+        assert_eq!(status, "observed");
+        let seen = seen_observation(&reopened, "fixture")
+            .await
+            .expect("reopened recognition row is readable");
+        assert_eq!(
+            seen.provider_invocation_ids,
+            Some(vec!["restart-call".into()])
+        );
+        assert_eq!(seen.attribution_status.as_deref(), Some("observed"));
+        assert_eq!(seen.provider_invocations.len(), 1);
+        assert_eq!(seen.provider_invocations[0].invocation_id, "restart-call");
+        assert_eq!(
+            seen.provider_invocations[0].provider.as_deref(),
+            Some("fixture-provider")
+        );
+        assert_eq!(
+            seen.provider_invocations[0].model.as_deref(),
+            Some("fixture-model")
+        );
+    }
+
+    #[tokio::test]
     async fn migrate_v21_to_v22_adds_columns_and_is_idempotent() {
         use crate::session::spectral_schema::migrate_v21_to_v22;
         let pool = test_pool().await;
@@ -1469,12 +2179,14 @@ mod tests {
 
         let cols: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('recognition_events')
-              WHERE name IN ('recognition_verdict', 'familiarity')",
+              WHERE name IN ('recognition_verdict', 'familiarity',
+                             'provider_invocation_ids', 'attribution_status',
+                             'attribution_observed_at')",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(cols, 2);
+        assert_eq!(cols, 5);
     }
 
     #[tokio::test]

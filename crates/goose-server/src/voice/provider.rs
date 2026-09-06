@@ -94,6 +94,146 @@ pub struct SttConfig {
     pub language: Option<String>,
 }
 
+/// A generation-scoped update from an incremental speech recognizer.
+///
+/// Partials are provisional and may be replaced until the first final update.
+/// The generation is carried on the event deliberately: a producer can finish
+/// after a socket has closed, and the consumer must be able to reject that
+/// output without relying on timing or a shared "current turn" variable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StreamingSttEvent {
+    Partial { generation: u64, text: String },
+    Final { generation: u64, text: String },
+}
+
+impl StreamingSttEvent {
+    pub fn partial(generation: u64, text: impl Into<String>) -> Self {
+        Self::Partial {
+            generation,
+            text: text.into(),
+        }
+    }
+
+    pub fn final_text(generation: u64, text: impl Into<String>) -> Self {
+        Self::Final {
+            generation,
+            text: text.into(),
+        }
+    }
+
+    pub fn generation(&self) -> u64 {
+        match self {
+            Self::Partial { generation, .. } | Self::Final { generation, .. } => *generation,
+        }
+    }
+}
+
+/// A provider-side incremental STT session.
+///
+/// Implementations own their recognizer and may return zero or more updates
+/// for each audio push. They must not obtain audio by calling the batch
+/// [`SpeechToText::transcribe`] method on a growing buffer: that would duplicate
+/// inference and cannot safely define ownership when stop races a worker.
+pub trait StreamingSttSession: Send {
+    /// Feed one captured PCM chunk and return any recognizer updates ready to
+    /// be consumed. Chunks are never retained by this contract after the call.
+    fn push_audio(&mut self, samples: &[f32]) -> anyhow::Result<Vec<StreamingSttEvent>>;
+
+    /// Close the input and return the recognizer's authoritative result. The
+    /// consumer still applies [`StreamingSttGate`] so a faulty provider cannot
+    /// emit more than one final or resurrect a cancelled generation.
+    fn finish(&mut self) -> anyhow::Result<Vec<StreamingSttEvent>>;
+
+    /// Stop work and discard any result that has not already crossed the
+    /// consumer boundary. This is best effort for provider implementations;
+    /// the generation gate remains the final stale-output fence.
+    fn cancel(&mut self);
+}
+
+/// Optional streaming capability implemented by providers with a supported
+/// online model and bounded local assets.
+pub trait StreamingSpeechToText: Send + Sync {
+    fn start_stream(
+        &self,
+        sample_rate: u32,
+        config: &SttConfig,
+        generation: u64,
+    ) -> anyhow::Result<Box<dyn StreamingSttSession>>;
+}
+
+/// Consumer-side ordering and cancellation fence for one stream generation.
+///
+/// The route/capture worker can feed every provider event to this gate. Partial
+/// updates are coalesced: only the newest pending partial is exposed by
+/// [`take_partial`](Self::take_partial). A final clears pending partial state,
+/// and all subsequent updates—including updates from another generation—are
+/// ignored.
+#[derive(Debug)]
+pub struct StreamingSttGate {
+    generation: u64,
+    cancelled: bool,
+    final_emitted: bool,
+    pending_partial: Option<String>,
+}
+
+impl StreamingSttGate {
+    pub fn new(generation: u64) -> Self {
+        Self {
+            generation,
+            cancelled: false,
+            final_emitted: false,
+            pending_partial: None,
+        }
+    }
+
+    /// Accept an update. Partials are buffered until `take_partial`; the first
+    /// final is returned immediately and all later updates are discarded.
+    pub fn accept(&mut self, event: StreamingSttEvent) -> Option<StreamingSttEvent> {
+        if self.cancelled || self.final_emitted || event.generation() != self.generation {
+            return None;
+        }
+
+        match event {
+            StreamingSttEvent::Partial { text, .. } => {
+                self.pending_partial = Some(text);
+                None
+            }
+            StreamingSttEvent::Final { text, .. } => {
+                self.pending_partial = None;
+                self.final_emitted = true;
+                Some(StreamingSttEvent::Final {
+                    generation: self.generation,
+                    text,
+                })
+            }
+        }
+    }
+
+    /// Take the newest provisional update, if one is pending.
+    pub fn take_partial(&mut self) -> Option<StreamingSttEvent> {
+        if self.cancelled || self.final_emitted {
+            return None;
+        }
+        self.pending_partial
+            .take()
+            .map(|text| StreamingSttEvent::Partial {
+                generation: self.generation,
+                text,
+            })
+    }
+
+    /// Invalidate this generation before closing a socket or interrupting a
+    /// turn. This is intentionally separate from provider cancellation.
+    pub fn cancel(&mut self) {
+        self.cancelled = true;
+        self.pending_partial = None;
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
 /// Speech-to-text provider.
 pub trait SpeechToText: Send + Sync {
     /// Transcribe audio samples to text.
@@ -105,6 +245,13 @@ pub trait SpeechToText: Send + Sync {
         sample_rate: u32,
         config: &SttConfig,
     ) -> anyhow::Result<String>;
+
+    /// Return the optional online capability. Existing and offline batch
+    /// providers keep the default `None`, so the voice route can retain its
+    /// final-only batch behavior until a supported streaming model is loaded.
+    fn streaming_capability(&self) -> Option<&dyn StreamingSpeechToText> {
+        None
+    }
 }
 
 /// Text-to-speech provider.
@@ -148,5 +295,161 @@ pub trait TextToSpeech: Send + Sync {
     /// the user just said, rather than discovering the spelling live.
     fn unresolved_words(&self, _text: &str) -> Vec<String> {
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    struct FakeStreamingProvider;
+
+    struct FakeStreamingSession {
+        updates: VecDeque<Vec<StreamingSttEvent>>,
+        final_updates: Vec<StreamingSttEvent>,
+        cancelled: bool,
+    }
+
+    impl StreamingSttSession for FakeStreamingSession {
+        fn push_audio(&mut self, _samples: &[f32]) -> anyhow::Result<Vec<StreamingSttEvent>> {
+            if self.cancelled {
+                return Ok(Vec::new());
+            }
+            Ok(self.updates.pop_front().unwrap_or_default())
+        }
+
+        fn finish(&mut self) -> anyhow::Result<Vec<StreamingSttEvent>> {
+            if self.cancelled {
+                return Ok(Vec::new());
+            }
+            Ok(std::mem::take(&mut self.final_updates))
+        }
+
+        fn cancel(&mut self) {
+            self.cancelled = true;
+        }
+    }
+
+    impl StreamingSpeechToText for FakeStreamingProvider {
+        fn start_stream(
+            &self,
+            _sample_rate: u32,
+            _config: &SttConfig,
+            generation: u64,
+        ) -> anyhow::Result<Box<dyn StreamingSttSession>> {
+            Ok(Box::new(FakeStreamingSession {
+                updates: VecDeque::from([
+                    vec![StreamingSttEvent::partial(generation, "hel")],
+                    vec![StreamingSttEvent::partial(generation, "hello")],
+                ]),
+                final_updates: vec![StreamingSttEvent::final_text(generation, "hello world")],
+                cancelled: false,
+            }))
+        }
+    }
+
+    impl SpeechToText for FakeStreamingProvider {
+        fn transcribe(
+            &self,
+            _samples: &[f32],
+            _sample_rate: u32,
+            _config: &SttConfig,
+        ) -> anyhow::Result<String> {
+            Ok("hello world".to_string())
+        }
+
+        fn streaming_capability(&self) -> Option<&dyn StreamingSpeechToText> {
+            Some(self)
+        }
+    }
+
+    struct BatchOnlyProvider;
+
+    impl SpeechToText for BatchOnlyProvider {
+        fn transcribe(
+            &self,
+            _samples: &[f32],
+            _sample_rate: u32,
+            _config: &SttConfig,
+        ) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn streaming_provider_coalesces_partials_and_emits_one_final() {
+        let provider = FakeStreamingProvider;
+        let capability = provider
+            .streaming_capability()
+            .expect("fake provider exposes streaming capability");
+        let mut session = capability
+            .start_stream(16_000, &SttConfig::default(), 41)
+            .expect("stream starts");
+        let mut gate = StreamingSttGate::new(41);
+
+        for event in session.push_audio(&[0.1, 0.2]).unwrap() {
+            assert!(gate.accept(event).is_none());
+        }
+        for event in session.push_audio(&[0.3, 0.4]).unwrap() {
+            assert!(gate.accept(event).is_none());
+        }
+        assert_eq!(
+            gate.take_partial(),
+            Some(StreamingSttEvent::partial(41, "hello"))
+        );
+        assert!(gate.take_partial().is_none());
+
+        let final_event = session.finish().unwrap().pop().expect("one final");
+        assert_eq!(
+            gate.accept(final_event.clone()),
+            Some(StreamingSttEvent::final_text(41, "hello world"))
+        );
+        assert!(gate.accept(final_event).is_none());
+        assert!(gate.take_partial().is_none());
+    }
+
+    #[test]
+    fn stale_generation_and_cancelled_stream_cannot_publish_late_output() {
+        let mut gate = StreamingSttGate::new(7);
+        assert!(gate.accept(StreamingSttEvent::partial(6, "old")).is_none());
+        assert!(gate
+            .accept(StreamingSttEvent::partial(7, "current"))
+            .is_none());
+        gate.cancel();
+        assert!(gate.take_partial().is_none());
+        assert!(gate
+            .accept(StreamingSttEvent::final_text(7, "late current"))
+            .is_none());
+        assert!(gate
+            .accept(StreamingSttEvent::final_text(8, "late replacement"))
+            .is_none());
+
+        let provider = FakeStreamingProvider;
+        let capability = provider.streaming_capability().unwrap();
+        let mut session = capability
+            .start_stream(16_000, &SttConfig::default(), 9)
+            .unwrap();
+        session.cancel();
+        assert!(session.push_audio(&[0.5]).unwrap().is_empty());
+        assert!(session.finish().unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_final_is_still_one_authoritative_result() {
+        let mut gate = StreamingSttGate::new(12);
+        assert_eq!(
+            gate.accept(StreamingSttEvent::final_text(12, "")),
+            Some(StreamingSttEvent::final_text(12, ""))
+        );
+        assert!(gate
+            .accept(StreamingSttEvent::final_text(12, "should be ignored"))
+            .is_none());
+    }
+
+    #[test]
+    fn batch_only_provider_keeps_explicit_offline_fallback() {
+        let provider = BatchOnlyProvider;
+        assert!(provider.streaming_capability().is_none());
     }
 }

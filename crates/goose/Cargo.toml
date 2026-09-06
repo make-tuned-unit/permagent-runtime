@@ -73,6 +73,7 @@ native-tls = [
 workspace = true
 
 [dependencies]
+permagent-eval = { path = "../permagent-eval" }
 spectral = { workspace = true }
 lru = { workspace = true }
 rmcp = { workspace = true, features = [

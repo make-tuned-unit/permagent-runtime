@@ -135,6 +135,19 @@ impl Provider for SovereignGuardProvider {
         self.inner.get_name()
     }
 
+    /// Forwards cost attribution. The trait default is `PaidApi` — correct as a
+    /// fail-closed default for a real provider, wrong for a decorator, which
+    /// knows nothing about pricing and must not answer for the thing it wraps.
+    /// Because `wrap` runs at the single factory choke point, inheriting that
+    /// default made EVERY provider read as paid: a free local Ollama call then
+    /// needed a paid reservation, and fail-closed refused it for want of a
+    /// context limit ("cannot authorize provider call: context limit is
+    /// required for a paid reservation"), so local inference could not run at
+    /// all. Same class as the `stream_split` note below.
+    fn cost_tier(&self) -> crate::session::CostTier {
+        self.inner.cost_tier()
+    }
+
     async fn stream(
         &self,
         model_config: &ModelConfig,
@@ -204,6 +217,7 @@ impl Provider for SovereignGuardProvider {
         }
         let stream = self
             .inner
+            // permagent-dispatch: seam=sovereign_guard_stream_transport_v1 class=excluded reason=provider_internal_delegate authority=agent_primary_stream
             .stream_split(model_config, session_id, system, messages, tools)
             .await?;
         Ok(crate::providers::inflight::hold_stream(stream, inflight))
@@ -325,6 +339,11 @@ mod tests {
 
         fn data_locality(&self) -> DataLocality {
             self.locality
+        }
+
+        fn cost_tier(&self) -> crate::session::CostTier {
+            // A local model costs nothing; the decorator must say so too.
+            crate::session::CostTier::LocalFree
         }
 
         fn get_model_config(&self) -> ModelConfig {
@@ -463,5 +482,15 @@ mod tests {
         let (guarded, _) = mock(DataLocality::Cloud);
         assert_eq!(guarded.get_name(), "mock");
         assert_eq!(guarded.data_locality(), DataLocality::Cloud);
+    }
+
+    #[test]
+    fn wrap_preserves_free_cost_attribution() {
+        // Every provider is wrapped at the factory choke point, so a decorator
+        // that answers the trait's fail-closed `PaidApi` default turns free
+        // local inference into an unauthorizable paid call.
+        let (guarded, _) = mock(DataLocality::Local);
+        assert_eq!(guarded.cost_tier(), crate::session::CostTier::LocalFree);
+        assert!(!guarded.cost_tier().is_chargeable());
     }
 }

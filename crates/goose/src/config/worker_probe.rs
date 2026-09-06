@@ -69,6 +69,31 @@ impl ProbeCache {
     pub fn clear(&self) {
         self.inner.lock().unwrap().clear();
     }
+
+    /// Probe once per worker/configuration pair within the cache TTL.
+    ///
+    /// The availability check is part of the key, so editing agent.yaml does
+    /// not leave the old answer live for five minutes. Callers that rebuild a
+    /// prompt every model turn should use this instead of calling
+    /// [`probe_worker`] directly: `model_loaded:` may otherwise add a two-
+    /// second blocking HTTP timeout for every configured local worker on every
+    /// turn.
+    pub fn probe(&self, worker_key: &str, check: &str) -> (bool, Option<String>) {
+        self.probe_with(worker_key, check, probe_worker)
+    }
+
+    fn probe_with<F>(&self, worker_key: &str, check: &str, probe: F) -> (bool, Option<String>)
+    where
+        F: FnOnce(&str) -> (bool, Option<String>),
+    {
+        let cache_key = format!("{worker_key}\0{check}");
+        if let Some(cached) = self.get(&cache_key) {
+            return (cached.available, cached.reason);
+        }
+        let (available, reason) = probe(check);
+        self.set(&cache_key, available, reason.clone());
+        (available, reason)
+    }
 }
 
 /// Probe whether a worker is available based on its `availability_check` string.
@@ -409,5 +434,30 @@ mod tests {
 
         cache.clear();
         assert!(cache.get("worker").is_none());
+    }
+
+    #[test]
+    fn cached_probe_runs_once_and_configuration_changes_miss() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let cache = ProbeCache::new();
+        let calls = AtomicUsize::new(0);
+        let first = cache.probe_with("worker", "bin_exists:first", |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            (true, None)
+        });
+        let second = cache.probe_with("worker", "bin_exists:first", |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            (false, Some("must not run".into()))
+        });
+        let changed = cache.probe_with("worker", "bin_exists:second", |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            (false, Some("changed".into()))
+        });
+
+        assert!(first.0);
+        assert!(second.0);
+        assert!(!changed.0);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

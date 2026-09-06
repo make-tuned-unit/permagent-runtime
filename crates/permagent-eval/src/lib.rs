@@ -29,20 +29,41 @@
 //!   with mocks).
 
 pub mod cost;
+pub mod dispatch_inventory;
 pub mod harness_log;
 pub mod invocation;
+pub mod iteration;
 pub mod metrics;
 pub mod oracle;
 pub mod paired;
+pub mod program;
+pub mod qualification;
 pub mod report;
 pub mod runner;
 pub mod task;
 pub mod tier;
 
 pub use cost::{CostReader, CostReading, LedgerCostReader};
+pub use dispatch_inventory::{
+    scan_production_rust, DispatchInventory, DispatchSeam, SeamClassification, SeamKind,
+    RULESET_VERSION as DISPATCH_INVENTORY_RULESET_VERSION,
+};
 pub use harness_log::{scan as scan_harness_log, LogSignals};
 pub use invocation::{build_invocation, recipe_with_prompt, Invocation};
+pub use iteration::{
+    run_training_loop, ArmRun, ArmRunner, DagEvidence, GraduationDecision, GraduationGates,
+    GraduationStatus, IterationConfig, IterationReport, Observation, TokenTotals, TrainingReport,
+};
 pub use metrics::{aggregate, Aggregate, TaskResult};
 pub use oracle::{outcome_from_exit, OracleOutcome};
+pub use program::{
+    ApprovalPolicy, DeliveryMode, ExitGateReceipt, ProgramDag, ProgramFrontier, ProgramNode,
+    ProgramNodeStatus, ProgramReopen, ProgramReopenError, ProgramTransition,
+    ProgramTransitionError,
+};
+pub use qualification::{
+    qualify, AreaEvidence, AreaRating, AreaScore, QualificationInput, QualificationReport,
+    QualificationRun,
+};
 pub use task::{Task, TaskSpec};
 pub use tier::Tier;

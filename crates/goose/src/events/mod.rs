@@ -28,10 +28,8 @@ pub const WORLD_VIEW_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         id: "world_view",
         display_name: "World View",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
-        what_it_does:
-            "A live 3D rotunda ringed by a colonnade where your three agents — you (the orchestrator), the Librarian, and the Reader — are embodied and animate from your real memory recall, worker state, and events streamed over /events. Real active goals light plaques over the working bay's benches, the Librarian pulls a book from the mezzanine wall during real describe runs, clicking a pedestal glides the camera to it, and the Mesh Stargate stands at the colonnade opening with an honest Forum plaque",
-        why_it_matters:
-            "The user can watch your background activity in real time, press T for a guided camera tour, pick any agent from the roster to follow in third-person and open its live HUD, and drive the followed agent on foot with the arrow keys or WASD",
+        what_it_does: "A live 3D rotunda ringed by a colonnade where your three agents — you (the orchestrator), the Librarian, and the Reader — are embodied and animate from your real memory recall, worker state, and events streamed over /events. Real active goals light plaques over the working bay's benches, the Librarian pulls a book from the mezzanine wall during real describe runs, clicking a pedestal glides the camera to it, and the Mesh Stargate stands at the colonnade opening with an honest Forum plaque",
+        why_it_matters: "The user can watch your background activity in real time, press T for a guided camera tour, pick any agent from the roster to follow in third-person and open its live HUD, and drive the followed agent on foot with the arrow keys or WASD",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[],
     };
@@ -47,10 +45,8 @@ pub const TRACE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         id: "trace",
         display_name: "Execution trace",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
-        what_it_does:
-            "A live, chronological readout of the runtime's most recent events straight off the running system's event streams — the Activity page in Settings, each entry a timestamp and event type as tool calls, worker activity, navigations, and lifecycle signals fire in real time. It reflects the whole running system and needs no session id",
-        why_it_matters:
-            "It is the low-level, in-the-moment 'what is the system doing right now' view for inspecting or debugging behavior as it happens — distinct from the Activity timeline, which is the curated, durable record of what your agents did; when the user wants to watch the raw event stream or see what just fired under the hood, bring them here",
+        what_it_does: "A live, chronological readout of the runtime's most recent events straight off the running system's event streams — the Activity page in Settings, each entry a timestamp and event type as tool calls, worker activity, navigations, and lifecycle signals fire in real time. It reflects the whole running system and needs no session id",
+        why_it_matters: "It is the low-level, in-the-moment 'what is the system doing right now' view for inspecting or debugging behavior as it happens — distinct from the Activity timeline, which is the curated, durable record of what your agents did; when the user wants to watch the raw event stream or see what just fired under the hood, bring them here",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[],
     };
@@ -1133,21 +1129,26 @@ pub fn session_changed(session_id: &str, change: &str) -> PermagentEvent {
 /// `final_turn` marks the announcement made as the session closes, so the meter
 /// can keep showing a finished session's total instead of decaying to nothing.
 pub fn session_spend_changed(spend: SessionSpend<'_>) -> PermagentEvent {
-    PermagentEvent::new(
-        PermagentEventType::SessionSpendChanged,
-        serde_json::json!({
-            "session_id": spend.session_id,
-            "turn_usd": spend.turn_usd,
-            "session_usd": spend.session_usd,
-            "today_usd": spend.today_usd,
-            "total_tokens": spend.total_tokens,
-            "provider": spend.provider,
-            "model": spend.model,
-            "working_dir": spend.working_dir,
-            "estimated": spend.estimated,
-            "final_turn": spend.final_turn,
-        }),
-    )
+    let mut payload = serde_json::json!({
+        "session_id": spend.session_id,
+        "turn_usd": spend.turn_usd,
+        "session_usd": spend.session_usd,
+        "today_usd": spend.today_usd,
+        "total_tokens": spend.total_tokens,
+        "provider": spend.provider,
+        "model": spend.model,
+        "working_dir": spend.working_dir,
+        "estimated": spend.estimated,
+        "final_turn": spend.final_turn,
+    });
+    // Keep the legacy wire shape byte-compatible for emitters that do not
+    // have a projection yet. The daemon spend seam always supplies this
+    // canonical payload; older producers should not gain a surprising null
+    // field merely because the event contract grew an optional extension.
+    if let Some(budget) = spend.budget {
+        payload["budget"] = budget.clone();
+    }
+    PermagentEvent::new(PermagentEventType::SessionSpendChanged, payload)
 }
 
 /// The figures one [`session_spend_changed`] announcement carries.
@@ -1173,6 +1174,9 @@ pub struct SessionSpend<'a> {
     /// a bill.
     pub estimated: bool,
     pub final_turn: bool,
+    /// Serialized `budget-projection.v1`; optional for callers that emit a
+    /// legacy-compatible event without a projection.
+    pub budget: Option<&'a Value>,
 }
 
 /// A scheduled job changed. `change` ∈
@@ -1283,6 +1287,56 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"type\":\"daemon_started\""));
         assert!(json.contains("\"version\":\"0.1.0\""));
+    }
+
+    #[test]
+    fn session_spend_legacy_wire_shape_omits_unavailable_projection() {
+        let event = session_spend_changed(SessionSpend {
+            session_id: "session-1",
+            turn_usd: 0.0,
+            session_usd: 0.0,
+            today_usd: 0.0,
+            total_tokens: 0,
+            provider: None,
+            model: None,
+            working_dir: None,
+            estimated: false,
+            final_turn: false,
+            budget: None,
+        });
+        let payload = serde_json::to_value(event).unwrap()["payload"].clone();
+        assert!(payload.get("budget").is_none());
+        assert_eq!(payload["session_id"], "session-1");
+        assert_eq!(payload["session_usd"], 0.0);
+    }
+
+    #[test]
+    fn session_spend_projection_is_serialized_alongside_legacy_fields() {
+        let projection = serde_json::json!({
+            "provenance": {"version": "budget-projection.v1"},
+            "session": {"settledUsd": 0.0, "unknownUsd": 1.0, "band": "unknown"}
+        });
+        let event = session_spend_changed(SessionSpend {
+            session_id: "session-1",
+            turn_usd: 0.0,
+            session_usd: 0.0,
+            today_usd: 0.0,
+            total_tokens: 0,
+            provider: None,
+            model: None,
+            working_dir: None,
+            estimated: false,
+            final_turn: true,
+            budget: Some(&projection),
+        });
+        let payload = serde_json::to_value(event).unwrap()["payload"].clone();
+        assert_eq!(payload["session_usd"], 0.0);
+        assert_eq!(
+            payload["budget"]["provenance"]["version"],
+            "budget-projection.v1"
+        );
+        assert_eq!(payload["budget"]["session"]["band"], "unknown");
+        assert_eq!(payload["final_turn"], true);
     }
 
     #[test]

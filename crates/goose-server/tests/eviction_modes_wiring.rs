@@ -69,6 +69,7 @@ async fn eviction_ordering_and_effective_mode_wiring() {
         user_message: Message::user().with_text("hello"),
         override_conversation: None,
         app_context: None,
+        attachment_ids: Vec::new(),
     };
 
     // ── Wire 1: active bus request → 400 BEFORE any eviction ──

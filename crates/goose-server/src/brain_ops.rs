@@ -4,6 +4,8 @@
 //! read-only Brain DB connections that were previously duplicated across
 //! multiple route handlers.
 
+use chrono::{TimeZone, Utc};
+use sqlx::Row;
 use std::sync::Arc;
 
 // ── Recall constants & filter ────────────────────────────────────────────
@@ -26,6 +28,92 @@ pub fn filter_recall_hits(
         .collect()
 }
 
+const TOP_RECALL_EXCERPT_CHARS: usize = 480;
+
+fn trusted_recall_hit(hit: &spectral::ingest::MemoryHit) -> bool {
+    hit.confidence >= 0.8 && !hit.key.trim().is_empty() && !hit.content.is_empty()
+}
+
+/// Assemble recall with one source-grounded excerpt first. The generic
+/// progressive assembler fills abstracts before deepening, which can spend a
+/// small reply budget on breadth and omit the only exact evidence. This
+/// wrapper reserves the first slice for the highest-ranked trusted hit, then
+/// uses the remainder for bounded breadth; every emitted line carries its
+/// stable provenance key.
+fn assemble_recall_prompt(hits: &[&spectral::ingest::MemoryHit]) -> (Option<String>, Vec<String>) {
+    if hits.is_empty() {
+        return (None, Vec::new());
+    }
+    let budget = permagent::context_layers::AssembleBudget::REPLY.chars();
+    let header = "Relevant memories from past context:\n";
+    let mut prompt = String::from(header);
+    let mut remaining = budget.saturating_sub(header.chars().count());
+    let trusted_idx = hits.iter().position(|hit| trusted_recall_hit(hit));
+    let mut injected_ids = Vec::new();
+
+    if let Some(index) = trusted_idx {
+        let hit = hits[index];
+        let marker = format!("- [full] [source: {}] ", hit.key);
+        let available = remaining.saturating_sub(marker.chars().count() + 1);
+        let excerpt: String = hit
+            .content
+            .chars()
+            .take(available.min(TOP_RECALL_EXCERPT_CHARS))
+            .collect();
+        if !excerpt.is_empty() {
+            let line = format!("{marker}{excerpt}\n");
+            remaining = remaining.saturating_sub(line.chars().count());
+            prompt.push_str(&line);
+            injected_ids.push(hit.id.clone());
+        }
+    }
+
+    let breadth_sources: Vec<permagent::context_layers::AssembleSource<'_>> = hits
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != trusted_idx)
+        .map(|(_, hit)| permagent::context_layers::AssembleSource {
+            key: hit.key.as_str(),
+            abstract_text: hit.description.as_deref(),
+            content: hit.content.as_str(),
+            score: hit.signal_score,
+        })
+        .collect();
+    if remaining >= 4 && !breadth_sources.is_empty() {
+        let layered = permagent::context_layers::assemble(
+            &breadth_sources,
+            permagent::context_layers::AssembleBudget {
+                tokens: remaining / 4,
+            },
+        );
+        for layer in layered {
+            let line = format!(
+                "- [{}] [source: {}] {}\n",
+                layer.layer.as_str(),
+                layer.key,
+                layer.text
+            );
+            if line.chars().count() > remaining {
+                continue;
+            }
+            remaining -= line.chars().count();
+            prompt.push_str(&line);
+            if let Some(hit) = hits
+                .iter()
+                .find(|hit| hit.key == layer.key && !injected_ids.contains(&hit.id))
+            {
+                injected_ids.push(hit.id.clone());
+            }
+        }
+    }
+
+    if injected_ids.is_empty() {
+        (None, Vec::new())
+    } else {
+        (Some(prompt), injected_ids)
+    }
+}
+
 /// Result of one recall injection. The pending recognition write is optional
 /// because the daemon can run without a session DB pool.
 #[derive(Default)]
@@ -36,6 +124,23 @@ pub struct RecallInjection {
     /// report. `None` on the overwhelming majority of turns — see
     /// `permagent::turn_sampling` for why this path is not the default.
     turn: Option<PendingTurn>,
+}
+
+impl RecallInjection {
+    /// The existing recognition row identity opened by this recall, when the
+    /// session DB was available. No replacement identity is synthesized.
+    pub fn retrieval_id(&self) -> Option<&str> {
+        self.pending.as_ref().map(|pending| pending.retrieval_id())
+    }
+
+    /// Bounded producer ordering for provider attribution. A false result is
+    /// an explicit instrumentation gap; it never blocks the reply indefinitely.
+    pub async fn wait_persisted(&self) -> bool {
+        match self.pending.as_ref() {
+            Some(pending) => pending.wait_persisted().await,
+            None => true,
+        }
+    }
 }
 
 /// A sampled `turn` awaiting outcome attribution at end of turn.
@@ -199,35 +304,23 @@ pub async fn inject_recall(
             let (prefix, injected_ids) = if top_hits.is_empty() {
                 (None, Vec::new())
             } else {
-                let sources: Vec<permagent::context_layers::AssembleSource<'_>> = top_hits
-                    .iter()
-                    .map(|hit| permagent::context_layers::AssembleSource {
-                        key: hit.key.as_str(),
-                        abstract_text: hit.description.as_deref(),
-                        content: hit.content.as_str(),
-                        score: hit.signal_score,
-                    })
-                    .collect();
-                let layered = permagent::context_layers::assemble(
-                    &sources,
-                    permagent::context_layers::AssembleBudget::REPLY,
-                );
-                // `assemble` may omit budget-excluded hits. Receipts and
-                // recognition must describe what actually reached the prompt,
-                // not the larger pre-budget candidate set.
-                let injected_ids = top_hits
-                    .iter()
-                    .take(layered.len())
-                    .map(|hit| hit.id.clone())
-                    .collect();
-                let rendered = permagent::context_layers::render_prompt(&layered);
-                if rendered.is_empty() {
-                    (None, Vec::new())
-                } else {
-                    (Some(rendered), injected_ids)
-                }
+                assemble_recall_prompt(&top_hits)
             };
             let count = injected_ids.len();
+            // Carry the exact Spectral hit identities alongside the rendered
+            // extra. The reply seam consumes this typed channel; it must not
+            // infer memory provenance by parsing prompt prose.
+            let context_contributions = prefix.as_ref().map(|prompt| {
+                vec![
+                    permagent::context_packet::ContextContribution::spectral_memory(
+                        "recall-block",
+                        prompt.clone(),
+                        injected_ids
+                            .iter()
+                            .map(|id| format!("spectral_recall:{id}")),
+                    ),
+                ]
+            });
             drop(top_hits);
 
             // Recognition instrumentation: persist the recall event + its WHOLE
@@ -303,7 +396,11 @@ pub async fn inject_recall(
             );
 
             agent
-                .extend_system_prompt("memory_recall".to_string(), prefix)
+                .extend_system_prompt_with_contexts(
+                    "memory_recall".to_string(),
+                    prefix,
+                    context_contributions.unwrap_or_default(),
+                )
                 .await;
             RecallInjection {
                 count,
@@ -326,7 +423,7 @@ pub async fn inject_recall(
 
 /// The `RememberOpts` every chat turn is written with.
 ///
-/// Split out of [`spawn_persist_chat_turn`] so the metadata a chat memory
+/// Split out of [`persist_chat_turn`] so the metadata a chat memory
 /// carries can be asserted in a unit test without a Brain, a runtime, or a
 /// detached task.
 pub fn chat_turn_opts(
@@ -417,74 +514,207 @@ pub fn turn_tool_call_text(messages: &[permagent::conversation::message::Message
 /// near the front.
 const MAX_TOOL_TEXT_CHARS: usize = 16_384;
 
-/// Persist a chat turn's memories via SafeBrain::remember_with.
-/// Spawns a detached background task — fire-and-forget.
-pub fn spawn_persist_chat_turn(
+const CHAT_OUTBOX_MAX_ATTEMPTS: i64 = 5;
+
+fn bounded_tool_text(text: String) -> String {
+    text.chars().take(MAX_TOOL_TEXT_CHARS).collect()
+}
+
+fn normalize_event_at(event_at: i64) -> i64 {
+    // Session messages are currently epoch milliseconds. Keep this tolerant of
+    // older callers which supplied epoch seconds.
+    if event_at.unsigned_abs() < 10_000_000_000 {
+        event_at.saturating_mul(1_000)
+    } else {
+        event_at
+    }
+}
+
+fn ordered_event_time(event_at: i64, turn_ordinal: i64) -> Option<chrono::DateTime<Utc>> {
+    let base = Utc.timestamp_millis_opt(event_at).single()?;
+    // Session messages are commonly timestamped only to the second. Spectral
+    // orders episode members by created_at and then hashed memory ID, so equal
+    // timestamps would otherwise scramble narrative turns. Preserve the
+    // original instant and use less than one millisecond as a deterministic
+    // ordinal tie-breaker.
+    let ordinal_nanos = turn_ordinal.clamp(0, 999_999);
+    base.checked_add_signed(chrono::Duration::nanoseconds(ordinal_nanos))
+}
+
+struct ChatMemoryJob {
+    id: i64,
+    dedupe_key: String,
+    session_id: String,
+    turn_ordinal: i64,
+    event_at: i64,
+    user_text: String,
+    assistant_text: String,
+    tool_text: String,
+    attempts: i64,
+}
+
+/// Enqueue a chat turn durably before returning to the route. Spectral
+/// ingestion is asynchronous and retryable; the transcript remains evidence.
+pub async fn persist_chat_turn(
     brain: permagent::brain_handle::SafeBrain,
     pool: Option<sqlx::Pool<sqlx::Sqlite>>,
     session_id: String,
     turn_idx: usize,
+    event_at: i64,
     user_text: String,
     assistant_text: String,
     tool_text: String,
+) -> anyhow::Result<()> {
+    let pool = pool.ok_or_else(|| anyhow::anyhow!("session database unavailable"))?;
+    let turn_ordinal = i64::try_from(turn_idx)
+        .map_err(|_| anyhow::anyhow!("turn ordinal exceeds database range"))?;
+    let dedupe_key = format!("chat-{session_id}-{turn_ordinal}");
+    sqlx::query(
+        "INSERT OR IGNORE INTO chat_memory_outbox
+         (dedupe_key, session_id, turn_ordinal, event_at, user_text, assistant_text, tool_text)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&dedupe_key)
+    .bind(&session_id)
+    .bind(turn_ordinal)
+    .bind(normalize_event_at(event_at))
+    .bind(user_text)
+    .bind(assistant_text)
+    .bind(bounded_tool_text(tool_text))
+    .execute(&pool)
+    .await?;
+
+    spawn_chat_memory_outbox_drain(brain, pool);
+    Ok(())
+}
+
+/// Start a bounded startup/request drain. Pending and stale running rows are
+/// claimed from the session DB, so a daemon restart does not strand captures.
+pub fn spawn_chat_memory_outbox_drain(
+    brain: permagent::brain_handle::SafeBrain,
+    pool: sqlx::Pool<sqlx::Sqlite>,
 ) {
     tokio::spawn(async move {
-        let key = format!("chat-{}-{}", session_id, turn_idx);
-        let content = format!("User: {}\nAssistant: {}", user_text, assistant_text);
-        let device_id = *brain.device_id();
-        let key_for_log = key.clone();
-
-        // Does this turn's own evidence support the project the session was
-        // opened in? `None` pool (no session DB mounted) means we cannot ask,
-        // so we do not guess: unverifiable, wing stays empty.
-        let (hint, verdict) = match pool.as_ref() {
-            Some(pool) => {
-                permagent::session_wing::decide_turn_wing(pool, &session_id, &content, &tool_text)
-                    .await
-            }
-            None => (None, permagent::session_wing::WingVerdict::Unverifiable),
-        };
-        let wing = verdict.wing().map(str::to_string);
-
-        match brain
-            .remember_with(&key, &content, chat_turn_opts(&session_id, device_id, wing))
-            .await
-        {
-            Ok(_) => {
-                tracing::info!(
-                    target: "permagentd::brain",
-                    "Remembered chat turn: {}",
-                    key_for_log
-                );
-            }
-            Err(e) => {
-                // remember_with returns Err if the session association fails even
-                // when the memory itself was committed, so don't claim it was
-                // lost. Fire-and-forget: logged, never blocks the reply path.
-                tracing::warn!(
-                    target: "permagentd::brain",
-                    "remember_with returned an error for chat turn {} (the memory may still be persisted; session association or a later step failed): {}",
-                    key_for_log,
-                    e
-                );
-            }
-        }
-
-        // Record what was decided and on what evidence — including the turns
-        // left honestly unwinged. Without the negative rows the corroborated
-        // yield is a numerator with no denominator, and a turn nobody looked
-        // at is indistinguishable from a turn that had nothing to go on.
-        if let Some(pool) = pool.as_ref() {
-            permagent::session_wing::record_turn_provenance(
-                pool,
-                &key,
-                &session_id,
-                hint.as_ref(),
-                &verdict,
-            )
-            .await;
+        if let Err(e) = drain_chat_memory_outbox(&brain, &pool).await {
+            tracing::warn!(target: "permagentd::brain", "chat memory outbox drain failed: {e}");
         }
     });
+}
+
+async fn claim_chat_memory_job(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+) -> anyhow::Result<Option<ChatMemoryJob>> {
+    let row = sqlx::query(
+        "UPDATE chat_memory_outbox
+         SET status = 'running', attempts = attempts + 1,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE id = (
+           SELECT id FROM chat_memory_outbox
+           WHERE (status = 'pending' OR
+                  (status = 'running' AND updated_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-5 minutes')))
+             AND next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           ORDER BY id LIMIT 1
+         )
+         RETURNING id, dedupe_key, session_id, turn_ordinal, event_at,
+                   user_text, assistant_text, tool_text, attempts",
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| ChatMemoryJob {
+        id: row.get("id"),
+        dedupe_key: row.get("dedupe_key"),
+        session_id: row.get("session_id"),
+        turn_ordinal: row.get("turn_ordinal"),
+        event_at: row.get("event_at"),
+        user_text: row.get("user_text"),
+        assistant_text: row.get("assistant_text"),
+        tool_text: row.get("tool_text"),
+        attempts: row.get("attempts"),
+    }))
+}
+
+async fn finish_chat_memory_job(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    job: &ChatMemoryJob,
+    error: Option<&str>,
+) -> anyhow::Result<()> {
+    if let Some(error) = error {
+        let status = if job.attempts >= CHAT_OUTBOX_MAX_ATTEMPTS {
+            "dead"
+        } else {
+            "pending"
+        };
+        sqlx::query(
+            "UPDATE chat_memory_outbox
+             SET status = ?, last_error = ?,
+                 next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','+30 seconds'),
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE id = ?",
+        )
+        .bind(status)
+        .bind(error)
+        .bind(job.id)
+        .execute(pool)
+        .await?;
+        tracing::warn!(
+            target: "permagentd::brain",
+            outbox_id = job.id,
+            attempts = job.attempts,
+            terminal = status == "dead",
+            error = %error,
+            "Spectral memory delivery failed; retry state retained"
+        );
+    } else {
+        sqlx::query("DELETE FROM chat_memory_outbox WHERE id = ?")
+            .bind(job.id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
+async fn drain_chat_memory_outbox(
+    brain: &permagent::brain_handle::SafeBrain,
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+) -> anyhow::Result<()> {
+    for _ in 0..16 {
+        let Some(job) = claim_chat_memory_job(pool).await? else {
+            break;
+        };
+        let content = format!("User: {}\nAssistant: {}", job.user_text, job.assistant_text);
+        let (hint, verdict) = permagent::session_wing::decide_turn_wing(
+            pool,
+            &job.session_id,
+            &content,
+            &job.tool_text,
+        )
+        .await;
+        let mut opts = chat_turn_opts(
+            &job.session_id,
+            *brain.device_id(),
+            verdict.wing().map(str::to_string),
+        );
+        opts.created_at = ordered_event_time(job.event_at, job.turn_ordinal);
+        let result = brain.remember_with(&job.dedupe_key, &content, opts).await;
+        match result {
+            Ok(_) => {
+                finish_chat_memory_job(pool, &job, None).await?;
+                permagent::session_wing::record_turn_provenance(
+                    pool,
+                    &job.dedupe_key,
+                    &job.session_id,
+                    hint.as_ref(),
+                    &verdict,
+                )
+                .await;
+            }
+            Err(error) => {
+                let message = error.to_string();
+                finish_chat_memory_job(pool, &job, Some(&message)).await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── Ambient context injection ────────────────────────────────────────────
@@ -658,5 +888,101 @@ mod tests {
         assert_eq!(a.episode_id, b.episode_id);
         assert_eq!(a.session_id, b.session_id);
         assert_eq!(a.source, b.source);
+    }
+
+    fn recall_hit(
+        id: &str,
+        key: &str,
+        content: &str,
+        confidence: f64,
+        description: Option<&str>,
+    ) -> spectral::ingest::MemoryHit {
+        spectral::ingest::MemoryHit {
+            id: id.to_string(),
+            key: key.to_string(),
+            content: content.to_string(),
+            wing: None,
+            hall: None,
+            signal_score: 0.95,
+            visibility: "private".to_string(),
+            hits: 1,
+            source: Some("chat".to_string()),
+            device_id: None,
+            confidence,
+            created_at: None,
+            last_reinforced_at: None,
+            episode_id: None,
+            declarative_density: None,
+            description: description.map(str::to_string),
+            source_brain_id: None,
+            signature: None,
+        }
+    }
+
+    #[test]
+    fn recall_budget_puts_top_trusted_source_excerpt_before_breadth() {
+        let exact = "The source says arrow leads to the tree, then apples.";
+        let first = recall_hit("m1", "stable-source-1", exact, 0.95, Some("A description"));
+        let second = recall_hit(
+            "m2",
+            "stable-source-2",
+            "A second source.",
+            0.90,
+            Some("Breadth"),
+        );
+        let hits = vec![&first, &second];
+
+        let (prompt, ids) = assemble_recall_prompt(&hits);
+        let prompt = prompt.expect("trusted source must be emitted");
+        assert!(prompt.starts_with(
+            "Relevant memories from past context:\n- [full] [source: stable-source-1]"
+        ));
+        assert!(prompt.contains(exact));
+        assert_eq!(ids.first().map(String::as_str), Some("m1"));
+        assert!(prompt.chars().count() <= permagent::context_layers::AssembleBudget::REPLY.chars());
+    }
+
+    #[test]
+    fn golden_narrative_fixture_keeps_source_order_and_provenance() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/narrative_memory_replay.json"
+        ))
+        .unwrap();
+        let source = &fixture["source"];
+        let content = source["content"].as_str().unwrap();
+        let key = source["memory_key"].as_str().unwrap();
+        let hit = recall_hit(
+            source["memory_id"].as_str().unwrap(),
+            key,
+            content,
+            0.95,
+            fixture["lossy_description"].as_str(),
+        );
+
+        let (prompt, ids) = assemble_recall_prompt(&[&hit]);
+        let prompt = prompt.expect("trusted narrative source must fit the reply budget");
+        assert!(prompt.contains(&format!("[source: {key}]")));
+        assert_eq!(ids, vec![source["memory_id"].as_str().unwrap()]);
+
+        let mut cursor = 0;
+        for beat in fixture["ordered_beats"].as_array().unwrap() {
+            let beat = beat.as_str().unwrap();
+            let relative = prompt[cursor..]
+                .find(beat)
+                .unwrap_or_else(|| panic!("missing or out-of-order story beat: {beat}"));
+            cursor += relative + beat.len();
+        }
+        assert!(prompt.contains("remains unknown"));
+        assert!(prompt.chars().count() <= permagent::context_layers::AssembleBudget::REPLY.chars());
+        assert_eq!(fixture["safety"]["max_unchanged_verification_retries"], 2);
+    }
+
+    #[test]
+    fn equal_timestamp_turns_keep_dialogue_order_for_spectral_episode_reads() {
+        let earlier = ordered_event_time(1_700_000_000_000, 7).unwrap();
+        let later = ordered_event_time(1_700_000_000_000, 8).unwrap();
+        assert!(earlier < later);
+        assert_eq!(earlier.timestamp_millis(), 1_700_000_000_000);
+        assert_eq!(later.timestamp_millis(), 1_700_000_000_000);
     }
 }

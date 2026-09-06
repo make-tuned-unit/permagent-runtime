@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::agents::extension::ExtensionInfo;
+use crate::context_packet::ContextContribution;
 use crate::cost_router::cache::SystemPromptParts;
 use crate::hints::load_hints::build_gitignore;
 use crate::hints::{get_context_filenames, load_hint_files, SubdirectoryHintTracker};
@@ -32,6 +33,9 @@ struct ResolvedPersona {
 pub struct PromptManager {
     system_prompt_override: Option<String>,
     system_prompt_extras: IndexMap<String, String>,
+    /// Source attribution for extras that carry request context. Kept beside,
+    /// not inferred from, the rendered prompt text.
+    context_contributions: IndexMap<String, Vec<ContextContribution>>,
     current_date_timestamp: String,
     subdirectory_hint_tracker: SubdirectoryHintTracker,
     persona: Option<crate::config::agent_identity::SharedPersona>,
@@ -487,6 +491,7 @@ impl PromptManager {
         PromptManager {
             system_prompt_override: None,
             system_prompt_extras: IndexMap::new(),
+            context_contributions: IndexMap::new(),
             current_date_timestamp: Utc::now().format("%Y-%m-%d %H:00").to_string(),
             subdirectory_hint_tracker: SubdirectoryHintTracker::new(),
             persona: None,
@@ -501,6 +506,7 @@ impl PromptManager {
         PromptManager {
             system_prompt_override: None,
             system_prompt_extras: IndexMap::new(),
+            context_contributions: IndexMap::new(),
             current_date_timestamp: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
             subdirectory_hint_tracker: SubdirectoryHintTracker::new(),
             persona: None,
@@ -592,7 +598,35 @@ impl PromptManager {
     /// Add an additional instruction to the system prompt with a key
     /// Using the same key will replace the previous instruction
     pub fn add_system_prompt_extra(&mut self, key: String, instruction: String) {
+        self.context_contributions.shift_remove(&key);
         self.system_prompt_extras.insert(key, instruction);
+    }
+
+    /// Add a prompt extra and its typed request-boundary attribution.
+    pub fn add_system_prompt_extra_with_context(
+        &mut self,
+        key: String,
+        instruction: String,
+        contribution: ContextContribution,
+    ) {
+        self.add_system_prompt_extra_with_contexts(key, instruction, vec![contribution]);
+    }
+
+    pub fn add_system_prompt_extra_with_contexts(
+        &mut self,
+        key: String,
+        instruction: String,
+        contributions: Vec<ContextContribution>,
+    ) {
+        self.system_prompt_extras.insert(key.clone(), instruction);
+        self.context_contributions.insert(key, contributions);
+    }
+
+    pub fn context_contributions(&self) -> Vec<ContextContribution> {
+        self.context_contributions
+            .values()
+            .flat_map(|items| items.iter().cloned())
+            .collect()
     }
 
     pub fn record_tool_arguments(

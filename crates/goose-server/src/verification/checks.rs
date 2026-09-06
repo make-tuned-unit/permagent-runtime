@@ -9,6 +9,7 @@ use permagent::verification_approval::{self as approval, ChecksSource, DenyCateg
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 
 /// Per-stream output cap (last 16KiB kept).
 pub const MAX_TAIL_BYTES: usize = 16 * 1024;
@@ -570,11 +571,21 @@ fn check_path() -> String {
 /// other code path has to change for one to exist. Deliberately left un-gated
 /// here — whether model-authored shell needs consent before running is an open
 /// product decision, not something this seam should presume.
+#[derive(Debug)]
+struct ShellExecutionError {
+    message: String,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// Run a check while retaining bytes already emitted if the timeout fires.
+/// `Command::output()` hides those bytes when its future is dropped, which
+/// made a timed-out check's durable evidence needlessly message-only.
 async fn execute_check_shell(
     cmd: &str,
     dir: &Path,
     timeout_secs: u64,
-) -> Result<std::process::Output, String> {
+) -> Result<std::process::Output, ShellExecutionError> {
     let timeout = timeout_secs.clamp(1, 600);
 
     #[cfg(windows)]
@@ -582,7 +593,7 @@ async fn execute_check_shell(
     #[cfg(not(windows))]
     let (shell, flag) = ("/bin/sh", "-c");
 
-    let fut = tokio::process::Command::new(shell)
+    let mut child = tokio::process::Command::new(shell)
         .arg(flag)
         .arg(cmd)
         .current_dir(dir)
@@ -591,12 +602,55 @@ async fn execute_check_shell(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
-        .output();
+        .spawn()
+        .map_err(|e| ShellExecutionError {
+            message: format!("failed to spawn command: {}", e),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        })?;
 
-    match tokio::time::timeout(Duration::from_secs(timeout), fut).await {
-        Err(_) => Err(format!("command timed out after {}s", timeout)),
-        Ok(Err(e)) => Err(format!("failed to spawn command: {}", e)),
-        Ok(Ok(o)) => Ok(o),
+    let mut stdout_pipe = child.stdout.take().ok_or_else(|| ShellExecutionError {
+        message: "failed to capture command stdout".to_string(),
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    })?;
+    let mut stderr_pipe = child.stderr.take().ok_or_else(|| ShellExecutionError {
+        message: "failed to capture command stderr".to_string(),
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    })?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let wait_and_capture = async {
+        let (status, out_result, err_result) = tokio::join!(
+            child.wait(),
+            stdout_pipe.read_to_end(&mut stdout),
+            stderr_pipe.read_to_end(&mut stderr),
+        );
+        (status, out_result, err_result)
+    };
+
+    match tokio::time::timeout(Duration::from_secs(timeout), wait_and_capture).await {
+        Err(_) => Err(ShellExecutionError {
+            message: format!("command timed out after {}s", timeout),
+            stdout,
+            stderr,
+        }),
+        Ok((Err(e), _, _)) => Err(ShellExecutionError {
+            message: format!("failed to wait for command: {}", e),
+            stdout,
+            stderr,
+        }),
+        Ok((Ok(status), Ok(_), Ok(_))) => Ok(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        }),
+        Ok((Ok(_), Err(e), _)) | Ok((Ok(_), _, Err(e))) => Err(ShellExecutionError {
+            message: format!("failed to capture command output: {}", e),
+            stdout,
+            stderr,
+        }),
     }
 }
 
@@ -638,7 +692,24 @@ async fn run_command_check(
             .map_err(|e| format!("working_dir not resolvable: {}", e))?,
     };
 
-    let output = execute_check_shell(cmd, &dir, timeout_secs).await?;
+    let output = match execute_check_shell(cmd, &dir, timeout_secs).await {
+        Ok(output) => output,
+        Err(error) if !error.stdout.is_empty() || !error.stderr.is_empty() => {
+            let (stdout_tail, out_trunc) = tail_bytes(&error.stdout, MAX_TAIL_BYTES);
+            let (stderr_tail, err_trunc) = tail_bytes(&error.stderr, MAX_TAIL_BYTES);
+            return Ok((
+                CheckStatus::Error,
+                CheckEvidence {
+                    stdout_tail: Some(stdout_tail),
+                    stderr_tail: Some(stderr_tail),
+                    message: Some(error.message),
+                    ..Default::default()
+                },
+                out_trunc || err_trunc,
+            ));
+        }
+        Err(error) => return Err(error.message),
+    };
 
     let (stdout_tail, out_trunc) = tail_bytes(&output.stdout, MAX_TAIL_BYTES);
     let (stderr_tail, err_trunc) = tail_bytes(&output.stderr, MAX_TAIL_BYTES);
@@ -1344,7 +1415,7 @@ mod tests {
     async fn command_timeout_is_error_not_pass() {
         let dir = tempfile::tempdir().unwrap();
         let checks = vec![CompletionCheck::CommandExitZero {
-            cmd: "sleep 30".to_string(),
+            cmd: "printf partial-before-timeout; sleep 30".to_string(),
             cwd: None,
             expect: None,
             timeout_secs: 1,
@@ -1362,6 +1433,10 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("timed out"));
+        assert_eq!(
+            results[0].evidence.stdout_tail.as_deref(),
+            Some("partial-before-timeout")
+        );
     }
 
     #[tokio::test]

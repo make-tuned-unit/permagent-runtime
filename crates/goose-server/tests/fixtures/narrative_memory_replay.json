@@ -1,0 +1,51 @@
+{
+  "fixture_version": 1,
+  "source": {
+    "session_id": "story-source-session",
+    "message_id": "story-source-message-7",
+    "memory_id": "1111111111111111",
+    "memory_key": "chat-story-source-session-7",
+    "content": "During the silver storm, Mira tied a blue ribbon to an arrow and fired it into an old cedar. The ribbon became a beacon. The travelers followed it to a basket of pears beside Oren's camp. Oren played a glass flute that calmed the storm, baked a pear tart, and showed them the eastern pass at dawn. Oren's earlier life before the camp remains unknown."
+  },
+  "lossy_description": "Mira's travelers met Oren, a musician who helped them during a storm.",
+  "ordered_beats": [
+    "blue ribbon",
+    "arrow",
+    "cedar",
+    "beacon",
+    "pears",
+    "Oren's camp",
+    "glass flute",
+    "calmed the storm",
+    "pear tart",
+    "eastern pass"
+  ],
+  "queries": [
+    {
+      "text": "How did the travelers first find the musician?",
+      "must_retrieve_memory_key": "chat-story-source-session-7",
+      "must_preserve_ordered_beats": true
+    },
+    {
+      "text": "What do we know about Oren before the camp?",
+      "must_include": ["unknown"],
+      "must_not_invent": true
+    }
+  ],
+  "correction": {
+    "supersedes": "The ribbon was green.",
+    "canonical": "The ribbon was blue.",
+    "source_message_id": "story-source-message-7"
+  },
+  "attachment": {
+    "id": "story-screenshot-1",
+    "partial_ocr": "Mira story update",
+    "must_preserve_original_pixels": true,
+    "must_be_reopenable": true
+  },
+  "safety": {
+    "failed_lookup_phrase": "not retrieved from the available record",
+    "forbidden_failed_lookup_claim": "was never stored",
+    "max_unchanged_verification_retries": 2
+  }
+}

@@ -7,6 +7,98 @@ use crate::conversation::message::{Message, ToolRequest};
 use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
 
+/// Enforces the coding recipe's topology at the last safe point before a file
+/// mutation. The top-level coding session plans/routes; dispatched child
+/// sessions implement. Without this, "always use a DAG" was only prompt prose
+/// and a model could edit directly, bypassing goal evidence and approval.
+pub struct CodingDagInspector {
+    session_manager: std::sync::Arc<crate::session::SessionManager>,
+}
+
+pub const CODING_DAG_INSPECTOR_NAME: &str = "coding_dag";
+const CODING_HARNESS_RECIPE_TITLE: &str = "Permagent Coding Harness";
+
+impl CodingDagInspector {
+    pub fn new(session_manager: std::sync::Arc<crate::session::SessionManager>) -> Self {
+        Self { session_manager }
+    }
+}
+
+fn is_top_level_coding_harness(
+    recipe_title: Option<&str>,
+    parent_session_id: Option<&str>,
+) -> bool {
+    recipe_title == Some(CODING_HARNESS_RECIPE_TITLE) && parent_session_id.is_none()
+}
+
+fn requires_dispatched_coding_worker(name: &str) -> bool {
+    let base = name.rsplit("__").next().unwrap_or(name);
+    crate::after_turn::is_mutating_tool_name(name)
+        || matches!(
+            base,
+            "shell" | "bash" | "execute_command" | "run_command" | "terminal"
+        )
+}
+
+#[async_trait]
+impl ToolInspector for CodingDagInspector {
+    fn name(&self) -> &'static str {
+        CODING_DAG_INSPECTOR_NAME
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    async fn inspect(
+        &self,
+        session_id: &str,
+        tool_requests: &[ToolRequest],
+        _messages: &[Message],
+        _goose_mode: GooseMode,
+    ) -> Result<Vec<InspectionResult>> {
+        if !tool_requests.iter().any(|request| {
+            request
+                .tool_call
+                .as_ref()
+                .is_ok_and(|call| requires_dispatched_coding_worker(call.name.as_ref()))
+        }) {
+            return Ok(Vec::new());
+        }
+        let session = match self.session_manager.get_session(session_id, false).await {
+            Ok(session) => session,
+            // This is a quality-policy guard, not a filesystem security
+            // boundary. If the session store is degraded, the existing write
+            // jail and permission inspectors still own safety.
+            Err(error) => {
+                tracing::warn!(session_id, %error, "coding DAG policy could not read session");
+                return Ok(Vec::new());
+            }
+        };
+        let title = session.recipe.as_ref().map(|recipe| recipe.title.as_str());
+        if !is_top_level_coding_harness(title, session.parent_session_id.as_deref()) {
+            return Ok(Vec::new());
+        }
+
+        Ok(tool_requests
+            .iter()
+            .filter(|request| {
+                request.tool_call.as_ref().is_ok_and(|call| {
+                    requires_dispatched_coding_worker(call.name.as_ref())
+                })
+            })
+            .map(|request| InspectionResult {
+                tool_request_id: request.id.clone(),
+                action: InspectionAction::Deny,
+                reason: "Top-level coding harness sessions must create an approved orchestrator DAG and dispatch its node; direct shell execution or edits bypass routing, verification evidence, and approval. Use read/search tools to plan, decompose_roadmap/create_roadmap (or an approved Council plan), then let the dispatched worker execute and edit.".to_string(),
+                confidence: 1.0,
+                inspector_name: CODING_DAG_INSPECTOR_NAME.to_string(),
+                finding_id: Some("coding_dag_required".to_string()),
+            })
+            .collect())
+    }
+}
+
 /// The one string to grep for when asking "was a safety inspector switched
 /// off while this ran". Emitted on every affected call and echoed by
 /// `permagent doctor`, so a disable cannot be silent (D34).
@@ -403,6 +495,36 @@ mod tests {
     use crate::conversation::message::ToolRequest;
     use rmcp::model::CallToolRequestParams;
     use rmcp::object;
+
+    #[test]
+    fn coding_dag_gate_only_targets_top_level_coding_harness() {
+        assert!(is_top_level_coding_harness(
+            Some(CODING_HARNESS_RECIPE_TITLE),
+            None
+        ));
+        assert!(!is_top_level_coding_harness(
+            Some(CODING_HARNESS_RECIPE_TITLE),
+            Some("parent")
+        ));
+        assert!(!is_top_level_coding_harness(Some("Other recipe"), None));
+        assert!(!is_top_level_coding_harness(None, None));
+    }
+
+    #[test]
+    fn coding_dag_gate_covers_shell_and_file_mutation_bypasses() {
+        for name in [
+            "shell",
+            "developer__shell",
+            "execute_command",
+            "write",
+            "developer__apply_patch",
+        ] {
+            assert!(requires_dispatched_coding_worker(name), "{name}");
+        }
+        for name in ["read", "search", "developer__text_search", "orchestrator"] {
+            assert!(!requires_dispatched_coding_worker(name), "{name}");
+        }
+    }
 
     #[test]
     fn test_apply_inspection_results() {

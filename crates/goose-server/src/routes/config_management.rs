@@ -11,7 +11,7 @@ use axum::{
 use permagent::config::declarative_providers::LoadedProvider;
 use permagent::config::paths::Paths;
 use permagent::config::ExtensionEntry;
-use permagent::config::{Config, ConfigError};
+use permagent::config::{Config, ConfigError, ModelRole, RoleModelSource};
 use permagent::model::ModelConfig;
 use permagent::providers::base::{ProviderMetadata, ProviderType};
 use permagent::providers::canonical::maybe_get_canonical_model;
@@ -19,9 +19,9 @@ use permagent::providers::catalog::{
     get_provider_template, get_providers_by_format, ProviderCatalogEntry, ProviderFormat,
     ProviderTemplate,
 };
-use permagent::providers::create_with_default_model;
 use permagent::providers::get_from_registry;
 use permagent::providers::providers as get_providers;
+use permagent::providers::{create_with_default_model, create_with_named_model};
 use permagent::{
     agents::execute_commands, agents::ExtensionConfig, config::permission::PermissionLevel,
     slash_commands,
@@ -75,6 +75,82 @@ pub struct ConfigResponse {
     /// (re-enable-gate epic part B). Snake_case, e.g. "auto", "approve",
     /// "smart_approve", "chat".
     pub effective_goose_mode: String,
+    /// Effective routes after role-specific keys, session fallback, and
+    /// measured defaults are resolved. The raw `config` map remains intact for
+    /// settings editors; clients that render the active route must use this
+    /// projection so env/default-backed choices are not shown as blank.
+    #[serde(default)]
+    pub resolved_routes: HashMap<String, ResolvedModelRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ResolvedModelRoute {
+    pub provider: String,
+    pub model: String,
+    pub source: String,
+}
+
+fn source_label(source: RoleModelSource) -> &'static str {
+    match source {
+        RoleModelSource::Configured => "configured",
+        RoleModelSource::SessionModel => "session_model",
+        RoleModelSource::Default => "default",
+        RoleModelSource::HalfConfigured => "half_configured",
+        RoleModelSource::Disabled => "disabled",
+    }
+}
+
+fn resolved_route(
+    route: Option<(String, String)>,
+    fallback: (String, String),
+    source: &str,
+) -> ResolvedModelRoute {
+    let (provider, model) = route.unwrap_or(fallback);
+    ResolvedModelRoute {
+        provider,
+        model,
+        source: source.to_string(),
+    }
+}
+
+fn resolved_model_routes() -> HashMap<String, ResolvedModelRoute> {
+    let config = Config::global();
+    let fallback = || {
+        (
+            config.get_goose_provider().unwrap_or_default(),
+            config.get_goose_model().unwrap_or_default(),
+        )
+    };
+
+    let chat = permagent::config::role_model_from_config(ModelRole::Chat);
+    let chat_route = chat.route.map(|route| (route.provider, route.model));
+
+    let voice = permagent::config::voice_model_from_config();
+    let mut routes = HashMap::with_capacity(2);
+    routes.insert(
+        "chat".to_string(),
+        resolved_route(chat_route, fallback(), source_label(chat.source)),
+    );
+    routes.insert(
+        "voice".to_string(),
+        match voice {
+            Some((route, source)) => ResolvedModelRoute {
+                provider: route.provider,
+                model: route.model,
+                source: match source {
+                    permagent::config::VoiceModelSource::Configured => "configured",
+                    permagent::config::VoiceModelSource::Default => "default",
+                    permagent::config::VoiceModelSource::HalfConfigured => "half_configured",
+                }
+                .to_string(),
+            },
+            // `None` is the explicit voice=session choice. Expose the
+            // effective session route rather than leaving the mobile control
+            // blank, while retaining the raw keys for the settings editor.
+            None => resolved_route(None, fallback(), "session_model"),
+        },
+    );
+    routes
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -141,6 +217,16 @@ pub struct CheckProviderRequest {
 
 #[derive(Deserialize, ToSchema)]
 pub struct SetProviderRequest {
+    pub provider: String,
+    pub model: String,
+}
+
+/// One complete per-role route. Provider and model are deliberately accepted
+/// together and persisted in one file write; two `/config/upsert` calls can
+/// interleave and manufacture a provider/model pair the user never selected.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct SetModelRouteRequest {
+    pub role: String,
     pub provider: String,
     pub model: String,
 }
@@ -226,6 +312,62 @@ pub async fn upsert_config(
     }
 
     Ok(Json(Value::String(format!("Upserted key {}", query.key))))
+}
+
+fn model_route_keys(role: &str) -> Option<(&'static str, &'static str)> {
+    match role {
+        "chat" => Some(("chat_provider", "chat_model")),
+        "voice" => Some((
+            permagent::config::VOICE_PROVIDER_KEY,
+            permagent::config::VOICE_MODEL_KEY,
+        )),
+        "harness" => Some(("harness_provider", "harness_model")),
+        _ => None,
+    }
+}
+
+fn validate_model_route(
+    request: SetModelRouteRequest,
+) -> Result<(&'static str, &'static str, String, String, String), String> {
+    let role = request.role.trim().to_ascii_lowercase();
+    let provider = request.provider.trim().to_string();
+    let model = request.model.trim().to_string();
+    let (provider_key, model_key) =
+        model_route_keys(&role).ok_or_else(|| format!("Unknown model role '{}'", role))?;
+
+    let disabled = ["session", "off", "none"];
+    let is_disabled = disabled.contains(&provider.to_ascii_lowercase().as_str())
+        || disabled.contains(&model.to_ascii_lowercase().as_str());
+    if !is_disabled && (provider.is_empty() || model.is_empty()) {
+        return Err("Provider and model must be selected together".to_string());
+    }
+    Ok((provider_key, model_key, provider, model, role))
+}
+
+#[utoipa::path(
+    post,
+    path = "/config/model-route",
+    request_body = SetModelRouteRequest,
+    responses(
+        (status = 200, description = "Role provider/model route persisted atomically"),
+        (status = 400, description = "Unknown role or incomplete provider/model pair"),
+        (status = 500, description = "Configuration write failed")
+    )
+)]
+pub async fn set_model_route(
+    Json(request): Json<SetModelRouteRequest>,
+) -> Result<Json<Value>, ErrorResponse> {
+    let (provider_key, model_key, provider, model, role) =
+        validate_model_route(request).map_err(ErrorResponse::bad_request)?;
+
+    Config::global()
+        .set_params([(provider_key, provider), (model_key, model)])
+        .map_err(ErrorResponse::from)?;
+    permagent::cost_router::invalidate_derived_role_map();
+
+    Ok(Json(Value::String(format!(
+        "Updated {role} provider/model route"
+    ))))
 }
 
 #[utoipa::path(
@@ -481,6 +623,7 @@ pub async fn read_all_config() -> Result<Json<ConfigResponse>, ErrorResponse> {
     Ok(Json(ConfigResponse {
         config: values,
         effective_goose_mode,
+        resolved_routes: resolved_model_routes(),
     }))
 }
 
@@ -1340,7 +1483,7 @@ pub async fn set_config_provider(
     Json(SetProviderRequest { provider, model }): Json<SetProviderRequest>,
 ) -> Result<(), ErrorResponse> {
     // Create and validate the provider (also used for runtime state update)
-    let provider_arc = create_with_default_model(&provider, Vec::new())
+    let provider_arc = create_with_named_model(&provider, &model, Vec::new())
         .await
         .map_err(|err| {
             ErrorResponse::bad_request(format!(
@@ -1351,9 +1494,14 @@ pub async fn set_config_provider(
 
     // Persist to config.yaml (source of truth)
     let config = Config::global();
+    // Provider/model is one routing value. Persist both through the config's
+    // single-write API so a disk failure can never leave a half-configured
+    // global route behind.
     config
-        .set_goose_provider(provider.clone())
-        .and_then(|_| config.set_goose_model(model.clone()))
+        .set_params([
+            ("GOOSE_PROVIDER", provider.clone()),
+            ("GOOSE_MODEL", model.clone()),
+        ])
         .map_err(|e| {
             ErrorResponse::bad_request(format!("Failed to persist provider config: {}", e))
         })?;
@@ -1617,6 +1765,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/config", get(read_all_config))
         .route("/config/upsert", post(upsert_config))
+        .route("/config/model-route", post(set_model_route))
         .route("/config/remove", post(remove_config))
         .route("/config/read", post(read_config))
         .route("/config/secret-sources", get(get_secret_sources))
@@ -1670,6 +1819,96 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_route_roles_map_only_to_their_owned_pair() {
+        assert_eq!(
+            model_route_keys("chat"),
+            Some(("chat_provider", "chat_model"))
+        );
+        assert_eq!(
+            model_route_keys("voice"),
+            Some((
+                permagent::config::VOICE_PROVIDER_KEY,
+                permagent::config::VOICE_MODEL_KEY
+            ))
+        );
+        assert_eq!(
+            model_route_keys("harness"),
+            Some(("harness_provider", "harness_model"))
+        );
+        assert_eq!(model_route_keys("coding"), None);
+    }
+
+    #[test]
+    fn model_route_validation_rejects_half_pairs_before_any_write() {
+        for request in [
+            SetModelRouteRequest {
+                role: "chat".into(),
+                provider: "anthropic".into(),
+                model: "".into(),
+            },
+            SetModelRouteRequest {
+                role: "voice".into(),
+                provider: "".into(),
+                model: "deepseek-chat".into(),
+            },
+            SetModelRouteRequest {
+                role: "coding".into(),
+                provider: "openai".into(),
+                model: "gpt-5".into(),
+            },
+        ] {
+            assert!(validate_model_route(request).is_err());
+        }
+
+        let disabled = validate_model_route(SetModelRouteRequest {
+            role: "voice".into(),
+            provider: "".into(),
+            model: "session".into(),
+        })
+        .expect("the explicit session route is a complete user choice");
+        assert_eq!((disabled.0, disabled.1), ("voice_provider", "voice_model"));
+    }
+
+    #[test]
+    fn resolved_route_projection_prefers_explicit_route_and_falls_back_truthfully() {
+        let explicit = resolved_route(
+            Some(("anthropic".into(), "claude-haiku".into())),
+            ("openai".into(), "gpt-5".into()),
+            "configured",
+        );
+        assert_eq!(
+            explicit,
+            ResolvedModelRoute {
+                provider: "anthropic".into(),
+                model: "claude-haiku".into(),
+                source: "configured".into(),
+            }
+        );
+
+        let fallback = resolved_route(
+            None,
+            ("custom_deepseek".into(), "deepseek-chat".into()),
+            "session_model",
+        );
+        assert_eq!(fallback.provider, "custom_deepseek");
+        assert_eq!(fallback.model, "deepseek-chat");
+        assert_eq!(fallback.source, "session_model");
+    }
+
+    #[test]
+    fn resolved_route_projection_serializes_for_mobile_consumers() {
+        let response = ResolvedModelRoute {
+            provider: "custom_deepseek".into(),
+            model: "deepseek-chat".into(),
+            source: "default".into(),
+        };
+        let value = serde_json::to_value(response).expect("route is JSON-compatible");
+        assert_eq!(value["provider"], "custom_deepseek");
+        assert_eq!(value["model"], "deepseek-chat");
+        assert_eq!(value["source"], "default");
+    }
 
     #[tokio::test]
     async fn provider_check_times_out_even_when_blocking_work_hangs() {

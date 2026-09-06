@@ -192,6 +192,7 @@ fn resolve_login_shell_path() -> Option<String> {
     // would cause goose to receive SIGTTIN and be suspended on startup.
     cmd.wrap(ProcessSession);
 
+    // permagent-dispatch: seam=login_shell_path_probe_v1 class=excluded reason=deterministic_local authority=typed_local_subprocess
     let mut child = cmd.spawn().ok()?;
 
     let mut stdout = child.stdout().take()?;
@@ -496,6 +497,7 @@ async fn run_command(
     command.stdin(Stdio::null());
 
     let mut child = command
+        // permagent-dispatch: seam=shell_tool_process_v1 class=excluded reason=local_tool_command authority=shell_timeout_supervision
         .spawn()
         .map_err(|error| format!("Failed to spawn shell command: {}", error))?;
 

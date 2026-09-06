@@ -49,6 +49,7 @@ pub mod knowledge;
 pub mod mesh;
 pub mod packs;
 pub mod recommend;
+pub mod reservation;
 pub mod review_gate;
 pub mod reviewer_pick;
 pub mod role_map;
@@ -106,6 +107,9 @@ pub use recommend::{
     recommend_configured, recommend_configured_async, recommend_from_available, resolve_known,
     AvailableModel, CapabilityFloor, ProviderModels, Recommendation, RoleRecommendation,
     WorkflowRole, EDIT_RELIABILITY_FLOOR,
+};
+pub use reservation::{
+    plan_reservation_bound, PricingProvenance, ReservationBound, ReservationBoundError,
 };
 pub use review_gate::{
     build_review_prompt, classify_path, gate_decision, parse_review, review_required,

@@ -779,6 +779,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // they no-op here (fresh installs already got the columns from the sessions
     // CREATE above) and only fire on existing DBs.
     apply_cost_ledger_schema(pool).await?;
+    // Durable in-flight budget leases. Settled spend remains exclusively in
+    // `cost_ledger`; this adjunct only serializes authorization across sibling
+    // workers and survives a daemon restart.
+    apply_cost_reservations_schema(pool).await?;
 
     // Egress audit log (schema v29, sovereignty). Idempotent; shared with
     // migrate_v28_to_v29. Append-only, purely additive, base-independent.
@@ -802,6 +806,15 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // Durable Decision-Inbox effect outbox (schema v37). Idempotent; shared
     // with migrate_v36_to_v37 so fresh installs get it on first boot.
     apply_effect_outbox_schema(pool).await?;
+
+    // Durable, non-searchable delivery queue. The transcript owns the source
+    // evidence and Spectral remains the sole semantic memory/index.
+    apply_chat_memory_outbox_schema(pool).await?;
+
+    // Durable coding-harness run snapshots. The in-memory registry is still
+    // the live/TTL projection; this table is its restart and terminal-history
+    // backing store.
+    apply_harness_run_snapshots_schema(pool).await?;
 
     // First-party analytics events (schema v38). Idempotent; shared with
     // migrate_v37_to_v38 so fresh installs get it on first boot.
@@ -1183,7 +1196,10 @@ pub async fn apply_recognition_schema(pool: &Pool<Sqlite>) -> Result<()> {
             citation_checked_at TEXT,
             outcome_label       TEXT,
             recognition_verdict TEXT,
-            familiarity         REAL
+            familiarity         REAL,
+            provider_invocation_ids TEXT NOT NULL DEFAULT '[]',
+            attribution_status TEXT NOT NULL DEFAULT 'unavailable',
+            attribution_observed_at TEXT
         )",
     )
     .execute(&mut *tx)
@@ -1199,6 +1215,34 @@ pub async fn apply_recognition_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(&mut *tx)
     .await?;
+
+    // Bounded provider-attribution references for S2. The authoritative
+    // provider/model/call facts remain in cost_ledger; this row stores only
+    // deduplicated call IDs plus an explicit unavailable/partial state.
+    for (column, ddl) in [
+        (
+            "provider_invocation_ids",
+            "ALTER TABLE recognition_events ADD COLUMN provider_invocation_ids TEXT NOT NULL DEFAULT '[]'",
+        ),
+        (
+            "attribution_status",
+            "ALTER TABLE recognition_events ADD COLUMN attribution_status TEXT NOT NULL DEFAULT 'unavailable'",
+        ),
+        (
+            "attribution_observed_at",
+            "ALTER TABLE recognition_events ADD COLUMN attribution_observed_at TEXT",
+        ),
+    ] {
+        let present: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('recognition_events') WHERE name = ?",
+        )
+        .bind(column)
+        .fetch_one(&mut *tx)
+        .await?;
+        if present == 0 {
+            sqlx::query(ddl).execute(&mut *tx).await?;
+        }
+    }
 
     // ── RECOGNITION SET MEMBERS ──
     // The whole retrieved set for a recall (outcome scores vs the set, not per
@@ -2761,6 +2805,49 @@ pub async fn apply_cost_ledger_schema(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// Create the durable in-flight budget lease table. This is deliberately
+/// separate from `cost_ledger`: reservations are authorization holds, not
+/// provider spend, and must never change the ledger's SUM semantics.
+pub async fn apply_cost_reservations_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS cost_reservations (
+            reservation_id TEXT PRIMARY KEY,
+            invocation_id TEXT NOT NULL UNIQUE,
+            session_id TEXT NOT NULL,
+            task_id TEXT,
+            amount_usd REAL NOT NULL CHECK (amount_usd > 0),
+            state TEXT NOT NULL CHECK (state IN ('pending', 'settled', 'released', 'unknown')),
+            lease_until TEXT NOT NULL,
+            settled_cost_usd REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_cost_reservations_task_state
+         ON cost_reservations(task_id, state)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_cost_reservations_session_state
+         ON cost_reservations(session_id, state)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_cost_reservations_state_lease
+         ON cost_reservations(state, lease_until)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Migrate an existing database to the cost-ledger schema (schema v28).
 ///
 /// Additive (CREATE TABLE / INDEX IF NOT EXISTS + PRAGMA-guarded ADD COLUMN) and
@@ -3280,7 +3367,9 @@ pub async fn migrate_v21_to_v22(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (22)")
         .execute(pool)
         .await?;
-    info!("Spectral schema migrated to v22 (recognition_verdict + familiarity + recognition_tool_events)");
+    info!(
+        "Spectral schema migrated to v22 (recognition_verdict + familiarity + recognition_tool_events)"
+    );
     Ok(())
 }
 
@@ -3749,6 +3838,80 @@ pub async fn apply_effect_outbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_effect_outbox_drain
          ON effect_outbox(status, next_attempt_at)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Durable, idempotent hand-off from the session transcript to Spectral. This
+/// is non-searchable transport state only: it is never queried for recall and
+/// complete payloads are deleted after Spectral confirms ingestion.
+pub async fn apply_chat_memory_outbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS chat_memory_outbox (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            dedupe_key      TEXT NOT NULL UNIQUE,
+            session_id      TEXT NOT NULL,
+            turn_ordinal    INTEGER NOT NULL,
+            event_at        INTEGER NOT NULL,
+            user_text       TEXT NOT NULL,
+            assistant_text  TEXT NOT NULL,
+            tool_text       TEXT NOT NULL DEFAULT '',
+            status          TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending','running','applied','dead')),
+            attempts        INTEGER NOT NULL DEFAULT 0,
+            last_error      TEXT,
+            next_attempt_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_chat_memory_outbox_drain
+         ON chat_memory_outbox(status, next_attempt_at, id)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Durable backing store for the bounded coding-harness run projection.
+///
+/// `snapshot_json` intentionally keeps the operational contract in one place
+/// as the wire shape evolves. The indexed scalar columns make the important
+/// history queries cheap without turning this into a second semantic-memory
+/// system: terminal evidence remains the snapshot's `evidence`/`result`, and
+/// Spectral remains the only semantic memory/index.
+pub async fn apply_harness_run_snapshots_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS harness_run_snapshots (
+            run_id        TEXT PRIMARY KEY,
+            session_id    TEXT NOT NULL,
+            project       TEXT NOT NULL,
+            status        TEXT NOT NULL,
+            started_at    TEXT NOT NULL,
+            updated_at    TEXT NOT NULL,
+            is_terminal   INTEGER NOT NULL DEFAULT 0 CHECK (is_terminal IN (0, 1)),
+            evidence      TEXT,
+            result        TEXT,
+            snapshot_json TEXT NOT NULL,
+            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_harness_run_snapshots_history
+         ON harness_run_snapshots(is_terminal, updated_at DESC, run_id)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_harness_run_snapshots_session
+         ON harness_run_snapshots(session_id, updated_at DESC)",
     )
     .execute(pool)
     .await?;

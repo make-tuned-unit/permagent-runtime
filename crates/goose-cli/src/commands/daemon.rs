@@ -239,6 +239,13 @@ pub fn handle_restart() -> Result<()> {
 
 pub fn handle_status() -> Result<()> {
     let port = read_daemon_port();
+    // The desktop app can own the daemon without a launch agent. Check the
+    // listener before deciding whether starting another daemon is appropriate.
+    let listening = Command::new("lsof")
+        .args(["-nP", "-i", &format!(":{port}"), "-sTCP:LISTEN"])
+        .output()
+        .ok()
+        .and_then(|o| listener_probe_result(o.status.code(), !o.stderr.is_empty()));
 
     // Check launchctl list
     let output = Command::new("launchctl")
@@ -279,29 +286,65 @@ pub fn handle_status() -> Result<()> {
     }
 
     if !found {
-        println!("Status:    not loaded");
+        println!("Launch agent: not loaded");
         println!("Port:      {port} (configured)");
-        println!("\nRun `permagent start` to start the daemon.");
-        return Ok(());
+        println!("{}", unloaded_status_guidance(listening));
     }
-
-    // Check if port is listening
-    let listening = Command::new("lsof")
-        .args(["-i", &format!(":{port}"), "-sTCP:LISTEN"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
 
     println!(
         "Listening:  {}",
-        if listening {
-            format!("yes (port {port})")
-        } else {
-            format!("no (port {port} not open)")
+        match listening {
+            Some(true) => format!("yes (port {port}; listener identity not verified)"),
+            Some(false) => format!("no (port {port} not open)"),
+            None => "unknown (listener probe unavailable)".to_string(),
         }
     );
 
     Ok(())
+}
+
+fn listener_probe_result(exit_code: Option<i32>, has_diagnostics: bool) -> Option<bool> {
+    match (exit_code, has_diagnostics) {
+        (Some(0), _) => Some(true),
+        (Some(1), false) => Some(false),
+        _ => None,
+    }
+}
+
+fn unloaded_status_guidance(listening: Option<bool>) -> &'static str {
+    match listening {
+        Some(true) => "Port is occupied; the daemon may be managed by the desktop app. Run `permagent doctor` to verify its identity and health before starting another instance.",
+        Some(false) => "Run `permagent start` to start the daemon.",
+        None => "Listener state is unknown. Run `permagent doctor` before starting another instance.",
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::{listener_probe_result, unloaded_status_guidance};
+
+    #[test]
+    fn failed_listener_probe_is_not_an_absent_listener() {
+        assert_eq!(listener_probe_result(Some(0), false), Some(true));
+        assert_eq!(listener_probe_result(Some(1), false), Some(false));
+        assert_eq!(listener_probe_result(Some(1), true), None);
+        assert_eq!(listener_probe_result(None, false), None);
+    }
+
+    #[test]
+    fn desktop_owned_listener_is_not_reported_as_a_stopped_daemon() {
+        let guidance = unloaded_status_guidance(Some(true));
+        assert!(guidance.contains("desktop app"));
+        assert!(guidance.contains("verify its identity"));
+        assert!(!guidance.contains("Run `permagent start`"));
+    }
+
+    #[test]
+    fn unavailable_probe_does_not_recommend_a_duplicate_start() {
+        assert!(unloaded_status_guidance(None).contains("unknown"));
+        assert!(!unloaded_status_guidance(None).contains("Run `permagent start`"));
+        assert!(unloaded_status_guidance(Some(false)).contains("Run `permagent start`"));
+    }
 }
 
 pub fn handle_logs(err: bool) -> Result<()> {

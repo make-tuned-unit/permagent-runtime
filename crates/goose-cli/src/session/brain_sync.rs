@@ -63,10 +63,32 @@ struct SearchResponse {
     results: Vec<SearchResult>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct SearchResult {
     preview: String,
     score: f64,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    key: Option<String>,
+}
+
+/// Recall response plus the redacted, machine-readable packet accounting that
+/// was actually available at this bridge seam. The packet carries counts and
+/// provenance, never recalled text.
+struct RecallResult {
+    block: String,
+    spectral_memories: Vec<permagent::context_packet::SpectralMemoryRecord>,
+}
+
+/// Context returned by the bridge for one turn. The records are the same
+/// filtered Spectral hits used to build `block`; callers attach them to the
+/// Agent's typed prompt-extra metadata instead of recovering them from prose.
+pub(crate) struct RecallContext {
+    pub block: String,
+    pub spectral_memories: Vec<permagent::context_packet::SpectralMemoryRecord>,
 }
 
 #[derive(Debug, Serialize)]
@@ -126,24 +148,35 @@ fn http_client() -> reqwest::Result<reqwest::Client> {
 ///   an empty string clears it.
 /// - `None` — no hits and nothing stale to clear. Write nothing, so a session
 ///   that never recalls anything never grows an empty header.
-pub async fn recall_block(query: &str, previously_installed: bool) -> Option<String> {
-    // No daemon has ever run here: nothing to recall, and nothing was ever
-    // installed by this module, so there is nothing to clear either.
+pub(crate) async fn recall_context(query: &str) -> Option<RecallContext> {
     let Ok(ep) = endpoint() else {
         return None;
     };
-    recall_block_at(&ep, query, previously_installed).await
+    recall_at_with_packet(&ep, query)
+        .await
+        .map(|result| RecallContext {
+            block: result.block,
+            spectral_memories: result.spectral_memories,
+        })
 }
 
+#[cfg(test)]
 async fn recall_block_at(ep: &Endpoint, query: &str, previously_installed: bool) -> Option<String> {
-    match (recall_at(ep, query).await, previously_installed) {
-        (Some(block), _) => Some(block),
+    match (recall_at_with_packet(ep, query).await, previously_installed) {
+        (Some(result), _) => Some(result.block),
         (None, true) => Some(String::new()),
         (None, false) => None,
     }
 }
 
+#[cfg(test)]
 async fn recall_at(ep: &Endpoint, query: &str) -> Option<String> {
+    recall_at_with_packet(ep, query)
+        .await
+        .map(|result| result.block)
+}
+
+async fn recall_at_with_packet(ep: &Endpoint, query: &str) -> Option<RecallResult> {
     let query: String = query.trim().chars().take(MAX_QUERY_CHARS).collect();
     if query.is_empty() {
         return None;
@@ -165,7 +198,11 @@ async fn recall_at(ep: &Endpoint, query: &str) -> Option<String> {
         .json::<SearchResponse>()
         .await
         .ok()?;
-    render_recall(response.results)
+    let (block, spectral_records) = render_recall_context(response.results)?;
+    Some(RecallResult {
+        block,
+        spectral_memories: spectral_records,
+    })
 }
 
 /// Frame the hits as BACKGROUND, never as instructions.
@@ -176,28 +213,82 @@ async fn recall_at(ep: &Endpoint, query: &str) -> Option<String> {
 /// month's schema turns into this turn's refactor. The header says three things
 /// on purpose: where it came from, that it is historical, and that it must be
 /// verified before it is relied on.
-fn render_recall(results: Vec<SearchResult>) -> Option<String> {
-    let mut out = String::from(
-        "Shared Brain context from Chat and prior Harness work (historical hints; verify before relying on them):\n",
-    );
+fn render_recall_context(
+    results: Vec<SearchResult>,
+) -> Option<(String, Vec<permagent::context_packet::SpectralMemoryRecord>)> {
+    let header = "Shared Brain context from Chat and prior Harness work (historical hints; verify before relying on them):\n";
+    let mut out = String::from(header);
+    let mut records = Vec::new();
     let mut count = 0;
+    let mut seen_keys = std::collections::HashSet::new();
     for result in results
         .into_iter()
         .filter(|hit| hit.score >= MIN_SCORE)
+        // The endpoint searches both chat and durable memory. Chat rows have
+        // no packet slot, so exclude them rather than installing unaccounted
+        // prompt text.
+        .filter(|hit| {
+            hit.source
+                .as_deref()
+                .is_none_or(|source| source == "memory")
+        })
+        .enumerate()
+        .filter_map(|(index, mut result)| {
+            if result.preview.trim().is_empty() {
+                return None;
+            }
+            // Spectral's stable key is preferred. Test/legacy responses can
+            // omit both key and id; position-scoping those records preserves
+            // every rendered contribution instead of collapsing them all to
+            // one `unknown` packet record.
+            let key = result
+                .key
+                .clone()
+                .or_else(|| result.id.clone())
+                .unwrap_or_else(|| format!("anonymous:{index}"));
+            if !seen_keys.insert(key.clone()) {
+                return None;
+            }
+            result.key = Some(key);
+            Some(result)
+        })
         .take(3)
     {
         let preview = result.preview.trim();
-        if preview.is_empty() {
-            continue;
-        }
         count += 1;
-        out.push_str(&format!("- {preview}\n"));
-        if out.chars().count() >= MAX_RECALL_CHARS {
-            out = out.chars().take(MAX_RECALL_CHARS).collect();
+        let line = format!("- {preview}\n");
+        let remaining = MAX_RECALL_CHARS.saturating_sub(out.chars().count());
+        if remaining == 0 {
+            break;
+        }
+        let rendered_line: String = line.chars().take(remaining).collect();
+        let rendered = if records.is_empty() {
+            format!("{header}{rendered_line}")
+        } else {
+            rendered_line.clone()
+        };
+        out.push_str(&rendered_line);
+        let provenance = result
+            .id
+            .as_deref()
+            .map(|id| format!("spectral_search_result:{id}"))
+            .unwrap_or_else(|| "spectral_search".to_string());
+        let key = result.key.expect("normalized recall key");
+        records.push(permagent::context_packet::SpectralMemoryRecord {
+            key,
+            text: rendered,
+            provenance: vec![provenance],
+        });
+        if rendered_line.chars().count() < line.chars().count() {
             break;
         }
     }
-    (count > 0).then_some(out)
+    (count > 0).then_some((out, records))
+}
+
+#[cfg(test)]
+fn render_recall(results: Vec<SearchResult>) -> Option<String> {
+    render_recall_context(results).map(|(block, _)| block)
 }
 
 /// Persist a completed Harness turn through the daemon that owns Brain.
@@ -280,10 +371,16 @@ mod tests {
             SearchResult {
                 preview: "current project".into(),
                 score: 0.9,
+                source: None,
+                id: None,
+                key: None,
             },
             SearchResult {
                 preview: "too weak".into(),
                 score: 0.2,
+                source: None,
+                id: None,
+                key: None,
             },
         ])
         .unwrap();
@@ -336,6 +433,152 @@ mod tests {
             RECALL_PROMPT_KEY, "memory_recall",
             "the block must ride the same volatile key Chat uses, or it lands \
              inside the cached prompt prefix and costs a re-read every turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_spectral_recall_emits_packet_counts_and_provenance() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/brain/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "results": [
+                    {"source": "memory", "id": "spectral:7", "key": "mem-7", "preview": "stable fact", "score": 0.95},
+                    {"source": "memory", "id": "spectral:7", "key": "mem-7", "preview": "duplicate", "score": 0.94},
+                    {"source": "chat", "id": "chat:9", "preview": "chat context", "score": 0.91}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let result = recall_at_with_packet(&ep_for(server.uri()), "stable fact")
+            .await
+            .expect("strong recall should produce a result");
+        let packet = permagent::context_packet::assemble_owned(
+            None,
+            None,
+            None,
+            &result.spectral_memories,
+            None,
+            &[],
+        );
+        let spectral = packet
+            .parts
+            .iter()
+            .find(|part| part.source == permagent::context_packet::ContextSource::SpectralMemory)
+            .expect("fixed Spectral packet slot");
+        let expected_block = render_recall(vec![SearchResult {
+            preview: "stable fact".into(),
+            score: 0.95,
+            source: Some("memory".into()),
+            id: Some("spectral:7".into()),
+            key: Some("mem-7".into()),
+        }])
+        .unwrap();
+        assert_eq!(spectral.characters, Some(expected_block.chars().count()));
+        assert_eq!(
+            packet.retrieval_provenance,
+            vec!["spectral_search_result:spectral:7"]
+        );
+        assert_eq!(
+            packet.estimated_total_tokens,
+            Some(expected_block.chars().count().saturating_add(3) / 4)
+        );
+        assert!(packet
+            .parts
+            .iter()
+            .filter(|part| part.source != permagent::context_packet::ContextSource::SpectralMemory)
+            .all(|part| part.estimated_tokens.is_none()));
+    }
+
+    #[test]
+    fn mixed_sources_are_filtered_before_top_k_and_truncation() {
+        let results = vec![
+            SearchResult {
+                preview: "chat must not be installed".into(),
+                score: 0.99,
+                source: Some("chat".into()),
+                id: Some("chat:1".into()),
+                key: None,
+            },
+            SearchResult {
+                preview: "memory one".into(),
+                score: 0.98,
+                source: Some("memory".into()),
+                id: Some("m1".into()),
+                key: Some("key-1".into()),
+            },
+            SearchResult {
+                preview: "memory two".into(),
+                score: 0.97,
+                source: Some("memory".into()),
+                id: Some("m2".into()),
+                key: Some("key-2".into()),
+            },
+            SearchResult {
+                preview: "memory three".into(),
+                score: 0.96,
+                source: Some("memory".into()),
+                id: Some("m3".into()),
+                key: Some("key-3".into()),
+            },
+        ];
+        let (block, records) = render_recall_context(results).unwrap();
+        assert!(!block.contains("chat must not be installed"));
+        assert_eq!(records.len(), 3);
+        assert!(records
+            .iter()
+            .all(|record| record.provenance[0].starts_with("spectral_search_result:")));
+        let attributed = records
+            .iter()
+            .map(|record| record.text.as_str())
+            .collect::<String>();
+        assert_eq!(attributed, block);
+        assert!(block.chars().count() <= MAX_RECALL_CHARS);
+    }
+
+    #[test]
+    fn duplicate_and_idless_hits_keep_packet_and_block_in_lockstep() {
+        let (block, records) = render_recall_context(vec![
+            SearchResult {
+                preview: "first version".into(),
+                score: 0.99,
+                source: Some("memory".into()),
+                id: Some("same".into()),
+                key: Some("same-key".into()),
+            },
+            SearchResult {
+                preview: "duplicate key must disappear".into(),
+                score: 0.98,
+                source: Some("memory".into()),
+                id: Some("different-id".into()),
+                key: Some("same-key".into()),
+            },
+            SearchResult {
+                preview: "anonymous one".into(),
+                score: 0.97,
+                source: Some("memory".into()),
+                id: None,
+                key: None,
+            },
+            SearchResult {
+                preview: "anonymous two".into(),
+                score: 0.96,
+                source: Some("memory".into()),
+                id: None,
+                key: None,
+            },
+        ])
+        .unwrap();
+        assert!(!block.contains("duplicate key must disappear"));
+        assert_eq!(records.len(), 3);
+        assert_ne!(records[1].key, records[2].key);
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.text.as_str())
+                .collect::<String>(),
+            block
         );
     }
 

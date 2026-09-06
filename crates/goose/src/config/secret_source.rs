@@ -577,6 +577,7 @@ fn run_cli(
         command.process_group(0);
     }
 
+    // permagent-dispatch: seam=credential_backend_cli_v1 class=excluded reason=deterministic_local authority=typed_secret_backend
     let mut child = command.spawn().map_err(|e| SecretSourceError::Failed {
         backend,
         locator: program.display().to_string(),

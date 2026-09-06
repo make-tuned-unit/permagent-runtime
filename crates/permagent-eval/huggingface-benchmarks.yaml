@@ -1,0 +1,53 @@
+# Discovery manifest only. Importers must pin an immutable revision and explicit
+# task IDs before execution; never run a moving `main` dataset in a comparison.
+version: 1
+benchmarks:
+  - id: bigcodebench-instruct-smoke
+    dataset: bigcode/bigcodebench
+    purpose: component-level Python generation and library-use diagnostic
+    cadence: pull_request
+    target_tasks: 24
+    headline_harness_score: false
+    execution: sandboxed
+
+  - id: livecodebench-lite-smoke
+    dataset: livecodebench/code_generation_lite
+    purpose: date-stratified fresh-code diagnostic
+    cadence: pull_request
+    target_tasks: 12
+    headline_harness_score: false
+    execution: sandboxed
+
+  - id: terminal-bench-nightly
+    dataset: harborframework/terminal-bench
+    revision: v4.0.0
+    purpose: terminal-agent and harness behavior
+    cadence: nightly
+    target_tasks: 16
+    headline_harness_score: true
+    execution: isolated_container
+
+  - id: swe-bench-verified-release
+    dataset: princeton-nlp/SWE-bench_Verified
+    purpose: real repository issue resolution
+    cadence: release
+    target_tasks: 50
+    headline_harness_score: true
+    execution: official_container
+
+  - id: swe-bench-multilingual-release
+    dataset: SWE-bench/SWE-bench_Multilingual
+    purpose: cross-language repository issue resolution
+    cadence: release
+    target_tasks: 30
+    headline_harness_score: true
+    execution: official_container
+
+policy:
+  pin_revision: required
+  freeze_task_ids: required
+  paired_control_treatment: required
+  shared_budget_cap_usd: required
+  untrusted_tests_require_isolation: true
+  training_corpora_excluded:
+    - SWE-bench/SWE-smith

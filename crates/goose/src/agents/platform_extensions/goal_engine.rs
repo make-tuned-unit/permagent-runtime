@@ -33,6 +33,7 @@ use crate::agents::subagent_handler::{run_subagent_task, SubagentRunParams};
 use crate::agents::subagent_task_config::TaskConfig;
 use crate::agents::{AgentRunnerConfig, GoosePlatform};
 use crate::config::permission::PermissionManager;
+use crate::config::search_path::SearchPaths;
 use crate::config::{ExtensionConfig, GooseMode};
 use crate::providers;
 use crate::providers::base::Provider;
@@ -189,6 +190,22 @@ pub struct GoalTask {
     /// cost rolls up to the parent. `None` for headless / auto-dispatch with
     /// no parent session in scope.
     pub parent_session_id: Option<String>,
+    /// Stable card/goal identity from the dispatching orchestrator. External
+    /// workers receive it through [`crate::session::GOAL_ID_ENV`].
+    pub goal_id: Option<String>,
+    /// Durable budget identity of the dispatching parent turn. Workers inherit
+    /// this value so their spend remains in the same task after restart.
+    pub budget_task_id: Option<String>,
+    /// Explicit worker billing classification copied from the roster's
+    /// canonical `cost_tier` field. This is
+    /// intentionally independent of provider/bin names: generic external
+    /// CLIs are admitted only when this parses as local_free or subscription.
+    pub billing_class: Option<crate::config::agent_identity::WorkerBillingClass>,
+    /// Configured identity of the selected external runtime. These values are
+    /// observational routing metadata, not a source for billing inference.
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub cli_identity: Option<String>,
     /// The dispatching goal's project. External-CLI workers get a read-only MCP
     /// bridge ([`super::goal_context_mcp`]) scoped to exactly this id — it is
     /// the whole enforcement boundary, so it is carried explicitly rather than
@@ -212,6 +229,8 @@ pub struct WorkerOutputEvent {
 /// the orchestrator can use to inject a mid-run correction.
 pub struct DispatchedWork {
     pub run_id: String,
+    /// OS pid for an external CLI, persisted before the tracker starts.
+    pub process_id: Option<u32>,
     pub join: JoinHandle<GoalOutcome>,
     pub kill: GoalKill,
     /// `Some` only for claude external-CLI workers (the one engine with a
@@ -405,6 +424,13 @@ impl GoalEngine for InternalSubagentEngine {
             .map_err(|e| format!("Failed to create subagent session: {}", e))?;
 
         let session_id = subagent_session.id.clone();
+        inherit_worker_metadata(
+            &self.session_manager,
+            &session_id,
+            task.budget_task_id.as_deref(),
+            task.goal_id.as_deref(),
+        )
+        .await?;
 
         // Isolate exactly like the external engine — worktree off the baseline
         // on goal/<session_id> — so landing derives the same branch name it does
@@ -516,6 +542,7 @@ impl GoalEngine for InternalSubagentEngine {
 
         Ok(DispatchedWork {
             run_id: session_id,
+            process_id: None,
             join,
             kill,
             // In-process subagents have no stdin protocol; steering them is a
@@ -586,6 +613,10 @@ pub struct ExternalCliEngine {
     pub args: Vec<String>,
     /// `(system_prompt_block, display_name)` prepended to the goal prompt.
     pub persona_override: Option<(String, String)>,
+    /// Shared durable session store. External workers must be represented by
+    /// a real session before their process starts so restart-time accounting
+    /// can resolve the run id.
+    pub session_manager: Arc<SessionManager>,
 }
 
 impl ExternalCliEngine {
@@ -596,18 +627,166 @@ impl ExternalCliEngine {
         };
         format!("{}{}", base, COMMIT_ONLY_BRIEF)
     }
+
+    fn validate_adapter(&self) -> Result<(), String> {
+        let name = self.bin.to_ascii_lowercase();
+        if name.contains("-acp") || name.contains("_acp") {
+            return Err(format!(
+                "`{}` is an ACP adapter, not a plain external CLI. Configure a supported provider-backed ACP worker engine; dispatch was refused before creating a worktree.",
+                self.bin
+            ));
+        }
+        Ok(())
+    }
+
+    /// Generic external CLIs currently expose no authoritative usage stream or
+    /// finite paid-cost bound. Refuse metered/unknown adapters before any
+    /// worktree or child process is created. The configured class is parsed
+    /// from the task identity; provider and executable names are never used as
+    /// a billing heuristic.
+    fn validate_billing_contract(&self, task: &GoalTask) -> Result<(), String> {
+        let billing = task.billing_class.ok_or_else(|| {
+            format!(
+                "External CLI '{}' has unknown billing class; configure one of local_free, subscription, or paid_api before dispatch",
+                task.cli_identity.as_deref().unwrap_or(&self.bin)
+            )
+        })?;
+        if matches!(
+            billing,
+            crate::config::agent_identity::WorkerBillingClass::PaidApi
+        ) {
+            return Err(format!(
+                "External CLI '{}' is classified as paid_api, but the generic CLI protocol has no finite cost bound or authoritative usage settlement; dispatch refused before worktree/process creation",
+                task.cli_identity.as_deref().unwrap_or(&self.bin)
+            ));
+        }
+        if task.goal_id.as_deref().is_none_or(str::is_empty)
+            || task.budget_task_id.as_deref().is_none_or(str::is_empty)
+        {
+            return Err(
+                "External CLI dispatch requires durable goal_id and budget_task_id identity; worker was not started"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    async fn create_worker_session(&self, task: &GoalTask) -> Result<String, String> {
+        let session = self
+            .session_manager
+            .create_session_with_parent(
+                task.parent_session_id.as_deref(),
+                task.working_dir.clone(),
+                format!("Goal: {}", task.card_title),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .map_err(|e| format!("Failed to create durable external worker session: {e}"))?;
+        inherit_worker_metadata(
+            &self.session_manager,
+            &session.id,
+            task.budget_task_id.as_deref(),
+            task.goal_id.as_deref(),
+        )
+        .await?;
+        let worker = self
+            .session_manager
+            .get_session(&session.id, false)
+            .await
+            .map_err(|e| format!("Failed to verify durable external worker session: {e}"))?;
+        let persisted_goal = crate::session::goal_id(&worker.extension_data);
+        let persisted_budget = crate::session::budget_task_id(&worker.extension_data);
+        if persisted_goal.as_deref() != task.goal_id.as_deref()
+            || persisted_budget.as_deref() != task.budget_task_id.as_deref()
+        {
+            return Err(
+                "Durable external worker session identity did not match goal_id/budget_task_id; worker was not started"
+                    .to_string(),
+            );
+        }
+        Ok(session.id)
+    }
+}
+
+async fn inherit_worker_metadata(
+    session_manager: &SessionManager,
+    session_id: &str,
+    budget_task_id: Option<&str>,
+    goal_id: Option<&str>,
+) -> Result<(), String> {
+    let budget_task_id = budget_task_id.filter(|id| !id.trim().is_empty());
+    let goal_id = goal_id.filter(|id| !id.trim().is_empty());
+    if budget_task_id.is_none() && goal_id.is_none() {
+        return Ok(());
+    }
+    let session = session_manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|e| format!("Failed to load worker session for budget inheritance: {e}"))?;
+    let mut extension_data = session.extension_data;
+    if let Some(budget_task_id) = budget_task_id {
+        extension_data.set_extension_state(
+            crate::session::BUDGET_TASK_EXTENSION_NAME,
+            crate::session::BUDGET_TASK_EXTENSION_VERSION,
+            serde_json::Value::String(budget_task_id.to_string()),
+        );
+    }
+    if let Some(goal_id) = goal_id {
+        extension_data.set_extension_state(
+            crate::session::GOAL_ID_EXTENSION_NAME,
+            crate::session::GOAL_ID_EXTENSION_VERSION,
+            serde_json::Value::String(goal_id.to_string()),
+        );
+    }
+    session_manager
+        .update(session_id)
+        .extension_data(extension_data)
+        .apply()
+        .await
+        .map_err(|e| format!("Failed to persist worker budget identity: {e}"))
+}
+
+/// Explicit identity metadata passed to an external process. Keeping this as
+/// a small typed helper prevents callers from reconstructing either identity
+/// by scraping the rendered prompt.
+fn worker_identity_env(
+    run_id: &str,
+    goal_id: Option<&str>,
+    budget_task_id: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut env = vec![(
+        crate::session::WORKER_SESSION_ID_ENV.to_string(),
+        run_id.to_string(),
+    )];
+    if let Some(goal_id) = goal_id {
+        env.push((crate::session::GOAL_ID_ENV.to_string(), goal_id.to_string()));
+    }
+    if let Some(budget_task_id) = budget_task_id {
+        env.push((
+            crate::session::BUDGET_TASK_ID_ENV.to_string(),
+            budget_task_id.to_string(),
+        ));
+    }
+    env
 }
 
 #[async_trait]
 impl GoalEngine for ExternalCliEngine {
     async fn spawn(&self, task: GoalTask) -> Result<DispatchedWork, String> {
+        self.validate_adapter()?;
         let baseline = task.baseline_commit.clone().ok_or_else(|| {
             "External-CLI dispatch requires a git baseline commit, but the project root is not a \
              git repository"
                 .to_string()
         })?;
+        self.validate_billing_contract(&task)?;
 
-        let run_id = format!("cli-{}", uuid::Uuid::new_v4());
+        // Allocate the durable identity before creating the isolated worktree
+        // or launching the process. The returned run id is therefore a
+        // SessionManager-owned id, and goal accounting can resolve it after a
+        // restart instead of losing the external worker's spend.
+        let run_id = self.create_worker_session(&task).await?;
         let worktree = create_goal_worktree(&task.working_dir, &baseline, &run_id).await?;
 
         // Fix (#523): install the work-base capture hooks BEFORE the worker runs,
@@ -700,7 +879,7 @@ impl GoalEngine for ExternalCliEngine {
         // Spawn the worker NOW (in its own process group) so we can capture its
         // pid for a cancel/timeout group-kill before handing the wait off to the
         // tracker task. A spawn failure here means the goal never started.
-        let mut cmd = build_cli_command(&bin, &args, &worktree, steerable);
+        let mut cmd = build_cli_command(&bin, &args, &worktree, steerable)?;
         // Ephemeral git config for the worker (#523 hooks + #522 push block) —
         // inherited only by this worker's git subprocesses, so the user's repo
         // config is never touched.
@@ -710,7 +889,21 @@ impl GoalEngine for ExternalCliEngine {
             cmd.env(format!("GIT_CONFIG_KEY_{i}"), key)
                 .env(format!("GIT_CONFIG_VALUE_{i}"), value);
         }
+        if let Some(parent_session_id) = task.parent_session_id.as_deref() {
+            // External Permagent workers inherit the durable parent identity
+            // through their environment. Other CLIs harmlessly ignore it;
+            // there is no generated or second parent-id store.
+            cmd.env(crate::session::PARENT_SESSION_ID_ENV, parent_session_id);
+        }
+        for (key, value) in worker_identity_env(
+            &run_id,
+            task.goal_id.as_deref(),
+            task.budget_task_id.as_deref(),
+        ) {
+            cmd.env(key, value);
+        }
         let mut child = cmd
+            // permagent-dispatch: seam=goal_external_worker_v1 class=excluded reason=goal_task_supervision authority=goal_task_billing_gate
             .spawn()
             .map_err(|e| format!("Failed to run `{}`: {}", bin, e))?;
         let kill = match child.id() {
@@ -749,11 +942,30 @@ impl GoalEngine for ExternalCliEngine {
 
         Ok(DispatchedWork {
             run_id,
+            process_id: pid,
             join,
             kill,
             steer,
         })
     }
+}
+
+/// Best-effort liveness probe for a durable external-CLI pid. `kill(pid, 0)`
+/// does not terminate or signal the process; it only asks the OS whether the
+/// identity currently exists. A missing/invalid pid is conservatively dead.
+#[cfg(unix)]
+pub(crate) fn external_process_is_alive(pid: u32) -> bool {
+    // Do not cast values above the platform pid range: `u32::MAX` would become
+    // -1, which means "every process" to kill(2), not this worker.
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn external_process_is_alive(_pid: u32) -> bool {
+    false
 }
 
 /// Self-knowledge descriptor for the goal landing path — how dispatched work
@@ -765,8 +977,7 @@ pub const GOAL_LANDING_FEATURE: crate::agents::self_knowledge::FeatureDescriptor
         display_name: "Goal work landing path",
         category: crate::agents::self_knowledge::FeatureCategory::Guard,
         what_it_does: "Every dispatched goal runs in an isolated git worktree on its own goal/<run-id> branch; when the worker finishes, its commits are credential-scanned and pushed to that goal branch on origin — never to main. Failed and timed-out attempts push their partial work too, so no attempt's commits are ever lost. Landing on main happens only through the user's review and approval, never as a side effect of a worker finishing",
-        why_it_matters:
-            "When asked where a goal's work went: it is on its goal branch and cited in the review decision — not on main until the user approves. Never tell a user their goal's changes are live before the review gate has passed",
+        why_it_matters: "When asked where a goal's work went: it is on its goal branch and cited in the review decision — not on main until the user approves. Never tell a user their goal's changes are live before the review gate has passed",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[],
     };
@@ -1251,10 +1462,30 @@ async fn write_mcp_bridge_config(worktree: &Path, project_id: &str) -> Result<St
     Ok(path.to_string_lossy().into_owned())
 }
 
-fn build_cli_command(bin: &str, args: &[String], working_dir: &Path, steerable: bool) -> Command {
-    let mut cmd = Command::new(bin);
+fn build_cli_command(
+    bin: &str,
+    args: &[String],
+    working_dir: &Path,
+    steerable: bool,
+) -> Result<Command, String> {
+    // The availability probe and launcher must use the same search contract.
+    // Desktop/launchd processes commonly lack Homebrew and npm-global paths;
+    // probing with SearchPaths but spawning through the inherited PATH made a
+    // worker appear healthy and then fail at dispatch time.
+    let search_paths = SearchPaths::builder().with_npm();
+    let resolved = search_paths.resolve(bin).map_err(|error| {
+        format!(
+            "External worker binary `{bin}` was not found in Permagent's configured search paths: {error}"
+        )
+    })?;
+    let augmented_path = SearchPaths::builder().with_npm().path().map_err(|error| {
+        format!("Could not construct the external worker PATH for `{bin}`: {error}")
+    })?;
+
+    let mut cmd = Command::new(resolved);
     cmd.args(args)
         .current_dir(working_dir)
+        .env("PATH", augmented_path)
         // Steerable (claude) workers keep stdin open for mid-run user
         // messages; everything else gets the old closed stdin so a
         // stdin-reading CLI (codex without a prompt arg) can never hang.
@@ -1269,7 +1500,7 @@ fn build_cli_command(bin: &str, args: &[String], working_dir: &Path, steerable: 
     #[cfg(unix)]
     cmd.process_group(0);
     configure_subprocess(&mut cmd);
-    cmd
+    Ok(cmd)
 }
 
 /// Await a spawned external-CLI `child`, bounded by `timeout`. Exit 0 →
@@ -1433,7 +1664,10 @@ async fn run_external_cli(
     baseline: &str,
     timeout: Duration,
 ) -> GoalOutcome {
-    let mut cmd = build_cli_command(bin, args, working_dir, false);
+    let mut cmd = match build_cli_command(bin, args, working_dir, false) {
+        Ok(command) => command,
+        Err(error) => return GoalOutcome::Failed(error),
+    };
     match cmd.spawn() {
         Ok(child) => {
             let pid = child.id();
@@ -2116,6 +2350,7 @@ mod tests {
                 "--dangerously-skip-permissions".to_string(),
             ],
             persona_override: None,
+            session_manager: Arc::new(SessionManager::instance()),
         };
         let prompt = engine.build_prompt("Implement the thing");
         let resolved: Vec<String> = engine
@@ -2147,12 +2382,233 @@ mod tests {
                 "You are Claude Code.".to_string(),
                 "Claude Code".to_string(),
             )),
+            session_manager: Arc::new(SessionManager::instance()),
         };
         let prompt = engine.build_prompt("Do the work");
         // #522: the commit-only brief is appended after the persona + goal.
         assert_eq!(
             prompt,
             format!("You are Claude Code.\n\nDo the work{}", COMMIT_ONLY_BRIEF)
+        );
+    }
+
+    #[test]
+    fn external_cli_rejects_acp_adapters_instead_of_misreporting_support() {
+        let engine = ExternalCliEngine {
+            bin: "claude-agent-acp".to_string(),
+            args: vec![PROMPT_TOKEN.to_string()],
+            persona_override: None,
+            session_manager: Arc::new(SessionManager::instance()),
+        };
+        let error = engine
+            .validate_adapter()
+            .expect_err("ACP cannot run through the plain CLI protocol");
+        assert!(error.contains("provider-backed ACP worker engine"));
+    }
+
+    fn billing_gate_task(root: &Path, billing_class: &str) -> GoalTask {
+        GoalTask {
+            card_title: "billing gate".to_string(),
+            instructions: "do not run".to_string(),
+            working_dir: root.to_path_buf(),
+            baseline_commit: Some("HEAD".to_string()),
+            timeout: Duration::from_secs(30),
+            output_tx: None,
+            parent_session_id: None,
+            goal_id: Some("goal-billing-gate".to_string()),
+            budget_task_id: Some("task-billing-gate".to_string()),
+            billing_class: crate::config::agent_identity::WorkerBillingClass::parse(billing_class)
+                .ok(),
+            provider: Some("configured-provider".to_string()),
+            model: Some("configured-model".to_string()),
+            cli_identity: Some("configured-cli".to_string()),
+            project_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn paid_external_cli_is_denied_before_worktree_or_process_effects() {
+        let temp = tempfile::tempdir().unwrap();
+        let engine = ExternalCliEngine {
+            bin: "configured-cli".to_string(),
+            args: vec!["{prompt}".to_string()],
+            persona_override: None,
+            session_manager: Arc::new(SessionManager::new(temp.path().to_path_buf())),
+        };
+        let error = match engine
+            .spawn(billing_gate_task(temp.path(), "paid_api"))
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("generic paid CLI must be denied"),
+        };
+        assert!(error.contains("paid_api"), "{error}");
+        assert!(error.contains("finite cost bound"), "{error}");
+        assert!(
+            !temp.path().join(".permagent-goal-worktrees").exists(),
+            "billing denial must precede worktree creation"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_external_cli_billing_is_denied_before_worktree_or_process_effects() {
+        let temp = tempfile::tempdir().unwrap();
+        let engine = ExternalCliEngine {
+            bin: "configured-cli".to_string(),
+            args: vec!["{prompt}".to_string()],
+            persona_override: None,
+            session_manager: Arc::new(SessionManager::new(temp.path().to_path_buf())),
+        };
+        let error = match engine
+            .spawn(billing_gate_task(temp.path(), "vendor_name"))
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("unknown billing must fail closed"),
+        };
+        assert!(error.contains("unknown billing class"), "{error}");
+        assert!(
+            !temp.path().join(".permagent-goal-worktrees").exists(),
+            "billing denial must precede worktree creation"
+        );
+    }
+
+    #[tokio::test]
+    async fn omitted_external_cli_billing_is_denied_before_worktree_or_process_effects() {
+        let temp = tempfile::tempdir().unwrap();
+        let engine = ExternalCliEngine {
+            bin: "configured-cli".to_string(),
+            args: vec!["{prompt}".to_string()],
+            persona_override: None,
+            session_manager: Arc::new(SessionManager::new(temp.path().to_path_buf())),
+        };
+        let mut task = billing_gate_task(temp.path(), "subscription");
+        task.billing_class = None;
+        let error = match engine.spawn(task).await {
+            Err(error) => error,
+            Ok(_) => panic!("omitted billing must fail closed"),
+        };
+        assert!(error.contains("unknown billing class"), "{error}");
+        assert!(!temp.path().join(".permagent-goal-worktrees").exists());
+    }
+
+    /// External workers use the same durable session table as internal
+    /// subagents. The id remains resolvable after reopening the store, and the
+    /// goal's worker-session projection can therefore recover its spend.
+    #[tokio::test]
+    async fn external_worker_session_is_durable_parented_and_goal_attributed() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let parent = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "parent".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task = GoalTask {
+            card_title: "Implement accounting".to_string(),
+            instructions: "do the work".to_string(),
+            working_dir: temp.path().to_path_buf(),
+            baseline_commit: None,
+            timeout: Duration::from_secs(30),
+            output_tx: None,
+            parent_session_id: Some(parent.id.clone()),
+            goal_id: Some("card-42".to_string()),
+            budget_task_id: Some("task-parent".to_string()),
+            billing_class: Some(crate::config::agent_identity::WorkerBillingClass::Subscription),
+            provider: Some("openai".to_string()),
+            model: Some("gpt-5-codex".to_string()),
+            cli_identity: Some("codex".to_string()),
+            project_id: None,
+        };
+        let engine = ExternalCliEngine {
+            bin: "codex".to_string(),
+            args: vec![],
+            persona_override: None,
+            session_manager: manager.clone(),
+        };
+
+        let worker_id = engine.create_worker_session(&task).await.unwrap();
+        assert!(!worker_id.starts_with("cli-"));
+        let worker = manager.get_session(&worker_id, false).await.unwrap();
+        assert_eq!(worker.session_type, SessionType::SubAgent);
+        assert_eq!(
+            worker.parent_session_id.as_deref(),
+            Some(parent.id.as_str())
+        );
+        assert_eq!(
+            worker_identity_env(
+                &worker_id,
+                task.goal_id.as_deref(),
+                task.budget_task_id.as_deref(),
+            ),
+            vec![
+                (
+                    crate::session::WORKER_SESSION_ID_ENV.to_string(),
+                    worker_id.clone()
+                ),
+                (
+                    crate::session::GOAL_ID_ENV.to_string(),
+                    "card-42".to_string()
+                ),
+                (
+                    crate::session::BUDGET_TASK_ID_ENV.to_string(),
+                    "task-parent".to_string()
+                ),
+            ]
+        );
+
+        manager
+            .update(&worker_id)
+            .accumulate_tokens(37, 30, 7)
+            .apply()
+            .await
+            .unwrap();
+
+        // Reopen through a fresh manager to exercise the restart path rather
+        // than relying on an in-memory Session value.
+        let reopened = SessionManager::new(temp.path().to_path_buf());
+        let reopened_worker = reopened.get_session(&worker_id, false).await.unwrap();
+        assert_eq!(
+            crate::session::budget_task_id(&reopened_worker.extension_data).as_deref(),
+            Some("task-parent")
+        );
+        assert_eq!(
+            crate::session::goal_id(&reopened_worker.extension_data).as_deref(),
+            Some("card-42")
+        );
+        assert_eq!(reopened_worker.accumulated_total_tokens, Some(37));
+        let pool = reopened.pool_clone().await.unwrap();
+        let metadata = serde_json::json!({"worker_session_ids": [worker_id]});
+        assert_eq!(
+            crate::goal_transition::goal_spent_tokens(&pool, &metadata)
+                .await
+                .unwrap(),
+            37
+        );
+    }
+
+    #[test]
+    fn external_cli_launch_uses_the_same_augmented_path_as_its_probe() {
+        let cmd = build_cli_command("sh", &[], Path::new("."), false)
+            .expect("the standard shell resolves through SearchPaths");
+        assert!(
+            Path::new(cmd.as_std().get_program()).is_absolute(),
+            "the launcher must pin the executable resolved by SearchPaths"
+        );
+        let path = cmd
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == "PATH")
+            .and_then(|(_, value)| value)
+            .expect("the augmented PATH is exported to worker subprocesses")
+            .to_string_lossy();
+        assert!(
+            path.contains("/.local/bin") || path.contains("/usr/local/bin"),
+            "expected Permagent search roots in worker PATH, got {path}"
         );
     }
 
@@ -2187,7 +2643,8 @@ mod tests {
             ],
             Path::new("."),
             false,
-        );
+        )
+        .expect("resolve fake streaming worker shell");
         let child = cmd.spawn().expect("spawn fake streaming worker");
         let (output_tx, mut output_rx) = mpsc::unbounded_channel();
         let collector = tokio::spawn(collect_child_output(child, Some(output_tx), None));
@@ -2236,7 +2693,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn kill_process_group_reaps_the_worker() {
-        let mut cmd = build_cli_command("sleep", &["30".to_string()], Path::new("."), false);
+        let mut cmd = build_cli_command("sleep", &["30".to_string()], Path::new("."), false)
+            .expect("resolve sleep");
         let mut child = cmd.spawn().expect("spawn sleep");
         let pid = child.id().expect("child has a pid");
 
@@ -2274,6 +2732,13 @@ mod tests {
             "expected Success, got {:?}",
             outcome
         );
+    }
+
+    #[test]
+    fn durable_external_pid_probe_distinguishes_live_and_absent_processes() {
+        assert!(external_process_is_alive(std::process::id()));
+        assert!(!external_process_is_alive(0));
+        assert!(!external_process_is_alive(u32::MAX));
     }
 
     #[test]
@@ -2643,6 +3108,7 @@ mod tests {
             bin: "claude".to_string(),
             args: vec![PROMPT_TOKEN.to_string()],
             persona_override: None,
+            session_manager: Arc::new(SessionManager::instance()),
         };
         let task = GoalTask {
             card_title: "t".to_string(),
@@ -2652,6 +3118,12 @@ mod tests {
             timeout: Duration::from_secs(10),
             output_tx: None,
             parent_session_id: None,
+            goal_id: None,
+            budget_task_id: None,
+            billing_class: Some(crate::config::agent_identity::WorkerBillingClass::Subscription),
+            provider: Some("anthropic".to_string()),
+            model: None,
+            cli_identity: Some("claude".to_string()),
             project_id: None,
         };
         match engine.spawn(task).await {

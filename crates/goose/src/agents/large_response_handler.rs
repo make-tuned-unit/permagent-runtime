@@ -47,6 +47,11 @@ const HEAD_CHARS: usize = 2_000;
 /// totals live.
 const TAIL_CHARS: usize = 2_000;
 
+/// Structured tool payloads are persisted separately once they exceed this
+/// bound. Keeping the in-context JSON bounded is especially important for
+/// shell results, which otherwise duplicate stdout/stderr in `content`.
+const STRUCTURED_CONTENT_MAX_CHARS: usize = 16_384;
+
 /// Estimated tokens for a character count.
 pub fn estimated_tokens(chars: usize) -> usize {
     chars / CHARS_PER_TOKEN
@@ -114,6 +119,12 @@ pub fn spill_path(session_id: &str, request_id: &str, tool_name: &str) -> PathBu
         ))
 }
 
+pub fn structured_spill_path(session_id: &str, request_id: &str, tool_name: &str) -> PathBuf {
+    let mut path = spill_path(session_id, request_id, tool_name);
+    path.set_extension("structured.json");
+    path
+}
+
 /// Process a resolved tool result, spilling it to a file when it is too large
 /// to carry in context.
 ///
@@ -132,67 +143,116 @@ pub fn process_tool_response(
     };
 
     // Budget is measured over the WHOLE result, not per block — three blocks
-    // under the limit can still be far over it together.
+    // under the limit can still be far over it together. Structured payloads
+    // have their own bound because shell tools commonly repeat their text
+    // output there.
     let text_chars: usize = result
         .content
         .iter()
         .filter_map(|c| c.as_text().map(|t| t.text.chars().count()))
         .sum();
-    if estimated_tokens(text_chars) <= OFFLOAD_TOKEN_THRESHOLD {
+    let structured_json = result
+        .structured_content
+        .as_ref()
+        .and_then(|value| serde_json::to_string(value).ok());
+    let structured_chars = structured_json
+        .as_ref()
+        .map(|json| json.chars().count())
+        .unwrap_or_default();
+    let text_oversized = estimated_tokens(text_chars) > OFFLOAD_TOKEN_THRESHOLD;
+    let structured_oversized = structured_chars > STRUCTURED_CONTENT_MAX_CHARS;
+    if !text_oversized && !structured_oversized {
         return Ok(result);
     }
 
-    let full_text: String = result
-        .content
-        .iter()
-        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let path = spill_path(session_id, request_id, tool_name);
-    let write_result = std::fs::create_dir_all(path.parent().unwrap_or(&path))
-        .and_then(|_| std::fs::write(&path, full_text.as_bytes()));
-
-    let replacement = match write_result {
-        Ok(()) => {
-            tracing::info!(
-                tool = %tool_name,
-                chars = text_chars,
-                path = %path.display(),
-                "tool result offloaded to a file; a head+tail stub carries the path into context"
-            );
-            stub(tool_name, &full_text, &path)
-        }
-        Err(e) => {
-            // Never lose the result to a disk problem.
-            tracing::warn!(
-                tool = %tool_name,
-                path = %path.display(),
-                "could not write the tool-result spill file ({e}) — returning the result whole \
-                 rather than losing it"
-            );
-            format!(
-                "Warning: failed to save this large response to a file: {e}. Showing the full \
-                 content instead.\n\n{full_text}"
-            )
-        }
+    let (replacement, text_spilled) = if text_oversized {
+        let full_text: String = result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let path = spill_path(session_id, request_id, tool_name);
+        let write_result = std::fs::create_dir_all(path.parent().unwrap_or(&path))
+            .and_then(|_| std::fs::write(&path, full_text.as_bytes()));
+        let replacement = match write_result {
+            Ok(()) => {
+                tracing::info!(
+                    tool = %tool_name,
+                    chars = text_chars,
+                    path = %path.display(),
+                    "tool result offloaded to a file; a head+tail stub carries the path into context"
+                );
+                stub(tool_name, &full_text, &path)
+            }
+            Err(e) => {
+                // Never lose the result to a disk problem.
+                tracing::warn!(
+                    tool = %tool_name,
+                    path = %path.display(),
+                    "could not write the tool-result spill file ({e}) — returning the result whole \
+                     rather than losing it"
+                );
+                format!(
+                    "Warning: failed to save this large response to a file: {e}. Showing the full \
+                     content instead.\n\n{full_text}"
+                )
+            }
+        };
+        (Some(replacement), true)
+    } else {
+        (None, false)
     };
+
+    if structured_oversized {
+        if let (Some(json), Some(structured_content)) =
+            (structured_json.as_ref(), result.structured_content.as_mut())
+        {
+            let path = structured_spill_path(session_id, request_id, tool_name);
+            match std::fs::create_dir_all(path.parent().unwrap_or(&path))
+                .and_then(|_| std::fs::write(&path, json.as_bytes()))
+            {
+                Ok(()) => {
+                    tracing::info!(
+                        tool = %tool_name,
+                        chars = structured_chars,
+                        path = %path.display(),
+                        "structured tool result offloaded to a file"
+                    );
+                    *structured_content = serde_json::json!({
+                        "offloaded": true,
+                        "path": path.display().to_string(),
+                        "characters": structured_chars,
+                    });
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        tool = %tool_name,
+                        path = %path.display(),
+                        "could not write structured tool-result spill file ({error}); retaining payload"
+                    );
+                }
+            }
+        }
+    }
 
     // Collapse every text block into the one replacement, in the position of
     // the first text block; non-text blocks keep their relative order.
-    let mut rebuilt: Vec<Content> = Vec::with_capacity(result.content.len());
-    let mut placed = false;
-    for content in result.content.into_iter() {
-        if content.as_text().is_some() {
-            if !placed {
-                rebuilt.push(Content::text(replacement.clone()));
-                placed = true;
+    if text_spilled {
+        let mut rebuilt: Vec<Content> = Vec::with_capacity(result.content.len());
+        let mut placed = false;
+        for content in result.content.into_iter() {
+            if content.as_text().is_some() {
+                if !placed {
+                    rebuilt.push(Content::text(replacement.clone().unwrap_or_default()));
+                    placed = true;
+                }
+            } else {
+                rebuilt.push(content);
             }
-        } else {
-            rebuilt.push(content);
         }
+        result.content = rebuilt;
     }
-    result.content = rebuilt;
     Ok(result)
 }
 
@@ -286,6 +346,35 @@ mod tests {
         );
         assert!(text_of(&processed, 0).contains("too large to carry in context"));
         let _ = std::fs::remove_file(spill_path("sess-multi", "req-multi", "search"));
+    }
+
+    #[test]
+    fn oversized_structured_content_is_offloaded_and_bounded() {
+        let payload = serde_json::json!({"stdout": "x".repeat(STRUCTURED_CONTENT_MAX_CHARS * 2)});
+        let full_json = serde_json::to_string(&payload).unwrap();
+        let mut original = CallToolResult::success(vec![Content::text("short")]);
+        original.structured_content = Some(payload);
+
+        let processed =
+            process_tool_response(Ok(original), "shell", "req-structured", "sess-structured")
+                .unwrap();
+        let metadata = processed.structured_content.as_ref().unwrap();
+        assert_eq!(metadata["offloaded"], true);
+        assert_eq!(metadata["characters"], full_json.chars().count());
+        let path = structured_spill_path("sess-structured", "req-structured", "shell");
+        assert_eq!(metadata["path"], path.display().to_string());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), full_json);
+        assert_eq!(text_of(&processed, 0), "short");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn bounded_structured_content_passes_through() {
+        let payload = serde_json::json!({"stdout": "small"});
+        let mut original = CallToolResult::success(vec![Content::text("short")]);
+        original.structured_content = Some(payload.clone());
+        let processed = process(Ok(original)).unwrap();
+        assert_eq!(processed.structured_content, Some(payload));
     }
 
     #[test]

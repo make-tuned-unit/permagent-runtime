@@ -23,6 +23,7 @@ pub mod concierge;
 pub mod config;
 pub mod context_layers;
 pub mod context_mgmt;
+pub mod context_packet;
 pub mod conversation;
 pub mod cost_router;
 pub mod council;
@@ -100,6 +101,7 @@ pub mod recipe;
 pub mod recipe_deeplink;
 pub mod recognition;
 pub mod recognition_consent;
+pub mod recognition_contract;
 #[cfg(feature = "spectral-recognition")]
 pub mod recognition_sink;
 pub mod rlm;

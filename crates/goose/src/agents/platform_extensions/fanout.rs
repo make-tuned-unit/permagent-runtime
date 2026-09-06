@@ -77,6 +77,19 @@ impl ChildStatus {
     }
 }
 
+/// Collapse child outcomes into the protocol-level result for the fan-out.
+/// Failure has precedence over cancellation so a real child error is never
+/// hidden by a sibling that was cancelled at the same time.
+pub fn aggregate_status(outcomes: &[ChildOutcome]) -> ChildStatus {
+    if outcomes.iter().any(|o| o.status == ChildStatus::Failed) {
+        ChildStatus::Failed
+    } else if outcomes.iter().any(|o| o.status == ChildStatus::Cancelled) {
+        ChildStatus::Cancelled
+    } else {
+        ChildStatus::Ok
+    }
+}
+
 /// One child's result. `index` is its position in the caller's request, and the
 /// aggregate is always sorted by it.
 #[derive(Debug, Clone, Serialize)]
@@ -451,6 +464,69 @@ mod tests {
         assert!(outcomes[1].text.contains("did not complete"));
         assert_eq!(outcomes[0].status, ChildStatus::Ok);
         assert_eq!(outcomes[2].status, ChildStatus::Ok);
+    }
+
+    #[tokio::test]
+    async fn a_single_failed_child_is_not_an_ok_fanout() {
+        let outcomes = run_bounded(
+            vec!["stream-error"],
+            1,
+            CancellationToken::new(),
+            move |index, label, _token| async move {
+                ChildOutcome::failed(index, label, "subagent stream failed")
+            },
+        )
+        .await;
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].status, ChildStatus::Failed);
+        assert_eq!(aggregate_status(&outcomes), ChildStatus::Failed);
+        assert!(outcomes[0].text.contains("stream failed"));
+    }
+
+    fn outcome(index: usize, status: ChildStatus) -> ChildOutcome {
+        ChildOutcome {
+            index,
+            label: format!("task {index}"),
+            status,
+            subagent_id: None,
+            model_routing: None,
+            text: status.as_str().to_string(),
+        }
+    }
+
+    #[test]
+    fn aggregate_status_preserves_success_failure_and_cancellation() {
+        assert_eq!(
+            aggregate_status(&[outcome(0, ChildStatus::Ok)]),
+            ChildStatus::Ok
+        );
+        assert_eq!(
+            aggregate_status(&[outcome(0, ChildStatus::Ok), outcome(1, ChildStatus::Failed)]),
+            ChildStatus::Failed
+        );
+        assert_eq!(
+            aggregate_status(&[
+                outcome(0, ChildStatus::Failed),
+                outcome(1, ChildStatus::Failed)
+            ]),
+            ChildStatus::Failed
+        );
+        assert_eq!(
+            aggregate_status(&[
+                outcome(0, ChildStatus::Cancelled),
+                outcome(1, ChildStatus::Cancelled)
+            ]),
+            ChildStatus::Cancelled
+        );
+        assert_eq!(
+            aggregate_status(&[
+                outcome(0, ChildStatus::Failed),
+                outcome(1, ChildStatus::Cancelled)
+            ]),
+            ChildStatus::Failed,
+            "a failure must not be hidden by sibling cancellation"
+        );
     }
 
     async fn ledger_pool() -> Pool<Sqlite> {

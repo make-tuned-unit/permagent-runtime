@@ -70,6 +70,24 @@ pub struct RoleModel {
     pub model: String,
 }
 
+/// Whether a role-routed in-process worker can truthfully enforce this model
+/// choice without weakening the worker permission contract.
+pub fn role_model_is_enforceable(mapping: &RoleModel) -> bool {
+    let provider = mapping.provider.trim().to_ascii_lowercase();
+    if provider == "cursor-agent" || provider == "cursor_agent" {
+        // The current Cursor provider always launches with `--force`; it is
+        // valid for an explicitly selected chat session, but not for a worker
+        // advertised as permission-gated.
+        return false;
+    }
+    if matches!(provider.as_str(), "claude-acp" | "codex-acp") {
+        // These ACP adapters choose the model during session creation and do
+        // not yet expose a model-selection config option Permagent can verify.
+        return mapping.model.trim() == crate::acp::ACP_CURRENT_MODEL;
+    }
+    true
+}
+
 /// Pure: resolve one role's mapping from a key reader. `Some` only when BOTH the
 /// provider AND model keys are present and non-empty — a half-configured role is
 /// treated as unset, so dispatch falls through cleanly rather than routing to a
@@ -102,11 +120,12 @@ pub fn resolve_role_model_or_derived(
     read: impl Fn(&str) -> Option<String>,
     derived: &DerivedRoleMap,
 ) -> Option<(RoleModel, RoleSource)> {
-    if let Some(rm) = resolve_role_model(role, read) {
+    if let Some(rm) = resolve_role_model(role, read).filter(role_model_is_enforceable) {
         return Some((rm, RoleSource::Configured));
     }
     derived
         .get(role)
+        .filter(|(rm, _)| role_model_is_enforceable(rm))
         .map(|(rm, _)| (rm.clone(), RoleSource::Derived))
 }
 
@@ -290,6 +309,38 @@ mod tests {
         );
         // A DIFFERENT role stays unset — mappings are per-role, no bleed.
         assert_eq!(resolve_role_model(WorkflowRole::Mechanical, &read), None);
+    }
+
+    #[test]
+    fn role_routing_refuses_models_the_worker_adapter_cannot_enforce() {
+        let cursor = reader(&[
+            ("PERMAGENT_ROLE_EDIT_PROVIDER", "cursor-agent"),
+            ("PERMAGENT_ROLE_EDIT_MODEL", "composer-2"),
+        ]);
+        assert_eq!(
+            resolve_role_model_or_derived(WorkflowRole::Edit, cursor, &DerivedRoleMap::empty()),
+            None,
+            "Cursor's forced provider mode must not masquerade as a permission-gated worker"
+        );
+
+        let named_acp = reader(&[
+            ("PERMAGENT_ROLE_REVIEW_PROVIDER", "claude-acp"),
+            ("PERMAGENT_ROLE_REVIEW_MODEL", "opus"),
+        ]);
+        assert_eq!(
+            resolve_role_model_or_derived(
+                WorkflowRole::Review,
+                named_acp,
+                &DerivedRoleMap::empty()
+            ),
+            None,
+            "named ACP models are not enforceable until the session protocol applies them"
+        );
+
+        assert!(role_model_is_enforceable(&RoleModel {
+            provider: "claude-acp".into(),
+            model: "current".into(),
+        }));
     }
 
     #[test]

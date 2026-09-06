@@ -101,6 +101,32 @@ async fn goal_state(pool: &Pool<Sqlite>, goal_id: &str) -> Result<Option<String>
     .map_err(|e| GuardError::Db(e.to_string()))
 }
 
+/// Durable verifier state consulted at BOTH the HTTP answer boundary and the
+/// retryable effect boundary. The second check closes the race where a verdict
+/// changes after the user taps Approve but before the outbox lands the work.
+/// Missing evidence is pending, never an implicit pass.
+pub async fn approve_review_verification_status(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+) -> Result<String, GuardError> {
+    let metadata: Option<String> =
+        sqlx::query_scalar("SELECT metadata_json FROM cards WHERE id = ?")
+            .bind(goal_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| GuardError::Db(e.to_string()))?;
+    let Some(metadata) = metadata else {
+        return Err(GuardError::NotFound(format!("goal '{goal_id}' not found")));
+    };
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)
+        .map_err(|e| GuardError::Db(format!("goal metadata is invalid JSON: {e}")))?;
+    Ok(metadata
+        .pointer("/dispatch_evidence/verdict/status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("pending")
+        .to_ascii_lowercase())
+}
+
 fn already_applied(message: impl Into<String>) -> Result<EffectResult, GuardError> {
     Ok((Some(message.into()), None))
 }
@@ -466,6 +492,58 @@ async fn land_approved_goal(
     (Some((project_id, outcome)), warning)
 }
 
+/// Registered program successors may start only after the approved source is
+/// actually present on the project trunk. Re-run the existing fast-forward
+/// check on an outbox retry so a crash between Review → Complete and landing
+/// cannot make a successor run against stale trunk state.
+async fn ensure_registered_goal_landed(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+) -> Result<(), GuardError> {
+    let card = crate::cards::get_card(pool, goal_id)
+        .await
+        .map_err(GuardError::Db)?
+        .ok_or_else(|| GuardError::NotFound(format!("goal '{goal_id}' not found")))?;
+    let registered = card
+        .metadata_json
+        .get("program")
+        .and_then(|program| program.get("manifest"))
+        .is_some();
+    if !registered {
+        return Ok(());
+    }
+    if card
+        .metadata_json
+        .get("program")
+        .and_then(|program| program.get("delivery"))
+        .and_then(|delivery| delivery.as_str())
+        == Some("no_write")
+    {
+        // The approved ProgramDag explicitly declares this node as research /
+        // audit work. Its typed verifier receipts, not a missing commit, are
+        // the completion authority; there is no trunk to fast-forward.
+        return Ok(());
+    }
+    let (landing, warning) = land_approved_goal(pool, goal_id, Some(&card.project_id)).await;
+    let Some((_, outcome)) = landing else {
+        return Err(GuardError::Db(format!(
+            "registered continuation blocked: approved goal '{}' has no durable landing outcome{}",
+            goal_id,
+            warning
+                .as_deref()
+                .map(|value| format!(" ({value})"))
+                .unwrap_or_default()
+        )));
+    };
+    if !outcome.is_landed() {
+        return Err(GuardError::Db(format!(
+            "registered continuation blocked until source landing succeeds: {}",
+            outcome.describe()
+        )));
+    }
+    Ok(())
+}
+
 /// Leave one durable, copy-pasteable recovery item when automatic landing
 /// cannot fast-forward. An existing open unblock for the goal wins: two open
 /// requests for the same goal would compete for the human's answer.
@@ -547,13 +625,61 @@ pub async fn apply_decision_effect(
                 return Ok((None, None));
             };
             match goal_state(pool, goal_id).await?.as_deref() {
-                Some("complete") => return already_applied("goal was already Complete"),
+                Some("complete") => {
+                    // The approval transition may have committed before a
+                    // registered continuation hit a transient storage or
+                    // dispatch failure. Re-enter only that exact continuation
+                    // seam; never replay the broad legacy promoter.
+                    ensure_registered_goal_landed(pool, goal_id).await?;
+                    match crate::agents::platform_extensions::program_bridge::handoff_registered_goal(pool, goal_id).await {
+                        Ok(Some(response))
+                            if response.status
+                                == crate::agents::platform_extensions::program_bridge::HandoffStatus::PendingDispatch =>
+                        {
+                            return Err(GuardError::Db(
+                                "registered program continuation remains pending dispatch".to_string(),
+                            ));
+                        }
+                        Ok(Some(_)) => return already_applied("goal was already Complete; registered continuation is applied"),
+                        Ok(None) => return already_applied("goal was already Complete"),
+                        Err(crate::agents::platform_extensions::program_bridge::ProgramHandoffError::Storage(error)) => {
+                            return Err(GuardError::Db(format!("registered continuation retryable storage failure: {error}")));
+                        }
+                        Err(error) => {
+                            return already_applied(format!(
+                                "goal was already Complete; registered continuation is blocked: {error}"
+                            ));
+                        }
+                    }
+                }
                 Some("review") => {}
                 None => return already_applied("goal was already gone"),
                 Some(state) => {
                     return already_applied(format!(
                         "goal already advanced out of Review (current state: {state})"
                     ))
+                }
+            }
+            match approve_review_verification_status(pool, goal_id)
+                .await?
+                .as_str()
+            {
+                "pass" => {}
+                "pending" => {
+                    // Retryable by design: the user already approved, but the
+                    // asynchronous verifier has not earned permission to land
+                    // yet. Keeping the effect pending preserves that intent.
+                    return Err(GuardError::Denied(
+                        "verification is still pending; the goal remains in Review".to_string(),
+                    ));
+                }
+                status => {
+                    // A completed non-pass is terminal for THIS approval. The
+                    // verifier/rework flow may later create a fresh review
+                    // decision, but this stale approval can never land it.
+                    return already_applied(format!(
+                        "approval not applied: verifier verdict is {status}; goal remains in Review"
+                    ));
                 }
             }
             goal_transition::advance_goal_checked(
@@ -575,8 +701,19 @@ pub async fn apply_decision_effect(
             // approval actually arrives. Fast-forward only, and the outcome is
             // ALWAYS reported: a landing that silently declined is exactly the
             // failure this replaces.
-            let (landing, landing_warning) =
-                land_approved_goal(pool, goal_id, decision.project_id.as_deref()).await;
+            let no_write_program = crate::cards::get_card(pool, goal_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|card| card.metadata_json.get("program").cloned())
+                .and_then(|program| program.get("delivery").cloned())
+                .and_then(|delivery| delivery.as_str().map(str::to_owned))
+                == Some("no_write".to_string());
+            let (landing, landing_warning) = if no_write_program {
+                (None, None)
+            } else {
+                land_approved_goal(pool, goal_id, decision.project_id.as_deref()).await
+            };
             let effect = match &landing {
                 Some((_, outcome)) => {
                     format!("goal approved: Review → Complete; {}", outcome.describe())
@@ -603,21 +740,92 @@ pub async fn apply_decision_effect(
             //
             // AFTER landing, deliberately: a dependent starts against the
             // trunk, so it must not begin before its parent's work is on it.
-            let promotion_warning = match decision.project_id.as_deref() {
-                Some(project_id) => {
-                    crate::agents::platform_extensions::orchestrator::promote_and_dispatch_dependents(
-                        pool, project_id, goal_id,
-                    )
-                    .await
+            let mut program_lookup_warning = None;
+            let program_registered = match crate::cards::get_card(pool, goal_id).await {
+                Ok(Some(card)) => card
+                    .metadata_json
+                    .get("program")
+                    .and_then(|program| program.get("manifest"))
+                    .is_some(),
+                Ok(None) => false,
+                Err(error) => {
+                    // Fail closed: if we cannot establish that a goal is a
+                    // legacy roadmap card, never run the broad dependent
+                    // nudge which could bypass a program's exact frontier.
+                    program_lookup_warning =
+                        Some(format!("registered program lookup unavailable: {error}"));
+                    true
                 }
-                None => None,
+            };
+            let no_write_program = crate::cards::get_card(pool, goal_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|card| card.metadata_json.get("program").cloned())
+                .and_then(|program| program.get("delivery").cloned())
+                .and_then(|delivery| delivery.as_str().map(str::to_owned))
+                == Some("no_write".to_string());
+            if program_registered && !no_write_program {
+                let landed = landing
+                    .as_ref()
+                    .map(|(_, outcome)| outcome.is_landed())
+                    .unwrap_or(false);
+                if !landed {
+                    return Err(GuardError::Db(
+                        "registered continuation blocked until approved source is landed on trunk"
+                            .to_string(),
+                    ));
+                }
+            }
+            // The program bridge owns the exact successor set for registered
+            // programs. Do not also run the broad legacy nudge, which could
+            // start an approval-gated or unrelated dependent before the
+            // program manifest authorizes it.
+            let promotion_warning = if program_registered {
+                None
+            } else {
+                match decision.project_id.as_deref() {
+                    Some(project_id) => {
+                        crate::agents::platform_extensions::orchestrator::promote_and_dispatch_dependents(
+                            pool, project_id, goal_id,
+                        )
+                        .await
+                    }
+                    None => None,
+                }
+            };
+            // Registered program roadmaps use the same Complete transition,
+            // typed evidence, and dispatcher as ordinary goals. Keep this
+            // best-effort after the approval is durable: a continuity fault
+            // must be visible and retryable, but cannot roll back a valid
+            // human approval or silently approve a successor.
+            let program_warning = match crate::agents::platform_extensions::program_bridge::handoff_registered_goal(pool, goal_id).await {
+                Ok(Some(response)) => match response.status {
+                    crate::agents::platform_extensions::program_bridge::HandoffStatus::PendingDispatch => {
+                        return Err(GuardError::Db(
+                            "registered program continuation remains pending dispatch".to_string(),
+                        ));
+                    }
+                    _ => None,
+                },
+                Ok(None) => None,
+                Err(crate::agents::platform_extensions::program_bridge::ProgramHandoffError::Storage(error)) => {
+                    return Err(GuardError::Db(format!(
+                        "registered continuation retryable storage failure: {error}"
+                    )));
+                }
+                Err(error) => Some(format!("registered program continuation: {error}")),
             };
             crate::recognition::write_back_decision_outcome(pool, goal_id, true).await;
-            let warning = match (promotion_warning, landing_warning) {
-                (Some(promotion), Some(landing)) => Some(format!("{}; {}", promotion, landing)),
-                (Some(warning), None) | (None, Some(warning)) => Some(warning),
-                (None, None) => None,
-            };
+            let warning = [
+                promotion_warning,
+                landing_warning,
+                program_lookup_warning,
+                program_warning,
+            ]
+            .into_iter()
+            .flatten()
+            .reduce(|left, right| format!("{left}; {right}"));
             Ok((Some(effect), warning))
         }
         ("approve_review", Some("reject")) => {
@@ -1124,6 +1332,9 @@ async fn apply_council_action(
         .map_err(|e| {
             GuardError::Invalid(format!("stored council_action payload unreadable: {e}"))
         })?;
+    if let Some(plan) = payload.plan.clone() {
+        return apply_council_plan(pool, &payload.session_id, plan).await;
+    }
     let project_id = decision
         .project_id
         .clone()
@@ -1177,6 +1388,173 @@ async fn apply_council_action(
     .await
     .map_err(|e| GuardError::Db(format!("file council card: {e}")))?;
     Ok((Some(format!("filed board card \"{}\"", card.title)), None))
+}
+
+async fn apply_council_plan(
+    pool: &Pool<Sqlite>,
+    council_session_id: &str,
+    proposal: crate::council::plan::CouncilProposal,
+) -> Result<EffectResult, GuardError> {
+    let capabilities = crate::council::plan::configured_worker_capabilities();
+    let session = crate::council::plan::orchestrate(
+        proposal,
+        &capabilities,
+        Some(crate::council::plan::ApprovalToken::explicit()),
+    )
+    .map_err(|error| GuardError::Invalid(format!("Council DAG refused: {error:?}")))?;
+    let project_id = session.proposal.project.project_id.clone();
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?)")
+        .bind(&project_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| GuardError::Db(format!("check Council project exists: {e}")))?;
+    if !exists {
+        return already_applied(format!(
+            "project \"{}\" no longer exists; the Council DAG was not created",
+            session.proposal.project.project_name
+        ));
+    }
+
+    crate::cards::seed_goal_columns(pool, &project_id)
+        .await
+        .map_err(GuardError::Db)?;
+    let triage = crate::cards::get_goal_column(pool, &project_id, "triage")
+        .await
+        .map_err(GuardError::Db)?
+        .ok_or_else(|| GuardError::Db("Triage column not found".to_string()))?;
+    // The decision-effect outbox is retryable. Rehydrate any nodes written by
+    // an interrupted attempt so a lease retry resumes the DAG instead of
+    // duplicating cards.
+    let existing: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, json_extract(metadata_json, '$.council_node_id')
+         FROM cards
+         WHERE project_id = ? AND archived_at IS NULL
+           AND json_extract(metadata_json, '$.council_plan_id') = ?
+         ORDER BY created_at ASC",
+    )
+    .bind(&project_id)
+    .bind(&session.proposal.proposal_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| GuardError::Db(format!("resume Council DAG: {error}")))?;
+    let mut node_to_card = existing
+        .into_iter()
+        .map(|(card_id, node_id)| (node_id, card_id))
+        .collect::<std::collections::BTreeMap<String, String>>();
+    let mut roots = Vec::new();
+
+    for node_id in &session.order {
+        let node = session
+            .proposal
+            .nodes
+            .iter()
+            .find(|node| &node.id == node_id)
+            .ok_or_else(|| {
+                GuardError::Invalid(format!("validated node '{node_id}' disappeared"))
+            })?;
+        if let Some(card_id) = node_to_card.get(&node.id) {
+            if node.dependencies.is_empty() {
+                roots.push(card_id.clone());
+            }
+            continue;
+        }
+        let dependency_cards: Vec<String> = node
+            .dependencies
+            .iter()
+            .map(|dependency| {
+                node_to_card.get(dependency).cloned().ok_or_else(|| {
+                    GuardError::Invalid(format!(
+                        "dependency '{dependency}' was not created before '{}'",
+                        node.id
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let mut acceptance = node.acceptance_criteria.clone();
+        if !node.verification.command.trim().is_empty() {
+            acceptance.push(format!(
+                "Verification command `{}` exits successfully",
+                node.verification.command
+            ));
+        }
+        let mut description = node.description.clone();
+        if !node.files.is_empty() {
+            description.push_str(&format!("\n\nFiles: {}", node.files.join(", ")));
+        }
+        if !node.symbols.is_empty() {
+            description.push_str(&format!("\nSymbols: {}", node.symbols.join(", ")));
+        }
+        if !node.pattern_references.is_empty() {
+            description.push_str(&format!(
+                "\nFollow existing patterns: {}",
+                node.pattern_references.join(", ")
+            ));
+        }
+        let card = crate::cards::create_card(
+            pool,
+            crate::cards::CreateCard {
+                project_id: project_id.clone(),
+                title: node.title.clone(),
+                description: Some(description),
+                card_type: Some("goal".to_string()),
+                column_id: Some(triage.id.clone()),
+                created_by: Some("user".to_string()),
+                metadata_json: Some(serde_json::json!({
+                    "depends_on": dependency_cards,
+                    "goal_state": "triage",
+                    "attempt_count": 0,
+                    "tags": node.required_capabilities,
+                    "acceptance_criteria": acceptance,
+                    "files": node.files,
+                    "symbols": node.symbols,
+                    "pattern_references": node.pattern_references,
+                    "risk": node.risk,
+                    "verification_required": node.verification.required,
+                    "council_session_id": council_session_id,
+                    "council_plan_id": session.proposal.proposal_id,
+                    "council_node_id": node.id,
+                    "project_memory_ids": session.proposal.project.memory_ids,
+                })),
+            },
+        )
+        .await
+        .map_err(|e| GuardError::Db(format!("create Council goal '{}': {e}", node.title)))?;
+        node_to_card.insert(node.id.clone(), card.id.clone());
+        if node.dependencies.is_empty() {
+            roots.push(card.id);
+        }
+    }
+
+    for card_id in &roots {
+        if goal_state(pool, card_id).await?.as_deref() != Some("triage") {
+            continue;
+        }
+        goal_transition::advance_goal_checked(
+            pool,
+            card_id,
+            GoalAction::Ready,
+            decisions::ACTOR_SYSTEM,
+            None,
+            TransitionEffects::default(),
+        )
+        .await
+        .map_err(|error| GuardError::Invalid(String::from(error)))?;
+    }
+    let dispatched = crate::agents::platform_extensions::orchestrator::nudge_dispatch_ready_goals(
+        pool,
+        &project_id,
+        "approved Council DAG",
+    )
+    .await;
+    Ok((
+        Some(format!(
+            "created {} Council DAG goals; {} root goal(s) released and {} dispatched",
+            node_to_card.len(),
+            roots.len(),
+            dispatched
+        )),
+        None,
+    ))
 }
 
 async fn apply_project_intel(
@@ -1639,6 +2017,10 @@ mod tests {
         let mut meta = serde_json::Map::new();
         meta.insert("attempt_count".to_string(), serde_json::json!(0));
         meta.insert("goal_state".to_string(), serde_json::json!("review"));
+        meta.insert(
+            "dispatch_evidence".to_string(),
+            serde_json::json!({"verdict": {"status": "pass"}}),
+        );
         crate::cards::create_card(
             pool,
             crate::cards::CreateCard {
@@ -1665,6 +2047,338 @@ mod tests {
             .unwrap()
             .unwrap();
         col.state_binding.unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn approved_no_write_program_does_not_require_git_landing() {
+        let pool = test_pool().await;
+        let goal = goal_in_review(&pool).await;
+        let mut metadata = goal.metadata_json.as_object().cloned().unwrap();
+        metadata.insert(
+            "program".to_string(),
+            serde_json::json!({
+                "program_id": "research-program",
+                "node_id": "audit",
+                "manifest_sha256": "approved",
+                "manifest": "schema: 1\nprogram_id: research-program\nobjective: audit\nterminal_node: audit\nnodes:\n  - id: audit\n    child_dag: audit.md\n    status: active\n    entry_gate: [input captured]\n    exit_gate: [audit receipt]\n    worker_policy: cheap\n    delivery: no_write",
+                "delivery": "no_write"
+            }),
+        );
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::to_string(&metadata).unwrap())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        ensure_registered_goal_landed(&pool, &goal.id)
+            .await
+            .expect("explicit no-write contract must not require a repository landing");
+    }
+
+    #[tokio::test]
+    async fn approve_review_advances_registered_no_write_program_through_normal_effect() {
+        use crate::agents::platform_extensions::{execution_receipt, goal_engine};
+        use permagent_eval::{
+            ApprovalPolicy, DeliveryMode, ProgramDag, ProgramNode, ProgramNodeStatus,
+        };
+
+        let pool = test_pool().await;
+        let goal = goal_in_review(&pool).await;
+        let program = ProgramDag {
+            schema: 1,
+            program_id: "normal-approval-research".to_string(),
+            objective: "complete an approved audit without a repository write".to_string(),
+            terminal_node: "audit".to_string(),
+            nodes: vec![ProgramNode {
+                id: "audit".to_string(),
+                child_dag: "audit.md".to_string(),
+                status: ProgramNodeStatus::Active,
+                depends_on: Vec::new(),
+                next_on_pass: Vec::new(),
+                entry_gate: vec!["input captured".to_string()],
+                exit_gate: vec!["audit receipt".to_string()],
+                worker_policy: "cheap".to_string(),
+                approval: ApprovalPolicy::None,
+                delivery: DeliveryMode::NoWrite,
+                blocked_reason: None,
+            }],
+        };
+        let manifest = serde_yaml::to_string(&program).unwrap();
+        let manifest_hash =
+            crate::agents::platform_extensions::program_bridge::manifest_identity_hash(&program)
+                .unwrap();
+        let plan_id = "approved-normal-research";
+
+        let mut receipt = execution_receipt::ExecutionReceipt::new(
+            "worker",
+            "session",
+            serde_json::json!({}),
+            "lifecycle",
+            "2026-09-05T00:00:00Z",
+            1,
+        );
+        receipt.finalize(
+            execution_receipt::ReceiptState::Completed,
+            "2026-09-05T00:01:00Z",
+        );
+        let mut evidence = serde_json::to_value(goal_engine::GoalEvidence::default()).unwrap();
+        evidence["verdict"] = serde_json::json!({
+            "status": "pass",
+            "finished_at": "fixture-verification"
+        });
+        let mut metadata = goal.metadata_json.as_object().cloned().unwrap();
+        metadata.insert("council_plan_id".to_string(), serde_json::json!(plan_id));
+        metadata.insert("council_node_id".to_string(), serde_json::json!("audit"));
+        metadata.insert("depends_on".to_string(), serde_json::json!([]));
+        metadata.insert(
+            "execution_receipt".to_string(),
+            serde_json::to_value(receipt).unwrap(),
+        );
+        metadata.insert("dispatch_evidence".to_string(), evidence);
+        metadata.insert(
+            "program_receipts".to_string(),
+            serde_json::json!([{
+                "gate": "audit receipt",
+                "passed": true,
+                "verification_id": "fixture-verification"
+            }]),
+        );
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::to_string(&metadata).unwrap())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let council = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "council_action".to_string(),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Approve research program".to_string()),
+                detail: Some("fixture approval".to_string()),
+                // A council_action payload that fails its schema is not an
+                // error: create_decision stores it as a tier-2 `malformed`
+                // decision so the user can resolve it. This fixture omitted
+                // `title`, so it was filed as malformed and registration then
+                // correctly found no approval for the plan.
+                payload: serde_json::json!({
+                    "session_id": "decisions-effects-fixture",
+                    "title": "Approve research program",
+                    "plan": {
+                        "proposal_id": plan_id,
+                        "program_manifest_sha256": manifest_hash,
+                        "program_manifest": manifest.clone(),
+                        "project": {
+                            "project_id": PERSONAL_PROJECT_ID,
+                            "project_name": "Personal",
+                            "summary": "Decision effects fixture"
+                        },
+                        "budget_limit": 1,
+                        "nodes": [{
+                            "id": "audit",
+                            "title": "Run the audit",
+                            "description": "Produce the audit findings",
+                            "acceptance_criteria": ["audit receipt"],
+                            "estimated_budget": 1,
+                            "risk": "low",
+                            "verification": {"command": "true", "required": true}
+                        }]
+                    }
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &council.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        crate::agents::platform_extensions::program_bridge::register_program(
+            &pool,
+            crate::agents::platform_extensions::program_bridge::ProgramRegistrationRequest {
+                manifest: manifest.clone(),
+                node_to_goal: std::collections::BTreeMap::from([(
+                    "audit".to_string(),
+                    goal.id.clone(),
+                )]),
+            },
+        )
+        .await
+        .unwrap();
+
+        let review = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Approve the completed audit".to_string()),
+                detail: Some("typed evidence is complete".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &review.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &review.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+        apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        assert_eq!(goal_state_of(&pool, &goal.id).await, "complete");
+        let after = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(after.metadata_json.get("program_transition").is_some());
+    }
+
+    async fn answered_review_approval(
+        pool: &Pool<Sqlite>,
+        goal_id: &str,
+    ) -> (Decision, DecisionProof) {
+        let decision = decisions::create_decision(
+            pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal_id.to_string()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Approve reviewed work".to_string()),
+                detail: Some("test".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            pool,
+            &decision.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn review_approval_waits_for_durable_verifier_pass() {
+        let pool = test_pool().await;
+        let goal = goal_in_review(&pool).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_remove(metadata_json, '$.dispatch_evidence.verdict') WHERE id = ?",
+        )
+        .bind(&goal.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (decision, proof) = answered_review_approval(&pool, &goal.id).await;
+
+        let error = apply_decision_effect(&pool, &decision, proof, "approve_review")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("verification is still pending"));
+        assert_eq!(goal_state_of(&pool, &goal.id).await, "review");
+    }
+
+    #[tokio::test]
+    async fn non_passing_verdict_can_never_land_an_earlier_approval() {
+        let pool = test_pool().await;
+        let goal = goal_in_review(&pool).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.dispatch_evidence.verdict.status', 'fail') WHERE id = ?",
+        )
+        .bind(&goal.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (decision, proof) = answered_review_approval(&pool, &goal.id).await;
+
+        let (effect, _) = apply_decision_effect(&pool, &decision, proof, "approve_review")
+            .await
+            .unwrap();
+        assert!(effect.unwrap().contains("verifier verdict is fail"));
+        assert_eq!(goal_state_of(&pool, &goal.id).await, "review");
+    }
+
+    #[tokio::test]
+    async fn council_plan_retry_reuses_existing_node_cards() {
+        crate::agents::platform_extensions::orchestrator::test_dispatch_recorder::install();
+        let pool = test_pool().await;
+        let proposal = crate::council::plan::CouncilProposal {
+            proposal_id: "council-retry-test".to_string(),
+            project: crate::council::plan::ProjectContext {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                project_name: "Personal".to_string(),
+                summary: "Frozen test context".to_string(),
+                memory_ids: Vec::new(),
+                playbook_briefing: None,
+            },
+            nodes: vec![crate::council::plan::DagNode {
+                id: "edit".to_string(),
+                title: "Make one surgical edit".to_string(),
+                description: "Change the named symbol only.".to_string(),
+                files: vec!["src/example.rs".to_string()],
+                symbols: vec!["example".to_string()],
+                pattern_references: vec!["src/existing.rs::existing".to_string()],
+                acceptance_criteria: vec!["The requested behavior is present".to_string()],
+                dependencies: Vec::new(),
+                required_capabilities: Default::default(),
+                estimated_budget: 1,
+                risk: crate::council::plan::RiskLevel::Low,
+                verification: crate::council::plan::VerificationSpec {
+                    command: "cargo test -p permagent".to_string(),
+                    required: true,
+                },
+            }],
+            budget_limit: 1,
+            program_manifest_sha256: None,
+            program_manifest: None,
+        };
+
+        apply_council_plan(&pool, "session-retry", proposal.clone())
+            .await
+            .unwrap();
+        apply_council_plan(&pool, "session-retry", proposal)
+            .await
+            .unwrap();
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cards
+             WHERE json_extract(metadata_json, '$.council_plan_id') = 'council-retry-test'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "outbox retries must not duplicate DAG nodes");
     }
 
     async fn answered_debug_choice(
@@ -1872,6 +2586,7 @@ mod tests {
                         "worktree_path": "/tmp/.permagent-goal-worktrees/run-1",
                         "head_commit": head,
                         "commits": ["abc123 the work"],
+                        "verdict": {"status": "pass"},
                     },
                 })),
             },

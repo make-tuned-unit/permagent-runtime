@@ -38,6 +38,10 @@ pub struct SessionReplyRequest {
     /// Current UI state sent by the frontend (tab, selection, etc.).
     #[serde(default)]
     pub app_context: Option<AppContext>,
+    /// Durable uploads included in this turn. Each ID is validated against the
+    /// current session and linked to the persisted user message/request ID.
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
 }
 
 /// Snapshot of the frontend's current UI state, sent with each chat message.
@@ -442,6 +446,27 @@ pub async fn session_reply(
             ErrorResponse::bad_request("Session already has an active request. Cancel it first.")
         })?;
 
+    if !request.attachment_ids.is_empty() {
+        let pool =
+            state.session_manager().pool_clone().await.map_err(|e| {
+                ErrorResponse::internal(format!("Failed to open session store: {e}"))
+            })?;
+        let linked = permagent::attachments::link_many_to_message_for_session(
+            &pool,
+            &session_id,
+            &request.attachment_ids,
+            &request_id,
+        )
+        .await
+        .map_err(|e| ErrorResponse::internal(format!("Failed to link attachments: {e}")))?;
+        if !linked {
+            return Err(ErrorResponse::bad_request(format!(
+                "One or more attachments do not belong to session {}",
+                session_id
+            )));
+        }
+    }
+
     // Sync session provider/model with current global config so stale
     // sessions (created under a previous provider) pick up the user's
     // latest Settings choice.
@@ -526,7 +551,12 @@ pub async fn session_reply(
         }
     }
 
-    let user_message = request.user_message;
+    let mut user_message = request.user_message;
+    // Uploaded attachment messages may not carry their own id. Reuse the
+    // request id as a stable target for the persisted message row.
+    if user_message.id.is_none() {
+        user_message.id = Some(request_id.clone());
+    }
 
     // Diagnostic: log incoming content block types
     {
@@ -586,6 +616,13 @@ pub async fn session_reply(
                 return;
             }
         };
+
+        // Apply the configured CHAT provider/model to this turn after the
+        // request has claimed the event-bus slot. `apply_chat_model` is
+        // deliberately best-effort: an invalid or unreachable configured
+        // route leaves the session provider in place, so a settings mistake
+        // cannot take down the user's next reply.
+        crate::chat_model::apply_chat_model(&agent, &task_session_id).await;
 
         let session = match task_state
             .session_manager()
@@ -862,6 +899,7 @@ pub async fn session_reply(
                             )
                             .await;
                         }
+                        Ok(Some(Ok(AgentEvent::RuntimeOutcome(_)))) => {}
                         Ok(Some(Err(e))) => {
                             tracing::error!("Error processing message: {}", e);
                             publish(
@@ -916,15 +954,20 @@ pub async fn session_reply(
                 // that only exists at write time.
                 let tool_text = crate::brain_ops::turn_tool_call_text(all_messages.messages());
                 let pool = task_state.session_manager().pool_clone().await.ok();
-                crate::brain_ops::spawn_persist_chat_turn(
+                if let Err(error) = crate::brain_ops::persist_chat_turn(
                     brain.clone(),
                     pool,
                     task_session_id.clone(),
                     turn_idx,
+                    user_message.created,
                     user_text,
                     assistant_text,
                     tool_text,
-                );
+                )
+                .await
+                {
+                    tracing::warn!(target: "permagentd::brain", "chat memory enqueue failed: {error}");
+                }
             }
         }
 

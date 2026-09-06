@@ -307,6 +307,7 @@ impl Provider for AnthropicProvider {
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
         // A caller with no split to offer: treat the whole prompt as stable.
+        // permagent-dispatch: seam=anthropic_stream_delegate_v1 class=excluded reason=provider_internal_delegate authority=agent_primary_stream
         self.stream_split(
             model_config,
             session_id,

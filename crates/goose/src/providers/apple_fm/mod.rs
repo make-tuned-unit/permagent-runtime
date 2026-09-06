@@ -158,6 +158,10 @@ impl Provider for AppleFoundationModelsProvider {
         PROVIDER_NAME
     }
 
+    fn cost_tier(&self) -> crate::session::CostTier {
+        crate::session::CostTier::LocalFree
+    }
+
     fn get_model_config(&self) -> ModelConfig {
         self.model_config.clone()
     }

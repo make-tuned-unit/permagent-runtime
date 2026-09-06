@@ -581,6 +581,21 @@ impl SafeBrain {
             .map_err(Into::into)
     }
 
+    /// Load the ordered memories that share an episode with a memory. The
+    /// caller is responsible for applying a bounded window before presenting
+    /// the result to an agent.
+    pub async fn list_memories_by_episode(
+        &self,
+        episode_id: &str,
+    ) -> anyhow::Result<Vec<spectral::ingest::Memory>> {
+        let brain = self.inner.clone();
+        let episode_id = episode_id.to_string();
+        tokio::task::spawn_blocking(move || brain.list_memories_by_episode(&episode_id))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: list_memories_by_episode: {e}"))?
+            .map_err(Into::into)
+    }
+
     /// Hard-delete a memory by its logical **key** across every substrate
     /// (memories + all FK children + recognition sidecar), returning a
     /// verified `ForgetReport`.
@@ -1892,6 +1907,7 @@ fn resolve_acr_spread(raw: Option<&str>) -> spectral::graph::spreading::AssocSpr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Duration, TimeZone, Utc};
     use spectral::graph::spreading::SpreadMode;
 
     /// Verify that Clone shares the same underlying Arc (cheap clone).
@@ -1997,6 +2013,104 @@ mod tests {
                 .mode,
             SpreadMode::Off
         );
+    }
+
+    fn narrative_fixture() -> serde_json::Value {
+        serde_json::from_str(include_str!(
+            "../../goose-server/tests/fixtures/narrative_memory_replay.json"
+        ))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn pinned_spectral_round_trip_keeps_every_story_detail_and_uncertainty() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = spectral::Brain::open(temp.path()).unwrap();
+        let fixture = narrative_fixture();
+        let source = &fixture["source"];
+        let key = source["memory_key"].as_str().unwrap();
+        let content = source["content"].as_str().unwrap();
+        let receipt = raw
+            .remember_with(
+                key,
+                content,
+                spectral::RememberOpts {
+                    source: Some("chat".to_string()),
+                    confidence: Some(1.0),
+                    visibility: spectral::Visibility::Private,
+                    created_at: Utc.timestamp_millis_opt(1_788_500_000_000).single(),
+                    session_id: Some("story-source-session".to_string()),
+                    episode_id: Some("story-source-session".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let brain = SafeBrain::new(raw);
+
+        let exact = brain.get_memory(&receipt.memory_id).await.unwrap().unwrap();
+        assert_eq!(exact.key, key);
+        assert_eq!(exact.content, content);
+        assert_eq!(exact.episode_id.as_deref(), Some("story-source-session"));
+        assert_eq!(exact.source.as_deref(), Some("chat"));
+
+        let recall = brain
+            .recall_cascade(
+                "blue ribbon arrow cedar beacon pears Oren camp glass flute pear tart eastern pass",
+                &spectral::graph::RecognitionContext::empty().with_session("story-source-session"),
+            )
+            .await
+            .unwrap();
+        let recalled = recall
+            .merged_hits
+            .iter()
+            .find(|hit| hit.key == key)
+            .expect("the detailed source must be recalled from pinned Spectral");
+        assert_eq!(recalled.content, content);
+
+        let mut cursor = 0;
+        for beat in fixture["ordered_beats"].as_array().unwrap() {
+            let beat = beat.as_str().unwrap();
+            let relative = recalled.content[cursor..]
+                .find(beat)
+                .unwrap_or_else(|| panic!("missing or out-of-order recalled detail: {beat}"));
+            cursor += relative + beat.len();
+        }
+        assert!(recalled.content.contains("remains unknown"));
+    }
+
+    #[tokio::test]
+    async fn pinned_spectral_episode_read_respects_submillisecond_turn_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = spectral::Brain::open(temp.path()).unwrap();
+        let base = Utc
+            .timestamp_millis_opt(1_788_500_000_000)
+            .single()
+            .unwrap();
+        let beats = ["beacon", "camp", "eastern pass"];
+        for (ordinal, beat) in beats.iter().enumerate() {
+            raw.remember_with(
+                &format!("chat-ordered-story-{ordinal}"),
+                beat,
+                spectral::RememberOpts {
+                    created_at: base.checked_add_signed(Duration::nanoseconds(ordinal as i64 + 1)),
+                    session_id: Some("ordered-story".to_string()),
+                    episode_id: Some("ordered-story".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let brain = SafeBrain::new(raw);
+
+        let episode = brain
+            .list_memories_by_episode("ordered-story")
+            .await
+            .unwrap();
+        let contents: Vec<&str> = episode
+            .iter()
+            .map(|memory| memory.content.as_str())
+            .collect();
+        assert_eq!(contents, beats);
     }
 }
 

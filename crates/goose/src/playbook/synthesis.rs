@@ -27,6 +27,7 @@ use std::time::Duration;
 
 use sqlx::{Pool, Sqlite};
 
+use crate::agents::reply_parts::AccountedFastCompletion;
 use crate::brain_handle::SafeBrain;
 use crate::config::Config;
 use crate::decisions::Decision;
@@ -211,14 +212,22 @@ async fn synthesize_project(
     let user_text = build_distill_input(slug, &refs);
     let user_msg = crate::conversation::message::Message::user().with_text(user_text);
 
-    let (response, _usage) = provider
-        .complete_fast(
-            DISTILL_SESSION_ID,
-            DISTILL_SYSTEM,
-            std::slice::from_ref(&user_msg),
-            &[],
-        )
-        .await?;
+    let manager = Arc::new(crate::session::SessionManager::instance());
+    let session = AccountedFastCompletion::ensure_background_session(
+        Arc::clone(&manager),
+        DISTILL_SESSION_ID,
+    )
+    .await?;
+    let (response, _usage) = AccountedFastCompletion::complete_fast_accounted(
+        manager,
+        session,
+        Arc::clone(provider),
+        DISTILL_SYSTEM,
+        std::slice::from_ref(&user_msg),
+        &[],
+        false,
+    )
+    .await?;
     let hints = parse_hints(&response.as_concat_text(), &refs);
 
     // Every hint this pass stores shares one episode (R45): they were distilled
@@ -462,6 +471,14 @@ fn project_signature(decisions: &[Decision]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn synthesis_cannot_bypass_shared_paid_dispatch_boundary() {
+        let source = include_str!("synthesis.rs");
+        let direct_call = [".", "complete_fast("].concat();
+        assert!(source.contains("complete_fast_accounted"));
+        assert!(!source.contains(&direct_call));
+    }
 
     fn answered_row(id: &str, project: Option<&str>, actor: &str, status: &str) -> Decision {
         Decision {

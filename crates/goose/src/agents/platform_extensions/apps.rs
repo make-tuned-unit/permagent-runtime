@@ -1,6 +1,7 @@
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::reply_parts::coerce_tool_arguments;
+use crate::agents::reply_parts::AccountedFastCompletion;
 use crate::agents::tool_execution::ToolCallContext;
 use crate::config::paths::Paths;
 use crate::conversation::message::Message;
@@ -273,11 +274,22 @@ impl AppsManagerClient {
         let tools = vec![Self::create_app_content_tool()];
 
         let model_config = provider.get_model_config();
-
-        let (response, usage) = provider
-            .complete(&model_config, session_id, &system_prompt, &messages, &tools)
+        let manager = Arc::new(crate::session::SessionManager::instance());
+        let session = manager
+            .get_session(session_id, false)
             .await
-            .map_err(|e| format!("LLM call failed: {}", e))?;
+            .map_err(|e| format!("Session lookup failed: {e}"))?;
+        let (response, usage) = AccountedFastCompletion::complete_accounted(
+            manager,
+            session,
+            provider,
+            &system_prompt,
+            &messages,
+            &tools,
+            false,
+        )
+        .await
+        .map_err(|e| format!("LLM call failed: {}", e))?;
 
         if let (Some(output), Some(max)) = (usage.usage.output_tokens, model_config.max_tokens) {
             if output >= max {
@@ -316,11 +328,22 @@ impl AppsManagerClient {
         let tools = vec![Self::update_app_content_tool()];
 
         let model_config = provider.get_model_config();
-
-        let (response, usage) = provider
-            .complete(&model_config, session_id, &system_prompt, &messages, &tools)
+        let manager = Arc::new(crate::session::SessionManager::instance());
+        let session = manager
+            .get_session(session_id, false)
             .await
-            .map_err(|e| format!("LLM call failed: {}", e))?;
+            .map_err(|e| format!("Session lookup failed: {e}"))?;
+        let (response, usage) = AccountedFastCompletion::complete_accounted(
+            manager,
+            session,
+            provider,
+            &system_prompt,
+            &messages,
+            &tools,
+            false,
+        )
+        .await
+        .map_err(|e| format!("LLM call failed: {}", e))?;
 
         if let (Some(output), Some(max)) = (usage.usage.output_tokens, model_config.max_tokens) {
             if output >= max {
@@ -695,4 +718,16 @@ fn extract_tool_response<T: serde::de::DeserializeOwned>(
     }
 
     Err(format!("LLM did not call the required tool: {}", tool_name))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn app_generation_cannot_bypass_shared_paid_dispatch_boundary() {
+        let source = include_str!("apps.rs");
+        let direct_call = [".", "complete("].concat();
+        let accounted_call = ["complete_", "accounted"].concat();
+        assert_eq!(source.matches(&accounted_call).count(), 2);
+        assert!(!source.contains(&direct_call));
+    }
 }

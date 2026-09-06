@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::acp::{
-    extension_configs_to_mcp_servers, AcpProvider, AcpProviderConfig, ACP_CURRENT_MODEL,
+    extension_configs_to_mcp_servers, require_adapter_selected_model, AcpProvider,
+    AcpProviderConfig, ACP_CURRENT_MODEL,
 };
 use crate::config::search_path::SearchPaths;
 use crate::config::{Config, GooseMode};
@@ -12,6 +13,7 @@ use crate::model::ModelConfig;
 use crate::providers::acp_tooling::{acp_adapter_installed, acp_inventory_identity};
 use crate::providers::base::{ProviderDef, ProviderMetadata};
 use crate::providers::inventory::InventoryIdentityInput;
+use crate::session::CostTier;
 
 const CLAUDE_ACP_PROVIDER_NAME: &str = "claude-acp";
 const CLAUDE_ACP_DOC_URL: &str = "https://github.com/zed-industries/claude-agent-acp";
@@ -45,6 +47,7 @@ impl ProviderDef for ClaudeAcpProvider {
         extensions: Vec<crate::config::ExtensionConfig>,
     ) -> BoxFuture<'static, Result<AcpProvider>> {
         Box::pin(async move {
+            require_adapter_selected_model(CLAUDE_ACP_PROVIDER_NAME, &model)?;
             let config = Config::global();
             // with_npm() includes npm global bin dir (desktop app PATH may not)
             let resolved_command = SearchPaths::builder()
@@ -74,6 +77,9 @@ impl ProviderDef for ClaudeAcpProvider {
                 session_mode_id: Some(mode_mapping[&goose_mode].clone()),
                 mode_mapping,
                 notification_callback: None,
+                // Claude Code's own metadata describes this as a subscription
+                // adapter; ACP transport does not infer this at runtime.
+                cost_tier: CostTier::Subscription,
             };
 
             let metadata = Self::metadata();

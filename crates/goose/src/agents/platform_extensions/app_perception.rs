@@ -847,6 +847,7 @@ impl AppPerceptionClient {
                 })).collect::<Vec<_>>(),
                 "daily_note": "one row per day WITH traffic, ascending; absent days had none",
                 "top_paths": analytics_ranked(&summary.top_paths, "path", "views"),
+                "top_referrers": analytics_ranked(&summary.top_referrers, "domain", "events"),
                 "utm": {
                     "sources": analytics_ranked(&summary.top_utm_sources, "name", "events"),
                     "mediums": analytics_ranked(&summary.top_utm_mediums, "name", "events"),
@@ -1603,6 +1604,57 @@ impl AppPerceptionClient {
     async fn observe_build(&self) -> Value {
         let mut partial = false;
 
+        // This is the live half of Build. Coding-session memories are only
+        // written at turn/session completion; a harness working right now
+        // would otherwise be invisible to Henry. Read the bounded registry,
+        // not terminal output, and intentionally omit run/session ids (opaque
+        // join keys do not belong in model context). The bounded prompt context
+        // lets Henry understand the request while it is still running.
+        let live_harness_runs = {
+            let runs =
+                crate::agents::platform_extensions::terminal_supervision::list_active_harness_runs(
+                );
+            let total = runs.len();
+            let items: Vec<Value> = runs
+                .into_iter()
+                .take(LIST_LIMIT)
+                .map(|run| {
+                    json!({
+                        "project": safe_text(&run.project, 80),
+                        "prompt_title": safe_text(&run.prompt_title, 120),
+                        "prompt_digest": safe_text(&run.prompt_digest, 80),
+                        "prompt_context": run.prompt_context.map(|p| safe_text(&p, 8_000)),
+                        "council_recommendation": run.council_recommendation,
+                        "dag_nodes": run.dag_nodes.into_iter().map(|n| safe_text(&n, 80)).collect::<Vec<_>>(),
+                        "dependencies": run.dependencies.into_iter().map(|n| safe_text(&n, 80)).collect::<Vec<_>>(),
+                        "active_node": run.active_node.map(|n| safe_text(&n, 80)),
+                        "worker": run.worker.map(|w| safe_text(&w, 80)),
+                        "model": run.model.map(|m| safe_text(&m, 120)),
+                        "tier": run.tier.map(|t| safe_text(&t, 80)),
+                        "routing_reason": run.routing_reason.map(|r| safe_text(&r, 160)),
+                        "status": run.status,
+                        "declared_verification": run.declared_verification.map(|v| json!({
+                            "command": safe_text(&v.command, 160), "verdict": v.verdict.map(|x| safe_text(&x, 80))
+                        })),
+                        "last_verification": run.last_verification.map(|v| json!({
+                            "command": safe_text(&v.command, 160), "verdict": v.verdict.map(|x| safe_text(&x, 80))
+                        })),
+                        "verification_attempts": run.verification_attempts,
+                        "verification_verdict": run.verification_verdict.map(|v| safe_text(&v, 80)),
+                        "pending_gate": run.pending_gate.map(|g| json!({
+                            "tool_name": safe_text(&g.tool_name, 80), "tier": g.tier.map(|t| safe_text(&t, 80))
+                        })),
+                        "elapsed_ms": run.elapsed_ms
+                    })
+                })
+                .collect();
+            if total == 0 {
+                json!({"status": "empty", "runs": ranked(items, total)})
+            } else {
+                json!({"status": "available", "runs": ranked(items, total)})
+            }
+        };
+
         let coding_sessions = match open_brain_db_readonly() {
             Ok(conn) => {
                 let has_source = table_has_column(&conn, "memories", "source");
@@ -1784,9 +1836,10 @@ impl AppPerceptionClient {
 
         let coding_empty = coding_sessions.get("status").and_then(|s| s.as_str()) == Some("empty");
         let browser_empty = browser.get("status").and_then(|s| s.as_str()) == Some("empty");
+        let live_empty = live_harness_runs.get("status").and_then(|s| s.as_str()) == Some("empty");
         let status = if partial {
             "partial"
-        } else if coding_empty && browser_empty {
+        } else if coding_empty && browser_empty && live_empty {
             "empty"
         } else {
             "available"
@@ -1798,6 +1851,7 @@ impl AppPerceptionClient {
             "queried": true,
             "data": {
                 "coding_sessions": coding_sessions,
+                "live_harness_runs": live_harness_runs,
                 "browser": browser
             }
         })
@@ -1853,6 +1907,7 @@ impl AppPerceptionClient {
                     "name": safe_text(&worker.display_name(), 80),
                     "role": safe_text(&worker.role, 80),
                     "engine": worker.engine.label(),
+                    "capabilities": worker.capabilities(),
                     "available": available,
                     "unavailable_reason": reason.as_ref().map(|r| safe_text(r, 120))
                 })
@@ -2755,6 +2810,65 @@ mod tests {
         assert_eq!(payload["data"]["coding_sessions"]["sessions"]["total"], 0);
         // Empty is not unavailable.
         assert_ne!(payload["data"]["coding_sessions"]["status"], "unavailable");
+    }
+
+    #[tokio::test]
+    async fn observe_build_exposes_live_harness_state_without_prompt_body_or_ids() {
+        use crate::agents::platform_extensions::terminal_supervision as runs;
+
+        let run_id = format!("run-private-{}", uuid::Uuid::new_v4());
+        let session_id = format!("session-private-{}", uuid::Uuid::new_v4());
+        runs::update_harness_run(runs::HarnessRunUpdate {
+            run_id: run_id.clone(),
+            session_id: session_id.clone(),
+            project: "permagent-runtime".to_string(),
+            prompt_title: "Add structured run state".to_string(),
+            prompt_digest: "digest-only".to_string(),
+            task_version: Some("dag-1/v1".to_string()),
+            envelope_id: Some("coding-harness/v1/test".to_string()),
+            prompt_context: Some("Plan a Council DAG across the server and iOS app.".to_string()),
+            dag_nodes: vec!["implement".to_string()],
+            dependencies: Vec::new(),
+            active_node: Some("implement".to_string()),
+            worker: Some("permagent".to_string()),
+            provider: Some("local".to_string()),
+            model: Some("test-model".to_string()),
+            billing_class: Some("local".to_string()),
+            tier: None,
+            routing_reason: Some("test".to_string()),
+            status: runs::HarnessRunStatus::Running,
+            declared_verification: None,
+            last_verification: None,
+            verification_attempts: Some(0),
+            verification_verdict: None,
+            pending_gate: None,
+            retry_count: None,
+            tool_calls: None,
+            gate_attempts: None,
+            evidence: None,
+            result: None,
+            parent_run_id: None,
+            parent_session_id: None,
+        })
+        .unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _env = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.as_str()))]);
+        seed_memory_db(&brain_db_path(), &[("other", "safe", None)]);
+        let payload = observe(&test_client(tmp.path().to_path_buf()), "build").await;
+        let live = &payload["data"]["live_harness_runs"];
+        assert_eq!(live["status"], "available");
+        assert_eq!(live["runs"]["items"][0]["active_node"], "implement");
+        let encoded = live.to_string();
+        assert!(!encoded.contains(&run_id));
+        assert!(!encoded.contains(&session_id));
+        assert!(encoded.contains("Plan a Council DAG"));
+        assert_eq!(
+            live["runs"]["items"][0]["council_recommendation"]["recommended"],
+            true
+        );
+        runs::remove_harness_run(&run_id);
     }
 
     #[tokio::test]

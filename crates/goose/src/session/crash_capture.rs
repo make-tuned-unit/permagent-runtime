@@ -91,10 +91,8 @@ pub const DURABILITY_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         id: "durability_supervision",
         display_name: "Durability supervision",
         category: crate::agents::self_knowledge::FeatureCategory::Guard,
-        what_it_does:
-            "Keeps your daemon healthy for weeks unattended: a panic circuit-breaker forces a clean restart instead of limping half-dead, and — once `permagent setup` has registered you under launchd — an external watchdog restarts you if you stop answering while your process is still alive; the databases' write-ahead logs are checkpointed on a timer, retried on the next tick when a reader pins the log, and scheduled work is reconciled after every restart",
-        why_it_matters:
-            "It is why the user can leave you running and reach you days later and you just work — a crash restarts you cleanly, a wedge is caught by the watchdog once it is installed, the write-ahead logs are checkpointed rather than left to grow untended, and scheduled work resumes",
+        what_it_does: "Keeps your daemon healthy for weeks unattended: a panic circuit-breaker forces a clean restart instead of limping half-dead, and — once `permagent setup` has registered you under launchd — an external watchdog restarts you if you stop answering while your process is still alive; the databases' write-ahead logs are checkpointed on a timer, retried on the next tick when a reader pins the log, and scheduled work is reconciled after every restart",
+        why_it_matters: "It is why the user can leave you running and reach you days later and you just work — a crash restarts you cleanly, a wedge is caught by the watchdog once it is installed, the write-ahead logs are checkpointed rather than left to grow untended, and scheduled work resumes",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[],
     };

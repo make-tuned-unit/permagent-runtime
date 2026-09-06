@@ -10,6 +10,7 @@ use tracing::debug;
 use super::super::agents::Agent;
 #[cfg(feature = "code-mode")]
 use crate::agents::platform_extensions::code_execution;
+use crate::config::GooseMode;
 use crate::conversation::message::{Message, MessageContent, ToolRequest};
 use crate::conversation::Conversation;
 use crate::cost_router::cache::SystemPromptParts;
@@ -24,7 +25,9 @@ use crate::providers::toolshim::{
     augment_message_with_tool_calls, convert_tool_messages_to_text,
     modify_system_prompt_for_tool_json, OllamaInterpreter,
 };
-use crate::session::{CostLedgerRow, CostTier, SessionType};
+use crate::session::{
+    budget_task_id, goal_id, CostLedgerRow, CostTier, Session, SessionManager, SessionType,
+};
 use rmcp::model::Tool;
 
 async fn enhance_model_error(error: ProviderError, provider: &Arc<dyn Provider>) -> ProviderError {
@@ -66,10 +69,10 @@ fn coerce_value(s: &str, schema: &Value) -> Value {
                 if let Value::String(type_name) = t {
                     match type_name.as_str() {
                         "number" | "integer" if s.parse::<f64>().is_ok() => {
-                            return try_coerce_number(s)
+                            return try_coerce_number(s);
                         }
                         "boolean" if matches!(s.to_lowercase().as_str(), "true" | "false") => {
-                            return try_coerce_boolean(s)
+                            return try_coerce_boolean(s);
                         }
                         _ => continue,
                     }
@@ -138,6 +141,129 @@ async fn toolshim_postprocess(
 }
 
 impl Agent {
+    /// Immutable identity captured immediately before a provider dispatch.
+    /// Keeping these fields outside the mutable session/provider state prevents
+    /// a provider switch on the next turn from rewriting this invocation's
+    /// attribution.
+    pub(crate) async fn reserve_provider_invocation(
+        &self,
+        session: &Session,
+        provider: &Arc<dyn Provider>,
+        invocation_id: String,
+    ) -> std::result::Result<ProviderInvocationContext, ProviderAuthorizationFailure> {
+        reserve_provider_invocation_for_model(
+            Arc::clone(&self.config.session_manager),
+            session,
+            provider.get_name(),
+            provider.cost_tier(),
+            provider.get_model_config(),
+            provider.retry_config().max_physical_attempts(),
+            invocation_id,
+        )
+        .await
+    }
+
+    /// Make a budget denial durable for a goal worker, then park and stop it.
+    /// The requested bound is authorization-only and is intentionally never
+    /// presented as already-spent money.
+    pub(crate) async fn handle_provider_authorization_failure(
+        &self,
+        session: &Session,
+        failure: &ProviderAuthorizationFailure,
+    ) -> String {
+        let detail = failure.to_string();
+        let Some(card_id) = goal_id(&session.extension_data) else {
+            return detail;
+        };
+        let pool = match self.config.session_manager.pool_clone().await {
+            Ok(pool) => pool,
+            Err(error) => return format!("{detail}; could not open Decision Inbox: {error}"),
+        };
+
+        // Refused/unknown outcomes have no truthful BudgetVerdict (in
+        // particular, an unknown provider result is not zero dollars). Use the
+        // existing unblock decision shape and the sole guarded park path. A
+        // gate fallback remains a choice so the user can actually authorize
+        // the next attempt if the worker/session mapping raced with dispatch.
+        let is_gate = matches!(failure, ProviderAuthorizationFailure::NeedsGate { .. });
+        let kind = if is_gate { "choice" } else { "unblock" };
+        let already_open = crate::decisions::find_open_decision_for_goal(&pool, &card_id, kind)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|decision| {
+                !is_gate || decision.headline.contains("authorization needs approval")
+            });
+        if !already_open {
+            let request = if let ProviderAuthorizationFailure::NeedsGate {
+                scope,
+                spent_usd,
+                held_usd,
+                requested_usd,
+                ceiling_usd,
+            } = failure
+            {
+                let cfg = crate::cost_router::budget::load_budget_config();
+                crate::cost_router::budget::reservation_gate_decision_request(
+                    *scope,
+                    *spent_usd,
+                    *held_usd,
+                    *requested_usd,
+                    *ceiling_usd,
+                    match scope {
+                        crate::cost_router::budget::BudgetScope::Task => cfg.task.gate,
+                        crate::cost_router::budget::BudgetScope::Session => cfg.session.gate,
+                    },
+                    Some(card_id.clone()),
+                    None,
+                )
+            } else {
+                let reason = match failure {
+                    ProviderAuthorizationFailure::Refused { .. } => {
+                        crate::decisions::UnblockReason::TokenBudget
+                    }
+                    _ => crate::decisions::UnblockReason::Stuck,
+                };
+                let payload = serde_json::to_value(crate::decisions::UnblockPayload {
+                    reason,
+                    spent: None,
+                    cap: None,
+                })
+                .unwrap_or_default();
+                crate::decisions::NewDecision {
+                    kind: kind.to_string(),
+                    goal_id: Some(card_id.clone()),
+                    project_id: None,
+                    headline: Some(crate::decisions::truncate_for_headline(
+                        "Provider spend authorization blocked this goal",
+                    )),
+                    detail: Some(detail.clone()),
+                    payload,
+                    ..Default::default()
+                }
+            };
+            if let Err(error) = crate::decisions::create_decision(&pool, request).await {
+                tracing::error!(goal_id = %card_id, "could not create provider budget decision: {error}");
+            }
+        }
+        if let Err(error) = crate::goal_transition::park_goal(
+            &pool,
+            &card_id,
+            crate::decisions::ACTOR_SYSTEM,
+            &detail,
+        )
+        .await
+        {
+            tracing::warn!(goal_id = %card_id, "could not park blocked provider goal: {error}");
+        }
+        if let Some(kill) =
+            crate::agents::platform_extensions::orchestrator::take_goal_worker(&card_id)
+        {
+            kill.kill();
+        }
+        detail
+    }
+
     pub async fn prepare_tools_and_prompt(
         &self,
         session_id: &str,
@@ -457,6 +583,7 @@ impl Agent {
         let model_config = provider.get_model_config();
         debug!("WAITING_LLM_STREAM_START");
         let stream_result = provider
+            // permagent-dispatch: seam=agent_primary_stream_transport_v1 class=excluded reason=caller_reservation_settlement authority=agent_primary_stream
             .stream_split(
                 &model_config,
                 session_id,
@@ -631,202 +758,743 @@ impl Agent {
         (frontend_requests, other_requests, filtered_message)
     }
 
-    pub(crate) async fn update_session_metrics(
+    pub(crate) async fn update_session_metrics_for_invocation(
         &self,
         session_id: &str,
         schedule_id: Option<String>,
         usage: &ProviderUsage,
-        is_compaction_usage: bool,
+        invocation: &ProviderInvocationContext,
+        recognition_retrieval_id: Option<&str>,
     ) -> Result<()> {
-        let manager = self.config.session_manager.clone();
-        let session = manager.get_session(session_id, false).await?;
+        record_provider_usage(
+            Arc::clone(&self.config.session_manager),
+            session_id,
+            schedule_id,
+            usage,
+            false,
+            Some(invocation),
+            recognition_retrieval_id,
+        )
+        .await
+    }
+}
 
-        // Accumulate in the DATABASE, not here.
-        //
-        // This used to read `session.accumulated_*`, add the new usage in Rust,
-        // and write the absolute result. Two turns sharing a session — a
-        // subagent alongside the main loop, or concurrent tool calls — both
-        // read the same starting value and both write their own total, so the
-        // second commit silently discards the first's tokens. That undercounts
-        // spend, and the accumulated figures feed the spend caps.
-        let (delta_total, delta_input, delta_output) = (
-            usage.usage.total_tokens.unwrap_or(0),
-            usage.usage.input_tokens.unwrap_or(0),
-            usage.usage.output_tokens.unwrap_or(0),
-        );
+/// Append one provider response and all derived token/cost rollups.  This is
+/// deliberately independent from `Agent` so background context maintenance
+/// can use the same single Spectral transaction instead of creating a side
+/// ledger or a best-effort metric path.
+pub(crate) async fn record_provider_usage(
+    manager: Arc<SessionManager>,
+    session_id: &str,
+    schedule_id: Option<String>,
+    usage: &ProviderUsage,
+    is_compaction_usage: bool,
+    invocation: Option<&ProviderInvocationContext>,
+    recognition_retrieval_id: Option<&str>,
+) -> Result<()> {
+    let session = manager.get_session(session_id, false).await?;
 
-        let (current_total, current_input, current_output) = if is_compaction_usage {
-            // After compaction: summary output becomes new input context
-            let new_input = usage.usage.output_tokens;
-            (new_input, new_input, None)
-        } else {
-            (
-                usage.usage.total_tokens,
-                usage.usage.input_tokens,
-                usage.usage.output_tokens,
-            )
-        };
+    // Accumulate in the DATABASE, not here.
+    //
+    // This used to read `session.accumulated_*`, add the new usage in Rust,
+    // and write the absolute result. Two turns sharing a session — a
+    // subagent alongside the main loop, or concurrent tool calls — both
+    // read the same starting value and both write their own total, so the
+    // second commit silently discards the first's tokens. That undercounts
+    // spend, and the accumulated figures feed the spend caps.
+    let (delta_total, delta_input, delta_output) = (
+        usage.usage.total_tokens.unwrap_or(0),
+        usage.usage.input_tokens.unwrap_or(0),
+        usage.usage.output_tokens.unwrap_or(0),
+    );
 
-        manager
-            .update(session_id)
-            .schedule_id(schedule_id)
-            .total_tokens(current_total)
-            .input_tokens(current_input)
-            .output_tokens(current_output)
-            .accumulate_tokens(delta_total, delta_input, delta_output)
-            .apply()
-            .await?;
+    let (current_total, current_input, current_output) = if is_compaction_usage {
+        // After compaction: summary output becomes new input context
+        let new_input = usage.usage.output_tokens;
+        (new_input, new_input, None)
+    } else {
+        (
+            usage.usage.total_tokens,
+            usage.usage.input_tokens,
+            usage.usage.output_tokens,
+        )
+    };
 
-        // ── Per-call cost ledger (single source of truth for spend/attribution) ─
-        // One row per provider response. Every money field is folded by the ONE
-        // canonical `cost_of` (via `cost_breakdown`), so the ledger, the live
-        // meter, and the verification digest can never disagree. Best-effort: a
-        // ledger failure must never abort the agent turn — log and move on.
-        let provider = session.provider_name.clone();
-        let model = usage.model.clone();
-        // `maybe_get_pricing`, not `maybe_get_canonical_model(..).cost`: the
-        // generated registry has no ROW at all for a newly-selectable model, so
-        // the canonical lookup returns `None` and there is nothing to read a
-        // price off. That is how 128 `deepseek-v4-flash` calls billed as $0.00
-        // on 2026-08-23 — see `providers::canonical::published_prices`.
-        let pricing = provider
-            .as_deref()
-            .and_then(|p| maybe_get_pricing(p, &model));
-        let breakdown = pricing
-            .as_ref()
-            .and_then(|p| cost_breakdown(&usage.usage, p));
+    // ── Per-call cost ledger (single source of truth for spend/attribution) ─
+    // One row per provider response. Every money field is folded by the ONE
+    // canonical `cost_of` (via `cost_breakdown`), so the ledger, the live
+    // meter, and the verification digest can never disagree. For an
+    // invocation-authorized call this write is fail-closed: accounting
+    // failure aborts the turn instead of silently losing spend.
+    let provider = invocation
+        .map(|call| Some(call.provider.clone()))
+        .unwrap_or_else(|| session.provider_name.clone());
+    let model = invocation
+        .map(|call| call.model.clone())
+        .unwrap_or_else(|| usage.model.clone());
+    // `maybe_get_pricing`, not `maybe_get_canonical_model(..).cost`: the
+    // generated registry has no ROW at all for a newly-selectable model, so
+    // the canonical lookup returns `None` and there is nothing to read a
+    // price off. That is how 128 `deepseek-v4-flash` calls billed as $0.00
+    // on 2026-08-23 — see `providers::canonical::published_prices`.
+    let pricing = provider
+        .as_deref()
+        .and_then(|p| maybe_get_pricing(p, &model));
+    let breakdown = pricing
+        .as_ref()
+        .and_then(|p| cost_breakdown(&usage.usage, p));
 
-        // Ollama et al. run locally — not chargeable. Subscription/quota detection
-        // is not yet wired (no per-provider plan signal here), so a priced remote
-        // provider records as `paid_api`.
-        let is_local = provider.as_deref().is_some_and(is_local_provider);
-        let cost_tier = if is_local {
+    // Ollama et al. run locally — not chargeable. Subscription/quota detection
+    // is not yet wired (no per-provider plan signal here), so a priced remote
+    // provider records as `paid_api`.
+    let is_local = provider.as_deref().is_some_and(is_local_provider);
+    let cost_tier = invocation.map(|call| call.cost_tier).unwrap_or_else(|| {
+        if is_local {
             CostTier::LocalFree
         } else {
             CostTier::PaidApi
-        };
-
-        // Not chargeable → cost 0 (never bill local/in-quota). Chargeable with a
-        // known price → the folded `cost_of` total.
-        //
-        // Chargeable but UNPRICED → billed at the worst case we know of for that
-        // provider, still flagged `is_estimated`. It used to record $0.00, and
-        // because nothing downstream read the flag, the budget ceilings summed
-        // 211 real calls as zero and could never fire (2026-08-24 health review).
-        // An unknown price now fails CLOSED: an unmeasurable call can only make
-        // the cap fire early, never late. `is_estimated` still marks it, so the
-        // figure is never mistaken for a measured cost.
-        let estimated_breakdown = if cost_tier.is_chargeable() && breakdown.is_none() {
-            provider
-                .as_deref()
-                .and_then(worst_case_pricing)
-                .and_then(|p| cost_breakdown(&usage.usage, &p))
-        } else {
-            None
-        };
-        if let Some(est) = &estimated_breakdown {
-            tracing::warn!(
-                model = %model,
-                provider = provider.as_deref().unwrap_or("unknown"),
-                estimated_cost_usd = est.total_cost,
-                "no published price for this model — billing it at the provider's most \
-                 expensive known rate so the spend cap still applies"
-            );
         }
+    });
 
-        let (cost_usd, input_cost, output_cost, cache_read_cost, cache_write_cost, is_estimated) =
-            match (cost_tier.is_chargeable(), &breakdown, &estimated_breakdown) {
-                (false, _, _) => (0.0, 0.0, 0.0, 0.0, 0.0, false),
-                (true, Some(b), _) => (
-                    b.total_cost,
-                    b.input_cost,
-                    b.output_cost,
-                    b.cache_read_cost,
-                    b.cache_write_cost,
-                    false,
-                ),
-                (true, None, Some(b)) => (
-                    b.total_cost,
-                    b.input_cost,
-                    b.output_cost,
-                    b.cache_read_cost,
-                    b.cache_write_cost,
-                    true,
-                ),
-                // Nothing priced anywhere in the registry — keep $0 rather than
-                // inventing a number, and let `is_estimated` carry the warning.
-                (true, None, None) => (0.0, 0.0, 0.0, 0.0, 0.0, true),
-            };
-        let cache_savings_usd = if cost_tier.is_chargeable() {
-            pricing
-                .as_ref()
-                .map(|p| cache_savings_of(&usage.usage, p))
-                .unwrap_or(0.0)
-        } else {
-            0.0
+    // Not chargeable → cost 0 (never bill local/in-quota). Chargeable with a
+    // known price → the folded `cost_of` total.
+    //
+    // Chargeable but UNPRICED → billed at the worst case we know of for that
+    // provider, still flagged `is_estimated`. It used to record $0.00, and
+    // because nothing downstream read the flag, the budget ceilings summed
+    // 211 real calls as zero and could never fire (2026-08-24 health review).
+    // An unknown price now fails CLOSED: an unmeasurable call can only make
+    // the cap fire early, never late. `is_estimated` still marks it, so the
+    // figure is never mistaken for a measured cost.
+    let estimated_breakdown = if cost_tier.is_chargeable() && breakdown.is_none() {
+        provider
+            .as_deref()
+            .and_then(worst_case_pricing)
+            .and_then(|p| cost_breakdown(&usage.usage, &p))
+    } else {
+        None
+    };
+    if let Some(est) = &estimated_breakdown {
+        tracing::warn!(
+            model = %model,
+            provider = provider.as_deref().unwrap_or("unknown"),
+            estimated_cost_usd = est.total_cost,
+            "no published price for this model — billing it at the provider's most \
+             expensive known rate so the spend cap still applies"
+        );
+    }
+
+    let (cost_usd, input_cost, output_cost, cache_read_cost, cache_write_cost, is_estimated) =
+        match (cost_tier.is_chargeable(), &breakdown, &estimated_breakdown) {
+            (false, _, _) => (0.0, 0.0, 0.0, 0.0, 0.0, false),
+            (true, Some(b), _) => (
+                b.total_cost,
+                b.input_cost,
+                b.output_cost,
+                b.cache_read_cost,
+                b.cache_write_cost,
+                false,
+            ),
+            (true, None, Some(b)) => (
+                b.total_cost,
+                b.input_cost,
+                b.output_cost,
+                b.cache_read_cost,
+                b.cache_write_cost,
+                true,
+            ),
+            // Nothing priced anywhere in the registry — keep $0 rather than
+            // inventing a number, and let `is_estimated` carry the warning.
+            (true, None, None) => (0.0, 0.0, 0.0, 0.0, 0.0, true),
         };
+    let cache_savings_usd = if cost_tier.is_chargeable() {
+        pricing
+            .as_ref()
+            .map(|p| cache_savings_of(&usage.usage, p))
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
 
-        // Surface the prompt-cache hit rate for this response — reads /
-        // (reads + creation), the day-one measurable signal for the cache
-        // discipline (#717/#727). Emitted per call alongside the ledger's cost so
-        // it is observable without a schema change; `None` (no log) when nothing
-        // went through the cache this call.
-        if let Some(cache_hit_rate) = cache_hit_rate_of(&usage.usage) {
-            tracing::debug!(
-                cache_hit_rate,
-                cache_savings_usd,
-                cost_usd,
-                model = %model,
-                "prompt-cache hit rate for provider response"
-            );
-        }
-
-        // Interactive surfaces are User/Terminal; everything else (SubAgent,
-        // Scheduled, Hidden, Gateway, Acp) is background/headless. One
-        // definition, on the type itself.
-        let is_headless = !session.session_type.is_interactive();
-
-        let tok = |t: Option<i32>| t.unwrap_or(0).max(0) as i64;
-        // `subagent_id`: a SubAgent session IS the subagent — its own id is the
-        // identity a "cost run inside a subagent" query needs.
-        // `parent_session_id` comes from the session row (set at spawn via
-        // `create_session_with_parent`); ledger rows copy it so parent rollups
-        // do not need a join back to `sessions`.
-        let subagent_id =
-            matches!(session.session_type, SessionType::SubAgent).then(|| session.id.clone());
-        let row = CostLedgerRow {
-            call_id: uuid::Uuid::new_v4().to_string(),
-            ts: chrono::Utc::now().to_rfc3339(),
-            session_id: session_id.to_string(),
-            parent_session_id: session.parent_session_id.clone(),
-            task_id: None,
-            goal_id: None,
-            subagent_id,
-            provider,
-            model: Some(model),
-            cost_tier,
-            is_headless,
-            input_tokens: tok(usage.usage.input_tokens),
-            output_tokens: tok(usage.usage.output_tokens),
-            cache_read_tokens: tok(usage.usage.cache_read_input_tokens),
-            cache_write_tokens: tok(usage.usage.cache_write_input_tokens),
-            input_cost,
-            output_cost,
-            cache_read_cost,
-            cache_write_cost,
-            cost_usd,
+    // Surface the prompt-cache hit rate for this response — reads /
+    // (reads + creation), the day-one measurable signal for the cache
+    // discipline (#717/#727). Emitted per call alongside the ledger's cost so
+    // it is observable without a schema change; `None` (no log) when nothing
+    // went through the cache this call.
+    if let Some(cache_hit_rate) = cache_hit_rate_of(&usage.usage) {
+        tracing::debug!(
+            cache_hit_rate,
             cache_savings_usd,
-            is_estimated,
-        };
-        if let Err(e) = manager.append_cost_ledger(&row).await {
-            tracing::warn!(
-                "cost_ledger append failed for session {}: {}",
-                session_id,
-                e
-            );
-        }
+            cost_usd,
+            model = %model,
+            "prompt-cache hit rate for provider response"
+        );
+    }
 
+    // Interactive surfaces are User/Terminal; everything else (SubAgent,
+    // Scheduled, Hidden, Gateway, Acp) is background/headless. One
+    // definition, on the type itself.
+    let is_headless = !session.session_type.is_interactive();
+
+    let tok = |t: Option<i32>| t.unwrap_or(0).max(0) as i64;
+    // `subagent_id`: a SubAgent session IS the subagent — its own id is the
+    // identity a "cost run inside a subagent" query needs.
+    // `parent_session_id` comes from the session row (set at spawn via
+    // `create_session_with_parent`); ledger rows copy it so parent rollups
+    // do not need a join back to `sessions`.
+    let subagent_id =
+        matches!(session.session_type, SessionType::SubAgent).then(|| session.id.clone());
+    let row = CostLedgerRow {
+        // ProviderUsage carries the invocation identity assigned by the
+        // Agent. A missing identity is retained for legacy/manual callers;
+        // it gets a fresh key and therefore cannot claim replay safety.
+        call_id: invocation
+            .map(|call| call.invocation_id.clone())
+            .or_else(|| usage.invocation_id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        ts: chrono::Utc::now().to_rfc3339(),
+        session_id: session_id.to_string(),
+        parent_session_id: session.parent_session_id.clone(),
+        task_id: budget_task_id(&session.extension_data),
+        goal_id: goal_id(&session.extension_data),
+        subagent_id,
+        provider,
+        model: Some(model),
+        cost_tier,
+        is_headless,
+        input_tokens: tok(usage.usage.input_tokens),
+        output_tokens: tok(usage.usage.output_tokens),
+        cache_read_tokens: tok(usage.usage.cache_read_input_tokens),
+        cache_write_tokens: tok(usage.usage.cache_write_input_tokens),
+        input_cost,
+        output_cost,
+        cache_read_cost,
+        cache_write_cost,
+        cost_usd,
+        cache_savings_usd,
+        is_estimated,
+    };
+    // Token and money accounting are one durable operation. An unavailable
+    // ledger must stop the turn rather than allow paid work to continue
+    // with silently missing spend; duplicate invocation keys are handled as
+    // an explicit successful no-op by the storage layer.
+    if let Some(invocation) = invocation.filter(|call| call.cost_tier.is_chargeable()) {
+        let reservation_id = invocation.reservation_id.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "paid provider invocation has no reservation; refusing to settle silently"
+            )
+        })?;
+        manager
+            .settle_provider_invocation(
+                reservation_id,
+                &row,
+                schedule_id,
+                current_total,
+                current_input,
+                current_output,
+                delta_total,
+                delta_input,
+                delta_output,
+            )
+            .await?;
+    } else {
+        manager
+            .append_usage_and_rollup(
+                &row,
+                schedule_id,
+                current_total,
+                current_input,
+                current_output,
+                delta_total,
+                delta_input,
+                delta_output,
+            )
+            .await?;
+    }
+
+    // Provider identity is copied by reference only after the authoritative
+    // cost row is durable. The recognition writer resolves that call in
+    // cost_ledger and enforces the recall/session match; attribution gaps do
+    // not fail the ordinary reply.
+    if let Some(retrieval_id) = recognition_retrieval_id {
+        if let Some(invocation_id) = invocation
+            .map(|call| call.invocation_id.as_str())
+            .or(usage.invocation_id.as_deref())
+        {
+            match manager.storage().pool().await {
+                Ok(pool) => match tokio::time::timeout(
+                    std::time::Duration::from_millis(250),
+                    crate::recognition::record_provider_invocation_reference(
+                        pool,
+                        retrieval_id,
+                        session_id,
+                        invocation_id,
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(crate::recognition::ProviderAttributionWrite::Recorded))
+                    | Ok(Ok(crate::recognition::ProviderAttributionWrite::Duplicate)) => {}
+                    Ok(Ok(status)) => debug!(
+                        target: "permagent::recognition",
+                        retrieval_id = %retrieval_id,
+                        ?status,
+                        "provider attribution remains partial or unavailable"
+                    ),
+                    Ok(Err(error)) => debug!(
+                        target: "permagent::recognition",
+                        retrieval_id = %retrieval_id,
+                        ?error,
+                        "provider attribution write failed open"
+                    ),
+                    Err(_) => debug!(
+                        target: "permagent::recognition",
+                        retrieval_id = %retrieval_id,
+                        "provider attribution write timed out; settlement remains durable"
+                    ),
+                },
+                Err(error) => debug!(
+                    target: "permagent::recognition",
+                    retrieval_id = %retrieval_id,
+                    ?error,
+                    "provider attribution pool unavailable"
+                ),
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Reserve exactly one provider invocation using immutable transport/model
+/// facts captured before dispatch.  This is shared by streamed turns and the
+/// explicit physical attempts behind `complete_fast`; neither path may infer
+/// a free tier from a provider name or fabricate a task identity.
+pub(crate) async fn reserve_provider_invocation_for_model(
+    manager: Arc<SessionManager>,
+    session: &Session,
+    provider: &str,
+    cost_tier: CostTier,
+    model_config: crate::model::ModelConfig,
+    max_physical_attempts: u32,
+    invocation_id: String,
+) -> std::result::Result<ProviderInvocationContext, ProviderAuthorizationFailure> {
+    let bound = crate::cost_router::plan_reservation_bound(
+        provider,
+        &model_config.model_name,
+        cost_tier,
+        &model_config,
+        max_physical_attempts,
+    )
+    .map_err(|e| ProviderAuthorizationFailure::Unknown {
+        reason: format!("cannot authorize provider call: {e}"),
+    })?;
+
+    let mut context = ProviderInvocationContext {
+        invocation_id,
+        provider: provider.to_string(),
+        model: model_config.model_name,
+        cost_tier,
+        reservation_id: None,
+    };
+
+    // Local and subscription calls retain typed attribution, but never create
+    // a paid-dollar hold.
+    let Some(bound) = bound else {
+        return Ok(context);
+    };
+    let task_id = budget_task_id(&session.extension_data);
+    let lease_until = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+    let outcome = manager
+        .reserve_provider_invocation(
+            &context.invocation_id,
+            &session.id,
+            task_id.as_deref(),
+            bound.amount_usd,
+            &lease_until,
+            &crate::cost_router::budget::load_budget_config(),
+        )
+        .await
+        .map_err(|e| ProviderAuthorizationFailure::Unknown {
+            reason: format!("cannot authorize provider call: {e}"),
+        })?;
+
+    match outcome {
+        crate::session::CostReservationOutcome::Granted { reservation_id }
+        | crate::session::CostReservationOutcome::AlreadyReserved { reservation_id } => {
+            context.reservation_id = Some(reservation_id);
+            Ok(context)
+        }
+        crate::session::CostReservationOutcome::AlreadySettled { .. } => {
+            Err(ProviderAuthorizationFailure::Unknown {
+                reason: "provider invocation identity was already settled; refusing replay"
+                    .to_string(),
+            })
+        }
+        crate::session::CostReservationOutcome::NeedsGate {
+            scope,
+            spent_usd,
+            held_usd,
+            requested_usd,
+            ceiling_usd,
+        } => Err(ProviderAuthorizationFailure::NeedsGate {
+            scope,
+            spent_usd,
+            held_usd,
+            requested_usd,
+            ceiling_usd,
+        }),
+        crate::session::CostReservationOutcome::Refused {
+            scope,
+            spent_usd,
+            held_usd,
+            requested_usd,
+            ceiling_usd,
+        } => Err(ProviderAuthorizationFailure::Refused {
+            scope,
+            spent_usd,
+            held_usd,
+            requested_usd,
+            ceiling_usd,
+        }),
+        crate::session::CostReservationOutcome::Unknown { reason } => {
+            Err(ProviderAuthorizationFailure::Unknown { reason })
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProviderInvocationContext {
+    pub invocation_id: String,
+    pub provider: String,
+    pub model: String,
+    pub cost_tier: CostTier,
+    pub reservation_id: Option<String>,
+}
+
+/// One reserved `complete_fast` attempt. It owns an immutable provider and
+/// session snapshot so background context work cannot accidentally inherit a
+/// model switch or a new task on the next turn.
+#[derive(Clone)]
+pub(crate) struct AccountedFastCompletion {
+    manager: Arc<SessionManager>,
+    session: Session,
+    provider: Arc<dyn Provider>,
+    is_compaction_usage: bool,
+}
+
+impl Agent {
+    pub(crate) fn accounted_fast_completion(
+        &self,
+        session: &Session,
+        provider: Arc<dyn Provider>,
+        is_compaction_usage: bool,
+    ) -> Arc<dyn crate::context_mgmt::AccountedFastCompletion> {
+        Arc::new(AccountedFastCompletion {
+            manager: Arc::clone(&self.config.session_manager),
+            session: session.clone(),
+            provider,
+            is_compaction_usage,
+        })
+    }
+}
+
+struct FastReservationUnknownGuard {
+    manager: Arc<SessionManager>,
+    reservation_id: Option<String>,
+    armed: bool,
+}
+
+impl FastReservationUnknownGuard {
+    fn new(manager: Arc<SessionManager>, reservation_id: Option<String>) -> Self {
+        Self {
+            manager,
+            armed: reservation_id.is_some(),
+            reservation_id,
+        }
+    }
+
+    async fn mark_unknown(&mut self) -> Result<()> {
+        if let Some(id) = self.reservation_id.as_deref().filter(|_| self.armed) {
+            self.manager.mark_provider_invocation_unknown(id).await?;
+        }
+        self.armed = false;
         Ok(())
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for FastReservationUnknownGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Some(reservation_id) = self.reservation_id.clone() else {
+            return;
+        };
+        let manager = Arc::clone(&self.manager);
+        // Cancellation cannot await. Preserve the paid hold as unknown; the
+        // durable lease is the crash-safe fallback if the runtime is exiting.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Err(error) = manager
+                    .mark_provider_invocation_unknown(&reservation_id)
+                    .await
+                {
+                    tracing::warn!(
+                        reservation_id = %reservation_id,
+                        "could not mark cancelled complete_fast reservation unknown: {error}"
+                    );
+                }
+            });
+        }
+    }
+}
+
+impl AccountedFastCompletion {
+    /// Resolve the durable hidden session used by background model work. This
+    /// keeps internal completions on the same Spectral ledger without inventing
+    /// a transcript-side budget or process-local accounting store.
+    pub(crate) async fn ensure_background_session(
+        manager: Arc<SessionManager>,
+        name: &str,
+    ) -> Result<Session> {
+        if let Some(session) = manager
+            .list_sessions_by_types(&[SessionType::Hidden])
+            .await?
+            .into_iter()
+            .find(|session| session.name == name)
+        {
+            return Ok(session);
+        }
+        manager
+            .create_session(
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                name.to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+    }
+
+    /// Run a fast/full completion through the shared reservation and Spectral
+    /// settlement seam without requiring an `Agent` instance. Background
+    /// orchestrator work uses this entry point so it cannot bypass the same
+    /// paid-dispatch boundary as interactive turns.
+    pub(crate) async fn complete_fast_accounted(
+        manager: Arc<SessionManager>,
+        session: Session,
+        provider: Arc<dyn Provider>,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+        is_compaction_usage: bool,
+    ) -> Result<(Message, ProviderUsage)> {
+        let completion = Self {
+            manager,
+            session,
+            provider,
+            is_compaction_usage,
+        };
+        completion
+            .complete_fast_inner(system, messages, tools)
+            .await
+    }
+
+    /// Run one full-model completion through the same reservation and
+    /// Spectral settlement boundary. Background callers that intentionally
+    /// select the provider's actor/lead model use this instead of bypassing
+    /// accounting with `Provider::complete`.
+    pub(crate) async fn complete_accounted(
+        manager: Arc<SessionManager>,
+        session: Session,
+        provider: Arc<dyn Provider>,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+        is_compaction_usage: bool,
+    ) -> Result<(Message, ProviderUsage)> {
+        let model_config = provider.get_model_config();
+        let completion = Self {
+            manager,
+            session,
+            provider,
+            is_compaction_usage,
+        };
+        completion
+            .complete_one(model_config, system, messages, tools)
+            .await
+    }
+
+    async fn complete_one(
+        &self,
+        model_config: crate::model::ModelConfig,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage)> {
+        let invocation = reserve_provider_invocation_for_model(
+            Arc::clone(&self.manager),
+            &self.session,
+            self.provider.get_name(),
+            self.provider.cost_tier(),
+            model_config.clone(),
+            self.provider.retry_config().max_physical_attempts(),
+            uuid::Uuid::new_v4().to_string(),
+        )
+        .await
+        .map_err(|failure| anyhow::anyhow!(failure.to_string()))?;
+        let mut unknown_guard = FastReservationUnknownGuard::new(
+            Arc::clone(&self.manager),
+            invocation.reservation_id.clone(),
+        );
+
+        let (response, mut usage) = match self
+            .provider
+            // permagent-dispatch: seam=complete_fast_attempt_v1 class=wrapped contract=reservation_settlement
+            .complete(&model_config, &self.session.id, system, messages, tools)
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                unknown_guard.mark_unknown().await?;
+                return Err(anyhow::anyhow!(
+                    "complete_fast physical attempt failed: {error}"
+                ));
+            }
+        };
+
+        let has_authoritative_usage = usage.usage.input_tokens.is_some()
+            || usage.usage.output_tokens.is_some()
+            || usage.usage.total_tokens.is_some()
+            || usage.usage.cache_read_input_tokens.is_some()
+            || usage.usage.cache_write_input_tokens.is_some();
+        if invocation.cost_tier.is_chargeable() && !has_authoritative_usage {
+            unknown_guard.mark_unknown().await?;
+            return Err(anyhow::anyhow!(
+                "complete_fast physical attempt returned no authoritative provider usage"
+            ));
+        }
+        // Free/quota work has no paid hold. Preserve its existing token-meter
+        // behavior even when a local adapter omitted a usage frame.
+        if !has_authoritative_usage {
+            usage
+                .ensure_tokens(system, messages, &response, tools)
+                .await
+                .map_err(|error| anyhow::anyhow!("could not estimate non-paid usage: {error}"))?;
+        }
+        usage = usage.with_invocation_id(invocation.invocation_id.clone());
+        if let Err(error) = record_provider_usage(
+            Arc::clone(&self.manager),
+            &self.session.id,
+            self.session.schedule_id.clone(),
+            &usage,
+            self.is_compaction_usage,
+            Some(&invocation),
+            None,
+        )
+        .await
+        {
+            unknown_guard.mark_unknown().await?;
+            return Err(anyhow::anyhow!(
+                "complete_fast usage settlement failed: {error}"
+            ));
+        }
+        unknown_guard.disarm();
+        Ok((response, usage))
+    }
+
+    async fn complete_fast_inner(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage)> {
+        let regular = self.provider.get_model_config();
+        let fast = regular.use_fast_model();
+        let paid = self.provider.cost_tier().is_chargeable();
+        match self
+            .complete_one(fast.clone(), system, messages, tools)
+            .await
+        {
+            Ok(result) => Ok(result),
+            // A paid fast failure may have reached the remote provider. Its
+            // reservation is now unknown, so a regular fallback would be an
+            // unauthorized second dispatch. The user can resolve the existing
+            // gate/reconciliation before retrying.
+            Err(error) if paid || fast.model_name == regular.model_name => Err(error),
+            // Local/subscription calls retain the provider's normal fast→full
+            // fallback semantics, with a distinct invocation/ledger row.
+            Err(_) => self.complete_one(regular, system, messages, tools).await,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::context_mgmt::AccountedFastCompletion for AccountedFastCompletion {
+    async fn complete_fast(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage)> {
+        self.complete_fast_inner(system, messages, tools).await
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ProviderAuthorizationFailure {
+    NeedsGate {
+        scope: crate::cost_router::budget::BudgetScope,
+        spent_usd: f64,
+        held_usd: f64,
+        requested_usd: f64,
+        ceiling_usd: f64,
+    },
+    Refused {
+        scope: crate::cost_router::budget::BudgetScope,
+        spent_usd: f64,
+        held_usd: f64,
+        requested_usd: f64,
+        ceiling_usd: f64,
+    },
+    Unknown {
+        reason: String,
+    },
+}
+
+impl std::fmt::Display for ProviderAuthorizationFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NeedsGate {
+                scope,
+                spent_usd,
+                held_usd,
+                requested_usd,
+                ceiling_usd,
+            } => write!(
+                f,
+                "{} budget gate required before provider call (spent ${spent_usd:.2}, authorization holds ${held_usd:.2}, requested bound ${requested_usd:.2}, ceiling ${ceiling_usd:.2})",
+                scope.word()
+            ),
+            Self::Refused {
+                scope,
+                spent_usd,
+                held_usd,
+                requested_usd,
+                ceiling_usd,
+            } => write!(
+                f,
+                "{} budget refused provider call (spent ${spent_usd:.2}, authorization holds ${held_usd:.2}, requested bound ${requested_usd:.2}, ceiling ${ceiling_usd:.2})",
+                scope.word()
+            ),
+            Self::Unknown { reason } => {
+                write!(f, "provider budget is unknown; refusing call: {reason}")
+            }
+        }
     }
 }
 
@@ -892,6 +1560,10 @@ mod tests {
     use crate::session::session_manager::SessionType;
     use async_trait::async_trait;
     use rmcp::object;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::time::Duration;
+    use tempfile::TempDir;
 
     #[derive(Clone)]
     struct MockProvider {
@@ -928,6 +1600,537 @@ mod tests {
     struct NamedMockProvider {
         name: &'static str,
         model_config: ModelConfig,
+    }
+
+    #[derive(Clone)]
+    struct FastAccountingProvider {
+        usage: Usage,
+        fail: bool,
+        calls: Arc<AtomicUsize>,
+        model_config: ModelConfig,
+    }
+
+    impl FastAccountingProvider {
+        fn paid(usage: Usage) -> Self {
+            Self {
+                usage,
+                fail: false,
+                calls: Arc::new(AtomicUsize::new(0)),
+                model_config: ModelConfig::new("claude-haiku-4-5")
+                    .unwrap()
+                    .with_canonical_limits("anthropic"),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for FastAccountingProvider {
+        fn get_name(&self) -> &str {
+            "anthropic"
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            self.model_config.clone()
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(ProviderError::RequestFailed(
+                    "fixture dispatch failed".to_string(),
+                ));
+            }
+            Ok(stream_from_single_message(
+                Message::assistant().with_text("summary"),
+                ProviderUsage::new("claude-haiku-4-5".to_string(), self.usage),
+            ))
+        }
+    }
+
+    /// Records the model selected for every physical attempt. The first fast
+    /// attempt fails; a non-chargeable provider is permitted to retry once
+    /// with the regular model.
+    #[derive(Clone)]
+    struct LocalFastFallbackProvider {
+        calls: Arc<AtomicUsize>,
+        selected_models: Arc<Mutex<Vec<String>>>,
+        model_config: ModelConfig,
+    }
+
+    impl LocalFastFallbackProvider {
+        fn new() -> Self {
+            Self {
+                calls: Arc::new(AtomicUsize::new(0)),
+                selected_models: Arc::new(Mutex::new(Vec::new())),
+                model_config: ModelConfig {
+                    model_name: "full-local-model".to_string(),
+                    context_limit: Some(4_096),
+                    max_tokens: Some(128),
+                    fast_model_config: Some(Box::new(ModelConfig {
+                        model_name: "fast-local-model".to_string(),
+                        context_limit: Some(4_096),
+                        max_tokens: Some(128),
+                        ..ModelConfig::default()
+                    })),
+                    ..ModelConfig::default()
+                },
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for LocalFastFallbackProvider {
+        fn get_name(&self) -> &str {
+            "local-fixture"
+        }
+
+        fn cost_tier(&self) -> CostTier {
+            CostTier::LocalFree
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            self.model_config.clone()
+        }
+
+        async fn stream(
+            &self,
+            model_config: &ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            self.selected_models
+                .lock()
+                .unwrap()
+                .push(model_config.model_name.clone());
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(ProviderError::RequestFailed(
+                    "fast local fixture dispatch failed".to_string(),
+                ));
+            }
+            Ok(stream_from_single_message(
+                Message::assistant().with_text("regular summary"),
+                ProviderUsage::new(
+                    model_config.model_name.clone(),
+                    Usage {
+                        input_tokens: Some(8),
+                        output_tokens: Some(3),
+                        total_tokens: Some(11),
+                        ..Usage::default()
+                    },
+                ),
+            ))
+        }
+    }
+
+    /// A paid attempt which has definitely crossed the dispatch boundary but
+    /// never returns. Dropping its future must turn the durable hold unknown.
+    #[derive(Clone)]
+    struct PendingPaidProvider {
+        calls: Arc<AtomicUsize>,
+        model_config: ModelConfig,
+    }
+
+    #[async_trait]
+    impl Provider for PendingPaidProvider {
+        fn get_name(&self) -> &str {
+            "anthropic"
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            self.model_config.clone()
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+            unreachable!("the cancellation test must abort the pending dispatch")
+        }
+    }
+
+    async fn fast_accounting_fixture(
+        provider: Arc<dyn Provider>,
+        begin_task: bool,
+    ) -> (
+        TempDir,
+        Arc<SessionManager>,
+        Session,
+        AccountedFastCompletion,
+    ) {
+        let directory = TempDir::new().unwrap();
+        let manager = Arc::new(SessionManager::new(directory.path().to_path_buf()));
+        let session = manager
+            .create_session(
+                directory.path().to_path_buf(),
+                "fast-accounting".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        if begin_task {
+            manager.begin_budget_task(&session.id).await.unwrap();
+        }
+        let session = manager.get_session(&session.id, false).await.unwrap();
+        let completion = AccountedFastCompletion {
+            manager: Arc::clone(&manager),
+            session: session.clone(),
+            provider,
+            is_compaction_usage: false,
+        };
+        (directory, manager, session, completion)
+    }
+
+    #[tokio::test]
+    async fn accounted_fast_success_settles_once_with_a_durable_task() {
+        let fixture = FastAccountingProvider::paid(Usage {
+            input_tokens: Some(12),
+            output_tokens: Some(5),
+            total_tokens: Some(17),
+            ..Usage::default()
+        });
+        let calls = Arc::clone(&fixture.calls);
+        let (_directory, manager, session, completion) =
+            fast_accounting_fixture(Arc::new(fixture), true).await;
+
+        crate::context_mgmt::AccountedFastCompletion::complete_fast(
+            &completion,
+            "summarize",
+            &[Message::user().with_text("hello")],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(manager
+            .last_call_facts(&session.id)
+            .await
+            .unwrap()
+            .is_some());
+        let pool = manager.storage().pool().await.unwrap();
+        let settled: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cost_reservations WHERE session_id = ? AND state = 'settled'",
+        )
+        .bind(&session.id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(settled, 1);
+    }
+
+    #[tokio::test]
+    async fn primary_stream_reservation_refuses_paid_dispatch_without_a_task() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let calls = Arc::clone(&fixture.calls);
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), false).await;
+
+        let result = reserve_provider_invocation_for_model(
+            Arc::clone(&manager),
+            &session,
+            fixture.get_name(),
+            fixture.cost_tier(),
+            fixture.get_model_config(),
+            fixture.retry_config().max_physical_attempts(),
+            uuid::Uuid::new_v4().to_string(),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ProviderAuthorizationFailure::Unknown { .. })
+        ));
+        // Authorization happens before the stream transport is ever called.
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn primary_stream_settles_one_authoritative_snapshot_per_invocation() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let invocation = reserve_provider_invocation_for_model(
+            Arc::clone(&manager),
+            &session,
+            fixture.get_name(),
+            fixture.cost_tier(),
+            fixture.get_model_config(),
+            fixture.retry_config().max_physical_attempts(),
+            uuid::Uuid::new_v4().to_string(),
+        )
+        .await
+        .expect("durable task should authorize the paid stream");
+        let usage = ProviderUsage::new(
+            fixture.get_model_config().model_name,
+            Usage {
+                input_tokens: Some(12),
+                output_tokens: Some(5),
+                total_tokens: Some(17),
+                ..Usage::default()
+            },
+        )
+        .with_invocation_id(invocation.invocation_id.clone());
+
+        let pool = manager.storage().pool().await.unwrap();
+        sqlx::query(
+            "INSERT INTO recognition_events
+                (retrieval_id, session_id, query, retrieved_at, rc_persona, strategy)
+             VALUES ('reply-attribution', ?, 'fixture', '2026-09-05T12:00:00Z', 'unknown', 'cascade')",
+        )
+        .bind(&session.id)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        record_provider_usage(
+            Arc::clone(&manager),
+            &session.id,
+            session.schedule_id.clone(),
+            &usage,
+            false,
+            Some(&invocation),
+            Some("reply-attribution"),
+        )
+        .await
+        .expect("authoritative terminal usage should settle the hold");
+
+        let pool = manager.storage().pool().await.unwrap();
+        let ledger_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cost_ledger WHERE session_id = ? AND call_id = ?",
+        )
+        .bind(&session.id)
+        .bind(&invocation.invocation_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(ledger_rows, 1);
+        let settled: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cost_reservations WHERE session_id = ? AND reservation_id = ? AND state = 'settled'",
+        )
+        .bind(&session.id)
+        .bind(invocation.reservation_id.as_deref().unwrap())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(settled, 1);
+        let (ids, status): (String, String) = sqlx::query_as(
+            "SELECT provider_invocation_ids, attribution_status
+               FROM recognition_events WHERE retrieval_id = 'reply-attribution'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(ids, format!("[\"{}\"]", invocation.invocation_id));
+        assert_eq!(status, "observed");
+    }
+
+    #[tokio::test]
+    async fn accounted_fast_refuses_paid_dispatch_without_a_durable_task() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let calls = Arc::clone(&fixture.calls);
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), false).await;
+
+        assert!(AccountedFastCompletion::complete_fast_accounted(
+            Arc::clone(&manager),
+            session,
+            fixture,
+            "summarize",
+            &[Message::user().with_text("hello")],
+            &[],
+            false,
+        )
+        .await
+        .is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn accounted_full_refuses_paid_dispatch_without_a_durable_task() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let calls = Arc::clone(&fixture.calls);
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), false).await;
+
+        assert!(AccountedFastCompletion::complete_accounted(
+            Arc::clone(&manager),
+            session,
+            fixture,
+            "summarize",
+            &[Message::user().with_text("hello")],
+            &[],
+            false,
+        )
+        .await
+        .is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn accounted_fast_missing_usage_keeps_the_paid_hold_unknown() {
+        let fixture = FastAccountingProvider::paid(Usage::default());
+        let calls = Arc::clone(&fixture.calls);
+        let (_directory, manager, session, completion) =
+            fast_accounting_fixture(Arc::new(fixture), true).await;
+
+        assert!(crate::context_mgmt::AccountedFastCompletion::complete_fast(
+            &completion,
+            "summarize",
+            &[Message::user().with_text("hello")],
+            &[],
+        )
+        .await
+        .is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let pool = manager.storage().pool().await.unwrap();
+        let unknown: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cost_reservations WHERE session_id = ? AND state = 'unknown'",
+        )
+        .bind(&session.id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(unknown, 1);
+    }
+
+    #[tokio::test]
+    async fn accounted_fast_paid_failure_does_not_dispatch_the_regular_fallback() {
+        let mut fixture = FastAccountingProvider::paid(Usage::default());
+        fixture.fail = true;
+        fixture.model_config = ModelConfig::new("claude-sonnet-4-5")
+            .unwrap()
+            .with_canonical_limits("anthropic")
+            .with_fast("claude-haiku-4-5", "anthropic")
+            .unwrap();
+        let calls = Arc::clone(&fixture.calls);
+        let (_directory, manager, session, completion) =
+            fast_accounting_fixture(Arc::new(fixture), true).await;
+
+        assert!(crate::context_mgmt::AccountedFastCompletion::complete_fast(
+            &completion,
+            "summarize",
+            &[Message::user().with_text("hello")],
+            &[],
+        )
+        .await
+        .is_err());
+
+        // A paid fast error may have reached the remote provider. The full
+        // model is deliberately not a second unauthorized physical attempt.
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let pool = manager.storage().pool().await.unwrap();
+        let unknown: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cost_reservations WHERE session_id = ? AND state = 'unknown'",
+        )
+        .bind(&session.id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(unknown, 1);
+    }
+
+    #[tokio::test]
+    async fn accounted_fast_local_failure_retries_the_full_model_as_a_separate_attempt() {
+        let fixture = LocalFastFallbackProvider::new();
+        let calls = Arc::clone(&fixture.calls);
+        let selected_models = Arc::clone(&fixture.selected_models);
+        let (_directory, manager, session, completion) =
+            fast_accounting_fixture(Arc::new(fixture), false).await;
+
+        crate::context_mgmt::AccountedFastCompletion::complete_fast(
+            &completion,
+            "summarize",
+            &[Message::user().with_text("hello")],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            selected_models.lock().unwrap().as_slice(),
+            ["fast-local-model", "full-local-model"]
+        );
+        let pool = manager.storage().pool().await.unwrap();
+        let rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cost_ledger WHERE session_id = ? AND model = 'full-local-model'",
+        )
+        .bind(&session.id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[tokio::test]
+    async fn accounted_fast_cancelled_paid_dispatch_keeps_the_hold_unknown() {
+        let fixture = PendingPaidProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            model_config: ModelConfig::new("claude-haiku-4-5")
+                .unwrap()
+                .with_canonical_limits("anthropic"),
+        };
+        let calls = Arc::clone(&fixture.calls);
+        let (_directory, manager, session, completion) =
+            fast_accounting_fixture(Arc::new(fixture), true).await;
+        let completion = Arc::new(completion);
+        let task = tokio::spawn({
+            let completion = Arc::clone(&completion);
+            async move {
+                crate::context_mgmt::AccountedFastCompletion::complete_fast(
+                    completion.as_ref(),
+                    "summarize",
+                    &[Message::user().with_text("hello")],
+                    &[],
+                )
+                .await
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("pending provider must reach dispatch before cancellation");
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+
+        let pool = manager.storage().pool().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let unknown: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM cost_reservations WHERE session_id = ? AND state = 'unknown'",
+                )
+                .bind(&session.id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+                if unknown == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cancellation guard must mark the paid hold unknown");
     }
 
     #[async_trait]

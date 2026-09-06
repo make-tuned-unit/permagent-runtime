@@ -19,6 +19,7 @@ pub mod debate;
 pub mod deliver;
 pub mod due;
 pub mod membership;
+pub mod plan;
 pub mod store;
 pub mod verdict;
 
@@ -106,6 +107,21 @@ fn session_lock() -> &'static tokio::sync::Mutex<()> {
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
+/// A process-wide permit shared by scheduled, tool-driven, and HTTP Council
+/// entry points. Reserving before an HTTP 202 makes acceptance truthful: no
+/// weekly sweep can win the lock between the route check and its spawned task.
+#[must_use = "dropping the reservation releases the Council slot"]
+pub struct ConveneReservation {
+    _guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+pub fn try_reserve() -> Result<ConveneReservation, String> {
+    session_lock()
+        .try_lock()
+        .map(|guard| ConveneReservation { _guard: guard })
+        .map_err(|_| "a council session is already running".to_string())
+}
+
 #[derive(Debug, Clone)]
 pub struct Convened {
     pub session_id: String,
@@ -127,9 +143,54 @@ pub async fn convene(
     if !is_enabled() {
         return Err("council_enabled is off — turn it on under Settings → Features".to_string());
     }
-    let _guard = session_lock()
-        .try_lock()
-        .map_err(|_| "a council session is already running".to_string())?;
+    let reservation = try_reserve()?;
+    convene_reserved(pool, trigger, extra_question, None, caller, reservation).await
+}
+
+/// Convene one on-demand session after an explicit per-run approval.
+///
+/// The global feature flag controls automatic weekly runs and unprompted tool
+/// calls. A click on Build's "Convene Council" button is a narrower authority:
+/// it approves this one spend without silently enabling the weekly schedule.
+pub async fn convene_approved(
+    pool: &Pool<Sqlite>,
+    extra_question: Option<&str>,
+    project_hint: Option<&str>,
+    caller: &dyn debate::MemberCaller,
+) -> Result<Convened, String> {
+    let reservation = try_reserve()?;
+    convene_approved_reserved(pool, extra_question, project_hint, caller, reservation).await
+}
+
+/// Run an explicitly approved pass using a slot already reserved by the HTTP
+/// acceptor. Callers must obtain the permit with [`try_reserve`] before they
+/// tell a user the work was accepted.
+pub async fn convene_approved_reserved(
+    pool: &Pool<Sqlite>,
+    extra_question: Option<&str>,
+    project_hint: Option<&str>,
+    caller: &dyn debate::MemberCaller,
+    reservation: ConveneReservation,
+) -> Result<Convened, String> {
+    convene_reserved(
+        pool,
+        store::Trigger::OnDemand,
+        extra_question,
+        project_hint,
+        caller,
+        reservation,
+    )
+    .await
+}
+
+async fn convene_reserved(
+    pool: &Pool<Sqlite>,
+    trigger: store::Trigger,
+    extra_question: Option<&str>,
+    project_hint: Option<&str>,
+    caller: &dyn debate::MemberCaller,
+    _reservation: ConveneReservation,
+) -> Result<Convened, String> {
     if store::has_running(pool).await? {
         return Err("a council session is already running".to_string());
     }
@@ -150,7 +211,7 @@ pub async fn convene(
     // that was refused for being off, locked, or unseated did no work, and
     // `Err` before this line must stay silent.
     announce("working");
-    let convened = run_session(pool, trigger, extra_question, caller, members).await;
+    let convened = run_session(pool, trigger, extra_question, project_hint, caller, members).await;
     // Any transition off `working` is also the Council HUD's cue to re-read
     // `/api/council/latest` — the report, if there is one, is written by now.
     announce(end_state(&convened));
@@ -184,10 +245,11 @@ async fn run_session(
     pool: &Pool<Sqlite>,
     trigger: store::Trigger,
     extra_question: Option<&str>,
+    project_hint: Option<&str>,
     caller: &dyn debate::MemberCaller,
     members: Vec<membership::Member>,
 ) -> Result<Convened, String> {
-    let snapshot = brief::assemble(pool, extra_question).await?;
+    let snapshot = brief::assemble_for_project(pool, extra_question, project_hint).await?;
     let brief_value = serde_json::to_value(&snapshot).unwrap_or(serde_json::json!({}));
     let session_id = store::insert_session(pool, trigger, extra_question, &brief_value).await?;
 
@@ -282,11 +344,25 @@ async fn run_session(
         }
     };
 
-    let actions: Vec<serde_json::Value> = report
+    let plan = validated_build_plan(
+        pool,
+        &session_id,
+        &snapshot,
+        project_hint,
+        report.dag.as_ref(),
+    )
+    .await;
+    let mut actions: Vec<serde_json::Value> = report
         .actions
         .iter()
         .map(|a| serde_json::to_value(a).unwrap_or(serde_json::Value::Null))
         .collect();
+    if let Some(proposal) = &plan {
+        actions.insert(
+            0,
+            serde_json::json!({"kind": "council_dag", "proposal": proposal}),
+        );
+    }
     let _ = store::insert_report(
         pool,
         store::NewReport {
@@ -318,9 +394,16 @@ async fn run_session(
     )
     .await;
 
-    let action_ids = deliver::file_actions(pool, &session_id, &report)
-        .await
-        .unwrap_or_default();
+    let action_ids = if let Some(proposal) = plan {
+        deliver::file_plan(pool, &session_id, &report.headline, proposal)
+            .await
+            .map(|id| vec![id])
+            .unwrap_or_default()
+    } else {
+        deliver::file_actions(pool, &session_id, &report)
+            .await
+            .unwrap_or_default()
+    };
     deliver::file_briefing(
         pool,
         &session_id,
@@ -341,6 +424,108 @@ async fn run_session(
         n_actions: action_ids.len(),
         error: None,
     })
+}
+
+async fn validated_build_plan(
+    pool: &Pool<Sqlite>,
+    session_id: &str,
+    snapshot: &brief::PortfolioBrief,
+    project_hint: Option<&str>,
+    draft: Option<&plan::CouncilDagDraft>,
+) -> Option<plan::CouncilProposal> {
+    let hint = project_hint?.trim();
+    let draft = draft?.clone();
+    let project = brief::resolve_project(pool, hint).await.ok().flatten()?;
+    let program_manifest = draft.program_manifest.clone();
+    let program_manifest_sha256 = if let Some(manifest) = program_manifest.as_deref() {
+        let program = permagent_eval::ProgramDag::from_yaml(manifest).ok()?;
+        program.validate().ok()?;
+        let council_ids = draft
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let program_ids = program
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        if council_ids != program_ids {
+            tracing::warn!(
+                target: "permagent::council",
+                "optional ProgramDag contract node ids do not match the Council DAG"
+            );
+            return None;
+        }
+        for council_node in &draft.nodes {
+            let program_node = program
+                .nodes
+                .iter()
+                .find(|node| node.id == council_node.id)?;
+            if program_node.depends_on != council_node.dependencies {
+                tracing::warn!(
+                    target: "permagent::council",
+                    node_id = %council_node.id,
+                    "optional ProgramDag contract dependencies do not match the Council DAG"
+                );
+                return None;
+            }
+            if program_node.exit_gate.iter().any(|gate| {
+                !council_node
+                    .acceptance_criteria
+                    .iter()
+                    .any(|criterion| criterion == gate)
+            }) {
+                tracing::warn!(
+                    target: "permagent::council",
+                    node_id = %council_node.id,
+                    "optional ProgramDag exit gates must have exact Council acceptance-criterion parity"
+                );
+                return None;
+            }
+        }
+        crate::agents::platform_extensions::program_bridge::manifest_identity_hash(&program).ok()
+    } else {
+        None
+    };
+    let memory_ids =
+        crate::project_association::list_project_memory_associations(pool, &project.id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .take(12)
+            .map(|association| association.memory_id)
+            .collect();
+    let proposal = plan::CouncilProposal {
+        proposal_id: format!("council-{session_id}"),
+        project: plan::ProjectContext {
+            project_id: project.id,
+            project_name: project.name,
+            summary: snapshot.markdown.clone(),
+            memory_ids,
+            playbook_briefing: if crate::playbook::is_enabled() {
+                Some("Project playbook hints are embedded in the frozen summary.".to_string())
+            } else {
+                None
+            },
+        },
+        nodes: draft.nodes,
+        budget_limit: draft.budget_limit,
+        program_manifest_sha256,
+        program_manifest,
+    };
+    let report = plan::validate(&proposal, &plan::configured_worker_capabilities());
+    if report.is_valid() {
+        Some(proposal)
+    } else {
+        tracing::warn!(
+            target: "permagent::council",
+            proposal_id = %proposal.proposal_id,
+            errors = ?report.errors,
+            "Council DAG rejected before it reached the approval inbox"
+        );
+        None
+    }
 }
 
 pub async fn format_report(

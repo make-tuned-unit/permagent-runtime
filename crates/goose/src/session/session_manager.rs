@@ -1,3 +1,4 @@
+use crate::agents::platform_extensions::terminal_supervision::HarnessRunSnapshot;
 use crate::config::paths::Paths;
 use crate::config::GooseMode;
 use crate::conversation::message::Message;
@@ -21,6 +22,34 @@ use utoipa::ToSchema;
 
 /// Default user ID for Phase 1 single-user operation (Section B.0).
 pub const DEFAULT_USER_ID: &str = "default";
+
+/// Extension-data key for the durable budget identity of the current reply.
+/// Keeping this in the existing session JSON avoids a schema migration while
+/// making the identity survive compaction, retries, resume, and daemon restart.
+pub const BUDGET_TASK_EXTENSION_NAME: &str = "budget_task";
+pub const BUDGET_TASK_EXTENSION_VERSION: &str = "v1";
+
+/// Extension-data key for the goal card whose worker owns this session.
+/// Keeping this separate from the budget identity lets ledger writers recover
+/// attribution from durable session state without inspecting process env.
+pub const GOAL_ID_EXTENSION_NAME: &str = "goal_worker";
+pub const GOAL_ID_EXTENSION_VERSION: &str = "v1";
+
+pub fn budget_task_id(extension_data: &ExtensionData) -> Option<String> {
+    extension_data
+        .get_extension_state(BUDGET_TASK_EXTENSION_NAME, BUDGET_TASK_EXTENSION_VERSION)
+        .and_then(|value| value.as_str())
+        .filter(|id| !id.trim().is_empty())
+        .map(ToOwned::to_owned)
+}
+
+pub fn goal_id(extension_data: &ExtensionData) -> Option<String> {
+    extension_data
+        .get_extension_state(GOAL_ID_EXTENSION_NAME, GOAL_ID_EXTENSION_VERSION)
+        .and_then(|value| value.as_str())
+        .filter(|id| !id.trim().is_empty())
+        .map(ToOwned::to_owned)
+}
 
 #[derive(
     Debug,
@@ -132,6 +161,39 @@ pub struct CostLedgerRow {
     /// True when tokens were estimated (no exact provider usage) rather than
     /// reported.
     pub is_estimated: bool,
+}
+
+/// Result of atomically acquiring a provider-spend lease. Only `Granted`
+/// permits a paid invocation to start; all other variants are deterministic
+/// outcomes, not transport errors.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CostReservationOutcome {
+    Granted {
+        reservation_id: String,
+    },
+    AlreadyReserved {
+        reservation_id: String,
+    },
+    AlreadySettled {
+        reservation_id: String,
+    },
+    NeedsGate {
+        scope: crate::cost_router::budget::BudgetScope,
+        spent_usd: f64,
+        held_usd: f64,
+        requested_usd: f64,
+        ceiling_usd: f64,
+    },
+    Refused {
+        scope: crate::cost_router::budget::BudgetScope,
+        spent_usd: f64,
+        held_usd: f64,
+        requested_usd: f64,
+        ceiling_usd: f64,
+    },
+    Unknown {
+        reason: String,
+    },
 }
 
 /// One child's contribution inside a [`ParentSessionCost`] rollup.
@@ -445,6 +507,43 @@ impl SessionManager {
         self.storage.pool_clone().await
     }
 
+    /// Persist one complete coding-harness projection. The run id is the
+    /// idempotency key, so retries and daemon reconnects cannot duplicate
+    /// history. The in-memory terminal-supervision registry remains the live
+    /// TTL projection; this store is its restart/terminal-history backing.
+    pub async fn upsert_harness_run_snapshot(
+        &self,
+        snapshot: &HarnessRunSnapshot,
+    ) -> Result<HarnessRunSnapshot> {
+        self.storage.upsert_harness_run_snapshot(snapshot).await
+    }
+
+    /// Read persisted harness snapshots newest-first. `terminal_only` keeps
+    /// the history surface from accidentally mixing stale active rows into a
+    /// live projection; callers may request both for restart hydration.
+    pub async fn list_harness_run_snapshots(
+        &self,
+        terminal_only: bool,
+        limit: i64,
+    ) -> Result<Vec<HarnessRunSnapshot>> {
+        self.storage
+            .list_harness_run_snapshots(terminal_only, limit)
+            .await
+    }
+
+    /// Recompute the versioned budget projection from the canonical Spectral
+    /// session/ledger/reservation sources. This is a read seam only: it never
+    /// stores a copied spend snapshot or creates a second budget boundary.
+    pub async fn budget_projection(
+        &self,
+        root_session_id: &str,
+        config: crate::cost_router::budget::BudgetConfig,
+    ) -> Result<crate::session::BudgetProjection> {
+        crate::session::budget_projection::BudgetProjection::query(self, root_session_id, config)
+            .await
+            .map_err(|error| anyhow::anyhow!(error))
+    }
+
     pub async fn create_session(
         &self,
         working_dir: PathBuf,
@@ -483,6 +582,25 @@ impl SessionManager {
         self.storage.get_session(id, include_messages).await
     }
 
+    /// Start a new user task in a session. The value is persisted alongside
+    /// other session extension state, so internal Agent-loop continuations do
+    /// not accidentally create a new budget boundary.
+    pub async fn begin_budget_task(&self, id: &str) -> Result<String> {
+        let session = self.get_session(id, false).await?;
+        let task_id = uuid::Uuid::now_v7().to_string();
+        let mut extension_data = session.extension_data;
+        extension_data.set_extension_state(
+            BUDGET_TASK_EXTENSION_NAME,
+            BUDGET_TASK_EXTENSION_VERSION,
+            serde_json::Value::String(task_id.clone()),
+        );
+        self.update(id)
+            .extension_data(extension_data)
+            .apply()
+            .await?;
+        Ok(task_id)
+    }
+
     pub fn update(&self, id: &str) -> SessionUpdateBuilder<'_> {
         SessionUpdateBuilder::new(self, id.to_string())
     }
@@ -496,6 +614,104 @@ impl SessionManager {
     /// transaction. See [`CostLedgerRow`].
     pub async fn append_cost_ledger(&self, row: &CostLedgerRow) -> Result<()> {
         self.storage.append_cost_ledger(row).await
+    }
+
+    /// Append one provider invocation and atomically update both token and
+    /// money rollups. A repeated `call_id` is a successful no-op.
+    pub async fn append_usage_and_rollup(
+        &self,
+        row: &CostLedgerRow,
+        schedule_id: Option<String>,
+        current_total: Option<i32>,
+        current_input: Option<i32>,
+        current_output: Option<i32>,
+        delta_total: i32,
+        delta_input: i32,
+        delta_output: i32,
+    ) -> Result<bool> {
+        self.storage
+            .append_usage_and_rollup(
+                row,
+                schedule_id,
+                current_total,
+                current_input,
+                current_output,
+                delta_total,
+                delta_input,
+                delta_output,
+            )
+            .await
+    }
+
+    /// Atomically reserve a bounded amount for a paid provider invocation.
+    /// Settled spend is read from `cost_ledger`; pending and unknown leases are
+    /// added before comparing either budget scope.
+    pub async fn reserve_provider_invocation(
+        &self,
+        invocation_id: &str,
+        session_id: &str,
+        task_id: Option<&str>,
+        amount_usd: f64,
+        lease_until: &str,
+        config: &crate::cost_router::budget::BudgetConfig,
+    ) -> Result<CostReservationOutcome> {
+        self.storage
+            .reserve_provider_invocation(
+                invocation_id,
+                session_id,
+                task_id,
+                amount_usd,
+                lease_until,
+                config,
+            )
+            .await
+    }
+
+    /// Settle a reservation and append its provider usage in one transaction.
+    /// Duplicate invocation/call IDs are successful no-ops.
+    pub async fn settle_provider_invocation(
+        &self,
+        reservation_id: &str,
+        row: &CostLedgerRow,
+        schedule_id: Option<String>,
+        current_total: Option<i32>,
+        current_input: Option<i32>,
+        current_output: Option<i32>,
+        delta_total: i32,
+        delta_input: i32,
+        delta_output: i32,
+    ) -> Result<bool> {
+        self.storage
+            .settle_provider_invocation(
+                reservation_id,
+                row,
+                schedule_id,
+                current_total,
+                current_input,
+                current_output,
+                delta_total,
+                delta_input,
+                delta_output,
+            )
+            .await
+    }
+
+    /// Release a reservation after a provider invocation failed before it
+    /// produced billable usage. Releasing an already released/settled/unknown
+    /// lease is an idempotent no-op.
+    pub async fn release_provider_invocation(&self, reservation_id: &str) -> Result<bool> {
+        self.storage
+            .release_provider_invocation(reservation_id)
+            .await
+    }
+
+    /// Preserve a paid hold when dispatch may have reached the provider but no
+    /// authoritative usage arrived. Unknown holds remain budget-consuming and
+    /// block fresh paid work until reconciliation proves the outcome.
+    pub async fn mark_provider_invocation_unknown(&self, reservation_id: &str) -> Result<bool> {
+        self.storage
+            .mark_provider_invocation_unknown(reservation_id)
+            .await
     }
 
     /// Roll a parent's own spend together with every direct child's spend.
@@ -1235,6 +1451,14 @@ impl SessionStorage {
                     if version < 37 {
                         spectral_schema::migrate_v36_to_v37(&self.pool).await?;
                     }
+                    // Durable chat-memory capture queue. This is intentionally
+                    // applied independent of the numbered ladder so an existing
+                    // database gets the queue on its first boot after upgrade.
+                    spectral_schema::apply_chat_memory_outbox_schema(&self.pool).await?;
+                    // Durable coding-harness snapshots. Version-independent so
+                    // databases already past the numbered ladder receive the
+                    // restart/terminal-history store on their first boot.
+                    spectral_schema::apply_harness_run_snapshots_schema(&self.pool).await?;
                     // v38: first-party analytics events (#23). New table +
                     // index, additive and idempotent.
                     if version < 38 {
@@ -1420,6 +1644,14 @@ impl SessionStorage {
                     // silently drops parent attribution on every child spawn.
                     spectral_schema::apply_session_parent_schema(&self.pool).await?;
 
+                    // Durable provider-spend reservations are an additive
+                    // authorization adjunct to the existing cost ledger. Run
+                    // the idempotent table/index apply on every boot: databases
+                    // already stamped at the current schema version would never
+                    // enter a numbered migration and otherwise fail their first
+                    // paid invocation with `no such table`.
+                    spectral_schema::apply_cost_reservations_schema(&self.pool).await?;
+
                     // Growth actions + analytics events. Both apply functions
                     // claimed to run on every boot; they only ran on fresh init
                     // and their version-gated migrate. A DB already past v42
@@ -1457,6 +1689,30 @@ impl SessionStorage {
         let pool = self.pool().await?;
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
+        // Child workers belong to the same user task as their parent. Copy the
+        // durable identity at session creation so the child can emit ledger rows
+        // under the parent's task without inventing a second budget.
+        let inherited_extension_data = if let Some(parent_id) = parent_session_id {
+            let parent_json =
+                sqlx::query_scalar::<_, String>("SELECT extension_data FROM sessions WHERE id = ?")
+                    .bind(parent_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("parent session '{}' not found", parent_id))?;
+            let parent_data: ExtensionData = serde_json::from_str(&parent_json)?;
+            let mut child_data = ExtensionData::new();
+            if let Some(task_id) = budget_task_id(&parent_data) {
+                child_data.set_extension_state(
+                    BUDGET_TASK_EXTENSION_NAME,
+                    BUDGET_TASK_EXTENSION_VERSION,
+                    serde_json::Value::String(task_id),
+                );
+            }
+            serde_json::to_string(&child_data)?
+        } else {
+            "{}".to_string()
+        };
+
         let today = chrono::Utc::now().format("%Y%m%d").to_string();
         let session = sqlx::query_as(
             r#"
@@ -1472,7 +1728,7 @@ impl SessionStorage {
                     FALSE,
                     ?,
                     ?,
-                    '{}',
+                    ?,
                     ?,
                     ?
                 )
@@ -1485,6 +1741,7 @@ impl SessionStorage {
             .bind(&name)
             .bind(session_type.to_string())
             .bind(&*working_dir.to_string_lossy())
+            .bind(inherited_extension_data)
             .bind(goose_mode.to_string())
             .bind(parent_session_id)
             .fetch_one(&mut *tx)
@@ -1530,6 +1787,112 @@ impl SessionStorage {
         }
 
         Ok(session)
+    }
+
+    async fn upsert_harness_run_snapshot(
+        &self,
+        snapshot: &HarnessRunSnapshot,
+    ) -> Result<HarnessRunSnapshot> {
+        let pool = self.pool().await?;
+        // Prompt context is useful to the live in-memory projection and the
+        // Council preflight, but it is not durable run evidence. Keep the
+        // durable row limited to the title/digest and operational/result
+        // fields, so a DB inspection cannot recover the user's prompt body.
+        let mut durable = snapshot.clone();
+        durable.prompt_context = None;
+        let snapshot_json = serde_json::to_string(&durable)?;
+        let is_terminal =
+            (!crate::agents::platform_extensions::terminal_supervision::HarnessRunStatus::is_active(
+                durable.status,
+            )) as i64;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some((bound_session, existing_terminal, existing_json)) =
+            sqlx::query_as::<_, (String, i64, String)>(
+                "SELECT session_id, is_terminal, snapshot_json
+             FROM harness_run_snapshots WHERE run_id = ?",
+            )
+            .bind(&durable.run_id)
+            .fetch_optional(&mut *tx)
+            .await?
+        {
+            if bound_session != durable.session_id {
+                return Err(anyhow::anyhow!(
+                    "harness run id is already bound to another session"
+                ));
+            }
+            // Match the process-local registry's terminal monotonicity even
+            // when the daemon restarted and has not hydrated this run yet.
+            if existing_terminal != 0 {
+                let existing = serde_json::from_str(&existing_json).map_err(|error| {
+                    anyhow::anyhow!("invalid persisted harness snapshot: {error}")
+                })?;
+                tx.commit().await?;
+                return Ok(existing);
+            }
+        }
+        sqlx::query(
+            "INSERT INTO harness_run_snapshots
+                (run_id, session_id, project, status, started_at, updated_at,
+                 is_terminal, evidence, result, snapshot_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(run_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                project = excluded.project,
+                status = excluded.status,
+                started_at = excluded.started_at,
+                updated_at = excluded.updated_at,
+                is_terminal = excluded.is_terminal,
+                evidence = excluded.evidence,
+                result = excluded.result,
+                snapshot_json = excluded.snapshot_json",
+        )
+        .bind(&durable.run_id)
+        .bind(&durable.session_id)
+        .bind(&durable.project)
+        .bind(serde_json::to_string(&durable.status)?.trim_matches('"'))
+        .bind(durable.started_at.to_rfc3339())
+        .bind(durable.updated_at.to_rfc3339())
+        .bind(is_terminal)
+        .bind(&durable.evidence)
+        .bind(&durable.result)
+        .bind(snapshot_json)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(durable)
+    }
+
+    async fn list_harness_run_snapshots(
+        &self,
+        terminal_only: bool,
+        limit: i64,
+    ) -> Result<Vec<HarnessRunSnapshot>> {
+        let pool = self.pool().await?;
+        let limit = limit.clamp(1, 128);
+        let rows: Vec<String> = if terminal_only {
+            sqlx::query_scalar(
+                "SELECT snapshot_json FROM harness_run_snapshots
+                 WHERE is_terminal = 1
+                 ORDER BY updated_at DESC, run_id DESC LIMIT ?",
+            )
+            .bind(limit)
+            .fetch_all(pool)
+            .await?
+        } else {
+            sqlx::query_scalar(
+                "SELECT snapshot_json FROM harness_run_snapshots
+                 ORDER BY updated_at DESC, run_id DESC LIMIT ?",
+            )
+            .bind(limit)
+            .fetch_all(pool)
+            .await?
+        };
+        rows.into_iter()
+            .map(|json| {
+                serde_json::from_str(&json)
+                    .map_err(|error| anyhow::anyhow!("invalid persisted harness snapshot: {error}"))
+            })
+            .collect()
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1718,10 +2081,452 @@ impl SessionStorage {
     }
 
     async fn append_cost_ledger(&self, row: &CostLedgerRow) -> Result<()> {
+        self.append_cost_ledger_with_usage(row, None, None)
+            .await
+            .map(|_| ())
+    }
+
+    async fn append_usage_and_rollup(
+        &self,
+        row: &CostLedgerRow,
+        schedule_id: Option<String>,
+        current_total: Option<i32>,
+        current_input: Option<i32>,
+        current_output: Option<i32>,
+        delta_total: i32,
+        delta_input: i32,
+        delta_output: i32,
+    ) -> Result<bool> {
+        self.append_cost_ledger_with_usage(
+            row,
+            Some((
+                schedule_id,
+                current_total,
+                current_input,
+                current_output,
+                delta_total,
+                delta_input,
+                delta_output,
+            )),
+            None,
+        )
+        .await
+    }
+
+    async fn settle_provider_invocation(
+        &self,
+        reservation_id: &str,
+        row: &CostLedgerRow,
+        schedule_id: Option<String>,
+        current_total: Option<i32>,
+        current_input: Option<i32>,
+        current_output: Option<i32>,
+        delta_total: i32,
+        delta_input: i32,
+        delta_output: i32,
+    ) -> Result<bool> {
+        self.append_cost_ledger_with_usage(
+            row,
+            Some((
+                schedule_id,
+                current_total,
+                current_input,
+                current_output,
+                delta_total,
+                delta_input,
+                delta_output,
+            )),
+            Some(reservation_id),
+        )
+        .await
+    }
+
+    async fn release_provider_invocation(&self, reservation_id: &str) -> Result<bool> {
+        let pool = self.pool().await?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        let result = sqlx::query(
+            "UPDATE cost_reservations
+             SET state = 'released', updated_at = datetime('now')
+             WHERE reservation_id = ? AND state = 'pending'",
+        )
+        .bind(reservation_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn mark_provider_invocation_unknown(&self, reservation_id: &str) -> Result<bool> {
+        let pool = self.pool().await?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        let result = sqlx::query(
+            "UPDATE cost_reservations
+             SET state = 'unknown', updated_at = datetime('now')
+             WHERE reservation_id = ? AND state = 'pending'",
+        )
+        .bind(reservation_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn reserve_provider_invocation(
+        &self,
+        invocation_id: &str,
+        session_id: &str,
+        task_id: Option<&str>,
+        amount_usd: f64,
+        lease_until: &str,
+        config: &crate::cost_router::budget::BudgetConfig,
+    ) -> Result<CostReservationOutcome> {
+        if invocation_id.trim().is_empty() {
+            return Err(anyhow::anyhow!("provider invocation id must not be empty"));
+        }
+        if !amount_usd.is_finite() || amount_usd <= 0.0 {
+            return Err(anyhow::anyhow!(
+                "paid provider reservation must have a finite positive bound"
+            ));
+        }
+        let Some(task_id) = task_id.filter(|id| !id.trim().is_empty()) else {
+            return Ok(CostReservationOutcome::Unknown {
+                reason: "paid provider reservation requires a durable task identity".to_string(),
+            });
+        };
+        if lease_until.trim().is_empty() {
+            return Err(anyhow::anyhow!(
+                "provider reservation lease must not be empty"
+            ));
+        }
+        let lease_until = chrono::DateTime::parse_from_rfc3339(lease_until)
+            .map_err(|_| anyhow::anyhow!("provider reservation lease must be RFC3339"))?
+            .with_timezone(&chrono::Utc);
+        if lease_until <= chrono::Utc::now() {
+            return Ok(CostReservationOutcome::Unknown {
+                reason: "provider reservation lease is already expired".to_string(),
+            });
+        }
+        let lease_until = lease_until.to_rfc3339();
+        let task = config.task.sanitized();
+        let session = config.session.sanitized();
+        if [
+            task.soft,
+            task.gate,
+            task.hard,
+            session.soft,
+            session.gate,
+            session.hard,
+        ]
+        .iter()
+        .any(|value| !value.is_finite() || *value < 0.0)
+        {
+            return Ok(CostReservationOutcome::Unknown {
+                reason: "budget ceiling is unavailable or invalid".to_string(),
+            });
+        }
+
+        let pool = self.pool().await?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // An expired provider call may already have been accepted remotely;
+        // preserve its hold as unknown rather than fabricating free allowance.
+        sqlx::query(
+            "UPDATE cost_reservations SET state = 'unknown', updated_at = ?
+             WHERE state = 'pending' AND lease_until <= ?",
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+
+        let reservation_id = format!("invocation:{invocation_id}");
+        if let Some((existing_id, existing_session, existing_task, state)) =
+            sqlx::query_as::<_, (String, String, Option<String>, String)>(
+                "SELECT reservation_id, session_id, task_id, state
+                 FROM cost_reservations WHERE invocation_id = ?",
+            )
+            .bind(invocation_id)
+            .fetch_optional(&mut *tx)
+            .await?
+        {
+            if existing_session != session_id || existing_task.as_deref() != Some(task_id) {
+                return Err(anyhow::anyhow!(
+                    "provider invocation id is already bound to another budget scope"
+                ));
+            }
+            tx.commit().await?;
+            return Ok(match state.as_str() {
+                "pending" => CostReservationOutcome::AlreadyReserved {
+                    reservation_id: existing_id,
+                },
+                "settled" => CostReservationOutcome::AlreadySettled {
+                    reservation_id: existing_id,
+                },
+                "unknown" => CostReservationOutcome::Unknown {
+                    reason: "provider reservation lease expired before settlement".to_string(),
+                },
+                "released" => CostReservationOutcome::Unknown {
+                    reason: "provider invocation reservation was already released".to_string(),
+                },
+                _ => CostReservationOutcome::Unknown {
+                    reason: format!("unrecognized reservation state: {state}"),
+                },
+            });
+        }
+
+        let session_exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if session_exists != 1 {
+            tx.commit().await?;
+            return Ok(CostReservationOutcome::Unknown {
+                reason: format!("session '{session_id}' does not exist"),
+            });
+        }
+        let extension_data_json: String =
+            sqlx::query_scalar("SELECT extension_data FROM sessions WHERE id = ?")
+                .bind(session_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let durable_task_id = serde_json::from_str::<ExtensionData>(&extension_data_json)
+            .ok()
+            .and_then(|data| budget_task_id(&data));
+        if durable_task_id.as_deref() != Some(task_id) {
+            tx.commit().await?;
+            return Ok(CostReservationOutcome::Unknown {
+                reason: "provider reservation task identity is not bound to this session"
+                    .to_string(),
+            });
+        }
+
+        let task_spent: f64 = sqlx::query_scalar(
+            "SELECT CAST(COALESCE(SUM(cost_usd), 0.0) AS REAL)
+             FROM cost_ledger WHERE task_id = ?",
+        )
+        .bind(task_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let (task_held, task_unknown): (f64, i64) = sqlx::query_as(
+            "SELECT CAST(COALESCE(SUM(amount_usd), 0.0) AS REAL),
+                    COALESCE(SUM(CASE WHEN state = 'unknown' THEN 1 ELSE 0 END), 0)
+             FROM cost_reservations
+             WHERE task_id = ? AND state IN ('pending', 'unknown')",
+        )
+        .bind(task_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        // Session scope includes this session and all descendants, matching
+        // the durable parent-session contract rather than a process-local map.
+        let session_spent: f64 = sqlx::query_scalar(
+            "WITH RECURSIVE lineage(id, parent_id) AS (
+                 SELECT id, parent_session_id FROM sessions WHERE id = ?
+                 UNION ALL
+                 SELECT s.id, s.parent_session_id
+                 FROM sessions s JOIN lineage l ON s.id = l.parent_id
+             ), session_tree(id) AS (
+                 SELECT id FROM lineage WHERE parent_id IS NULL
+                 UNION ALL
+                 SELECT s.id FROM sessions s JOIN session_tree t ON s.parent_session_id = t.id
+             )
+             SELECT CAST(COALESCE(SUM(l.cost_usd), 0.0) AS REAL)
+             FROM cost_ledger l JOIN session_tree t ON t.id = l.session_id",
+        )
+        .bind(session_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let (session_held, session_unknown): (f64, i64) = sqlx::query_as(
+            "WITH RECURSIVE lineage(id, parent_id) AS (
+                 SELECT id, parent_session_id FROM sessions WHERE id = ?
+                 UNION ALL
+                 SELECT s.id, s.parent_session_id
+                 FROM sessions s JOIN lineage l ON s.id = l.parent_id
+             ), session_tree(id) AS (
+                 SELECT id FROM lineage WHERE parent_id IS NULL
+                 UNION ALL
+                 SELECT s.id FROM sessions s JOIN session_tree t ON s.parent_session_id = t.id
+             )
+             SELECT CAST(COALESCE(SUM(r.amount_usd), 0.0) AS REAL),
+                    COALESCE(SUM(CASE WHEN r.state = 'unknown' THEN 1 ELSE 0 END), 0)
+             FROM cost_reservations r JOIN session_tree t ON t.id = r.session_id
+             WHERE r.state IN ('pending', 'unknown')",
+        )
+        .bind(session_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        for (label, value) in [
+            ("task settled spend", task_spent),
+            ("task held spend", task_held),
+            ("session settled spend", session_spent),
+            ("session held spend", session_held),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                tx.commit().await?;
+                return Ok(CostReservationOutcome::Unknown {
+                    reason: format!("{label} is unavailable or invalid"),
+                });
+            }
+        }
+        if task_unknown > 0 || session_unknown > 0 {
+            tx.commit().await?;
+            return Ok(CostReservationOutcome::Unknown {
+                reason: "an expired provider reservation is unresolved".to_string(),
+            });
+        }
+
+        let task_total = task_spent + task_held + amount_usd;
+        let session_total = session_spent + session_held + amount_usd;
+        if task_total >= task.hard {
+            tx.commit().await?;
+            return Ok(CostReservationOutcome::Refused {
+                scope: crate::cost_router::budget::BudgetScope::Task,
+                spent_usd: task_spent,
+                held_usd: task_held,
+                requested_usd: amount_usd,
+                ceiling_usd: task.hard,
+            });
+        }
+        if session_total >= session.hard {
+            tx.commit().await?;
+            return Ok(CostReservationOutcome::Refused {
+                scope: crate::cost_router::budget::BudgetScope::Session,
+                spent_usd: session_spent,
+                held_usd: session_held,
+                requested_usd: amount_usd,
+                ceiling_usd: session.hard,
+            });
+        }
+        if task_total >= task.gate {
+            tx.commit().await?;
+            return Ok(CostReservationOutcome::NeedsGate {
+                scope: crate::cost_router::budget::BudgetScope::Task,
+                spent_usd: task_spent,
+                held_usd: task_held,
+                requested_usd: amount_usd,
+                ceiling_usd: task.gate,
+            });
+        }
+        if session_total >= session.gate {
+            tx.commit().await?;
+            return Ok(CostReservationOutcome::NeedsGate {
+                scope: crate::cost_router::budget::BudgetScope::Session,
+                spent_usd: session_spent,
+                held_usd: session_held,
+                requested_usd: amount_usd,
+                ceiling_usd: session.gate,
+            });
+        }
+
+        sqlx::query(
+            "INSERT INTO cost_reservations
+                (reservation_id, invocation_id, session_id, task_id, amount_usd,
+                 state, lease_until, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+        )
+        .bind(&reservation_id)
+        .bind(invocation_id)
+        .bind(session_id)
+        .bind(task_id)
+        .bind(amount_usd)
+        .bind(lease_until)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(CostReservationOutcome::Granted { reservation_id })
+    }
+
+    async fn append_cost_ledger_with_usage(
+        &self,
+        row: &CostLedgerRow,
+        usage: Option<(
+            Option<String>,
+            Option<i32>,
+            Option<i32>,
+            Option<i32>,
+            i32,
+            i32,
+            i32,
+        )>,
+        reservation_id: Option<&str>,
+    ) -> Result<bool> {
         let pool = self.pool().await?;
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
-        sqlx::query(
+        if let Some(reservation_id) = reservation_id {
+            let Some((
+                reservation_invocation,
+                state,
+                reserved_usd,
+                reservation_session,
+                reservation_task,
+            )) = sqlx::query_as::<_, (String, String, f64, String, Option<String>)>(
+                "SELECT invocation_id, state, amount_usd, session_id, task_id
+                     FROM cost_reservations
+                     WHERE reservation_id = ?",
+            )
+            .bind(reservation_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            else {
+                return Err(anyhow::anyhow!(
+                    "provider reservation '{reservation_id}' not found"
+                ));
+            };
+            if reservation_invocation != row.call_id {
+                return Err(anyhow::anyhow!(
+                    "provider reservation does not match ledger invocation"
+                ));
+            }
+            if reservation_session != row.session_id
+                || reservation_task.as_deref() != row.task_id.as_deref()
+            {
+                return Err(anyhow::anyhow!(
+                    "provider reservation does not match ledger scope"
+                ));
+            }
+            if !row.cost_usd.is_finite() || row.cost_usd < 0.0 || !reserved_usd.is_finite() {
+                return Err(anyhow::anyhow!(
+                    "provider settlement cost must be finite and non-negative"
+                ));
+            }
+            if row.cost_usd > reserved_usd {
+                tracing::warn!(
+                    reservation_id,
+                    reserved_usd,
+                    actual_cost_usd = row.cost_usd,
+                    "provider settlement exceeded its spend bound"
+                );
+            }
+            match state.as_str() {
+                "settled" => {
+                    tx.commit().await?;
+                    return Ok(false);
+                }
+                "pending" => {}
+                "unknown" => {
+                    return Err(anyhow::anyhow!(
+                        "provider reservation '{reservation_id}' expired before settlement"
+                    ));
+                }
+                "released" => {
+                    return Err(anyhow::anyhow!(
+                        "provider reservation '{reservation_id}' was released"
+                    ));
+                }
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "provider reservation '{reservation_id}' has invalid state '{state}'"
+                    ));
+                }
+            }
+        }
+
+        let inserted = sqlx::query(
             "INSERT INTO cost_ledger (
                 call_id, ts, session_id, parent_session_id, task_id, goal_id,
                 subagent_id, turn_index, provider, model, cost_tier, is_chargeable,
@@ -1734,7 +2539,7 @@ impl SessionStorage {
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?
-            )",
+            ) ON CONFLICT(call_id) DO NOTHING",
         )
         .bind(&row.call_id)
         .bind(&row.ts)
@@ -1760,7 +2565,79 @@ impl SessionStorage {
         .bind(row.cost_usd)
         .bind(row.is_estimated)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected()
+            == 1;
+
+        if !inserted {
+            if let Some(reservation_id) = reservation_id {
+                let Some((existing_session, existing_task, existing_cost)) =
+                    sqlx::query_as::<_, (String, Option<String>, f64)>(
+                        "SELECT session_id, task_id, cost_usd FROM cost_ledger WHERE call_id = ?",
+                    )
+                    .bind(&row.call_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                else {
+                    return Err(anyhow::anyhow!(
+                        "ledger conflict did not leave an existing invocation row"
+                    ));
+                };
+                if existing_session != row.session_id
+                    || existing_task.as_deref() != row.task_id.as_deref()
+                    || existing_cost != row.cost_usd
+                {
+                    return Err(anyhow::anyhow!(
+                        "existing ledger invocation does not match reservation settlement"
+                    ));
+                }
+                sqlx::query(
+                    "UPDATE cost_reservations SET state = 'settled',
+                        settled_cost_usd = ?, updated_at = datetime('now')
+                     WHERE reservation_id = ? AND state = 'pending'",
+                )
+                .bind(row.cost_usd)
+                .bind(reservation_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
+            return Ok(false);
+        }
+
+        if let Some((
+            schedule_id,
+            current_total,
+            current_input,
+            current_output,
+            delta_total,
+            delta_input,
+            delta_output,
+        )) = usage
+        {
+            sqlx::query(
+                "UPDATE sessions SET
+                    total_tokens = ?,
+                    input_tokens = ?,
+                    output_tokens = ?,
+                    accumulated_total_tokens = COALESCE(accumulated_total_tokens, 0) + ?,
+                    accumulated_input_tokens = COALESCE(accumulated_input_tokens, 0) + ?,
+                    accumulated_output_tokens = COALESCE(accumulated_output_tokens, 0) + ?,
+                    schedule_id = ?,
+                    updated_at = datetime('now')
+                 WHERE id = ?",
+            )
+            .bind(current_total)
+            .bind(current_input)
+            .bind(current_output)
+            .bind(delta_total)
+            .bind(delta_input)
+            .bind(delta_output)
+            .bind(schedule_id)
+            .bind(&row.session_id)
+            .execute(&mut *tx)
+            .await?;
+        }
 
         // O(1) rollup: last-turn cost + running accumulators. COALESCE handles the
         // first append (columns start NULL on existing DBs).
@@ -1782,8 +2659,25 @@ impl SessionStorage {
         .execute(&mut *tx)
         .await?;
 
+        if let Some(reservation_id) = reservation_id {
+            let settled = sqlx::query(
+                "UPDATE cost_reservations SET state = 'settled',
+                    settled_cost_usd = ?, updated_at = datetime('now')
+                 WHERE reservation_id = ? AND state = 'pending'",
+            )
+            .bind(row.cost_usd)
+            .bind(reservation_id)
+            .execute(&mut *tx)
+            .await?;
+            if settled.rows_affected() != 1 {
+                return Err(anyhow::anyhow!(
+                    "provider reservation '{reservation_id}' changed before settlement"
+                ));
+            }
+        }
+
         tx.commit().await?;
-        Ok(())
+        Ok(true)
     }
 
     async fn cost_by_parent_session(&self, parent_id: &str) -> Result<ParentSessionCost> {
@@ -1795,7 +2689,7 @@ impl SessionStorage {
             "SELECT COALESCE(
                 (SELECT accumulated_cost_usd FROM sessions WHERE id = ?),
                 (SELECT SUM(cost_usd) FROM cost_ledger WHERE session_id = ?),
-                0
+                0.0
              )",
         )
         .bind(parent_id)
@@ -1808,7 +2702,7 @@ impl SessionStorage {
                     COALESCE(
                         accumulated_cost_usd,
                         (SELECT SUM(cost_usd) FROM cost_ledger WHERE session_id = sessions.id),
-                        0
+                        0.0
                     ) AS cost_usd
              FROM sessions
              WHERE parent_session_id = ?
@@ -2218,9 +3112,18 @@ impl SessionStorage {
             )
             .await?;
 
+        let mut extension_data = import.extension_data;
+        // Import creates an independent session/budget. Preserve unrelated
+        // extension state, but do not carry source execution attribution.
+        extension_data.extension_states.remove(&format!(
+            "{BUDGET_TASK_EXTENSION_NAME}.{BUDGET_TASK_EXTENSION_VERSION}"
+        ));
+        extension_data.extension_states.remove(&format!(
+            "{GOAL_ID_EXTENSION_NAME}.{GOAL_ID_EXTENSION_VERSION}"
+        ));
         let mut builder = session_manager
             .update(&session.id)
-            .extension_data(import.extension_data)
+            .extension_data(extension_data)
             .total_tokens(import.total_tokens)
             .input_tokens(import.input_tokens)
             .output_tokens(import.output_tokens)
@@ -2263,9 +3166,19 @@ impl SessionStorage {
             )
             .await?;
 
+        let mut extension_data = original_session.extension_data;
+        // A fork starts a new execution identity. Keep all unrelated
+        // extension-owned state, but never attribute its future calls to the
+        // source task or goal.
+        extension_data.extension_states.remove(&format!(
+            "{BUDGET_TASK_EXTENSION_NAME}.{BUDGET_TASK_EXTENSION_VERSION}"
+        ));
+        extension_data.extension_states.remove(&format!(
+            "{GOAL_ID_EXTENSION_NAME}.{GOAL_ID_EXTENSION_VERSION}"
+        ));
         let mut builder = session_manager
             .update(&new_session.id)
-            .extension_data(original_session.extension_data)
+            .extension_data(extension_data)
             .schedule_id(original_session.schedule_id)
             .recipe(original_session.recipe)
             .user_recipe_values(original_session.user_recipe_values);
@@ -2373,11 +3286,235 @@ impl SessionStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::platform_extensions::terminal_supervision::{
+        self as run_registry, HarnessRunSnapshot, HarnessRunStatus, HarnessRunUpdate,
+    };
     use crate::conversation::message::{Message, MessageContent};
+    use crate::cost_router::budget::{BudgetCeilings, BudgetConfig};
     use tempfile::TempDir;
     use test_case::test_case;
 
     const NUM_CONCURRENT_SESSIONS: i32 = 10;
+
+    fn reservation_config(
+        task_gate: f64,
+        task_hard: f64,
+        session_gate: f64,
+        session_hard: f64,
+    ) -> BudgetConfig {
+        BudgetConfig {
+            task: BudgetCeilings {
+                soft: 0.0,
+                gate: task_gate,
+                hard: task_hard,
+            },
+            session: BudgetCeilings {
+                soft: 0.0,
+                gate: session_gate,
+                hard: session_hard,
+            },
+        }
+    }
+
+    fn reservation_row(
+        session_id: &str,
+        task_id: &str,
+        call_id: &str,
+        cost_usd: f64,
+    ) -> CostLedgerRow {
+        CostLedgerRow {
+            call_id: call_id.to_string(),
+            ts: "2026-09-04T00:00:00Z".to_string(),
+            session_id: session_id.to_string(),
+            parent_session_id: None,
+            task_id: Some(task_id.to_string()),
+            goal_id: None,
+            subagent_id: None,
+            provider: Some("test-provider".to_string()),
+            model: Some("test-model".to_string()),
+            cost_tier: CostTier::PaidApi,
+            is_headless: true,
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            input_cost: cost_usd,
+            output_cost: 0.0,
+            cache_read_cost: 0.0,
+            cache_write_cost: 0.0,
+            cost_usd,
+            cache_savings_usd: 0.0,
+            is_estimated: false,
+        }
+    }
+
+    fn persisted_harness_snapshot(status: HarnessRunStatus) -> HarnessRunSnapshot {
+        serde_json::from_value(serde_json::json!({
+            "runId": "restart-run",
+            "sessionId": "restart-session",
+            "project": "permagent-runtime",
+            "promptTitle": "Durable harness run",
+            "promptDigest": "digest-123",
+            "taskVersion": "dag-1/v1",
+            "envelopeId": "envelope-1",
+            "promptContext": "private prompt body must not be durable",
+            "councilRecommendation": {
+                "recommended": true,
+                "reason": "architecture",
+                "signals": ["architecture"]
+            },
+            "dagNodes": ["implement"],
+            "dependencies": [],
+            "activeNode": if status.is_active() { Some("implement") } else { None::<&str> },
+            "worker": "worker-1",
+            "provider": "local",
+            "model": "test-model",
+            "billingClass": "local",
+            "tier": "harness",
+            "routingReason": "test",
+            "status": status,
+            "declaredVerification": { "command": "cargo test", "verdict": null },
+            "lastVerification": { "command": "cargo test", "verdict": "pass" },
+            "verificationAttempts": 2,
+            "verificationVerdict": "pass",
+            "pendingGate": null,
+            "retryCount": 1,
+            "toolCalls": 3,
+            "gateAttempts": 0,
+            "evidence": "cargo test: pass",
+            "result": "implemented",
+            "parentRunId": null,
+            "startedAt": "2026-09-04T12:00:00Z",
+            "updatedAt": "2026-09-04T12:01:00Z",
+            "elapsedMs": 60000
+        }))
+        .expect("valid harness snapshot fixture")
+    }
+
+    fn snapshot_as_update(snapshot: &HarnessRunSnapshot) -> HarnessRunUpdate {
+        let mut value = serde_json::to_value(snapshot).expect("snapshot is serializable");
+        let object = value.as_object_mut().expect("snapshot is an object");
+        for field in [
+            "councilRecommendation",
+            "startedAt",
+            "updatedAt",
+            "elapsedMs",
+        ] {
+            object.remove(field);
+        }
+        serde_json::from_value(value).expect("snapshot fields match update contract")
+    }
+
+    #[tokio::test]
+    async fn harness_snapshot_store_is_idempotent_private_and_restart_safe() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let terminal = persisted_harness_snapshot(HarnessRunStatus::Succeeded);
+
+        let stored = sm.upsert_harness_run_snapshot(&terminal).await.unwrap();
+        assert!(stored.prompt_context.is_none());
+        // A retry is an upsert, not a duplicate history row.
+        sm.upsert_harness_run_snapshot(&terminal).await.unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM harness_run_snapshots WHERE run_id = 'restart-run'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+        let raw: String = sqlx::query_scalar(
+            "SELECT snapshot_json FROM harness_run_snapshots WHERE run_id = 'restart-run'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(!raw.contains("private prompt body"));
+        assert!(raw.contains("cargo test: pass"));
+
+        // A fresh manager is the daemon-restart boundary. The terminal row is
+        // still queryable and an old active heartbeat cannot resurrect it.
+        drop(sm);
+        let restarted = SessionManager::new(temp_dir.path().to_path_buf());
+        let history = restarted
+            .list_harness_run_snapshots(true, 64)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].status, HarnessRunStatus::Succeeded);
+        assert_eq!(history[0].evidence.as_deref(), Some("cargo test: pass"));
+        run_registry::hydrate_harness_runs(history.clone());
+        assert_eq!(
+            run_registry::harness_run_snapshot("restart-run")
+                .expect("restart hydration")
+                .status,
+            HarnessRunStatus::Succeeded
+        );
+        let stale = persisted_harness_snapshot(HarnessRunStatus::Running);
+        let effective = restarted.upsert_harness_run_snapshot(&stale).await.unwrap();
+        assert_eq!(effective.status, HarnessRunStatus::Succeeded);
+
+        let mut rebound = terminal;
+        rebound.session_id = "other-session".to_string();
+        assert!(restarted
+            .upsert_harness_run_snapshot(&rebound)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("another session"));
+        run_registry::remove_harness_run("restart-run");
+    }
+
+    #[tokio::test]
+    async fn harness_snapshot_schema_apply_is_idempotent() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let pool = sm.pool_clone().await.unwrap();
+        crate::session::spectral_schema::apply_harness_run_snapshots_schema(&pool)
+            .await
+            .unwrap();
+        crate::session::spectral_schema::apply_harness_run_snapshots_schema(&pool)
+            .await
+            .unwrap();
+        let table_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'harness_run_snapshots'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(table_count, 1);
+    }
+
+    #[tokio::test]
+    async fn terminal_hydration_overrides_late_active_heartbeat() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let terminal = persisted_harness_snapshot(HarnessRunStatus::Succeeded);
+        sm.upsert_harness_run_snapshot(&terminal).await.unwrap();
+
+        // Simulate a daemon restart followed by a heartbeat that was already
+        // in flight: the local registry sees it at `now`, later than the old
+        // persisted terminal timestamp.
+        run_registry::remove_harness_run("restart-run");
+        let stale = persisted_harness_snapshot(HarnessRunStatus::Running);
+        run_registry::update_harness_run(snapshot_as_update(&stale)).unwrap();
+        assert!(run_registry::list_active_harness_runs()
+            .iter()
+            .any(|run| run.run_id == "restart-run"));
+
+        let persisted = sm.list_harness_run_snapshots(false, 64).await.unwrap();
+        run_registry::hydrate_harness_runs(persisted);
+        assert_eq!(
+            run_registry::harness_run_snapshot("restart-run")
+                .expect("hydrated terminal")
+                .status,
+            HarnessRunStatus::Succeeded
+        );
+        assert!(!run_registry::list_active_harness_runs()
+            .iter()
+            .any(|run| run.run_id == "restart-run"));
+        run_registry::remove_harness_run("restart-run");
+    }
 
     #[test]
     fn persistable_content_json_coalesces_split_text() {
@@ -3231,6 +4368,7 @@ mod tests {
         // separate brain/memory.db) and are no longer created by init_spectral_db
         // (dropped by migrate_v18_to_v19).
         let expected = vec![
+            "cost_reservations",
             "cost_ledger",
             "integrations",
             "messages",
@@ -3262,6 +4400,33 @@ mod tests {
                 .unwrap();
         assert_eq!(user.0, "default");
         assert_eq!(user.1, "Default User");
+    }
+
+    #[tokio::test]
+    async fn existing_current_schema_repairs_missing_cost_reservations_on_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let data_dir = temp_dir.path().to_path_buf();
+        let sm = SessionManager::new(data_dir.clone());
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query("DROP TABLE cost_reservations")
+            .execute(pool)
+            .await
+            .unwrap();
+        drop(sm);
+
+        // The database is already stamped at the current schema version, so a
+        // numbered migration cannot repair it. The every-boot additive apply
+        // must restore the authorization table before any paid call runs.
+        let reopened = SessionManager::new(data_dir);
+        let pool = reopened.storage().pool().await.unwrap();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type = 'table' AND name = 'cost_reservations'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]
@@ -3383,6 +4548,270 @@ mod tests {
         assert_eq!(reread.accumulated_cache_read_tokens, Some(200));
         assert_eq!(reread.accumulated_cache_write_tokens, Some(300));
         assert!((reread.accumulated_cache_savings_usd.unwrap() - 0.000_54).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn usage_rollup_is_idempotent_across_concurrency_and_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "exact usage".to_string(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+        let row = CostLedgerRow {
+            call_id: "invocation-1".to_string(),
+            ts: "2026-07-14T00:00:00Z".to_string(),
+            session_id: session.id.clone(),
+            parent_session_id: None,
+            task_id: None,
+            goal_id: None,
+            subagent_id: None,
+            provider: Some("local".to_string()),
+            model: Some("test-model".to_string()),
+            cost_tier: CostTier::LocalFree,
+            is_headless: false,
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_tokens: 2,
+            cache_write_tokens: 1,
+            input_cost: 0.0,
+            output_cost: 0.0,
+            cache_read_cost: 0.0,
+            cache_write_cost: 0.0,
+            cost_usd: 0.0,
+            cache_savings_usd: 0.0,
+            is_estimated: false,
+        };
+
+        // If a legacy caller already persisted the ledger row, the combined
+        // path must not apply its token side effects on replay.
+        let mut preexisting = row.clone();
+        preexisting.call_id = "already-recorded".to_string();
+        sm.append_cost_ledger(&preexisting).await.unwrap();
+        assert!(!sm
+            .append_usage_and_rollup(&preexisting, None, Some(15), Some(10), Some(5), 15, 10, 5,)
+            .await
+            .unwrap());
+        let before_race = sm.get_session(&session.id, false).await.unwrap();
+        assert_eq!(before_race.accumulated_total_tokens, None);
+
+        // Two callbacks for one invocation race each other. SQLite's existing
+        // BEGIN IMMEDIATE serializes them; the conflict path must not apply the
+        // token update a second time.
+        let (first, second) = tokio::join!(
+            sm.append_usage_and_rollup(&row, None, Some(15), Some(10), Some(5), 15, 10, 5),
+            sm.append_usage_and_rollup(&row, None, Some(15), Some(10), Some(5), 15, 10, 5),
+        );
+        assert_eq!(first.unwrap() as u8 + second.unwrap() as u8, 1);
+
+        let after = sm.get_session(&session.id, false).await.unwrap();
+        assert_eq!(after.accumulated_total_tokens, Some(15));
+        assert_eq!(after.accumulated_input_tokens, Some(10));
+        assert_eq!(after.accumulated_output_tokens, Some(5));
+        let pool = sm.pool_clone().await.unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger WHERE call_id = 'invocation-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1);
+
+        // Re-opening the manager is the daemon restart boundary. Replaying the
+        // same stable key remains a no-op rather than charging the invocation.
+        drop(sm);
+        let resumed = SessionManager::new(temp_dir.path().to_path_buf());
+        assert!(!resumed
+            .append_usage_and_rollup(&row, None, Some(15), Some(10), Some(5), 15, 10, 5)
+            .await
+            .unwrap());
+        let after_restart = resumed.get_session(&session.id, false).await.unwrap();
+        assert_eq!(after_restart.accumulated_total_tokens, Some(15));
+        assert_eq!(after_restart.accumulated_cost_usd, Some(0.0));
+    }
+
+    #[tokio::test]
+    async fn budget_task_identity_survives_resume_and_history_replacement() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "budget identity".to_string(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+
+        let first_task = sm.begin_budget_task(&session.id).await.unwrap();
+        let row = |call_id: &str, task_id: &str, cost_usd: f64| CostLedgerRow {
+            call_id: call_id.to_string(),
+            ts: format!("2026-07-14T00:00:{call_id}Z"),
+            session_id: session.id.clone(),
+            parent_session_id: None,
+            task_id: Some(task_id.to_string()),
+            goal_id: None,
+            subagent_id: None,
+            provider: Some("test".to_string()),
+            model: Some("test-model".to_string()),
+            cost_tier: CostTier::PaidApi,
+            is_headless: false,
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            input_cost: cost_usd,
+            output_cost: 0.0,
+            cache_read_cost: 0.0,
+            cache_write_cost: 0.0,
+            cost_usd,
+            cache_savings_usd: 0.0,
+            is_estimated: false,
+        };
+        sm.append_cost_ledger(&row("01", &first_task, 1.0))
+            .await
+            .unwrap();
+
+        // A new manager is the resume/daemon-restart boundary. The identity is
+        // still present, and replacing conversation history (compaction/retry)
+        // must not change it.
+        drop(sm);
+        let resumed = SessionManager::new(temp_dir.path().to_path_buf());
+        let loaded = resumed.get_session(&session.id, false).await.unwrap();
+        assert_eq!(
+            budget_task_id(&loaded.extension_data),
+            Some(first_task.clone())
+        );
+        resumed
+            .replace_conversation(&session.id, &Conversation::default())
+            .await
+            .unwrap();
+        resumed
+            .append_cost_ledger(&row("02", &first_task, 0.5))
+            .await
+            .unwrap();
+
+        let pool = resumed.pool_clone().await.unwrap();
+        let continued_spend =
+            crate::agents::platform_extensions::orchestrator::spend_snapshot(&pool, &session.id)
+                .await
+                .unwrap()
+                .task_spent_usd;
+        assert!((continued_spend - 1.5).abs() < 1e-12);
+
+        // A genuine next reply rotates the durable identity; its spend is
+        // isolated from the previous task even though the session is shared.
+        let next_task = resumed.begin_budget_task(&session.id).await.unwrap();
+        assert_ne!(next_task, first_task);
+        resumed
+            .append_cost_ledger(&row("03", &next_task, 0.25))
+            .await
+            .unwrap();
+        let next_spend =
+            crate::agents::platform_extensions::orchestrator::spend_snapshot(&pool, &session.id)
+                .await
+                .unwrap()
+                .task_spent_usd;
+        assert!((next_spend - 0.25).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn child_session_inherits_and_contributes_to_parent_budget_task() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let parent = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "parent".to_string(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&parent.id).await.unwrap();
+        let mut parent_extensions = sm
+            .get_session(&parent.id, false)
+            .await
+            .unwrap()
+            .extension_data;
+        parent_extensions.set_extension_state("unrelated", "v1", serde_json::json!("parent-only"));
+        sm.update(&parent.id)
+            .extension_data(parent_extensions)
+            .apply()
+            .await
+            .unwrap();
+
+        let unknown_parent = sm
+            .create_session_with_parent(
+                Some("missing-parent"),
+                temp_dir.path().to_path_buf(),
+                "invalid child".to_string(),
+                SessionType::SubAgent,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap_err();
+        assert!(unknown_parent.to_string().contains("parent session"));
+
+        let child = sm
+            .create_session_with_parent(
+                Some(&parent.id),
+                temp_dir.path().to_path_buf(),
+                "child".to_string(),
+                SessionType::SubAgent,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(budget_task_id(&child.extension_data), Some(task_id.clone()));
+        assert!(child
+            .extension_data
+            .get_extension_state("unrelated", "v1")
+            .is_none());
+
+        let row = |call_id: &str, session_id: &str, cost_usd: f64| CostLedgerRow {
+            call_id: call_id.to_string(),
+            ts: format!("2026-07-14T00:00:{call_id}Z"),
+            session_id: session_id.to_string(),
+            parent_session_id: Some(parent.id.clone()),
+            task_id: Some(task_id.clone()),
+            goal_id: None,
+            subagent_id: Some(child.id.clone()),
+            provider: Some("test".to_string()),
+            model: Some("test-model".to_string()),
+            cost_tier: CostTier::PaidApi,
+            is_headless: true,
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            input_cost: cost_usd,
+            output_cost: 0.0,
+            cache_read_cost: 0.0,
+            cache_write_cost: 0.0,
+            cost_usd,
+            cache_savings_usd: 0.0,
+            is_estimated: false,
+        };
+        sm.append_cost_ledger(&row("11", &parent.id, 1.0))
+            .await
+            .unwrap();
+        sm.append_cost_ledger(&row("12", &child.id, 0.5))
+            .await
+            .unwrap();
+
+        let pool = sm.pool_clone().await.unwrap();
+        let spend =
+            crate::agents::platform_extensions::orchestrator::spend_snapshot(&pool, &parent.id)
+                .await
+                .unwrap()
+                .task_spent_usd;
+        assert!((spend - 1.5).abs() < 1e-12);
     }
 
     /// `sessions.parent_session_id` (v51) must exist after a fresh init AND
@@ -3557,5 +4986,1158 @@ mod tests {
             .collect();
         assert!((by_id[child_a.id.as_str()] - 0.10).abs() < 1e-12);
         assert!((by_id[child_b.id.as_str()] - 0.07).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn reservation_is_idempotent_across_concurrency_restart_and_settlement() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_dir = temp_dir.path().to_path_buf();
+        let sm = SessionManager::new(db_dir.clone());
+        let session = sm
+            .create_session(
+                db_dir.clone(),
+                "reservation".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let cfg = reservation_config(10.0, 20.0, 10.0, 20.0);
+
+        let (first, second) = tokio::join!(
+            sm.reserve_provider_invocation(
+                "provider-call-1",
+                &session.id,
+                Some(&task_id),
+                0.50,
+                "2099-01-01T00:00:00Z",
+                &cfg
+            ),
+            sm.reserve_provider_invocation(
+                "provider-call-1",
+                &session.id,
+                Some(&task_id),
+                0.50,
+                "2099-01-01T00:00:00Z",
+                &cfg
+            )
+        );
+        let outcomes = [first.unwrap(), second.unwrap()];
+        let reservation_id = outcomes
+            .iter()
+            .find_map(|outcome| match outcome {
+                CostReservationOutcome::Granted { reservation_id }
+                | CostReservationOutcome::AlreadyReserved { reservation_id } => {
+                    Some(reservation_id.clone())
+                }
+                other => panic!("unexpected reservation outcome: {other:?}"),
+            })
+            .unwrap();
+        assert!(outcomes
+            .iter()
+            .any(|outcome| matches!(outcome, CostReservationOutcome::Granted { .. })));
+        assert!(outcomes
+            .iter()
+            .any(|outcome| matches!(outcome, CostReservationOutcome::AlreadyReserved { .. })));
+
+        let row = reservation_row(&session.id, &task_id, "provider-call-1", 0.25);
+        assert!(sm
+            .settle_provider_invocation(
+                &reservation_id,
+                &row,
+                Some("schedule-1".to_string()),
+                Some(15),
+                Some(10),
+                Some(5),
+                15,
+                10,
+                5,
+            )
+            .await
+            .unwrap());
+        assert!(!sm
+            .settle_provider_invocation(&reservation_id, &row, None, None, None, None, 15, 10, 5,)
+            .await
+            .unwrap());
+        let released_id = match sm
+            .reserve_provider_invocation(
+                "provider-call-release",
+                &session.id,
+                Some(&task_id),
+                0.50,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            outcome => panic!("unexpected release reservation outcome: {outcome:?}"),
+        };
+        assert!(sm.release_provider_invocation(&released_id).await.unwrap());
+        assert!(!sm.release_provider_invocation(&released_id).await.unwrap());
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "provider-call-release",
+                &session.id,
+                Some(&task_id),
+                0.50,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Unknown { .. }
+        ));
+
+        let unknown_id = match sm
+            .reserve_provider_invocation(
+                "provider-call-unknown",
+                &session.id,
+                Some(&task_id),
+                0.50,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            outcome => panic!("unexpected unknown reservation outcome: {outcome:?}"),
+        };
+        assert!(sm
+            .mark_provider_invocation_unknown(&unknown_id)
+            .await
+            .unwrap());
+        assert!(!sm
+            .mark_provider_invocation_unknown(&unknown_id)
+            .await
+            .unwrap());
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "provider-call-unknown",
+                &session.id,
+                Some(&task_id),
+                0.50,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Unknown { .. }
+        ));
+        drop(sm);
+
+        let restarted = SessionManager::new(db_dir);
+        assert!(matches!(
+            restarted
+                .reserve_provider_invocation(
+                    "provider-call-1",
+                    &session.id,
+                    Some(&task_id),
+                    0.50,
+                    "2099-01-01T00:00:00Z",
+                    &cfg
+                )
+                .await
+                .unwrap(),
+            CostReservationOutcome::AlreadySettled { .. }
+        ));
+        let persisted = restarted.get_session(&session.id, false).await.unwrap();
+        assert_eq!(persisted.accumulated_total_tokens, Some(15));
+        assert_eq!(persisted.accumulated_cost_usd, Some(0.25));
+    }
+
+    #[tokio::test]
+    async fn reservation_scope_is_root_lineage_and_sibling_holds_block() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let parent = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "parent".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&parent.id).await.unwrap();
+        let child_a = sm
+            .create_session_with_parent(
+                Some(&parent.id),
+                temp_dir.path().to_path_buf(),
+                "child-a".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child_b = sm
+            .create_session_with_parent(
+                Some(&parent.id),
+                temp_dir.path().to_path_buf(),
+                "child-b".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let cfg = reservation_config(10.0, 20.0, 3.0, 3.0);
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "sibling-a",
+                &child_a.id,
+                Some(&task_id),
+                2.0,
+                "2099-01-01T00:00:00Z",
+                &cfg
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Granted { .. }
+        ));
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "sibling-b",
+                &child_b.id,
+                Some(&task_id),
+                2.0,
+                "2099-01-01T00:00:00Z",
+                &cfg
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Refused {
+                scope: crate::cost_router::budget::BudgetScope::Session,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn reservation_requires_task_and_expiry_becomes_unknown() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "reservation identity".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let cfg = reservation_config(10.0, 20.0, 10.0, 20.0);
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "spoofed-task",
+                &session.id,
+                Some("task-spoofed"),
+                1.0,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Unknown { .. }
+        ));
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "missing-task",
+                &session.id,
+                None,
+                1.0,
+                "2099-01-01T00:00:00Z",
+                &cfg
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Unknown { .. }
+        ));
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "expired-call",
+                &session.id,
+                Some(&task_id),
+                1.0,
+                "2099-01-01T00:00:00Z",
+                &cfg
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Granted { .. }
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        sqlx::query(
+            "UPDATE cost_reservations SET lease_until = '2000-01-01T00:00:00Z'
+             WHERE invocation_id = 'expired-call'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "after-expiry",
+                &session.id,
+                Some(&task_id),
+                1.0,
+                "2099-01-01T00:00:00Z",
+                &cfg
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Unknown { .. }
+        ));
+    }
+
+    /// B6.1: transient failures may retry only within the configured physical
+    /// envelope. Pre-dispatch failures release their distinct reservations;
+    /// the terminal post-dispatch attempt remains unknown.
+    #[tokio::test]
+    async fn b6_bounded_retry_storm_has_distinct_attempts_and_terminal_unknown() {
+        use crate::providers::errors::ProviderError;
+        use crate::providers::{retry_operation, RetryConfig};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let temp_dir = TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "retry storm".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let config = RetryConfig::new(2, 0, 1.0, 0).with_rate_limit_floor_ms(0);
+        let retry_result: Result<(), ProviderError> = retry_operation(&config, || {
+            let sm = Arc::clone(&sm);
+            let session_id = session.id.clone();
+            let task_id = task_id.clone();
+            let attempts = Arc::clone(&attempts);
+            async move {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                let invocation_id = format!("b6-retry-{attempt}");
+                let reservation_id = match sm
+                    .reserve_provider_invocation(
+                        &invocation_id,
+                        &session_id,
+                        Some(&task_id),
+                        0.10,
+                        "2099-01-01T00:00:00Z",
+                        &reservation_config(1.0, 10.0, 1.0, 10.0),
+                    )
+                    .await
+                    .map_err(|error| ProviderError::ExecutionError(error.to_string()))?
+                {
+                    CostReservationOutcome::Granted { reservation_id } => reservation_id,
+                    outcome => {
+                        return Err(ProviderError::ExecutionError(format!(
+                            "retry attempt was not authorized: {outcome:?}"
+                        )))
+                    }
+                };
+
+                // The first two failures are proven pre-dispatch failures and
+                // may release their holds. The terminal attempt crosses the
+                // boundary and must remain unknown.
+                if attempt < 2 {
+                    sm.release_provider_invocation(&reservation_id)
+                        .await
+                        .map_err(|error| ProviderError::ExecutionError(error.to_string()))?;
+                } else {
+                    sm.mark_provider_invocation_unknown(&reservation_id)
+                        .await
+                        .map_err(|error| ProviderError::ExecutionError(error.to_string()))?;
+                }
+                Err(ProviderError::ServerError(
+                    "bounded transient fixture".into(),
+                ))
+            }
+        })
+        .await;
+
+        assert!(retry_result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        let pool = sm.pool_clone().await.unwrap();
+        let states: Vec<String> = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE task_id = ? ORDER BY invocation_id",
+        )
+        .bind(&task_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(states, vec!["released", "released", "unknown"]);
+        let distinct_invocations: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT invocation_id) FROM cost_reservations WHERE task_id = ?",
+        )
+        .bind(&task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(distinct_invocations, 3);
+        let ledger_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger WHERE task_id = ?")
+                .bind(&task_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            ledger_rows, 0,
+            "transient failures must not fabricate spend"
+        );
+    }
+
+    /// B6.3: a daemon death after authorization must reconcile the durable
+    /// hold on restart. Replaying the physical invocation is not dispatch
+    /// permission, and a fresh invocation remains fail-closed while the
+    /// unknown hold consumes the task allowance.
+    #[tokio::test]
+    async fn b6_restart_reconciles_unknown_hold_and_blocks_replay() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_dir = temp_dir.path().to_path_buf();
+        let sm = SessionManager::new(db_dir.clone());
+        let session = sm
+            .create_session(
+                db_dir.clone(),
+                "restart reconciliation".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let cfg = reservation_config(0.90, 1.00, 0.90, 1.00);
+
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "b6-restart-call",
+                &session.id,
+                Some(&task_id),
+                0.75,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Granted { .. }
+        ));
+        drop(sm);
+
+        // Reopening is the daemon restart boundary. The durable task identity
+        // must survive before any reservation reconciliation is attempted.
+        let reopened = SessionManager::new(db_dir);
+        let resumed = reopened.get_session(&session.id, false).await.unwrap();
+        assert_eq!(
+            budget_task_id(&resumed.extension_data),
+            Some(task_id.clone())
+        );
+
+        let pool = reopened.pool_clone().await.unwrap();
+        sqlx::query(
+            "UPDATE cost_reservations
+             SET lease_until = '2000-01-01T00:00:00Z'
+             WHERE invocation_id = 'b6-restart-call'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // The same durable invocation id is now unknown, never a fresh grant.
+        assert!(matches!(
+            reopened
+                .reserve_provider_invocation(
+                    "b6-restart-call",
+                    &session.id,
+                    Some(&task_id),
+                    0.75,
+                    "2099-01-01T00:00:00Z",
+                    &cfg,
+                )
+                .await
+                .unwrap(),
+            CostReservationOutcome::Unknown { .. }
+        ));
+
+        // A different physical invocation is also refused fail-closed while
+        // the unresolved hold remains budget-consuming after restart.
+        assert!(matches!(
+            reopened
+                .reserve_provider_invocation(
+                    "b6-restart-fresh",
+                    &session.id,
+                    Some(&task_id),
+                    0.10,
+                    "2099-01-01T00:00:00Z",
+                    &cfg,
+                )
+                .await
+                .unwrap(),
+            CostReservationOutcome::Unknown { .. }
+        ));
+
+        let (state, amount): (String, f64) = sqlx::query_as(
+            "SELECT state, amount_usd FROM cost_reservations
+             WHERE invocation_id = 'b6-restart-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "unknown");
+        assert!((amount - 0.75).abs() < 1e-12);
+        let reservation_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cost_reservations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(reservation_count, 1, "replay must not create a second hold");
+
+        let projection = reopened.budget_projection(&session.id, cfg).await.unwrap();
+        assert!((projection.task.unknown_usd.unwrap() - 0.75).abs() < 1e-12);
+        assert!((projection.task.remaining_usd.unwrap() - 0.25).abs() < 1e-12);
+
+        // B5.5 producer contract: the real restart projection is the shared
+        // JSON consumed by downstream event/store/UI tests. Only identities
+        // and wall-clock provenance are normalized; every other field must
+        // match the checked-in contract exactly.
+        let mut actual = serde_json::to_value(projection).unwrap();
+        actual["taskId"] = serde_json::json!("<taskId>");
+        actual["rootSessionId"] = serde_json::json!("<rootSessionId>");
+        actual["provenance"]["asOf"] = serde_json::json!("<asOf>");
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../scripts/testdata/budget_projection_v1.json"
+        ))
+        .unwrap();
+        assert_eq!(actual, expected, "B5.5 budget projection contract drifted");
+    }
+
+    /// B6.2: compaction and continuation keep the same durable task identity,
+    /// preserve code-bearing tool arguments byte-for-byte, and keep ledger
+    /// replay idempotent across a manager restart.
+    #[tokio::test]
+    async fn b6_compaction_continuation_preserves_task_and_ledger_identity() {
+        use crate::providers::base::{ProviderUsage, Usage};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct B6Compactor {
+            calls: Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::context_mgmt::AccountedFastCompletion for B6Compactor {
+            async fn complete_fast(
+                &self,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[rmcp::model::Tool],
+            ) -> Result<(Message, ProviderUsage)> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok((
+                    Message::assistant().with_text("b6 compacted summary"),
+                    ProviderUsage::new("b6-local".to_string(), Usage::default()),
+                ))
+            }
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_dir = temp_dir.path().to_path_buf();
+        let sm = SessionManager::new(db_dir.clone());
+        let session = sm
+            .create_session(
+                db_dir.clone(),
+                "compaction continuation".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let before = "fn add(a: i32, b: i32) -> i32 {\n    a - b // BUG\n}";
+        let after = "fn add(a: i32, b: i32) -> i32 {\n    a + b\n}";
+        let diff_args = serde_json::json!({
+            "path": "/repo/src/math.rs",
+            "before": before,
+            "after": after,
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("fix the add bug"),
+            Message::assistant().with_tool_request(
+                "b6-edit",
+                Ok(
+                    rmcp::model::CallToolRequestParams::new("developer__edit".to_string())
+                        .with_arguments(diff_args.clone()),
+                ),
+            ),
+            Message::user().with_tool_response(
+                "b6-edit",
+                Ok(rmcp::model::CallToolResult::success(vec![
+                    rmcp::model::Content::text("edited math.rs"),
+                ])),
+            ),
+            Message::assistant().with_tool_request(
+                "b6-shell",
+                Ok(rmcp::model::CallToolRequestParams::new(
+                    "developer__shell".to_string(),
+                )),
+            ),
+            Message::user().with_tool_response(
+                "b6-shell",
+                Ok(rmcp::model::CallToolResult::success(vec![
+                    rmcp::model::Content::text("B6_SHELL_LOG_MARKER".repeat(200))
+                        .with_priority(0.0),
+                ])),
+            ),
+        ]);
+        let compactor = B6Compactor {
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let compaction_calls = Arc::clone(&compactor.calls);
+        let (compacted, _) = crate::context_mgmt::compact_messages_accounted(
+            &session.id,
+            &conversation,
+            false,
+            &compactor,
+        )
+        .await
+        .unwrap();
+        assert_eq!(compaction_calls.load(Ordering::SeqCst), 1);
+
+        let recovered_args = compacted
+            .agent_visible_messages()
+            .iter()
+            .flat_map(|message| &message.content)
+            .find_map(|content| match content {
+                MessageContent::ToolRequest(request) => match &request.tool_call {
+                    Ok(call) if call.name.ends_with("edit") => call.arguments.clone(),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("code-bearing edit must survive compaction");
+        assert_eq!(recovered_args, diff_args);
+
+        let ledger_row = |call_id: &str, cost_usd: f64| CostLedgerRow {
+            call_id: call_id.to_string(),
+            ts: if call_id == "b6-compact-before" {
+                "2026-09-05T00:00:00Z".to_string()
+            } else {
+                "2026-09-05T00:00:01Z".to_string()
+            },
+            session_id: session.id.clone(),
+            parent_session_id: None,
+            task_id: Some(task_id.clone()),
+            goal_id: None,
+            subagent_id: None,
+            provider: Some("b6-local".to_string()),
+            model: Some("b6-local-model".to_string()),
+            cost_tier: CostTier::LocalFree,
+            is_headless: false,
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            input_cost: 0.0,
+            output_cost: 0.0,
+            cache_read_cost: 0.0,
+            cache_write_cost: 0.0,
+            cost_usd,
+            cache_savings_usd: 0.0,
+            is_estimated: false,
+        };
+        sm.append_cost_ledger(&ledger_row("b6-compact-before", 0.10))
+            .await
+            .unwrap();
+        drop(sm);
+
+        let resumed = SessionManager::new(db_dir);
+        let resumed_session = resumed.get_session(&session.id, false).await.unwrap();
+        assert_eq!(
+            budget_task_id(&resumed_session.extension_data),
+            Some(task_id.clone())
+        );
+        resumed
+            .replace_conversation(&session.id, &compacted)
+            .await
+            .unwrap();
+        resumed
+            .append_cost_ledger(&ledger_row("b6-compact-after", 0.20))
+            .await
+            .unwrap();
+        // Replaying the continuation's terminal row is a no-op.
+        resumed
+            .append_cost_ledger(&ledger_row("b6-compact-after", 0.20))
+            .await
+            .unwrap();
+
+        let pool = resumed.pool_clone().await.unwrap();
+        let ledger_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger WHERE task_id = ?")
+                .bind(&task_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ledger_rows, 2);
+        let task_total: f64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(cost_usd), 0.0) FROM cost_ledger WHERE task_id = ?",
+        )
+        .bind(&task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!((task_total - 0.30).abs() < 1e-12);
+    }
+
+    /// B6.5: local, subscription, and paid workers can share one durable task
+    /// without relabelling free work as paid or creating more than one hold.
+    /// The ledger/reservation seams stand in for deterministic fake workers;
+    /// no provider transport is involved.
+    #[tokio::test]
+    async fn b6_mixed_billing_classes_keep_one_paid_hold_and_exact_recursive_totals() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let parent = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "mixed billing".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&parent.id).await.unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&parent.id),
+                temp_dir.path().to_path_buf(),
+                "subscription child".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let grandchild = sm
+            .create_session_with_parent(
+                Some(&child.id),
+                temp_dir.path().to_path_buf(),
+                "paid grandchild".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        let row = |call_id: &str,
+                   session_id: &str,
+                   parent_session_id: Option<&str>,
+                   tier: CostTier,
+                   cost_usd: f64| CostLedgerRow {
+            call_id: call_id.to_string(),
+            ts: match call_id {
+                "b6-local" => "2026-09-05T00:00:00Z",
+                "b6-subscription" => "2026-09-05T00:00:01Z",
+                "b6-paid" => "2026-09-05T00:00:02Z",
+                _ => "2026-09-05T00:00:03Z",
+            }
+            .to_string(),
+            session_id: session_id.to_string(),
+            parent_session_id: parent_session_id.map(ToOwned::to_owned),
+            task_id: Some(task_id.clone()),
+            goal_id: None,
+            subagent_id: None,
+            provider: Some(format!("{call_id}-provider")),
+            model: Some("b6-fake".to_string()),
+            cost_tier: tier,
+            is_headless: true,
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            input_cost: cost_usd,
+            output_cost: 0.0,
+            cache_read_cost: 0.0,
+            cache_write_cost: 0.0,
+            cost_usd,
+            cache_savings_usd: 0.0,
+            is_estimated: false,
+        };
+
+        sm.append_cost_ledger(&row("b6-local", &parent.id, None, CostTier::LocalFree, 0.0))
+            .await
+            .unwrap();
+        sm.append_cost_ledger(&row(
+            "b6-subscription",
+            &child.id,
+            Some(&parent.id),
+            CostTier::Subscription,
+            0.0,
+        ))
+        .await
+        .unwrap();
+
+        let cfg = reservation_config(4.0, 5.0, 4.0, 5.0);
+        let reservation_id = match sm
+            .reserve_provider_invocation(
+                "b6-paid",
+                &grandchild.id,
+                Some(&task_id),
+                0.50,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            outcome => panic!("paid fake worker was not granted: {outcome:?}"),
+        };
+        let paid = row(
+            "b6-paid",
+            &grandchild.id,
+            Some(&child.id),
+            CostTier::PaidApi,
+            0.25,
+        );
+        assert!(sm
+            .settle_provider_invocation(&reservation_id, &paid, None, None, None, None, 15, 10, 5,)
+            .await
+            .unwrap());
+
+        let pool = sm.pool_clone().await.unwrap();
+        let rows: Vec<(String, i64, f64)> = sqlx::query_as(
+            "SELECT cost_tier, is_chargeable, cost_usd FROM cost_ledger
+             WHERE task_id = ? ORDER BY call_id",
+        )
+        .bind(&task_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("local_free".to_string(), 0, 0.0),
+                ("paid_api".to_string(), 1, 0.25),
+                ("subscription".to_string(), 0, 0.0),
+            ]
+        );
+
+        let reservation_counts: (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(SUM(state = 'settled'), 0)
+             FROM cost_reservations WHERE task_id = ?",
+        )
+        .bind(&task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(reservation_counts, (1, 1));
+
+        let projection = sm.budget_projection(&parent.id, cfg).await.unwrap();
+        assert!((projection.task.settled_usd.unwrap() - 0.25).abs() < 1e-12);
+        assert!((projection.session.settled_usd.unwrap() - 0.25).abs() < 1e-12);
+        assert_eq!(projection.task.held_usd, Some(0.0));
+        assert_eq!(projection.session.unknown_usd, Some(0.0));
+        assert_eq!(
+            projection.task_billing.billing_class.as_deref(),
+            Some("paid_api")
+        );
+        assert_eq!(
+            projection.session_billing.billing_class.as_deref(),
+            Some("paid_api")
+        );
+    }
+
+    /// B6.4: duplicate child completion callbacks for one durable invocation
+    /// produce one settlement, one ledger row, and one recursive roll-up; a
+    /// callback replay after restart remains a no-op.
+    #[tokio::test]
+    async fn b6_duplicate_child_completion_settles_once_after_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_dir = temp_dir.path().to_path_buf();
+        let sm = SessionManager::new(db_dir.clone());
+        let parent = sm
+            .create_session(
+                db_dir.clone(),
+                "duplicate child completion".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&parent.id).await.unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&parent.id),
+                db_dir.clone(),
+                "child callback".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        assert_eq!(budget_task_id(&child.extension_data), Some(task_id.clone()));
+        let cfg = reservation_config(4.0, 5.0, 4.0, 5.0);
+        let reservation_id = match sm
+            .reserve_provider_invocation(
+                "b6-child-completion",
+                &child.id,
+                Some(&task_id),
+                0.50,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            outcome => panic!("child completion fixture was not authorized: {outcome:?}"),
+        };
+        let mut row = reservation_row(&child.id, &task_id, "b6-child-completion", 0.25);
+        row.parent_session_id = Some(parent.id.clone());
+
+        let (first, second) = tokio::join!(
+            sm.settle_provider_invocation(
+                &reservation_id,
+                &row,
+                None,
+                None,
+                None,
+                None,
+                15,
+                10,
+                5,
+            ),
+            sm.settle_provider_invocation(
+                &reservation_id,
+                &row,
+                None,
+                None,
+                None,
+                None,
+                15,
+                10,
+                5,
+            )
+        );
+        let settled_results = [first.unwrap(), second.unwrap()];
+        assert_eq!(
+            settled_results.iter().filter(|settled| **settled).count(),
+            1
+        );
+
+        let pool = sm.pool_clone().await.unwrap();
+        let ledger_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cost_ledger WHERE call_id = 'b6-child-completion'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(ledger_rows, 1);
+        let rollup = sm.cost_by_parent_session(&parent.id).await.unwrap();
+        assert!((rollup.children_total - 0.25).abs() < 1e-12);
+        let projection = sm.budget_projection(&parent.id, cfg).await.unwrap();
+        assert!((projection.task.settled_usd.unwrap() - 0.25).abs() < 1e-12);
+        assert!((projection.session.settled_usd.unwrap() - 0.25).abs() < 1e-12);
+        drop(sm);
+
+        let resumed = SessionManager::new(db_dir);
+        assert!(!resumed
+            .settle_provider_invocation(&reservation_id, &row, None, None, None, None, 15, 10, 5,)
+            .await
+            .unwrap());
+        let resumed_pool = resumed.pool_clone().await.unwrap();
+        let resumed_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cost_ledger WHERE call_id = 'b6-child-completion'",
+        )
+        .fetch_one(&resumed_pool)
+        .await
+        .unwrap();
+        assert_eq!(resumed_rows, 1);
+    }
+
+    /// B6.6: two distinct claims launched concurrently against the same
+    /// one-call allowance must be arbitrated by the atomic reservation
+    /// transaction, not by a stale preselection snapshot.
+    #[tokio::test]
+    async fn b6_atomic_claim_race_grants_once_and_refuses_once() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "claim race".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let cfg = reservation_config(0.90, 1.00, 0.90, 1.00);
+
+        let (first, second) = tokio::join!(
+            sm.reserve_provider_invocation(
+                "b6-race-a",
+                &session.id,
+                Some(&task_id),
+                0.60,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            ),
+            sm.reserve_provider_invocation(
+                "b6-race-b",
+                &session.id,
+                Some(&task_id),
+                0.60,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+        );
+        let outcomes = [first.unwrap(), second.unwrap()];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, CostReservationOutcome::Granted { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| {
+                    matches!(
+                        outcome,
+                        CostReservationOutcome::Refused {
+                            scope: crate::cost_router::budget::BudgetScope::Task,
+                            ..
+                        }
+                    )
+                })
+                .count(),
+            1
+        );
+
+        let pool = sm.pool_clone().await.unwrap();
+        let reservation_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cost_reservations WHERE task_id = ?")
+                .bind(&task_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            reservation_count, 1,
+            "only one fake dispatch may be authorized"
+        );
+        let ledger_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger WHERE task_id = ?")
+                .bind(&task_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ledger_count, 0, "reservation race must not fabricate spend");
+    }
+
+    #[tokio::test]
+    async fn reservation_rejects_invalid_bounds_and_failed_settlement_is_atomic() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "invalid bounds".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let cfg = reservation_config(10.0, 20.0, 10.0, 20.0);
+        for amount in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(sm
+                .reserve_provider_invocation(
+                    &format!("invalid-{amount}"),
+                    &session.id,
+                    Some(&task_id),
+                    amount,
+                    "2099-01-01T00:00:00Z",
+                    &cfg,
+                )
+                .await
+                .is_err());
+        }
+        for ceiling in [f64::NAN, f64::INFINITY] {
+            let mut invalid_cfg = cfg;
+            invalid_cfg.task.soft = ceiling;
+            assert!(matches!(
+                sm.reserve_provider_invocation(
+                    "invalid-ceiling",
+                    &session.id,
+                    Some(&task_id),
+                    1.0,
+                    "2099-01-01T00:00:00Z",
+                    &invalid_cfg,
+                )
+                .await
+                .unwrap(),
+                CostReservationOutcome::Unknown { .. }
+            ));
+        }
+        let reservation_id = match sm
+            .reserve_provider_invocation(
+                "atomic-call",
+                &session.id,
+                Some(&task_id),
+                1.0,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            outcome => panic!("unexpected reservation outcome: {outcome:?}"),
+        };
+        let mismatched = reservation_row(&session.id, "other-task", "atomic-call", 0.5);
+        assert!(sm
+            .settle_provider_invocation(
+                &reservation_id,
+                &mismatched,
+                None,
+                Some(15),
+                Some(10),
+                Some(5),
+                15,
+                10,
+                5,
+            )
+            .await
+            .is_err());
+        let pool = sm.pool_clone().await.unwrap();
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM cost_reservations WHERE reservation_id = ?")
+                .bind(&reservation_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state, "pending");
+        let ledger_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger WHERE call_id = 'atomic-call'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ledger_count, 0);
+        assert_eq!(
+            sm.get_session(&session.id, false)
+                .await
+                .unwrap()
+                .accumulated_total_tokens,
+            None
+        );
     }
 }

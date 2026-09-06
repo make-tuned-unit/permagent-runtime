@@ -7,7 +7,7 @@ mod elicitation;
 mod export;
 mod input;
 mod output;
-mod spend_announce;
+pub(crate) mod spend_announce;
 pub mod streaming_buffer;
 mod task_execution_display;
 mod thinking;
@@ -278,6 +278,7 @@ pub struct CliSession {
     edit_mode: Option<EditMode>,
     retry_config: Option<RetryConfig>,
     output_format: String,
+    coding_harness: bool,
     composer: Option<composer::Composer>,
     /// Whether last turn left a Brain-recall block installed under
     /// [`brain_sync::RECALL_PROMPT_KEY`]. The system-prompt extras map is keyed
@@ -393,6 +394,7 @@ impl CliSession {
         edit_mode: Option<EditMode>,
         retry_config: Option<RetryConfig>,
         output_format: String,
+        coding_harness: bool,
     ) -> Self {
         let messages = agent
             .config
@@ -414,6 +416,7 @@ impl CliSession {
             edit_mode,
             retry_config,
             output_format,
+            coding_harness,
             composer: None,
             recall_installed: false,
         }
@@ -421,6 +424,17 @@ impl CliSession {
 
     pub fn session_id(&self) -> &String {
         &self.session_id
+    }
+
+    /// The provider/model actually active after routing and fallback. This is
+    /// used by the local harness telemetry seam; CLI overrides alone can be
+    /// stale after a provider switch.
+    pub async fn active_provider_identity(&self) -> Option<(String, String)> {
+        let provider = self.agent.provider().await.ok()?;
+        Some((
+            provider.get_name().to_string(),
+            provider.get_model_config().model_name,
+        ))
     }
 
     /// Parse a stdio extension command string into an ExtensionConfig
@@ -616,9 +630,65 @@ impl CliSession {
     ) -> Result<()> {
         let cancel_token = cancel_token.clone();
         self.push_message(message);
-        self.process_agent_response(interactive, cancel_token)
+        let prompt = self
+            .messages
+            .last()
+            .map(Message::as_concat_text)
+            .unwrap_or_default();
+        self.process_with_harness_heartbeat(&prompt, interactive, cancel_token)
             .await?;
         Ok(())
+    }
+
+    /// Run one reply with the same run-scoped telemetry accumulator used by
+    /// interactive turns. This also covers `headless`, whose older path went
+    /// straight to `process_agent_response` and never published a run.
+    async fn process_with_harness_heartbeat(
+        &mut self,
+        prompt: &str,
+        interactive: bool,
+        cancel_token: CancellationToken,
+    ) -> Result<()> {
+        let provider = self.agent.provider().await?;
+        let turn_provider = provider.get_name().to_string();
+        let turn_model = provider.get_model_config().model_name;
+        drop(provider);
+        // Session parentage is durable truth for delegated/resumed sessions.
+        // Carry it as session lineage; parentRunId remains unset because a
+        // session id is not a harness run id.
+        let parent_session_id = self
+            .agent
+            .config
+            .session_manager
+            .get_session(&self.session_id, false)
+            .await
+            .ok()
+            .and_then(|session| session.parent_session_id);
+        let heartbeat = spend_announce::start_harness_heartbeat(
+            &self.session_id,
+            prompt,
+            Some(&turn_provider),
+            Some(&turn_model),
+            self.coding_harness,
+            parent_session_id.as_deref(),
+        );
+        let telemetry = heartbeat.telemetry();
+        let response = self
+            .process_agent_response(interactive, cancel_token, Some(telemetry.clone()))
+            .await;
+        // Agent::reply resets its retry manager at reply entry, so this
+        // post-reply sample is authoritative even when the value is zero.
+        telemetry.set_retry_count(self.agent.get_retry_attempts().await);
+        // Provider failures handled inside Agent::reply arrive as the
+        // per-stream typed outcome. Errors that escape retain their concrete
+        // source and are classified without parsing display text.
+        let observed_result = telemetry.terminal_result();
+        let result =
+            spend_announce::classify_terminal_result(&response, observed_result.as_deref());
+        heartbeat
+            .finish_observed((result != "unknown").then_some(result))
+            .await;
+        response
     }
 
     /// Start an interactive session, optionally with an initial message
@@ -1117,8 +1187,6 @@ impl CliSession {
                     );
                 }
 
-                let _provider = self.agent.provider().await?;
-
                 if self.composer.is_none() {
                     println!();
                 }
@@ -1128,9 +1196,11 @@ impl CliSession {
                     output::show_thinking();
                 }
                 let start_time = Instant::now();
-                self.process_agent_response(true, CancellationToken::default())
-                    .await?;
+                let response = self
+                    .process_with_harness_heartbeat(content, true, CancellationToken::default())
+                    .await;
                 output::hide_thinking();
+                response?;
 
                 if !pinned {
                     let elapsed = start_time.elapsed();
@@ -1324,7 +1394,7 @@ impl CliSession {
         if should_summarize {
             self.push_message(Message::user().with_text(COMPACT_TRIGGERS[0]));
             output::show_thinking();
-            self.process_agent_response(true, CancellationToken::default())
+            self.process_agent_response(true, CancellationToken::default(), None)
                 .await?;
             output::hide_thinking();
         } else {
@@ -1394,7 +1464,7 @@ impl CliSession {
                     self.push_message(plan_message);
                     // act on the plan
                     output::show_thinking();
-                    self.process_agent_response(true, CancellationToken::default())
+                    self.process_agent_response(true, CancellationToken::default(), None)
                         .await?;
                     output::hide_thinking();
 
@@ -1430,6 +1500,7 @@ impl CliSession {
         &mut self,
         interactive: bool,
         cancel_token: CancellationToken,
+        harness_telemetry: Option<spend_announce::HarnessRunTelemetry>,
     ) -> Result<()> {
         let is_json_mode = self.output_format == "json";
         let is_stream_json_mode = self.output_format == "stream-json";
@@ -1461,10 +1532,30 @@ impl CliSession {
         // Bounded and silent: a wedged daemon costs this turn 750ms once, and a
         // missing one costs nothing at all (no token file ⇒ no network attempt).
         let turn_idx = self.messages.len();
-        if let Some(block) = brain_sync::recall_block(&user_text, self.recall_installed).await {
-            self.recall_installed = !block.is_empty();
+        if let Some(context) = brain_sync::recall_context(&user_text).await {
+            self.recall_installed = true;
+            let contributions = context
+                .spectral_memories
+                .into_iter()
+                .map(|memory| {
+                    permagent::context_packet::ContextContribution::spectral_memory(
+                        memory.key,
+                        memory.text,
+                        memory.provenance,
+                    )
+                })
+                .collect();
             self.agent
-                .extend_system_prompt(brain_sync::RECALL_PROMPT_KEY.to_string(), block)
+                .extend_system_prompt_with_contexts(
+                    brain_sync::RECALL_PROMPT_KEY.to_string(),
+                    context.block,
+                    contributions,
+                )
+                .await;
+        } else if self.recall_installed {
+            self.recall_installed = false;
+            self.agent
+                .extend_system_prompt(brain_sync::RECALL_PROMPT_KEY.to_string(), String::new())
                 .await;
         }
         let user_message = self
@@ -1537,7 +1628,41 @@ impl CliSession {
                 result = stream.as_mut().unwrap().next() => {
                     match result {
                         Some(Ok(AgentEvent::Message(message))) => {
-                            if let Some((id, security_prompt)) = find_tool_confirmation(&message) {
+                            if let Some(telemetry) = harness_telemetry.as_ref() {
+                                for content in &message.content {
+                                    match content {
+                                        MessageContent::ToolRequest(request) => {
+                                            telemetry.record_tool_call(&request.id);
+                                            if request.tool_call.as_ref().is_ok_and(|call| {
+                                                permagent::agents::platform_extensions::orchestrator::is_verify_tool_name(call.name.as_ref())
+                                            }) {
+                                                telemetry.record_verification_request(
+                                                    &request.id,
+                                                    request.tool_call.as_ref().ok().and_then(|call| {
+                                                        call.arguments.as_ref()
+                                                    }),
+                                                );
+                                            }
+                                        }
+                                        MessageContent::ToolResponse(response) => {
+                                            if let Ok(result) = &response.tool_result {
+                                                telemetry.record_verification_result(
+                                                    &response.id,
+                                                    result,
+                                                );
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            if let Some((id, tool_name, security_prompt)) =
+                                find_tool_confirmation(&message)
+                            {
+                                if let Some(telemetry) = harness_telemetry.as_ref() {
+                                    telemetry.record_gate_attempt(&id);
+                                    telemetry.set_pending_gate(&id, &tool_name);
+                                }
                                 let permission = if interactive {
                                     if let Some(c) = composer.as_mut() {
                                         c.suspend();
@@ -1549,6 +1674,9 @@ impl CliSession {
                                     match result {
                                         Ok(p) => p,
                                         Err(e) => {
+                                            if let Some(telemetry) = harness_telemetry.as_ref() {
+                                                telemetry.clear_pending_gate();
+                                            }
                                             fatal = Some(e);
                                             break;
                                         }
@@ -1575,6 +1703,10 @@ impl CliSession {
                                 };
 
                                 if permission == Permission::Cancel {
+                                    if let Some(telemetry) = harness_telemetry.as_ref() {
+                                        telemetry.clear_pending_gate();
+                                        telemetry.mark_cancelled();
+                                    }
                                     if let Some(c) = composer.as_mut() {
                                         c.prepare_output();
                                     }
@@ -1598,6 +1730,12 @@ impl CliSession {
                                     self.messages.push(response_message);
                                     cancel_token_clone.cancel();
                                     break;
+                                }
+                                if let Some(telemetry) = harness_telemetry.as_ref() {
+                                    telemetry.clear_pending_gate();
+                                    if matches!(permission, Permission::DenyOnce | Permission::AlwaysDeny) {
+                                        telemetry.mark_denied();
+                                    }
                                 }
                                 self.agent.handle_confirmation(id, PermissionConfirmation {
                                     principal_type: PrincipalType::Tool,
@@ -1758,9 +1896,17 @@ impl CliSession {
                         Some(Ok(AgentEvent::HistoryReplaced(updated_conversation))) => {
                             self.messages = updated_conversation;
                         }
+                        Some(Ok(AgentEvent::RuntimeOutcome(outcome))) => {
+                            if let Some(telemetry) = harness_telemetry.as_ref() {
+                                telemetry.record_agent_outcome(outcome);
+                            }
+                        }
                         Some(Err(e)) => {
                             if let Some(c) = composer.as_mut() {
                                 c.prepare_output();
+                            }
+                            if let Some(telemetry) = harness_telemetry.as_ref() {
+                                telemetry.record_error(&e);
                             }
                             handle_agent_error(&e, is_stream_json_mode);
                             if let Some(c) = composer.as_mut() {
@@ -1792,6 +1938,11 @@ impl CliSession {
         }
 
         drop(stream);
+        if interrupt_kind == Some(true) {
+            if let Some(telemetry) = harness_telemetry.as_ref() {
+                telemetry.mark_cancelled();
+            }
+        }
         if let Some(user) = interrupt_kind {
             if let Some(c) = composer.as_mut() {
                 c.prepare_output();
@@ -2151,7 +2302,7 @@ impl CliSession {
                         }
 
                         output::show_thinking();
-                        self.process_agent_response(true, CancellationToken::default())
+                        self.process_agent_response(true, CancellationToken::default(), None)
                             .await?;
                         output::hide_thinking();
                     }
@@ -2299,11 +2450,17 @@ fn prompt_tool_confirmation(security_prompt: &Option<String>) -> Result<Permissi
 }
 
 /// Extract tool confirmation request from a message
-fn find_tool_confirmation(message: &Message) -> Option<(String, Option<String>)> {
+fn find_tool_confirmation(message: &Message) -> Option<(String, String, Option<String>)> {
     message.content.iter().find_map(|content| {
         if let MessageContent::ActionRequired(action) = content {
-            if let ActionRequiredData::ToolConfirmation { id, prompt, .. } = &action.data {
-                return Some((id.clone(), prompt.clone()));
+            if let ActionRequiredData::ToolConfirmation {
+                id,
+                tool_name,
+                prompt,
+                ..
+            } = &action.data
+            {
+                return Some((id.clone(), tool_name.clone(), prompt.clone()));
             }
         }
         None

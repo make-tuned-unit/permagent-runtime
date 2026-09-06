@@ -238,10 +238,15 @@ pub fn scan_verify_positions(messages: &[Message]) -> VerifyPositions {
                     let Some(kind) = pending.remove(&resp.id) else {
                         continue;
                     };
-                    let succeeded = resp
-                        .tool_result
-                        .as_ref()
-                        .is_ok_and(|result| result.is_error != Some(true));
+                    let succeeded = match kind {
+                        Kind::Mutation => resp
+                            .tool_result
+                            .as_ref()
+                            .is_ok_and(|result| result.is_error != Some(true)),
+                        Kind::Verify => resp.tool_result.as_ref().is_ok_and(
+                            crate::agents::platform_extensions::developer::verify::is_authoritative_pass,
+                        ),
+                    };
                     if !succeeded {
                         continue;
                     }
@@ -264,7 +269,7 @@ pub fn conversation_mutated_files(messages: &[Message]) -> bool {
 }
 
 /// Tool names whose purpose is to write to the filesystem.
-fn is_mutating_tool_name(name: &str) -> bool {
+pub fn is_mutating_tool_name(name: &str) -> bool {
     let base = name.rsplit("__").next().unwrap_or(name);
     matches!(
         base,
@@ -522,13 +527,16 @@ fn parse_shortstat(text: &str) -> usize {
 /// `worker_persona: "reviewer"` (case-insensitive) appears anywhere after
 /// `after_position` — the SAME flattened-conversation position scheme
 /// [`scan_verify_positions`] uses, so "after the last mutation" means the same
-/// thing here as it does there. The REQUEST alone is enough evidence the
-/// delegation happened: by the time `after_turn` runs, the turn has already
-/// finished, so every tool request in `messages` has already been answered.
-fn reviewer_delegation_ran_after(messages: &[Message], after_position: usize) -> bool {
+/// thing here as it does there. A request is not proof: only a successful tool
+/// response whose canonical `VERDICT: APPROVE` parses as approval satisfies
+/// the mandate.
+fn reviewer_approved_after(messages: &[Message], after_position: usize) -> bool {
     use crate::conversation::message::MessageContent;
+    use crate::cost_router::review_gate::{parse_review, Verdict};
+    use std::collections::HashSet;
 
     let mut index = 0usize;
+    let mut pending = HashSet::new();
     for msg in messages {
         for content in &msg.content {
             index += 1;
@@ -538,8 +546,27 @@ fn reviewer_delegation_ran_after(messages: &[Message], after_position: usize) ->
             if let MessageContent::ToolRequest(req) = content {
                 if let Ok(call) = req.tool_call.as_ref() {
                     if is_reviewer_delegation(call) {
-                        return true;
+                        pending.insert(req.id.clone());
                     }
+                }
+            } else if let MessageContent::ToolResponse(response) = content {
+                if !pending.remove(&response.id) {
+                    continue;
+                }
+                let Ok(result) = response.tool_result.as_ref() else {
+                    continue;
+                };
+                if result.is_error == Some(true) {
+                    continue;
+                }
+                let text = result
+                    .content
+                    .iter()
+                    .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if parse_review(&text).verdict == Verdict::Approve {
+                    return true;
                 }
             }
         }
@@ -617,12 +644,19 @@ fn reviewer_inject_text(pick: &crate::cost_router::ReviewerPick) -> String {
 /// to have `availability` computed at all.
 fn decide(
     mutated: bool,
-    delegation_already_ran: bool,
+    reviewer_approved: bool,
     already_asked: bool,
     availability: &ReviewerAvailability,
 ) -> AfterTurnAction {
-    if !mutated || delegation_already_ran || already_asked {
+    if !mutated || reviewer_approved {
         return AfterTurnAction::Allow;
+    }
+    if already_asked {
+        return AfterTurnAction::Park {
+            reason: format!(
+                "{REVIEW_PARK_PREFIX}the reviewer did not return a successful APPROVE verdict"
+            ),
+        };
     }
     match availability {
         ReviewerAvailability::Ready(pick) => AfterTurnAction::Continue {
@@ -667,7 +701,7 @@ impl AfterTurn for ReviewerMandate {
             return AfterTurnAction::Allow;
         }
 
-        let delegation_already_ran = reviewer_delegation_ran_after(ctx.messages, last_mutation);
+        let reviewer_approved = reviewer_approved_after(ctx.messages, last_mutation);
         // `prior_holds` is a shared, all-hooks counter and cannot answer "did I
         // already ask?" (see `REVIEW_ASK_OPENING`); it serves only as a hard
         // backstop against an unbounded loop if the injected ask ever stopped
@@ -675,12 +709,12 @@ impl AfterTurn for ReviewerMandate {
         // spent one hold on verify before this hook ever ran.
         let already_asked =
             reviewer_ask_pending(ctx.messages, last_mutation) || ctx.prior_holds >= 2;
-        if delegation_already_ran || already_asked {
+        if reviewer_approved {
             return AfterTurnAction::Allow;
         }
 
         let availability = Self::assess(ctx.session_id).await;
-        decide(true, delegation_already_ran, already_asked, &availability)
+        decide(true, reviewer_approved, already_asked, &availability)
     }
 }
 
@@ -697,11 +731,19 @@ mod tests {
     }
 
     fn tool_exchange_with_text(name: &str, id: &str, text: &str, ok: bool) -> Message {
-        let result = if ok {
+        let mut result = if ok {
             CallToolResult::success(vec![Content::text(text)])
         } else {
             CallToolResult::error(vec![Content::text(text)])
         };
+        if crate::agents::platform_extensions::orchestrator::is_verify_tool_name(name) {
+            result.structured_content = Some(serde_json::json!({
+                "kind": crate::agents::platform_extensions::developer::verify::VERIFICATION_OBSERVATION_KIND,
+                "command": "test",
+                "verdict": if ok { "pass" } else { "fail" },
+                "evidence": text,
+            }));
+        }
         Message::new(
             Role::Assistant,
             0,
@@ -799,6 +841,28 @@ mod tests {
             guard.after_turn(&ctx(&done, 0)).await,
             AfterTurnAction::Allow
         );
+    }
+
+    #[tokio::test]
+    async fn a_plaintext_pass_without_structured_evidence_does_not_advance() {
+        let guard = PrematureDoneGuard::new();
+        let result = CallToolResult::success(vec![Content::text("PASS - all checks passed")]);
+        let mut messages = vec![tool_exchange("developer__edit", "e1", true)];
+        messages.push(Message::new(
+            Role::Assistant,
+            0,
+            vec![
+                MessageContent::tool_request(
+                    "v1",
+                    Ok(CallToolRequestParams::new("developer__verify")),
+                ),
+                MessageContent::tool_response("v1", Ok(result)),
+            ],
+        ));
+        assert!(matches!(
+            guard.after_turn(&ctx(&messages, 0)).await,
+            AfterTurnAction::Continue { .. }
+        ));
     }
 
     /// The live bug, end to end. A passing cargo suite prints `0 failed`;
@@ -994,24 +1058,36 @@ mod tests {
 
     // ── ReviewerMandate ──────────────────────────────────────────────────────
 
-    fn delegate_exchange(id: &str, worker_persona: &str) -> Message {
+    fn delegate_exchange_result(
+        id: &str,
+        worker_persona: &str,
+        verdict: &str,
+        ok: bool,
+    ) -> Message {
         let call = CallToolRequestParams::new("delegate".to_string()).with_arguments(
             serde_json::Map::from_iter([(
                 "worker_persona".to_string(),
                 serde_json::Value::String(worker_persona.to_string()),
             )]),
         );
+        let output = format!("VERDICT: {verdict}\nCHECKED: the changed files");
+        let result = if ok {
+            CallToolResult::success(vec![Content::text(output)])
+        } else {
+            CallToolResult::error(vec![Content::text(output)])
+        };
         Message::new(
             Role::Assistant,
             0,
             vec![
                 MessageContent::tool_request(id, Ok(call)),
-                MessageContent::tool_response(
-                    id,
-                    Ok(CallToolResult::success(vec![Content::text("APPROVE")])),
-                ),
+                MessageContent::tool_response(id, Ok(result)),
             ],
         )
+    }
+
+    fn delegate_exchange(id: &str, worker_persona: &str) -> Message {
+        delegate_exchange_result(id, worker_persona, "APPROVE", true)
     }
 
     /// Two KB rows from different families — mirrors
@@ -1135,9 +1211,8 @@ mod tests {
         );
     }
 
-    /// Case 4 — The ask is made ONCE per changed-files turn, whether or not the model
-    /// obliged — the injected message is its own record. Short-circuits before
-    /// `assess`, so safe through the real `after_turn`.
+    /// Case 4 — The ask is made once. Refusal then parks instead of looping or
+    /// treating the request itself as a completed independent review.
     #[tokio::test]
     async fn an_ask_already_injected_is_never_repeated() {
         let mandate = ReviewerMandate::new();
@@ -1147,11 +1222,10 @@ mod tests {
             Message::user().with_text(reviewer_inject_text(&ready_pick())),
             Message::assistant().with_text("I would rather not."),
         ];
-        assert_eq!(
+        assert!(matches!(
             mandate.after_turn(&ctx(&asked, 0)).await,
-            AfterTurnAction::Allow,
-            "the mandate asks once; it does not nag"
-        );
+            AfterTurnAction::Park { .. }
+        ));
 
         // And the shared counter is a backstop only, at 2 — one hold belongs to
         // `PrematureDoneGuard`.
@@ -1159,10 +1233,32 @@ mod tests {
             tool_exchange("developer__edit", "e1", true),
             tool_exchange("developer__verify", "v1", true),
         ];
-        assert_eq!(
+        assert!(matches!(
             mandate.after_turn(&ctx(&verified, 2)).await,
-            AfterTurnAction::Allow
-        );
+            AfterTurnAction::Park { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_or_non_approving_reviewer_never_satisfies_the_mandate() {
+        let mandate = ReviewerMandate::new();
+        for review in [
+            delegate_exchange_result("d1", "reviewer", "APPROVE", false),
+            delegate_exchange_result("d2", "reviewer", "REQUEST_CHANGES", true),
+            delegate_exchange_result("d3", "reviewer", "UNCERTAIN", true),
+            delegate_exchange_result("d4", "reviewer", "not a verdict", true),
+        ] {
+            let turn = vec![
+                tool_exchange("developer__edit", "e1", true),
+                tool_exchange("developer__verify", "v1", true),
+                review,
+                Message::user().with_text(reviewer_inject_text(&ready_pick())),
+            ];
+            assert!(matches!(
+                mandate.after_turn(&ctx(&turn, 0)).await,
+                AfterTurnAction::Park { .. }
+            ));
+        }
     }
 
     /// The two hooks do not fight. While edits are unverified the mandate stays

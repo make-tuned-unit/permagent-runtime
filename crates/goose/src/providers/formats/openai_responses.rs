@@ -754,6 +754,7 @@ where
                     final_usage = Some(ProviderUsage {
                         usage,
                         model: model.clone(),
+                        invocation_id: None,
                     });
 
                     // For complete output, use the response output items

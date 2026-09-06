@@ -33,10 +33,24 @@ use crate::permission::permission_confirmation::PrincipalType;
 use crate::permission::{Permission, PermissionConfirmation};
 use crate::providers::base::{MessageStream, PermissionRouting, Provider, ProviderUsage, Usage};
 use crate::providers::errors::ProviderError;
+use crate::session::CostTier;
 use crate::subprocess::configure_subprocess;
 
 /// Sentinel: resolved to the actual model name during connect().
 pub const ACP_CURRENT_MODEL: &str = "current";
+
+/// Claude/Codex ACP sessions currently choose their own model when the session
+/// is created. Until their adapters expose a model config option that we can
+/// apply and verify, accepting a named model would make routing receipts lie.
+pub fn require_adapter_selected_model(provider: &str, model: &ModelConfig) -> Result<()> {
+    if model.model_name == ACP_CURRENT_MODEL {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "{provider} cannot apply explicit model `{}` through ACP yet; select `{ACP_CURRENT_MODEL}` so the adapter-reported session model remains authoritative",
+        model.model_name
+    )
+}
 
 pub struct AcpProviderConfig {
     pub command: PathBuf,
@@ -48,6 +62,9 @@ pub struct AcpProviderConfig {
     pub session_mode_id: Option<String>,
     pub mode_mapping: HashMap<GooseMode, String>,
     pub notification_callback: Option<Arc<dyn Fn(SessionNotification) + Send + Sync>>,
+    /// Explicit billing classification supplied by the registered adapter.
+    /// ACP transport cannot establish subscription coverage itself.
+    pub cost_tier: CostTier,
 }
 
 enum ClientRequest {
@@ -125,6 +142,7 @@ struct AcpSession {
 pub struct AcpProvider {
     name: String,
     model: ModelConfig,
+    cost_tier: CostTier,
     goose_mode: Arc<Mutex<GooseMode>>,
     mode_mapping: HashMap<GooseMode, String>,
 
@@ -207,6 +225,7 @@ impl AcpProvider {
     ) -> Result<Self> {
         let (tx, rx) = mpsc::channel(32);
         let (init_tx, init_rx) = oneshot::channel();
+        let cost_tier = config.cost_tier;
         let mode_mapping = config.mode_mapping.clone();
         let goose_mode_shared = Arc::new(Mutex::new(goose_mode));
         let pending_tool_updates: Arc<Mutex<HashMap<String, AccumulatedToolCall>>> =
@@ -256,6 +275,7 @@ impl AcpProvider {
         Ok(Self {
             name,
             model: resolved_model,
+            cost_tier,
             goose_mode: goose_mode_shared,
             mode_mapping,
             session,
@@ -340,6 +360,10 @@ impl AcpProvider {
 impl Provider for AcpProvider {
     fn get_name(&self) -> &str {
         &self.name
+    }
+
+    fn cost_tier(&self) -> CostTier {
+        self.cost_tier
     }
 
     fn get_model_config(&self) -> ModelConfig {
@@ -862,6 +886,7 @@ async fn spawn_acp_process(config: &AcpProviderConfig) -> Result<Child> {
     }
 
     configure_subprocess(&mut cmd);
+    // permagent-dispatch: seam=acp_provider_transport_v1 class=excluded reason=caller_provider_accounting authority=provider_dispatch
     cmd.spawn().context("failed to spawn ACP process")
 }
 
@@ -1362,6 +1387,25 @@ mod tests {
     use crate::agents::extension::Envs;
     use sacp::schema::SessionConfigSelectOption;
     use test_case::test_case;
+
+    #[test]
+    fn adapter_selected_model_rejects_unenforceable_named_models() {
+        let current = ModelConfig {
+            model_name: ACP_CURRENT_MODEL.to_string(),
+            ..Default::default()
+        };
+        require_adapter_selected_model("claude-acp", &current)
+            .expect("current delegates model choice honestly to the ACP session");
+
+        let named = ModelConfig {
+            model_name: "claude-opus-4-1".to_string(),
+            ..Default::default()
+        };
+        let error = require_adapter_selected_model("claude-acp", &named)
+            .expect_err("a model the ACP session cannot select must be refused");
+        assert!(error.to_string().contains("cannot apply explicit model"));
+        assert!(error.to_string().contains("select `current`"));
+    }
 
     #[test_case(
         ExtensionConfig::Stdio {

@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
+use crate::agents::reply_parts::AccountedFastCompletion;
 use crate::conversation::message::Message;
 use crate::providers::base::Provider;
 
@@ -187,12 +188,22 @@ async fn execute_summarize(
 
     let user_message = Message::user().with_text(&prompt);
 
-    let model_config = provider.get_model_config();
-
-    let (response, _usage) = provider
-        .complete(&model_config, session_id, system, &[user_message], &[])
+    let manager = Arc::new(crate::session::SessionManager::instance());
+    let session = manager
+        .get_session(session_id, false)
         .await
-        .map_err(|e| format!("LLM call failed: {}", e))?;
+        .map_err(|e| format!("session lookup failed: {e}"))?;
+    let (response, _usage) = AccountedFastCompletion::complete_accounted(
+        manager,
+        session,
+        provider,
+        system,
+        &[user_message],
+        &[],
+        false,
+    )
+    .await
+    .map_err(|e| format!("LLM call failed: {e}"))?;
 
     let response_text = response
         .content
@@ -424,6 +435,14 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn summarize_cannot_bypass_shared_paid_dispatch_boundary() {
+        let source = include_str!("summarize.rs");
+        let direct_call = [".", "complete("].concat();
+        assert!(source.contains("complete_accounted"));
+        assert!(!source.contains(&direct_call));
+    }
 
     fn setup_test_dir() -> TempDir {
         let dir = tempfile::tempdir().unwrap();

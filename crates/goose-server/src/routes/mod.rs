@@ -51,6 +51,7 @@ pub mod ollama;
 pub mod onboarding;
 pub mod packs;
 pub mod people;
+pub mod program;
 pub mod projects;
 pub mod prompts;
 pub mod public_apis;
@@ -170,6 +171,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(coding_session::routes(state.clone()))
         .merge(security::routes(state.clone()))
         .merge(prompts::routes())
+        .merge(program::routes(state.clone()))
         .merge(recipe::routes(state.clone()))
         .merge(session::routes(state.clone()))
         .merge(schedule::routes(state.clone()))

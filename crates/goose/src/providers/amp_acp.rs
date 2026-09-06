@@ -12,6 +12,7 @@ use crate::model::ModelConfig;
 use crate::providers::acp_tooling::{acp_adapter_installed, acp_inventory_identity};
 use crate::providers::base::{ProviderDef, ProviderMetadata};
 use crate::providers::inventory::InventoryIdentityInput;
+use crate::session::CostTier;
 
 const AMP_ACP_PROVIDER_NAME: &str = "amp-acp";
 const AMP_ACP_DOC_URL: &str = "https://ampcode.com";
@@ -70,6 +71,9 @@ impl ProviderDef for AmpAcpProvider {
                 session_mode_id: Some(mode_mapping[&goose_mode].clone()),
                 mode_mapping,
                 notification_callback: None,
+                // Amp's product metadata describes this adapter as a
+                // subscription service; keep the classification explicit.
+                cost_tier: CostTier::Subscription,
             };
 
             let metadata = Self::metadata();

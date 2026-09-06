@@ -248,6 +248,7 @@ async fn offer_extension_debugging_help(
         None,
         None,
         "text".to_string(),
+        false,
     )
     .await;
 
@@ -393,6 +394,20 @@ fn harness_role_route(config: &Config) -> Option<permagent::config::RoleModel> {
     resolved.route
 }
 
+/// A complete `harness_provider`/`harness_model` pair is an operator choice,
+/// just like a CLI `--provider/--model` pair.  If that choice is not yet
+/// graduated, preserve it and emit the spend warning instead of silently
+/// replacing it with a paid fallback.
+fn harness_role_selection_is_explicit(config: &Config) -> bool {
+    use permagent::config::{ModelRole, RoleModelSource};
+
+    let source = permagent::config::resolve_role_model(ModelRole::Harness, |key| {
+        config.get_param::<String>(key).ok()
+    })
+    .source;
+    source == RoleModelSource::Configured
+}
+
 fn resolve_provider_and_model(
     session_config: &SessionBuilderConfig,
     config: &Config,
@@ -469,6 +484,101 @@ fn resolve_provider_and_model(
         model_name,
         model_config,
     }
+}
+
+/// Keep an ungraduated model out of the coding harness's top-level
+/// coordinator seat.  The operator may still select the same local model for
+/// bounded mechanical workers; this gate only protects the judgment-dense
+/// session that must create and advance the coding DAG.
+///
+/// The default route is trusted explicitly; the knowledge table only supplies
+/// a heuristic status for other models until a coding-suite graduation record
+/// exists. Unknown models therefore fail closed instead of being treated as
+/// capable because they happen to answer a provider request.
+fn enforce_harness_coordinator_route(
+    resolved: ResolvedProviderConfig,
+    coding_harness: bool,
+    configured_fallback: Option<permagent::config::RoleModel>,
+    explicit_override: bool,
+    interactive: bool,
+) -> (ResolvedProviderConfig, Option<String>) {
+    if !coding_harness {
+        return (resolved, None);
+    }
+
+    let eligibility = permagent::config::assess_harness_coordinator(
+        &resolved.provider_name,
+        &resolved.model_name,
+    );
+    if eligibility.is_eligible() {
+        return (resolved, None);
+    }
+
+    if explicit_override {
+        let notice = format!(
+            "Coding harness coordinator {}/{} is not trusted ({}), but the model was explicitly selected; automatic fallback is refused to avoid unexpected provider spend. The selected model remains in control, and the cost meter records any work it performs.",
+            resolved.provider_name,
+            resolved.model_name,
+            eligibility.reason(),
+        );
+        return (resolved, deliver_failover_notice(notice, interactive));
+    }
+
+    // A deliberately configured harness role is the first fallback, but it
+    // must pass the same graduation gate. The measured default is the final
+    // deterministic fallback and is itself covered by the knowledge table.
+    let measured_fallback = permagent::config::ModelRole::Harness.measured_default();
+    let target = [configured_fallback, Some(measured_fallback)]
+        .into_iter()
+        .flatten()
+        .find(|candidate| {
+            permagent::config::assess_harness_coordinator(&candidate.provider, &candidate.model)
+                .is_eligible()
+        });
+
+    let Some(target) = target else {
+        // This should be unreachable while the measured default remains in the
+        // knowledge table. Keep the user's route if the table is deliberately
+        // edited into an inconsistent state, but make the missing evidence
+        // visible rather than claiming the coordinator is safe.
+        let notice = format!(
+            "Coding harness coordinator {}/{} is not graduated ({}), and no measured fallback is available; keeping the configured route.",
+            resolved.provider_name,
+            resolved.model_name,
+            eligibility.reason(),
+        );
+        return (resolved, deliver_failover_notice(notice, interactive));
+    };
+
+    let model_config = permagent::model::ModelConfig::new(&target.model)
+        .expect("a graduated harness fallback must have a valid model id")
+        .with_canonical_limits(&target.provider)
+        .with_temperature(resolved.model_config.temperature);
+    let notice = format!(
+        "Coding harness coordinator {}/{} is not graduated ({}); routed the top-level session to {}/{}. This fallback may incur provider spend and is recorded by the cost meter; local models remain eligible for bounded mechanical worker nodes.",
+        resolved.provider_name,
+        resolved.model_name,
+        eligibility.reason(),
+        target.provider,
+        target.model,
+    );
+    tracing::warn!(
+        target: "permagent::cost_router",
+        from_provider = %resolved.provider_name,
+        from_model = %resolved.model_name,
+        to_provider = %target.provider,
+        to_model = %target.model,
+        reason = eligibility.reason(),
+        "ungraduated model blocked from coding coordinator role"
+    );
+    (
+        ResolvedProviderConfig {
+            provider_name: target.provider,
+            model_name: target.model,
+            model_config,
+        },
+        deliver_failover_notice(notice, interactive),
+    )
 }
 
 /// Pure: what a resolved-but-dead local endpoint becomes, and the sentence that
@@ -589,8 +699,12 @@ async fn resolve_session_id(
             output::render_error(&format!("Could not get working directory: {}", e));
             process::exit(1);
         });
+        let inherited_parent = std::env::var(permagent::session::PARENT_SESSION_ID_ENV)
+            .ok()
+            .filter(|id| !id.trim().is_empty());
         let session = session_manager
-            .create_session(
+            .create_session_with_parent(
+                inherited_parent.as_deref(),
                 working_dir,
                 "CLI Session".to_string(),
                 SessionType::Hidden,
@@ -944,10 +1058,28 @@ async fn configure_session_prompts(
                 "coding harness session starting without a repo map"
             );
         }
-        session
-            .agent
-            .extend_system_prompt("repo_map".to_string(), orientation_block(map_block))
-            .await;
+        let orientation = orientation_block(map_block.clone());
+        if let Some(map) = map_block {
+            session
+                .agent
+                .extend_system_prompt_with_context(
+                    "repo_map".to_string(),
+                    orientation,
+                    permagent::context_packet::ContextContribution::project_memory(
+                        // The attribution is the exact text installed in the
+                        // extra, including its orientation guardrails; do
+                        // not reconstruct it from prompt prose later.
+                        orientation_block(Some(map)),
+                        ["project:repo_map".to_string()],
+                    ),
+                )
+                .await;
+        } else {
+            session
+                .agent
+                .extend_system_prompt("repo_map".to_string(), orientation)
+                .await;
+        }
     }
 
     let system_prompt_file: Option<String> = config.get_param("GOOSE_SYSTEM_PROMPT_FILE_PATH").ok();
@@ -989,15 +1121,37 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         (None, None)
     };
 
+    let recipe = session_config.recipe.as_ref();
+    let coding_harness = recipe
+        .map(crate::recipes::builtin_recipes::is_coding_harness_recipe)
+        .unwrap_or(false);
+
     let resolved =
         resolve_provider_and_model(&session_config, config, saved_provider, saved_model_config);
+    let (resolved, coordinator_notice) = enforce_harness_coordinator_route(
+        resolved,
+        coding_harness,
+        harness_role_route(config),
+        session_config.provider.is_some()
+            || session_config.model.is_some()
+            || harness_role_selection_is_explicit(config),
+        session_config.interactive,
+    );
     // Resolution answers "what is configured", not "what is up". Settle a dead
     // self-hosted endpoint HERE, so the banner below prints what will actually
     // serve and turn one is not spent finding a closed port.
     let (resolved, headless_failover_notice) =
         failover_if_endpoint_is_dead(resolved, session_config.interactive).await;
 
-    let recipe = session_config.recipe.as_ref();
+    // Preserve both startup routing receipts when the coordinator fallback is
+    // followed by an endpoint failover. Headless runs journal this combined
+    // evidence below; interactive runs already saw each notice at the point
+    // it was emitted.
+    let startup_notice = match (coordinator_notice, headless_failover_notice) {
+        (Some(coordinator), Some(failover)) => Some(format!("{coordinator}\n{failover}")),
+        (Some(notice), None) | (None, Some(notice)) => Some(notice),
+        (None, None) => None,
+    };
 
     if let Err(e) = agent
         .apply_recipe_components(recipe.and_then(|r| r.response.clone()), true)
@@ -1014,7 +1168,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // session exists. A headless run has no banner and no footer, so without
     // this the transcript claims nothing about which model actually served it —
     // and whoever reads the run afterwards has no way to find out.
-    if let Some(notice) = headless_failover_notice {
+    if let Some(notice) = startup_notice {
         let message = permagent::conversation::message::Message::assistant()
             .with_system_notification(
                 permagent::conversation::message::SystemNotificationType::InlineMessage,
@@ -1125,6 +1279,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         edit_mode,
         recipe.and_then(|r| r.retry.clone()),
         session_config.output_format.clone(),
+        coding_harness,
     )
     .await;
 
@@ -1240,6 +1395,124 @@ mod tests {
     #[test]
     fn no_configured_fallback_means_no_silent_substitution() {
         assert!(startup_failover(&dead_split(), None).is_none());
+    }
+
+    #[test]
+    fn unrated_local_model_is_rerouted_before_the_coding_turn() {
+        let resolved = ResolvedProviderConfig {
+            provider_name: "ollama".into(),
+            model_name: "qwen25-16k:latest".into(),
+            model_config: permagent::model::ModelConfig::new("qwen25-16k:latest").unwrap(),
+        };
+        let (routed, notice) =
+            enforce_harness_coordinator_route(resolved, true, None, false, false);
+        assert_eq!(routed.provider_name, "openai");
+        assert_eq!(routed.model_name, "gpt-5.4-mini");
+        assert_eq!(routed.model_config.model_name, "gpt-5.4-mini");
+        let notice = notice.expect("headless routing must retain a durable receipt");
+        assert!(notice.contains("not graduated"), "{notice}");
+        assert!(notice.contains("ollama/qwen25-16k:latest"), "{notice}");
+        assert!(notice.contains("openai/gpt-5.4-mini"), "{notice}");
+        assert!(notice.contains("cost meter"), "{notice}");
+    }
+
+    #[test]
+    fn trusted_default_model_is_not_overridden() {
+        let resolved = ResolvedProviderConfig {
+            provider_name: "openai".into(),
+            model_name: "gpt-5.4-mini".into(),
+            model_config: permagent::model::ModelConfig::new("gpt-5.4-mini").unwrap(),
+        };
+        let (routed, notice) =
+            enforce_harness_coordinator_route(resolved, true, None, false, false);
+        assert_eq!(routed.provider_name, "openai");
+        assert_eq!(routed.model_name, "gpt-5.4-mini");
+        assert!(notice.is_none());
+    }
+
+    #[test]
+    fn heuristic_non_local_model_still_needs_harness_evidence() {
+        let resolved = ResolvedProviderConfig {
+            provider_name: "minimax".into(),
+            model_name: "MiniMax-M2.5".into(),
+            model_config: permagent::model::ModelConfig::new("MiniMax-M2.5").unwrap(),
+        };
+        let (routed, notice) =
+            enforce_harness_coordinator_route(resolved, true, None, false, false);
+        assert_eq!(routed.provider_name, "openai");
+        assert_eq!(routed.model_name, "gpt-5.4-mini");
+        assert!(notice
+            .expect("headless routing must retain a receipt")
+            .contains("graduation evidence is missing"));
+    }
+
+    #[test]
+    fn explicit_unrated_model_is_preserved_without_paid_fallback() {
+        let resolved = ResolvedProviderConfig {
+            provider_name: "ollama".into(),
+            model_name: "qwen25-16k:latest".into(),
+            model_config: permagent::model::ModelConfig::new("qwen25-16k:latest").unwrap(),
+        };
+        let (routed, notice) = enforce_harness_coordinator_route(resolved, true, None, true, false);
+        assert_eq!(routed.provider_name, "ollama");
+        assert_eq!(routed.model_name, "qwen25-16k:latest");
+        let notice = notice.expect("headless explicit override must retain a receipt");
+        assert!(notice.contains("explicitly selected"), "{notice}");
+        assert!(notice.contains("unexpected provider spend"), "{notice}");
+    }
+
+    #[test]
+    fn configured_harness_role_is_preserved_without_paid_fallback() {
+        let root = std::env::temp_dir().join(format!(
+            "permagent-harness-role-explicit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock is after the Unix epoch")
+                .as_nanos()
+        ));
+        let config =
+            Config::new_with_file_secrets(root.join("config.yaml"), root.join("secrets.yaml"))
+                .expect("temporary config should be constructible");
+        config
+            .set_params([
+                ("harness_provider", "ollama"),
+                ("harness_model", "qwen25-16k:latest"),
+            ])
+            .expect("temporary role config should be writable");
+        assert!(harness_role_selection_is_explicit(&config));
+
+        let resolved = ResolvedProviderConfig {
+            provider_name: "ollama".into(),
+            model_name: "qwen25-16k:latest".into(),
+            model_config: permagent::model::ModelConfig::new("qwen25-16k:latest").unwrap(),
+        };
+        let (routed, notice) = enforce_harness_coordinator_route(
+            resolved,
+            true,
+            harness_role_route(&config),
+            harness_role_selection_is_explicit(&config),
+            false,
+        );
+        assert_eq!(routed.provider_name, "ollama");
+        assert_eq!(routed.model_name, "qwen25-16k:latest");
+        assert!(notice
+            .expect("headless configured override must retain a receipt")
+            .contains("unexpected provider spend"));
+    }
+
+    #[test]
+    fn local_model_is_untouched_outside_the_coding_harness() {
+        let resolved = ResolvedProviderConfig {
+            provider_name: "ollama".into(),
+            model_name: "qwen25-16k:latest".into(),
+            model_config: permagent::model::ModelConfig::new("qwen25-16k:latest").unwrap(),
+        };
+        let (routed, notice) =
+            enforce_harness_coordinator_route(resolved, false, None, false, false);
+        assert_eq!(routed.provider_name, "ollama");
+        assert_eq!(routed.model_name, "qwen25-16k:latest");
+        assert!(notice.is_none());
     }
 
     /// The five sources in `resolve_provider_and_model`'s order:

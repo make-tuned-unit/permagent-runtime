@@ -3,8 +3,10 @@ use super::goal_engine;
 use super::publish_sequence;
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
+use crate::agents::reply_parts::AccountedFastCompletion;
 use crate::agents::tool_execution::ToolCallContext;
 use crate::agents::{AgentEvent, SessionConfig};
+use crate::attachments;
 use crate::cards;
 use crate::config::agent_identity;
 use crate::config::worker_probe::{self, ProbeCache};
@@ -19,8 +21,10 @@ use crate::providers;
 use crate::providers::base::Provider;
 use crate::session::extension_data::EnabledExtensionsState;
 use crate::session::session_manager::SessionType;
+use crate::session::{Session, SessionManager};
 use anyhow::Result;
 use async_trait::async_trait;
+use base64::Engine;
 use futures::StreamExt;
 use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
@@ -28,9 +32,12 @@ use rmcp::model::{
 };
 use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use sqlx::Row;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 // Attempt caps are now per-goal budgets (S4): see
@@ -99,7 +106,10 @@ const DEFAULT_LIST_LIMIT: usize = 10;
 //   ORCHESTRATOR_DECOMPOSITION_PROVIDER  (default: "ollama")
 //   ORCHESTRATOR_DECOMPOSITION_MODEL     (default: "qwen2.5:7b")
 // Set either to an empty string to disable cheap routing and always use the
-// session provider.
+// session provider. A configured candidate must be the trusted harness route
+// (or gain an explicit benchmark-backed graduation record in a future loop);
+// knowledge-table scores are only heuristics. Unrated or below-floor local
+// models remain valid mechanical workers but do not own the roadmap pass.
 const DEFAULT_DECOMPOSITION_PROVIDER: &str = "ollama";
 const DEFAULT_DECOMPOSITION_MODEL: &str = "qwen2.5:7b";
 
@@ -153,6 +163,73 @@ struct ViewSessionParams {
     /// How to view the conversation: "first_last" returns the first and last message,
     /// "summarize" calls the LLM to produce a summary. If omitted, returns first and last.
     mode: Option<String>,
+    /// Zero-based page offset for exact/page/search modes.
+    offset: Option<usize>,
+    /// Page size for exact/page/search modes (default 20, max 100).
+    limit: Option<usize>,
+    /// Case-insensitive text query for search/query mode.
+    query: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ViewAttachmentParams {
+    /// Durable attachment ID from an attachment marker or prior tool result.
+    attachment_id: String,
+}
+
+fn display_message_ref(
+    session_id: &str,
+    ordinal: usize,
+    message: &Message,
+) -> (&'static str, String) {
+    message
+        .id
+        .clone()
+        .map(|id| ("message_id", id))
+        .unwrap_or_else(|| ("locator", format!("legacy:{session_id}:{ordinal}")))
+}
+
+fn render_exact_session_messages(
+    session_id: &str,
+    messages: &[Message],
+    offset: usize,
+    limit: usize,
+    query: Option<&str>,
+) -> String {
+    let query_terms: Vec<String> = query
+        .unwrap_or("")
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .filter(|term| !term.is_empty())
+        .collect();
+    let matches = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| {
+            if query_terms.is_empty() {
+                return true;
+            }
+            let text = message.as_concat_text().to_lowercase();
+            query_terms.iter().any(|term| text.contains(term))
+        })
+        .collect::<Vec<_>>();
+    let mut output = String::new();
+    for (ordinal, message) in matches.into_iter().skip(offset).take(limit) {
+        let (ref_kind, ref_value) = display_message_ref(session_id, ordinal, message);
+        output.push_str(&format!(
+            "- ordinal: {} | {}: {} | created_timestamp: {} | role: {:?}\n{}\n",
+            ordinal + 1,
+            ref_kind,
+            ref_value,
+            message.created,
+            message.role,
+            format_message_for_compacting(message)
+        ));
+    }
+    if output.is_empty() {
+        output.push_str("No matching messages.\n");
+    }
+    output
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -213,6 +290,20 @@ struct GoalAdvanceParams {
 struct GoalStatusParams {
     /// The card ID (UUID) of the goal to inspect.
     card_id: String,
+}
+
+fn dispatch_budget_task_id(
+    card_metadata: &serde_json::Value,
+    session: Option<&crate::session::Session>,
+) -> Option<String> {
+    card_metadata
+        .get("budget_task_id")
+        .and_then(|value| value.as_str())
+        .filter(|id| !id.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            session.and_then(|session| crate::session::budget_task_id(&session.extension_data))
+        })
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -308,6 +399,273 @@ struct CreateRoadmapParams {
     project_id_or_slug: String,
     /// The proposed goals as a JSON array (from decompose_roadmap output).
     goals_json: String,
+    /// The proposal hash returned by decompose_roadmap. This binds goals to the
+    /// exact proposal, but is not consent without approval_decision_id.
+    proposal_hash: String,
+    /// The Decision Inbox choice created by decompose_roadmap and answered by
+    /// the user. A hash without this answered decision is not consent.
+    approval_decision_id: String,
+}
+
+/// The project metadata key holding the latest roadmap proposal proof. The
+/// proof is deliberately small: the goals are already returned to the caller,
+/// while the project stores only their canonical content hash. It is consumed
+/// when `create_roadmap` starts, so the same proposal cannot be replayed.
+const ROADMAP_PROPOSAL_METADATA_KEY: &str = "roadmap_proposal";
+
+fn roadmap_proposal_hash(goals: &[goal_state::ProposedGoal]) -> String {
+    let canonical = serde_json::to_vec(goals)
+        .expect("ProposedGoal is serializable; roadmap hashing must be infallible");
+    hex::encode(Sha256::digest(canonical))
+}
+
+fn validate_roadmap_goals(goals: &[goal_state::ProposedGoal]) -> Result<(), String> {
+    if !(2..=goal_state::MAX_ROADMAP_GOALS).contains(&goals.len()) {
+        return Err(format!(
+            "A roadmap must contain between 2 and {} goals",
+            goal_state::MAX_ROADMAP_GOALS
+        ));
+    }
+    for (idx, goal) in goals.iter().enumerate() {
+        if goal.title.trim().is_empty() {
+            return Err(format!("Roadmap goal {} has an empty title", idx + 1));
+        }
+        if goal.description.trim().is_empty() {
+            return Err(format!("Roadmap goal {} has an empty description", idx + 1));
+        }
+        if goal
+            .acceptance_criteria
+            .iter()
+            .any(|criterion| criterion.trim().is_empty())
+        {
+            return Err(format!(
+                "Roadmap goal {} has an empty acceptance criterion",
+                idx + 1
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct RoadmapMaterialization {
+    project_name: String,
+    created_ids: Vec<String>,
+    roots: Vec<goal_transition::GoalTransitionRecord>,
+}
+
+/// Materialize an approved roadmap as one SQLite unit.  The optional failure
+/// point is test-only plumbing: it lets rollback be proven without corrupting
+/// the production path or relying on an unrelated constraint failure.
+#[cfg(test)]
+async fn materialize_roadmap_transaction(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    goals: &[goal_state::ProposedGoal],
+    order: &[usize],
+    proposal_hash: &str,
+    approval_decision_id: &str,
+    fail_after_cards: Option<usize>,
+) -> Result<RoadmapMaterialization, String> {
+    materialize_roadmap_transaction_with_budget(
+        pool,
+        project_id,
+        goals,
+        order,
+        proposal_hash,
+        approval_decision_id,
+        fail_after_cards,
+        None,
+    )
+    .await
+}
+
+/// Variant used by an interactive roadmap approval. The parent reply's
+/// durable budget identity is copied into each materialized card so later
+/// auto-dispatches remain attributable even after the approving session is no
+/// longer live.
+async fn materialize_roadmap_transaction_with_budget(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    goals: &[goal_state::ProposedGoal],
+    order: &[usize],
+    proposal_hash: &str,
+    approval_decision_id: &str,
+    fail_after_cards: Option<usize>,
+    budget_task_id: Option<&str>,
+) -> Result<RoadmapMaterialization, String> {
+    validate_roadmap_goals(goals)?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Could not begin roadmap materialization: {e}"))?;
+
+    let project_row = sqlx::query("SELECT name, metadata_json FROM projects WHERE id = ?")
+        .bind(project_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Project '{project_id}' not found"))?;
+    let project_name: String = project_row.get("name");
+    let metadata_text: String = project_row.get("metadata_json");
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_text)
+        .map_err(|e| format!("Project metadata_json unreadable: {e}"))?;
+    let proof = metadata
+        .get(ROADMAP_PROPOSAL_METADATA_KEY)
+        .ok_or_else(|| "No matching pending roadmap proposal. Run decompose_roadmap again; proposals are exact and single-use.".to_string())?;
+    if proof.get("hash").and_then(|v| v.as_str()) != Some(proposal_hash)
+        || proof.get("approval_decision_id").and_then(|v| v.as_str()) != Some(approval_decision_id)
+    {
+        return Err("Roadmap approval proof does not match the latest pending proposal; run decompose_roadmap again.".to_string());
+    }
+
+    // Re-read and validate the answer under the same write lock as proof
+    // consumption.  This prevents a concurrent replay from observing an
+    // approved decision and a stale project proof as two separate facts.
+    let decision = sqlx::query(
+        "SELECT project_id, kind, status, answer, answer_choice_id, acted_by, payload_json
+         FROM decisions WHERE id = ?",
+    )
+    .bind(approval_decision_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "Roadmap approval decision not found".to_string())?;
+    let decision_project_id: Option<String> =
+        decision.try_get("project_id").map_err(|e| e.to_string())?;
+    if decision_project_id.as_deref() != Some(project_id) {
+        return Err("Roadmap approval decision belongs to a different project".to_string());
+    }
+    let kind: Option<String> = decision.try_get("kind").map_err(|e| e.to_string())?;
+    let status: Option<String> = decision.try_get("status").map_err(|e| e.to_string())?;
+    let answer: Option<String> = decision.try_get("answer").map_err(|e| e.to_string())?;
+    let answer_choice_id: Option<String> = decision
+        .try_get("answer_choice_id")
+        .map_err(|e| e.to_string())?;
+    let acted_by: Option<String> = decision.try_get("acted_by").map_err(|e| e.to_string())?;
+    let approved = kind.as_deref() == Some("choice")
+        && status.as_deref() == Some("answered")
+        && answer.as_deref() == Some("choice")
+        && answer_choice_id.as_deref() == Some("approve-roadmap")
+        && acted_by.as_deref() == Some(decisions::ACTOR_JESSE);
+    if !approved {
+        return Err(
+            "Roadmap creation requires an answered Decision Inbox approval by the user".to_string(),
+        );
+    }
+    let payload_json: String = decision
+        .try_get("payload_json")
+        .map_err(|e| e.to_string())?;
+    let payload: crate::decisions::ChoicePayload = serde_json::from_str(&payload_json)
+        .map_err(|e| format!("Roadmap approval decision payload unreadable: {e}"))?;
+    if payload.proposal.as_deref() != Some(crate::decisions::PROPOSAL_ROADMAP_CREATE)
+        || payload
+            .roadmap_approval
+            .as_ref()
+            .map(|p| p.proposal_hash.as_str())
+            != Some(proposal_hash)
+    {
+        return Err("Roadmap approval does not match this exact proposal".to_string());
+    }
+
+    let consumed = sqlx::query(
+        "UPDATE projects SET metadata_json = json_remove(metadata_json, '$.roadmap_proposal')
+         WHERE id = ? AND json_extract(metadata_json, '$.roadmap_proposal.hash') = ?
+           AND json_extract(metadata_json, '$.roadmap_proposal.approval_decision_id') = ?",
+    )
+    .bind(project_id)
+    .bind(proposal_hash)
+    .bind(approval_decision_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Could not consume roadmap proposal proof: {e}"))?;
+    if consumed.rows_affected() != 1 {
+        return Err(
+            "Roadmap proposal was already consumed or changed; run decompose_roadmap again."
+                .to_string(),
+        );
+    }
+
+    cards::seed_goal_columns_in_tx(&mut tx, project_id).await?;
+    let triage_col: String = sqlx::query_scalar(
+        "SELECT id FROM board_columns WHERE project_id = ? AND state_binding = 'triage'",
+    )
+    .bind(project_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "Triage column not found".to_string())?;
+
+    let mut index_to_card_id = vec![String::new(); goals.len()];
+    let mut created_ids = Vec::with_capacity(goals.len());
+    for &idx in order {
+        let g = &goals[idx];
+        let depends_on_ids: Vec<String> = g
+            .depends_on
+            .iter()
+            .map(|&dep_idx| index_to_card_id[dep_idx].clone())
+            .collect();
+        let mut meta = serde_json::Map::new();
+        meta.insert("depends_on".to_string(), serde_json::json!(depends_on_ids));
+        meta.insert("goal_state".to_string(), serde_json::json!("triage"));
+        meta.insert("attempt_count".to_string(), serde_json::json!(0));
+        if let Some(budget_task_id) = budget_task_id.filter(|id| !id.trim().is_empty()) {
+            meta.insert(
+                "budget_task_id".to_string(),
+                serde_json::json!(budget_task_id),
+            );
+        }
+        if !g.tags.is_empty() {
+            meta.insert("tags".to_string(), serde_json::json!(g.tags));
+        }
+        if !g.acceptance_criteria.is_empty() {
+            meta.insert(
+                "acceptance_criteria".to_string(),
+                serde_json::json!(g.acceptance_criteria),
+            );
+        }
+        let card_id = cards::create_goal_card_in_tx(
+            &mut tx,
+            project_id,
+            &g.title,
+            &g.description,
+            &triage_col,
+            &serde_json::Value::Object(meta),
+        )
+        .await?;
+        index_to_card_id[idx] = card_id.clone();
+        created_ids.push(card_id);
+        if fail_after_cards == Some(created_ids.len()) {
+            return Err("injected roadmap materialization failure".to_string());
+        }
+    }
+
+    let mut roots = Vec::new();
+    for &idx in order {
+        if goals[idx].depends_on.is_empty() {
+            roots.push(
+                goal_transition::advance_goal_checked_in_tx(
+                    &mut tx,
+                    &index_to_card_id[idx],
+                    GoalAction::Ready,
+                    decisions::ACTOR_SYSTEM,
+                    None,
+                    TransitionEffects::default(),
+                )
+                .await
+                .map_err(String::from)?,
+            );
+        }
+    }
+    tx.commit()
+        .await
+        .map_err(|e| format!("Could not commit roadmap materialization: {e}"))?;
+
+    Ok(RoadmapMaterialization {
+        project_name,
+        created_ids,
+        roots,
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -537,6 +895,18 @@ impl OrchestratorClient {
             return None;
         }
 
+        let eligibility = crate::config::assess_harness_coordinator(&provider_name, &model_name);
+        if !eligibility.is_eligible() {
+            tracing::warn!(
+                target: "permagentd::orchestrator",
+                provider = %provider_name,
+                model = %model_name,
+                reason = eligibility.reason(),
+                "Skipping ungraduated roadmap decomposition model; using the session coordinator"
+            );
+            return None;
+        }
+
         match providers::create_with_named_model(&provider_name, &model_name, Vec::new()).await {
             Ok(provider) => {
                 tracing::debug!(
@@ -727,7 +1097,7 @@ pub(crate) async fn select_requested_worker(
         let mut keys: Vec<&str> = config
             .workers
             .iter()
-            .filter(|(_, p)| !matches!(p.engine, agent_identity::WorkerEngineKind::Pending))
+            .filter(|(_, persona)| persona.engine.is_dispatchable())
             .map(|(k, _)| k.as_str())
             .collect();
         keys.sort_unstable();
@@ -742,12 +1112,21 @@ pub(crate) async fn select_requested_worker(
         )
     })?;
 
-    if matches!(persona.engine, agent_identity::WorkerEngineKind::Pending) {
+    if let Some(reason) = persona.engine.dispatchability_error() {
         return Err(format!(
-            "Worker '{}' has no runnable engine yet (engine pending) — not dispatched. \
+            "Worker '{}' has no runnable engine ({}) — not dispatched. \
              Dispatchable workers: {}.",
             requested,
+            reason,
             runnable()
+        ));
+    }
+
+    if let Some(missing) = missing_adapter_requirement(&goal_required_kinds(goal), persona) {
+        return Err(format!(
+            "Worker '{}' adapter does not support required capability '{}' — not dispatched. \
+             Inspect the worker capabilities before selecting another adapter.",
+            requested, missing
         ));
     }
 
@@ -772,6 +1151,7 @@ pub(crate) async fn select_requested_worker(
     }
 
     let load = cards::active_worker_load(pool).await.unwrap_or_default();
+    let capabilities = persona.capabilities();
     Ok(WorkerSelection {
         worker_key: requested.to_string(),
         snapshot: serde_json::json!({
@@ -791,9 +1171,55 @@ pub(crate) async fn select_requested_worker(
                 "available": true,
                 "cost_tier": persona.cost_tier,
                 "tool_kinds": persona.tool_kinds,
+                "engine": persona.engine.label(),
+                "capabilities": capabilities,
                 "active_sessions": load.get(requested).copied().unwrap_or(0),
             },
         }),
+    })
+}
+
+fn goal_required_kinds(goal: &cards::Card) -> Vec<String> {
+    goal.metadata_json
+        .get("tags")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_else(|| vec!["code_edit".to_string(), "shell".to_string()])
+}
+
+fn missing_adapter_requirement(
+    required_kinds: &[String],
+    persona: &agent_identity::WorkerPersona,
+) -> Option<String> {
+    let capabilities = persona.capabilities();
+    required_kinds.iter().find_map(|kind| {
+        capabilities
+            .supports_requirement(kind)
+            .filter(|supported| !supported)
+            .map(|_| kind.clone())
+    })
+}
+
+fn external_cli_model_routing_receipt(
+    worker: Option<&agent_identity::WorkerPersona>,
+    bin: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "role": worker.and_then(|persona| persona.workflow_role.clone()),
+        // These are explicit roster metadata. Do not relabel the executable
+        // name as a provider or invent a model when the CLI selects one from
+        // its own account/configuration.
+        "provider": worker.and_then(|persona| persona.provider.clone()),
+        "model": worker.and_then(|persona| persona.model.clone()),
+        "cli_identity": worker.and_then(|persona| persona.cli_identity.clone()),
+        "executable": bin,
+        "source": "external_cli_static_args",
+        "supports_model_override": false,
+        "summary": "external CLI model is controlled by its validated agent.yaml arguments",
     })
 }
 
@@ -806,16 +1232,7 @@ pub(crate) async fn select_worker_detailed(
     let config = agent_identity::load_agent_config();
 
     // Derive required tool_kinds from goal metadata, default to code_edit + shell
-    let required_kinds: Vec<String> = goal
-        .metadata_json
-        .get("tags")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_else(|| vec!["code_edit".to_string(), "shell".to_string()]);
+    let required_kinds = goal_required_kinds(goal);
 
     // Per-worker active load for the tie-break (#212): count in-progress goal
     // cards grouped by their spawning `worker_key`. Authoritative and engine-
@@ -829,9 +1246,9 @@ pub(crate) async fn select_worker_detailed(
         .iter()
         // Workers with no runnable engine yet are visible in the roster but
         // never selected — never route a real goal to an unbuilt engine.
-        .filter(|(_, persona)| !matches!(persona.engine, agent_identity::WorkerEngineKind::Pending))
+        .filter(|(_, persona)| persona.engine.is_dispatchable())
         .map(|(key, persona)| {
-            let available = match probe_cache.get(key) {
+            let probed_available = match probe_cache.get(key) {
                 Some(cached) => cached.available,
                 None => {
                     let (ok, reason) = worker_probe::probe_worker(&persona.availability_check);
@@ -839,6 +1256,12 @@ pub(crate) async fn select_worker_detailed(
                     ok
                 }
             };
+            // Adapter-level requirements (MCP, steering, sandbox, model
+            // override, etc.) are validated separately from ordinary
+            // `tool_kinds`, so a CLI cannot win routing while lacking the
+            // behavior the goal explicitly requested.
+            let available =
+                probed_available && missing_adapter_requirement(&required_kinds, persona).is_none();
 
             let active_sessions = load.get(key).copied().unwrap_or(0);
 
@@ -852,12 +1275,65 @@ pub(crate) async fn select_worker_detailed(
         })
         .collect();
 
-    let worker_key = goal_state::select_best_worker(&candidates, &required_kinds)?;
+    // Adapter requirements were already checked per candidate above. The pure
+    // selector must see only ordinary tool kinds; otherwise a valid MCP-only
+    // node could be rejected because `mcp` is not duplicated in tool_kinds.
+    let ordinary_required_kinds: Vec<String> = required_kinds
+        .iter()
+        .filter(|kind| {
+            agent_identity::WorkerCapabilities::default()
+                .supports_requirement(kind)
+                .is_none()
+        })
+        .cloned()
+        .collect();
+    let worker_key = goal_state::select_best_worker(&candidates, &ordinary_required_kinds)?;
     let snapshot = build_capability_snapshot(&worker_key, &required_kinds, &candidates);
+    let snapshot = attach_worker_capabilities(snapshot, &config, &worker_key);
     Ok(WorkerSelection {
         worker_key,
         snapshot,
     })
+}
+
+/// Add adapter-discovered capability metadata to the routing receipt.  The
+/// pure worker selector intentionally knows only about tool kinds and costs;
+/// this enrichment happens at the registry boundary where the concrete engine
+/// is available, so a routing receipt cannot imply that every `tool_kinds`
+/// entry also means MCP, steering, model override, or sandbox support.
+fn attach_worker_capabilities(
+    mut snapshot: serde_json::Value,
+    config: &agent_identity::AgentConfig,
+    selected_key: &str,
+) -> serde_json::Value {
+    if let Some(obj) = snapshot.as_object_mut() {
+        let mut metadata = serde_json::Map::new();
+        for (key, persona) in &config.workers {
+            let mut row = serde_json::Map::new();
+            row.insert(
+                "engine".to_string(),
+                serde_json::json!(persona.engine.label()),
+            );
+            row.insert(
+                "capabilities".to_string(),
+                serde_json::json!(persona.capabilities()),
+            );
+            metadata.insert(key.clone(), serde_json::Value::Object(row));
+        }
+        obj.insert(
+            "worker_capabilities".to_string(),
+            serde_json::Value::Object(metadata),
+        );
+        obj.insert(
+            "selected_capabilities".to_string(),
+            config
+                .workers
+                .get(selected_key)
+                .map(|p| serde_json::json!(p.capabilities()))
+                .unwrap_or(serde_json::Value::Null),
+        );
+    }
+    snapshot
 }
 
 /// Build the routing snapshot (#211): the required capabilities plus every
@@ -957,6 +1433,45 @@ async fn finalize_receipt(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, state:
             }
         }
     }
+}
+
+/// Refuse a parallel dispatch when a ready goal's declared write scope
+/// overlaps an in-flight sibling in the same project. Worktrees isolate
+/// branches, not merge conflicts; this gate keeps independent nodes parallel
+/// while making overlapping edits wait for the first worker's evidence.
+async fn write_scope_conflict(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    card_id: &str,
+    candidate_meta: &serde_json::Value,
+) -> Result<Option<String>, String> {
+    let rows = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT c.id, c.title, c.metadata_json
+           FROM cards c
+           JOIN board_columns bc ON c.column_id = bc.id
+          WHERE c.project_id = ?
+            AND c.id != ?
+            AND c.card_type = 'goal'
+            AND bc.state_binding = 'in_progress'
+            AND c.archived_at IS NULL
+          ORDER BY c.id ASC",
+    )
+    .bind(project_id)
+    .bind(card_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("could not inspect active write scopes: {e}"))?;
+
+    for (active_id, title, metadata_json) in rows {
+        let metadata: serde_json::Value = serde_json::from_str(&metadata_json)
+            .map_err(|e| format!("active goal {active_id} has invalid metadata: {e}"))?;
+        if let Some(reason) = super::write_scope::metadata_conflict(candidate_meta, &metadata)? {
+            return Ok(Some(format!(
+                "write scope conflicts with active goal '{title}' ({active_id}): {reason}"
+            )));
+        }
+    }
+    Ok(None)
 }
 
 /// Dispatch a goal card to a worker via subagent.
@@ -1064,6 +1579,16 @@ pub(crate) async fn dispatch_goal_fn(
     let project = crate::projects::get_project(&pool, &card.project_id)
         .await?
         .ok_or_else(|| format!("Project '{}' not found", card.project_id))?;
+
+    if let Some(conflict) =
+        write_scope_conflict(&pool, &project.id, &card.id, &card.metadata_json).await?
+    {
+        return Err(format!(
+            "Goal '{}' remains Ready and was not dispatched: {conflict}. Wait for the active goal to finish or narrow its declared '{key}' paths.",
+            card.title,
+            key = super::write_scope::WRITE_SCOPE_KEY,
+        ));
+    }
 
     let root_path = project.root_path.as_deref().unwrap_or("(not specified)");
 
@@ -1246,6 +1771,14 @@ pub(crate) async fn dispatch_goal_fn(
         timeout: std::time::Duration::from_secs(timeout_secs),
         output_tx: Some(output_tx),
         parent_session_id: context.session.as_ref().map(|s| s.id.clone()),
+        goal_id: Some(card_id.to_string()),
+        budget_task_id: dispatch_budget_task_id(&card.metadata_json, context.session.as_deref()),
+        billing_class: worker_cfg
+            .map(|worker| worker.configured_billing_class())
+            .transpose()?,
+        provider: worker_cfg.and_then(|worker| worker.provider.clone()),
+        model: worker_cfg.and_then(|worker| worker.model.clone()),
+        cli_identity: worker_cfg.and_then(|worker| worker.cli_identity.clone()),
         project_id: Some(project.id.clone()),
     };
 
@@ -1271,10 +1804,21 @@ pub(crate) async fn dispatch_goal_fn(
     }
     let engine: Box<dyn goal_engine::GoalEngine> = match engine_kind {
         Some(agent_identity::WorkerEngineKind::ExternalCli { bin, args }) => {
+            // External workers own their model flag in `agent.yaml`; the role
+            // router cannot override it. Record that limitation explicitly so
+            // a goal never claims a configured/derived model that was not sent
+            // to the child process.
+            if let Some(obj) = capability_snapshot.as_object_mut() {
+                obj.insert(
+                    "model_routing".to_string(),
+                    external_cli_model_routing_receipt(worker_cfg, bin),
+                );
+            }
             Box::new(goal_engine::ExternalCliEngine {
                 bin: bin.clone(),
                 args: args.clone(),
                 persona_override,
+                session_manager: context.session_manager.clone(),
             })
         }
         // S1 (#427): supervised sibling — same worktree/review scaffolding,
@@ -1483,6 +2027,7 @@ pub(crate) async fn dispatch_goal_fn(
 
     let goal_engine::DispatchedWork {
         run_id: session_id,
+        process_id,
         join,
         kill,
         steer,
@@ -1663,7 +2208,8 @@ pub(crate) async fn dispatch_goal_fn(
         daemon_lifecycle_id().to_string(),
         dispatched_at.clone(),
         next_attempt,
-    );
+    )
+    .with_process_id(process_id);
 
     let mut patch = serde_json::Map::new();
     patch.insert("worker_key".to_string(), serde_json::json!(worker_key));
@@ -1853,6 +2399,18 @@ impl OrchestratorClient {
             .get("mode")
             .and_then(|v| v.as_str())
             .unwrap_or("first_last");
+        let offset = args
+            .get("offset")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(0);
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(20)
+            .clamp(1, 100);
+        let query = args.get("query").and_then(|v| v.as_str());
 
         let session = self
             .context
@@ -1911,9 +2469,54 @@ impl OrchestratorClient {
                     output.push("No messages to summarize.".to_string());
                 }
             }
+            "exact" | "page" | "search" | "query" => {
+                let conversation: &[Message] = session
+                    .conversation
+                    .as_ref()
+                    .map_or(&[], |conversation| conversation.messages().as_slice());
+                let is_search = matches!(mode, "search" | "query");
+                if is_search && query.is_none_or(|q| q.trim().is_empty()) {
+                    return Err("query is required for search/query mode".to_string());
+                }
+                let matched_count = conversation
+                    .iter()
+                    .filter(|message| {
+                        if !is_search {
+                            return true;
+                        }
+                        let text = message.as_concat_text().to_lowercase();
+                        query
+                            .unwrap_or_default()
+                            .split_whitespace()
+                            .any(|term| text.contains(&term.to_lowercase()))
+                    })
+                    .count();
+                output.push(format!(
+                    "## Messages {}–{} of {}{}{}\n",
+                    if matched_count == 0 { 0 } else { offset + 1 },
+                    (offset + limit).min(matched_count),
+                    matched_count,
+                    query
+                        .filter(|_| is_search)
+                        .map(|q| format!(" matching {:?}", q))
+                        .unwrap_or_default(),
+                    if is_search {
+                        " (query semantics: any term)"
+                    } else {
+                        ""
+                    }
+                ));
+                output.push(render_exact_session_messages(
+                    &session_id,
+                    conversation,
+                    offset,
+                    limit,
+                    query.filter(|_| is_search),
+                ));
+            }
             other => {
                 return Err(format!(
-                    "Unknown mode '{}'. Use 'first_last' or 'summarize'.",
+                    "Unknown mode '{}'. Use 'first_last', 'summarize', 'exact', or 'search'.",
                     other
                 ));
             }
@@ -1924,12 +2527,111 @@ impl OrchestratorClient {
         )]))
     }
 
+    /// Re-open one durable attachment for the calling user's sessions. The
+    /// attachment row is resolved by ID, then both sessions' user ownership is
+    /// checked before touching the stored path. The path itself is never
+    /// returned to the agent.
+    async fn handle_view_attachment(
+        &self,
+        owner_session_id: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        const MAX_ATTACHMENT_TEXT_BYTES: usize = 32 * 1024;
+
+        let args = arguments.ok_or("Missing arguments")?;
+        let attachment_id = args
+            .get("attachment_id")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("Missing required parameter: attachment_id")?;
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| format!("Failed to open session store: {e}"))?;
+        let record = attachments::get_attachment_by_id(&pool, attachment_id)
+            .await
+            .map_err(|e| format!("Failed to load attachment: {e}"))?
+            .ok_or_else(|| format!("Attachment '{}' not found", attachment_id))?;
+
+        let current_user =
+            sqlx::query_scalar::<_, String>("SELECT user_id FROM sessions WHERE id = ?")
+                .bind(owner_session_id)
+                .fetch_optional(&pool)
+                .await
+                .map_err(|e| format!("Failed to validate attachment ownership: {e}"))?;
+        let attachment_user =
+            sqlx::query_scalar::<_, String>("SELECT user_id FROM sessions WHERE id = ?")
+                .bind(&record.session_id)
+                .fetch_optional(&pool)
+                .await
+                .map_err(|e| format!("Failed to validate attachment ownership: {e}"))?;
+        if current_user.is_none() || current_user != attachment_user {
+            return Err(format!(
+                "Attachment '{}' is not available to this user",
+                attachment_id
+            ));
+        }
+
+        let metadata = format!(
+            "Attachment [id: {}] [filename: {}] [mime: {}] [bytes: {}] [created_at: {}]",
+            record.id, record.filename, record.mime_type, record.size_bytes, record.created_at
+        );
+        if record.mime_type.starts_with("image/") {
+            let bytes = tokio::fs::read(&record.path)
+                .await
+                .map_err(|e| format!("Failed to read attachment: {e}"))?;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+            return Ok(CallToolResult::success(vec![
+                Content::text(metadata),
+                Content::image(encoded, record.mime_type),
+            ]));
+        }
+
+        if record.mime_type.starts_with("text/")
+            || record.filename.ends_with(".md")
+            || record.filename.ends_with(".txt")
+            || record.filename.ends_with(".json")
+        {
+            let file = tokio::fs::File::open(&record.path)
+                .await
+                .map_err(|e| format!("Failed to read attachment: {e}"))?;
+            let mut bytes = Vec::with_capacity(MAX_ATTACHMENT_TEXT_BYTES + 1);
+            file.take((MAX_ATTACHMENT_TEXT_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+                .await
+                .map_err(|e| format!("Failed to read attachment: {e}"))?;
+            let truncated = bytes.len() > MAX_ATTACHMENT_TEXT_BYTES;
+            bytes.truncate(MAX_ATTACHMENT_TEXT_BYTES);
+            let mut text = String::from_utf8_lossy(&bytes).into_owned();
+            if truncated {
+                text.push_str("\n[attachment text truncated]");
+            }
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "{}\n\n{}",
+                metadata, text
+            ))]));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{}\nBinary attachment reopened; use the attachment's MIME-aware consumer.",
+            metadata
+        ))]))
+    }
+
     async fn summarize_conversation(
         &self,
         session_id: &str,
         messages: &[Message],
     ) -> Result<String, String> {
         let provider = self.get_provider().await?;
+        let session = self
+            .context
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .map_err(|e| format!("Could not load summary session: {e}"))?;
 
         let conversation_text = messages
             .iter()
@@ -1948,10 +2650,17 @@ impl OrchestratorClient {
             conversation_text
         ));
 
-        let (response, _usage) = provider
-            .complete_fast(session_id, system, &[user_message], &[])
-            .await
-            .map_err(|e| format!("LLM summarization failed: {}", e))?;
+        let (response, _usage) = AccountedFastCompletion::complete_fast_accounted(
+            Arc::clone(&self.context.session_manager),
+            session,
+            provider,
+            system,
+            &[user_message],
+            &[],
+            false,
+        )
+        .await
+        .map_err(|e| format!("LLM summarization failed: {}", e))?;
 
         Ok(response
             .content
@@ -2226,7 +2935,7 @@ impl OrchestratorClient {
         let mut workers = Vec::new();
 
         for (key, persona) in &config.workers {
-            let (available, reason) = match self.probe_cache.get(key) {
+            let (probed_available, probe_reason) = match self.probe_cache.get(key) {
                 Some(cached) if !refresh => (cached.available, cached.reason),
                 _ => {
                     let (ok, reason) = worker_probe::probe_worker(&persona.availability_check);
@@ -2234,12 +2943,18 @@ impl OrchestratorClient {
                     (ok, reason)
                 }
             };
+            let dispatch_error = persona.engine.dispatchability_error();
+            let available = probed_available && dispatch_error.is_none();
+            let reason = dispatch_error.map(str::to_string).or(probe_reason);
 
             workers.push(serde_json::json!({
                 "key": key,
                 "display_name": persona.display_name(),
                 "role": persona.role,
                 "tool_kinds": persona.tool_kinds,
+                // Discovered from the selected adapter, never from the
+                // worker's free-form tool_kinds declaration.
+                "capabilities": persona.capabilities(),
                 "cost_tier": persona.cost_tier,
                 "available": available,
                 "reason": reason,
@@ -2275,11 +2990,18 @@ impl OrchestratorClient {
             .ok_or_else(|| format!("Worker '{}' not found in agent.yaml", worker_key))?;
 
         // Always re-probe, ignoring cache
-        let (available, reason) = worker_probe::probe_worker(&persona.availability_check);
-        self.probe_cache.set(&worker_key, available, reason.clone());
+        let (probed_available, probe_reason) =
+            worker_probe::probe_worker(&persona.availability_check);
+        self.probe_cache
+            .set(&worker_key, probed_available, probe_reason.clone());
+        let dispatch_error = persona.engine.dispatchability_error();
+        let available = probed_available && dispatch_error.is_none();
+        let reason = dispatch_error.map(str::to_string).or(probe_reason);
 
         let result = serde_json::json!({
             "worker_key": worker_key,
+            "engine": persona.engine.label(),
+            "capabilities": persona.capabilities(),
             "available": available,
             "reason": reason,
         });
@@ -3068,12 +3790,19 @@ impl OrchestratorClient {
         }
 
         let user_message = crate::conversation::message::Message::user().with_text(user_text);
+        let session = self
+            .context
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .map_err(|e| format!("Could not load decomposition session: {e}"))?;
+        let manager = Arc::clone(&self.context.session_manager);
 
         // Cost-aware routing (#249): try a cheaper/local model first, escalate
         // to the session's default provider only if the cheap pass fails.
         let goals = match self.resolve_decomposition_provider().await {
             Some(cheap) => {
-                match run_decomposition(&cheap, session_id, system, &user_message).await {
+                match run_decomposition(&cheap, &manager, &session, system, &user_message).await {
                     Ok(g) => DecompositionOutcome::Goals(g),
                     Err(cheap_err) => {
                         let reason = match &cheap_err {
@@ -3089,7 +3818,8 @@ impl OrchestratorClient {
                         );
                         let default = self.get_provider().await?;
                         finalize_decomposition(
-                            run_decomposition(&default, session_id, system, &user_message).await,
+                            run_decomposition(&default, &manager, &session, system, &user_message)
+                                .await,
                         )?
                     }
                 }
@@ -3097,7 +3827,7 @@ impl OrchestratorClient {
             None => {
                 let default = self.get_provider().await?;
                 finalize_decomposition(
-                    run_decomposition(&default, session_id, system, &user_message).await,
+                    run_decomposition(&default, &manager, &session, system, &user_message).await,
                 )?
             }
         };
@@ -3113,8 +3843,66 @@ impl OrchestratorClient {
             }
         };
 
+        validate_roadmap_goals(&goals)?;
+
         // Validate via topological sort
         let order = goal_state::topological_order(&goals).map_err(|e| e.to_string())?;
+
+        // Leave a durable proposal record and put the actual consent question
+        // in the Decision Inbox. Keeping the record on the project survives a
+        // daemon restart; the create path still requires the answered decision
+        // (a hash by itself is not an approval).
+        let proposal_hash = roadmap_proposal_hash(&goals);
+        let approval = crate::decisions::create_decision(
+            &pool,
+            crate::decisions::NewDecision {
+                kind: "choice".to_string(),
+                project_id: Some(project.id.clone()),
+                headline: Some("Approve this roadmap?".to_string()),
+                detail: Some(format!(
+                    "Review the proposed roadmap for project '{}'. Approving creates {} goal card(s) and dispatches root goals. Proposal hash: {}",
+                    project.name,
+                    goals.len(),
+                    proposal_hash
+                )),
+                payload: serde_json::json!({
+                    "question": "Create these exact roadmap goals and begin execution?",
+                    "options": [
+                        {"id": "approve-roadmap", "label": "Approve and begin"},
+                        {"id": "reject-roadmap", "label": "Reject"}
+                    ],
+                    "proposal": crate::decisions::PROPOSAL_ROADMAP_CREATE,
+                    "roadmap_approval": {"proposal_hash": proposal_hash}
+                }),
+                ..Default::default()
+            },
+        )
+        .await?;
+        // JSON-path update + updated_at CAS: concurrent metadata writers keep
+        // their keys, while a stale decomposition refuses to overwrite a
+        // newer project revision.
+        let proof_json = serde_json::json!({
+            "hash": proposal_hash,
+            "goal_count": goals.len(),
+            "approval_decision_id": approval.id.clone(),
+        });
+        let saved = sqlx::query(
+            "UPDATE projects
+             SET metadata_json = json_set(metadata_json, '$.roadmap_proposal', json(?))
+             WHERE id = ? AND updated_at = ?",
+        )
+        .bind(proof_json.to_string())
+        .bind(&project.id)
+        .bind(&project.updated_at)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Could not save roadmap proposal: {e}"))?;
+        if saved.rows_affected() != 1 {
+            return Err(format!(
+                "Project '{}' changed while saving roadmap proposal; please run decompose_roadmap again",
+                project.name
+            ));
+        }
 
         // Format the proposal for user review
         let mut output = format!(
@@ -3153,7 +3941,11 @@ impl OrchestratorClient {
         output.push_str(&format!(
             "\nShall I create these as goal cards and begin execution? \
              You can also ask me to add, remove, or modify goals.\n\n\
-             To approve, call create_roadmap with the goals JSON below:\n{}",
+             To approve, call create_roadmap with the goals JSON below and this \
+             proposal_hash and approval_decision_id returned here (both are required; \
+             approval must be answered in the Decision Inbox):\n\nproposal_hash: {}\napproval_decision_id: {}\ngoals_json:\n{}",
+            proposal_hash,
+            approval.id,
             serde_json::to_string(&goals).unwrap_or_default()
         ));
 
@@ -3167,9 +3959,20 @@ impl OrchestratorClient {
         let args = arguments.ok_or("Missing arguments")?;
         let id_or_slug = extract_string(&args, "project_id_or_slug")?;
         let goals_json = extract_string(&args, "goals_json")?;
+        let proposal_hash = extract_string(&args, "proposal_hash")?;
+        let approval_decision_id = extract_string(&args, "approval_decision_id")?;
 
         let goals: Vec<goal_state::ProposedGoal> =
             serde_json::from_str(&goals_json).map_err(|e| format!("Invalid goals JSON: {}", e))?;
+
+        validate_roadmap_goals(&goals)?;
+
+        let computed_hash = roadmap_proposal_hash(&goals);
+        if proposal_hash != computed_hash {
+            return Err(format!(
+                "Roadmap proposal hash mismatch: expected the hash of the exact goals_json ({computed_hash})"
+            ));
+        }
 
         let order = goal_state::topological_order(&goals).map_err(|e| e.to_string())?;
 
@@ -3184,91 +3987,45 @@ impl OrchestratorClient {
             .await?
             .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?;
 
-        // Ensure goal columns exist
-        cards::seed_goal_columns(&pool, &project.id).await?;
+        let budget_task_id = self
+            .context
+            .session
+            .as_ref()
+            .and_then(|session| crate::session::budget_task_id(&session.extension_data));
+        let materialized = materialize_roadmap_transaction_with_budget(
+            &pool,
+            &project.id,
+            &goals,
+            &order,
+            &proposal_hash,
+            &approval_decision_id,
+            None,
+            budget_task_id.as_deref(),
+        )
+        .await?;
 
-        let triage_col = cards::get_goal_column(&pool, &project.id, "triage")
-            .await?
-            .ok_or("Triage column not found")?;
-
-        // Create cards in topological order, building index→card_id map
-        let mut index_to_card_id: Vec<String> = vec![String::new(); goals.len()];
-        let mut created_ids: Vec<String> = Vec::new();
-
-        for &idx in &order {
-            let g = &goals[idx];
-
-            // Map depends_on indices to card_ids
-            let depends_on_ids: Vec<String> = g
-                .depends_on
-                .iter()
-                .map(|&dep_idx| index_to_card_id[dep_idx].clone())
-                .collect();
-
-            let mut meta = serde_json::Map::new();
-            meta.insert("depends_on".to_string(), serde_json::json!(depends_on_ids));
-            meta.insert(
-                "goal_state".to_string(),
-                serde_json::Value::String("triage".to_string()),
-            );
-            meta.insert("attempt_count".to_string(), serde_json::json!(0));
-            if !g.tags.is_empty() {
-                meta.insert("tags".to_string(), serde_json::json!(g.tags));
-            }
-            if !g.acceptance_criteria.is_empty() {
-                meta.insert(
-                    "acceptance_criteria".to_string(),
-                    serde_json::json!(g.acceptance_criteria),
-                );
-            }
-
-            let card = cards::create_card(
-                &pool,
-                cards::CreateCard {
-                    project_id: project.id.clone(),
-                    title: g.title.clone(),
-                    description: Some(g.description.clone()),
-                    card_type: Some("goal".to_string()),
-                    column_id: Some(triage_col.id.clone()),
-                    created_by: Some("user".to_string()),
-                    metadata_json: Some(serde_json::Value::Object(meta)),
-                },
-            )
-            .await?;
-
-            index_to_card_id[idx] = card.id.clone();
-            created_ids.push(card.id);
+        // All external worker activity is deliberately after commit and goes
+        // through the shared eligibility/nudge seam.
+        for card_id in &materialized.created_ids {
+            crate::events::emit(crate::events::goal_state_changed(
+                card_id,
+                Some(&project.id),
+                None,
+                "triage",
+                "user",
+            ));
+            crate::events::emit(crate::events::project_changed(&project.id, "cards"));
         }
-
-        // Dispatch root goals (no dependencies) — move to Ready then dispatch
-        let mut dispatched = 0;
-        for &idx in &order {
-            if goals[idx].depends_on.is_empty() {
-                let card_id = &index_to_card_id[idx];
-                goal_transition::advance_goal_checked(
-                    &pool,
-                    card_id,
-                    GoalAction::Ready,
-                    decisions::ACTOR_SYSTEM,
-                    None,
-                    TransitionEffects::default(),
-                )
-                .await
-                .map_err(String::from)?;
-                match self.dispatch_goal(card_id).await {
-                    Ok(_) => dispatched += 1,
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "permagentd::brain",
-                            "Failed to auto-dispatch root goal '{}': {}",
-                            goals[idx].title,
-                            e
-                        );
-                    }
-                }
-            }
+        for root in &materialized.roots {
+            crate::events::emit(crate::events::goal_state_changed(
+                &root.card_id,
+                Some(&root.project_id),
+                Some(root.current_state.binding()),
+                root.new_state.binding(),
+                &root.journal_actor,
+            ));
         }
-
+        let dispatched = nudge_dispatch_ready_goals(&pool, &project.id, "roadmap approval").await;
         self.invalidate_kanban_cache().await;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -3276,8 +4033,8 @@ impl OrchestratorClient {
              {} root goal(s) dispatched to workers. \
              Remaining goals will dispatch automatically as dependencies complete.\n\n\
              Use pause_roadmap to stop auto-dispatch. Use resume_roadmap to continue.",
-            created_ids.len(),
-            project.name,
+            materialized.created_ids.len(),
+            materialized.project_name,
             dispatched
         ))]))
     }
@@ -3413,9 +4170,15 @@ impl OrchestratorClient {
             ),
             Tool::new(
                 "view_session".to_string(),
-                "View a session's details and conversation. Mode 'first_last' (default) returns the first and last message. Mode 'summarize' calls the LLM to produce a conversation summary."
+                "View a session's details and conversation. Mode 'first_last' (default) returns the first and last message; 'summarize' calls the LLM; 'exact'/'page' returns bounded messages with stable IDs; 'search'/'query' returns bounded matching messages with stable IDs."
                     .to_string(),
                 schema::<ViewSessionParams>(),
+            ),
+            Tool::new(
+                "view_attachment".to_string(),
+                "Re-open one durable attachment belonging to the current user by attachment_id. Returns the original image content or bounded text/metadata; never exposes the filesystem path."
+                    .to_string(),
+                schema::<ViewAttachmentParams>(),
             ),
             Tool::new(
                 "start_agent".to_string(),
@@ -3439,14 +4202,19 @@ impl OrchestratorClient {
                 "list_workers".to_string(),
                 "List all configured workers from agent.yaml with their availability status. \
                  Use this to inspect what workers are available before dispatching goals. \
-                 Set refresh=true to force re-probing all workers."
+                 The response also includes adapter-derived capabilities (model override, \
+                 streaming, steering, cancellation, sandbox, permission gates, MCP, and CLI \
+                 tools); tool_kinds alone does not promise those behaviors. Set refresh=true \
+                 to force re-probing all workers."
                     .to_string(),
                 schema::<ListWorkersParams>(),
             ),
             Tool::new(
                 "check_worker".to_string(),
                 "Check a specific worker's availability by probing its detection method. \
-                 Always re-probes regardless of cache. Use before dispatching to a specific worker."
+                 Always re-probes regardless of cache. The response includes the worker's \
+                 adapter-derived capabilities so unsupported model, MCP, sandbox, or control \
+                 behavior is not assumed. Use before dispatching to a specific worker."
                     .to_string(),
                 schema::<CheckWorkerParams>(),
             ),
@@ -3544,7 +4312,9 @@ impl OrchestratorClient {
                  compiled into completion checks the daemon runs in the goal's worktree \
                  before it can be approved, so phrase them measurably (a command exits 0, a \
                  file exists, an endpoint returns a status, a pattern is absent). \
-                 After the user approves, call create_roadmap with the goals JSON."
+                 After the user approves, call create_roadmap with the exact goals JSON and \
+                 proposal_hash and approval_decision_id returned here. Creation requires \
+                 the Decision Inbox approval; the proof is durable and single-use."
                     .to_string(),
                 schema::<DecomposeRoadmapParams>(),
             ),
@@ -3552,6 +4322,9 @@ impl OrchestratorClient {
                 "create_roadmap".to_string(),
                 "Create goal cards from an approved roadmap proposal. Call this ONLY after \
                  the user has reviewed and approved the output of decompose_roadmap. \
+                 Pass the exact goals_json, proposal_hash, and approval_decision_id returned \
+                 by the latest decompose_roadmap; altered, stale, unapproved, or replayed \
+                 proposals are refused. \
                  Each goal's mechanically-verifiable acceptance_criteria are compiled into \
                  enforced completion checks at dispatch (source 'spec-acceptance'). \
                  Root goals (no dependencies) are auto-dispatched to workers."
@@ -3614,6 +4387,10 @@ impl McpClientTrait for OrchestratorClient {
         let result = match name {
             "list_sessions" => self.handle_list_sessions(arguments).await,
             "view_session" => self.handle_view_session(&ctx.session_id, arguments).await,
+            "view_attachment" => {
+                self.handle_view_attachment(&ctx.session_id, arguments)
+                    .await
+            }
             "start_agent" => self.handle_start_agent(arguments).await,
             "send_message" => {
                 self.handle_send_message(&ctx.session_id, &cancel_token, arguments)
@@ -3760,14 +4537,22 @@ fn parse_roadmap_response(response: &str) -> Result<Vec<goal_state::ProposedGoal
 /// both the cheap pass and the strong-model escalation (#249).
 async fn run_decomposition(
     provider: &Arc<dyn Provider>,
-    session_id: &str,
+    manager: &Arc<SessionManager>,
+    session: &Session,
     system: &str,
     user_message: &crate::conversation::message::Message,
 ) -> Result<Vec<goal_state::ProposedGoal>, DecompositionError> {
-    let (response, _usage) = provider
-        .complete_fast(session_id, system, std::slice::from_ref(user_message), &[])
-        .await
-        .map_err(|e| DecompositionError::Provider(format!("LLM decomposition failed: {}", e)))?;
+    let (response, _usage) = AccountedFastCompletion::complete_fast_accounted(
+        Arc::clone(manager),
+        session.clone(),
+        Arc::clone(provider),
+        system,
+        std::slice::from_ref(user_message),
+        &[],
+        false,
+    )
+    .await
+    .map_err(|e| DecompositionError::Provider(format!("LLM decomposition failed: {}", e)))?;
 
     let response_text = response.as_concat_text();
 
@@ -3781,15 +4566,17 @@ async fn run_decomposition(
                  Output ONLY the JSON object with the \"goals\" array. No prose, no markdown fences."
                     .to_string(),
             );
-            let (retry_resp, _) = provider
-                .complete_fast(
-                    session_id,
-                    system,
-                    &[user_message.clone(), response, retry_msg],
-                    &[],
-                )
-                .await
-                .map_err(|e| DecompositionError::Provider(format!("LLM retry failed: {}", e)))?;
+            let (retry_resp, _) = AccountedFastCompletion::complete_fast_accounted(
+                Arc::clone(manager),
+                session.clone(),
+                Arc::clone(provider),
+                system,
+                &[user_message.clone(), response, retry_msg],
+                &[],
+                false,
+            )
+            .await
+            .map_err(|e| DecompositionError::Provider(format!("LLM retry failed: {}", e)))?;
 
             match parse_roadmap_response(&retry_resp.as_concat_text()) {
                 Ok(g) => Ok(g),
@@ -4016,13 +4803,14 @@ pub async fn promote_and_dispatch_dependents(
     project_id: &str,
     approved_goal_id: &str,
 ) -> Option<String> {
-    promote_and_dispatch_dependents_with(
+    promote_and_dispatch_dependents_report(
         pool,
         project_id,
         approved_goal_id,
         GOAL_DISPATCH_HOOK.get(),
     )
     .await
+    .warning
 }
 
 /// [`promote_and_dispatch_dependents`] with an injected dispatcher (tests).
@@ -4032,14 +4820,42 @@ pub(crate) async fn promote_and_dispatch_dependents_with(
     approved_goal_id: &str,
     dispatch: Option<&GoalDispatchHook>,
 ) -> Option<String> {
+    promote_and_dispatch_dependents_report(pool, project_id, approved_goal_id, dispatch)
+        .await
+        .warning
+}
+
+/// The completion result needed by the program-DAG bridge. Promotion remains
+/// owned by the existing guard and dispatch remains owned by the existing
+/// hook; this only reports whether the installed dispatch rail was available
+/// and how many claims it started. A missing hook is an explicit pending
+/// outcome, never a successful dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PromotionDispatchReport {
+    pub warning: Option<String>,
+    pub dispatched: u32,
+    pub dispatcher_installed: bool,
+}
+
+pub(crate) async fn promote_and_dispatch_dependents_report(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    approved_goal_id: &str,
+    dispatch: Option<&GoalDispatchHook>,
+) -> PromotionDispatchReport {
     let warning =
         goal_transition::promote_eligible_dependents_or_warn(pool, project_id, approved_goal_id)
             .await;
     // The nudge re-runs promotion inside `eligible_ready_goals`. That pass is
     // idempotent and cheap, and going through the shared arbiter is worth more
     // than saving it: there is exactly one definition of eligibility.
-    dispatch_ready_goals_with(pool, project_id, dispatch, "dependent promotion").await;
-    warning
+    let dispatched =
+        dispatch_ready_goals_with(pool, project_id, dispatch, "dependent promotion").await;
+    PromotionDispatchReport {
+        warning,
+        dispatched,
+        dispatcher_installed: dispatch.is_some(),
+    }
 }
 
 /// A dispatcher that records card ids instead of starting workers, for tests
@@ -5725,77 +6541,159 @@ pub async fn escalate_session_budget(
 
 // ── Live verifier-driven escalation (the #739 ACTION) ────────────────────────
 
-/// The running session spend (USD) for the goal worker's session — the spend-cap
-/// input (guardrail 3). Unknown/unpriced ⇒ `0.0` (never fabricate a stop, per the
-/// budget ledger contract).
-pub async fn session_spent_usd(pool: &sqlx::Pool<sqlx::Sqlite>, session_id: &str) -> f64 {
-    sqlx::query_scalar::<_, Option<f64>>("SELECT accumulated_cost_usd FROM sessions WHERE id = ?")
-        .bind(session_id)
-        .fetch_optional(pool)
+/// A consistent, durable spend view for one session lineage.
+///
+/// This is deliberately the only read surface used by budget enforcement. The
+/// task amount is keyed by the durable `budget_task.v1` identity and therefore
+/// includes every worker session carrying that identity. The session amount is
+/// rooted at the requested session's ancestor and recursively includes all of
+/// its descendants. All fields are read in one transaction snapshot.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpendSnapshot {
+    pub task_id: String,
+    pub root_session_id: String,
+    pub task_spent_usd: f64,
+    pub session_spent_usd: f64,
+    pub unpriced_calls: u32,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SpendSnapshotError {
+    #[error("unknown session '{0}'")]
+    UnknownSession(String),
+    #[error("session '{0}' has no durable budget task identity")]
+    MissingTaskIdentity(String),
+    #[error("spend snapshot query failed: {0}")]
+    Database(String),
+    #[error("invalid {scope} spend value: {value}")]
+    InvalidSpend { scope: &'static str, value: f64 },
+    #[error("invalid unpriced-call count: {0}")]
+    InvalidUnpricedCount(i64),
+}
+
+fn validate_spend_value(scope: &'static str, value: f64) -> Result<f64, SpendSnapshotError> {
+    if value.is_finite() && value >= 0.0 {
+        Ok(value)
+    } else {
+        Err(SpendSnapshotError::InvalidSpend { scope, value })
+    }
+}
+
+/// Read task/session spend in one consistent Spectral snapshot.
+pub async fn spend_snapshot(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: &str,
+) -> Result<SpendSnapshot, SpendSnapshotError> {
+    let mut tx = pool
+        .begin()
         .await
-        .ok()
-        .flatten()
-        .flatten()
-        .unwrap_or(0.0)
-}
+        .map_err(|e| SpendSnapshotError::Database(e.to_string()))?;
 
-/// Spend (USD) on the CURRENT task — everything charged since the session's most
-/// recent user message. A goal worker's dispatch prompt is that message, so for a
-/// worker this is the whole run; for an interactive session it is the request in
-/// flight. No user message yet ⇒ the whole session. Errors ⇒ 0.0 (never fabricate
-/// a stop, per the budget ledger contract).
-pub async fn task_spent_usd(pool: &sqlx::Pool<sqlx::Sqlite>, session_id: &str) -> f64 {
-    let last_user_secs = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT MAX(created_timestamp) FROM messages WHERE session_id = ? AND role = 'user'",
+    let session =
+        sqlx::query("SELECT id, parent_session_id, extension_data FROM sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| SpendSnapshotError::Database(e.to_string()))?
+            .ok_or_else(|| SpendSnapshotError::UnknownSession(session_id.to_string()))?;
+    let extension_json: Option<String> = session
+        .try_get("extension_data")
+        .map_err(|e| SpendSnapshotError::Database(e.to_string()))?;
+    let task_id = extension_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<crate::session::ExtensionData>(json).ok())
+        .and_then(|data| crate::session::budget_task_id(&data))
+        .ok_or_else(|| SpendSnapshotError::MissingTaskIdentity(session_id.to_string()))?;
+
+    // Resolve the root and all descendants in the same read transaction. This
+    // avoids the old direct-child-only rollup, which made a grandchild's spend
+    // disappear from its task/session cap.
+    let row = sqlx::query(
+        "WITH RECURSIVE
+             ancestors(id, parent_session_id) AS (
+                 SELECT id, parent_session_id FROM sessions WHERE id = ?
+                 UNION ALL
+                 SELECT s.id, s.parent_session_id
+                   FROM sessions s JOIN ancestors a ON s.id = a.parent_session_id
+             ),
+             root(id) AS (
+                 SELECT id FROM ancestors WHERE parent_session_id IS NULL LIMIT 1
+             ),
+             descendants(id) AS (
+                 SELECT id FROM root
+                 UNION ALL
+                 SELECT s.id FROM sessions s JOIN descendants d
+                   ON s.parent_session_id = d.id
+             )
+         SELECT
+             COALESCE((SELECT SUM(cost_usd) FROM cost_ledger WHERE task_id = ?), 0.0) AS task_spent,
+             COALESCE((SELECT SUM(cost_usd) FROM cost_ledger
+                         WHERE session_id IN (SELECT id FROM descendants)), 0.0) AS session_spent,
+             COALESCE((SELECT COUNT(*) FROM cost_ledger
+                         WHERE session_id IN (SELECT id FROM descendants)
+                           AND is_estimated = 1), 0) AS unpriced_calls,
+             (SELECT id FROM root) AS root_session_id,
+             EXISTS (SELECT 1 FROM cost_ledger WHERE task_id = ?
+                       AND (cost_usd IS NULL OR cost_usd < 0 OR cost_usd != cost_usd)) AS task_invalid,
+             EXISTS (SELECT 1 FROM cost_ledger
+                       WHERE session_id IN (SELECT id FROM descendants)
+                         AND (cost_usd IS NULL OR cost_usd < 0 OR cost_usd != cost_usd)) AS session_invalid",
     )
     .bind(session_id)
-    .fetch_one(pool)
+    .bind(&task_id)
+    .bind(&task_id)
+    .fetch_one(&mut *tx)
     .await
-    .ok()
-    .flatten();
+    .map_err(|e| SpendSnapshotError::Database(e.to_string()))?;
 
-    // `cost_ledger.ts` is written with `chrono::Utc::now().to_rfc3339()`, so the
-    // task boundary is built the same way and compared as a plain indexed TEXT
-    // range rather than parsed in SQL.
-    let since = last_user_secs
-        .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
-        .map(|dt| dt.to_rfc3339());
-
-    let result = match &since {
-        Some(since) => {
-            sqlx::query_scalar::<_, f64>(
-                "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_ledger \
-                 WHERE session_id = ? AND ts >= ?",
-            )
-            .bind(session_id)
-            .bind(since)
-            .fetch_one(pool)
-            .await
-        }
-        None => {
-            sqlx::query_scalar::<_, f64>(
-                "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_ledger WHERE session_id = ?",
-            )
-            .bind(session_id)
-            .fetch_one(pool)
-            .await
-        }
-    };
-    result.unwrap_or(0.0)
-}
-
-/// Chargeable calls in this session that ran on a model with no published
-/// price (`cost_ledger.is_estimated`). They contribute $0.00 to the running
-/// total, so the budget gate needs the count to know its figure is a floor.
-pub async fn unpriced_calls_in_session(pool: &sqlx::Pool<sqlx::Sqlite>, session_id: &str) -> u32 {
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM cost_ledger WHERE session_id = ? AND is_estimated = 1",
-    )
-    .bind(session_id)
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0);
-    count.max(0) as u32
+    let task_spent: f64 = row
+        .try_get("task_spent")
+        .map_err(|e| SpendSnapshotError::Database(e.to_string()))?;
+    let session_spent: f64 = row
+        .try_get("session_spent")
+        .map_err(|e| SpendSnapshotError::Database(e.to_string()))?;
+    let unpriced: i64 = row
+        .try_get("unpriced_calls")
+        .map_err(|e| SpendSnapshotError::Database(e.to_string()))?;
+    let task_invalid: bool = row
+        .try_get::<i64, _>("task_invalid")
+        .map_err(|e| SpendSnapshotError::Database(e.to_string()))?
+        != 0;
+    let session_invalid: bool = row
+        .try_get::<i64, _>("session_invalid")
+        .map_err(|e| SpendSnapshotError::Database(e.to_string()))?
+        != 0;
+    if task_invalid {
+        return Err(SpendSnapshotError::InvalidSpend {
+            scope: "task",
+            value: task_spent,
+        });
+    }
+    if session_invalid {
+        return Err(SpendSnapshotError::InvalidSpend {
+            scope: "session",
+            value: session_spent,
+        });
+    }
+    let task_spent_usd = validate_spend_value("task", task_spent)?;
+    let session_spent_usd = validate_spend_value("session", session_spent)?;
+    if unpriced < 0 {
+        return Err(SpendSnapshotError::InvalidUnpricedCount(unpriced));
+    }
+    let root_session_id: String = row
+        .try_get("root_session_id")
+        .map_err(|e| SpendSnapshotError::Database(e.to_string()))?;
+    tx.commit()
+        .await
+        .map_err(|e| SpendSnapshotError::Database(e.to_string()))?;
+    Ok(SpendSnapshot {
+        task_id,
+        root_session_id,
+        task_spent_usd,
+        session_spent_usd,
+        unpriced_calls: u32::try_from(unpriced)
+            .map_err(|_| SpendSnapshotError::InvalidUnpricedCount(unpriced))?,
+    })
 }
 
 /// The goal's normal retry-attempt count (kept UNCHANGED across an escalation
@@ -5816,26 +6714,16 @@ async fn persist_escalation_state(
     state: &crate::cost_router::GoalEscalationState,
     snapshot: Option<crate::cost_router::RoutingSnapshot>,
 ) -> Result<(), String> {
-    let card = cards::get_card(pool, card_id)
-        .await?
-        .ok_or_else(|| format!("Card '{}' not found for escalation state", card_id))?;
-    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
-    meta.insert(
-        crate::cost_router::ESCALATION_METADATA_KEY.to_string(),
-        state.to_metadata_value(),
-    );
-    if let Some(snap) = snapshot {
-        snap.write_into(&mut meta);
-    }
-    let meta_str =
-        serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
-    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
-        .bind(&meta_str)
-        .bind(card_id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    persist_card_meta(pool, card_id, |meta| {
+        meta.insert(
+            crate::cost_router::ESCALATION_METADATA_KEY.to_string(),
+            state.to_metadata_value(),
+        );
+        if let Some(snap) = snapshot.as_ref() {
+            snap.write_into(meta);
+        }
+    })
+    .await
 }
 
 async fn persist_card_meta(
@@ -5843,20 +6731,48 @@ async fn persist_card_meta(
     card_id: &str,
     mut write: impl FnMut(&mut serde_json::Map<String, serde_json::Value>),
 ) -> Result<(), String> {
-    let card = cards::get_card(pool, card_id)
-        .await?
-        .ok_or_else(|| format!("Card '{card_id}' not found"))?;
-    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
-    write(&mut meta);
-    let meta_str =
-        serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
-    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
-        .bind(&meta_str)
-        .bind(card_id)
-        .execute(pool)
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
         .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+        .map_err(|error| error.to_string())?;
+    let row = sqlx::query(
+        "SELECT card_type, metadata_json FROM cards WHERE id = ? AND archived_at IS NULL",
+    )
+    .bind(card_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| format!("Card '{card_id}' not found"))?;
+    let card_type: String = row.get("card_type");
+    if card_type != "goal" {
+        return Err(format!("Card '{card_id}' is not a goal"));
+    }
+    let original_json: String = row.get("metadata_json");
+    let mut meta = serde_json::from_str::<serde_json::Value>(&original_json)
+        .map_err(|error| format!("goal metadata is invalid JSON: {error}"))?
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    write(&mut meta);
+    let updated_json = serde_json::to_string(&serde_json::Value::Object(meta))
+        .map_err(|error| error.to_string())?;
+    let result = sqlx::query(
+        "UPDATE cards
+            SET metadata_json = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND metadata_json = ? AND archived_at IS NULL",
+    )
+    .bind(&updated_json)
+    .bind(card_id)
+    .bind(&original_json)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| error.to_string())?;
+    if result.rows_affected() != 1 {
+        return Err(format!(
+            "goal '{card_id}' metadata changed while persisting; retry required"
+        ));
+    }
+    tx.commit().await.map_err(|error| error.to_string())
 }
 
 async fn load_session_signals(
@@ -5920,10 +6836,9 @@ fn messages_have_successful_verify(
             }
             MessageContent::ToolResponse(response)
                 if pending.remove(response.id.as_str())
-                    && response
-                        .tool_result
-                        .as_ref()
-                        .is_ok_and(|result| result.is_error != Some(true)) =>
+                    && response.tool_result.as_ref().is_ok_and(
+                        crate::agents::platform_extensions::developer::verify::is_authoritative_pass,
+                    ) =>
             {
                 return true;
             }
@@ -6205,9 +7120,28 @@ pub async fn escalate_verify_fix_loop(
         .map(|(rm, _)| rm);
     let resolve =
         |tier| resolve_tier_model(tier, read, &derived, current_model.as_ref()).map(|(rm, _)| rm);
-    let spent = session_spent_usd(pool, session_id).await;
+    let snapshot = match spend_snapshot(pool, session_id).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            // Escalation is an authorization to spend on another model. If the
+            // durable meter cannot be read, do not silently authorize that
+            // branch: preserve the work and park the goal until a human can
+            // retry after the ledger is healthy.
+            let reason = format!("budget snapshot unavailable; parked fail-closed: {error}");
+            goal_transition::park_goal(pool, &card_id, decisions::ACTOR_SYSTEM, &reason)
+                .await
+                .map_err(|park_error| {
+                    format!("{reason}; additionally failed to park goal: {park_error}")
+                })?;
+            if let Some(kill) = take_goal_worker(&card_id) {
+                kill.kill();
+            }
+            return Err(reason);
+        }
+    };
+    let spent = snapshot.session_spent_usd;
     let budget_cfg = crate::cost_router::budget::load_budget_config();
-    let task_spent = task_spent_usd(pool, session_id).await;
+    let task_spent = snapshot.task_spent_usd;
     let verdict = crate::cost_router::budget_verdict(task_spent, spent, &budget_cfg);
     let max_escalations = crate::cost_router::load_max_escalations();
 
@@ -6361,6 +7295,18 @@ pub const RESTART_FORGIVEN_LIFECYCLE: &str = "restart_forgiven_lifecycle";
 /// Briefing `kind` for the boot reconciler's own report (R2b).
 pub const RESTART_RECONCILE_BRIEFING_KIND: &str = "restart_reconcile";
 
+/// Maximum number of durable registered-program dispatch claims retried by a
+/// single boot pass. The count is intentionally bounded; the report exposes
+/// any remainder instead of pretending the pass recovered the whole queue.
+const PENDING_DISPATCH_RECOVERY_LIMIT: i64 = 64;
+
+fn unix_now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// Whether the boot reconciler charges an attempt for an orphaned in-flight
 /// goal. Named and pure so the classification is assertable directly (R4's
 /// chaos gate needs it without a daemon).
@@ -6441,6 +7387,22 @@ pub struct ReconcileReport {
     pub parked_failed: usize,
     /// Goals whose reconciliation itself errored (logged, then skipped).
     pub errors: usize,
+    /// Registered-program transition claims inspected by the same boot pass.
+    pub pending_dispatch_examined: usize,
+    /// Claims whose exact successor handoff actually started one or more
+    /// authorized workers.
+    pub pending_dispatch_auto_dispatched: usize,
+    /// Claims whose exact successor handoff was already durably applied.
+    pub pending_dispatch_already_applied: usize,
+    /// Claims that reached an explicit approval gate; no worker was started.
+    pub pending_dispatch_approval_required: usize,
+    /// Claims still pending because the project is paused, no dispatcher is
+    /// installed, or the exact handoff has an explicit retryable outcome.
+    pub pending_dispatch_deferred: usize,
+    /// Durable claims not inspected because the bounded scan limit was hit.
+    pub pending_dispatch_unscanned: usize,
+    /// Claims that failed with a non-retryable or storage error.
+    pub pending_dispatch_errors: usize,
 }
 
 impl ReconcileReport {
@@ -6485,9 +7447,12 @@ impl ReconcileReport {
              - {} requeued to Ready — no attempt charged (restart interruption)\n\
              - {} requeued to Ready — attempt charged\n\
              - {} recovered to Review from committed worktree evidence\n\
-             - {} parked in Failed (budget exhausted)\n\
+            - {} parked in Failed (budget exhausted)\n\
              - {} re-attached to a still-live worker session\n\
-             - {} could not be reconciled (see the daemon log)",
+             - {} could not be reconciled (see the daemon log)\n\
+             - {} registered pending-dispatch claim(s) inspected; {} auto-dispatched; {} already applied; {} approval-required; {} deferred\n\
+             - {} registered pending-dispatch claim(s) remain outside this bounded pass\n\
+             - {} registered pending-dispatch claim(s) errored (see the daemon log)",
             daemon_lifecycle_id(),
             self.examined,
             self.owned_by_live_tracker,
@@ -6497,11 +7462,22 @@ impl ReconcileReport {
             self.parked_failed,
             self.reattached,
             self.errors,
+            self.pending_dispatch_examined,
+            self.pending_dispatch_auto_dispatched,
+            self.pending_dispatch_already_applied,
+            self.pending_dispatch_approval_required,
+            self.pending_dispatch_deferred,
+            self.pending_dispatch_unscanned,
+            self.pending_dispatch_errors,
         )
     }
 
     fn severity(&self) -> crate::briefings::Severity {
-        if self.parked_failed > 0 || self.errors > 0 {
+        if self.parked_failed > 0
+            || self.errors > 0
+            || self.pending_dispatch_errors > 0
+            || self.pending_dispatch_unscanned > 0
+        {
             crate::briefings::Severity::Attention
         } else {
             crate::briefings::Severity::Info
@@ -6603,7 +7579,183 @@ pub async fn reconcile_in_progress_goals(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     manager: &Option<Arc<AgentManager>>,
 ) -> ReconcileReport {
+    reconcile_in_progress_goals_with_dispatch(pool, manager, GOAL_DISPATCH_HOOK.get()).await
+}
+
+#[derive(Debug, Default)]
+pub struct PendingDispatchRecovery {
+    pub examined: usize,
+    pub auto_dispatched: usize,
+    pub already_applied: usize,
+    pub approval_required: usize,
+    pub deferred: usize,
+    pub unscanned: usize,
+    pub errors: usize,
+}
+
+/// Run one due-only bounded recovery page from the existing daemon maintenance
+/// tick. This is intentionally narrower than boot reconciliation: it never
+/// sweeps generic Ready goals or promotes unrelated dependents.
+pub async fn recover_pending_registered_dispatches(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+) -> PendingDispatchRecovery {
+    reconcile_pending_registered_dispatches(pool, GOAL_DISPATCH_HOOK.get()).await
+}
+
+/// Retry only durable registered-program claims that were left at
+/// `pending_dispatch`. This is part of boot reconciliation, not a new worker
+/// scheduler: one bounded query, one attempt per claim, and an explicit
+/// remainder when the queue is larger than the pass budget.
+pub(crate) async fn reconcile_pending_registered_dispatches(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    dispatch: Option<&GoalDispatchHook>,
+) -> PendingDispatchRecovery {
+    let now = unix_now_secs();
+    let total: i64 = match sqlx::query_scalar(
+        "SELECT COUNT(*) FROM cards c
+         JOIN board_columns bc ON c.column_id = bc.id
+         JOIN projects p ON c.project_id = p.id
+         WHERE c.card_type = 'goal'
+           AND c.archived_at IS NULL
+           AND bc.state_binding = 'complete'
+           AND p.status = 'active'
+           AND json_extract(c.metadata_json, '$.program_transition.status') = 'pending_dispatch'
+           AND (json_extract(c.metadata_json, '$.program_transition.next_attempt_at') IS NULL
+                OR CAST(json_extract(c.metadata_json, '$.program_transition.next_attempt_at') AS INTEGER) <= ?)",
+    )
+    .bind(now)
+        .fetch_one(pool)
+        .await
+    {
+        Ok(total) => total,
+        Err(error) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "Could not enumerate registered pending-dispatch claims: {}",
+                error
+            );
+            return PendingDispatchRecovery {
+                errors: 1,
+                ..Default::default()
+            };
+        }
+    };
+
+    let rows: Vec<(String, String)> = match sqlx::query_as(
+        "SELECT c.id, c.project_id FROM cards c
+         JOIN board_columns bc ON c.column_id = bc.id
+         JOIN projects p ON c.project_id = p.id
+         WHERE c.card_type = 'goal'
+           AND c.archived_at IS NULL
+           AND bc.state_binding = 'complete'
+           AND p.status = 'active'
+           AND json_extract(c.metadata_json, '$.program_transition.status') = 'pending_dispatch'
+           AND (json_extract(c.metadata_json, '$.program_transition.next_attempt_at') IS NULL
+                OR CAST(json_extract(c.metadata_json, '$.program_transition.next_attempt_at') AS INTEGER) <= ?)
+         ORDER BY COALESCE(CAST(json_extract(c.metadata_json, '$.program_transition.next_attempt_at') AS INTEGER), 0) ASC,
+                  c.updated_at ASC, c.id ASC LIMIT ?",
+    )
+    .bind(now)
+    .bind(PENDING_DISPATCH_RECOVERY_LIMIT)
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "Could not read registered pending-dispatch claims: {}",
+                error
+            );
+            return PendingDispatchRecovery {
+                errors: 1,
+                ..Default::default()
+            };
+        }
+    };
+
+    let mut report = PendingDispatchRecovery {
+        examined: rows.len(),
+        unscanned: total.saturating_sub(rows.len() as i64) as usize,
+        ..Default::default()
+    };
+    if report.unscanned > 0 {
+        tracing::warn!(
+            target: "permagentd::brain",
+            total,
+            examined = report.examined,
+            remaining = report.unscanned,
+            limit = PENDING_DISPATCH_RECOVERY_LIMIT,
+            "Registered pending-dispatch claims exceed the bounded boot pass; remaining claims require a later recovery trigger"
+        );
+    }
+
+    for (goal_id, project_id) in rows {
+        match crate::agents::platform_extensions::program_bridge::retry_pending_registered_goal_with_dispatch(
+            pool, &goal_id, dispatch,
+        )
+        .await
+        {
+            Ok(Some(response)) => match response.status {
+                crate::agents::platform_extensions::program_bridge::HandoffStatus::Applied => {
+                    if response.dispatched > 0 {
+                        report.auto_dispatched += 1;
+                    } else {
+                        report.already_applied += 1;
+                    }
+                }
+                crate::agents::platform_extensions::program_bridge::HandoffStatus::AlreadyApplied => {
+                    report.already_applied += 1;
+                }
+                crate::agents::platform_extensions::program_bridge::HandoffStatus::ApprovalRequired => {
+                    report.approval_required += 1;
+                }
+                crate::agents::platform_extensions::program_bridge::HandoffStatus::PendingDispatch => {
+                    report.deferred += 1;
+                }
+            },
+            Ok(None) => {
+                // Another completion/recovery writer settled the claim after
+                // the bounded scan; this is an idempotent race, not an error.
+            }
+            Err(crate::agents::platform_extensions::program_bridge::ProgramHandoffError::Pending(
+                error,
+            )) => {
+                report.deferred += 1;
+                tracing::info!(
+                    target: "permagentd::brain",
+                    goal_id = %goal_id,
+                    project_id = %project_id,
+                    "Registered pending-dispatch claim remains deferred: {}",
+                    error
+                );
+            }
+            Err(error) => {
+                report.errors += 1;
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    goal_id = %goal_id,
+                    project_id = %project_id,
+                    "Registered pending-dispatch recovery failed: {}",
+                    error
+                );
+            }
+        }
+    }
+    report
+}
+
+/// Reconcile interrupted goals and, when the daemon has a dispatcher, resume
+/// the bounded Ready work in the same pass. The injected seam keeps restart
+/// behavior deterministic in tests without installing a process-global worker
+/// hook.
+async fn reconcile_in_progress_goals_with_dispatch(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    manager: &Option<Arc<AgentManager>>,
+    dispatch: Option<&GoalDispatchHook>,
+) -> ReconcileReport {
     let mut report = ReconcileReport::default();
+    let mut projects_to_nudge = HashSet::new();
 
     // Find all in-progress goal cards across all projects
     let rows = match sqlx::query_as::<_, (String, String)>(
@@ -6644,7 +7796,15 @@ pub async fn reconcile_in_progress_goals(
 
     for (card_id, project_id) in rows {
         match resume_single_goal(pool, manager, &card_id, &project_id).await {
-            Ok(disposition) => report.record(disposition),
+            Ok(disposition) => {
+                if matches!(
+                    disposition,
+                    ResumeDisposition::RequeuedNoCharge | ResumeDisposition::RequeuedCharged
+                ) {
+                    projects_to_nudge.insert(project_id.clone());
+                }
+                report.record(disposition);
+            }
             Err(e) => {
                 report.errors += 1;
                 tracing::warn!(
@@ -6656,6 +7816,37 @@ pub async fn reconcile_in_progress_goals(
             }
         }
     }
+
+    // A restart requeues an orphan to Ready. Without this one bounded nudge,
+    // the durable recovery path still strands the goal until a human calls
+    // resume_roadmap. Reuse the normal eligibility arbiter and dispatcher:
+    // pause tags, budget checks, atomic Ready→InProgress claims, and worker
+    // failures remain authoritative. One call per affected project prevents a
+    // restart from becoming a dispatch/reconcile spin loop.
+    for project_id in projects_to_nudge {
+        let dispatched =
+            dispatch_ready_goals_with(pool, &project_id, dispatch, "restart reconciliation").await;
+        if dispatched > 0 {
+            tracing::info!(
+                target: "permagentd::brain",
+                project_id = %project_id,
+                dispatched,
+                "Restart reconciliation resumed Ready goal(s)"
+            );
+        }
+    }
+
+    // Registered program transitions have their own exact successor frontier.
+    // Recover those durable claims separately from generic Ready work so a
+    // restart never broad-promotes an unrelated or approval-gated dependent.
+    let pending = reconcile_pending_registered_dispatches(pool, dispatch).await;
+    report.pending_dispatch_examined = pending.examined;
+    report.pending_dispatch_auto_dispatched = pending.auto_dispatched;
+    report.pending_dispatch_already_applied = pending.already_applied;
+    report.pending_dispatch_approval_required = pending.approval_required;
+    report.pending_dispatch_deferred = pending.deferred;
+    report.pending_dispatch_unscanned = pending.unscanned;
+    report.pending_dispatch_errors = pending.errors;
 
     // R2b: leave an audit trail. A restart that rewrites goal state in silence
     // is the condition R0 had to reconstruct from the journal a month later —
@@ -6671,7 +7862,11 @@ pub async fn reconcile_in_progress_goals(
     // reconcile files nothing, because this is a report of work done, not a
     // heartbeat (a per-boot "all quiet" briefing on a machine restarting four
     // times a day is noise that teaches people to ignore the surface).
-    if report.reconciled() > 0 {
+    if report.reconciled() > 0
+        || report.pending_dispatch_examined > 0
+        || report.pending_dispatch_unscanned > 0
+        || report.pending_dispatch_errors > 0
+    {
         crate::briefings::file_briefing(
             pool,
             crate::briefings::NewBriefing {
@@ -6787,6 +7982,11 @@ async fn resume_single_goal(
     let session_id = meta
         .and_then(|m| m.get("worker_session_id"))
         .and_then(|v| v.as_str());
+    let process_id = meta
+        .and_then(|m| m.get("execution_receipt"))
+        .and_then(|v| v.get("process_id"))
+        .and_then(|v| v.as_u64())
+        .and_then(|pid| u32::try_from(pid).ok());
     let attempt_count = meta
         .and_then(|m| m.get("attempt_count"))
         .and_then(|v| v.as_u64())
@@ -6797,8 +7997,16 @@ async fn resume_single_goal(
         (Some(sid), Some(mgr)) => mgr.is_session_busy(sid).await,
         _ => false,
     };
+    // External CLIs are not visible to AgentManager. The durable receipt pid
+    // closes that restart race: never requeue while the exact recorded worker
+    // process is still alive, or a second dispatch could edit the same goal's
+    // logical work in parallel. Once it exits, the normal worktree-evidence
+    // recovery path below decides Review versus Ready.
+    let external_process_alive = process_id
+        .map(goal_engine::external_process_is_alive)
+        .unwrap_or(false);
 
-    if session_alive {
+    if session_alive || external_process_alive {
         // Case 2: session is alive — spawn polling tracker
         let pool_clone = pool.clone();
         let card_id = card_id.to_string();
@@ -6812,7 +8020,9 @@ async fn resume_single_goal(
                 let still_busy = match AgentManager::instance().await {
                     Ok(mgr) => mgr.is_session_busy(&sid).await,
                     Err(_) => false,
-                };
+                } || process_id
+                    .map(goal_engine::external_process_is_alive)
+                    .unwrap_or(false);
 
                 if !still_busy {
                     // W5: a re-attached session going idle is not evidence of
@@ -6862,9 +8072,12 @@ async fn resume_single_goal(
 
         tracing::info!(
             target: "permagentd::brain",
-            "Re-attached tracker for alive goal '{}' (session: {})",
+            "Re-attached tracker for alive goal '{}' (session: {}, pid: {})",
             card.title,
-            session_id.unwrap_or("?")
+            session_id.unwrap_or("?"),
+            process_id
+                .map(|pid| pid.to_string())
+                .unwrap_or_else(|| "?".to_string())
         );
         Ok(ResumeDisposition::Reattached)
     } else {
@@ -7097,6 +8310,69 @@ async fn try_complete_dead_worker_from_worktree(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::message::MessageContent;
+    use rmcp::model::Role;
+
+    #[test]
+    fn exact_session_refs_distinguish_persisted_ids_from_legacy_locators() {
+        let mut persisted = Message::new(Role::User, 1_700_000_000, vec![]);
+        persisted.id = Some("db-message-7".to_string());
+        assert_eq!(
+            display_message_ref("session-a", 4, &persisted),
+            ("message_id", "db-message-7".to_string())
+        );
+
+        let legacy = Message::new(Role::User, 1_700_000_001, vec![]);
+        assert_eq!(
+            display_message_ref("session-a", 4, &legacy),
+            ("locator", "legacy:session-a:4".to_string())
+        );
+    }
+
+    #[test]
+    fn exact_session_search_is_bounded_and_reports_any_term_matches() {
+        let messages = vec![
+            Message::new(
+                Role::User,
+                1,
+                vec![MessageContent::text("Alpha beat recorded")],
+            ),
+            Message::new(
+                Role::Assistant,
+                2,
+                vec![MessageContent::text("Unrelated response")],
+            ),
+            Message::new(
+                Role::User,
+                3,
+                vec![MessageContent::text("Beta beat recorded")],
+            ),
+        ];
+        let rendered =
+            render_exact_session_messages("session-a", &messages, 1, 1, Some("alpha beta"));
+        assert!(rendered.contains("Beta beat recorded"));
+        assert!(!rendered.contains("Alpha beat recorded"));
+        assert!(rendered.contains("locator: legacy:session-a:2"));
+        assert!(rendered.contains("created_timestamp: 3"));
+    }
+
+    #[test]
+    fn external_cli_receipt_never_claims_an_unapplied_model_override() {
+        let worker = agent_identity::WorkerPersona {
+            first_name: "Codex".to_string(),
+            workflow_role: Some("edit".to_string()),
+            provider: Some("openai".to_string()),
+            model: Some("gpt-5-codex".to_string()),
+            cli_identity: Some("codex".to_string()),
+            ..Default::default()
+        };
+        let receipt = external_cli_model_routing_receipt(Some(&worker), "codex");
+        assert_eq!(receipt["source"], "external_cli_static_args");
+        assert_eq!(receipt["provider"], "openai");
+        assert_eq!(receipt["model"], "gpt-5-codex");
+        assert_eq!(receipt["cli_identity"], "codex");
+        assert_eq!(receipt["supports_model_override"], false);
+    }
 
     #[test]
     fn orchestrator_queries_the_financier_instead_of_inventing_prices() {
@@ -7623,11 +8899,17 @@ mod tests {
             ),
         )
         .await;
-        let result = if successful {
+        let mut result = if successful {
             CallToolResult::success(vec![Content::text("all checks passed")])
         } else {
             CallToolResult::error(vec![Content::text("checks failed")])
         };
+        result.structured_content = Some(serde_json::json!({
+            "kind": crate::agents::platform_extensions::developer::verify::VERIFICATION_OBSERVATION_KIND,
+            "command": "test",
+            "verdict": if successful { "pass" } else { "fail" },
+            "evidence": if successful { "all checks passed" } else { "checks failed" },
+        }));
         append_tool_message(
             pool,
             &session_id,
@@ -7645,11 +8927,17 @@ mod tests {
         use crate::conversation::message::MessageContent;
         use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
 
-        let result = if successful {
+        let mut result = if successful {
             CallToolResult::success(vec![Content::text("all checks passed")])
         } else {
             CallToolResult::error(vec![Content::text("checks failed")])
         };
+        result.structured_content = Some(serde_json::json!({
+            "kind": crate::agents::platform_extensions::developer::verify::VERIFICATION_OBSERVATION_KIND,
+            "command": "test",
+            "verdict": if successful { "pass" } else { "fail" },
+            "evidence": if successful { "all checks passed" } else { "checks failed" },
+        }));
         vec![
             MessageContent::tool_request(
                 "verify-call",
@@ -7737,6 +9025,19 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
+    }
+
+    /// Verify-loop tests must use the same durable identity contract as a
+    /// dispatched worker: the session exists in Spectral and carries the
+    /// task identity used by the spend snapshot.  Keeping this in the fixture
+    /// preserves the production fail-closed behavior for unknown sessions.
+    async fn bind_authoritative_worker_session(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        session_id: &str,
+        task_id: &str,
+    ) {
+        insert_session(pool, session_id).await;
+        set_budget_task(pool, session_id, task_id).await;
     }
 
     async fn open_unblock_count(pool: &sqlx::Pool<sqlx::Sqlite>, goal_id: &str) -> i64 {
@@ -7855,6 +9156,7 @@ mod tests {
         // exactly like every other loop signal.
         let pool = test_pool().await;
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        bind_authoritative_worker_session(&pool, "sess-verify", &card.id).await;
         stamp_worker_session(&pool, &card.id, "sess-verify").await;
 
         escalate_verify_fix_loop(
@@ -7958,6 +9260,7 @@ mod tests {
         // trying — no park, no decision, goal stays in_progress.
         let pool = test_pool().await;
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        bind_authoritative_worker_session(&pool, "sess-verify", &card.id).await;
         stamp_worker_session(&pool, &card.id, "sess-verify").await;
 
         escalate_verify_fix_loop(&pool, "sess-verify", 1, "evidence", None)
@@ -7984,6 +9287,7 @@ mod tests {
         // never authorize a climb alone (consecutive=0 still no-ops).
         let pool = test_pool().await;
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        bind_authoritative_worker_session(&pool, "sess-verify", &card.id).await;
         stamp_worker_session(&pool, &card.id, "sess-verify").await;
 
         escalate_verify_fix_loop(
@@ -8599,6 +9903,23 @@ mod tests {
         let considered = snap["candidates_considered"].as_array().unwrap();
         assert_eq!(considered.len(), 2, "every candidate must be recorded");
         assert!(snap["selected_at"].as_str().is_some());
+    }
+
+    #[test]
+    fn adapter_capability_requirements_do_not_fall_back_to_tool_kinds() {
+        let roster = agent_identity::default_roster();
+        assert_eq!(
+            missing_adapter_requirement(&["mcp".to_string()], &roster["codex"]),
+            Some("mcp".to_string())
+        );
+        assert_eq!(
+            missing_adapter_requirement(&["model_override".to_string()], &roster["permagent"]),
+            None
+        );
+        assert_eq!(
+            missing_adapter_requirement(&["code_edit".to_string()], &roster["codex"]),
+            None
+        );
     }
 
     #[tokio::test]
@@ -9246,6 +10567,71 @@ mod tests {
         );
     }
 
+    /// Restart recovery must continue approved unattended work: requeueing an
+    /// orphan to Ready is only half a recovery if the daemon leaves it waiting
+    /// for a human to call resume_roadmap. The normal dispatcher seam must take
+    /// the bounded Ready→InProgress claim exactly once in the same pass.
+    #[tokio::test]
+    async fn resume_requeues_and_dispatches_orphan_once() {
+        let pool = test_pool().await;
+        crate::session::spectral_schema::apply_briefings_schema(&pool)
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_lifecycle(&pool, &card, "prior-lifecycle").await;
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let dispatcher = recording_dispatcher(Arc::clone(&seen), Some(pool.clone()));
+        let report =
+            reconcile_in_progress_goals_with_dispatch(&pool, &None, Some(&dispatcher)).await;
+
+        assert_eq!(report.requeued_no_charge, 1);
+        assert_eq!(seen.lock().unwrap().as_slice(), &[card.id.clone()]);
+        assert_eq!(state_of(&pool, &card.id).await, "in_progress");
+    }
+
+    #[tokio::test]
+    async fn boot_pending_scan_is_bounded_and_does_not_sweep_generic_ready_work() {
+        let pool = test_pool().await;
+        let mut pending_ids = Vec::new();
+        for _ in 0..(PENDING_DISPATCH_RECOVERY_LIMIT as usize + 1) {
+            let card = setup_goal_in_state(&pool, "complete", 1).await;
+            let mut metadata = card.metadata_json.as_object().cloned().unwrap_or_default();
+            metadata.insert(
+                "program_transition".to_string(),
+                serde_json::json!({
+                    "digest": format!("fixture-{}", card.id),
+                    "program_id": "fixture",
+                    "node_id": "source",
+                    "status": "pending_dispatch"
+                }),
+            );
+            // `program_transition` is a protected goal metadata key: card CRUD
+            // refuses it by design and only the program bridge's own validated
+            // transaction may write it. Seed it through that same direct seam.
+            sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+                .bind(serde_json::to_string(&serde_json::Value::Object(metadata)).unwrap())
+                .bind(&card.id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            pending_ids.push(card.id);
+        }
+        let generic_ready = setup_goal_in_state(&pool, "ready", 1).await;
+
+        let report = reconcile_in_progress_goals_with_dispatch(&pool, &None, None).await;
+
+        assert_eq!(
+            report.pending_dispatch_examined,
+            PENDING_DISPATCH_RECOVERY_LIMIT as usize
+        );
+        assert_eq!(report.pending_dispatch_unscanned, 1);
+        assert_eq!(state_of(&pool, &generic_ready.id).await, "ready");
+        for id in pending_ids {
+            assert_eq!(state_of(&pool, &id).await, "complete");
+        }
+    }
+
     /// The idempotency guard: the exemption is granted once per interruption.
     /// A goal already forgiven for THIS `dispatched_lifecycle` is charged
     /// normally, so a restart loop can never buy infinite free retries.
@@ -9810,6 +11196,390 @@ mod tests {
     fn parse_roadmap_response_invalid() {
         let result = parse_roadmap_response("not json at all");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn roadmap_proposal_hash_is_content_bound() {
+        let goals = vec![goal_state::ProposedGoal {
+            title: "Build it".to_string(),
+            description: "Do the work".to_string(),
+            acceptance_criteria: vec!["cargo test passes".to_string()],
+            tags: vec!["code_edit".to_string()],
+            depends_on: vec![],
+        }];
+        let mut changed = goals.clone();
+        changed[0].description.push_str(" safely");
+
+        let hash = roadmap_proposal_hash(&goals);
+        assert_eq!(hash.len(), 64);
+        assert_ne!(hash, roadmap_proposal_hash(&changed));
+        // Hashing the typed proposal makes harmless JSON whitespace irrelevant,
+        // while any actual goal edit changes the proof.
+        let reparsed: Vec<goal_state::ProposedGoal> =
+            serde_json::from_str(&serde_json::to_string(&goals).unwrap()).unwrap();
+        assert_eq!(hash, roadmap_proposal_hash(&reparsed));
+    }
+
+    async fn install_answered_roadmap_proof(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        project_id: &str,
+        goals: &[goal_state::ProposedGoal],
+    ) -> (String, String) {
+        let hash = roadmap_proposal_hash(goals);
+        let decision = crate::decisions::create_decision(
+            pool,
+            crate::decisions::NewDecision {
+                kind: "choice".to_string(),
+                project_id: Some(project_id.to_string()),
+                headline: Some("Approve this roadmap?".to_string()),
+                detail: Some("Approve exact roadmap".to_string()),
+                payload: serde_json::json!({
+                    "question": "Create this exact roadmap?",
+                    "options": [
+                        {"id": "approve-roadmap", "label": "Approve and begin"},
+                        {"id": "reject-roadmap", "label": "Reject"}
+                    ],
+                    "proposal": crate::decisions::PROPOSAL_ROADMAP_CREATE,
+                    "roadmap_approval": {"proposal_hash": hash}
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::decisions::answer_decision(
+            pool,
+            &decision.id,
+            &crate::decisions::DecisionAnswer {
+                answer: "choice".to_string(),
+                choice_id: Some("approve-roadmap".to_string()),
+                ..Default::default()
+            },
+            crate::decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+
+        let project = crate::projects::get_project(pool, project_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut metadata = project.metadata_json;
+        metadata
+            .as_object_mut()
+            .unwrap()
+            .insert("roadmap_sentinel".to_string(), serde_json::json!(true));
+        metadata.as_object_mut().unwrap().insert(
+            ROADMAP_PROPOSAL_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "hash": hash,
+                "goal_count": goals.len(),
+                "approval_decision_id": decision.id,
+            }),
+        );
+        crate::projects::update_project(
+            pool,
+            project_id,
+            crate::projects::UpdateProject {
+                metadata_json: Some(metadata),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        (hash, decision.id)
+    }
+
+    #[tokio::test]
+    async fn roadmap_materialization_failure_rolls_back_proof_and_cards() {
+        let pool = test_pool().await;
+        let goals = vec![
+            goal_state::ProposedGoal {
+                title: "Atomic A".to_string(),
+                description: "first".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![],
+            },
+            goal_state::ProposedGoal {
+                title: "Atomic B".to_string(),
+                description: "second".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![0],
+            },
+        ];
+        let (hash, decision_id) =
+            install_answered_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
+                .await;
+        let order = goal_state::topological_order(&goals).unwrap();
+        let error = materialize_roadmap_transaction(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            Some(1),
+        )
+        .await
+        .expect_err("injected failure must abort materialization");
+        assert!(error.contains("injected roadmap materialization failure"));
+
+        let project = crate::projects::get_project(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(project.metadata_json["roadmap_sentinel"], true);
+        assert_eq!(
+            project.metadata_json[ROADMAP_PROPOSAL_METADATA_KEY]["hash"],
+            hash
+        );
+        let cards: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cards WHERE project_id = ? AND card_type = 'goal'",
+        )
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cards, 0, "rollback must leave zero partial goal cards");
+    }
+
+    #[tokio::test]
+    async fn concurrent_roadmap_replay_materializes_exactly_once() {
+        let pool = test_pool().await;
+        let goals = vec![
+            goal_state::ProposedGoal {
+                title: "Replay-safe A".to_string(),
+                description: "only once".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![],
+            },
+            goal_state::ProposedGoal {
+                title: "Replay-safe B".to_string(),
+                description: "only once".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![0],
+            },
+        ];
+        let (hash, decision_id) =
+            install_answered_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
+                .await;
+        let order = goal_state::topological_order(&goals).unwrap();
+        let left = materialize_roadmap_transaction(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            None,
+        );
+        let right = materialize_roadmap_transaction(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            None,
+        );
+        let (a, b) = tokio::join!(left, right);
+        assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+        let cards: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cards WHERE project_id = ? AND card_type = 'goal'",
+        )
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cards, 2, "concurrent replay must create one DAG");
+    }
+
+    #[tokio::test]
+    async fn materialized_goals_persist_budget_identity_for_headless_dispatch() {
+        let pool = test_pool().await;
+        let goals = vec![
+            goal_state::ProposedGoal {
+                title: "Budget A".to_string(),
+                description: "first".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![],
+            },
+            goal_state::ProposedGoal {
+                title: "Budget B".to_string(),
+                description: "second".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![0],
+            },
+        ];
+        let (hash, decision_id) =
+            install_answered_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
+                .await;
+        let order = goal_state::topological_order(&goals).unwrap();
+        let materialized = materialize_roadmap_transaction_with_budget(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            None,
+            Some("approving-task"),
+        )
+        .await
+        .unwrap();
+        let metadata: String = sqlx::query_scalar("SELECT metadata_json FROM cards WHERE id = ?")
+            .bind(&materialized.created_ids[0])
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(metadata["budget_task_id"], "approving-task");
+    }
+
+    #[test]
+    fn roadmap_validation_rejects_empty_and_wrong_sized_proposals() {
+        let empty = vec![goal_state::ProposedGoal {
+            title: "".to_string(),
+            description: "description".to_string(),
+            acceptance_criteria: vec![],
+            tags: vec![],
+            depends_on: vec![],
+        }];
+        assert!(validate_roadmap_goals(&empty)
+            .unwrap_err()
+            .contains("between 2 and"));
+        let malformed = vec![
+            goal_state::ProposedGoal {
+                title: "A".to_string(),
+                description: "description".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![],
+            },
+            goal_state::ProposedGoal {
+                title: "B".to_string(),
+                description: "".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![],
+            },
+        ];
+        assert!(validate_roadmap_goals(&malformed)
+            .unwrap_err()
+            .contains("empty description"));
+    }
+
+    #[tokio::test]
+    async fn cross_project_approval_is_rejected_without_consuming_proof() {
+        let pool = test_pool().await;
+        let other = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Other roadmap project".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let goals = vec![
+            goal_state::ProposedGoal {
+                title: "Cross A".to_string(),
+                description: "first".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![],
+            },
+            goal_state::ProposedGoal {
+                title: "Cross B".to_string(),
+                description: "second".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![0],
+            },
+        ];
+        let hash = roadmap_proposal_hash(&goals);
+        let decision = crate::decisions::create_decision(
+            &pool,
+            crate::decisions::NewDecision {
+                kind: "choice".to_string(),
+                project_id: Some(other.id),
+                headline: Some("Approve this roadmap?".to_string()),
+                detail: Some("Wrong project".to_string()),
+                payload: serde_json::json!({
+                    "question": "Create this exact roadmap?",
+                    "options": [
+                        {"id": "approve-roadmap", "label": "Approve and begin"},
+                        {"id": "reject-roadmap", "label": "Reject"}
+                    ],
+                    "proposal": crate::decisions::PROPOSAL_ROADMAP_CREATE,
+                    "roadmap_approval": {"proposal_hash": hash}
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &crate::decisions::DecisionAnswer {
+                answer: "choice".to_string(),
+                choice_id: Some("approve-roadmap".to_string()),
+                ..Default::default()
+            },
+            crate::decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let project = crate::projects::get_project(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut metadata = project.metadata_json;
+        metadata.as_object_mut().unwrap().insert(
+            ROADMAP_PROPOSAL_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "hash": hash,
+                "approval_decision_id": decision.id,
+            }),
+        );
+        crate::projects::update_project(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            crate::projects::UpdateProject {
+                metadata_json: Some(metadata),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let order = goal_state::topological_order(&goals).unwrap();
+        let err = materialize_roadmap_transaction(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision.id,
+            None,
+        )
+        .await
+        .expect_err("cross-project approval must be rejected");
+        assert!(err.contains("different project"));
+        let project = crate::projects::get_project(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            project.metadata_json[ROADMAP_PROPOSAL_METADATA_KEY]["hash"],
+            hash
+        );
     }
 
     // --- Cost-aware decomposition routing (#249) ---
@@ -10450,6 +12220,22 @@ mod tests {
             .unwrap();
     }
 
+    async fn set_budget_task(pool: &sqlx::Pool<sqlx::Sqlite>, session_id: &str, task_id: &str) {
+        let data = serde_json::json!({
+            format!(
+                "{}.{}",
+                crate::session::BUDGET_TASK_EXTENSION_NAME,
+                crate::session::BUDGET_TASK_EXTENSION_VERSION
+            ): task_id,
+        });
+        sqlx::query("UPDATE sessions SET extension_data = ? WHERE id = ?")
+            .bind(data.to_string())
+            .bind(session_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
     async fn insert_user_message(
         pool: &sqlx::Pool<sqlx::Sqlite>,
         session_id: &str,
@@ -10490,13 +12276,38 @@ mod tests {
         .unwrap();
     }
 
+    async fn insert_task_ledger_row(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        call_id: &str,
+        session_id: &str,
+        task_id: &str,
+        ts: &str,
+        cost_usd: f64,
+        is_estimated: bool,
+    ) {
+        sqlx::query(
+            "INSERT INTO cost_ledger (call_id, ts, session_id, task_id, cost_usd, is_estimated) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(call_id)
+        .bind(ts)
+        .bind(session_id)
+        .bind(task_id)
+        .bind(cost_usd)
+        .bind(is_estimated)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
-    async fn task_spent_counts_only_ledger_after_last_user_message() {
+    async fn task_spent_counts_only_ledger_for_current_task_identity() {
         let pool = test_pool().await;
         let sid = "sess-task-spend";
         insert_session(&pool, sid).await;
+        set_budget_task(&pool, sid, "task-current").await;
 
-        // Two user turns; spend before the second must not count as task spend.
+        // Historical spend from another task must not count as current-task spend.
         insert_user_message(&pool, sid, "m1", 1_700_000_000).await;
         insert_user_message(&pool, sid, "m2", 1_700_000_100).await;
 
@@ -10507,13 +12318,13 @@ mod tests {
             .unwrap()
             .to_rfc3339();
 
-        insert_ledger_row(&pool, "c-before", sid, &before_ts, 3.0, false).await;
-        insert_ledger_row(&pool, "c-after", sid, &after_ts, 1.5, false).await;
+        insert_task_ledger_row(&pool, "c-before", sid, "task-old", &before_ts, 3.0, false).await;
+        insert_task_ledger_row(&pool, "c-after", sid, "task-current", &after_ts, 1.5, false).await;
 
-        let task = task_spent_usd(&pool, sid).await;
+        let task = spend_snapshot(&pool, sid).await.unwrap().task_spent_usd;
         assert!(
             (task - 1.5).abs() < 1e-9,
-            "task spend must be only post-last-user rows, got {task}"
+            "task spend must be only current identity rows, got {task}"
         );
 
         let session_sum: f64 = sqlx::query_scalar(
@@ -10534,11 +12345,12 @@ mod tests {
         let pool = test_pool().await;
         let sid = "sess-unpriced";
         insert_session(&pool, sid).await;
+        set_budget_task(&pool, sid, "task-unpriced").await;
 
         let ts = chrono::Utc::now().to_rfc3339();
         insert_ledger_row(&pool, "c-unpriced", sid, &ts, 0.0, true).await;
 
-        assert_eq!(unpriced_calls_in_session(&pool, sid).await, 1);
+        assert_eq!(spend_snapshot(&pool, sid).await.unwrap().unpriced_calls, 1);
         let sum: f64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_ledger WHERE session_id = ?",
         )
@@ -10555,9 +12367,9 @@ mod tests {
         // the confident "nothing was spent" that a genuinely free call does.
         let cfg = crate::cost_router::budget::BudgetConfig::default();
         let verdict = crate::cost_router::budget::budget_verdict_with_unpriced(
-            task_spent_usd(&pool, sid).await,
-            session_spent_usd(&pool, sid).await,
-            unpriced_calls_in_session(&pool, sid).await,
+            spend_snapshot(&pool, sid).await.unwrap().task_spent_usd,
+            spend_snapshot(&pool, sid).await.unwrap().session_spent_usd,
+            spend_snapshot(&pool, sid).await.unwrap().unpriced_calls,
             &cfg,
         );
         assert_ne!(
@@ -10575,17 +12387,34 @@ mod tests {
         let pool = test_pool().await;
         let sid = "sess-task-gate";
         insert_session(&pool, sid).await;
+        set_budget_task(&pool, sid, "task-gate").await;
         insert_user_message(&pool, sid, "m1", 1_700_000_000).await;
 
         let ts = chrono::DateTime::from_timestamp(1_700_000_010, 0)
             .unwrap()
             .to_rfc3339();
-        insert_ledger_row(&pool, "c-1", sid, &ts, 6.0, false).await;
+        insert_task_ledger_row(&pool, "c-1", sid, "task-gate", &ts, 6.0, false).await;
+
+        let attributed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cost_ledger WHERE session_id = ? AND task_id = ?",
+        )
+        .bind(sid)
+        .bind("task-gate")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            attributed, 1,
+            "the gate spend must be attributed to the active task"
+        );
 
         let cfg = crate::cost_router::budget::BudgetConfig::default();
+        let snapshot = spend_snapshot(&pool, sid).await.unwrap();
+        assert!((snapshot.task_spent_usd - 6.0).abs() < 1e-9);
+        assert!((snapshot.session_spent_usd - 6.0).abs() < 1e-9);
         let verdict = crate::cost_router::budget_verdict(
-            task_spent_usd(&pool, sid).await,
-            session_spent_usd(&pool, sid).await,
+            snapshot.task_spent_usd,
+            snapshot.session_spent_usd,
             &cfg,
         );
         assert!(
@@ -10593,5 +12422,173 @@ mod tests {
             "$6.00 on one task must cross the $5.00 task gate, got {verdict:?}"
         );
         assert_eq!(verdict.scope, crate::cost_router::budget::BudgetScope::Task);
+    }
+
+    #[tokio::test]
+    async fn session_budget_includes_recursive_descendant_spend() {
+        let pool = test_pool().await;
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES ('parent', '/tmp')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (id, working_dir, parent_session_id) \
+             VALUES ('child', '/tmp', 'parent')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (id, working_dir, parent_session_id) \
+             VALUES ('grandchild', '/tmp', 'child')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        set_budget_task(&pool, "parent", "session-task").await;
+        insert_task_ledger_row(
+            &pool,
+            "grandchild-spend",
+            "grandchild",
+            "session-task",
+            "2026-01-01T00:00:02Z",
+            1.0,
+            false,
+        )
+        .await;
+        insert_task_ledger_row(
+            &pool,
+            "parent-spend",
+            "parent",
+            "session-task",
+            "2026-01-01T00:00:00Z",
+            4.0,
+            false,
+        )
+        .await;
+        insert_task_ledger_row(
+            &pool,
+            "child-spend",
+            "child",
+            "session-task",
+            "2026-01-01T00:00:01Z",
+            2.0,
+            false,
+        )
+        .await;
+        let snapshot = spend_snapshot(&pool, "parent").await.unwrap();
+        assert!((snapshot.task_spent_usd - 7.0).abs() < 1e-9);
+        let spent = snapshot.session_spent_usd;
+        assert!(
+            (spent - 7.0).abs() < 1e-9,
+            "parent must see recursive child spend"
+        );
+        let verdict = crate::cost_router::budget_verdict(
+            0.0,
+            spent,
+            &crate::cost_router::budget::BudgetConfig {
+                session: crate::cost_router::budget::BudgetCeilings {
+                    soft: 1.0,
+                    gate: 5.0,
+                    hard: 10.0,
+                },
+                ..Default::default()
+            },
+        );
+        assert!(verdict.needs_gate());
+        assert_eq!(
+            verdict.scope,
+            crate::cost_router::budget::BudgetScope::Session
+        );
+    }
+
+    #[tokio::test]
+    async fn spend_snapshot_rejects_unknown_or_unattributed_sessions() {
+        let pool = test_pool().await;
+        assert!(matches!(
+            spend_snapshot(&pool, "missing" ).await,
+            Err(SpendSnapshotError::UnknownSession(id)) if id == "missing"
+        ));
+
+        insert_session(&pool, "no-task").await;
+        assert!(matches!(
+            spend_snapshot(&pool, "no-task").await,
+            Err(SpendSnapshotError::MissingTaskIdentity(id)) if id == "no-task"
+        ));
+    }
+
+    #[tokio::test]
+    async fn spend_snapshot_rejects_negative_ledger_values() {
+        let pool = test_pool().await;
+        insert_session(&pool, "invalid-spend").await;
+        set_budget_task(&pool, "invalid-spend", "invalid-task").await;
+        insert_ledger_row(
+            &pool,
+            "negative-spend",
+            "invalid-spend",
+            "2026-01-01T00:00:00Z",
+            -0.01,
+            false,
+        )
+        .await;
+        assert!(matches!(
+            spend_snapshot(&pool, "invalid-spend").await,
+            Err(SpendSnapshotError::InvalidSpend {
+                scope: "session",
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn spend_snapshot_reports_database_failures() {
+        let pool = test_pool().await;
+        pool.close().await;
+        assert!(matches!(
+            spend_snapshot(&pool, "missing").await,
+            Err(SpendSnapshotError::Database(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn dispatch_prefers_card_budget_identity_for_headless_workers() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = crate::session::SessionManager::new(temp.path().to_path_buf());
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "approver".to_string(),
+                crate::session::SessionType::User,
+                crate::config::GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let mut extension_data = session.extension_data;
+        extension_data.set_extension_state(
+            crate::session::BUDGET_TASK_EXTENSION_NAME,
+            crate::session::BUDGET_TASK_EXTENSION_VERSION,
+            serde_json::Value::String("parent-task".to_string()),
+        );
+        manager
+            .update(&session.id)
+            .extension_data(extension_data)
+            .apply()
+            .await
+            .unwrap();
+        let session = manager.get_session(&session.id, false).await.unwrap();
+
+        assert_eq!(
+            dispatch_budget_task_id(&serde_json::json!({}), Some(&session)).as_deref(),
+            Some("parent-task")
+        );
+        assert_eq!(
+            dispatch_budget_task_id(
+                &serde_json::json!({"budget_task_id": "materialized-task"}),
+                Some(&session)
+            )
+            .as_deref(),
+            Some("materialized-task")
+        );
     }
 }

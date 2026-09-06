@@ -380,6 +380,7 @@ impl ClaudeCodeProvider {
 
         let control_protocol_enabled = Self::apply_permission_flags(&mut cmd)?;
 
+        // permagent-dispatch: seam=claude_provider_transport_v1 class=excluded reason=caller_provider_accounting authority=provider_dispatch
         let mut child = cmd.spawn().map_err(|e| {
             ProviderError::RequestFailed(format!(
                 "Failed to spawn Claude CLI command '{:?}': {}.",
@@ -651,6 +652,7 @@ impl Provider for ClaudeCodeProvider {
         // but it's unavailable during model listing.
         // See: https://code.claude.com/docs/en/cli-reference#system-prompt-flags
         let mut cmd = self.build_stream_json_command();
+        // permagent-dispatch: seam=claude_model_listing_probe_v1 class=excluded reason=deterministic_metadata authority=model_listing
         let mut child = cmd.spawn().map_err(|e| {
             ProviderError::RequestFailed(format!("Failed to spawn CLI for model listing: {e}"))
         })?;

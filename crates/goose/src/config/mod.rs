@@ -33,8 +33,8 @@ pub use extensions::{
 };
 pub use goose_mode::GooseMode;
 pub use model_roles::{
-    resolve_role_model, role_model_from_config, ModelRole, RoleModel, RoleModelSource,
-    RoleResolution,
+    assess_harness_coordinator, resolve_role_model, role_model_from_config, CoordinatorEligibility,
+    ModelRole, RoleModel, RoleModelSource, RoleResolution, HARNESS_COORDINATOR_MIN_ORCHESTRATION,
 };
 pub use permission::PermissionManager;
 pub use secret_source::{SecretSource, SecretSourceError};

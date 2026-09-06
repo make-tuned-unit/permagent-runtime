@@ -12,6 +12,7 @@ use crate::model::ModelConfig;
 use crate::providers::acp_tooling::{acp_adapter_installed, acp_inventory_identity};
 use crate::providers::base::{ProviderDef, ProviderMetadata};
 use crate::providers::inventory::InventoryIdentityInput;
+use crate::session::CostTier;
 
 const COPILOT_ACP_PROVIDER_NAME: &str = "copilot-acp";
 const COPILOT_ACP_DOC_URL: &str = "https://github.com/github/copilot-cli";
@@ -80,6 +81,9 @@ impl ProviderDef for CopilotAcpProvider {
                 session_mode_id: Some(mode_mapping[&goose_mode].clone()),
                 mode_mapping,
                 notification_callback: None,
+                // Copilot's product metadata describes this as subscription
+                // covered; ACP itself does not make that determination.
+                cost_tier: CostTier::Subscription,
             };
 
             let metadata = Self::metadata();

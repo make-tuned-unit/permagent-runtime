@@ -137,6 +137,7 @@ impl GeminiCliProvider {
 
         let mut cmd = self.build_command(&prompt, model_name);
 
+        // permagent-dispatch: seam=gemini_provider_transport_v1 class=excluded reason=caller_provider_accounting authority=provider_dispatch
         let mut child = cmd.kill_on_drop(true).spawn().map_err(|e| {
             ProviderError::RequestFailed(format!(
                 "Failed to spawn Gemini CLI command '{}': {e}. \

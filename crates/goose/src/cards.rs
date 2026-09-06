@@ -7,7 +7,7 @@
 //! sole legal mutator is [`crate::goal_transition::advance_goal_checked`]
 //! (and its audited sibling paths), which performs its own guarded writes.
 
-use sqlx::{Pool, Row, Sqlite};
+use sqlx::{Pool, Row, Sqlite, Transaction};
 use uuid::Uuid;
 
 use crate::goal_transition::PROTECTED_GOAL_METADATA_KEYS;
@@ -220,6 +220,91 @@ pub async fn seed_goal_columns(pool: &Pool<Sqlite>, project_id: &str) -> Result<
     cleanup_duplicate_manual_columns(pool).await?;
 
     Ok(())
+}
+
+/// Seed the goal lifecycle columns using a caller-owned transaction.  Unlike
+/// [`seed_goal_columns`], this deliberately emits no board event and never
+/// commits: roadmap materialization needs columns, cards, and root promotion
+/// to succeed or roll back together.
+pub(crate) async fn seed_goal_columns_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    project_id: &str,
+) -> Result<(), String> {
+    for (state_binding, name, position) in GOAL_COLUMNS {
+        let present: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM board_columns WHERE project_id = ? AND state_binding = ?)",
+        )
+        .bind(project_id)
+        .bind(state_binding)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        if present {
+            continue;
+        }
+        sqlx::query(
+            "INSERT INTO board_columns (id, project_id, name, position, column_kind, state_binding)
+             VALUES (?, ?, ?, ?, 'state', ?)",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(project_id)
+        .bind(name)
+        .bind(position)
+        .bind(state_binding)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    // Match normal seeding's data-safe cleanup: only empty manual columns are
+    // removed, and cards in legacy columns are never touched here.
+    sqlx::query(
+        "DELETE FROM board_columns
+         WHERE column_kind = 'manual' AND project_id = ?
+           AND id NOT IN (SELECT column_id FROM cards WHERE column_id IS NOT NULL)",
+    )
+    .bind(project_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Insert a goal card into a caller-owned transaction.  This is intentionally
+/// narrower than the public CRUD API: the roadmap handler has already built
+/// and validated the protected goal metadata and lifecycle column.
+pub(crate) async fn create_goal_card_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    project_id: &str,
+    title: &str,
+    description: &str,
+    column_id: &str,
+    metadata_json: &serde_json::Value,
+) -> Result<String, String> {
+    let max_pos: Option<i32> = sqlx::query_scalar(
+        "SELECT MAX(position) FROM cards WHERE column_id = ? AND archived_at IS NULL",
+    )
+    .bind(column_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    let id = Uuid::now_v7().to_string();
+    let metadata = serde_json::to_string(metadata_json).map_err(|e| e.to_string())?;
+    sqlx::query(
+        "INSERT INTO cards (id, project_id, card_type, title, description, column_id, position, created_by, metadata_json)
+         VALUES (?, ?, 'goal', ?, ?, ?, ?, 'user', ?)",
+    )
+    .bind(&id)
+    .bind(project_id)
+    .bind(title)
+    .bind(description)
+    .bind(column_id)
+    .bind(max_pos.unwrap_or(-1) + 1)
+    .bind(metadata)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(id)
 }
 
 /// Backfill the `cancelled` lifecycle column (#490) for existing boards.
@@ -1665,32 +1750,113 @@ pub async fn set_goal_verdict(
     card_id: &str,
     verdict: serde_json::Value,
 ) -> Result<(), String> {
-    let card = get_card(pool, card_id)
-        .await?
-        .ok_or_else(|| format!("Card '{}' not found", card_id))?;
-    if card.card_type != "goal" {
+    set_goal_verdict_and_program_receipts_inner(pool, card_id, Some(verdict), None, true).await
+}
+
+/// Narrow API for the trusted completion verifier: writes ONLY the typed
+/// program gate receipts produced from declared deterministic checks. Generic
+/// workers and ordinary metadata patches cannot mint this protected evidence.
+pub async fn set_goal_program_receipts(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    receipts: serde_json::Value,
+) -> Result<(), String> {
+    set_goal_verdict_and_program_receipts_inner(pool, card_id, None, Some(receipts), false).await
+}
+
+/// Atomically persist the verifier verdict and the optional ProgramDag gate
+/// receipts.  These values are produced by the same trusted verification run:
+/// splitting them into two read/modify/write calls creates a race in which an
+/// approval can observe a PASS before its gate receipts exist, or one writer
+/// can clobber metadata written by the other.  The immediate transaction keeps
+/// the read and CAS update together; the original JSON predicate also makes a
+/// stale writer fail closed if this code is ever used with a non-locking
+/// SQLite connection.
+pub async fn set_goal_verdict_and_program_receipts(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    verdict: serde_json::Value,
+    receipts: Option<serde_json::Value>,
+) -> Result<(), String> {
+    set_goal_verdict_and_program_receipts_inner(pool, card_id, Some(verdict), receipts, true).await
+}
+
+async fn set_goal_verdict_and_program_receipts_inner(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    verdict: Option<serde_json::Value>,
+    receipts: Option<serde_json::Value>,
+    clear_receipts_when_missing: bool,
+) -> Result<(), String> {
+    if let Some(receipts) = receipts.as_ref() {
+        if !receipts.is_array() {
+            return Err("program receipts must be an array".to_string());
+        }
+    }
+
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|error| error.to_string())?;
+    let row = sqlx::query(
+        "SELECT card_type, metadata_json FROM cards WHERE id = ? AND archived_at IS NULL",
+    )
+    .bind(card_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+    let card_type: String = row.get("card_type");
+    if card_type != "goal" {
         return Err(format!("Card '{}' is not a goal", card_id));
     }
-    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+    let original_json: String = row.get("metadata_json");
+    let mut meta: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str::<serde_json::Value>(&original_json)
+            .map_err(|error| format!("goal metadata is invalid JSON: {error}"))?
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
     let mut evidence = meta
         .get("dispatch_evidence")
-        .and_then(|v| v.as_object())
+        .and_then(|value| value.as_object())
         .cloned()
         .unwrap_or_default();
-    evidence.insert("verdict".to_string(), verdict);
-    meta.insert(
-        "dispatch_evidence".to_string(),
-        serde_json::Value::Object(evidence),
-    );
-    let meta_str =
-        serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
-    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
-        .bind(&meta_str)
-        .bind(card_id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    if let Some(verdict) = verdict {
+        evidence.insert("verdict".to_string(), verdict);
+        meta.insert(
+            "dispatch_evidence".to_string(),
+            serde_json::Value::Object(evidence),
+        );
+    }
+    if let Some(receipts) = receipts {
+        meta.insert("program_receipts".to_string(), receipts);
+    } else if clear_receipts_when_missing {
+        // A new verifier verdict without a fresh gate set must not inherit
+        // receipts from an earlier run.  Keeping them would let a later
+        // automatic handoff consume stale evidence for the new verdict.
+        meta.remove("program_receipts");
+    }
+    let updated_json = serde_json::to_string(&serde_json::Value::Object(meta))
+        .map_err(|error| error.to_string())?;
+    let result = sqlx::query(
+        "UPDATE cards
+            SET metadata_json = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND metadata_json = ? AND archived_at IS NULL",
+    )
+    .bind(&updated_json)
+    .bind(card_id)
+    .bind(&original_json)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| error.to_string())?;
+    if result.rows_affected() != 1 {
+        return Err(format!(
+            "goal '{}' metadata changed while persisting verification; retry required",
+            card_id
+        ));
+    }
+    tx.commit().await.map_err(|error| error.to_string())
 }
 
 /// Narrow API for the orchestrator's completion tracker (allowlist): writes
@@ -1703,23 +1869,7 @@ pub async fn set_goal_dispatch_evidence(
     card_id: &str,
     evidence: serde_json::Value,
 ) -> Result<(), String> {
-    let card = get_card(pool, card_id)
-        .await?
-        .ok_or_else(|| format!("Card '{}' not found", card_id))?;
-    if card.card_type != "goal" {
-        return Err(format!("Card '{}' is not a goal", card_id));
-    }
-    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
-    meta.insert("dispatch_evidence".to_string(), evidence);
-    let meta_str =
-        serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
-    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
-        .bind(&meta_str)
-        .bind(card_id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    set_goal_metadata_key_atomic(pool, card_id, "dispatch_evidence", evidence).await
 }
 
 /// Narrow API for the orchestrator's dispatch/heartbeat path (#210): writes
@@ -1732,23 +1882,61 @@ pub async fn set_goal_execution_receipt(
     card_id: &str,
     receipt: serde_json::Value,
 ) -> Result<(), String> {
-    let card = get_card(pool, card_id)
-        .await?
-        .ok_or_else(|| format!("Card '{}' not found", card_id))?;
-    if card.card_type != "goal" {
+    set_goal_metadata_key_atomic(pool, card_id, "execution_receipt", receipt).await
+}
+
+/// Atomically patch one narrow, non-lifecycle metadata key while preserving
+/// all other goal metadata. This is shared by completion evidence and receipt
+/// writers because those writes frequently race with verifier/program writes.
+async fn set_goal_metadata_key_atomic(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|error| error.to_string())?;
+    let row = sqlx::query(
+        "SELECT card_type, metadata_json FROM cards WHERE id = ? AND archived_at IS NULL",
+    )
+    .bind(card_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+    let card_type: String = row.get("card_type");
+    if card_type != "goal" {
         return Err(format!("Card '{}' is not a goal", card_id));
     }
-    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
-    meta.insert("execution_receipt".to_string(), receipt);
-    let meta_str =
-        serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
-    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
-        .bind(&meta_str)
-        .bind(card_id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    let original_json: String = row.get("metadata_json");
+    let mut metadata = serde_json::from_str::<serde_json::Value>(&original_json)
+        .map_err(|error| format!("goal metadata is invalid JSON: {error}"))?
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    metadata.insert(key.to_string(), value);
+    let updated_json = serde_json::to_string(&serde_json::Value::Object(metadata))
+        .map_err(|error| error.to_string())?;
+    let result = sqlx::query(
+        "UPDATE cards
+            SET metadata_json = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND metadata_json = ? AND archived_at IS NULL",
+    )
+    .bind(&updated_json)
+    .bind(card_id)
+    .bind(&original_json)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| error.to_string())?;
+    if result.rows_affected() != 1 {
+        return Err(format!(
+            "goal '{}' metadata changed while persisting '{}'; retry required",
+            card_id, key
+        ));
+    }
+    tx.commit().await.map_err(|error| error.to_string())
 }
 
 /// Read the `execution_receipt` off a goal card's metadata, if present (#210).
@@ -2935,6 +3123,101 @@ mod tests {
                 .and_then(|v| v.as_u64()),
             Some(1),
             "protected keys untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn verifier_combined_write_preserves_metadata_and_persists_receipts_atomically() {
+        let pool = test_pool().await;
+        let goal = make_goal(&pool).await;
+        sqlx::query("UPDATE cards SET metadata_json = json_set(metadata_json, '$.dispatch_evidence', json(?), '$.worker_note', 'keep') WHERE id = ?")
+            .bind(serde_json::json!({"head_commit": "abc"}).to_string())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        set_goal_verdict_and_program_receipts(
+            &pool,
+            &goal.id,
+            serde_json::json!({"status": "pass"}),
+            Some(serde_json::json!([{"gate": "checks", "passed": true}])),
+        )
+        .await
+        .unwrap();
+
+        let after = get_card(&pool, &goal.id).await.unwrap().unwrap();
+        assert_eq!(after.metadata_json["worker_note"], "keep");
+        assert_eq!(
+            after.metadata_json["dispatch_evidence"]["head_commit"],
+            "abc"
+        );
+        assert_eq!(
+            after.metadata_json["dispatch_evidence"]["verdict"]["status"],
+            "pass"
+        );
+        assert_eq!(after.metadata_json["program_receipts"][0]["gate"], "checks");
+    }
+
+    #[tokio::test]
+    async fn verifier_new_verdict_clears_receipts_from_an_older_run() {
+        let pool = test_pool().await;
+        let goal = make_goal(&pool).await;
+        set_goal_verdict_and_program_receipts(
+            &pool,
+            &goal.id,
+            serde_json::json!({"status": "pass", "finished_at": "old-run"}),
+            Some(serde_json::json!([{
+                "gate": "checks",
+                "passed": true,
+                "verification_id": "old-run"
+            }])),
+        )
+        .await
+        .unwrap();
+
+        // A new verdict without a freshly derived gate set is deliberately
+        // incomplete; stale receipts must not survive it.
+        set_goal_verdict(
+            &pool,
+            &goal.id,
+            serde_json::json!({"status": "uncertain", "finished_at": "new-run"}),
+        )
+        .await
+        .unwrap();
+        let after = get_card(&pool, &goal.id).await.unwrap().unwrap();
+        assert!(after.metadata_json.get("program_receipts").is_none());
+        assert_eq!(
+            after.metadata_json["dispatch_evidence"]["verdict"]["finished_at"],
+            "new-run"
+        );
+    }
+
+    #[tokio::test]
+    async fn narrow_metadata_writers_preserve_protected_program_state() {
+        let pool = test_pool().await;
+        let goal = make_goal(&pool).await;
+        sqlx::query("UPDATE cards SET metadata_json = json_set(metadata_json, '$.program_receipts', json(?), '$.program_transition', json(?)) WHERE id = ?")
+            .bind(serde_json::json!([{"gate": "old", "passed": true}]).to_string())
+            .bind(serde_json::json!({"digest": "keep"}).to_string())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        set_goal_dispatch_evidence(&pool, &goal.id, serde_json::json!({"files_changed": 0}))
+            .await
+            .unwrap();
+        set_goal_execution_receipt(&pool, &goal.id, serde_json::json!({"state": "Completed"}))
+            .await
+            .unwrap();
+        let after = get_card(&pool, &goal.id).await.unwrap().unwrap();
+        assert_eq!(after.metadata_json["program_receipts"][0]["gate"], "old");
+        assert_eq!(after.metadata_json["program_transition"]["digest"], "keep");
+        assert_eq!(after.metadata_json["dispatch_evidence"]["files_changed"], 0);
+        assert_eq!(
+            after.metadata_json["execution_receipt"]["state"],
+            "Completed"
         );
     }
 

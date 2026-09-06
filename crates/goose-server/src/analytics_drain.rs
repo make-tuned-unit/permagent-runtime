@@ -255,7 +255,15 @@ async fn run_once(state: &AppState, pacing: &mut Pacing) -> Result<(), String> {
             continue;
         }
 
-        let outcome = drain_project(&pool, &project.id, &drain_url, &secret, &mut config).await;
+        let outcome = drain_project(
+            &pool,
+            &project.id,
+            project.site_url.as_deref(),
+            &drain_url,
+            &secret,
+            &mut config,
+        )
+        .await;
         let interval = next_interval(
             pacing.current_interval(&project.id),
             outcome.as_ref().ok().copied(),
@@ -366,14 +374,17 @@ async fn prune_old_events(pool: &Pool<Sqlite>) {
 async fn drain_project(
     pool: &Pool<Sqlite>,
     project_id: &str,
+    site_url: Option<&str>,
     drain_url: &str,
     secret: &str,
     config: &mut crate::routes::first_party_analytics::DrainState,
 ) -> Result<usize, String> {
     let mut total = 0usize;
-    // The site's own host, for the self-referral drop in insert_event. The
-    // drain URL IS the site's origin, so no extra configuration is needed.
-    let site_host = classify::referrer_host(drain_url);
+    // The drain URL is the relay endpoint and may be on a different host from
+    // the public site. Use the project's authoritative site URL for the
+    // self-referral drop; if it is absent, leave the host unknown rather than
+    // silently discarding referrals to the relay host.
+    let site_host = site_url.and_then(classify::referrer_host);
     // A retention gap is not an error — the drain succeeds, it just succeeds
     // over a hole. It therefore reached the success path at the bottom, which
     // clears `last_error`, and the one durable record that data was lost was
@@ -517,7 +528,9 @@ async fn insert_event(
     // site the top "referrer" of itself. The snippet cannot fix this without
     // knowing its own host reliably; the daemon does, from the drain URL. Fixed
     // here rather than in each query so every downstream aggregate inherits it.
-    // (Reported against reckonize.org, 2026-08-06.)
+    // The public project URL is passed separately because the drain endpoint
+    // can be hosted on a relay domain. (Reported against reckonize.org,
+    // 2026-08-06.)
     // Normalize BOTH sides through referrer_host: it lowercases and strips
     // `www.`, so comparing a normalized host against a raw one silently never
     // matches (caught by CI — "www.reckonize.org" vs "reckonize.org"). Running
@@ -530,6 +543,7 @@ async fn insert_event(
             _ => true,
         }
     });
+    let referrer = crate::routes::analytics_classify::sanitize_referrer(referrer);
 
     // INSERT OR IGNORE against UNIQUE(project_id, source_event_id): re-draining
     // the same window is a no-op instead of inflating every count.
@@ -681,6 +695,58 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn drain_uses_project_site_url_not_relay_host_and_sanitizes_links() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "events": [
+                    { "id": 1, "kind": "pageview", "path": "/", "referrer": "https://grocerysaver.ca/pricing?session=private#top", "at": "2026-07-01T10:00:00Z" },
+                    { "id": 2, "kind": "pageview", "path": "/", "referrer": "https://www.reddit.com/r/example/comments/abc?context=3#comment-1", "at": "2026-07-01T10:01:00Z" }
+                ],
+                "latestId": "2"
+            })))
+            .mount(&server)
+            .await;
+
+        let pool = mem_pool().await;
+        let mut state = crate::routes::first_party_analytics::DrainState {
+            site_key: "k".into(),
+            ingest_base: None,
+            drain_url: None,
+            cursor: None,
+            last_drain_at: None,
+            last_error: None,
+            relay_latest_id: None,
+        };
+        let relay_url = format!("{}/api/permagent-analytics/drain", server.uri());
+        drain_project(
+            &pool,
+            "p1",
+            Some("https://grocerysaver.ca"),
+            &relay_url,
+            "SECRET123",
+            &mut state,
+        )
+        .await
+        .unwrap();
+
+        let stored: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT referrer FROM analytics_events ORDER BY source_event_id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored[0], None, "the public site host is internal");
+        assert_eq!(
+            stored[1].as_deref(),
+            Some("https://www.reddit.com/r/example/comments/abc"),
+            "the relay host must not be treated as the public site and private suffixes are removed"
+        );
+    }
+
     /// The source's timestamp must be preserved. Letting created_at default to
     /// now() would stamp a week of backlog with the fetch time and collapse
     /// every chart into a single day.
@@ -789,7 +855,7 @@ mod tests {
         };
         let url = format!("{}/api/permagent-analytics/drain", server.uri());
 
-        let n = drain_project(&pool, "p1", &url, "SECRET123", &mut state)
+        let n = drain_project(&pool, "p1", None, &url, "SECRET123", &mut state)
             .await
             .expect("a gap is not a failure — the drain still succeeds");
 
@@ -858,7 +924,7 @@ mod tests {
         };
         let url = format!("{}/api/permagent-analytics/drain", server.uri());
 
-        let n = drain_project(&pool, "p1", &url, "SECRET123", &mut state)
+        let n = drain_project(&pool, "p1", None, &url, "SECRET123", &mut state)
             .await
             .expect("drain succeeds");
         assert_eq!(n, 2, "both events ingested");
@@ -891,7 +957,7 @@ mod tests {
         // A second pass (daemon restarted, same window re-offered) must not
         // double-count — the failure mode that inflates every number.
         state.cursor = None;
-        drain_project(&pool, "p1", &url, "SECRET123", &mut state)
+        drain_project(&pool, "p1", None, &url, "SECRET123", &mut state)
             .await
             .unwrap();
         let total: i64 = sqlx::query_scalar("SELECT count(*) FROM analytics_events")
@@ -922,7 +988,7 @@ mod tests {
             last_error: None,
             relay_latest_id: None,
         };
-        let err = drain_project(&pool, "p1", &server.uri(), "WRONG", &mut state)
+        let err = drain_project(&pool, "p1", None, &server.uri(), "WRONG", &mut state)
             .await
             .unwrap_err();
         assert!(err.contains("401"), "got {err}");

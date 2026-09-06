@@ -8,6 +8,7 @@ use crate::providers::base::{Provider, ProviderUsage};
 use crate::providers::errors::ProviderError;
 use crate::{config::Config, token_counter::create_token_counter};
 use anyhow::Result;
+use async_trait::async_trait;
 use indoc::indoc;
 use rmcp::model::Role;
 use serde::Serialize;
@@ -45,6 +46,63 @@ Just continue the conversation naturally based on the summarized context.";
 #[derive(Serialize)]
 struct SummarizeContext {
     messages: String,
+}
+
+/// A `complete_fast` caller with durable accounting. Agent-owned compaction
+/// and asynchronous tool-pair summaries use this boundary so a fallback
+/// attempt cannot disappear from the existing Spectral ledger.
+#[async_trait]
+pub(crate) trait AccountedFastCompletion: Send + Sync {
+    async fn complete_fast(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[rmcp::model::Tool],
+    ) -> Result<(Message, ProviderUsage)>;
+}
+
+#[cfg(test)]
+struct DirectFastCompletion<'a> {
+    provider: &'a dyn Provider,
+    session_id: &'a str,
+}
+
+#[cfg(test)]
+#[async_trait]
+impl AccountedFastCompletion for DirectFastCompletion<'_> {
+    async fn complete_fast(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[rmcp::model::Tool],
+    ) -> Result<(Message, ProviderUsage)> {
+        self.provider
+            .complete_fast(self.session_id, system, messages, tools)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+struct OwnedDirectFastCompletion {
+    provider: Arc<dyn Provider>,
+    session_id: String,
+}
+
+#[cfg(test)]
+#[async_trait]
+impl AccountedFastCompletion for OwnedDirectFastCompletion {
+    async fn complete_fast(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[rmcp::model::Tool],
+    ) -> Result<(Message, ProviderUsage)> {
+        self.provider
+            .complete_fast(&self.session_id, system, messages, tools)
+            .await
+            .map_err(Into::into)
+    }
 }
 
 // ── Code-safe compaction ────────────────────────────────────────────────
@@ -180,11 +238,38 @@ fn middle_out_order(tool_indices: &[usize]) -> Vec<usize> {
 /// * A tuple containing:
 ///   - `Conversation`: The compacted messages
 ///   - `ProviderUsage`: Provider usage from summarization
+#[cfg(test)]
 pub async fn compact_messages(
     provider: &dyn Provider,
     session_id: &str,
     conversation: &Conversation,
     manual_compact: bool,
+) -> Result<(Conversation, ProviderUsage)> {
+    let completer = DirectFastCompletion {
+        provider,
+        session_id,
+    };
+    compact_messages_inner(session_id, conversation, manual_compact, &completer).await
+}
+
+/// Agent-owned compaction. Each physical fast/regular attempt is dispatched
+/// through `AccountedFastCompletion`; the standalone function above is kept
+/// for non-agent callers and unit fixtures that deliberately have no durable
+/// coding-task identity.
+pub(crate) async fn compact_messages_accounted(
+    session_id: &str,
+    conversation: &Conversation,
+    manual_compact: bool,
+    completer: &dyn AccountedFastCompletion,
+) -> Result<(Conversation, ProviderUsage)> {
+    compact_messages_inner(session_id, conversation, manual_compact, completer).await
+}
+
+async fn compact_messages_inner(
+    _session_id: &str,
+    conversation: &Conversation,
+    manual_compact: bool,
+    completer: &dyn AccountedFastCompletion,
 ) -> Result<(Conversation, ProviderUsage)> {
     info!("Performing message compaction");
 
@@ -255,8 +340,7 @@ pub async fn compact_messages(
         .cloned()
         .collect();
 
-    let (summary_message, summarization_usage) =
-        do_compact(provider, session_id, &summarizable).await?;
+    let (summary_message, summarization_usage) = do_compact(&summarizable, completer).await?;
 
     // Create the final message list with updated visibility metadata:
     // 1. Original messages become user_visible but not agent_visible
@@ -416,9 +500,8 @@ fn filter_tool_responses(messages: &[Message], remove_percent: u32) -> Vec<&Mess
 }
 
 async fn do_compact(
-    provider: &dyn Provider,
-    session_id: &str,
     messages: &[Message],
+    completer: &dyn AccountedFastCompletion,
 ) -> Result<(Message, ProviderUsage), anyhow::Error> {
     let agent_visible_messages: Vec<Message> = messages
         .iter()
@@ -448,10 +531,13 @@ async fn do_compact(
             .with_text("Please summarize the conversation history provided in the system prompt.");
         let summarization_request = vec![user_message];
 
-        match provider
-            .complete_fast(session_id, &system_prompt, &summarization_request, &[])
+        // permagent-dispatch: seam=context_compaction_fast_v1 class=wrapped contract=accounted_fast_completion
+        let result = completer
+            .complete_fast(&system_prompt, &summarization_request, &[])
             .await
-        {
+            .map_err(|error| ProviderError::ExecutionError(error.to_string()));
+
+        match result {
             Ok((mut response, mut provider_usage)) => {
                 response.role = Role::User;
 
@@ -604,11 +690,24 @@ pub fn tool_ids_to_summarize(
         .collect()
 }
 
+#[cfg(test)]
 pub async fn summarize_tool_call(
     provider: &dyn Provider,
     session_id: &str,
     conversation: &Conversation,
     tool_id: &str,
+) -> Result<Message> {
+    let completer = DirectFastCompletion {
+        provider,
+        session_id,
+    };
+    summarize_tool_call_inner(conversation, tool_id, &completer).await
+}
+
+async fn summarize_tool_call_inner(
+    conversation: &Conversation,
+    tool_id: &str,
+    completer: &dyn AccountedFastCompletion,
 ) -> Result<Message> {
     let messages = conversation.messages();
 
@@ -652,8 +751,9 @@ pub async fn summarize_tool_call(
                 if that is what it was.
             "#};
 
-    let (mut response, _) = provider
-        .complete_fast(session_id, system_prompt, &summarization_request, &[])
+    // permagent-dispatch: seam=context_tool_pair_fast_v1 class=wrapped contract=accounted_fast_completion
+    let (mut response, _) = completer
+        .complete_fast(system_prompt, &summarization_request, &[])
         .await?;
 
     response.role = Role::User;
@@ -663,12 +763,42 @@ pub async fn summarize_tool_call(
     Ok(response.with_generated_id())
 }
 
+#[cfg(test)]
 pub fn maybe_summarize_tool_pairs(
     provider: Arc<dyn Provider>,
     session_id: String,
     conversation: Conversation,
     cutoff: usize,
     protect_last_n: usize,
+) -> JoinHandle<Vec<(Message, String)>> {
+    let completer = Arc::new(OwnedDirectFastCompletion {
+        provider: Arc::clone(&provider),
+        session_id,
+    });
+    maybe_summarize_tool_pairs_inner(provider, conversation, cutoff, protect_last_n, completer)
+}
+
+/// Background tool-pair maintenance with the same durable reservation and
+/// settlement boundary as foreground replies. The adapter owns the exact
+/// provider/session snapshot captured before the task is spawned.
+pub(crate) fn maybe_summarize_tool_pairs_accounted(
+    provider: Arc<dyn Provider>,
+    session_id: String,
+    conversation: Conversation,
+    cutoff: usize,
+    protect_last_n: usize,
+    completer: Arc<dyn AccountedFastCompletion>,
+) -> JoinHandle<Vec<(Message, String)>> {
+    let _ = session_id;
+    maybe_summarize_tool_pairs_inner(provider, conversation, cutoff, protect_last_n, completer)
+}
+
+fn maybe_summarize_tool_pairs_inner(
+    provider: Arc<dyn Provider>,
+    conversation: Conversation,
+    cutoff: usize,
+    protect_last_n: usize,
+    completer: Arc<dyn AccountedFastCompletion>,
 ) -> JoinHandle<Vec<(Message, String)>> {
     tokio::spawn(async move {
         if !tool_pair_summarization_enabled() || provider.manages_own_context() {
@@ -678,8 +808,9 @@ pub fn maybe_summarize_tool_pairs(
         let tool_ids = tool_ids_to_summarize(&conversation, cutoff, protect_last_n);
         let mut results = Vec::new();
         for tool_id in tool_ids {
-            match summarize_tool_call(provider.as_ref(), &session_id, &conversation, &tool_id).await
-            {
+            let result =
+                summarize_tool_call_inner(&conversation, &tool_id, completer.as_ref()).await;
+            match result {
                 Ok(summary) => results.push((summary, tool_id)),
                 Err(e) => {
                     warn!("Failed to summarize tool pair: {}", e);

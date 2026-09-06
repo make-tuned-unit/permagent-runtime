@@ -43,6 +43,8 @@ pub mod usage;
 
 use std::fmt::Write as _;
 
+use once_cell::sync::Lazy;
+
 use crate::agents::platform_extensions::{
     librarian_state, PlatformExtensionDef, PLATFORM_EXTENSIONS,
 };
@@ -508,6 +510,12 @@ pub struct DispatchableWorker {
     pub status: String,
 }
 
+/// Prompt construction runs once per model turn. Keep worker availability
+/// outside that hot loop; [`ProbeCache::probe`] includes the check string in
+/// its key, so an edited worker configuration still invalidates immediately.
+static SELF_KNOWLEDGE_PROBE_CACHE: Lazy<crate::config::worker_probe::ProbeCache> =
+    Lazy::new(crate::config::worker_probe::ProbeCache::new);
+
 /// Build the dispatchable-worker list from the live registry + availability
 /// probe. `Pending`-engine workers are reported as "engine pending" without
 /// probing; runnable workers report their live probe result. Deterministically
@@ -519,13 +527,12 @@ pub fn dispatchable_workers_from_config(
     use crate::config::agent_identity::WorkerEngineKind;
     let mut workers: Vec<DispatchableWorker> = config
         .workers
-        .values()
-        .map(|w| {
+        .iter()
+        .map(|(key, w)| {
             let status = match &w.engine {
                 WorkerEngineKind::Pending => "engine pending".to_string(),
                 _ => {
-                    let (ok, reason) =
-                        crate::config::worker_probe::probe_worker(&w.availability_check);
+                    let (ok, reason) = SELF_KNOWLEDGE_PROBE_CACHE.probe(key, &w.availability_check);
                     if ok {
                         "available".to_string()
                     } else {

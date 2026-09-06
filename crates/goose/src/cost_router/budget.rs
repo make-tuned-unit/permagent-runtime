@@ -50,6 +50,12 @@ impl BudgetCeilings {
     /// a misconfigured ceiling (e.g. gate below soft) can never invert the
     /// bands. `gate` is lifted to at least `soft`, `hard` to at least `gate`.
     pub fn sanitized(self) -> Self {
+        // Preserve invalid numbers so authorization callers can fail closed.
+        // `f64::max` would otherwise turn some NaN configurations into a
+        // plausible zero/finite ceiling and accidentally authorize work.
+        if !self.soft.is_finite() || !self.gate.is_finite() || !self.hard.is_finite() {
+            return self;
+        }
         let soft = self.soft.max(0.0);
         let gate = self.gate.max(soft);
         let hard = self.hard.max(gate);
@@ -313,6 +319,7 @@ pub fn gate_choice_payload(scope: BudgetScope, spent: f64, increment: f64) -> Ch
         default: Some(GATE_OPTION_STOP.to_string()),
         proposal: None,
         check_approval: None,
+        roadmap_approval: None,
     }
 }
 
@@ -352,6 +359,60 @@ pub fn gate_decision_request(
     }
 }
 
+/// Build a spend gate for a reservation crossing. Unlike the historical
+/// settled-spend gate, this wording keeps settled dollars, active holds, and
+/// the requested worst-case bound separate; an authorization hold is never
+/// misreported as money already spent.
+pub fn reservation_gate_decision_request(
+    scope: BudgetScope,
+    settled_usd: f64,
+    held_usd: f64,
+    requested_usd: f64,
+    ceiling_usd: f64,
+    increment: f64,
+    goal_id: Option<String>,
+    project_id: Option<String>,
+) -> NewDecision {
+    let headline = format!("{} budget authorization needs approval", scope.word());
+    let detail = format!(
+        "Provider authorization is paused: settled spend is ${settled_usd:.2}, active authorization holds are ${held_usd:.2}, and this request's worst-case bound is ${requested_usd:.2} against the ${ceiling_usd:.2} {} ceiling. The bound is not recorded as spent. 'increment' raises the ceiling by ${increment:.2}; 'to_completion' lifts the gate for this run; 'stop' halts now.",
+        scope.word(),
+    );
+    NewDecision {
+        kind: "choice".to_string(),
+        goal_id,
+        project_id,
+        headline: Some(headline),
+        detail: Some(detail),
+        payload: serde_json::to_value(ChoicePayload {
+            question: format!(
+                "Approve this {} provider authorization? Settled ${settled_usd:.2}; holds ${held_usd:.2}; bound ${requested_usd:.2}; ceiling ${ceiling_usd:.2}.",
+                scope.word()
+            ),
+            options: vec![
+                ChoiceOption {
+                    id: GATE_OPTION_INCREMENT.to_string(),
+                    label: format!("Add ${increment:.2} to the budget and continue"),
+                },
+                ChoiceOption {
+                    id: GATE_OPTION_TO_COMPLETION.to_string(),
+                    label: "Continue to completion (no further gate this run)".to_string(),
+                },
+                ChoiceOption {
+                    id: GATE_OPTION_STOP.to_string(),
+                    label: "Stop now and keep all changes".to_string(),
+                },
+            ],
+            default: Some(GATE_OPTION_STOP.to_string()),
+            proposal: None,
+            check_approval: None,
+            roadmap_approval: None,
+        })
+        .unwrap_or_default(),
+        ..Default::default()
+    }
+}
+
 /// Raise the spend-gate decision in the Decision Inbox and return the created
 /// row. A `choice` with no seeded action-class resolves fail-closed to Tier 2,
 /// so only the user (never Henry-policy) can answer it. The caller pauses the
@@ -387,6 +448,36 @@ mod tests {
         approx(d.session.soft, 10.0);
         approx(d.session.gate, 25.0);
         approx(d.session.hard, 50.0);
+    }
+
+    #[test]
+    fn reservation_gate_distinguishes_holds_from_settled_spend() {
+        let d = reservation_gate_decision_request(
+            BudgetScope::Task,
+            1.25,
+            2.50,
+            3.75,
+            5.00,
+            5.00,
+            Some("goal-1".to_string()),
+            None,
+        );
+        assert!(d
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("settled spend is $1.25"));
+        assert!(d
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("authorization holds are $2.50"));
+        assert!(d
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("worst-case bound is $3.75"));
+        assert!(!d.detail.as_deref().unwrap().contains("$3.75 spent"));
     }
 
     // ── Soft / gate / hard fire at the thresholds ──────────────────────────
@@ -471,6 +562,15 @@ mod tests {
                                   // A sanitized config never inverts a verdict.
         let v = budget_verdict(1.0, 0.0, &c);
         assert!(matches!(v.band, BudgetBand::Gate | BudgetBand::Hard));
+    }
+
+    #[test]
+    fn non_finite_ceilings_remain_invalid_for_fail_closed_callers() {
+        let c = budget_config_from(Some(f64::NAN), None, None, None, None, None);
+        assert!(c.task.soft.is_nan());
+
+        let c = budget_config_from(None, Some(f64::INFINITY), None, None, None, None);
+        assert!(c.task.gate.is_infinite());
     }
 
     // ── The Decision-Inbox gate request ────────────────────────────────────

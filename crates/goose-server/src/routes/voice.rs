@@ -17,8 +17,11 @@
 //!     Text: {"type":"enrolled"}
 //!     Text: {"type":"enroll_retry","reason":"..."}
 //!     Text: {"type":"enroll_cleared"}
-//!     Text: {"type":"transcript","text":"..."}
+//!     Text: {"type":"transcript_partial","text":"..."} (optional,
+//!       provisional online-STT hypothesis)
+//!     Text: {"type":"transcript","text":"..."} (authoritative final)
 //!     Text: {"type":"reply_start"}
+//!     Text: {"type":"audio_segment", ...} (immediately before each binary frame)
 //!     Binary: [tts pcm_f32le audio]
 //!     Text: {"type":"clipboard","text":"..."}  (as soon as copy_to_clipboard
 //!            runs — not after TTS — so the phone can write the pasteboard
@@ -26,6 +29,18 @@
 //!     Text: {"type":"reply_text","text":"..."}
 //!     Text: {"type":"navigate",...}            (after narration; desktop only)
 //!     Text: {"type":"reply_end","sample_rate":24000}
+//!     Text: {"type":"turn_outcome","outcome":"empty_stt","reason":"near_silent_pcm"}
+//!     Text: {"type":"idle"}                    (legacy ready/reset signal)
+//!
+//! `audio_segment` is additive framing for clients that want synchronized
+//! transcript presentation. Its `text` is exactly the text sent to TTS,
+//! `segment_id` starts at zero for each reply and increases monotonically,
+//! and `word_timings` use UTF-16 offsets (the native indexing unit for iOS)
+//! plus millisecond offsets relative to that segment. Current Kokoro output
+//! has no alignments, so the timings are explicitly marked
+//! `estimated_proportional`; they are deterministic estimates, not phoneme
+//! timestamps. Older clients can ignore the metadata text frame and continue
+//! consuming the following binary frame, `reply_text`, and `reply_end`.
 //!     Text: {"type":"error","message":"..."}
 //!     Text: {"type":"wake_status","active":true,"phrase":"Hey <agent>"}
 //!     Text: {"type":"wake","kind":"wake"|"stop"}        (keyword detected)
@@ -45,7 +60,9 @@
 
 use crate::routes::errors::ErrorResponse;
 use crate::state::{build_kokoro_tts, AppState, SharedSpeakerVerifier, SharedTts};
-use crate::voice::provider::{AudioOutput, SttConfig, TtsConfig};
+use crate::voice::provider::{
+    AudioOutput, StreamingSttEvent, StreamingSttGate, StreamingSttSession, SttConfig, TtsConfig,
+};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -58,6 +75,8 @@ use axum::{
 };
 use permagent::download_manager::{get_download_manager, DownloadProgress, DownloadStatus};
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::Arc;
 
 /// The style contract for a SPOKEN reply, appended to the agent's system prompt on
@@ -330,7 +349,7 @@ async fn save_pronunciation_route(
     crate::voice::oov_log::forget(&req.word);
     tracing::info!(
         target: "permagentd::voice",
-        word = %req.word, %ipa, derived, "pronunciation saved"
+        derived, "pronunciation saved"
     );
     Ok(Json(serde_json::json!({
         "saved": true, "total": count, "ipa": ipa, "derived_from_respelling": derived
@@ -979,13 +998,110 @@ enum ClientMessage {
     EnrollClear,
 }
 
+enum StreamingSttCommand {
+    Audio(Vec<f32>),
+    Finish,
+    Cancel,
+}
+
+fn spawn_streaming_stt_worker(
+    mut session: Box<dyn StreamingSttSession>,
+) -> (
+    SyncSender<StreamingSttCommand>,
+    tokio::sync::mpsc::Receiver<StreamingSttEvent>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (command_tx, command_rx) = sync_channel(4);
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
+    let worker = tokio::task::spawn_blocking(move || {
+        while let Ok(command) = command_rx.recv() {
+            let result = match command {
+                StreamingSttCommand::Audio(samples) => session.push_audio(&samples),
+                StreamingSttCommand::Finish => {
+                    let result = session.finish();
+                    if let Ok(events) = result {
+                        for event in events {
+                            if event_tx.blocking_send(event).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    return;
+                }
+                StreamingSttCommand::Cancel => {
+                    session.cancel();
+                    return;
+                }
+            };
+            let Ok(events) = result else {
+                return;
+            };
+            for event in events {
+                if event_tx.blocking_send(event).is_err() {
+                    return;
+                }
+            }
+        }
+        session.cancel();
+    });
+    (command_tx, event_rx, worker)
+}
+
+fn cancel_streaming_stt_worker(
+    command_tx: &mut Option<SyncSender<StreamingSttCommand>>,
+    event_rx: &mut Option<tokio::sync::mpsc::Receiver<StreamingSttEvent>>,
+    gate: &mut Option<StreamingSttGate>,
+    pending_partial: &mut Option<String>,
+) {
+    if let Some(command_tx) = command_tx.take() {
+        let _ = command_tx.try_send(StreamingSttCommand::Cancel);
+    }
+    *event_rx = None;
+    if let Some(gate) = gate.as_mut() {
+        gate.cancel();
+    }
+    *gate = None;
+    *pending_partial = None;
+}
+
+fn streaming_worker_is_available(worker: Option<&tokio::task::JoinHandle<()>>) -> bool {
+    worker.map_or(true, |worker| worker.is_finished())
+}
+
+type BatchSttTask = tokio::task::JoinHandle<anyhow::Result<String>>;
+
+fn batch_worker_is_available(worker: Option<&BatchSttTask>) -> bool {
+    worker.map_or(true, |worker| worker.is_finished())
+}
+
+fn native_stt_workers_are_available(
+    streaming_worker: Option<&tokio::task::JoinHandle<()>>,
+    batch_worker: Option<&BatchSttTask>,
+) -> bool {
+    streaming_worker_is_available(streaming_worker) && batch_worker_is_available(batch_worker)
+}
+
 #[derive(Serialize)]
 #[serde(tag = "type")]
 enum ServerMessage {
     #[serde(rename = "transcript")]
     Transcript { text: String },
+    #[serde(rename = "transcript_partial")]
+    TranscriptPartial { text: String },
     #[serde(rename = "reply_start")]
     ReplyStart,
+    /// Metadata for the binary TTS frame that follows immediately. This is a
+    /// separate frame rather than an attribute on the audio bytes so existing
+    /// clients can continue to ignore it without changing their PCM decoder.
+    #[serde(rename = "audio_segment")]
+    AudioSegment {
+        segment_id: u64,
+        text: String,
+        sample_rate: u32,
+        duration_ms: u64,
+        timing_source: &'static str,
+        word_timings: Vec<WordTiming>,
+    },
     #[serde(rename = "reply_end")]
     ReplyEnd { sample_rate: u32 },
     #[serde(rename = "reply_text")]
@@ -1010,11 +1126,20 @@ enum ServerMessage {
     Clipboard { text: String },
     #[serde(rename = "error")]
     Error { message: String },
-    /// Empty or too-short capture — return to ready with no toast.
-    /// Last night (20260821_14) every `transcript: ""` flashed
-    /// "No speech detected — try again" on the orb.
+    /// Legacy ready/reset signal after an empty or too-short capture. New
+    /// clients receive a typed `turn_outcome` immediately before this frame;
+    /// older clients remain silently compatible with the established behavior.
     #[serde(rename = "idle")]
     Idle,
+    /// Additive terminal evidence for a capture that will not produce a reply.
+    /// This always precedes the legacy `idle` frame. Clients that do not know
+    /// this frame retain the old ready/reset behavior; newer clients can render
+    /// a recoverable, precise explanation without inspecting daemon logs.
+    #[serde(rename = "turn_outcome")]
+    TurnOutcome {
+        outcome: VoiceTurnOutcome,
+        reason: VoiceTurnOutcomeReason,
+    },
     #[serde(rename = "ready")]
     Ready,
     /// Wake-listening state after a `wake_start`/`wake_stop`. `phrase` is the
@@ -1063,6 +1188,45 @@ enum ServerMessage {
     EnrollCleared,
 }
 
+/// Closed terminal outcomes exposed to voice clients. Keep this intentionally
+/// small: the wire frame communicates state, never raw PCM, thresholds, or
+/// transcript content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum VoiceTurnOutcome {
+    CaptureRejectedMalformed,
+    CaptureRejectedShort,
+    EmptyStt,
+    SttBusy,
+}
+
+/// Closed, privacy-safe evidence for a no-reply terminal outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum VoiceTurnOutcomeReason {
+    MalformedPcm,
+    ShortCapture,
+    ZeroPcm,
+    NearSilentPcm,
+    FiniteSignalNoWords,
+    SttBusy,
+}
+
+/// A word's estimated position inside one synthesized segment.
+///
+/// Offsets are UTF-16 code-unit ranges because that is the indexing unit used
+/// by `NSString`/`NSRange` on iOS. `end_utf16` is exclusive. The server keeps
+/// this type deliberately independent of any TTS implementation: once a
+/// backend exposes alignments, the same wire shape can carry measured values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct WordTiming {
+    word: String,
+    start_ms: u64,
+    end_ms: u64,
+    start_utf16: u32,
+    end_utf16: u32,
+}
+
 /// RAII cleanup for navigation interception: guarantees the session's entry is
 /// removed from the registry on every exit path (including mid-stream client
 /// disconnect), so a dropped voice turn can never leave a stale interceptor that
@@ -1096,6 +1260,335 @@ impl Drop for VoiceOriginGuard {
 
 fn send_json(msg: &ServerMessage) -> Message {
     Message::Text(serde_json::to_string(msg).unwrap().into())
+}
+
+fn terminal_idle_frames(
+    outcome: VoiceTurnOutcome,
+    reason: VoiceTurnOutcomeReason,
+) -> [ServerMessage; 2] {
+    [
+        ServerMessage::TurnOutcome { outcome, reason },
+        // This legacy frame must remain second so established clients reset to
+        // ready even if they ignore the additive outcome frame.
+        ServerMessage::Idle,
+    ]
+}
+
+async fn send_terminal_idle(
+    socket: &mut WebSocket,
+    outcome: VoiceTurnOutcome,
+    reason: VoiceTurnOutcomeReason,
+) {
+    for frame in terminal_idle_frames(outcome, reason) {
+        // Attempt Idle even if a newer-frame write fails, preserving the
+        // compatibility behavior whenever the socket remains usable.
+        let _ = socket.send(send_json(&frame)).await;
+    }
+}
+
+enum StreamFinalResult {
+    Final(String),
+    Fallback,
+    Disconnected,
+    Deferred(Message),
+}
+
+enum SttWaitDisposition {
+    KeepWaiting,
+    Deferred(Message),
+    Disconnected,
+}
+
+/// Controls which arrive while native STT is running must not turn into a
+/// cancellation. A replacement/setup command is deferred for the outer loop;
+/// duplicate stop, late PCM, pong, and unknown text are harmlessly consumed.
+/// This keeps one in-flight native call per socket without dropping a valid
+/// stream merely because a peer sent a late frame.
+fn classify_stt_wait_message(message: Message) -> SttWaitDisposition {
+    match message {
+        Message::Close(_) => SttWaitDisposition::Disconnected,
+        Message::Text(text) => {
+            let replacement = serde_json::from_str::<ClientMessage>(&text)
+                .ok()
+                .is_some_and(|message| {
+                    matches!(
+                        message,
+                        ClientMessage::Start { .. }
+                            | ClientMessage::WakeStart { .. }
+                            | ClientMessage::WakeStop
+                            | ClientMessage::EnrollStart
+                            | ClientMessage::EnrollDone
+                            | ClientMessage::EnrollSkip
+                            | ClientMessage::EnrollClear
+                    )
+                });
+            if replacement {
+                SttWaitDisposition::Deferred(Message::Text(text))
+            } else {
+                SttWaitDisposition::KeepWaiting
+            }
+        }
+        Message::Binary(_) | Message::Ping(_) | Message::Pong(_) => SttWaitDisposition::KeepWaiting,
+    }
+}
+
+async fn handle_stream_event(
+    gate: &mut StreamingSttGate,
+    event: StreamingSttEvent,
+    publish: bool,
+    pending_partial: &mut Option<String>,
+    socket: &mut WebSocket,
+) -> Result<Option<String>, ()> {
+    let terminal = gate.accept(event);
+    if let Some(StreamingSttEvent::Final { text, .. }) = terminal {
+        return Ok(Some(text));
+    }
+    if let Some(StreamingSttEvent::Partial { text, .. }) = gate.take_partial() {
+        if publish {
+            socket
+                .send(send_json(&ServerMessage::TranscriptPartial { text }))
+                .await
+                .map_err(|_| ())?;
+        } else {
+            *pending_partial = Some(text);
+        }
+    }
+    Ok(None)
+}
+
+fn speaker_gate_allows_stream_text(gate: Option<&crate::voice::speaker_print::Gate>) -> bool {
+    matches!(
+        gate,
+        Some(
+            crate::voice::speaker_print::Gate::Admit { .. }
+                | crate::voice::speaker_print::Gate::Open
+        )
+    )
+}
+
+async fn flush_pending_stream_partial(
+    pending_partial: &mut Option<String>,
+    socket: &mut WebSocket,
+) -> Result<(), ()> {
+    if let Some(text) = pending_partial.take() {
+        socket
+            .send(send_json(&ServerMessage::TranscriptPartial { text }))
+            .await
+            .map_err(|_| ())?;
+    }
+    Ok(())
+}
+
+async fn finish_streaming_stt(
+    command_tx: &SyncSender<StreamingSttCommand>,
+    event_rx: &mut tokio::sync::mpsc::Receiver<StreamingSttEvent>,
+    gate: &mut StreamingSttGate,
+    pending_partial: &mut Option<String>,
+    socket: &mut WebSocket,
+) -> StreamFinalResult {
+    if command_tx.try_send(StreamingSttCommand::Finish).is_err() {
+        let _ = command_tx.try_send(StreamingSttCommand::Cancel);
+        return StreamFinalResult::Fallback;
+    }
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                event = event_rx.recv() => {
+                    let Some(event) = event else {
+                        return StreamFinalResult::Fallback;
+                    };
+                    match handle_stream_event(gate, event, true, pending_partial, socket).await {
+                        Ok(Some(text)) => return StreamFinalResult::Final(text),
+                        Ok(None) => {}
+                        Err(()) => return StreamFinalResult::Disconnected,
+                    }
+                }
+                message = socket.recv() => {
+                    match message {
+                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
+                            let _ = command_tx.try_send(StreamingSttCommand::Cancel);
+                            return StreamFinalResult::Disconnected;
+                        }
+                        Some(Ok(Message::Ping(payload))) => {
+                            if socket.send(Message::Pong(payload)).await.is_err() {
+                                return StreamFinalResult::Disconnected;
+                            }
+                        }
+                        Some(Ok(message)) => {
+                            match classify_stt_wait_message(message) {
+                                SttWaitDisposition::KeepWaiting => {}
+                                SttWaitDisposition::Deferred(message) => {
+                                    return StreamFinalResult::Deferred(message);
+                                }
+                                SttWaitDisposition::Disconnected => {
+                                    let _ = command_tx.try_send(StreamingSttCommand::Cancel);
+                                    return StreamFinalResult::Disconnected;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .await;
+
+    match result {
+        Ok(result) => result,
+        Err(_) => {
+            let _ = command_tx.try_send(StreamingSttCommand::Cancel);
+            StreamFinalResult::Fallback
+        }
+    }
+}
+
+enum BatchTranscribeResult {
+    Completed(Result<anyhow::Result<String>, tokio::task::JoinError>),
+    Disconnected,
+    Deferred(Message, BatchSttTask),
+}
+
+async fn transcribe_batch_with_socket(
+    stt: Arc<dyn crate::voice::SpeechToText>,
+    samples: Vec<f32>,
+    sample_rate: u32,
+    socket: &mut WebSocket,
+) -> BatchTranscribeResult {
+    let mut stt_task: BatchSttTask = tokio::task::spawn_blocking(move || {
+        stt.transcribe(&samples, sample_rate, &SttConfig::default())
+    });
+    loop {
+        tokio::select! {
+            result = &mut stt_task => return BatchTranscribeResult::Completed(result),
+            message = socket.recv() => {
+                match message {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
+                        stt_task.abort();
+                        return BatchTranscribeResult::Disconnected;
+                    }
+                    Some(Ok(Message::Ping(payload))) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            stt_task.abort();
+                            return BatchTranscribeResult::Disconnected;
+                        }
+                    }
+                    Some(Ok(message)) => {
+                        match classify_stt_wait_message(message) {
+                            SttWaitDisposition::KeepWaiting => {}
+                            SttWaitDisposition::Deferred(message) => {
+                                // `spawn_blocking` native work cannot be hard
+                                // cancelled. Retain the handle so a deferred
+                                // replacement cannot start a second call on
+                                // this socket while the first one unwinds.
+                                return BatchTranscribeResult::Deferred(message, stt_task);
+                            }
+                            SttWaitDisposition::Disconnected => {
+                                stt_task.abort();
+                                return BatchTranscribeResult::Disconnected;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Derive stable word ranges and proportional timings when a TTS backend does
+/// not expose alignments. The full segment duration is apportioned by word
+/// length, making this pure and repeatable for a given text/duration pair.
+/// Whitespace is intentionally omitted from ranges; punctuation attached to a
+/// word remains part of that word because it is spoken by the synthesizer.
+fn estimate_word_timings(text: &str, duration_ms: u64) -> Vec<WordTiming> {
+    let mut words: Vec<(String, u32, u32)> = Vec::new();
+    let mut current = String::new();
+    let mut start_utf16 = 0u32;
+    let mut cursor_utf16 = 0u32;
+
+    for ch in text.chars() {
+        let width = ch.len_utf16() as u32;
+        if ch.is_whitespace() {
+            if !current.is_empty() {
+                words.push((std::mem::take(&mut current), start_utf16, cursor_utf16));
+            }
+        } else {
+            if current.is_empty() {
+                start_utf16 = cursor_utf16;
+            }
+            current.push(ch);
+        }
+        cursor_utf16 += width;
+    }
+    if !current.is_empty() {
+        words.push((current, start_utf16, cursor_utf16));
+    }
+
+    let total_units: u64 = words
+        .iter()
+        .map(|(_, start, end)| u64::from(end.saturating_sub(*start)))
+        .sum();
+    if total_units == 0 {
+        return Vec::new();
+    }
+
+    let mut elapsed_units = 0u64;
+    words
+        .into_iter()
+        .map(|(word, start_utf16, end_utf16)| {
+            let word_units = u64::from(end_utf16.saturating_sub(start_utf16));
+            let start_ms = duration_ms.saturating_mul(elapsed_units) / total_units;
+            elapsed_units = elapsed_units.saturating_add(word_units);
+            let end_ms = duration_ms.saturating_mul(elapsed_units) / total_units;
+            WordTiming {
+                word,
+                start_ms,
+                end_ms,
+                start_utf16,
+                end_utf16,
+            }
+        })
+        .collect()
+}
+
+/// Send the synchronization frame and its PCM frame as one ordered pair.
+/// Returning `false` means cancellation or a missing socket; callers should
+/// stop the turn without attempting to send another frame.
+async fn send_tts_segment(
+    socket: &mut WebSocket,
+    audio: &AudioOutput,
+    text: String,
+    segment_id: u64,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> bool {
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    let metadata = audio_segment_metadata(audio, &text, segment_id);
+    if socket.send(send_json(&metadata)).await.is_err() {
+        return false;
+    }
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    let bytes: Vec<u8> = audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+    socket.send(Message::Binary(bytes.into())).await.is_ok()
+}
+
+fn audio_segment_metadata(audio: &AudioOutput, text: &str, segment_id: u64) -> ServerMessage {
+    let duration_ms = if audio.sample_rate == 0 {
+        0
+    } else {
+        (audio.samples.len() as u64).saturating_mul(1_000) / u64::from(audio.sample_rate)
+    };
+    ServerMessage::AudioSegment {
+        segment_id,
+        text: text.to_string(),
+        sample_rate: audio.sample_rate,
+        duration_ms,
+        timing_source: "estimated_proportional",
+        word_timings: estimate_word_timings(text, duration_ms),
+    }
 }
 
 fn enroll_status_msg(have: usize) -> ServerMessage {
@@ -1208,11 +1701,17 @@ async fn handle_voice_socket(
     session_id: Option<String>,
     origin: permagent::events::voice_origin::VoiceOrigin,
 ) {
+    let socket_epoch = next_voice_socket_epoch();
     // Snapshot the hot-swappable TTS slot once for this session.
     let tts_opt = state.voice_tts.read().await.clone();
 
     tracing::info!(
         target: "permagentd::voice",
+        event = "voice_socket",
+        stage = "connected",
+        socket_epoch,
+        session_id = session_id.as_deref().unwrap_or("voice-anon"),
+        client = origin.client.wire_name(),
         "Voice WebSocket connected (session_id={:?}, client={}, device={:?}, stt={}, tts={})",
         session_id,
         origin.client.wire_name(),
@@ -1227,6 +1726,10 @@ async fn handle_voice_socket(
         _ => {
             tracing::warn!(
                 target: "permagentd::voice",
+                event = "voice_socket",
+                stage = "rejected_provider_unavailable",
+                socket_epoch,
+                session_id = session_id.as_deref().unwrap_or("voice-anon"),
                 "Voice providers not loaded — closing WebSocket"
             );
             let _ = socket
@@ -1241,9 +1744,24 @@ async fn handle_voice_socket(
     // Signal ready
     tracing::info!(target: "permagentd::voice", "Sending ready signal to client");
     if socket.send(send_json(&ServerMessage::Ready)).await.is_err() {
-        tracing::warn!(target: "permagentd::voice", "Failed to send ready — client disconnected");
+        tracing::warn!(
+            target: "permagentd::voice",
+            event = "voice_socket",
+            stage = "ready_send_disconnected",
+            socket_epoch,
+            session_id = session_id.as_deref().unwrap_or("voice-anon"),
+            "Failed to send ready — client disconnected"
+        );
         return;
     }
+    tracing::info!(
+        target: "permagentd::voice",
+        event = "voice_socket",
+        stage = "ready",
+        socket_epoch,
+        session_id = session_id.as_deref().unwrap_or("voice-anon"),
+        "Voice WebSocket ready"
+    );
     let _ = socket.send(send_json(&voice_print_msg(&state).await)).await;
     let remainder_key = session_id.as_deref().unwrap_or("voice-anon");
     if let Some(teach) = pending_teach_msg(remainder_key) {
@@ -1278,7 +1796,33 @@ async fn handle_voice_socket(
     };
 
     let mut audio_buffer: Vec<f32> = Vec::new();
+    let mut capture_health = CaptureHealth::default();
     let mut recording = false;
+    let mut streaming_command_tx: Option<SyncSender<StreamingSttCommand>> = None;
+    let mut streaming_event_rx: Option<tokio::sync::mpsc::Receiver<StreamingSttEvent>> = None;
+    let mut streaming_gate: Option<StreamingSttGate> = None;
+    let mut streaming_worker: Option<tokio::task::JoinHandle<()>> = None;
+    let mut streaming_blocked = false;
+    let mut pending_stream_partial: Option<String> = None;
+    let mut streaming_output_closed = false;
+    let mut streaming_failed = false;
+    // At most one actionable control is deferred while native STT runs. A
+    // queue would let a peer build an unbounded backlog and obscure which
+    // replacement generation actually supersedes the turn.
+    let mut deferred_message: Option<Message> = None;
+    let mut batch_worker: Option<BatchSttTask> = None;
+    let mut turn_generation = 0u64;
+    // A supported online provider gets a single bounded worker below. Moonshine
+    // remains final-only batch STT: no rolling re-transcription is attempted,
+    // and the batch path remains the fallback when no online model is loaded.
+    let mut recording_turn_id: Option<u64> = None;
+    let mut recording_started_at: Option<std::time::Instant> = None;
+    let mut capture_first_received_at: Option<std::time::Instant> = None;
+    let mut capture_last_received_at: Option<std::time::Instant> = None;
+    // Keep a turn clock from Start through Stop so a socket that disappears
+    // during capture still gets a terminal outcome rather than only the
+    // generic handler-exit line.
+    let mut active_telemetry: Option<VoiceTurnTelemetry> = None;
     // Set after the early 2s learned-speaker check. An admitted turn does not
     // pay for the same embedding again at Stop.
     let mut speaker_gate: Option<crate::voice::speaker_print::Gate> = None;
@@ -1297,37 +1841,237 @@ async fn handle_voice_socket(
         crate::voice::kws::WakeSession,
     )> = None;
 
+    let mut socket_close_reason = "peer_eof";
     tracing::info!(target: "permagentd::voice", "Entering message loop");
-    while let Some(result) = socket.recv().await {
+    'voice_loop: while let Some(result) = if let Some(message) = deferred_message.take() {
+        Some(Ok(message))
+    } else if streaming_event_rx.is_some() && !streaming_output_closed {
+        let event_rx = streaming_event_rx
+            .as_mut()
+            .expect("stream receiver present");
+        tokio::select! {
+            event = event_rx.recv() => {
+                match event {
+                    Some(event) => {
+                        let Some(gate) = streaming_gate.as_mut() else {
+                            continue 'voice_loop;
+                        };
+                        let publish = speaker_gate_allows_stream_text(speaker_gate.as_ref());
+                        match handle_stream_event(
+                            gate,
+                            event,
+                            publish,
+                            &mut pending_stream_partial,
+                            &mut socket,
+                        )
+                        .await
+                        {
+                            Ok(Some(_)) => {
+                                // A provider final before Stop violates the
+                                // stream contract; fall back to batch at Stop.
+                                streaming_failed = true;
+                                gate.cancel();
+                            }
+                            Ok(None) => {}
+                            Err(()) => {
+                                socket_close_reason = "stream_partial_send_disconnected";
+                                break 'voice_loop;
+                            }
+                        }
+                        continue 'voice_loop;
+                    }
+                    None => {
+                        streaming_output_closed = true;
+                        socket.recv().await
+                    }
+                }
+            }
+            result = socket.recv() => result,
+        }
+    } else {
+        socket.recv().await
+    } {
         let msg = match result {
             Ok(m) => m,
             Err(e) => {
-                tracing::warn!(target: "permagentd::voice", "WebSocket recv error: {}", e);
+                socket_close_reason = "transport_recv_error";
+                tracing::warn!(
+                    target: "permagentd::voice",
+                    socket_epoch,
+                    "WebSocket recv error: {}",
+                    e
+                );
                 break;
             }
         };
         match msg {
             Message::Text(text) => {
                 let text_str: &str = &text;
-                tracing::debug!(target: "permagentd::voice", "Received text: {}", truncate_str(text_str, 100));
                 match serde_json::from_str::<ClientMessage>(text_str) {
                     Ok(ClientMessage::Start { sample_rate }) => {
+                        turn_generation = turn_generation.wrapping_add(1);
+                        if let Some(mut prior) = active_telemetry.take() {
+                            prior.set_stop_reason("replaced_by_start");
+                            prior.record_capture_health(std::mem::take(&mut capture_health));
+                            prior.log_outcome("capture_replaced");
+                        }
                         audio_buffer.clear();
                         recording = true;
+                        let turn_id = next_voice_turn_id();
+                        recording_turn_id = Some(turn_id);
+                        let started_at = std::time::Instant::now();
+                        recording_started_at = Some(started_at);
+                        active_telemetry = Some(VoiceTurnTelemetry::new(
+                            turn_id,
+                            socket_epoch,
+                            session_id.as_deref(),
+                            started_at,
+                        ));
+                        capture_first_received_at = None;
+                        capture_last_received_at = None;
                         speaker_gate = None;
-                        client_sample_rate = sample_rate.unwrap_or(16000);
-                        tracing::info!(target: "permagentd::voice", "Recording started, sample_rate={}", client_sample_rate);
+                        if batch_worker_is_available(batch_worker.as_ref()) {
+                            // A finished native task is safe to reap before a
+                            // replacement turn. If it is still running, keep
+                            // the handle and fail closed at the next Stop.
+                            batch_worker = None;
+                        }
+                        client_sample_rate = sample_rate.unwrap_or(16000).max(1);
+                        streaming_blocked = !native_stt_workers_are_available(
+                            streaming_worker.as_ref(),
+                            batch_worker.as_ref(),
+                        );
+                        if streaming_worker_is_available(streaming_worker.as_ref()) {
+                            streaming_worker = None;
+                        }
+                        cancel_streaming_stt_worker(
+                            &mut streaming_command_tx,
+                            &mut streaming_event_rx,
+                            &mut streaming_gate,
+                            &mut pending_stream_partial,
+                        );
+                        streaming_output_closed = false;
+                        streaming_failed = false;
+                        if enroll.is_none() && !streaming_blocked {
+                            if let Some(capability) = stt.streaming_capability() {
+                                match capability.start_stream(
+                                    client_sample_rate,
+                                    &SttConfig::default(),
+                                    turn_id,
+                                ) {
+                                    Ok(stream) => {
+                                        let (command_tx, event_rx, worker) =
+                                            spawn_streaming_stt_worker(stream);
+                                        streaming_command_tx = Some(command_tx);
+                                        streaming_event_rx = Some(event_rx);
+                                        streaming_gate = Some(StreamingSttGate::new(turn_id));
+                                        streaming_worker = Some(worker);
+                                    }
+                                    Err(error) => {
+                                        tracing::debug!(
+                                            target: "permagentd::voice",
+                                            turn_id,
+                                            "optional streaming STT unavailable; retaining batch fallback: {error}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        tracing::info!(
+                            target: "permagentd::voice",
+                            event = "voice_latency_stage",
+                            stage = "capture_started",
+                            turn_id,
+                            socket_epoch,
+                            session_id = session_id.as_deref().unwrap_or("voice-anon"),
+                            sample_rate = client_sample_rate,
+                            "voice capture started"
+                        );
                     }
                     Ok(ClientMessage::Stop) if recording => {
                         recording = false;
                         let pipeline_start = std::time::Instant::now();
+                        let turn_id = recording_turn_id.take().unwrap_or_else(next_voice_turn_id);
+                        let generation_at_stop = turn_generation;
+                        let turn_started_at = recording_started_at.take().unwrap_or(pipeline_start);
                         let audio_duration_s =
                             audio_buffer.len() as f32 / client_sample_rate as f32;
+                        let mut telemetry = active_telemetry.take().unwrap_or_else(|| {
+                            VoiceTurnTelemetry::new(
+                                turn_id,
+                                socket_epoch,
+                                session_id.as_deref(),
+                                turn_started_at,
+                            )
+                        });
+                        telemetry.set_stop_reason("client_stop");
+                        let completed_health = std::mem::take(&mut capture_health);
+                        telemetry.record_capture_health(completed_health.clone());
                         tracing::info!(
                             target: "permagentd::voice",
-                            "Recording stopped, {} samples ({:.1}s audio)",
-                            audio_buffer.len(), audio_duration_s
+                            event = "voice_latency_stage",
+                            stage = "capture_stopped",
+                            turn_id,
+                            socket_epoch,
+                            session_id = session_id.as_deref().unwrap_or("voice-anon"),
+                            stop_reason = "client_stop",
+                            "voice capture stopped"
                         );
+                        tracing::info!(
+                            target: "permagentd::voice",
+                            event = "voice_latency_stage",
+                            turn_id,
+                            session_id = session_id.as_deref().unwrap_or("voice-anon"),
+                            stage = "capture_received",
+                            stage_elapsed_ms = telemetry.elapsed_ms(),
+                            stage_duration_ms = capture_first_received_at
+                                .map(|at| at.duration_since(turn_started_at).as_millis())
+                                .unwrap_or(0),
+                            capture_receive_span_ms = capture_first_received_at
+                                .zip(capture_last_received_at)
+                                .map(|(first, last)| last.duration_since(first).as_millis())
+                                .unwrap_or(0),
+                            capture_samples = audio_buffer.len(),
+                            capture_duration_ms = (audio_buffer.len() as u64)
+                                .saturating_mul(1_000)
+                                .checked_div(u64::from(client_sample_rate.max(1)))
+                                .unwrap_or(0),
+                            sample_rate = client_sample_rate,
+                            capture_had_frames = capture_first_received_at.is_some(),
+                            "voice capture received"
+                        );
+                        tracing::info!(
+                            target: "permagentd::voice",
+                            event = "voice_latency_stage",
+                            turn_id,
+                            session_id = session_id.as_deref().unwrap_or("voice-anon"),
+                            stage = "capture_complete",
+                            capture_samples = audio_buffer.len(),
+                            capture_duration_ms = (audio_buffer.len() as u64)
+                                .saturating_mul(1_000)
+                                .checked_div(u64::from(client_sample_rate.max(1)))
+                                .unwrap_or(0),
+                            capture_wall_ms = turn_started_at.elapsed().as_millis(),
+                            capture_receive_span_ms = capture_first_received_at
+                                .zip(capture_last_received_at)
+                                .map(|(first, last)| last.duration_since(first).as_millis())
+                                .unwrap_or(0),
+                            capture_had_frames = capture_first_received_at.is_some(),
+                            "voice capture complete"
+                        );
+
+                        if completed_health.is_malformed() {
+                            telemetry.set_empty_reason("malformed_pcm");
+                            telemetry.log_outcome("capture_rejected_malformed");
+                            audio_buffer.clear();
+                            send_terminal_idle(
+                                &mut socket,
+                                VoiceTurnOutcome::CaptureRejectedMalformed,
+                                VoiceTurnOutcomeReason::MalformedPcm,
+                            )
+                            .await;
+                            continue;
+                        }
 
                         // Skip STT for empty or too-short buffers (< 0.3s).
                         // Prevents wasting 25s running STT on silence from
@@ -1336,12 +2080,21 @@ async fn handle_voice_socket(
                         if audio_buffer.len() < min_samples {
                             tracing::info!(
                                 target: "permagentd::voice",
+                                turn_id,
+                                session_id = session_id.as_deref().unwrap_or("voice-anon"),
+                                event = "voice_latency_stage",
+                                stage = "capture_rejected_short",
                                 "Skipping STT: buffer too short ({} samples, {:.2}s < 0.3s minimum)",
                                 audio_buffer.len(), audio_duration_s
                             );
+                            telemetry.log_outcome("capture_rejected_short");
                             audio_buffer.clear();
-                            // Silent return to ready — a too-short tap is not an error.
-                            let _ = socket.send(send_json(&ServerMessage::Idle)).await;
+                            send_terminal_idle(
+                                &mut socket,
+                                VoiceTurnOutcome::CaptureRejectedShort,
+                                VoiceTurnOutcomeReason::ShortCapture,
+                            )
+                            .await;
                             continue;
                         }
 
@@ -1361,8 +2114,10 @@ async fn handle_voice_socket(
                                         crate::voice::speaker_print::NEED_UTTERANCES
                                     );
                                     let _ = socket.send(send_json(&enroll_status_msg(have))).await;
+                                    telemetry.log_outcome("enrollment_clip");
                                 }
                                 Ok(None) => {
+                                    telemetry.log_outcome("enrollment_clip_rejected");
                                     let _ = socket
                                         .send(send_json(&ServerMessage::EnrollRetry {
                                             reason: "That was too short — say the full sentence."
@@ -1371,6 +2126,7 @@ async fn handle_voice_socket(
                                         .await;
                                 }
                                 Err(e) => {
+                                    telemetry.log_outcome("enrollment_error");
                                     tracing::warn!(
                                         target: "permagentd::voice",
                                         "speaker enrollment inference failed: {e}"
@@ -1395,11 +2151,29 @@ async fn handle_voice_socket(
                             None => learned_speaker_gate(&state, &samples, sr).await,
                         };
                         let gate_ms = gate_start.elapsed().as_millis();
+                        let speaker_admitted = speaker_gate_allows_stream_text(Some(&gate));
+                        tracing::info!(
+                            target: "permagentd::voice",
+                            event = "voice_latency_stage",
+                            stage = "speaker_gate",
+                            turn_id,
+                            session_id = session_id.as_deref().unwrap_or("voice-anon"),
+                            stage_elapsed_ms = telemetry.elapsed_ms(),
+                            stage_duration_ms = gate_ms,
+                            "voice speaker gate complete"
+                        );
                         match gate {
                             crate::voice::speaker_print::Gate::Reject { score } => {
                                 tracing::info!(
                                     target: "permagentd::voice",
                                     "speaker_print reject score={score:.3} gate_ms={gate_ms}"
+                                );
+                                telemetry.log_outcome("speaker_rejected");
+                                cancel_streaming_stt_worker(
+                                    &mut streaming_command_tx,
+                                    &mut streaming_event_rx,
+                                    &mut streaming_gate,
+                                    &mut pending_stream_partial,
                                 );
                                 let _ = socket
                                     .send(send_json(&ServerMessage::SpeakerRejected))
@@ -1423,6 +2197,13 @@ async fn handle_voice_socket(
                                     target: "permagentd::voice",
                                     "speaker_print unavailable gate_ms={gate_ms}; enrolled identity fails closed"
                                 );
+                                telemetry.log_outcome("speaker_gate_unavailable");
+                                cancel_streaming_stt_worker(
+                                    &mut streaming_command_tx,
+                                    &mut streaming_event_rx,
+                                    &mut streaming_gate,
+                                    &mut pending_stream_partial,
+                                );
                                 let _ = socket
                                     .send(send_json(&ServerMessage::SpeakerRejected))
                                     .await;
@@ -1430,17 +2211,145 @@ async fn handle_voice_socket(
                             }
                         }
 
+                        if speaker_admitted {
+                            if flush_pending_stream_partial(
+                                &mut pending_stream_partial,
+                                &mut socket,
+                            )
+                            .await
+                            .is_err()
+                            {
+                                socket_close_reason = "stream_partial_send_disconnected";
+                                break 'voice_loop;
+                            }
+                        }
+
+                        let streamed_transcript = if !streaming_failed {
+                            match (
+                                streaming_command_tx.as_ref(),
+                                streaming_event_rx.as_mut(),
+                                streaming_gate.as_mut(),
+                            ) {
+                                (Some(command_tx), Some(event_rx), Some(gate)) => {
+                                    match finish_streaming_stt(
+                                        command_tx,
+                                        event_rx,
+                                        gate,
+                                        &mut pending_stream_partial,
+                                        &mut socket,
+                                    )
+                                    .await
+                                    {
+                                        StreamFinalResult::Final(text) => Some(text),
+                                        StreamFinalResult::Fallback => {
+                                            streaming_failed = true;
+                                            None
+                                        }
+                                        StreamFinalResult::Disconnected => {
+                                            socket_close_reason = "stream_final_disconnected";
+                                            break 'voice_loop;
+                                        }
+                                        StreamFinalResult::Deferred(message) => {
+                                            // A replacement/setup control must
+                                            // reach Start/Wake/Enroll before
+                                            // this turn can fall through to
+                                            // batch STT or reply. Do not let an
+                                            // old stream answer after a new
+                                            // generation has been requested.
+                                            deferred_message = Some(message);
+                                            cancel_streaming_stt_worker(
+                                                &mut streaming_command_tx,
+                                                &mut streaming_event_rx,
+                                                &mut streaming_gate,
+                                                &mut pending_stream_partial,
+                                            );
+                                            streaming_failed = true;
+                                            telemetry.log_outcome("capture_replaced");
+                                            continue 'voice_loop;
+                                        }
+                                    }
+                                }
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+                        if streamed_transcript.is_none() {
+                            cancel_streaming_stt_worker(
+                                &mut streaming_command_tx,
+                                &mut streaming_event_rx,
+                                &mut streaming_gate,
+                                &mut pending_stream_partial,
+                            );
+                        } else {
+                            streaming_command_tx = None;
+                            streaming_event_rx = None;
+                            streaming_gate = None;
+                        }
+
                         // --- STT ---
                         let stt_start = std::time::Instant::now();
-                        let stt_ref = stt.clone();
-                        let transcript = tokio::task::spawn_blocking(move || {
-                            stt_ref.transcribe(&samples, sr, &SttConfig::default())
-                        })
-                        .await;
+                        let transcript = if let Some(transcript) = streamed_transcript {
+                            Ok(Ok(transcript))
+                        } else {
+                            if !native_stt_workers_are_available(
+                                streaming_worker.as_ref(),
+                                batch_worker.as_ref(),
+                            ) {
+                                telemetry.log_outcome("stt_busy");
+                                let _ = socket
+                                    .send(send_json(&ServerMessage::Error {
+                                        message: "Voice transcription is still finishing; please try again.".into(),
+                                    }))
+                                    .await;
+                                send_terminal_idle(
+                                    &mut socket,
+                                    VoiceTurnOutcome::SttBusy,
+                                    VoiceTurnOutcomeReason::SttBusy,
+                                )
+                                .await;
+                                continue 'voice_loop;
+                            }
+                            match transcribe_batch_with_socket(
+                                stt.clone(),
+                                samples,
+                                sr,
+                                &mut socket,
+                            )
+                            .await
+                            {
+                                BatchTranscribeResult::Completed(result) => result,
+                                BatchTranscribeResult::Disconnected => {
+                                    socket_close_reason = "batch_stt_disconnected";
+                                    break 'voice_loop;
+                                }
+                                BatchTranscribeResult::Deferred(message, task) => {
+                                    deferred_message = Some(message);
+                                    batch_worker = Some(task);
+                                    telemetry.log_outcome("stt_interrupted_control");
+                                    continue 'voice_loop;
+                                }
+                            }
+                        };
+                        let stt_ms = stt_start.elapsed().as_millis();
+                        telemetry.stt_ms = Some(stt_ms);
+                        telemetry.log_stage("stt", stt_start);
 
                         let transcript = match transcript {
                             Ok(Ok(t)) => t,
                             Ok(Err(e)) => {
+                                tracing::info!(
+                                    target: "permagentd::voice",
+                                    event = "voice_latency_stage",
+                                    stage = "stt_complete",
+                                    stt_outcome = "error",
+                                    turn_id,
+                                    socket_epoch,
+                                    session_id = session_id.as_deref().unwrap_or("voice-anon"),
+                                    stt_ms,
+                                    "voice transcription failed"
+                                );
+                                telemetry.log_outcome("stt_error");
                                 let _ = socket
                                     .send(send_json(&ServerMessage::Error {
                                         message: format!("STT failed: {}", e),
@@ -1449,6 +2358,18 @@ async fn handle_voice_socket(
                                 continue;
                             }
                             Err(e) => {
+                                tracing::info!(
+                                    target: "permagentd::voice",
+                                    event = "voice_latency_stage",
+                                    stage = "stt_complete",
+                                    stt_outcome = "task_panic",
+                                    turn_id,
+                                    socket_epoch,
+                                    session_id = session_id.as_deref().unwrap_or("voice-anon"),
+                                    stt_ms,
+                                    "voice transcription task failed"
+                                );
+                                telemetry.log_outcome("stt_task_panic");
                                 let _ = socket
                                     .send(send_json(&ServerMessage::Error {
                                         message: format!("STT task panicked: {}", e),
@@ -1458,18 +2379,31 @@ async fn handle_voice_socket(
                             }
                         };
 
-                        let stt_ms = stt_start.elapsed().as_millis();
                         tracing::info!(
                             target: "permagentd::voice",
-                            "TIMING STT: {}ms | transcript: \"{}\"",
-                            stt_ms, truncate_str(&transcript, 80)
+                            event = "voice_latency_stage",
+                            stage = "stt_complete",
+                            turn_id,
+                            socket_epoch,
+                            session_id = session_id.as_deref().unwrap_or("voice-anon"),
+                            stt_ms,
+                            transcript_chars = transcript.chars().count(),
+                            stt_outcome = if transcript.is_empty() { "empty" } else { "nonempty" },
+                            "voice transcription timing"
                         );
 
                         if transcript.is_empty() {
                             // 20260821_14: empty STT after real speech (and after
                             // auto-started noise turns) flashed "No speech detected".
                             // Return to ready with no toast.
-                            let _ = socket.send(send_json(&ServerMessage::Idle)).await;
+                            telemetry.set_empty_reason(empty_stt_reason(&completed_health));
+                            telemetry.log_outcome("empty_stt");
+                            send_terminal_idle(
+                                &mut socket,
+                                VoiceTurnOutcome::EmptyStt,
+                                empty_stt_wire_reason(&completed_health),
+                            )
+                            .await;
                             continue;
                         }
 
@@ -1479,6 +2413,41 @@ async fn handle_voice_socket(
                             &entity_dict,
                         );
 
+                        // Fence the reply against a replacement generation
+                        // that arrived while STT was finishing. Poll exactly
+                        // once: this is deliberately non-blocking and cannot
+                        // become a peer-controlled drain loop.
+                        if turn_generation != generation_at_stop {
+                            telemetry.log_outcome("capture_replaced");
+                            continue 'voice_loop;
+                        }
+                        use futures::FutureExt;
+                        match socket.recv().now_or_never() {
+                            None => {}
+                            Some(None) | Some(Some(Err(_))) | Some(Some(Ok(Message::Close(_)))) => {
+                                socket_close_reason = "reply_generation_disconnected";
+                                break 'voice_loop;
+                            }
+                            Some(Some(Ok(Message::Ping(payload)))) => {
+                                if socket.send(Message::Pong(payload)).await.is_err() {
+                                    socket_close_reason = "reply_generation_disconnected";
+                                    break 'voice_loop;
+                                }
+                            }
+                            Some(Some(Ok(message))) => match classify_stt_wait_message(message) {
+                                SttWaitDisposition::Deferred(message) => {
+                                    deferred_message = Some(message);
+                                    telemetry.log_outcome("capture_replaced");
+                                    continue 'voice_loop;
+                                }
+                                SttWaitDisposition::KeepWaiting => {}
+                                SttWaitDisposition::Disconnected => {
+                                    socket_close_reason = "reply_generation_disconnected";
+                                    break 'voice_loop;
+                                }
+                            },
+                        }
+
                         if socket
                             .send(send_json(&ServerMessage::Transcript {
                                 text: transcript.clone(),
@@ -1486,6 +2455,7 @@ async fn handle_voice_socket(
                             .await
                             .is_err()
                         {
+                            telemetry.log_outcome("transcript_send_disconnected");
                             return;
                         }
 
@@ -1511,11 +2481,14 @@ async fn handle_voice_socket(
                                     .await
                                     .is_err()
                                 {
+                                    telemetry.log_outcome("reply_start_disconnected");
                                     return;
                                 }
-                                let reply_ctx = VoiceReplyCtx {
+                                let mut reply_ctx = VoiceReplyCtx {
                                     state: &state,
                                     transcript: &held,
+                                    telemetry,
+                                    turn_id,
                                     session_id: session_id.as_deref(),
                                     tts: &tts,
                                     pipeline_start,
@@ -1525,8 +2498,10 @@ async fn handle_voice_socket(
                                     sample_rate: client_sample_rate,
                                     origin: &origin,
                                 };
-                                if let Err(e) = stream_reply_with_tts(&reply_ctx, &mut socket).await
+                                if let Err(e) =
+                                    stream_reply_with_tts(&mut reply_ctx, &mut socket).await
                                 {
+                                    reply_ctx.telemetry.log_outcome("reply_error");
                                     let _ = socket
                                         .send(send_json(&ServerMessage::Error {
                                             message: format!("Voice reply failed: {}", e),
@@ -1542,7 +2517,6 @@ async fn handle_voice_socket(
                         if let Some(word) = first_unknown_name(tts.as_ref(), &transcript) {
                             tracing::info!(
                                 target: "permagentd::voice",
-                                word = %word,
                                 "unknown name — asking how to say it before the reply"
                             );
                             permagent::events::voice_pronounce::begin(
@@ -1654,12 +2628,15 @@ async fn handle_voice_socket(
                             .await
                             .is_err()
                         {
+                            telemetry.log_outcome("reply_start_disconnected");
                             return;
                         }
 
-                        let reply_ctx = VoiceReplyCtx {
+                        let mut reply_ctx = VoiceReplyCtx {
                             state: &state,
                             transcript: &transcript,
+                            telemetry,
+                            turn_id,
                             session_id: session_id.as_deref(),
                             tts: &tts,
                             pipeline_start,
@@ -1672,9 +2649,11 @@ async fn handle_voice_socket(
                         // A new ask replaces any leftover — only a continue cue
                         // (handled above) is allowed to replay it.
                         permagent::events::voice_remainder::clear(remainder_key);
-                        let stream_result = stream_reply_with_tts(&reply_ctx, &mut socket).await;
+                        let stream_result =
+                            stream_reply_with_tts(&mut reply_ctx, &mut socket).await;
 
                         if let Err(e) = stream_result {
+                            reply_ctx.telemetry.log_outcome("reply_error");
                             let _ = socket
                                 .send(send_json(&ServerMessage::Error {
                                     message: format!("Voice reply failed: {}", e),
@@ -1876,11 +2855,96 @@ async fn handle_voice_socket(
                 }
             }
             Message::Binary(data) if recording => {
-                let chunk: Vec<f32> = data
-                    .chunks_exact(4)
-                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                    .collect();
+                // Enforce the capture bound on the server, before allocating
+                // decoded PCM. A missing client stop must not grow memory or
+                // leave an arbitrarily expensive offline STT job behind.
+                if capture_exceeds_limit(audio_buffer.len(), data.len(), client_sample_rate) {
+                    if let Some(mut telemetry) = active_telemetry.take() {
+                        telemetry.set_stop_reason("capture_limit");
+                        telemetry.record_capture_health(std::mem::take(&mut capture_health));
+                        telemetry.log_outcome("capture_rejected_limit");
+                    }
+                    recording = false;
+                    cancel_streaming_stt_worker(
+                        &mut streaming_command_tx,
+                        &mut streaming_event_rx,
+                        &mut streaming_gate,
+                        &mut pending_stream_partial,
+                    );
+                    audio_buffer.clear();
+                    let _ = socket
+                        .send(send_json(&ServerMessage::Error {
+                            message: "Voice capture limit reached. Please start a shorter turn."
+                                .into(),
+                        }))
+                        .await;
+                    let _ = socket.send(send_json(&ServerMessage::Idle)).await;
+                    continue;
+                }
+                let chunk = capture_health.observe_frame(&data);
+                // A non-finite sample or partial f32 cannot be trusted by the
+                // speaker/STT models. Reject it at the protocol boundary rather
+                // than letting an invalid value enter an inference buffer.
+                if capture_health.is_malformed() {
+                    if let Some(mut telemetry) = active_telemetry.take() {
+                        telemetry.set_stop_reason("malformed_capture_frame");
+                        telemetry.set_empty_reason("malformed_pcm");
+                        telemetry.record_capture_health(std::mem::take(&mut capture_health));
+                        telemetry.log_outcome("capture_rejected_malformed");
+                    }
+                    recording = false;
+                    cancel_streaming_stt_worker(
+                        &mut streaming_command_tx,
+                        &mut streaming_event_rx,
+                        &mut streaming_gate,
+                        &mut pending_stream_partial,
+                    );
+                    audio_buffer.clear();
+                    send_terminal_idle(
+                        &mut socket,
+                        VoiceTurnOutcome::CaptureRejectedMalformed,
+                        VoiceTurnOutcomeReason::MalformedPcm,
+                    )
+                    .await;
+                    continue;
+                }
+                if !chunk.is_empty() {
+                    let received_at = std::time::Instant::now();
+                    if capture_first_received_at.is_none() {
+                        capture_first_received_at = Some(received_at);
+                        if let Some(turn_id) = recording_turn_id {
+                            tracing::info!(
+                                target: "permagentd::voice",
+                                event = "voice_latency_stage",
+                                stage = "capture_received",
+                                turn_id,
+                                socket_epoch,
+                                session_id = session_id.as_deref().unwrap_or("voice-anon"),
+                                stage_elapsed_ms = recording_started_at
+                                    .map(|at| received_at.duration_since(at).as_millis())
+                                    .unwrap_or(0),
+                                audio_bytes = data.len().min(1_048_576),
+                                "first voice audio frame received"
+                            );
+                        }
+                    }
+                    capture_last_received_at = Some(received_at);
+                }
                 audio_buffer.extend_from_slice(&chunk);
+                if !streaming_failed {
+                    if let Some(command_tx) = streaming_command_tx.as_ref() {
+                        match command_tx.try_send(StreamingSttCommand::Audio(chunk.clone())) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                                streaming_failed = true;
+                                if let Some(gate) = streaming_gate.as_mut() {
+                                    gate.cancel();
+                                }
+                                let _ = command_tx.try_send(StreamingSttCommand::Cancel);
+                            }
+                        }
+                    }
+                }
                 // Do not let a wrong speaker hold the client open until the
                 // 60-second cap. Once two seconds are available, run CAM++ and
                 // terminate the capture immediately on rejection. Enrollment
@@ -1903,13 +2967,35 @@ async fn handle_voice_socket(
                                 "speaker_print early_admit score={score:.3} gate_ms={gate_ms}"
                             );
                             speaker_gate = Some(gate);
+                            if flush_pending_stream_partial(
+                                &mut pending_stream_partial,
+                                &mut socket,
+                            )
+                            .await
+                            .is_err()
+                            {
+                                socket_close_reason = "stream_partial_send_disconnected";
+                                break 'voice_loop;
+                            }
                         }
                         crate::voice::speaker_print::Gate::Reject { score } => {
                             tracing::info!(
                                 target: "permagentd::voice",
                                 "speaker_print early_reject score={score:.3} gate_ms={gate_ms}"
                             );
+                            if let Some(mut telemetry) = active_telemetry.take() {
+                                telemetry.set_stop_reason("speaker_gate_early");
+                                telemetry
+                                    .record_capture_health(std::mem::take(&mut capture_health));
+                                telemetry.log_outcome("speaker_rejected_early");
+                            }
                             recording = false;
+                            cancel_streaming_stt_worker(
+                                &mut streaming_command_tx,
+                                &mut streaming_event_rx,
+                                &mut streaming_gate,
+                                &mut pending_stream_partial,
+                            );
                             audio_buffer.clear();
                             let _ = socket
                                 .send(send_json(&ServerMessage::SpeakerRejected))
@@ -1920,7 +3006,19 @@ async fn handle_voice_socket(
                                 target: "permagentd::voice",
                                 "speaker_print early_unavailable gate_ms={gate_ms}; failing closed"
                             );
+                            if let Some(mut telemetry) = active_telemetry.take() {
+                                telemetry.set_stop_reason("speaker_gate_early");
+                                telemetry
+                                    .record_capture_health(std::mem::take(&mut capture_health));
+                                telemetry.log_outcome("speaker_gate_unavailable");
+                            }
                             recording = false;
+                            cancel_streaming_stt_worker(
+                                &mut streaming_command_tx,
+                                &mut streaming_event_rx,
+                                &mut streaming_gate,
+                                &mut pending_stream_partial,
+                            );
                             audio_buffer.clear();
                             let _ = socket
                                 .send(send_json(&ServerMessage::SpeakerRejected))
@@ -1928,6 +3026,16 @@ async fn handle_voice_socket(
                         }
                         crate::voice::speaker_print::Gate::Open => {
                             speaker_gate = Some(gate);
+                            if flush_pending_stream_partial(
+                                &mut pending_stream_partial,
+                                &mut socket,
+                            )
+                            .await
+                            .is_err()
+                            {
+                                socket_close_reason = "stream_partial_send_disconnected";
+                                break 'voice_loop;
+                            }
                         }
                     }
                 }
@@ -1966,7 +3074,16 @@ async fn handle_voice_socket(
                 }
             }
             Message::Close(frame) => {
-                tracing::info!(target: "permagentd::voice", "Client sent Close frame: {:?}", frame);
+                socket_close_reason = if frame.is_some() {
+                    "client_close_frame"
+                } else {
+                    "client_close"
+                };
+                tracing::info!(
+                    target: "permagentd::voice",
+                    socket_epoch,
+                    "Client sent Close frame"
+                );
                 break;
             }
             Message::Ping(_) => {
@@ -1977,17 +3094,28 @@ async fn handle_voice_socket(
             }
         }
     }
+    cancel_streaming_stt_worker(
+        &mut streaming_command_tx,
+        &mut streaming_event_rx,
+        &mut streaming_gate,
+        &mut pending_stream_partial,
+    );
+    if let Some(mut telemetry) = active_telemetry.take() {
+        telemetry.set_stop_reason(socket_close_reason);
+        telemetry.record_capture_health(capture_health);
+        telemetry.log_outcome("capture_disconnected");
+    }
     // Signal cancellation so any in-flight TTS spawn_blocking tasks skip the mutex
     cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
-    tracing::info!(target: "permagentd::voice", "Voice WebSocket handler exiting (cancelled=true)");
-}
-
-/// Truncate a string at a char boundary for safe logging.
-fn truncate_str(s: &str, max_chars: usize) -> &str {
-    match s.char_indices().nth(max_chars) {
-        Some((i, _)) => s.get(..i).unwrap_or(s),
-        None => s,
-    }
+    tracing::info!(
+        target: "permagentd::voice",
+        event = "voice_socket",
+        stage = "closed",
+        socket_epoch,
+        session_id = session_id.as_deref().unwrap_or("voice-anon"),
+        close_reason = socket_close_reason,
+        "Voice WebSocket handler exiting (cancelled=true)"
+    );
 }
 
 /// Emergency cap on how many sentences are spoken in one turn.
@@ -2003,6 +3131,297 @@ const DEFAULT_MAX_SPOKEN_SENTENCES: u32 = 100;
 /// Clamped to [1, 100]; 0 would mute replies entirely, which is never intended.
 const MAX_SPOKEN_SENTENCES_KEY: &str = "voice_max_spoken_sentences";
 
+static NEXT_VOICE_TURN_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static NEXT_VOICE_SOCKET_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_voice_turn_id() -> u64 {
+    NEXT_VOICE_TURN_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn next_voice_socket_epoch() -> u64 {
+    NEXT_VOICE_SOCKET_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+const VOICE_STT_SLOW_MS: u128 = 2_000;
+const VOICE_TTFT_SLOW_MS: u128 = 5_000;
+const VOICE_FIRST_AUDIO_ELEVATED_MS: u128 = 3_000;
+const VOICE_FIRST_AUDIO_STALL_MS: u128 = 8_000;
+const VOICE_TURN_CRITICAL_MS: u128 = 20_000;
+
+/// Coarse, actionable buckets for latency dashboards. These thresholds are
+/// intentionally conservative: the known ~20s incident should be impossible
+/// to hide inside an "average" bucket, while normal network variance remains
+/// distinguishable from a real STT/LLM stall.
+fn classify_voice_latency(
+    stt_ms: Option<u128>,
+    ttft_ms: Option<u128>,
+    first_audio_ms: Option<u128>,
+    total_ms: u128,
+) -> &'static str {
+    if total_ms >= VOICE_TURN_CRITICAL_MS
+        || first_audio_ms.is_some_and(|ms| ms >= VOICE_FIRST_AUDIO_STALL_MS)
+    {
+        "critical_stall"
+    } else if stt_ms.is_some_and(|ms| ms >= VOICE_STT_SLOW_MS) {
+        "slow_stt"
+    } else if ttft_ms.is_some_and(|ms| ms >= VOICE_TTFT_SLOW_MS) {
+        "slow_llm_ttft"
+    } else if first_audio_ms.is_some_and(|ms| ms >= VOICE_FIRST_AUDIO_ELEVATED_MS) {
+        "elevated_first_audio"
+    } else {
+        "healthy"
+    }
+}
+
+/// `f32` PCM is valid only when every sample is finite. This deliberately
+/// conservative threshold is -60 dBFS: it is a diagnostic label, not a VAD
+/// decision, so quiet speech still reaches STT and we do not silently tune the
+/// user's microphone from the server.
+const PCM_NEAR_SILENCE_RMS: f64 = 0.001;
+
+/// Bounded, privacy-safe properties of one capture. Audio is never retained or
+/// logged here: only counters and aggregate amplitudes are used to distinguish
+/// a quiet microphone from malformed transport bytes or invalid float values.
+#[derive(Debug, Clone, Default)]
+struct CaptureHealth {
+    frame_count: u64,
+    payload_bytes: u64,
+    trailing_bytes: u64,
+    decoded_samples: u64,
+    finite_samples: u64,
+    nonfinite_samples: u64,
+    zero_samples: u64,
+    sum_squares: f64,
+    peak_abs: f32,
+}
+
+impl CaptureHealth {
+    fn observe_frame(&mut self, data: &[u8]) -> Vec<f32> {
+        self.frame_count = self.frame_count.saturating_add(1);
+        self.payload_bytes = self.payload_bytes.saturating_add(data.len() as u64);
+        self.trailing_bytes = self
+            .trailing_bytes
+            .saturating_add((data.len() % std::mem::size_of::<f32>()) as u64);
+
+        let mut samples = Vec::with_capacity(data.len() / std::mem::size_of::<f32>());
+        for bytes in data.chunks_exact(std::mem::size_of::<f32>()) {
+            let sample = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            self.decoded_samples = self.decoded_samples.saturating_add(1);
+            if sample.is_finite() {
+                self.finite_samples = self.finite_samples.saturating_add(1);
+                if sample == 0.0 {
+                    self.zero_samples = self.zero_samples.saturating_add(1);
+                }
+                let absolute = sample.abs();
+                self.peak_abs = self.peak_abs.max(absolute);
+                self.sum_squares += f64::from(sample) * f64::from(sample);
+            } else {
+                self.nonfinite_samples = self.nonfinite_samples.saturating_add(1);
+            }
+            samples.push(sample);
+        }
+        samples
+    }
+
+    fn rms(&self) -> Option<f64> {
+        (self.finite_samples > 0).then(|| (self.sum_squares / self.finite_samples as f64).sqrt())
+    }
+
+    fn rms_millionths(&self) -> Option<u32> {
+        self.rms().map(|value| {
+            (value.clamp(0.0, 1.0) * 1_000_000.0)
+                .round()
+                .min(u32::MAX as f64) as u32
+        })
+    }
+
+    fn peak_millionths(&self) -> Option<u32> {
+        (self.finite_samples > 0).then(|| {
+            (f64::from(self.peak_abs).clamp(0.0, 1.0) * 1_000_000.0)
+                .round()
+                .min(u32::MAX as f64) as u32
+        })
+    }
+
+    fn label(&self) -> &'static str {
+        if self.frame_count == 0 {
+            "no_frames"
+        } else if self.decoded_samples == 0 || self.trailing_bytes > 0 || self.nonfinite_samples > 0
+        {
+            "malformed_pcm"
+        } else if self.zero_samples == self.finite_samples {
+            "zero_pcm"
+        } else if self
+            .rms()
+            .is_some_and(|value| value <= PCM_NEAR_SILENCE_RMS)
+        {
+            "near_silent_pcm"
+        } else {
+            "finite_signal_pcm"
+        }
+    }
+
+    fn is_malformed(&self) -> bool {
+        self.label() == "malformed_pcm"
+    }
+}
+
+fn empty_stt_reason(health: &CaptureHealth) -> &'static str {
+    match health.label() {
+        "zero_pcm" => "zero_pcm",
+        "near_silent_pcm" => "near_silent_pcm",
+        "no_frames" => "no_frames",
+        "malformed_pcm" => "malformed_pcm",
+        _ => "finite_signal_no_words",
+    }
+}
+
+fn empty_stt_wire_reason(health: &CaptureHealth) -> VoiceTurnOutcomeReason {
+    match health.label() {
+        "zero_pcm" => VoiceTurnOutcomeReason::ZeroPcm,
+        "near_silent_pcm" => VoiceTurnOutcomeReason::NearSilentPcm,
+        // `no_frames` cannot reach STT in the current route; retain a closed
+        // short-capture reason if a future caller routes it through this seam.
+        "no_frames" => VoiceTurnOutcomeReason::ShortCapture,
+        "malformed_pcm" => VoiceTurnOutcomeReason::MalformedPcm,
+        _ => VoiceTurnOutcomeReason::FiniteSignalNoWords,
+    }
+}
+
+/// Server-side timing state for one spoken turn. `Instant` is monotonic and
+/// never serialized; only bounded elapsed milliseconds are emitted. The
+/// session ID joins events without exposing user audio or transcript content.
+struct VoiceTurnTelemetry {
+    turn_id: u64,
+    socket_epoch: u64,
+    session_id: Option<String>,
+    turn_started_at: std::time::Instant,
+    stt_ms: Option<u128>,
+    ttft_ms: Option<u128>,
+    /// First audio latency from Stop/speech end (the user-visible metric).
+    first_audio_ms: Option<u128>,
+    tts_total_ms: u128,
+    tts_enqueued: u32,
+    audio_segments_sent: u32,
+    playback_estimate_ms: u64,
+    capture_health: Option<CaptureHealth>,
+    stop_reason: Option<&'static str>,
+    empty_reason: Option<&'static str>,
+    outcome_logged: bool,
+}
+
+impl VoiceTurnTelemetry {
+    fn new(
+        turn_id: u64,
+        socket_epoch: u64,
+        session_id: Option<&str>,
+        turn_started_at: std::time::Instant,
+    ) -> Self {
+        Self {
+            turn_id,
+            socket_epoch,
+            session_id: session_id.map(str::to_string),
+            turn_started_at,
+            stt_ms: None,
+            ttft_ms: None,
+            first_audio_ms: None,
+            tts_total_ms: 0,
+            tts_enqueued: 0,
+            audio_segments_sent: 0,
+            playback_estimate_ms: 0,
+            capture_health: None,
+            stop_reason: None,
+            empty_reason: None,
+            outcome_logged: false,
+        }
+    }
+
+    fn elapsed_ms(&self) -> u128 {
+        self.turn_started_at.elapsed().as_millis()
+    }
+
+    fn log_stage(&self, stage: &'static str, stage_started_at: std::time::Instant) {
+        tracing::info!(
+            target: "permagentd::voice",
+            event = "voice_latency_stage",
+            turn_id = self.turn_id,
+            socket_epoch = self.socket_epoch,
+            session_id = self.session_id.as_deref().unwrap_or("voice-anon"),
+            stage,
+            stage_elapsed_ms = self.elapsed_ms(),
+            stage_duration_ms = stage_started_at.elapsed().as_millis(),
+            "voice latency stage"
+        );
+    }
+
+    fn record_capture_health(&mut self, health: CaptureHealth) {
+        self.capture_health = Some(health);
+        let health = self.capture_health.as_ref().expect("set above");
+        tracing::info!(
+            target: "permagentd::voice",
+            event = "voice_capture_health",
+            turn_id = self.turn_id,
+            socket_epoch = self.socket_epoch,
+            session_id = self.session_id.as_deref().unwrap_or("voice-anon"),
+            capture_health = health.label(),
+            capture_frames = health.frame_count,
+            capture_bytes = health.payload_bytes,
+            capture_trailing_bytes = health.trailing_bytes,
+            capture_decoded_samples = health.decoded_samples,
+            capture_finite_samples = health.finite_samples,
+            capture_nonfinite_samples = health.nonfinite_samples,
+            capture_zero_samples = health.zero_samples,
+            capture_rms_millionths = health.rms_millionths(),
+            capture_peak_millionths = health.peak_millionths(),
+            "voice capture health"
+        );
+    }
+
+    fn set_stop_reason(&mut self, reason: &'static str) {
+        self.stop_reason = Some(reason);
+    }
+
+    fn set_empty_reason(&mut self, reason: &'static str) {
+        self.empty_reason = Some(reason);
+    }
+
+    fn log_outcome(&mut self, outcome: &'static str) {
+        if self.outcome_logged {
+            return;
+        }
+        self.outcome_logged = true;
+        let total_ms = self.elapsed_ms();
+        let classification =
+            classify_voice_latency(self.stt_ms, self.ttft_ms, self.first_audio_ms, total_ms);
+        tracing::info!(
+            target: "permagentd::voice",
+            event = "voice_latency_summary",
+            turn_id = self.turn_id,
+            socket_epoch = self.socket_epoch,
+            session_id = self.session_id.as_deref().unwrap_or("voice-anon"),
+            total_ms,
+            stt_ms = self.stt_ms,
+            llm_ttft_ms = self.ttft_ms,
+            first_audio_ms = self.first_audio_ms,
+            tts_total_ms = self.tts_total_ms,
+            tts_enqueued = self.tts_enqueued,
+            audio_segments_sent = self.audio_segments_sent,
+            playback_estimate_ms = self.playback_estimate_ms,
+            playback_observed = false,
+            capture_health = self
+                .capture_health
+                .as_ref()
+                .map(CaptureHealth::label)
+                .unwrap_or("not_recorded"),
+            stop_reason = self.stop_reason.unwrap_or("not_recorded"),
+            empty_reason = self.empty_reason.unwrap_or("not_applicable"),
+            outcome,
+            classification,
+            "voice latency summary"
+        );
+    }
+}
+
 fn max_spoken_sentences() -> u32 {
     permagent::config::Config::global()
         .get_param::<u32>(MAX_SPOKEN_SENTENCES_KEY)
@@ -2014,6 +3433,8 @@ fn max_spoken_sentences() -> u32 {
 struct VoiceReplyCtx<'a> {
     state: &'a AppState,
     transcript: &'a str,
+    telemetry: VoiceTurnTelemetry,
+    turn_id: u64,
     session_id: Option<&'a str>,
     tts: &'a Arc<dyn crate::voice::TextToSpeech>,
     pipeline_start: std::time::Instant,
@@ -2081,7 +3502,7 @@ fn drain_client_messages(socket: &mut WebSocket, ctx: &VoiceReplyCtx<'_>) -> Dra
 /// audio chunks to the client immediately. This way the client starts playing
 /// sentence 1 while sentence 2 is still generating.
 async fn stream_reply_with_tts(
-    ctx: &VoiceReplyCtx<'_>,
+    ctx: &mut VoiceReplyCtx<'_>,
     socket: &mut WebSocket,
 ) -> anyhow::Result<()> {
     use futures::StreamExt;
@@ -2107,11 +3528,20 @@ async fn stream_reply_with_tts(
         id.to_string()
     } else {
         // Lean projection — we only need the most-recent session's id.
-        let sessions = state.session_manager().list_session_summaries().await?;
-        sessions
-            .first()
-            .map(|s| s.id.clone())
-            .ok_or_else(|| anyhow::anyhow!("No session available for voice"))?
+        let sessions = match state.session_manager().list_session_summaries().await {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                ctx.telemetry.log_outcome("session_lookup_error");
+                return Err(error.into());
+            }
+        };
+        match sessions.first().map(|s| s.id.clone()) {
+            Some(id) => id,
+            None => {
+                ctx.telemetry.log_outcome("session_missing");
+                return Err(anyhow::anyhow!("No session available for voice"));
+            }
+        }
     };
 
     // Speak-then-act: intercept this turn's navigations so `navigate_app` hands
@@ -2127,21 +3557,39 @@ async fn stream_reply_with_tts(
     let _origin_guard = VoiceOriginGuard(sid.clone());
 
     let user_msg = ChatMessage::user().with_text(transcript);
-    let agent = state
-        .get_agent(sid.clone())
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get agent: {}", e))?;
+    let agent = match state.get_agent(sid.clone()).await {
+        Ok(agent) => agent,
+        Err(error) => {
+            ctx.telemetry.log_outcome("agent_setup_error");
+            return Err(anyhow::anyhow!("Failed to get agent: {}", error));
+        }
+    };
 
     // Voice turns may answer on a different model than chat — the whole point of
     // the knob. Unconfigured or unreachable falls through to the session model.
-    match apply_voice_model(&agent, &sid).await {
+    let routing_started_at = std::time::Instant::now();
+    let voice_route = apply_voice_model(&agent, &sid).await;
+    ctx.telemetry.log_stage("routing", routing_started_at);
+    match voice_route {
         Some(route) => tracing::info!(
             target: "permagentd::voice",
-            "  voice model: {}/{}", route.provider, route.model
+            event = "voice_route",
+            turn_id = ctx.turn_id,
+            session_id = ctx.session_id.unwrap_or("voice-anon"),
+            route_configured = true,
+            route_applied = true,
+            provider = route.provider.as_str(),
+            model = route.model.as_str(),
+            "voice route applied"
         ),
         None => tracing::info!(
             target: "permagentd::voice",
-            "  voice model: session model (not configured, or unreachable — see warnings above)"
+            event = "voice_route",
+            turn_id = ctx.turn_id,
+            session_id = ctx.session_id.unwrap_or("voice-anon"),
+            route_configured = false,
+            route_applied = false,
+            "session route retained"
         ),
     }
 
@@ -2156,6 +3604,7 @@ async fn stream_reply_with_tts(
         .await;
 
     let setup_ms = t_setup.elapsed().as_millis();
+    ctx.telemetry.log_stage("agent_setup", t_setup);
 
     // Ambient, recall, and a G2P scan of the user's words are independent —
     // run them together so pronunciation coaching does not add a serial wait.
@@ -2185,7 +3634,16 @@ async fn stream_reply_with_tts(
         )
     };
     let ctx_recall_ms = t_ctx.elapsed().as_millis();
-    tracing::info!(target: "permagentd::voice", "  ctx+recall: {}ms ({} recall hits)", ctx_recall_ms, recall_trace.count);
+    ctx.telemetry.log_stage("context_recall", t_ctx);
+    tracing::info!(
+        target: "permagentd::voice",
+        event = "voice_context",
+        turn_id = ctx.turn_id,
+        session_id = ctx.session_id.unwrap_or("voice-anon"),
+        context_recall_ms = ctx_recall_ms,
+        recall_hits = recall_trace.count,
+        "voice context prepared"
+    );
 
     if let Some(coaching) = pronunciation_coaching(&transcript_oov) {
         agent
@@ -2201,13 +3659,26 @@ async fn stream_reply_with_tts(
     };
 
     let t_reply = std::time::Instant::now();
-    let mut stream = agent.reply(user_msg, session_config, None).await?;
+    ctx.telemetry.log_stage("provider_started", t_reply);
+    let stream_result = agent.reply(user_msg, session_config, None).await;
     let reply_setup_ms = t_reply.elapsed().as_millis();
+    ctx.telemetry.log_stage("llm_stream_setup", t_reply);
+    let mut stream = match stream_result {
+        Ok(stream) => stream,
+        Err(error) => {
+            ctx.telemetry.log_outcome("llm_provider_error");
+            return Err(error.into());
+        }
+    };
     tracing::info!(
         target: "permagentd::voice",
-        "  pipeline: setup={}ms ctx+recall={}ms reply_setup={}ms (speech-end-to-stream={}ms)",
-        setup_ms, ctx_recall_ms, reply_setup_ms,
-        pipeline_start.elapsed().as_millis()
+        turn_id = ctx.turn_id,
+        session_id = ctx.session_id.unwrap_or("voice-anon"),
+        setup_ms,
+        context_recall_ms = ctx_recall_ms,
+        reply_setup_ms,
+        speech_end_to_stream_ms = pipeline_start.elapsed().as_millis(),
+        "voice reply pipeline"
     );
 
     // Accumulate text, detect phrase/sentence boundaries. TTS of sentence N
@@ -2223,6 +3694,7 @@ async fn stream_reply_with_tts(
     let mut pronounce_hold = false;
     let mut total_tts_ms: u128 = 0;
     let mut first_audio_sent = false;
+    let mut next_segment_id = 0u64;
     let mut first_token_logged = false;
     let mut spoken_stop = false;
     let stream_start = std::time::Instant::now();
@@ -2231,6 +3703,7 @@ async fn stream_reply_with_tts(
         tokio::task::JoinHandle<anyhow::Result<AudioOutput>>,
         std::time::Instant,
         String,
+        u64,
     )> = None;
     let mut stream_ended = false;
     let mut sent_clips: Vec<permagent::events::clipboard_intercept::ClipboardIntent> = Vec::new();
@@ -2247,22 +3720,40 @@ async fn stream_reply_with_tts(
         match drain_client_messages(socket, ctx) {
             DrainOutcome::Continue => {}
             DrainOutcome::SpokenStop => {
+                if let Some((handle, ..)) = inflight.take() {
+                    handle.abort();
+                }
                 spoken_stop = true;
                 break;
             }
-            DrainOutcome::Disconnected => return Ok(()),
+            DrainOutcome::Disconnected => {
+                if let Some((handle, ..)) = inflight.take() {
+                    handle.abort();
+                }
+                ctx.telemetry.log_outcome("disconnected");
+                return Ok(());
+            }
         }
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Some((handle, ..)) = inflight.take() {
+                handle.abort();
+            }
+            ctx.telemetry.log_outcome("cancelled");
             return Ok(());
         }
 
         if inflight.is_none() {
             if let Some((speech, speed)) = queue.pop_front() {
+                let segment_id = next_segment_id;
+                next_segment_id = next_segment_id.saturating_add(1);
+                ctx.telemetry.tts_enqueued = ctx.telemetry.tts_enqueued.saturating_add(1);
+                let tts_enqueue_started_at = std::time::Instant::now();
+                ctx.telemetry
+                    .log_stage("tts_enqueue", tts_enqueue_started_at);
                 // Never spell an unknown name. Stop this reply, ask, listen.
                 if let Some(word) = first_unknown_name(tts.as_ref(), &speech) {
                     tracing::info!(
                         target: "permagentd::voice",
-                        word = %word,
                         "unknown name in reply — stopping to ask"
                     );
                     permagent::events::voice_remainder::append_sentence(&mut leftover, &speech);
@@ -2286,6 +3777,7 @@ async fn stream_reply_with_tts(
                         ),
                         std::time::Instant::now(),
                         ask,
+                        segment_id,
                     ));
                 } else {
                     let preview = speech.clone();
@@ -2299,6 +3791,7 @@ async fn stream_reply_with_tts(
                         ),
                         std::time::Instant::now(),
                         preview,
+                        segment_id,
                     ));
                 }
             } else if stream_ended {
@@ -2316,18 +3809,24 @@ async fn stream_reply_with_tts(
                 let handle = &mut inflight.as_mut().expect("guarded by if").0;
                 std::pin::Pin::new(handle).poll(cx)
             }), if inflight.is_some() => {
-                let (_, started, preview) = inflight.take().expect("guarded");
+                let (_, started, preview, segment_id) = inflight.take().expect("guarded");
                 let chunk_tts_ms = started.elapsed().as_millis();
                 total_tts_ms += chunk_tts_ms;
+                ctx.telemetry.tts_total_ms = ctx.telemetry.tts_total_ms.saturating_add(chunk_tts_ms);
+                ctx.telemetry.log_stage("tts_synthesis", started);
                 match drain_client_messages(socket, ctx) {
                     DrainOutcome::Continue => {}
                     DrainOutcome::SpokenStop => {
                         spoken_stop = true;
                         break;
                     }
-                    DrainOutcome::Disconnected => return Ok(()),
+                    DrainOutcome::Disconnected => {
+                        ctx.telemetry.log_outcome("disconnected");
+                        return Ok(());
+                    }
                 }
                 if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                    ctx.telemetry.log_outcome("cancelled");
                     return Ok(());
                 }
                 match result {
@@ -2336,34 +3835,79 @@ async fn stream_reply_with_tts(
                         let rtf = chunk_tts_ms as f32 / 1000.0 / dur.max(0.01);
                         tracing::info!(
                             target: "permagentd::voice",
-                            "STREAM sentence {}: {}chars TTS={}ms audio={:.1}s RTF={:.2}x | \"{}\"",
-                            sentence_num, preview.len(), chunk_tts_ms, dur, rtf,
-                            truncate_str(&preview, 60)
+                            turn_id = ctx.turn_id,
+                            session_id = ctx.session_id.unwrap_or("voice-anon"),
+                            sentence = sentence_num,
+                            chars = preview.len(),
+                            tts_ms = chunk_tts_ms,
+                            audio_seconds = dur,
+                            realtime_factor = rtf,
+                            segment_id,
+                            "voice audio segment synthesized"
                         );
+                        let duration_ms = if audio.sample_rate == 0 {
+                            0
+                        } else {
+                            (audio.samples.len() as u64).saturating_mul(1_000)
+                                / u64::from(audio.sample_rate)
+                        };
+                        if !send_tts_segment(
+                            socket,
+                            &audio,
+                            preview,
+                            segment_id,
+                            ctx.cancelled.as_ref(),
+                        )
+                        .await
+                        {
+                            tracing::warn!(target: "permagentd::voice", "Voice audio send stopped");
+                            ctx.telemetry.log_outcome(if cancelled.load(
+                                std::sync::atomic::Ordering::Relaxed,
+                            ) {
+                                "cancelled"
+                            } else {
+                                "audio_send_disconnected"
+                            });
+                            return Ok(());
+                        }
                         if !first_audio_sent {
                             tracing::info!(
                                 target: "permagentd::voice",
-                                "TIMING first audio: {}ms after speech-end",
-                                pipeline_start.elapsed().as_millis()
+                                turn_id = ctx.turn_id,
+                                socket_epoch = ctx.telemetry.socket_epoch,
+                                session_id = ctx.session_id.unwrap_or("voice-anon"),
+                                first_audio_ms = ctx.telemetry.elapsed_ms(),
+                                speech_end_to_first_audio_ms = pipeline_start.elapsed().as_millis(),
+                                "voice first audio queued"
                             );
+                            // This is the first complete metadata+PCM pair the
+                            // server queued. It remains distinct from a client
+                            // playback receipt, which is not yet on the wire.
+                            ctx.telemetry.first_audio_ms =
+                                Some(pipeline_start.elapsed().as_millis());
                             first_audio_sent = true;
                         }
-                        let bytes: Vec<u8> =
-                            audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-                        if socket.send(Message::Binary(bytes.into())).await.is_err() {
-                            tracing::warn!(target: "permagentd::voice", "Client disconnected during streaming");
-                            return Ok(());
-                        }
+                        ctx.telemetry.playback_estimate_ms = ctx
+                            .telemetry
+                            .playback_estimate_ms
+                            .saturating_add(duration_ms);
+                        ctx.telemetry.audio_segments_sent = ctx
+                            .telemetry
+                            .audio_segments_sent
+                            .saturating_add(1);
                     }
                     Ok(Err(e)) if e.to_string() == "cancelled" => {
                         tracing::info!(target: "permagentd::voice", "TTS cancelled (pre-mutex)");
+                        ctx.telemetry.log_outcome("tts_cancelled");
                         return Ok(());
                     }
                     Ok(Err(e)) => {
-                        tracing::warn!(target: "permagentd::voice", "TTS chunk failed: {}", e);
+                        ctx.telemetry.log_outcome("tts_error");
+                        return Err(e);
                     }
                     Err(e) => {
-                        tracing::warn!(target: "permagentd::voice", "TTS task panicked: {}", e);
+                        ctx.telemetry.log_outcome("tts_task_panic");
+                        return Err(anyhow::anyhow!("TTS task panicked: {}", e));
                     }
                 }
             }
@@ -2396,10 +3940,17 @@ async fn stream_reply_with_tts(
                         for content in &msg.content {
                             if let MessageContent::Text(text_content) = content {
                                 if !first_token_logged {
+                                    let ttft_ms = stream_start.elapsed().as_millis();
+                                    ctx.telemetry.ttft_ms = Some(ttft_ms);
                                     tracing::info!(
                                         target: "permagentd::voice",
-                                        "  TTFT: {}ms after stream start",
-                                        stream_start.elapsed().as_millis()
+                                        event = "voice_latency_stage",
+                                        stage = "llm_ttft",
+                                        turn_id = ctx.turn_id,
+                                        session_id = ctx.session_id.unwrap_or("voice-anon"),
+                                        stage_elapsed_ms = ctx.telemetry.elapsed_ms(),
+                                        stage_duration_ms = ttft_ms,
+                                        "voice first LLM token"
                                     );
                                     first_token_logged = true;
                                 }
@@ -2426,7 +3977,11 @@ async fn stream_reply_with_tts(
                             }
                         }
                     }
-                    Some(_) => {
+                    Some(Err(error)) => {
+                        ctx.telemetry.log_outcome("llm_stream_error");
+                        return Err(error.into());
+                    }
+                    Some(Ok(_)) => {
                         // Tool results land here. Drain on the next loop turn
                         // (and via clip_tick) so we don't wait for confirmation TTS.
                     }
@@ -2448,7 +4003,14 @@ async fn stream_reply_with_tts(
             sentence_num
         );
         permagent::events::voice_remainder::clear(&sid);
-        let _ = socket.send(send_json(&ServerMessage::Stopped)).await;
+        if socket
+            .send(send_json(&ServerMessage::Stopped))
+            .await
+            .is_err()
+        {
+            ctx.telemetry.log_outcome("stopped_send_disconnected");
+            return Ok(());
+        }
     } else if leftover.trim().is_empty() {
         permagent::events::voice_remainder::clear(&sid);
     } else {
@@ -2464,11 +4026,16 @@ async fn stream_reply_with_tts(
     // guard's Drop is a no-op rather than swallowing a late write.
     flush_voice_clipboard(socket, &sid, &mut sent_clips).await;
     for clip in permagent::events::clipboard_intercept::take(&sid) {
-        let _ = socket
+        if socket
             .send(send_json(&ServerMessage::Clipboard {
                 text: clip.text.clone(),
             }))
-            .await;
+            .await
+            .is_err()
+        {
+            ctx.telemetry.log_outcome("clipboard_send_disconnected");
+            return Ok(());
+        }
         sent_clips.push(clip);
     }
 
@@ -2483,9 +4050,14 @@ async fn stream_reply_with_tts(
     } else {
         full_reply.clone()
     };
-    let _ = socket
+    if socket
         .send(send_json(&ServerMessage::ReplyText { text: shown }))
-        .await;
+        .await
+        .is_err()
+    {
+        ctx.telemetry.log_outcome("reply_text_send_disconnected");
+        return Ok(());
+    }
 
     // Forward any navigations captured during this turn AFTER all narration
     // audio — they ride this ordered socket, so by the time the client sees them
@@ -2503,7 +4075,7 @@ async fn stream_reply_with_tts(
         permagent::events::nav_intercept::take(&sid)
     };
     for nav in navs {
-        let _ = socket
+        if socket
             .send(send_json(&ServerMessage::Navigate {
                 tab: nav.tab,
                 tool_type: nav.tool_type,
@@ -2512,22 +4084,46 @@ async fn stream_reply_with_tts(
                 state: nav.state,
                 reason: nav.reason,
             }))
-            .await;
+            .await
+            .is_err()
+        {
+            ctx.telemetry.log_outcome("navigate_send_disconnected");
+            return Ok(());
+        }
     }
 
     let reply_ms = t_reply.elapsed().as_millis();
-    let _ = socket
+    if socket
         .send(send_json(&ServerMessage::ReplyEnd {
             sample_rate: tts.sample_rate(),
         }))
-        .await;
+        .await
+        .is_err()
+    {
+        ctx.telemetry.log_outcome("reply_end_send_disconnected");
+        return Ok(());
+    }
 
     let total_ms = pipeline_start.elapsed().as_millis();
     tracing::info!(
         target: "permagentd::voice",
-        "TIMING Total: {}ms (STT={}ms Reply+TTS={}ms, TTS_total={}ms, {} sentences)",
-        total_ms, stt_ms, reply_ms, total_tts_ms, sentence_num
+        turn_id = ctx.turn_id,
+        session_id = ctx.session_id.unwrap_or("voice-anon"),
+        total_ms,
+        stt_ms,
+        reply_ms,
+        tts_total_ms = total_tts_ms,
+        sentences = sentence_num,
+        "voice turn timing"
     );
+    // `reply_sent` means all frames were accepted by this socket. It is not a
+    // claim that iOS drained playback: the server has no playback receipt yet,
+    // so the summary remains explicit about `playback_observed=false`.
+    ctx.telemetry.log_outcome(if spoken_stop {
+        "spoken_stop"
+    } else {
+        "reply_sent"
+    });
 
     recall_trace.finish(full_reply.clone());
 
@@ -2545,15 +4141,23 @@ async fn stream_reply_with_tts(
             // turn is winged when it names its project and left `general`
             // otherwise, exactly like a typed turn that names nothing.
             let pool = state.session_manager().pool_clone().await.ok();
-            crate::brain_ops::spawn_persist_chat_turn(
+            if let Err(error) = crate::brain_ops::persist_chat_turn(
                 brain.clone(),
                 pool,
                 sid.to_string(),
                 turn_idx,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or_default(),
                 transcript.to_string(),
                 full_reply,
                 String::new(),
-            );
+            )
+            .await
+            {
+                tracing::warn!(target: "permagentd::brain", "chat memory enqueue failed: {error}");
+            }
         }
     }
 
@@ -2638,8 +4242,6 @@ fn try_save_heard(
         crate::voice::oov_log::forget(word);
         tracing::info!(
             target: "permagentd::voice",
-            word = %word,
-            %sounds_like,
             "pronunciation saved from listen"
         );
         return Some(sounds_like);
@@ -2736,6 +4338,9 @@ async fn speak_canned_reply(
     text: &str,
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     if socket
         .send(send_json(&ServerMessage::ReplyStart))
         .await
@@ -2747,13 +4352,18 @@ async fn speak_canned_reply(
     let plan = crate::voice::prosody::plan(text);
     let speech =
         crate::voice::speakable::speakable(&plan.speech).unwrap_or_else(|| text.to_string());
-    match spawn_synth(tts.clone(), speech, voice_id, plan.speed, cancelled).await {
+    let metadata_text = speech.clone();
+    match spawn_synth(tts.clone(), speech, voice_id, plan.speed, cancelled.clone()).await {
         Ok(Ok(audio)) => {
-            let bytes: Vec<u8> = audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-            let _ = socket.send(Message::Binary(bytes.into())).await;
+            if !send_tts_segment(socket, &audio, metadata_text, 0, cancelled.as_ref()).await {
+                return;
+            }
         }
-        Ok(Err(e)) => tracing::warn!(target: "permagentd::voice", "canned TTS failed: {e}"),
-        Err(e) => tracing::warn!(target: "permagentd::voice", "canned TTS panicked: {e}"),
+        Ok(Err(_)) => tracing::warn!(target: "permagentd::voice", "canned TTS failed"),
+        Err(_) => tracing::warn!(target: "permagentd::voice", "canned TTS task panicked"),
+    }
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
     }
     let _ = socket
         .send(send_json(&ServerMessage::ReplyText {
@@ -2803,8 +4413,7 @@ fn push_spoken(
     let Some((speech, speed)) = prepare_spoken(sentence) else {
         tracing::debug!(
             target: "permagentd::voice",
-            "skipping unspeakable fragment: \"{}\"",
-            truncate_str(sentence, 60)
+            "skipping unspeakable reply fragment"
         );
         return;
     };
@@ -2914,6 +4523,10 @@ async fn speak_remainder(
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     client: permagent::events::voice_origin::VoiceClient,
 ) {
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        permagent::events::voice_remainder::stash(session_id, leftover.to_string());
+        return;
+    }
     if socket
         .send(send_json(&ServerMessage::ReplyStart))
         .await
@@ -2931,6 +4544,7 @@ async fn speak_remainder(
     let mut budget_notice_spoken = false;
     let mut still_left = String::new();
     let mut text_buf = leftover.to_string();
+    let mut next_segment_id = 0u64;
     enqueue_ready_sentences(
         &mut text_buf,
         &mut queue,
@@ -2963,6 +4577,7 @@ async fn speak_remainder(
             }
             spoken_text.push_str(&speech);
         }
+        let metadata_text = speech.clone();
         match spawn_synth(
             tts.clone(),
             speech,
@@ -2973,15 +4588,29 @@ async fn speak_remainder(
         .await
         {
             Ok(Ok(audio)) => {
-                let bytes: Vec<u8> = audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-                if socket.send(Message::Binary(bytes.into())).await.is_err() {
+                let segment_id = next_segment_id;
+                next_segment_id = next_segment_id.saturating_add(1);
+                if !send_tts_segment(
+                    socket,
+                    &audio,
+                    metadata_text,
+                    segment_id,
+                    cancelled.as_ref(),
+                )
+                .await
+                {
                     permagent::events::voice_remainder::stash(session_id, leftover.to_string());
                     return;
                 }
             }
-            Ok(Err(e)) => tracing::warn!(target: "permagentd::voice", "remainder TTS failed: {e}"),
-            Err(e) => tracing::warn!(target: "permagentd::voice", "remainder TTS panicked: {e}"),
+            Ok(Err(_)) => tracing::warn!(target: "permagentd::voice", "remainder TTS failed"),
+            Err(_) => tracing::warn!(target: "permagentd::voice", "remainder TTS task panicked"),
         }
+    }
+
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        permagent::events::voice_remainder::stash(session_id, leftover.to_string());
+        return;
     }
 
     if still_left.trim().is_empty() {
@@ -3079,8 +4708,226 @@ fn period_is_mid_sentence_initialism(text: &str, period_at: usize) -> bool {
         .is_some_and(|ch| ch.is_lowercase())
 }
 
+/// Match the client's maximum turn duration with an independent absolute PCM
+/// memory ceiling. The byte check also rejects trailing overflow before decode.
+fn capture_exceeds_limit(samples: usize, incoming_bytes: usize, sample_rate: u32) -> bool {
+    let allowed = (u64::from(sample_rate) * 60).min(4_000_000) as usize;
+    samples > allowed || incoming_bytes > allowed.saturating_sub(samples).saturating_mul(4)
+}
+
 #[cfg(test)]
 mod tests {
+    struct FakeStream {
+        cancelled: bool,
+        generation: u64,
+    }
+
+    impl crate::voice::provider::StreamingSttSession for FakeStream {
+        fn push_audio(
+            &mut self,
+            _samples: &[f32],
+        ) -> anyhow::Result<Vec<crate::voice::provider::StreamingSttEvent>> {
+            if self.cancelled {
+                return Ok(Vec::new());
+            }
+            Ok(vec![crate::voice::provider::StreamingSttEvent::partial(
+                self.generation,
+                "partial",
+            )])
+        }
+
+        fn finish(&mut self) -> anyhow::Result<Vec<crate::voice::provider::StreamingSttEvent>> {
+            if self.cancelled {
+                return Ok(Vec::new());
+            }
+            Ok(vec![crate::voice::provider::StreamingSttEvent::final_text(
+                self.generation,
+                "final",
+            )])
+        }
+
+        fn cancel(&mut self) {
+            self.cancelled = true;
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_worker_preserves_partial_then_single_final_order() {
+        let (command_tx, mut event_rx, _worker) =
+            super::spawn_streaming_stt_worker(Box::new(FakeStream {
+                cancelled: false,
+                generation: 3,
+            }));
+        command_tx
+            .try_send(super::StreamingSttCommand::Audio(vec![0.1]))
+            .unwrap();
+        let partial = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            partial,
+            crate::voice::provider::StreamingSttEvent::partial(3, "partial")
+        );
+
+        command_tx
+            .try_send(super::StreamingSttCommand::Finish)
+            .unwrap();
+        let final_event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            final_event,
+            crate::voice::provider::StreamingSttEvent::final_text(3, "final")
+        );
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), event_rx.recv()).await,
+            Ok(None) | Err(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancelling_stream_worker_drops_late_provider_output() {
+        let (command_tx, mut event_rx, _worker) =
+            super::spawn_streaming_stt_worker(Box::new(FakeStream {
+                cancelled: false,
+                generation: 8,
+            }));
+        command_tx
+            .try_send(super::StreamingSttCommand::Cancel)
+            .unwrap();
+        drop(command_tx);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), event_rx.recv())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_live_stream_worker_blocks_a_second_start_without_spawning_another() {
+        let worker = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        assert!(!super::streaming_worker_is_available(Some(&worker)));
+        assert!(!super::native_stt_workers_are_available(
+            Some(&worker),
+            None
+        ));
+        worker.abort();
+    }
+
+    #[test]
+    fn stt_wait_controls_do_not_abort_a_live_provider() {
+        assert!(matches!(
+            super::classify_stt_wait_message(Message::Pong(Vec::new().into())),
+            super::SttWaitDisposition::KeepWaiting
+        ));
+        assert!(matches!(
+            super::classify_stt_wait_message(Message::Binary(Vec::new().into())),
+            super::SttWaitDisposition::KeepWaiting
+        ));
+        assert!(matches!(
+            super::classify_stt_wait_message(Message::Text(r#"{"type":"stop"}"#.into())),
+            super::SttWaitDisposition::KeepWaiting
+        ));
+        assert!(matches!(
+            super::classify_stt_wait_message(Message::Text(
+                r#"{"type":"start","sample_rate":16000}"#.into()
+            )),
+            super::SttWaitDisposition::Deferred(Message::Text(_))
+        ));
+        assert!(matches!(
+            super::classify_stt_wait_message(Message::Close(None)),
+            super::SttWaitDisposition::Disconnected
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_blocked_batch_worker_is_retained_across_start_storm() {
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+        let worker: super::BatchSttTask = tokio::task::spawn_blocking(move || {
+            release_rx
+                .recv()
+                .expect("the fake native decode is released by the test");
+            Ok::<String, anyhow::Error>(String::new())
+        });
+        let mut retained = Some(worker);
+        for _ in 0..16 {
+            assert!(!super::batch_worker_is_available(retained.as_ref()));
+            assert!(!super::native_stt_workers_are_available(
+                None,
+                retained.as_ref()
+            ));
+        }
+        let worker = retained.take().expect("the single worker is retained");
+        release_tx.send(()).expect("release the fake native decode");
+        assert!(worker.await.unwrap().is_ok());
+    }
+
+    #[test]
+    fn busy_stt_terminal_contract_always_returns_client_to_idle() {
+        let frames = super::terminal_idle_frames(
+            super::VoiceTurnOutcome::SttBusy,
+            super::VoiceTurnOutcomeReason::SttBusy,
+        );
+        assert!(matches!(
+            &frames[0],
+            &super::ServerMessage::TurnOutcome {
+                outcome: super::VoiceTurnOutcome::SttBusy,
+                reason: super::VoiceTurnOutcomeReason::SttBusy,
+            }
+        ));
+        assert!(matches!(&frames[1], &super::ServerMessage::Idle));
+        let wire = serde_json::to_value(&frames[0]).unwrap();
+        assert_eq!(wire["type"], "turn_outcome");
+        assert_eq!(wire["outcome"], "stt_busy");
+        assert_eq!(wire["reason"], "stt_busy");
+    }
+
+    #[test]
+    fn streaming_partial_uses_existing_transcript_wire_shape() {
+        let wire = serde_json::to_value(super::ServerMessage::TranscriptPartial {
+            text: "hello".into(),
+        })
+        .unwrap();
+        assert_eq!(wire["type"], "transcript_partial");
+        assert_eq!(wire["text"], "hello");
+    }
+
+    #[test]
+    fn partials_stay_private_until_speaker_gate_admits_or_opens() {
+        use crate::voice::speaker_print::Gate;
+
+        assert!(!super::speaker_gate_allows_stream_text(None));
+        assert!(super::speaker_gate_allows_stream_text(Some(&Gate::Open)));
+        assert!(super::speaker_gate_allows_stream_text(Some(&Gate::Admit {
+            score: 0.9,
+        })));
+        assert!(!super::speaker_gate_allows_stream_text(Some(
+            &Gate::Reject { score: 0.1 }
+        )));
+        assert!(!super::speaker_gate_allows_stream_text(Some(
+            &Gate::Unavailable
+        )));
+    }
+
+    #[test]
+    fn capture_limit_bounds_duration_memory_and_overflow_before_decode() {
+        assert!(!super::capture_exceeds_limit(959_999, 4, 16_000));
+        assert!(super::capture_exceeds_limit(960_000, 4, 16_000));
+        assert!(super::capture_exceeds_limit(0, 3_840_001, 16_000));
+        assert!(!super::capture_exceeds_limit(2_879_999, 4, 48_000));
+        assert!(super::capture_exceeds_limit(4_000_000, 4, u32::MAX));
+        assert!(super::capture_exceeds_limit(
+            usize::MAX,
+            usize::MAX,
+            u32::MAX
+        ));
+        assert!(super::capture_exceeds_limit(0, 4, 0));
+    }
     use super::*;
     use permagent::download_manager::DownloadManager;
 
@@ -3316,6 +5163,183 @@ mod tests {
             idle["type"], err["type"],
             "empty STT must not reuse the error frame"
         );
+    }
+
+    #[test]
+    fn terminal_no_reply_frame_is_typed_private_and_precedes_legacy_idle() {
+        let cases = [
+            (
+                VoiceTurnOutcome::CaptureRejectedMalformed,
+                VoiceTurnOutcomeReason::MalformedPcm,
+                "capture_rejected_malformed",
+                "malformed_pcm",
+            ),
+            (
+                VoiceTurnOutcome::CaptureRejectedShort,
+                VoiceTurnOutcomeReason::ShortCapture,
+                "capture_rejected_short",
+                "short_capture",
+            ),
+            (
+                VoiceTurnOutcome::EmptyStt,
+                VoiceTurnOutcomeReason::NearSilentPcm,
+                "empty_stt",
+                "near_silent_pcm",
+            ),
+        ];
+
+        for (outcome, reason, expected_outcome, expected_reason) in cases {
+            let frames = terminal_idle_frames(outcome, reason);
+            let values = frames
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(
+                values,
+                vec![
+                    serde_json::json!({
+                        "type": "turn_outcome",
+                        "outcome": expected_outcome,
+                        "reason": expected_reason,
+                    }),
+                    serde_json::json!({"type": "idle"}),
+                ]
+            );
+            assert_eq!(values[0].as_object().unwrap().len(), 3);
+        }
+    }
+
+    #[test]
+    fn estimated_word_timings_are_ordered_and_cover_the_audio_duration() {
+        let timings = estimate_word_timings("Hello, world!", 1_000);
+        assert_eq!(timings.len(), 2);
+        assert_eq!(timings[0].word, "Hello,");
+        assert_eq!(timings[1].word, "world!");
+        assert_eq!((timings[0].start_ms, timings[0].end_ms), (0, 500));
+        assert_eq!((timings[1].start_ms, timings[1].end_ms), (500, 1_000));
+        assert_eq!((timings[0].start_utf16, timings[0].end_utf16), (0, 6));
+        assert_eq!((timings[1].start_utf16, timings[1].end_utf16), (7, 13));
+        assert!(timings.windows(2).all(|pair| {
+            pair[0].start_ms <= pair[0].end_ms
+                && pair[0].end_ms <= pair[1].start_ms
+                && pair[0].end_utf16 <= pair[1].start_utf16
+        }));
+    }
+
+    #[test]
+    fn estimated_word_timings_use_ios_utf16_ranges_for_non_bmp_text() {
+        let timings = estimate_word_timings("Hi 👋 there", 900);
+        assert_eq!(
+            timings.iter().map(|t| t.word.as_str()).collect::<Vec<_>>(),
+            ["Hi", "👋", "there"]
+        );
+        // The waving-hand emoji occupies two UTF-16 code units.
+        assert_eq!((timings[1].start_utf16, timings[1].end_utf16), (3, 5));
+        assert_eq!((timings[2].start_utf16, timings[2].end_utf16), (6, 11));
+        assert_eq!(timings.last().unwrap().end_ms, 900);
+    }
+
+    #[test]
+    fn audio_segment_metadata_is_additive_and_explicitly_estimated() {
+        let audio = AudioOutput {
+            samples: vec![0.0; 24_000],
+            sample_rate: 24_000,
+        };
+        let value =
+            serde_json::to_value(audio_segment_metadata(&audio, "A short reply.", 7)).unwrap();
+        assert_eq!(value["type"], "audio_segment");
+        assert_eq!(value["segment_id"], 7);
+        assert_eq!(value["text"], "A short reply.");
+        assert_eq!(value["sample_rate"], 24_000);
+        assert_eq!(value["duration_ms"], 1_000);
+        assert_eq!(value["timing_source"], "estimated_proportional");
+        assert_eq!(value["word_timings"].as_array().unwrap().len(), 3);
+        // Existing framing remains serializable and unchanged.
+        assert_eq!(
+            serde_json::to_value(ServerMessage::ReplyStart).unwrap()["type"],
+            "reply_start"
+        );
+        assert_eq!(
+            serde_json::to_value(ServerMessage::ReplyEnd {
+                sample_rate: 24_000
+            })
+            .unwrap()["type"],
+            "reply_end"
+        );
+    }
+
+    #[test]
+    fn latency_classification_surfaces_the_known_long_stall() {
+        assert_eq!(
+            classify_voice_latency(Some(120), Some(1_200), Some(19_900), 19_950),
+            "critical_stall"
+        );
+        assert_eq!(
+            classify_voice_latency(Some(2_100), Some(1_000), Some(2_500), 4_000),
+            "slow_stt"
+        );
+        assert_eq!(
+            classify_voice_latency(Some(100), Some(5_100), Some(5_200), 6_000),
+            "slow_llm_ttft"
+        );
+        assert_eq!(
+            classify_voice_latency(Some(100), Some(1_000), Some(3_100), 4_000),
+            "elevated_first_audio"
+        );
+        assert_eq!(
+            classify_voice_latency(Some(100), Some(1_000), Some(1_900), 2_500),
+            "healthy"
+        );
+    }
+
+    #[test]
+    fn telemetry_emits_only_one_terminal_outcome() {
+        let mut telemetry = VoiceTurnTelemetry::new(7, 3, None, std::time::Instant::now());
+        assert!(!telemetry.outcome_logged);
+        telemetry.log_outcome("empty_stt");
+        assert!(telemetry.outcome_logged);
+        // Caller-side error handling may run after an inner streaming path has
+        // already classified the turn; the summary must remain single-shot.
+        telemetry.log_outcome("reply_error");
+        assert!(telemetry.outcome_logged);
+    }
+
+    fn pcm_bytes(samples: &[f32]) -> Vec<u8> {
+        samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect()
+    }
+
+    #[test]
+    fn capture_health_distinguishes_no_frames_silence_signal_and_malformed_pcm() {
+        let no_frames = CaptureHealth::default();
+        assert_eq!(no_frames.label(), "no_frames");
+
+        let mut zero = CaptureHealth::default();
+        zero.observe_frame(&pcm_bytes(&[0.0, -0.0, 0.0]));
+        assert_eq!(zero.label(), "zero_pcm");
+        assert_eq!(empty_stt_reason(&zero), "zero_pcm");
+
+        let mut quiet = CaptureHealth::default();
+        quiet.observe_frame(&pcm_bytes(&[0.0005, -0.0005, 0.0004]));
+        assert_eq!(quiet.label(), "near_silent_pcm");
+        assert_eq!(empty_stt_reason(&quiet), "near_silent_pcm");
+        assert!(quiet.rms_millionths().is_some());
+
+        let mut signal = CaptureHealth::default();
+        signal.observe_frame(&pcm_bytes(&[0.15, -0.10, 0.05]));
+        assert_eq!(signal.label(), "finite_signal_pcm");
+        assert_eq!(empty_stt_reason(&signal), "finite_signal_no_words");
+
+        let mut malformed = CaptureHealth::default();
+        malformed.observe_frame(&pcm_bytes(&[f32::NAN, f32::INFINITY]));
+        malformed.observe_frame(&[0xAB, 0xCD, 0xEF]);
+        assert_eq!(malformed.label(), "malformed_pcm");
+        assert!(malformed.is_malformed());
+        assert_eq!(malformed.nonfinite_samples, 2);
+        assert_eq!(malformed.trailing_bytes, 3);
     }
 
     /// Last night: eight spoken sentences, leftover dropped, Continue lost.

@@ -30,7 +30,8 @@ use crate::agents::types::{FrontendTool, SessionConfig, SharedProvider, ToolResu
 use crate::config::permission::PermissionManager;
 use crate::config::{get_enabled_extensions, Config, GooseMode};
 use crate::context_mgmt::{
-    check_if_compaction_needed, compact_messages, DEFAULT_COMPACTION_THRESHOLD,
+    check_if_compaction_needed, compact_messages_accounted, maybe_summarize_tool_pairs_accounted,
+    DEFAULT_COMPACTION_THRESHOLD,
 };
 use crate::conversation::message::{
     ActionRequiredData, Message, MessageContent, ProviderMetadata, SystemNotificationType,
@@ -44,7 +45,7 @@ use crate::mcp_utils::ToolResult;
 use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
 use crate::permission::PermissionConfirmation;
-use crate::providers::base::{PermissionRouting, Provider};
+use crate::providers::base::{PermissionRouting, Provider, ProviderUsage};
 use crate::providers::errors::ProviderError;
 use crate::recipe::{Author, Recipe, Response, Settings};
 use crate::scheduler_trait::SchedulerTrait;
@@ -249,6 +250,11 @@ impl AgentRunnerConfig {
     }
 }
 
+fn starts_new_budget_task(session_type: crate::session::SessionType, message_text: &str) -> bool {
+    session_type.is_interactive()
+        && !crate::agents::execute_commands::COMPACT_TRIGGERS.contains(&message_text.trim())
+}
+
 /// The main goose Agent
 pub struct Agent {
     pub(super) provider: SharedProvider,
@@ -290,6 +296,18 @@ pub enum AgentEvent {
     Message(Message),
     McpNotification((String, ServerNotification)),
     HistoryReplaced(Conversation),
+    /// Structured terminal outcome for the reply stream. Consumers that
+    /// project run telemetry must use this per-stream event instead of the
+    /// process-global HUD runtime registry.
+    RuntimeOutcome(AgentRuntimeOutcome),
+}
+
+/// Outcome of one concrete [`Agent::reply`] stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentRuntimeOutcome {
+    Succeeded,
+    Failed,
+    Cancelled,
 }
 
 impl Default for Agent {
@@ -475,6 +493,13 @@ impl Agent {
         tool_inspection_manager.add_inspector(Box::new(WriteJailInspector::new(Some(
             session_manager.clone(),
         ))));
+
+        // Coding harness roots are planners/orchestrators. They may inspect,
+        // research, and build the graph, but mutation belongs to a dispatched
+        // DAG node so verification and approval cannot be bypassed.
+        tool_inspection_manager.add_inspector(Box::new(
+            crate::tool_inspection::CodingDagInspector::new(session_manager.clone()),
+        ));
 
         // Add permission inspector (medium-high priority)
         tool_inspection_manager.add_inspector(Box::new(PermissionInspector::new(
@@ -1492,6 +1517,25 @@ impl Agent {
         session_config: SessionConfig,
         cancel_token: Option<CancellationToken>,
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
+        self.reply_with_recognition(user_message, session_config, cancel_token, None)
+            .await
+    }
+
+    /// Reply entry point carrying the optional existing recognition retrieval
+    /// identity for durable provider-attribution write-back. Existing callers
+    /// should continue using [`Self::reply`]; this additive seam is used only
+    /// by the recall-aware server route.
+    #[instrument(
+        skip(self, user_message, session_config, cancel_token, recognition_retrieval_id),
+        fields(user_message, trace_input, session.id = %session_config.id)
+    )]
+    pub async fn reply_with_recognition(
+        &self,
+        user_message: Message,
+        session_config: SessionConfig,
+        cancel_token: Option<CancellationToken>,
+        recognition_retrieval_id: Option<String>,
+    ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
         let session_manager = self.config.session_manager.clone();
 
         let message_text_for_trace = user_message.as_concat_text();
@@ -1524,6 +1568,20 @@ impl Agent {
         }
 
         let message_text = user_message.as_concat_text();
+
+        // One top-level interactive Agent::reply is one user task. The ID is
+        // durable session state, so after-turn continuations, compaction, and
+        // provider retries remain part of this same budget identity. Child and
+        // headless sessions inherit their parent's ID at session creation.
+        let session_type = session_manager
+            .get_session(&session_config.id, false)
+            .await?
+            .session_type;
+        if starts_new_budget_task(session_type, &message_text) {
+            session_manager
+                .begin_budget_task(&session_config.id)
+                .await?;
+        }
 
         // Track custom slash command usage (don't track command name for privacy)
         if message_text.trim().starts_with('/') {
@@ -1651,17 +1709,27 @@ impl Agent {
                     )
                 );
 
-                match compact_messages(
-                    self.provider().await?.as_ref(),
+                let compact_provider = self.provider().await?;
+                let compact_accounting = self.accounted_fast_completion(
+                    &session,
+                    Arc::clone(&compact_provider),
+                    true,
+                );
+                match compact_messages_accounted(
                     &session_config.id,
                     &conversation_to_compact,
                     false,
+                    compact_accounting.as_ref(),
                 )
                 .await
                 {
                     Ok((compacted_conversation, summarization_usage)) => {
                         session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
-                        self.update_session_metrics(&session_config.id, session_config.schedule_id.clone(), &summarization_usage, true).await?;
+                        // `compact_messages_accounted` already settled this
+                        // exact invocation atomically with the session rollup.
+                        // Keep the usage binding only as a compile-time guard
+                        // against accidentally reverting to unaccounted calls.
+                        let _ = summarization_usage;
 
                         yield AgentEvent::HistoryReplaced(compacted_conversation.clone());
 
@@ -1685,7 +1753,15 @@ impl Agent {
                 }
             };
 
-            let mut reply_stream = self.reply_internal(final_conversation, session_config, session, cancel_token).await?;
+            let mut reply_stream = self
+                .reply_internal(
+                    final_conversation,
+                    session_config,
+                    session,
+                    cancel_token,
+                    recognition_retrieval_id,
+                )
+                .await?;
             while let Some(event) = reply_stream.next().await {
                 yield event?;
             }
@@ -1698,6 +1774,7 @@ impl Agent {
         session_config: SessionConfig,
         session: Session,
         cancel_token: Option<CancellationToken>,
+        recognition_retrieval_id: Option<String>,
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
         // #348 — real agent lifecycle hook for the World View. This Drop guard ties
         // the primary agent's runtime state to the ACTUAL reply turn: `working` on
@@ -1859,14 +1936,100 @@ impl Agent {
                 );
                 let mut logged_cache_result = false;
 
-                let mut stream = Self::stream_response_from_provider(
-                    self.provider().await?,
+                // ContextPacket is a projection of the exact request inputs at
+                // this seam. Keep unavailable partitions missing rather than
+                // guessing (notably project memory and Spectral recall are
+                // rendered into the prompt by other owners). Tool output is
+                // recoverable from the conversation and tool definitions are
+                // serialized exactly as the provider-facing values.
+                let tool_schema = serde_json::to_string(&tools).ok();
+                let tool_output = conversation_with_moim
+                    .messages()
+                    .iter()
+                    .filter(|message| message.is_tool_response())
+                    .map(Message::as_concat_text)
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let context_contributions = self.prompt_manager.lock().await.context_contributions();
+                let context_packet = crate::context_packet::assemble_with_contributions(
+                    Some(system_prompt.stable_prefix()),
+                    tool_schema.as_deref(),
+                    &context_contributions,
+                    (!tool_output.is_empty()).then_some(tool_output.as_str()),
+                    &[],
+                );
+                debug!(
+                    target: "permagent.context_packet",
+                    session_id = %session_config.id,
+                    packet = ?context_packet,
+                    "coding model request context packet"
+                );
+
+                // Authorize this exact provider/model invocation before any
+                // transport work begins. The captured identity is deliberately
+                // independent of mutable session settings so a provider switch
+                // on a later turn cannot rewrite this call's attribution.
+                let turn_provider = self.provider().await?;
+                let invocation_id = Uuid::new_v4().to_string();
+                let invocation = match self
+                    .reserve_provider_invocation(
+                        &session,
+                        &turn_provider,
+                        invocation_id.clone(),
+                    )
+                    .await
+                {
+                    Ok(invocation) => invocation,
+                    Err(failure) => {
+                        let reason = self
+                            .handle_provider_authorization_failure(&session, &failure)
+                            .await;
+                        let message = Message::assistant().with_text(format!(
+                            "I did not send this request because provider spend could not be authorized: {reason}."
+                        ));
+                        persist_turn_ending_message(&session_manager, &session_config.id, &message)
+                            .await;
+                        yield AgentEvent::Message(message);
+                        state_guard.mark_error();
+                        break;
+                    }
+                };
+
+                let mut stream = match Self::stream_response_from_provider(
+                    turn_provider.clone(),
                     &session_config.id,
                     &system_prompt,
                     conversation_with_moim.messages(),
                     &tools,
                     &toolshim_tools,
-                ).await?;
+                )
+                .await
+                {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        // stream_split can fail after handing work to a remote
+                        // endpoint. Treat this as an unknown paid outcome; only
+                        // the reservation layer may release a proven
+                        // pre-dispatch failure.
+                        if let Some(reservation_id) = invocation.reservation_id.as_deref() {
+                            session_manager
+                                .mark_provider_invocation_unknown(reservation_id)
+                                .await?;
+                        }
+                        let message = Message::assistant()
+                            .with_text(format!("Ran into this error: {error}."));
+                        persist_turn_ending_message(&session_manager, &session_config.id, &message)
+                            .await;
+                        yield AgentEvent::Message(message);
+                        state_guard.mark_error();
+                        break;
+                    }
+                };
+                // A provider may attach the same cumulative usage snapshot to
+                // several stream frames. Account once, using the final snapshot,
+                // under one stable key for this logical invocation.
+                let mut terminal_usage: Option<ProviderUsage> = None;
 
                 let current_turn_tool_count = conversation.messages().iter()
                     .flat_map(|m| m.content.iter())
@@ -1874,12 +2037,19 @@ impl Agent {
                     .count()
                     .saturating_sub(pre_turn_tool_count);
 
-                let tool_pair_summarization_task = crate::context_mgmt::maybe_summarize_tool_pairs(
-                    self.provider().await?,
+                let tool_pair_provider = self.provider().await?;
+                let tool_pair_accounting = self.accounted_fast_completion(
+                    &session,
+                    Arc::clone(&tool_pair_provider),
+                    false,
+                );
+                let tool_pair_summarization_task = maybe_summarize_tool_pairs_accounted(
+                    tool_pair_provider,
                     session_config.id.clone(),
                     conversation.clone(),
                     tool_call_cut_off,
                     current_turn_tool_count,
+                    tool_pair_accounting,
                 );
 
                 let mut no_tools_called = true;
@@ -1912,7 +2082,9 @@ impl Agent {
                         Ok((response, usage)) => {
                             compaction_attempts = 0;
 
+                            let usage = usage.map(|usage| usage.with_invocation_id(invocation_id.clone()));
                             if let Some(ref usage) = usage {
+                                terminal_usage = Some(usage.clone());
                                 // Pair the prefix hash with what the provider
                                 // actually did with it. Once per turn: usage
                                 // frames arrive repeatedly on a stream and the
@@ -1925,6 +2097,14 @@ impl Agent {
                                 // the other direction.
                                 if !logged_cache_result {
                                     logged_cache_result = true;
+                                    debug!(
+                                        target: "permagent.context_packet",
+                                        session_id = %session_config.id,
+                                        provider_input_tokens = ?usage.usage.input_tokens,
+                                        provider_output_tokens = ?usage.usage.output_tokens,
+                                        packet_estimated_input_tokens = ?context_packet.estimated_total_tokens,
+                                        "coding model usage joined to context packet"
+                                    );
                                     debug!(
                                         target: "prompt_cache",
                                         session_id = %session_config.id,
@@ -1944,7 +2124,6 @@ impl Agent {
                                         "prompt cache result"
                                     );
                                 }
-                                self.update_session_metrics(&session_config.id, session_config.schedule_id.clone(), usage, false).await?;
                             }
 
                             if let Some(response) = response {
@@ -2289,17 +2468,26 @@ impl Agent {
                                 )
                             );
 
-                            match compact_messages(
-                                self.provider().await?.as_ref(),
+                            let compact_provider = self.provider().await?;
+                            let compact_accounting = self.accounted_fast_completion(
+                                &session,
+                                Arc::clone(&compact_provider),
+                                true,
+                            );
+                            match compact_messages_accounted(
                                 &session_config.id,
                                 &conversation,
                                 false,
+                                compact_accounting.as_ref(),
                             )
                             .await
                             {
                                 Ok((compacted_conversation, usage)) => {
                                     session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
-                                    self.update_session_metrics(&session_config.id, session_config.schedule_id.clone(), &usage, true).await?;
+                                    // Accounting occurred inside the reserved
+                                    // fast-completion boundary before this
+                                    // history replacement.
+                                    let _ = usage;
                                     conversation = compacted_conversation;
                                     did_recovery_compact_this_iteration = true;
                                     yield AgentEvent::HistoryReplaced(conversation.clone());
@@ -2650,6 +2838,65 @@ impl Agent {
                         }
                     }
                 }
+                if invocation.cost_tier.is_chargeable() {
+                    let has_authoritative_usage = terminal_usage.as_ref().is_some_and(|usage| {
+                        let u = usage.usage;
+                        u.input_tokens.is_some()
+                            || u.output_tokens.is_some()
+                            || u.total_tokens.is_some()
+                            || u.cache_read_input_tokens.is_some()
+                            || u.cache_write_input_tokens.is_some()
+                    });
+                    if let Some(usage) = terminal_usage.as_ref().filter(|_| has_authoritative_usage)
+                    {
+                        if let Err(error) = self.update_session_metrics_for_invocation(
+                            &session_config.id,
+                            session_config.schedule_id.clone(),
+                            usage,
+                            &invocation,
+                            recognition_retrieval_id.as_deref(),
+                        )
+                        .await
+                        {
+                            if let Some(reservation_id) = invocation.reservation_id.as_deref() {
+                                // Settlement failure is not evidence that the
+                                // remote provider did not charge us. Preserve
+                                // the hold as unknown before surfacing the
+                                // durable accounting error.
+                                session_manager
+                                    .mark_provider_invocation_unknown(reservation_id)
+                                    .await?;
+                            }
+                            let message = Message::assistant().with_text(format!(
+                                "Provider usage was received, but durable accounting failed: {error}."
+                            ));
+                            persist_turn_ending_message(
+                                &session_manager,
+                                &session_config.id,
+                                &message,
+                            )
+                            .await;
+                            yield AgentEvent::Message(message);
+                            state_guard.mark_error();
+                            break;
+                        }
+                    } else if let Some(reservation_id) = invocation.reservation_id.as_deref() {
+                        // A dispatched call without authoritative usage cannot
+                        // be safely released: it may have been billed remotely.
+                        session_manager
+                            .mark_provider_invocation_unknown(reservation_id)
+                            .await?;
+                    }
+                } else if let Some(usage) = terminal_usage.as_ref() {
+                    self.update_session_metrics_for_invocation(
+                        &session_config.id,
+                        session_config.schedule_id.clone(),
+                        usage,
+                        &invocation,
+                        recognition_retrieval_id.as_deref(),
+                    )
+                    .await?;
+                }
                 if tools_updated {
                     (tools, toolshim_tools, system_prompt) =
                         self.prepare_tools_and_prompt(&session_config.id, &session.working_dir).await?;
@@ -2891,6 +3138,14 @@ impl Agent {
             if !last_assistant_text.is_empty() {
                 tracing::info!(target: "permagent::agents::agent", trace_output = last_assistant_text.as_str());
             }
+            let outcome = if state_guard.errored {
+                AgentRuntimeOutcome::Failed
+            } else if is_token_cancelled(&cancel_token) {
+                AgentRuntimeOutcome::Cancelled
+            } else {
+                AgentRuntimeOutcome::Succeeded
+            };
+            yield AgentEvent::RuntimeOutcome(outcome);
         }.instrument(reply_stream_span));
         Ok(inner)
     }
@@ -2898,6 +3153,29 @@ impl Agent {
     pub async fn extend_system_prompt(&self, key: String, instruction: String) {
         let mut prompt_manager = self.prompt_manager.lock().await;
         prompt_manager.add_system_prompt_extra(key, instruction);
+    }
+
+    /// Install a prompt extra and preserve its typed source attribution for
+    /// the request-boundary ContextPacket. The model still receives the exact
+    /// instruction text; attribution never relies on parsing that text later.
+    pub async fn extend_system_prompt_with_context(
+        &self,
+        key: String,
+        instruction: String,
+        contribution: crate::context_packet::ContextContribution,
+    ) {
+        let mut prompt_manager = self.prompt_manager.lock().await;
+        prompt_manager.add_system_prompt_extra_with_context(key, instruction, contribution);
+    }
+
+    pub async fn extend_system_prompt_with_contexts(
+        &self,
+        key: String,
+        instruction: String,
+        contributions: Vec<crate::context_packet::ContextContribution>,
+    ) {
+        let mut prompt_manager = self.prompt_manager.lock().await;
+        prompt_manager.add_system_prompt_extra_with_contexts(key, instruction, contributions);
     }
 
     pub async fn set_persona(&self, persona: crate::config::agent_identity::SharedPersona) {
@@ -3299,31 +3577,15 @@ impl Agent {
         );
 
         tracing::info!("Calling provider to generate recipe content");
-        let model_config = {
-            let provider_guard = self.provider.lock().await;
-            let provider = provider_guard.as_ref().ok_or_else(|| {
-                let error = anyhow!("Provider not available during recipe creation");
-                tracing::error!("{}", error);
-                error
-            })?;
-            provider.get_model_config()
-        };
-        let (result, _usage) = self
-            .provider
-            .lock()
-            .await
-            .as_ref()
-            .ok_or_else(|| {
-                let error = anyhow!("Provider not available during recipe creation");
-                tracing::error!("{}", error);
-                error
-            })?
-            .complete(
-                &model_config,
-                session_id,
+        let (result, _usage) =
+            crate::agents::reply_parts::AccountedFastCompletion::complete_accounted(
+                Arc::clone(&self.config.session_manager),
+                session,
+                Arc::clone(&provider),
                 &system_prompt,
                 messages.messages(),
                 &tools,
+                false,
             )
             .await
             .map_err(|e| {
@@ -3479,6 +3741,30 @@ mod tests {
     use crate::permission::permission_confirmation::PrincipalType;
     use crate::providers::base::PermissionRouting;
     use crate::recipe::Response;
+
+    #[test]
+    fn recipe_creation_cannot_bypass_shared_paid_dispatch_boundary() {
+        let source = include_str!("agent.rs");
+        let direct_call = [".", "complete("].concat();
+        assert!(source.contains("complete_accounted"));
+        assert!(!source.contains(&direct_call));
+    }
+
+    #[test]
+    fn compact_control_reply_keeps_the_existing_budget_task() {
+        assert!(!starts_new_budget_task(
+            crate::session::SessionType::User,
+            "/compact"
+        ));
+        assert!(starts_new_budget_task(
+            crate::session::SessionType::User,
+            "a genuine next request"
+        ));
+        assert!(!starts_new_budget_task(
+            crate::session::SessionType::SubAgent,
+            "worker prompt"
+        ));
+    }
 
     /// The exact shape session 20260825_3 persisted 22 times in one
     /// conversation: MiniMax-M2.7 streamed its reasoning and reply text as one

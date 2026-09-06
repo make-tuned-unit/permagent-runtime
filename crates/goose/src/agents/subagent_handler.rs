@@ -1,6 +1,7 @@
 use crate::{
     agents::{
-        subagent_task_config::TaskConfig, Agent, AgentEvent, AgentRunnerConfig, SessionConfig,
+        subagent_task_config::TaskConfig, Agent, AgentEvent, AgentRunnerConfig,
+        AgentRuntimeOutcome, SessionConfig,
     },
     conversation::{
         message::{Message, MessageContent},
@@ -218,6 +219,7 @@ fn get_agent_messages(params: SubagentRunParams) -> AgentMessagesFuture {
             .await
             .map_err(|e| anyhow!("Failed to get reply from agent: {}", e))?;
 
+        let mut runtime_outcome = None;
         while let Some(message_result) = stream.next().await {
             match message_result {
                 Ok(AgentEvent::Message(msg)) => {
@@ -242,10 +244,19 @@ fn get_agent_messages(params: SubagentRunParams) -> AgentMessagesFuture {
                 Ok(AgentEvent::HistoryReplaced(updated_conversation)) => {
                     conversation = updated_conversation;
                 }
+                Ok(AgentEvent::RuntimeOutcome(outcome)) => {
+                    runtime_outcome = Some(outcome);
+                }
                 Err(e) => {
                     tracing::error!("Error receiving message from subagent: {}", e);
-                    break;
+                    return Err(anyhow!("Subagent stream failed: {e}"));
                 }
+            }
+        }
+
+        if let Some(outcome) = runtime_outcome {
+            if let Some(error) = runtime_outcome_error(outcome) {
+                return Err(error);
             }
         }
 
@@ -253,6 +264,18 @@ fn get_agent_messages(params: SubagentRunParams) -> AgentMessagesFuture {
 
         Ok((conversation, final_output))
     })
+}
+
+/// Convert the typed terminal outcome into a worker error. The caller's
+/// cancellation token remains the authority for classifying cancellation in a
+/// fan-out, while a failed runtime must never be mistaken for a successful
+/// last assistant message.
+fn runtime_outcome_error(outcome: AgentRuntimeOutcome) -> Option<anyhow::Error> {
+    match outcome {
+        AgentRuntimeOutcome::Succeeded => None,
+        AgentRuntimeOutcome::Failed => Some(anyhow!("Subagent runtime failed")),
+        AgentRuntimeOutcome::Cancelled => Some(anyhow!("Subagent runtime cancelled")),
+    }
 }
 
 async fn build_subagent_prompt(
@@ -329,7 +352,8 @@ pub fn create_tool_notification(
 
 #[cfg(test)]
 mod tests {
-    use super::{create_tool_notification, SUBAGENT_TOOL_REQUEST_TYPE};
+    use super::{create_tool_notification, runtime_outcome_error, SUBAGENT_TOOL_REQUEST_TYPE};
+    use crate::agents::AgentRuntimeOutcome;
     use crate::conversation::message::MessageContent;
     use rmcp::model::{CallToolRequestParams, ServerNotification};
     use serde_json::json;
@@ -372,6 +396,23 @@ mod tests {
     fn create_tool_notification_ignores_non_tool_request() {
         let content = MessageContent::text("hello");
         assert!(create_tool_notification(&content, "session_1").is_none());
+    }
+
+    #[test]
+    fn failed_and_cancelled_runtime_outcomes_are_not_successes() {
+        assert!(runtime_outcome_error(AgentRuntimeOutcome::Succeeded).is_none());
+        assert_eq!(
+            runtime_outcome_error(AgentRuntimeOutcome::Failed)
+                .expect("failed runtime must propagate")
+                .to_string(),
+            "Subagent runtime failed"
+        );
+        assert_eq!(
+            runtime_outcome_error(AgentRuntimeOutcome::Cancelled)
+                .expect("cancelled runtime must propagate")
+                .to_string(),
+            "Subagent runtime cancelled"
+        );
     }
 
     #[tokio::test]

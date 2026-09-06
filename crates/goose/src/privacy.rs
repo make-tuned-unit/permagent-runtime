@@ -18,7 +18,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 /// Ordered list of sensitive substring patterns replaced with `[REDACTED]`.
-static SENSITIVE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+static PROVIDER_SENSITIVE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     vec![
         // Home directories (leak the OS username).
         Regex::new(r"/Users/[^/\s]+").unwrap(),
@@ -35,20 +35,34 @@ static SENSITIVE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap(),
         // Credentials embedded in a URL (`https://user:pass@host`).
         Regex::new(r"https?://[^:]+:[^@]+@").unwrap(),
-        // UUIDs (installation ids, session ids, …).
+    ]
+});
+
+static LOCAL_EXPORT_EXTRA_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    vec![
         Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
             .unwrap(),
     ]
 });
 
-/// Redact known-sensitive substrings from `s`, replacing each with `[REDACTED]`.
-/// Idempotent and multi-line safe. This is the one place the patterns live.
-pub fn redact(s: &str) -> String {
+fn apply_patterns(s: &str, patterns: &[Regex]) -> String {
     let mut result = s.to_string();
-    for pattern in SENSITIVE_PATTERNS.iter() {
+    for pattern in patterns {
         result = pattern.replace_all(&result, "[REDACTED]").to_string();
     }
     result
+}
+
+/// Scrub content before it is shared with a configured model provider while
+/// retaining opaque project/memory IDs needed for structured actions.
+pub fn redact_for_provider(s: &str) -> String {
+    apply_patterns(s, &PROVIDER_SENSITIVE_PATTERNS)
+}
+
+/// Redact known-sensitive substrings from `s`, replacing each with `[REDACTED]`.
+/// Idempotent and multi-line safe. This is the one place the patterns live.
+pub fn redact(s: &str) -> String {
+    apply_patterns(&redact_for_provider(s), &LOCAL_EXPORT_EXTRA_PATTERNS)
 }
 
 #[cfg(test)]
@@ -89,5 +103,16 @@ mod tests {
     fn leaves_clean_text_untouched() {
         let s = "a normal panic message with no secrets";
         assert_eq!(redact(s), s);
+    }
+
+    #[test]
+    fn provider_redaction_preserves_routing_ids_but_removes_credentials() {
+        let id = "550e8400-e29b-41d4-a716-446655440000";
+        let out = redact_for_provider(&format!(
+            "project {id} at /Users/alice/repo token=secret-value-long"
+        ));
+        assert!(out.contains(id));
+        assert!(!out.contains("/Users/alice"));
+        assert!(!out.contains("secret-value-long"));
     }
 }

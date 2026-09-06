@@ -637,7 +637,7 @@ impl SummonClient {
                 .build_delegate_recipe(&child, session_id, &working_dir)
                 .await
                 .map_err(|e| format!("child {index} ({label}): {e}"))?;
-            let (task_config, routing) = self
+            let (task_config, routing_receipt) = self
                 .build_task_config(&child, &recipe, &session)
                 .await
                 .map_err(|e| {
@@ -649,7 +649,7 @@ impl SummonClient {
                 working_dir: working_dir.clone(),
                 recipe,
                 task_config,
-                routing_receipt: routing.receipt_json(),
+                routing_receipt,
                 persona_override: Self::resolve_worker_persona(child.worker_persona.as_deref()),
             });
         }
@@ -789,18 +789,25 @@ impl SummonClient {
             })
             .collect();
 
+        let aggregate_status = fanout::aggregate_status(&outcomes);
         let mut meta = Meta::new();
+        meta.0.insert(
+            "status".to_string(),
+            serde_json::Value::String(aggregate_status.as_str().to_string()),
+        );
         meta.0.insert(
             "fanout_children".to_string(),
             serde_json::Value::Array(children_meta),
         );
 
-        Ok(
-            CallToolResult::success(vec![Content::text(fanout::render_outcomes(
-                &outcomes, &costs,
-            ))])
-            .with_meta(Some(meta)),
-        )
+        let content = vec![Content::text(fanout::render_outcomes(&outcomes, &costs))];
+        let result = match aggregate_status {
+            fanout::ChildStatus::Ok => CallToolResult::success(content),
+            fanout::ChildStatus::Failed | fanout::ChildStatus::Cancelled => {
+                CallToolResult::error(content)
+            }
+        };
+        Ok(result.with_meta(Some(meta)))
     }
 
     async fn get_working_dir(&self, session_id: &str) -> PathBuf {
@@ -1289,7 +1296,7 @@ impl SummonClient {
             .build_delegate_recipe(&params, session_id, &working_dir)
             .await?;
 
-        let (task_config, routing) = self
+        let (task_config, routing_receipt) = self
             .build_task_config(&params, &recipe, &session)
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
@@ -1355,8 +1362,7 @@ impl SummonClient {
         );
         // The routing receipt travels with the result so a reader can say which
         // model this subagent's tokens were billed to, and why it was that one.
-        meta.0
-            .insert("model_routing".to_string(), routing.receipt_json());
+        meta.0.insert("model_routing".to_string(), routing_receipt);
 
         match result {
             Ok(text) => {
@@ -1669,8 +1675,8 @@ impl SummonClient {
         params: &DelegateParams,
         recipe: &Recipe,
         session: &crate::session::Session,
-    ) -> Result<(TaskConfig, crate::cost_router::DelegateRouting), anyhow::Error> {
-        let (provider, routing) = self.resolve_provider(params, recipe, session).await?;
+    ) -> Result<(TaskConfig, serde_json::Value), anyhow::Error> {
+        let (provider, routing_receipt) = self.resolve_provider(params, recipe, session).await?;
 
         let mut extensions = EnabledExtensionsState::extensions_or_default(
             Some(&session.extension_data),
@@ -1701,7 +1707,7 @@ impl SummonClient {
         let task_config = TaskConfig::new(provider, &session.id, &session.working_dir, extensions)
             .with_max_turns(Some(max_turns));
 
-        Ok((task_config, routing))
+        Ok((task_config, routing_receipt))
     }
 
     /// The workflow role a delegate's worker persona plays, for cost routing.
@@ -1715,20 +1721,19 @@ impl SummonClient {
 
     /// The spend band that gates a delegate ESCALATION.
     ///
-    /// FAIL-CLOSED, and deliberately the opposite polarity to
-    /// [`crate::tool_monitor`]'s `budget_verdict_for`: that gate STOPS work, so a
-    /// transient fault must never fabricate a stop and it fails OPEN. This one
-    /// AUTHORIZES extra spend on a pricier model, and a band we cannot read is not
-    /// permission. `None` ⇒ no escalation.
+    /// FAIL-CLOSED, matching [`crate::tool_monitor`]'s budget boundary. This
+    /// path AUTHORIZES extra spend on a pricier model, so a band we cannot read
+    /// is not permission. `None` means no escalation.
     async fn escalation_spend_band(
         &self,
         session: &crate::session::Session,
     ) -> Option<crate::cost_router::BudgetBand> {
         use crate::agents::platform_extensions::orchestrator as orch;
         let pool = self.context.session_manager.pool_clone().await.ok()?;
-        let task_spent = orch::task_spent_usd(&pool, &session.id).await;
-        let session_spent = orch::session_spent_usd(&pool, &session.id).await;
-        let unpriced = orch::unpriced_calls_in_session(&pool, &session.id).await;
+        let snapshot = orch::spend_snapshot(&pool, &session.id).await.ok()?;
+        let task_spent = snapshot.task_spent_usd;
+        let session_spent = snapshot.session_spent_usd;
+        let unpriced = snapshot.unpriced_calls;
         let cfg = crate::cost_router::budget::load_budget_config();
         Some(
             crate::cost_router::budget::budget_verdict_with_unpriced(
@@ -1746,13 +1751,7 @@ impl SummonClient {
         params: &DelegateParams,
         recipe: &Recipe,
         session: &crate::session::Session,
-    ) -> Result<
-        (
-            Arc<dyn crate::providers::base::Provider>,
-            crate::cost_router::DelegateRouting,
-        ),
-        anyhow::Error,
-    > {
+    ) -> Result<(Arc<dyn crate::providers::base::Provider>, serde_json::Value), anyhow::Error> {
         // The role→model layer. If the delegate carries a worker persona with a
         // workflow role, route to that role's model by the precedence in
         // `cost_router::delegate`: role pin (`PERMAGENT_ROLE_*`) → pack pin
@@ -1940,6 +1939,50 @@ impl SummonClient {
 
         let provider = providers::create(&provider_name, model_config, Vec::new()).await?;
 
+        // The role router runs before explicit/recipe reconciliation. Preserve
+        // its human-readable summary, but attach the final dispatch target so a
+        // receipt can never claim "session model" when an explicit child pin
+        // was actually honored (or vice versa).
+        let effective_provider = provider.get_name().to_string();
+        let effective_model = provider.get_model_config().model_name.clone();
+        let requested_provider = params.provider.clone().or(recipe_provider.clone());
+        let requested_model = params
+            .model
+            .clone()
+            .or_else(|| recipe.settings.as_ref().and_then(|s| s.goose_model.clone()));
+        let effective_source = if params.provider.is_some() || params.model.is_some() {
+            "explicit_param"
+        } else if recipe_provider.is_some()
+            || recipe
+                .settings
+                .as_ref()
+                .is_some_and(|s| s.goose_model.is_some())
+        {
+            "recipe"
+        } else if role_model.is_some() {
+            routing.source.as_str()
+        } else if Config::global()
+            .get_param::<String>("GOOSE_SUBAGENT_PROVIDER")
+            .ok()
+            .is_some()
+            || Config::global()
+                .get_param::<String>("GOOSE_SUBAGENT_MODEL")
+                .ok()
+                .is_some()
+        {
+            "environment"
+        } else {
+            "session"
+        };
+        let routing_receipt = resolved_routing_receipt(
+            &routing,
+            requested_provider,
+            requested_model,
+            &effective_provider,
+            &effective_model,
+            effective_source,
+        );
+
         // Live cache guard (#730): a cache-heavy role (orchestrate/edit) routed by
         // the role map to a provider without prompt caching forfeits the
         // warm-prefix saving that makes the loop cheap. Warn — only when the role
@@ -1964,7 +2007,7 @@ impl SummonClient {
             }
         }
 
-        Ok((provider, routing))
+        Ok((provider, routing_receipt))
     }
 
     fn resolve_max_turns(&self, session: &crate::session::Session) -> usize {
@@ -2073,7 +2116,7 @@ impl SummonClient {
             .build_delegate_recipe(&params, session_id, &working_dir)
             .await?;
 
-        let (task_config, routing) = self
+        let (task_config, routing_receipt) = self
             .build_task_config(&params, &recipe, &session)
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
@@ -2174,7 +2217,13 @@ impl SummonClient {
             "Task {} started in background: \"{}\"\n\
              {}\n\
              Continue with other work. When you need the result, use load(source: \"{}\").",
-            task_id, description, routing.receipt, task_id
+            task_id,
+            description,
+            routing_receipt
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("routing receipt unavailable"),
+            task_id
         ))];
         Ok((content, task_id))
     }
@@ -2357,6 +2406,52 @@ fn resolve_subagent_model(
     subagent_env: Option<String>,
 ) -> Option<String> {
     param.or(recipe).or(role).or(subagent_env)
+}
+
+/// Preserve the existing role-router summary while attaching the final,
+/// post-reconciliation target. The old receipt was produced before explicit
+/// and recipe overrides were applied, which made an honored child pin appear
+/// to have used the session model.
+fn resolved_routing_receipt(
+    routing: &crate::cost_router::DelegateRouting,
+    requested_provider: Option<String>,
+    requested_model: Option<String>,
+    effective_provider: &str,
+    effective_model: &str,
+    effective_source: &str,
+) -> serde_json::Value {
+    let mut receipt = routing.receipt_json();
+    if let Some(object) = receipt.as_object_mut() {
+        object.insert(
+            "requested".to_string(),
+            serde_json::json!({
+                "provider": requested_provider,
+                "model": requested_model,
+            }),
+        );
+        object.insert(
+            "effective".to_string(),
+            serde_json::json!({
+                "provider": effective_provider,
+                "model": effective_model,
+                "source": effective_source,
+            }),
+        );
+        // Keep these top-level fields for existing consumers that already read
+        // `provider`/`model`, but make them the actual dispatch target.
+        object.insert("provider".to_string(), effective_provider.into());
+        object.insert("model".to_string(), effective_model.into());
+        object.insert("effective_source".to_string(), effective_source.into());
+        object.insert(
+            "summary".to_string(),
+            format!(
+                "{}; effective {}/{} ({})",
+                routing.receipt, effective_provider, effective_model, effective_source
+            )
+            .into(),
+        );
+    }
+    receipt
 }
 
 /// A model decision for a resolved subagent provider, kept CONSISTENT with it.
@@ -2576,6 +2671,37 @@ mod tests {
     // live session. `s` is a terse Option<String> helper.
     fn s(v: &str) -> Option<String> {
         Some(v.to_string())
+    }
+
+    #[test]
+    fn explicit_target_receipt_overrides_session_summary() {
+        let routing = crate::cost_router::delegate::decide_delegate_model(
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &|_| true,
+            Some(("minimax", "MiniMax-M2.5")),
+        );
+        let receipt = resolved_routing_receipt(
+            &routing,
+            Some("zai".to_string()),
+            Some("glm-4.5-air".to_string()),
+            "zai",
+            "glm-4.5-air",
+            "explicit_param",
+        );
+
+        assert_eq!(receipt["requested"]["provider"], "zai");
+        assert_eq!(receipt["requested"]["model"], "glm-4.5-air");
+        assert_eq!(receipt["effective"]["provider"], "zai");
+        assert_eq!(receipt["effective"]["model"], "glm-4.5-air");
+        assert_eq!(receipt["effective_source"], "explicit_param");
+        assert!(receipt["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("effective zai/glm-4.5-air")));
     }
 
     #[test]

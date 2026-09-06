@@ -6,7 +6,9 @@
 
 use crate::state::AppState;
 use chrono::{DateTime, Local};
+use permagent::config::GooseMode;
 use permagent::council::{self, debate, due, store};
+use permagent::session::{SessionManager, SessionType};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -48,7 +50,31 @@ async fn run_once(state: &AppState) {
         return;
     }
     tracing::info!(target: "permagentd::council", "convening weekly council");
-    match council::convene(&pool, store::Trigger::Weekly, None, &debate::LiveCaller).await {
+    // Weekly Council work still needs a durable harness task identity. Create
+    // a scheduled session in the existing Spectral session store; this is the
+    // attribution parent, while the Council store remains the report store.
+    let manager = Arc::new(SessionManager::instance());
+    let session = match manager
+        .create_session(
+            std::env::current_dir().unwrap_or_default(),
+            "Council weekly".to_string(),
+            SessionType::Scheduled,
+            GooseMode::Auto,
+        )
+        .await
+    {
+        Ok(session) => session,
+        Err(e) => {
+            tracing::warn!(target: "permagentd::council", "weekly Council skipped; could not create attribution session: {e}");
+            return;
+        }
+    };
+    if let Err(e) = manager.begin_budget_task(&session.id).await {
+        tracing::warn!(target: "permagentd::council", "weekly Council skipped; could not create budget task: {e}");
+        return;
+    }
+    let caller = debate::LiveCaller::new(manager, session.id);
+    match council::convene(&pool, store::Trigger::Weekly, None, &caller).await {
         Ok(c) => tracing::info!(
             target: "permagentd::council",
             session = %c.session_id,

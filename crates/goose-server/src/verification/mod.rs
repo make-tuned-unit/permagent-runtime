@@ -5,7 +5,7 @@
 //! checks, analyzes the diff over the worker's own commits (`work_base..head`,
 //! #523), grades the work with a local Ollama model, and writes the result to
 //! `metadata_json.verification` via L1's narrow allowlist API
-//! `cards::set_goal_verdict` (the sanctioned L2 write path).
+//! `cards::set_goal_verdict_and_program_receipts` (the sanctioned L2 write path).
 //!
 //! L1 contract (PHASE0-L2.md §4):
 //! - This module writes ONLY the `verification` key in metadata_json.
@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 use checks::{CheckResult, CheckStatus, CompletionCheck};
 use digest::{DiffSummary, EvidenceDigest, PerFileDiff};
 use permagent::verification_approval as approval;
+use permagent_eval::{ExitGateReceipt, ProgramDag};
 use verifier::{Grade, VerdictStatus, VerifierRun};
 
 /// The single metadata key this module owns.
@@ -577,8 +578,19 @@ pub async fn run_for_goal_with_review(
         .as_ref()
         .map(digest::review_detail_from);
 
-    // ── 5. ONE atomic metadata write: only `dispatch_evidence.verdict` (#466) ──
-    write_verification(pool, goal_id, &record).await?;
+    // ── 5. ONE atomic metadata write: verdict + typed program receipts (#466) ──
+    // Receipts are derived only from the verifier's declared deterministic
+    // checks. A contract with no exact one-to-one check mapping remains visibly
+    // blocked; no generic PASS is manufactured for it. Persist both values in
+    // the same narrow CAS so approval cannot race between them.
+    let program_receipts = build_program_gate_receipts(&card.metadata_json, &record)?;
+    permagent::cards::set_goal_verdict_and_program_receipts(
+        pool,
+        goal_id,
+        serde_json::to_value(&record).map_err(|error| error.to_string())?,
+        program_receipts,
+    )
+    .await?;
 
     // ── 5a. A review that stopped the line hands the goal to a person ──
     //
@@ -1247,6 +1259,7 @@ async fn park_for_command_approval(
             tier: parked.tier.as_str().to_string(),
             project_id: project.id.clone(),
         }),
+        roadmap_approval: None,
     };
 
     let headline = permagent::decisions::truncate_for_headline(&format!(
@@ -2086,6 +2099,76 @@ async fn write_verification(
         serde_json::to_value(record).map_err(|e| e.to_string())?,
     )
     .await
+}
+
+fn build_program_gate_receipts(
+    metadata: &serde_json::Value,
+    record: &VerificationRecord,
+) -> Result<Option<serde_json::Value>, String> {
+    if record.status != VerdictStatus::Pass {
+        return Ok(None);
+    }
+    let Some(program) = metadata.get("program") else {
+        return Ok(None);
+    };
+    let manifest = program
+        .get("manifest")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "program contract has no persisted manifest".to_string())?;
+    let node_id = program
+        .get("node_id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "program contract has no node id".to_string())?;
+    let dag = ProgramDag::from_yaml(manifest)
+        .map_err(|error| format!("program manifest is invalid during verification: {error}"))?;
+    let node = dag
+        .nodes
+        .iter()
+        .find(|node| node.id == node_id)
+        .ok_or_else(|| format!("program node '{node_id}' is absent from its manifest"))?;
+    let declared: Vec<CompletionCheck> = serde_json::from_value(
+        metadata
+            .get("completion_checks")
+            .cloned()
+            .ok_or_else(|| "program node has no declared completion checks".to_string())?,
+    )
+    .map_err(|error| format!("declared completion checks are invalid: {error}"))?;
+
+    let mut receipts = Vec::with_capacity(node.exit_gate.len());
+    for gate in &node.exit_gate {
+        let matching = declared
+            .iter()
+            .enumerate()
+            .filter(|(_, check)| check.summary() == gate.as_str())
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if matching.len() != 1 {
+            return Err(format!(
+                "program gate '{}' does not map to exactly one declared completion check",
+                gate
+            ));
+        }
+        let check_index = matching[0];
+        let result = record
+            .check_results
+            .iter()
+            .find(|result| result.check_index == check_index)
+            .ok_or_else(|| format!("program gate '{}' has no verifier result", gate))?;
+        if result.status != CheckStatus::Pass || result.lint.is_some() {
+            return Err(format!(
+                "program gate '{}' lacks a clean passing verifier result",
+                gate
+            ));
+        }
+        receipts.push(ExitGateReceipt {
+            gate: gate.clone(),
+            passed: true,
+            verification_id: Some(record.finished_at.clone()),
+        });
+    }
+    Ok(Some(
+        serde_json::to_value(receipts).map_err(|error| error.to_string())?,
+    ))
 }
 
 // ── Test support: mock Ollama server ────────────────────────────────────────

@@ -38,7 +38,8 @@
 //! model.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -47,6 +48,66 @@ use regex::Regex;
 use rmcp::model::{CallToolResult, Content};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde_json::json;
+
+/// Marker carried in `CallToolResult::structured_content` for the verifier's
+/// machine-readable result. Consumers must use this field rather than parsing
+/// the human-facing text content; the latter is intentionally free to change
+/// and may contain untrusted command output.
+pub const VERIFICATION_OBSERVATION_KIND: &str = "permagent.verification.v1";
+
+/// Structured result emitted by the built-in `verify` tool. This is the
+/// authoritative producer for harness verification telemetry.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct VerificationObservation {
+    pub kind: String,
+    pub command: Option<String>,
+    pub verdict: Option<String>,
+    pub evidence: Option<String>,
+}
+
+/// Return true only for a successful, structured verifier observation.
+///
+/// The textual content on a tool result is presentation, not an approval
+/// protocol: a response that merely says "PASS" (or an RPC success with no
+/// observation) must never advance a completion gate. Keeping this predicate
+/// beside the producer gives every consumer one authoritative contract.
+pub fn is_authoritative_pass(result: &CallToolResult) -> bool {
+    if result.is_error == Some(true) {
+        return false;
+    }
+    let Some(value) = result.structured_content.as_ref() else {
+        return false;
+    };
+    let Ok(observation) = serde_json::from_value::<VerificationObservation>(value.clone()) else {
+        return false;
+    };
+    observation.kind == VERIFICATION_OBSERVATION_KIND
+        && observation.verdict.as_deref() == Some("pass")
+}
+
+/// The verification boundary requested by the caller. `Auto` is deliberately
+/// conservative: it scopes checks to the changed files and never upgrades a
+/// docs or package change into a workspace-wide Rust test.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationScope {
+    Auto,
+    Docs,
+    Rust,
+    Integration,
+}
+
+/// Risk is metadata for the selection decision, not a reason to broaden a
+/// check. High-risk changes still require the explicit `integration` boundary
+/// to run a workspace-wide test.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationRisk {
+    Low,
+    Standard,
+    High,
+}
 
 /// Per-check timeout when the caller does not specify one. Generous enough for
 /// real builds/test suites, but bounded so a hung command can't wedge the
@@ -61,6 +122,10 @@ const MAX_OUTPUT_LINES: usize = 400;
 const HEAD_LINES: usize = 250;
 /// Lines kept from the bottom when clamping (the final summary trails it).
 const TAIL_LINES: usize = 120;
+/// Documentation checks must never turn a large or special file into an
+/// unbounded verifier read. Two MiB is ample for a source document while
+/// keeping the check deterministic and cheap.
+const MAX_MARKDOWN_BYTES: u64 = 2 * 1024 * 1024;
 
 /// Directory markers that identify a Python project.
 const PYTHON_MARKERS: &[&str] = &[
@@ -127,6 +192,17 @@ pub struct VerifyParams {
     pub path: Option<String>,
     /// Per-check timeout in seconds (default 600; 0 disables the timeout).
     pub timeout_secs: Option<u64>,
+    /// Verification scope. Auto scopes checks from the changed files; use
+    /// `integration` only at an intentional integration boundary.
+    pub scope: Option<VerificationScope>,
+    /// Optional risk annotation used in the selection rationale. It never
+    /// silently broadens verification.
+    pub risk: Option<VerificationRisk>,
+    /// Changed paths supplied by the caller (relative to `path`). This avoids
+    /// treating unrelated dirty worktree files as this task's scope. When
+    /// omitted, tracked and untracked git changes under `path` are inspected.
+    #[serde(alias = "files", alias = "changed_files")]
+    pub changed_paths: Option<Vec<String>>,
 }
 
 /// How a check is executed: either a resolved program + args run directly (no
@@ -136,6 +212,7 @@ pub struct VerifyParams {
 enum Exec {
     Direct { program: String, args: Vec<String> },
     Shell(String),
+    Markdown { files: Vec<PathBuf> },
 }
 
 /// One check command to run: a human label plus how to execute it.
@@ -149,6 +226,10 @@ impl Check {
     /// A check run directly as `program arg arg …` (no shell).
     fn direct(program: &str, args: &[&str]) -> Self {
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        Self::direct_owned(program, args)
+    }
+
+    fn direct_owned(program: &str, args: Vec<String>) -> Self {
         let label = if args.is_empty() {
             program.to_string()
         } else {
@@ -171,11 +252,27 @@ impl Check {
         }
     }
 
+    fn markdown(files: Vec<PathBuf>) -> Self {
+        Self {
+            label: "bounded markdown hygiene checks".to_string(),
+            exec: Exec::Markdown { files },
+        }
+    }
+
     /// The program whose absence would make this check unrunnable.
     fn program_name(&self) -> String {
         match &self.exec {
             Exec::Direct { program, .. } => program.clone(),
-            Exec::Shell(_) => "shell".to_string(),
+            // The missing program is the one the command line names, not the
+            // shell that would have run it. Reporting "`shell` was not found on
+            // PATH ... Install it" sent a local run looking for a tool called
+            // `shell`; the tool actually missing was `npm`.
+            Exec::Shell(command) => command
+                .split_whitespace()
+                .next()
+                .unwrap_or("shell")
+                .to_string(),
+            Exec::Markdown { .. } => "markdown checker".to_string(),
         }
     }
 }
@@ -221,10 +318,15 @@ impl VerifyTool {
             Some("") => {
                 return error_result(
                     "`command` cannot be empty — omit it to auto-detect the project's checks.",
-                )
+                );
             }
             Some(command) => vec![Check::shell(command)],
-            None => match detect_checks(&base_dir) {
+            None => match select_checks(
+                &base_dir,
+                params.scope.unwrap_or(VerificationScope::Auto),
+                params.risk.unwrap_or(VerificationRisk::Standard),
+                params.changed_paths.as_deref(),
+            ) {
                 Ok(DetectOutcome::Checks(checks)) => checks,
                 // A recognized project with nothing to verify yet is not a failure.
                 Ok(DetectOutcome::NoChecksConfigured(note)) => return no_checks_result(&note),
@@ -354,6 +456,377 @@ fn detect_checks(dir: &Path) -> Result<DetectOutcome, String> {
          target). Pass an explicit `command` to run this project's checks."
             .to_string(),
     )
+}
+
+/// Select checks for the current change set. This is intentionally separate
+/// from marker-file detection: the latter remains a useful pure fallback and
+/// its language behavior is stable, while the generic tool must not turn a
+/// docs-only or narrow Rust edit into a workspace build.
+fn select_checks(
+    dir: &Path,
+    scope: VerificationScope,
+    risk: VerificationRisk,
+    supplied_changes: Option<&[String]>,
+) -> Result<DetectOutcome, String> {
+    if scope == VerificationScope::Integration {
+        if !dir.join("Cargo.toml").is_file() {
+            return Err(
+                "integration scope requires a Cargo workspace at the verification path".to_string(),
+            );
+        }
+        return Ok(DetectOutcome::Checks(vec![Check::direct(
+            "cargo",
+            &["test", "--workspace", "--all-targets"],
+        )]));
+    }
+
+    let changes = match supplied_changes {
+        Some(paths) => normalize_supplied_changes(dir, paths)?,
+        None => match git_changes_under(dir) {
+            Some(changes) => changes,
+            None if dir.join("Cargo.toml").is_file() => {
+                return Ok(DetectOutcome::NoChecksConfigured(
+                    "could not determine the changed files, so no Cargo check is inferred; pass an "
+                        .to_string()
+                        + "explicit command or provide `changed_paths`",
+                ));
+            }
+            None => return detect_checks(dir),
+        },
+    };
+    if changes.is_empty() {
+        return Ok(DetectOutcome::NoChecksConfigured(
+            "no changed files were found under this verification path — no scoped check is safe to infer"
+                .to_string(),
+        ));
+    }
+
+    let docs_only = changes.iter().all(|path| is_documentation_path(path));
+    if scope == VerificationScope::Docs && !docs_only {
+        return Err(
+            "docs scope was requested, but the changed set includes non-documentation files; "
+                .to_string(),
+        );
+    }
+    if docs_only && matches!(scope, VerificationScope::Docs | VerificationScope::Auto) {
+        // This check is deterministic, local, and does not compile anything.
+        // It catches syntax-shaped defects without pretending to validate
+        // prose meaning.
+        return Ok(DetectOutcome::Checks(vec![markdown_check(dir, &changes)?]));
+    }
+    match scope {
+        VerificationScope::Rust | VerificationScope::Auto => {
+            if changes.iter().all(|path| is_rust_path(path)) {
+                return narrow_rust_checks(dir, &changes);
+            }
+            if scope == VerificationScope::Rust {
+                return Err(format!(
+                    "scoped Rust verification cannot cover this change set (risk={risk:?}); \
+                     pass `scope: \"integration\"` at the integration boundary or an explicit `command`",
+                ));
+            }
+            if changes.iter().any(|path| is_rust_path(path)) {
+                return Err("auto verification found a mixed Rust/non-Rust change set; provide `changed_paths` for this task or pass an explicit command (workspace-wide integration tests require `scope: \"integration\"`)".to_string());
+            }
+            // Preserve the existing language-native behavior for non-Rust
+            // projects. A Cargo marker alone is not permission to run a broad
+            // test when the changed set is unrelated to Rust.
+            if dir.join("Cargo.toml").is_file() {
+                return Ok(DetectOutcome::NoChecksConfigured("the changed files are not Rust, so no Cargo check is inferred; use the matching project check or an explicit command".to_string()));
+            }
+            detect_checks(dir)
+        }
+        VerificationScope::Docs => unreachable!("handled before scope dispatch"),
+        VerificationScope::Integration => unreachable!(),
+    }
+}
+
+/// Documentation extensions accepted by the lightweight markdown check.
+fn is_documentation_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.starts_with("docs/")
+        || lower.starts_with(".docs/")
+        || matches!(
+            Path::new(&lower).extension().and_then(|e| e.to_str()),
+            Some("md" | "mdx" | "markdown" | "rst" | "txt")
+        )
+}
+
+fn is_rust_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".rs")
+        || lower.ends_with("/cargo.toml")
+        || lower == "cargo.toml"
+        || lower.ends_with("/cargo.lock")
+        || lower == "cargo.lock"
+        || lower.ends_with("/.cargo/config")
+        || lower.ends_with("/.cargo/config.toml")
+        || lower == "build.rs"
+        || lower.ends_with("/build.rs")
+}
+
+fn markdown_check(dir: &Path, paths: &[String]) -> Result<Check, String> {
+    let root = git_root(dir).unwrap_or_else(|| dir.to_path_buf());
+    let root = root.canonicalize().unwrap_or(root);
+    let mut files = Vec::with_capacity(paths.len());
+    for path in paths {
+        let candidate = root.join(path);
+        let metadata = std::fs::symlink_metadata(&candidate)
+            .map_err(|error| format!("cannot inspect documentation path `{path}`: {error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return Err(format!(
+                "documentation path `{path}` must be a regular file inside the verification root"
+            ));
+        }
+        if metadata.len() > MAX_MARKDOWN_BYTES {
+            return Err(format!(
+                "documentation path `{path}` exceeds the {MAX_MARKDOWN_BYTES}-byte verification limit"
+            ));
+        }
+        let canonical = candidate
+            .canonicalize()
+            .map_err(|error| format!("cannot resolve documentation path `{path}`: {error}"))?;
+        if !canonical.starts_with(&root) {
+            return Err(format!(
+                "documentation path `{path}` resolves outside the verification repository"
+            ));
+        }
+        files.push(canonical);
+    }
+    Ok(Check::markdown(files))
+}
+
+/// Validate caller-supplied paths and normalize them to repository-root
+/// relative paths, matching the representation returned by
+/// [`git_changes_under`]. This keeps subdirectory verification honest and
+/// rejects absolute/traversal inputs before any filesystem access.
+fn normalize_supplied_changes(dir: &Path, paths: &[String]) -> Result<Vec<String>, String> {
+    let root = git_root(dir).unwrap_or_else(|| dir.to_path_buf());
+    let root = root.canonicalize().unwrap_or(root);
+    let dir = dir
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve verification path: {error}"))?;
+    if !dir.starts_with(&root) {
+        return Err("verification path is outside the repository root".to_string());
+    }
+    let mut normalized = Vec::new();
+    for raw in paths {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let supplied = Path::new(trimmed);
+        if supplied.is_absolute()
+            || supplied
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+        {
+            return Err(format!(
+                "changed path `{trimmed}` must be relative and cannot contain parent traversal"
+            ));
+        }
+        let candidate = dir.join(supplied);
+        let relative = candidate.strip_prefix(&root).map_err(|_| {
+            format!("changed path `{trimmed}` resolves outside the verification repository")
+        })?;
+        let relative = relative
+            .to_str()
+            .ok_or_else(|| format!("changed path `{trimmed}` is not valid UTF-8"))?
+            .to_string();
+        if !relative.is_empty() {
+            normalized.push(relative);
+        }
+    }
+    normalized.sort();
+    normalized.dedup();
+    Ok(normalized)
+}
+
+/// Resolve the repository root and return tracked/untracked paths below `dir`.
+/// A failure is surfaced rather than falling back to a broad Cargo command.
+fn git_changes_under(dir: &Path) -> Option<Vec<String>> {
+    let root = std::process::Command::new("git")
+        .args(["-C", dir.to_str()?, "rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| PathBuf::from(s.trim()))?;
+    let relative_dir = dir
+        .canonicalize()
+        .ok()?
+        .strip_prefix(&root)
+        .ok()?
+        .to_path_buf();
+
+    let tracked = std::process::Command::new("git")
+        .args(["-C", root.to_str()?, "diff", "--name-only", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let untracked = std::process::Command::new("git")
+        .args([
+            "-C",
+            root.to_str()?,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+
+    let tracked_text = String::from_utf8_lossy(&tracked.stdout).into_owned();
+    let untracked_text = String::from_utf8_lossy(&untracked.stdout).into_owned();
+    let mut paths = tracked_text
+        .lines()
+        .chain(untracked_text.lines())
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .filter(|path| {
+            let path = Path::new(path);
+            relative_dir.as_os_str().is_empty() || path.starts_with(&relative_dir)
+        })
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    Some(paths)
+}
+
+/// Build package/target-scoped Cargo checks. Package names come from the
+/// nearest manifest rather than directory spelling, and target files receive
+/// a target selector so a single binary/integration test does not fan out to
+/// every workspace member.
+fn narrow_rust_checks(dir: &Path, changes: &[String]) -> Result<DetectOutcome, String> {
+    let repo_root = git_root(dir)
+        .or_else(|| dir.canonicalize().ok())
+        .ok_or_else(|| "could not resolve the Cargo repository root".to_string())?;
+    let mut packages = Vec::new();
+    let mut targets = Vec::new();
+    for changed in changes {
+        let path = repo_root.join(changed);
+        let Some(manifest) = nearest_manifest(&path, &repo_root) else {
+            return Err(format!(
+                "changed Rust path `{changed}` is not inside a Cargo package; pass `scope: \"integration\"` or an explicit `command`"
+            ));
+        };
+        let package = cargo_package_name(&manifest)
+            .ok_or_else(|| format!("could not read package name from {}", manifest.display()))?;
+        if !packages.contains(&package) {
+            packages.push(package);
+        }
+        if let Some(target) = cargo_target_selector(&path, &manifest) {
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
+    }
+    if packages.is_empty() {
+        return Err("no impacted Cargo package found for the Rust change".to_string());
+    }
+    let mut args = vec!["test".to_string()];
+    for package in packages {
+        args.extend(["-p".to_string(), package]);
+    }
+    // One target selector is safe and useful for a narrow target change. If a
+    // package has several targets changed, package-level tests cover them all
+    // without inventing an invalid multi-target Cargo command.
+    if targets.len() == 1 {
+        args.extend(targets.remove(0));
+    }
+    Ok(DetectOutcome::Checks(vec![Check::direct_owned(
+        "cargo", args,
+    )]))
+}
+
+fn git_root(dir: &Path) -> Option<PathBuf> {
+    std::process::Command::new("git")
+        .args(["-C", dir.to_str()?, "rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| PathBuf::from(s.trim()))
+}
+
+fn nearest_manifest(path: &Path, root: &Path) -> Option<PathBuf> {
+    let mut cursor = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()?.to_path_buf()
+    };
+    loop {
+        let manifest = cursor.join("Cargo.toml");
+        if manifest.is_file() {
+            return Some(manifest);
+        }
+        if cursor == root || !cursor.pop() {
+            return None;
+        }
+    }
+}
+
+fn cargo_package_name(manifest: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(manifest).ok()?;
+    let mut in_package = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_package = trimmed == "[package]";
+            continue;
+        }
+        if !in_package || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "name" {
+            continue;
+        }
+        let name = value.split('#').next()?.trim().trim_matches('"');
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn cargo_target_selector(path: &Path, manifest: &Path) -> Option<Vec<String>> {
+    let package_root = manifest.parent()?;
+    let relative = path.strip_prefix(package_root).ok()?;
+    let mut components = relative.components();
+    match (components.next()?.as_os_str().to_str()?, components.next()?) {
+        ("tests", name) if relative.extension().and_then(|e| e.to_str()) == Some("rs") => {
+            Some(vec![
+                "--test".to_string(),
+                name.as_os_str()
+                    .to_str()?
+                    .trim_end_matches(".rs")
+                    .to_string(),
+            ])
+        }
+        ("examples", name) if relative.extension().and_then(|e| e.to_str()) == Some("rs") => {
+            Some(vec![
+                "--example".to_string(),
+                name.as_os_str()
+                    .to_str()?
+                    .trim_end_matches(".rs")
+                    .to_string(),
+            ])
+        }
+        ("src", name) if name.as_os_str().to_str()? == "bin" => components
+            .next()
+            .and_then(|name| name.as_os_str().to_str())
+            .map(|name| {
+                vec![
+                    "--bin".to_string(),
+                    name.trim_end_matches(".rs").to_string(),
+                ]
+            }),
+        _ => None,
+    }
 }
 
 /// Node checks: run whichever of `build` then `test` scripts exist, via the
@@ -493,6 +966,9 @@ fn makefile_check_target(dir: &Path) -> Option<String> {
 // --- execution --------------------------------------------------------------
 
 async fn run_check(check: &Check, dir: &Path, timeout_secs: u64) -> CheckOutcome {
+    if let Exec::Markdown { files } = &check.exec {
+        return run_markdown_checks(files, timeout_secs).await;
+    }
     let mut command = match &check.exec {
         Exec::Direct { program, args } => {
             let mut command = tokio::process::Command::new(program);
@@ -500,6 +976,7 @@ async fn run_check(check: &Check, dir: &Path, timeout_secs: u64) -> CheckOutcome
             command
         }
         Exec::Shell(command_line) => shell_command(command_line),
+        Exec::Markdown { .. } => unreachable!("markdown checks return before spawning a process"),
     };
     command
         .current_dir(dir)
@@ -510,6 +987,7 @@ async fn run_check(check: &Check, dir: &Path, timeout_secs: u64) -> CheckOutcome
         // a timed-out build can't linger.
         .kill_on_drop(true);
 
+    // permagent-dispatch: seam=verifier_command_v1 class=excluded reason=deterministic_local authority=verification_contract
     let child = match command.spawn() {
         Ok(child) => child,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -541,6 +1019,107 @@ async fn run_check(check: &Check, dir: &Path, timeout_secs: u64) -> CheckOutcome
         CheckOutcome::Failed {
             exit_code: output.status.code(),
             output: combine_streams(&output.stdout, &output.stderr),
+        }
+    }
+}
+
+/// Deterministic markdown hygiene for both tracked and newly-created files.
+/// This intentionally checks syntax-shaped defects only: trailing whitespace,
+/// empty inline destinations, and malformed reference definitions.
+async fn run_markdown_checks(files: &[PathBuf], timeout_secs: u64) -> CheckOutcome {
+    let reference = Regex::new(r"^\s*\[[^\]]+\]:\s*(\S.*)$").expect("static regex");
+    let mut findings = Vec::new();
+    for path in files {
+        let path_for_read = path.clone();
+        let read = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
+            let metadata = std::fs::symlink_metadata(&path_for_read)?;
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "not a regular non-symlink file",
+                ));
+            }
+            if metadata.len() > MAX_MARKDOWN_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "file exceeds markdown verification size limit",
+                ));
+            }
+            let mut bytes = Vec::with_capacity(metadata.len() as usize);
+            std::fs::File::open(&path_for_read)?
+                .take(MAX_MARKDOWN_BYTES + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > MAX_MARKDOWN_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "file exceeds markdown verification size limit",
+                ));
+            }
+            Ok(bytes)
+        });
+        let read = if timeout_secs > 0 {
+            match tokio::time::timeout(Duration::from_secs(timeout_secs), read).await {
+                Ok(result) => result,
+                Err(_) => return CheckOutcome::TimedOut,
+            }
+        } else {
+            read.await
+        };
+        let bytes = match read {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(error)) => {
+                findings.push(format!("{}: cannot read: {error}", path.display()));
+                continue;
+            }
+            Err(error) => {
+                findings.push(format!("{}: read task failed: {error}", path.display()));
+                continue;
+            }
+        };
+        let text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(_) => {
+                findings.push(format!("{}: not valid UTF-8", path.display()));
+                continue;
+            }
+        };
+        for (line_number, line) in text.lines().enumerate() {
+            if line.ends_with(' ') || line.ends_with('\t') {
+                findings.push(format!(
+                    "{}:{}: trailing whitespace",
+                    path.display(),
+                    line_number + 1
+                ));
+            }
+            if let Some(start) = line.find("](") {
+                let destination = &line[start + 2..];
+                if !destination.contains(')')
+                    || destination[..destination.find(')').unwrap_or(0)]
+                        .trim()
+                        .is_empty()
+                {
+                    findings.push(format!(
+                        "{}:{}: inline link has an empty or unterminated destination",
+                        path.display(),
+                        line_number + 1
+                    ));
+                }
+            }
+            if line.contains("]: ") && !reference.is_match(line) {
+                findings.push(format!(
+                    "{}:{}: malformed link reference",
+                    path.display(),
+                    line_number + 1
+                ));
+            }
+        }
+    }
+    if findings.is_empty() {
+        CheckOutcome::Passed
+    } else {
+        CheckOutcome::Failed {
+            exit_code: Some(1),
+            output: findings.join("\n"),
         }
     }
 }
@@ -615,10 +1194,30 @@ fn clamp_output(text: &str) -> String {
 }
 
 /// A clean success: no error dump, just which checks passed.
+fn observation(
+    mut result: CallToolResult,
+    command: Option<&str>,
+    verdict: Option<&str>,
+    evidence: Option<&str>,
+) -> CallToolResult {
+    result.structured_content = Some(json!({
+        "kind": VERIFICATION_OBSERVATION_KIND,
+        "command": command,
+        "verdict": verdict,
+        "evidence": evidence,
+    }));
+    result
+}
+
 fn pass_result(checks: &[Check]) -> CallToolResult {
     let labels: Vec<&str> = checks.iter().map(|check| check.label.as_str()).collect();
     let message = format!("PASS - all checks passed: {}.", labels.join(", "));
-    CallToolResult::success(vec![Content::text(message).with_priority(0.0)])
+    observation(
+        CallToolResult::success(vec![Content::text(message.clone()).with_priority(0.0)]),
+        Some(&labels.join(", ")),
+        Some("pass"),
+        Some(&message),
+    )
 }
 
 /// A structured failure: the failing command, its exit code, the (normalized,
@@ -639,11 +1238,21 @@ fn fail_result(check: &Check, exit_code: Option<i32>, output: &str) -> CallToolR
          and are blocked by the runaway-loop guard.",
         label = check.label,
     );
-    error_result(&message)
+    observation(
+        CallToolResult::error(vec![Content::text(message).with_priority(0.0)]),
+        Some(&check.label),
+        Some("fail"),
+        Some(&body),
+    )
 }
 
 fn error_result(message: &str) -> CallToolResult {
-    CallToolResult::error(vec![Content::text(message.to_string()).with_priority(0.0)])
+    observation(
+        CallToolResult::error(vec![Content::text(message.to_string()).with_priority(0.0)]),
+        None,
+        Some("error"),
+        Some(message),
+    )
 }
 
 /// A "no checks configured" outcome: the project type was recognized but has
@@ -655,7 +1264,12 @@ fn no_checks_result(reason: &str) -> CallToolResult {
         "NO CHECKS - {reason} Nothing to verify yet. Add tests or a build/test script and run \
          verify again, or pass an explicit `command` to run a specific check."
     );
-    CallToolResult::success(vec![Content::text(message).with_priority(0.0)])
+    observation(
+        CallToolResult::success(vec![Content::text(message.clone()).with_priority(0.0)]),
+        None,
+        Some("pass"),
+        Some(&message),
+    )
 }
 
 #[cfg(test)]
@@ -671,6 +1285,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn verifier_results_carry_authoritative_structured_observations() {
+        let result = pass_result(&[Check::direct("cargo", &["test"])]);
+        let observation: VerificationObservation =
+            serde_json::from_value(result.structured_content.unwrap()).unwrap();
+        assert_eq!(observation.kind, VERIFICATION_OBSERVATION_KIND);
+        assert_eq!(observation.command.as_deref(), Some("cargo test"));
+        assert_eq!(observation.verdict.as_deref(), Some("pass"));
+        assert!(observation
+            .evidence
+            .as_deref()
+            .is_some_and(|e| e.contains("PASS")));
+
+        let failed = fail_result(
+            &Check::direct("cargo", &["test"]),
+            Some(101),
+            "error: test failed",
+        );
+        let observation: VerificationObservation =
+            serde_json::from_value(failed.structured_content.unwrap()).unwrap();
+        assert_eq!(observation.verdict.as_deref(), Some("fail"));
+        assert_eq!(observation.command.as_deref(), Some("cargo test"));
+        assert_eq!(observation.evidence.as_deref(), Some("error: test failed"));
+    }
+
     /// Unwrap a detection that must have produced runnable checks.
     fn checks_of(dir: &Path) -> Vec<Check> {
         match detect_checks(dir) {
@@ -682,6 +1321,15 @@ mod tests {
     // ── Detection → the correct check command ──
 
     #[test]
+    fn shell_check_names_the_missing_program_not_the_shell() {
+        // A local harness run was told "`shell` was not found on PATH, so `npm
+        // run test` could not run. Install it" — there is no program called
+        // `shell`, and the advice was unfollowable.
+        assert_eq!(Check::shell("npm run test").program_name(), "npm");
+        assert_eq!(Check::shell("cargo test --lib").program_name(), "cargo");
+    }
+
+    #[test]
     fn detects_rust() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
@@ -689,6 +1337,141 @@ mod tests {
             checks_of(dir.path()),
             vec![Check::direct("cargo", &["test"])]
         );
+    }
+
+    #[test]
+    fn auto_docs_scope_uses_deterministic_diff_check_without_cargo() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
+        std::fs::create_dir(dir.path().join("docs")).unwrap();
+        std::fs::write(dir.path().join("docs/guide.md"), "# Guide\n").unwrap();
+        std::fs::write(dir.path().join("README.md"), "# Readme\n").unwrap();
+        let changes = ["docs/guide.md".to_string(), "README.md".to_string()];
+        assert_eq!(
+            select_checks(
+                dir.path(),
+                VerificationScope::Auto,
+                VerificationRisk::Low,
+                Some(&changes),
+            )
+            .unwrap(),
+            DetectOutcome::Checks(vec![markdown_check(
+                dir.path(),
+                &["README.md".to_string(), "docs/guide.md".to_string()],
+            )
+            .unwrap(),])
+        );
+    }
+
+    #[test]
+    fn supplied_rust_paths_are_relative_to_the_requested_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = dir.path().join("crates/widget");
+        std::fs::create_dir_all(package.join("src")).unwrap();
+        std::fs::write(package.join("Cargo.toml"), "[package]\nname = \"widget\"").unwrap();
+        std::fs::write(package.join("src/lib.rs"), "pub fn widget() {}\n").unwrap();
+        let changes = ["src/lib.rs".to_string()];
+        assert_eq!(
+            select_checks(
+                &package,
+                VerificationScope::Rust,
+                VerificationRisk::Standard,
+                Some(&changes),
+            )
+            .unwrap(),
+            DetectOutcome::Checks(vec![Check::direct("cargo", &["test", "-p", "widget"])])
+        );
+    }
+
+    #[test]
+    fn supplied_changes_reject_absolute_and_parent_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        for path in ["../outside.md", "/tmp/outside.md"] {
+            let error = normalize_supplied_changes(dir.path(), &[path.to_string()]).unwrap_err();
+            assert!(error.contains("must be relative"), "got: {error}");
+        }
+    }
+
+    #[test]
+    fn auto_does_not_turn_non_rust_changes_into_workspace_cargo_tests() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
+        let changes = ["ui/app.ts".to_string()];
+        assert!(matches!(
+            select_checks(
+                dir.path(),
+                VerificationScope::Auto,
+                VerificationRisk::Standard,
+                Some(&changes),
+            )
+            .unwrap(),
+            DetectOutcome::NoChecksConfigured(_)
+        ));
+    }
+
+    #[test]
+    fn integration_scope_is_the_only_auto_selection_for_workspace_test() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]\nmembers = []").unwrap();
+        assert_eq!(
+            select_checks(
+                dir.path(),
+                VerificationScope::Integration,
+                VerificationRisk::High,
+                None,
+            )
+            .unwrap(),
+            DetectOutcome::Checks(vec![Check::direct(
+                "cargo",
+                &["test", "--workspace", "--all-targets"],
+            )])
+        );
+    }
+
+    #[test]
+    fn target_selector_keeps_rust_verification_narrow() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("Cargo.toml");
+        std::fs::write(&manifest, "[package]\nname = \"x\"").unwrap();
+        let target = cargo_target_selector(&dir.path().join("tests/parser.rs"), &manifest);
+        assert_eq!(
+            target,
+            Some(vec!["--test".to_string(), "parser".to_string()])
+        );
+    }
+
+    #[test]
+    fn cargo_package_name_only_reads_the_package_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            "[dependencies]\nname = \"wrong\"\n\n[package]\nname = \"right\"\n",
+        )
+        .unwrap();
+        assert_eq!(cargo_package_name(&manifest).as_deref(), Some("right"));
+    }
+
+    #[tokio::test]
+    async fn docs_scope_checks_the_supplied_untracked_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let docs = dir.path().join("notes.md");
+        std::fs::write(&docs, "[broken]()  \n").unwrap();
+        let result = VerifyTool::new()
+            .verify_with_cwd(
+                VerifyParams {
+                    command: None,
+                    path: None,
+                    timeout_secs: Some(30),
+                    scope: Some(VerificationScope::Docs),
+                    risk: Some(VerificationRisk::Low),
+                    changed_paths: Some(vec!["notes.md".to_string()]),
+                },
+                Some(dir.path()),
+            )
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text_of(&result).contains("bounded markdown hygiene checks"));
     }
 
     #[test]
@@ -948,6 +1731,9 @@ mod tests {
                     command: None,
                     path: None,
                     timeout_secs: None,
+                    scope: None,
+                    risk: None,
+                    changed_paths: None,
                 },
                 Some(dir.path()),
             )
@@ -1161,6 +1947,9 @@ mod tests {
         assert!(empty.command.is_none());
         assert!(empty.path.is_none());
         assert!(empty.timeout_secs.is_none());
+        assert!(empty.scope.is_none());
+        assert!(empty.risk.is_none());
+        assert!(empty.changed_paths.is_none());
 
         let full: VerifyParams = serde_json::from_value(
             json!({"command":"cargo clippy","path":"crates/x","timeout_secs":30}),
@@ -1181,6 +1970,9 @@ mod tests {
                     command: Some("   ".to_string()),
                     path: None,
                     timeout_secs: None,
+                    scope: None,
+                    risk: None,
+                    changed_paths: None,
                 },
                 Some(dir.path()),
             )
@@ -1199,6 +1991,9 @@ mod tests {
                     command: None,
                     path: None,
                     timeout_secs: None,
+                    scope: None,
+                    risk: None,
+                    changed_paths: None,
                 },
                 Some(dir.path()),
             )
@@ -1221,6 +2016,9 @@ mod tests {
                     command: Some("exit 0".to_string()),
                     path: None,
                     timeout_secs: Some(30),
+                    scope: None,
+                    risk: None,
+                    changed_paths: None,
                 },
                 Some(dir.path()),
             )
@@ -1240,6 +2038,9 @@ mod tests {
                     command: Some("echo EARLY_MARKER; echo LATE_MARKER 1>&2; exit 1".to_string()),
                     path: None,
                     timeout_secs: Some(30),
+                    scope: None,
+                    risk: None,
+                    changed_paths: None,
                 },
                 Some(dir.path()),
             )

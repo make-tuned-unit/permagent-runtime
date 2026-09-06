@@ -36,6 +36,7 @@ pub mod listen;
 pub mod model_manager;
 pub mod orchestrator;
 pub mod people;
+pub mod program_bridge;
 pub mod project_manager;
 pub mod pronunciation;
 pub mod public_apis;
@@ -53,6 +54,7 @@ pub mod supervised_cli;
 pub mod terminal_supervision;
 pub mod todo;
 pub mod tom;
+pub mod write_scope;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -442,7 +444,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: ext_manager::EXTENSION_NAME,
                 display_name: "Extension Manager",
                 description:
-                    "Search your long-term Brain memory to recall facts and context (search_memory), discover other extensions you can turn on (search_available_extensions), enable or disable them (manage_extensions), and list or read the resources an extension exposes (list_resources, read_resource)",
+                    "Search your long-term Brain memory to recall facts and context (search_memory), load one exact memory by stable id/key (get_memory), discover other extensions you can turn on (search_available_extensions), enable or disable them (manage_extensions), and list or read the resources an extension exposes (list_resources, read_resource)",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
@@ -555,7 +557,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: orchestrator::EXTENSION_NAME,
                 display_name: "Orchestrator",
                 description:
-                    "Orchestrate work across agent sessions: list, view, start, message, and interrupt them (list_sessions, view_session, start_agent, send_message, interrupt_agent); inspect available workers (list_workers, check_worker); plan objectives and dispatch roadmap goals to worker agents, optionally narrowing extensions for an in-process dispatch while refusing that scope for CLI workers (decompose_roadmap, create_roadmap, goal_advance, goal_status, steer_goal, pause_roadmap, resume_roadmap); run a packaged executable skill by name (run_executable_skill); keep durable state across turns and restarts (context_set, context_get, context_list, context_delete); send a structured agent-to-agent message between InProgress goal workers (message_goal); and surface decisions in the Decision Inbox for supervised approval (escalate)",
+                    "Orchestrate work across agent sessions: list, view, search/page exact messages, reopen current-user attachments, start, message, and interrupt them (list_sessions, view_session, view_attachment, start_agent, send_message, interrupt_agent); inspect available workers (list_workers, check_worker); plan objectives and dispatch roadmap goals to worker agents, optionally narrowing extensions for an in-process dispatch while refusing that scope for CLI workers (decompose_roadmap, create_roadmap, goal_advance, goal_status, steer_goal, pause_roadmap, resume_roadmap); run a packaged executable skill by name (run_executable_skill); keep durable state across turns and restarts (context_set, context_get, context_list, context_delete); send a structured agent-to-agent message between InProgress goal workers (message_goal); and surface decisions in the Decision Inbox for supervised approval (escalate)",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,

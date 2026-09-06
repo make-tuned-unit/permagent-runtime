@@ -1,4 +1,5 @@
 use crate::action_required_manager::ActionRequiredManager;
+use crate::agents::reply_parts::AccountedFastCompletion;
 use crate::agents::tool_execution::ToolCallContext;
 use crate::agents::types::SharedProvider;
 use crate::session_context::{SESSION_ID_HEADER, WORKING_DIR_HEADER};
@@ -255,23 +256,41 @@ impl ClientHandler for GooseClient {
             .as_deref()
             .unwrap_or("You are Permagent, a persistent AI agent.");
 
-        let model_config = provider.get_model_config();
-        let (response, usage) = provider
-            .complete(
-                &model_config,
-                session_id.as_deref().unwrap_or(""),
-                system_prompt,
-                &provider_ready_messages,
-                &[],
+        let durable_session_id = session_id.as_deref().ok_or_else(|| {
+            ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                "MCP sampling requires a durable session",
+                None,
             )
+        })?;
+        let manager = Arc::new(crate::session::SessionManager::instance());
+        let session = manager
+            .get_session(durable_session_id, false)
             .await
             .map_err(|e| {
                 ErrorData::new(
                     ErrorCode::INTERNAL_ERROR,
-                    "Unexpected error while completing the prompt",
+                    "Could not load the durable MCP sampling session",
                     Some(Value::from(e.to_string())),
                 )
             })?;
+        let (response, usage) = AccountedFastCompletion::complete_accounted(
+            manager,
+            session,
+            provider,
+            system_prompt,
+            &provider_ready_messages,
+            &[],
+            false,
+        )
+        .await
+        .map_err(|e| {
+            ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                "Unexpected error while completing the prompt",
+                Some(Value::from(e.to_string())),
+            )
+        })?;
 
         Ok(CreateMessageResult::new(
             SamplingMessage::new(
@@ -766,6 +785,14 @@ mod tests {
     use crate::agents::GoosePlatform;
     use serde_json::json;
     use test_case::test_case;
+
+    #[test]
+    fn mcp_create_message_cannot_bypass_shared_paid_dispatch_boundary() {
+        let source = include_str!("mcp_client.rs");
+        let direct_call = [".", "complete("].concat();
+        assert!(source.contains("complete_accounted"));
+        assert!(!source.contains(&direct_call));
+    }
 
     fn new_client(platform: GoosePlatform) -> GooseClient {
         let capabilities = match platform {

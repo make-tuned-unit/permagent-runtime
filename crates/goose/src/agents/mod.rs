@@ -26,7 +26,9 @@ mod tour_tool;
 pub mod types;
 pub mod validate_extensions;
 
-pub use agent::{Agent, AgentEvent, AgentRunnerConfig, ExtensionLoadResult, GoosePlatform};
+pub use agent::{
+    Agent, AgentEvent, AgentRunnerConfig, AgentRuntimeOutcome, ExtensionLoadResult, GoosePlatform,
+};
 pub use container::Container;
 pub use execute_commands::COMPACT_TRIGGERS;
 pub use extension::{ExtensionConfig, ExtensionError};

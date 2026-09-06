@@ -389,6 +389,7 @@ impl GoalEngine for SupervisedCliEngine {
 
         Ok(DispatchedWork {
             run_id: session_id,
+            process_id: None,
             join,
             kill: GoalKill::None,
             // Supervised sessions are steered by the human IN the terminal.
@@ -719,6 +720,12 @@ mod tests {
             timeout,
             output_tx: None,
             parent_session_id: None,
+            goal_id: None,
+            budget_task_id: None,
+            billing_class: Some(crate::config::agent_identity::WorkerBillingClass::Subscription),
+            provider: Some("anthropic".to_string()),
+            model: None,
+            cli_identity: Some("claude".to_string()),
             project_id: None,
         }
     }

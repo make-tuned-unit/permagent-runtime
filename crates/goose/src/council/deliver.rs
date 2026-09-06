@@ -79,6 +79,49 @@ pub async fn file_actions(
     Ok(ids)
 }
 
+/// File one approval for the whole validated graph. Approving nodes one by one
+/// destroys the point of a DAG and makes the user babysit internal gates.
+pub async fn file_plan(
+    pool: &Pool<Sqlite>,
+    session_id: &str,
+    headline: &str,
+    plan: super::plan::CouncilProposal,
+) -> Result<String, String> {
+    let title = format!("Run Council DAG: {}", headline.trim());
+    let detail = format!(
+        "{} ordered goal{} · relative budget {}/{} · project {}. Approval creates the complete dependency graph and releases only root goals.",
+        plan.nodes.len(),
+        if plan.nodes.len() == 1 { "" } else { "s" },
+        plan.nodes.iter().map(|node| node.estimated_budget).sum::<u64>(),
+        plan.budget_limit,
+        plan.project.project_name,
+    );
+    let project_id = plan.project.project_id.clone();
+    let project_name = plan.project.project_name.clone();
+    let decision = decisions::create_decision(
+        pool,
+        NewDecision {
+            kind: KIND.to_string(),
+            goal_id: None,
+            project_id: Some(project_id.clone()),
+            headline: Some(decisions::truncate_for_headline(&title)),
+            detail: Some(detail),
+            payload: serde_json::json!({
+                "session_id": session_id,
+                "project_id": project_id,
+                "project_name": project_name,
+                "title": title,
+                "description": "A validated Council-authored execution DAG.",
+                "plan": plan,
+            }),
+            rank: Some(0.9),
+            action_class: Some(KIND.to_string()),
+        },
+    )
+    .await?;
+    Ok(decision.id)
+}
+
 async fn file_one(
     pool: &Pool<Sqlite>,
     session_id: &str,
@@ -163,6 +206,7 @@ mod tests {
             consensus: vec![],
             dissent: vec![],
             actions,
+            dag: None,
             verdict_missing: false,
         }
     }
@@ -243,6 +287,54 @@ mod tests {
                 .count(),
             1,
             "a ruled report must not be flagged"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dag_is_one_approval_not_one_decision_per_node() {
+        use std::collections::BTreeSet;
+
+        let pool = pool().await;
+        let project_id = project(&pool).await;
+        let proposal = super::super::plan::CouncilProposal {
+            proposal_id: "council-session-plan".to_string(),
+            project: super::super::plan::ProjectContext {
+                project_id,
+                project_name: "Permagent".to_string(),
+                summary: "Frozen project context".to_string(),
+                memory_ids: vec!["memory-1".to_string()],
+                playbook_briefing: None,
+            },
+            nodes: vec![super::super::plan::DagNode {
+                id: "inspect".to_string(),
+                title: "Inspect existing pattern".to_string(),
+                description: "Read the existing implementation before editing.".to_string(),
+                files: vec!["crates/goose/src/council/mod.rs".to_string()],
+                symbols: vec!["convene".to_string()],
+                pattern_references: vec!["crates/goose/src/council/store.rs".to_string()],
+                acceptance_criteria: vec!["The existing Council flow remains intact".to_string()],
+                dependencies: Vec::new(),
+                required_capabilities: BTreeSet::from(["code_edit".to_string()]),
+                estimated_budget: 1,
+                risk: super::super::plan::RiskLevel::Low,
+                verification: super::super::plan::VerificationSpec {
+                    command: "cargo test -p permagent council".to_string(),
+                    required: true,
+                },
+            }],
+            budget_limit: 2,
+            program_manifest_sha256: None,
+            program_manifest: None,
+        };
+        file_plan(&pool, "session-plan", "Surgical fixes", proposal)
+            .await
+            .unwrap();
+        let open = crate::decisions::list_open_decisions(&pool).await.unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].decision.kind, KIND);
+        assert_eq!(
+            open[0].decision.payload["plan"]["nodes"][0]["id"],
+            "inspect"
         );
     }
 }

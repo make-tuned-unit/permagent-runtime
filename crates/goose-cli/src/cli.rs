@@ -45,6 +45,38 @@ pub struct Cli {
     command: Option<Command>,
 }
 
+#[cfg(test)]
+mod worker_session_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn inherited_worker_id_must_resolve_to_a_durable_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        let worker = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "worker".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reuse_inherited_worker_session(&manager, Some(worker.id.clone()))
+                .await
+                .unwrap(),
+            Some(worker.id)
+        );
+        let error = reuse_inherited_worker_session(&manager, Some("cli-fake".to_string()))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("does not exist"), "{error}");
+    }
+}
+
 #[derive(Args, Debug, Clone)]
 #[group(required = false, multiple = false)]
 pub struct Identifier {
@@ -364,11 +396,27 @@ async fn get_or_create_session_id(
     no_session: bool,
     goose_mode: GooseMode,
 ) -> Result<Option<String>> {
+    let inherited_worker = std::env::var(permagent::session::WORKER_SESSION_ID_ENV)
+        .ok()
+        .filter(|id| !id.trim().is_empty());
     if no_session {
+        if inherited_worker.is_some() {
+            return Err(anyhow::anyhow!(
+                "External goal workers require their durable session; --no-session is not supported"
+            ));
+        }
         return Ok(None);
     }
 
     let session_manager = SessionManager::instance();
+    if let Some(worker_id) =
+        reuse_inherited_worker_session(&session_manager, inherited_worker).await?
+    {
+        return Ok(Some(worker_id));
+    }
+    let inherited_parent = std::env::var(permagent::session::PARENT_SESSION_ID_ENV)
+        .ok()
+        .filter(|id| !id.trim().is_empty());
 
     let resolved_id = if resume {
         let Some(id) = identifier else {
@@ -402,7 +450,8 @@ async fn get_or_create_session_id(
     } else {
         let Some(id) = identifier else {
             let session = session_manager
-                .create_session(
+                .create_session_with_parent(
+                    inherited_parent.as_deref(),
                     std::env::current_dir()?,
                     "CLI Session".to_string(),
                     SessionType::User,
@@ -419,7 +468,8 @@ async fn get_or_create_session_id(
         let has_user_provided_name = id.name.is_some();
         let name = id.name.unwrap_or_else(|| "CLI Session".to_string());
         let session = session_manager
-            .create_session(
+            .create_session_with_parent(
+                inherited_parent.as_deref(),
                 std::env::current_dir()?,
                 name.clone(),
                 SessionType::User,
@@ -439,6 +489,30 @@ async fn get_or_create_session_id(
     };
 
     Ok(Some(resolved_id))
+}
+
+/// Resolve the daemon-created worker session supplied to an external
+/// Permagent CLI. A missing id means this is a normal top-level invocation;
+/// a non-existent id is an error so a worker can never silently fall back to
+/// an untracked session.
+async fn reuse_inherited_worker_session(
+    session_manager: &SessionManager,
+    worker_id: Option<String>,
+) -> Result<Option<String>> {
+    let Some(worker_id) = worker_id else {
+        return Ok(None);
+    };
+    if session_manager
+        .get_session(&worker_id, false)
+        .await
+        .is_err()
+    {
+        return Err(anyhow::anyhow!(
+            "External goal worker session '{}' does not exist",
+            worker_id
+        ));
+    }
+    Ok(Some(worker_id))
 }
 
 async fn lookup_session_id(identifier: Identifier) -> Result<String> {
@@ -1557,7 +1631,6 @@ async fn handle_run_command(
         goose_mode,
     )
     .await?;
-
     let mut session = build_session(SessionBuilderConfig {
         session_id,
         resume: run_behavior.resume,
@@ -1596,7 +1669,8 @@ async fn handle_run_command(
         );
 
         let result = session.headless(contents).await;
-        log_session_completion(&session, session_start, session_type, result.is_ok()).await;
+        let succeeded = result.is_ok();
+        log_session_completion(&session, session_start, session_type, succeeded).await;
         result
     } else {
         Err(anyhow::anyhow!(

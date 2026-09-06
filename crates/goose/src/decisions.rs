@@ -53,6 +53,10 @@ pub const PROPOSAL_DEBUG_DISPATCH: &str = "debug_dispatch";
 /// has — approve once, approve and allowlist, deny — are the three options.
 pub const PROPOSAL_CHECK_APPROVAL: &str = "check_approval";
 
+/// Payload marker for a roadmap proposal. Unlike a model-supplied hash,
+/// creation also requires this choice decision to be answered by the user.
+pub const PROPOSAL_ROADMAP_CREATE: &str = "roadmap_create";
+
 /// Option ids on a [`PROPOSAL_CHECK_APPROVAL`] choice. The effect arm keys on
 /// these exact strings, so they are constants rather than literals scattered
 /// across the filer and the applier.
@@ -227,6 +231,11 @@ pub struct ChoicePayload {
     /// byte-identical on the wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_approval: Option<CheckApprovalPayload>,
+    /// The exact roadmap content a human is approving, when this choice is a
+    /// roadmap creation gate. Kept optional so existing choice decisions stay
+    /// wire-compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roadmap_approval: Option<RoadmapApprovalPayload>,
 }
 
 /// The Tier-2 card's subject: one command the approval ladder refused to run.
@@ -259,6 +268,15 @@ pub struct CheckApprovalPayload {
     pub tier: String,
     /// Which project's ladder this decision updates.
     pub project_id: String,
+}
+
+/// The exact roadmap content a human is being asked to approve. The hash is
+/// compared with both the project proposal record and `create_roadmap`'s
+/// parsed goals before any cards are created.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoadmapApprovalPayload {
+    pub proposal_hash: String,
 }
 
 /// The concrete repo object a Steward git-health `risk_gate` targets
@@ -526,6 +544,10 @@ pub struct CouncilActionPayload {
     pub title: String,
     #[serde(default)]
     pub description: String,
+    /// Present when the Council proposed one approved-as-a-unit execution DAG.
+    /// Legacy weekly recommendations omit it and keep filing one standard card.
+    #[serde(default)]
+    pub plan: Option<crate::council::plan::CouncilProposal>,
 }
 
 /// One cited ecosystem or competitive-intelligence finding proposed for a
@@ -1431,7 +1453,18 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         }
         "council_action" => {
             match serde_json::from_value::<CouncilActionPayload>(req.payload.clone()) {
-                Ok(p) if !p.title.trim().is_empty() && !p.session_id.trim().is_empty() => Ok(()),
+                Ok(p) if !p.title.trim().is_empty() && !p.session_id.trim().is_empty() => {
+                    if let Some(plan) = &p.plan {
+                        let report = crate::council::plan::validate(
+                            plan,
+                            &crate::council::plan::configured_worker_capabilities(),
+                        );
+                        if !report.is_valid() {
+                            return Err(format!("council DAG is invalid: {:?}", report.errors));
+                        }
+                    }
+                    Ok(())
+                }
                 Ok(_) => Err("council_action requires title and session_id".to_string()),
                 Err(e) => Err(e.to_string()),
             }

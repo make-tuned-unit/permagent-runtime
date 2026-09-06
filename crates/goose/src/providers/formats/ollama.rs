@@ -225,6 +225,7 @@ where
         let mut xml_detected = false;
         let mut json_candidate = false;
         let mut last_usage: Option<ProviderUsage> = None;
+        let mut usage_emitted = false;
 
         while let Some(result) = base_stream.next().await {
             let (message_opt, usage) = result?;
@@ -258,8 +259,10 @@ where
                     }
                 }
 
+                usage_emitted |= usage.is_some();
                 yield (Some(message), usage);
             } else {
+                usage_emitted |= usage.is_some();
                 yield (None, usage);
             }
         }
@@ -272,9 +275,10 @@ where
                 Some(tool_call) => vec![tool_call],
                 None => vec![MessageContent::text(&accumulated_text)],
             };
+            let usage = if usage_emitted { None } else { last_usage.clone() };
             yield (
                 Some(Message::new(Role::Assistant, chrono::Utc::now().timestamp(), contents)),
-                last_usage,
+                usage,
             );
         } else if xml_detected && !accumulated_text.is_empty() {
             let (prefix, xml_tool_calls) = parse_xml_tool_calls(&accumulated_text);
@@ -292,7 +296,8 @@ where
                     contents,
                 );
 
-                yield (Some(msg), last_usage);
+                let usage = if usage_emitted { None } else { last_usage.clone() };
+                yield (Some(msg), usage);
             } else {
                 let msg = Message::new(
                     Role::Assistant,
@@ -300,7 +305,8 @@ where
                     vec![MessageContent::text(&accumulated_text)],
                 );
 
-                yield (Some(msg), last_usage);
+                let usage = if usage_emitted { None } else { last_usage.clone() };
+                yield (Some(msg), usage);
             }
         }
     }
@@ -309,6 +315,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
     use serde_json::json;
 
     /// Reproduced 2026-08-13 against a local qwen3-coder:30b (IQ2_M): with
@@ -348,6 +355,54 @@ mod tests {
                 "must not be treated as a tool call: {text}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn buffered_xml_does_not_reemit_usage_snapshot() {
+        let usage = json!({
+            "prompt_tokens": 10,
+            "completion_tokens": 3,
+            "total_tokens": 13
+        });
+        let chunks = vec![
+            Ok(format!(
+                "data: {}",
+                json!({
+                    "id": "chatcmpl-1",
+                    "model": "qwen",
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": "<function=developer__shell>"},
+                        "finish_reason": null
+                    }],
+                    "usage": usage
+                })
+            )),
+            Ok(format!(
+                "data: {}",
+                json!({
+                    "id": "chatcmpl-1",
+                    "model": "qwen",
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 3,
+                        "total_tokens": 13
+                    }
+                })
+            )),
+            Ok("data: [DONE]".to_string()),
+        ];
+
+        let mut stream = std::pin::pin!(response_to_streaming_message_ollama(
+            futures::stream::iter(chunks)
+        ));
+        let mut usage_frames = 0;
+        while let Some(item) = stream.next().await {
+            let (_, usage) = item.unwrap();
+            usage_frames += usage.is_some() as usize;
+        }
+        assert_eq!(usage_frames, 1);
     }
 
     #[test]

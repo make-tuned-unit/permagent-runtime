@@ -22,4 +22,7 @@ pub mod speech_normalize;
 pub mod spoken_verdict;
 pub mod user_lexicon;
 
-pub use provider::{SpeechToText, TextToSpeech};
+pub use provider::{
+    SpeechToText, StreamingSpeechToText, StreamingSttEvent, StreamingSttGate, StreamingSttSession,
+    TextToSpeech,
+};

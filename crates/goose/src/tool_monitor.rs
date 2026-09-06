@@ -44,8 +44,8 @@
 //!   not be killed (a known real-world false-positive).
 //!
 //! S7 (the interactive turn budget, 1000 → 50) is enforced in the agent loop.
-//! S8 (a $-budget pre-turn stop) is DEFERRED pending the cost ledger — see the
-//! `TODO(S8)` seam in `agent.rs`.
+//! The cost-ledger snapshot used by the budget check is fail-closed: a missing
+//! or unreadable durable spend identity denies tool execution.
 //!
 //! ## Response ladder (least-disruptive first)
 //!
@@ -963,29 +963,29 @@ impl ProgressMonitor {
         }
     }
 
-    /// The current budget verdict for this session's spend (#938). Reads task
-    /// spend (ledger rows since the most recent user message), session spend,
-    /// and the unpriced-call count, then evaluates them against the configured
-    /// ceilings. FAIL-OPEN: any error (no session manager, no pool, DB error)
-    /// yields `None` (no gate), so a transient fault never spuriously stops a
-    /// run — matching the ledger's "unknown cost never fabricates a stop"
-    /// contract.
+    /// The current budget verdict for this session's spend (#938). Reads one
+    /// consistent durable task/session snapshot, then evaluates it against the
+    /// configured ceilings. A missing manager is the explicit no-op used by
+    /// unit-only monitors; once a manager exists, snapshot errors are returned
+    /// so callers can deny work rather than silently treating spend as zero.
     async fn budget_verdict_for(
         &self,
         session_id: &str,
-    ) -> Option<crate::cost_router::budget::BudgetVerdict> {
-        let session_manager = self.session_manager.as_ref()?;
-        let pool = session_manager.pool_clone().await.ok()?;
-        let task_spent =
-            crate::agents::platform_extensions::orchestrator::task_spent_usd(&pool, session_id)
-                .await;
-        let session_spent =
-            crate::agents::platform_extensions::orchestrator::session_spent_usd(&pool, session_id)
-                .await;
-        let unpriced = crate::agents::platform_extensions::orchestrator::unpriced_calls_in_session(
-            &pool, session_id,
-        )
-        .await;
+    ) -> Result<Option<crate::cost_router::budget::BudgetVerdict>, String> {
+        let Some(session_manager) = self.session_manager.as_ref() else {
+            return Ok(None);
+        };
+        let pool = session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+        let snapshot =
+            crate::agents::platform_extensions::orchestrator::spend_snapshot(&pool, session_id)
+                .await
+                .map_err(|e| e.to_string())?;
+        let task_spent = snapshot.task_spent_usd;
+        let session_spent = snapshot.session_spent_usd;
+        let unpriced = snapshot.unpriced_calls;
         if unpriced > 0 {
             // Money is being spent that the ledger cannot price, so every figure
             // above is a floor. Ambient only — an unknown cost never fabricates a
@@ -999,11 +999,13 @@ impl ProgressMonitor {
             );
         }
         let cfg = crate::cost_router::budget::load_budget_config();
-        Some(crate::cost_router::budget::budget_verdict_with_unpriced(
-            task_spent,
-            session_spent,
-            unpriced,
-            &cfg,
+        Ok(Some(
+            crate::cost_router::budget::budget_verdict_with_unpriced(
+                task_spent,
+                session_spent,
+                unpriced,
+                &cfg,
+            ),
         ))
     }
 
@@ -1228,10 +1230,30 @@ impl ToolInspector for ProgressMonitor {
         // gate/hard ceiling, raise the Decision-Inbox spend gate + park any goal
         // worker (detached, once per run) AND deny every tool in this turn, so
         // an over-cap session cannot act again — an interactive session has no
-        // goal to park, and the deny is its only stop. Fail-open: a check error
-        // is a no-op. This is the enforcement half of the budget policy — the
+        // goal to park, and the deny is its only stop. A snapshot error is also
+        // denied: paid work must not continue when its durable spend cannot be
+        // read. This is the enforcement half of the budget policy — the
         // pure `budget_verdict` core was already built and tested (#938).
-        if let Some(verdict) = self.budget_verdict_for(session_id).await {
+        let budget_verdict = self.budget_verdict_for(session_id).await;
+        if let Err(error) = &budget_verdict {
+            let reason = format!(
+                "Budget state unavailable; refusing tool execution until it can be read safely: {error}"
+            );
+            let denials: Vec<InspectionResult> = tool_requests
+                .iter()
+                .filter(|req| req.tool_call.is_ok())
+                .map(|req| InspectionResult {
+                    tool_request_id: req.id.clone(),
+                    action: InspectionAction::Deny,
+                    reason: reason.clone(),
+                    confidence: 1.0,
+                    inspector_name: PROGRESS_MONITOR_NAME.to_string(),
+                    finding_id: Some(BUDGET_GATE_FINDING.to_string()),
+                })
+                .collect();
+            return Ok(denials);
+        }
+        if let Ok(Some(verdict)) = budget_verdict {
             if verdict.needs_gate() || verdict.must_stop() {
                 self.budget_escalate(session_id, verdict);
                 let reason = budget_block_message(verdict);
@@ -2172,6 +2194,10 @@ diff --git a/tests/math_tests.rs b/tests/math_tests.rs
         // No session manager (tests / non-daemon) ⇒ no spend read ⇒ no verdict,
         // so the budget check is a no-op and never spuriously gates a run.
         let monitor = ProgressMonitor::new(None);
-        assert!(monitor.budget_verdict_for("sess-1").await.is_none());
+        assert!(monitor
+            .budget_verdict_for("sess-1")
+            .await
+            .unwrap()
+            .is_none());
     }
 }

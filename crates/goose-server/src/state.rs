@@ -412,6 +412,14 @@ impl AppState {
         // Wire Brain into scheduler so scheduled jobs get recall/remember.
         agent_manager.scheduler().set_brain(brain.clone()).await;
 
+        // Replay the non-searchable delivery queue after startup. Spectral is
+        // still the sole semantic memory/index; rows disappear on receipt.
+        if let Some(ref b) = brain {
+            if let Ok(pool) = agent_manager.session_manager().pool_clone().await {
+                crate::brain_ops::spawn_chat_memory_outbox_drain(b.clone(), pool);
+            }
+        }
+
         // Make Brain available to platform extensions (Librarian etc.)
         if let Some(ref b) = brain {
             permagent::agents::platform_extensions::set_global_brain(b.clone());
@@ -761,16 +769,10 @@ impl AppState {
         // Seed starter recipes (Workspace Snapshot, Storage Insights) on first run.
         crate::automation::starters::seed_starter_recipes(agent_manager.scheduler().as_ref()).await;
 
-        // R2b: reconcile goals interrupted by the previous daemon lifecycle,
-        // here at boot rather than waiting for the first agent session to load
-        // the orchestrator extension. A machine that restarts and then sits
-        // idle used to leave its in-flight goals stranded in `in_progress`
-        // until something happened to build an OrchestratorRouter. That late
-        // trigger is still in place and is idempotent — both claim the same
-        // process-wide guard, so only whichever fires first sweeps.
-        permagent::agents::platform_extensions::orchestrator::spawn_boot_reconcile(
-            agent_manager.session_manager_arc(),
-        );
+        // Boot goal reconciliation is started by commands::agent AFTER the
+        // serving daemon installs its dispatcher. Starting it here raced slow
+        // AppState initialization and could strand requeued work with no hook.
+        // Pure AppState construction must not launch autonomous goal workers.
 
         // First-run welcome memories (#298): seed once onboarding is complete.
         // Idempotent (config marker); also triggered immediately on completion via
@@ -1191,8 +1193,38 @@ fn init_voice_providers(
     let stt: Option<Arc<dyn crate::voice::SpeechToText>> = if stt_paths.models_exist() {
         match crate::voice::sherpa_backend::SherpaMoonshineStt::new(&stt_paths.stt_model_dir, 4) {
             Ok(s) => {
-                tracing::info!(target: "permagentd::voice", "STT loaded: Moonshine via sherpa-onnx");
-                Some(Arc::new(s))
+                let batch: Arc<dyn crate::voice::SpeechToText> = Arc::new(s);
+                let online_paths = stt_paths.online_stt_model_dir();
+                if crate::voice::sherpa_backend::streaming_stt_opted_in()
+                    && stt_paths.online_models_exist()
+                {
+                    match crate::voice::sherpa_backend::SherpaOnlineTransducerStt::new(
+                        &online_paths,
+                        4,
+                    ) {
+                        Ok(online) => {
+                            let online = online.with_batch_fallback(batch.clone());
+                            tracing::info!(
+                                target: "permagentd::voice",
+                                "STT loaded: opt-in sherpa-onnx online transducer with Moonshine batch fallback"
+                            );
+                            Some(Arc::new(online))
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "permagentd::voice",
+                                "opt-in online STT failed; retaining Moonshine batch fallback: {error}"
+                            );
+                            Some(batch)
+                        }
+                    }
+                } else {
+                    tracing::info!(
+                        target: "permagentd::voice",
+                        "STT loaded: Moonshine via sherpa-onnx"
+                    );
+                    Some(batch)
+                }
             }
             Err(e) => {
                 tracing::error!(target: "permagentd::voice", "STT load failed: {}", e);

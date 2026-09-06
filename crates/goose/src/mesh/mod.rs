@@ -30,8 +30,9 @@
 //!   future phases extend the seam (TEE/FHE selection, Chitin peer resolution,
 //!   role-aware shard assignment) behind the same signature.
 //! - [`PrivacyApproach`] is `#[non_exhaustive]`: `TrustedPool` is today's
-//!   practical-trust offload (vision Phase 4, Approach A). `TeeAttested`
-//!   (Phase 5, Approach B) and `FullyEncrypted` (Phase 6, Approach C) are
+//!   whole-request practical-trust offload (vision Phase 4A). A future
+//!   activation-exposed split mode must be a distinct label. `TeeAttested`
+//!   (Phase 5, only with a qualified runtime) and `FullyEncrypted` (Phase 6) are
 //!   documented on the enum and slot in non-breakingly as the hardware matures.
 //! - [`is_trusted_peer`] / [`DeviceRole`] are the Chitin-trust seam (vision
 //!   Layer 1). Today an env allowlist / env role; tomorrow SBT-verified
@@ -158,11 +159,11 @@ fn parse_device_role(raw: Option<&str>) -> DeviceRole {
 pub enum PrivacyApproach {
     /// Runs on this device only — nothing leaves the machine.
     LocalOnly,
-    /// Runs on a user-configured, explicitly-trusted pool machine. Practical
-    /// trust within a Chitin circle (vision Phase 4, Approach A): the operator
-    /// vouches for the endpoint. Not cryptographically proven.
+    /// Runs a whole request on a user-configured, explicitly-trusted pool
+    /// machine (vision Phase 4A): the operator vouches for the endpoint, which
+    /// can read the prompt while executing it. Not cryptographically private.
     TrustedPool,
-    // future: TeeAttested   — Approach B, Apple Neural Engine attestation (vision Phase 5).
+    // future: TeeAttested   — only after a complete qualified confidential runtime (vision Phase 5).
     // future: FullyEncrypted — Approach C, FHE, mathematically private (vision Phase 6).
 }
 
@@ -216,7 +217,8 @@ pub enum InferencePayload {
     Prompt,
     /// Intermediate layer activations (vision Phase 4 hybrid split).
     Activations,
-    /// Model weights / shards — shared, non-sensitive.
+    /// Model weights / shards — inference material that can still be licensed,
+    /// access-controlled, or commercially sensitive.
     Weights,
 }
 

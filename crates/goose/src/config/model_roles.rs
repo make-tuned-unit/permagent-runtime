@@ -46,7 +46,10 @@
 //!   applies, reported as [`RoleModelSource::Default`]. New users get the bench
 //!   winner.
 //! - **A session model is set, no role keys** → the session model, reported as
-//!   [`RoleModelSource::SessionModel`]. An existing choice is left alone.
+//!   [`RoleModelSource::SessionModel`]. An existing choice is left alone for
+//!   ordinary chat. The coding harness applies one additional evidence gate at
+//!   session build: an unrated or below-floor model cannot own the top-level
+//!   coding DAG and is routed to its graduated harness route instead.
 //! - **Both role keys set** → that route, [`RoleModelSource::Configured`].
 //! - **Exactly one role key set** → [`RoleModelSource::HalfConfigured`]: the
 //!   caller WARNs and resolution continues as if neither were set. Half a pair
@@ -60,6 +63,69 @@
 //! without the process-global config.
 
 use serde::{Deserialize, Serialize};
+
+/// Heuristic orchestration threshold used to classify candidates. This is
+/// deliberately lower than the delegated ORCHESTRATE role floor (0.80), but
+/// it is NOT graduation evidence: the coding-suite pass/tool/DAG rates needed
+/// to promote a model are not yet recorded. Mechanical workers have their own
+/// cheaper, lower contract and are unaffected by this gate.
+pub const HARNESS_COORDINATOR_MIN_ORCHESTRATION: f64 = 0.60;
+
+/// Evidence status for a candidate coding-harness coordinator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoordinatorEligibility {
+    /// The compiled-in measured harness route. It is the only trusted
+    /// coordinator until a benchmark-backed graduation record is added.
+    TrustedDefault,
+    /// A known model cleared the knowledge-base heuristic, but has not yet
+    /// graduated on Permagent's own coding harness evidence.
+    HeuristicCandidate,
+    /// The model has no measured knowledge-base row, so it cannot graduate by
+    /// guesswork (for example `ollama/qwen25-16k:latest`).
+    Unrated,
+    /// A measured model is below the coordinator floor; it may still run
+    /// bounded mechanical work.
+    BelowFloor,
+}
+
+impl CoordinatorEligibility {
+    pub fn is_eligible(self) -> bool {
+        matches!(self, Self::TrustedDefault)
+    }
+
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::TrustedDefault => "compiled-in measured harness route",
+            Self::HeuristicCandidate => {
+                "knowledge-base heuristic clears the floor, but harness graduation evidence is missing"
+            }
+            Self::Unrated => "no measured orchestration evidence for this model",
+            Self::BelowFloor => "knowledge-base orchestration heuristic is below the coordinator floor",
+        }
+    }
+}
+
+/// Classify whether a provider/model is trusted for the top-level coding
+/// coordinator role. The knowledge row is a heuristic only; unknown models
+/// fail closed and a known non-default model still needs harness graduation
+/// evidence before it may coordinate. All models remain available to the
+/// mechanical routing lane.
+pub fn assess_harness_coordinator(provider: &str, model: &str) -> CoordinatorEligibility {
+    let Some((knowledge, _confidence)) =
+        crate::cost_router::lookup_with_confidence(provider, model)
+    else {
+        return CoordinatorEligibility::Unrated;
+    };
+    if provider.eq_ignore_ascii_case(DEFAULT_HARNESS_PROVIDER_ID)
+        && model.eq_ignore_ascii_case(DEFAULT_HARNESS_MODEL_ID)
+    {
+        CoordinatorEligibility::TrustedDefault
+    } else if knowledge.orchestration_strength >= HARNESS_COORDINATOR_MIN_ORCHESTRATION {
+        CoordinatorEligibility::HeuristicCandidate
+    } else {
+        CoordinatorEligibility::BelowFloor
+    }
+}
 
 /// Config key holding the session provider — the model everything falls back to.
 pub const SESSION_PROVIDER_KEY: &str = "GOOSE_PROVIDER";
@@ -452,5 +518,34 @@ mod tests {
                 "harness_model"
             ]
         );
+    }
+
+    #[test]
+    fn only_measured_coordinators_graduate() {
+        assert_eq!(
+            assess_harness_coordinator("openai", "gpt-5.4-mini"),
+            CoordinatorEligibility::TrustedDefault
+        );
+        assert_eq!(
+            assess_harness_coordinator("ollama", "qwen3-coder:30b"),
+            CoordinatorEligibility::BelowFloor
+        );
+        assert_eq!(
+            assess_harness_coordinator("ollama", "qwen25-16k:latest"),
+            CoordinatorEligibility::Unrated
+        );
+    }
+
+    #[test]
+    fn coordinator_gate_is_vendor_neutral_and_keeps_mechanical_models_available() {
+        // A measured non-OpenAI model can graduate on the same score rule.
+        assert_eq!(
+            assess_harness_coordinator("minimax", "MiniMax-M2.5"),
+            CoordinatorEligibility::HeuristicCandidate
+        );
+        // The gate only describes the top-level role; it does not alter the
+        // separate local/mechanical capability contract.
+        assert!(!CoordinatorEligibility::HeuristicCandidate.is_eligible());
+        assert!(!CoordinatorEligibility::BelowFloor.is_eligible());
     }
 }

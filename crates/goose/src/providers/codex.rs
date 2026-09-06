@@ -202,6 +202,7 @@ impl CodexProvider {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        // permagent-dispatch: seam=codex_provider_transport_v1 class=excluded reason=caller_provider_accounting authority=provider_dispatch
         let mut child = cmd.spawn().map_err(|e| {
             ProviderError::RequestFailed(format!(
                 "Failed to spawn Codex CLI command '{:?}': {}. \

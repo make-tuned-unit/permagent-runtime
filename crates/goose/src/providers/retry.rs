@@ -82,6 +82,19 @@ impl RetryConfig {
         self
     }
 
+    /// Conservative upper envelope of physical requests one logical provider
+    /// call may issue.  The ordinary retry budget is not enough by itself:
+    /// rate-limit responses use the larger, quota-window-specific budget.
+    /// Keeping this calculation here lets cost authorization cover the exact
+    /// retry policy without exposing its fields to callers.
+    pub fn max_physical_attempts(&self) -> u32 {
+        self.max_retries
+            .max(RATE_LIMIT_MAX_RETRIES)
+            .saturating_add(1)
+            .try_into()
+            .unwrap_or(u32::MAX)
+    }
+
     pub fn transient_only(mut self) -> Self {
         self.transient_only = true;
         self
@@ -471,7 +484,7 @@ mod tests {
 
         // Catch the wait in flight.
         let mut announced = None;
-        for _ in 0..200 {
+        for _ in 0..400 {
             if let Some(wait) = wait_status::current() {
                 announced = Some(wait);
                 break;
@@ -801,5 +814,11 @@ mod tests {
                 "must still retry: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn max_physical_attempts_covers_rate_limit_retry_envelope() {
+        assert_eq!(RetryConfig::new(0, 1, 1.0, 1).max_physical_attempts(), 5);
+        assert_eq!(RetryConfig::new(7, 1, 1.0, 1).max_physical_attempts(), 8);
     }
 }

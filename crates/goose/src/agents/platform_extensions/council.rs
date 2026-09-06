@@ -113,6 +113,7 @@ impl CouncilClient {
 
     async fn handle_convene(
         &self,
+        session_id: &str,
         arguments: Option<JsonObject>,
     ) -> std::result::Result<CallToolResult, String> {
         if !council::is_enabled() {
@@ -134,7 +135,7 @@ impl CouncilClient {
             &pool,
             store::Trigger::OnDemand,
             question,
-            &debate::LiveCaller,
+            &debate::LiveCaller::new(self.context.session_manager.clone(), session_id.to_string()),
         )
         .await
         {
@@ -191,7 +192,7 @@ impl McpClientTrait for CouncilClient {
 
     async fn call_tool(
         &self,
-        _ctx: &ToolCallContext,
+        ctx: &ToolCallContext,
         name: &str,
         arguments: Option<JsonObject>,
         _cancel_token: CancellationToken,
@@ -201,7 +202,7 @@ impl McpClientTrait for CouncilClient {
                 Ok(r) => Ok(r),
                 Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
             },
-            "council_convene" => match self.handle_convene(arguments).await {
+            "council_convene" => match self.handle_convene(&ctx.session_id, arguments).await {
                 Ok(r) => Ok(r),
                 Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
             },

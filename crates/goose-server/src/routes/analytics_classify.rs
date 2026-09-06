@@ -9,6 +9,42 @@
 
 use serde::Serialize;
 
+/// Maximum length of a stored referrer after privacy normalization.
+pub const MAX_REFERRER_CHARS: usize = 512;
+
+/// Keep a referrer useful as a click-through link without retaining common
+/// sources of secrets. Browser referrers can contain query strings or
+/// fragments copied from a private search, invite, or tracking URL; the path
+/// is enough to identify a Reddit thread, blog post, or comment page in the
+/// Grow surface. Credentials are never a useful referral signal either.
+pub fn sanitize_referrer(raw: Option<&str>) -> Option<String> {
+    let value = raw?.trim();
+    let mut parsed = url::Url::parse(value).ok()?;
+    match parsed.scheme().to_ascii_lowercase().as_str() {
+        "http" | "https" if parsed.host_str().is_some() => {}
+        _ => return None,
+    }
+
+    // Retain origin + path for click-through, but discard credentials,
+    // query parameters, and fragments which commonly carry secrets or
+    // visitor-specific state.
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+
+    // A normal referral path is short; bounding it before serialization keeps
+    // even a pathological host/path within the storage contract without
+    // cutting a URL in the middle of a percent-encoded query or fragment.
+    let bounded_path: String = parsed.path().chars().take(200).collect();
+    parsed.set_path(&bounded_path);
+    let normalized = parsed.to_string();
+    if normalized.chars().count() > MAX_REFERRER_CHARS {
+        return None;
+    }
+    Some(normalized)
+}
+
 /// Substrings that mark a request as automated. Matched case-insensitively
 /// against the user agent.
 ///
@@ -609,6 +645,23 @@ mod tests {
             Some("example.com")
         );
         assert_eq!(referrer_host(""), None);
+    }
+
+    #[test]
+    fn sanitize_referrer_keeps_clickable_path_but_drops_private_suffixes() {
+        assert_eq!(
+            sanitize_referrer(Some(
+                "https://user:secret@www.reddit.com/r/example/comments/abc?token=private#comment-1",
+            ))
+            .as_deref(),
+            Some("https://www.reddit.com/r/example/comments/abc")
+        );
+        assert!(sanitize_referrer(Some("javascript:alert(1)")).is_none());
+        assert!(sanitize_referrer(Some("file:///etc/passwd")).is_none());
+        assert!(sanitize_referrer(Some("https://example.com/".to_string().as_str())).is_some());
+        let long_path = format!("https://example.com/{}", "x".repeat(700));
+        let bounded = sanitize_referrer(Some(&long_path)).unwrap();
+        assert!(bounded.chars().count() <= MAX_REFERRER_CHARS);
     }
 
     // ── properties ──

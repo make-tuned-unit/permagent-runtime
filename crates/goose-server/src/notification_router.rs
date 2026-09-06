@@ -145,6 +145,24 @@ pub fn spawn(_state: Arc<AppState>) {
                     if let Err(error) = permagent::decisions_effects::drain_effect_outbox(&pool).await {
                         tracing::warn!(target: "permagentd::notifications", %error, "decision effect outbox drain failed");
                     }
+                    // Program-DAG continuation uses the same durable daemon
+                    // maintenance cadence, but remains a separate exact
+                    // handoff rail. It never turns a program transition into
+                    // a decision effect or sweeps generic Ready goals.
+                    let recovery = permagent::agents::platform_extensions::orchestrator::recover_pending_registered_dispatches(&pool).await;
+                    if recovery.examined > 0 || recovery.unscanned > 0 || recovery.errors > 0 {
+                        tracing::info!(
+                            target: "permagentd::brain",
+                            examined = recovery.examined,
+                            auto_dispatched = recovery.auto_dispatched,
+                            already_applied = recovery.already_applied,
+                            approval_required = recovery.approval_required,
+                            deferred = recovery.deferred,
+                            unscanned = recovery.unscanned,
+                            errors = recovery.errors,
+                            "registered program continuation maintenance pass"
+                        );
+                    }
                     if let Err(error) = deliver_due_digests(&pool).await {
                         tracing::warn!(target: "permagentd::notifications", %error, "daily digest delivery failed");
                     }

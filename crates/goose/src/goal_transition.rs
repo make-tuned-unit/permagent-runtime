@@ -18,6 +18,7 @@
 //! decision and parks the goal — never a silent retry.
 
 use sqlx::{Pool, Row, Sqlite};
+use std::collections::HashSet;
 
 use crate::decisions::{self, DecisionProof};
 use crate::goal_state::{validate_transition, GoalAction, GoalState};
@@ -48,6 +49,12 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     "completed_at",
     "depends_on",
     "auto_approve",
+    // Program registration and transition claims are authoritative roadmap
+    // bindings. They may only be written by the program bridge's validated
+    // transaction, never by card CRUD or an agent tool.
+    "program",
+    "program_receipts",
+    "program_transition",
 ];
 
 // ── Errors ──────────────────────────────────────────────────────────────────
@@ -149,6 +156,18 @@ struct GoalRow {
     card_type: String,
     column_id: String,
     metadata: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The durable part of a checked transition.  Callers that compose several
+/// card writes in one transaction use this record to emit live events only
+/// after the enclosing transaction commits.
+#[derive(Debug)]
+pub(crate) struct GoalTransitionRecord {
+    pub(crate) card_id: String,
+    pub(crate) project_id: String,
+    pub(crate) current_state: GoalState,
+    pub(crate) new_state: GoalState,
+    pub(crate) journal_actor: String,
 }
 
 async fn read_goal_tx(
@@ -470,6 +489,108 @@ pub async fn advance_goal_checked(
     }
 
     Ok(new_state)
+}
+
+/// Apply a checked transition to an already-open transaction.  No commit or
+/// event is performed here; the caller owns the transaction and must emit any
+/// live updates after it commits.  This is used by roadmap materialization so
+/// card creation, proposal consumption, and root promotion are one unit.
+pub(crate) async fn advance_goal_checked_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    card_id: &str,
+    action: GoalAction,
+    actor: &str,
+    proof: Option<DecisionProof>,
+    effects: TransitionEffects,
+) -> Result<GoalTransitionRecord, GuardError> {
+    let goal = read_goal_tx(tx, card_id).await?;
+    if goal.card_type != "goal" {
+        return Err(GuardError::Invalid(format!(
+            "Card '{}' is type '{}', not 'goal'",
+            card_id, goal.card_type
+        )));
+    }
+
+    let binding = state_binding_of_column_tx(tx, &goal.column_id).await?;
+    let current_state = binding
+        .as_deref()
+        .and_then(GoalState::from_binding)
+        .ok_or_else(|| {
+            GuardError::Invalid(format!(
+                "Card '{}' is in a column with no state_binding; goal cards must live in \
+                 state-bound columns",
+                card_id
+            ))
+        })?;
+    let new_state = validate_transition(current_state, action)
+        .map_err(|e| GuardError::Invalid(e.to_string()))?;
+
+    let tier: i64 = sqlx::query_scalar("SELECT tier FROM risk_policy WHERE action_class = ?")
+        .bind(action_class_for(action))
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db_err)?
+        .unwrap_or(2);
+    check_proof(tier, proof.as_ref(), card_id, action)?;
+
+    let (decision_id, audit_actor) = match proof.as_ref() {
+        Some(p) => (p.decision_id().to_string(), p.acted_by().to_string()),
+        None => ("none".to_string(), actor.to_string()),
+    };
+    let mut meta = goal.metadata;
+    apply_patch(&mut meta, &effects.metadata_patch);
+    if let Some(ref notes) = effects.review_notes {
+        meta.insert(
+            "review_notes".to_string(),
+            serde_json::Value::String(notes.clone()),
+        );
+    }
+    meta.insert(
+        "goal_state".to_string(),
+        serde_json::Value::String(new_state.binding().to_string()),
+    );
+    let journal_actor = journal_actor(&audit_actor, &meta);
+    let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
+        .map_err(|e| GuardError::Db(e.to_string()))?;
+    let target_col = goal_column_id_tx(tx, &goal.project_id, new_state.binding()).await?;
+    let position = next_position_tx(tx, &target_col).await?;
+
+    if let Some(ref assignee) = effects.assigned_to {
+        sqlx::query("UPDATE cards SET assigned_to = ? WHERE id = ?")
+            .bind(assignee)
+            .bind(card_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(db_err)?;
+    }
+    sqlx::query("UPDATE cards SET metadata_json = ?, column_id = ?, position = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(&target_col)
+        .bind(position)
+        .bind(card_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?;
+
+    decisions::append_audit_tx(
+        tx,
+        &decision_id,
+        Some(card_id),
+        &audit_actor,
+        tier,
+        &format!("transition:{}", action),
+        None,
+    )
+    .await
+    .map_err(GuardError::Db)?;
+
+    Ok(GoalTransitionRecord {
+        card_id: card_id.to_string(),
+        project_id: goal.project_id,
+        current_state,
+        new_state,
+        journal_actor,
+    })
 }
 
 // ── Audited system paths (park / requeue / failure record) ─────────────────
@@ -1080,17 +1201,38 @@ pub async fn goal_spent_tokens(
     pool: &Pool<Sqlite>,
     metadata: &serde_json::Value,
 ) -> Result<u64, String> {
-    let mut ids: Vec<String> = metadata
-        .get("worker_session_ids")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    if let Some(sid) = metadata.get("worker_session_id").and_then(|v| v.as_str()) {
-        if !ids.iter().any(|i| i == sid) {
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(value) = metadata.get("worker_session_ids") {
+        let array = value.as_array().ok_or_else(|| {
+            "worker_session_ids is not a list; token accounting is unknown".to_string()
+        })?;
+        for value in array {
+            let id = value.as_str().ok_or_else(|| {
+                "worker_session_ids contains a non-session value; token accounting is unknown"
+                    .to_string()
+            })?;
+            let id = id.trim();
+            if id.is_empty() {
+                return Err(
+                    "worker_session_ids contains an empty session id; token accounting is unknown"
+                        .to_string(),
+                );
+            }
+            if seen.insert(id.to_string()) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    if let Some(value) = metadata.get("worker_session_id") {
+        let sid = value.as_str().ok_or_else(|| {
+            "worker_session_id is not a session id; token accounting is unknown".to_string()
+        })?;
+        let sid = sid.trim();
+        if sid.is_empty() {
+            return Err("worker_session_id is empty; token accounting is unknown".to_string());
+        }
+        if seen.insert(sid.to_string()) {
             ids.push(sid.to_string());
         }
     }
@@ -1100,17 +1242,54 @@ pub async fn goal_spent_tokens(
 
     let placeholders = vec!["?"; ids.len()].join(", ");
     let sql = format!(
-        "SELECT COALESCE(SUM(COALESCE(accumulated_total_tokens, 0)), 0) FROM sessions \
-         WHERE id IN ({})",
+        "SELECT id, accumulated_total_tokens FROM sessions WHERE id IN ({})",
         placeholders
     );
     // `placeholders` is only "?" repeated `ids.len()` times; ids are bound below.
-    let mut query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql));
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
     for id in &ids {
         query = query.bind(id);
     }
-    let total = query.fetch_one(pool).await.map_err(|e| e.to_string())?;
-    Ok(total.max(0) as u64)
+    let rows = query.fetch_all(pool).await.map_err(|e| e.to_string())?;
+    if rows.len() != ids.len() {
+        let found: HashSet<String> = rows
+            .iter()
+            .filter_map(|row| row.try_get::<String, _>("id").ok())
+            .collect();
+        let missing = ids
+            .iter()
+            .filter(|id| !found.contains(*id))
+            .cloned()
+            .collect::<Vec<_>>();
+        return Err(format!(
+            "worker session(s) do not exist; token accounting is unknown: {}",
+            missing.join(", ")
+        ));
+    }
+
+    let mut total = 0u64;
+    for row in rows {
+        let id: String = row.try_get("id").map_err(|e| e.to_string())?;
+        let tokens: Option<i32> = row
+            .try_get("accumulated_total_tokens")
+            .map_err(|e| e.to_string())?;
+        let tokens = tokens.ok_or_else(|| {
+            format!(
+                "worker session '{}' has no accumulated token total; token accounting is unknown",
+                id
+            )
+        })?;
+        if tokens < 0 {
+            return Err(format!(
+                "worker session '{}' has a negative accumulated token total; token accounting is unknown",
+                id
+            ));
+        }
+        total = total.checked_add(tokens as u64).ok_or_else(|| {
+            "worker token total overflow; token accounting is unknown".to_string()
+        })?;
+    }
+    Ok(total)
 }
 
 /// Check a goal's budget. Returns the first exhausted dimension, or None when
@@ -2265,6 +2444,69 @@ mod tests {
         assert_eq!(b.attempt_cap, 5);
         assert_eq!(b.token_budget, Some(100000));
         assert_eq!(b.wallclock_cap_secs, Some(3600));
+    }
+
+    #[tokio::test]
+    async fn worker_token_accounting_fails_closed_for_unknown_or_null_sessions() {
+        let pool = test_pool().await;
+        assert_eq!(
+            goal_spent_tokens(&pool, &serde_json::json!({}))
+                .await
+                .unwrap(),
+            0
+        );
+
+        let unknown = goal_spent_tokens(
+            &pool,
+            &serde_json::json!({"worker_session_ids": ["missing-worker"]}),
+        )
+        .await
+        .unwrap_err();
+        assert!(unknown.contains("do not exist"), "{unknown}");
+
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES ('worker-null', '/tmp')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let null_total = goal_spent_tokens(
+            &pool,
+            &serde_json::json!({"worker_session_ids": ["worker-null"]}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            null_total.contains("no accumulated token total"),
+            "{null_total}"
+        );
+
+        // A token-budget redispatch must not treat a missing worker total as
+        // zero and proceed. The error is intentionally propagated by the
+        // budget guard instead of producing a fabricated exhaustion result.
+        let budget_error = check_budget(
+            &pool,
+            &serde_json::json!({
+                "attempt_count": 1,
+                "budget": {"token_budget": 1000},
+                "worker_session_ids": ["worker-null"]
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(budget_error.contains("unknown"), "{budget_error}");
+
+        sqlx::query("UPDATE sessions SET accumulated_total_tokens = 42 WHERE id = 'worker-null'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            goal_spent_tokens(
+                &pool,
+                &serde_json::json!({"worker_session_ids": ["worker-null"]}),
+            )
+            .await
+            .unwrap(),
+            42
+        );
     }
 
     #[tokio::test]

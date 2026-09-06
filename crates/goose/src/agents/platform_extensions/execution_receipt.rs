@@ -55,6 +55,10 @@ pub struct ExecutionReceipt {
     pub worker_key: String,
     /// The worker session / external run id for this attempt.
     pub session_id: String,
+    /// OS process identity for an external CLI attempt. Persisted so a daemon
+    /// restart can observe a still-running worker before deciding to retry.
+    #[serde(default)]
+    pub process_id: Option<u32>,
     /// The routing snapshot used to pick the worker (#211).
     #[serde(default)]
     pub capability_snapshot: serde_json::Value,
@@ -92,6 +96,7 @@ impl ExecutionReceipt {
         Self {
             worker_key: worker_key.into(),
             session_id: session_id.into(),
+            process_id: None,
             capability_snapshot,
             dispatched_lifecycle: dispatched_lifecycle.into(),
             last_heartbeat_at: dispatched_at.clone(),
@@ -101,6 +106,13 @@ impl ExecutionReceipt {
             terminal_at: None,
             attempt,
         }
+    }
+
+    /// Attach the external process identity after spawn. In-process workers
+    /// leave this unset; old receipts deserialize safely with `None`.
+    pub fn with_process_id(mut self, process_id: Option<u32>) -> Self {
+        self.process_id = process_id;
+        self
     }
 
     /// Record a liveness beat. No-op once terminal.
@@ -251,5 +263,27 @@ mod tests {
         assert_eq!(v["state"], "timeout");
         let back: ExecutionReceipt = serde_json::from_value(v).unwrap();
         assert_eq!(back, r);
+    }
+
+    #[test]
+    fn external_process_identity_round_trips_and_is_optional() {
+        let r = ExecutionReceipt::new(
+            "claude",
+            "cli-run-1",
+            snapshot(),
+            "life-1",
+            "2026-07-22T10:00:00+00:00",
+            1,
+        )
+        .with_process_id(Some(4242));
+        let encoded = serde_json::to_value(&r).unwrap();
+        assert_eq!(encoded["process_id"], 4242);
+        let decoded: ExecutionReceipt = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.process_id, Some(4242));
+
+        let mut legacy = serde_json::to_value(r).unwrap();
+        legacy.as_object_mut().unwrap().remove("process_id");
+        let decoded_legacy: ExecutionReceipt = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded_legacy.process_id, None);
     }
 }

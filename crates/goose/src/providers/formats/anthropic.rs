@@ -1073,7 +1073,40 @@ where
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown")
                             .to_string();
-                        final_usage = Some(crate::providers::base::ProviderUsage::new(model, usage));
+                        // `message_stop` is sparse on Anthropic: it commonly
+                        // carries output only, while message_start carried the
+                        // input/cache breakdown. Preserve every known field
+                        // rather than replacing that authoritative snapshot.
+                        final_usage = Some(match final_usage.take() {
+                            Some(existing) => {
+                                let input = existing.usage.input_tokens.or(usage.input_tokens);
+                                let output = usage.output_tokens.or(existing.usage.output_tokens);
+                                let total = match (input, output) {
+                                    (Some(input), Some(output)) => {
+                                        Some(input.saturating_add(output))
+                                    }
+                                    _ => usage.total_tokens.or(existing.usage.total_tokens),
+                                };
+                                let merged = crate::providers::base::Usage::new(
+                                    input,
+                                    output,
+                                    total,
+                                )
+                                .with_cache_tokens(
+                                    existing.usage.cache_read_input_tokens
+                                        .or(usage.cache_read_input_tokens),
+                                    existing.usage.cache_write_input_tokens
+                                        .or(usage.cache_write_input_tokens),
+                                );
+                                let model = if model == "unknown" {
+                                    existing.model
+                                } else {
+                                    model
+                                };
+                                crate::providers::base::ProviderUsage::new(model, merged)
+                            }
+                            None => crate::providers::base::ProviderUsage::new(model, usage),
+                        });
                     }
                     break;
                 }
@@ -1671,6 +1704,24 @@ mod tests {
         assert_eq!(usage.total_tokens, Some(15057));
         assert_eq!(usage.cache_read_input_tokens, Some(5000));
         assert_eq!(usage.cache_write_input_tokens, Some(10000));
+    }
+
+    #[tokio::test]
+    async fn sparse_message_stop_keeps_start_input_and_cache_usage() {
+        let events = concat!(
+            r#"data: {"type":"message_start","message":{"id":"msg_sparse","role":"assistant","content":[],"model":"claude-haiku-4-5","usage":{"input_tokens":12,"cache_read_input_tokens":30}}}"#,
+            "\n",
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":8}}"#,
+            "\n",
+            r#"data: {"type":"message_stop","usage":{"output_tokens":8}}"#,
+        );
+
+        let parts = collect_stream(events).await;
+        let usage = parts.usage.expect("stream should yield final usage").usage;
+        assert_eq!(usage.input_tokens, Some(42));
+        assert_eq!(usage.output_tokens, Some(8));
+        assert_eq!(usage.total_tokens, Some(50));
+        assert_eq!(usage.cache_read_input_tokens, Some(30));
     }
 
     #[tokio::test]

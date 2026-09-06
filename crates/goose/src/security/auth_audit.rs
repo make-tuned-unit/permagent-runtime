@@ -123,6 +123,7 @@ const RULES: &[(&str, RouteClass)] = &[
     ("/config/custom-providers", RouteClass::Secrets),
     ("/config/check_provider", RouteClass::Secrets),
     ("/config/set_provider", RouteClass::Secrets),
+    ("/config/model-route", RouteClass::Secrets),
     ("/api/devices/pair", RouteClass::Secrets),
     ("/pair/claim", RouteClass::Secrets),
     ("/sse-token", RouteClass::Secrets),
@@ -141,6 +142,7 @@ const RULES: &[(&str, RouteClass)] = &[
     ("/voice/wake/models", RouteClass::Spend),
     ("/api/dictation/provision", RouteClass::Spend),
     ("/api/brain/search", RouteClass::Spend),
+    ("/api/council/convene", RouteClass::Spend),
     // ── Status: liveness and build metadata only ──
     ("/status", RouteClass::Status),
     ("/api/version", RouteClass::Status),

@@ -311,6 +311,12 @@ impl PrimaryPersona {
              across sessions through Spectral memory). \"Permagent\" is the product name, \
              not your name.",
         );
+        block.push_str(
+            "\nEpistemic safety: if a lookup or verification is failed or incomplete, say \
+             \"not retrieved\" — never \"not stored\" — and do not infer absence from a \
+             failed search. When verifying a reconstructed artifact, cite the exact source \
+             IDs supporting each claim.",
+        );
         if !self.tone.is_empty() {
             block.push_str(&format!("\nTone: {}", self.tone));
         }
@@ -326,7 +332,46 @@ fn default_availability() -> String {
 }
 
 fn default_cost_tier() -> String {
-    "local_free".to_string()
+    // An omitted class is not evidence that an external adapter is local.
+    // Built-in local workers set `local_free` explicitly in `default_roster`.
+    "paid_api".to_string()
+}
+
+/// Closed billing vocabulary for worker routing.  Billing must come from the
+/// configured worker record; an adapter name is never evidence of whether a
+/// call is free, subscription-backed, or metered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerBillingClass {
+    LocalFree,
+    Subscription,
+    PaidApi,
+}
+
+impl WorkerBillingClass {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "local_free" => Ok(Self::LocalFree),
+            "subscription" => Ok(Self::Subscription),
+            "paid_api" => Ok(Self::PaidApi),
+            // Historical configs used this label for the in-process fallback.
+            // It was never a proof of free usage, so preserve compatibility by
+            // explicitly treating it as metered rather than guessing from the
+            // worker/provider name.
+            "cheap_api" => Ok(Self::PaidApi),
+            other => Err(format!(
+                "unknown worker billing class '{other}'; expected local_free, subscription, or paid_api"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalFree => "local_free",
+            Self::Subscription => "subscription",
+            Self::PaidApi => "paid_api",
+        }
+    }
 }
 
 /// How a worker is actually run when the orchestrator dispatches a goal to it.
@@ -358,6 +403,191 @@ pub enum WorkerEngineKind {
     /// visible in the roster but never selected for a real goal — it must not be
     /// dispatched and silently fail.
     Pending,
+}
+
+/// Capabilities the dispatch adapter can actually provide for a worker.
+///
+/// This is discovered from the engine kind and its invocation shape rather
+/// than being accepted as an agent.yaml claim.  In particular, a worker may
+/// have `code_edit` in `tool_kinds` while still having no model override,
+/// steering protocol, MCP bridge, or sandbox support.  Surfaces should use
+/// this value when describing what a worker can do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerCapabilities {
+    pub supports_model_override: bool,
+    pub supports_streaming: bool,
+    pub supports_steering: bool,
+    pub supports_cancellation: bool,
+    pub supports_sandbox: bool,
+    pub supports_permission_gates: bool,
+    pub supports_mcp: bool,
+    pub supports_cli_tools: bool,
+}
+
+impl Default for WorkerCapabilities {
+    fn default() -> Self {
+        Self {
+            supports_model_override: false,
+            supports_streaming: false,
+            supports_steering: false,
+            supports_cancellation: false,
+            supports_sandbox: false,
+            supports_permission_gates: false,
+            supports_mcp: false,
+            supports_cli_tools: false,
+        }
+    }
+}
+
+impl WorkerCapabilities {
+    /// Resolve a routing requirement that names an adapter-level capability.
+    /// `None` means the string is an ordinary worker tool kind and remains
+    /// governed by `WorkerPersona::tool_kinds`.
+    pub fn supports_requirement(&self, requirement: &str) -> Option<bool> {
+        let requirement = requirement.trim().to_ascii_lowercase();
+        match requirement.as_str() {
+            "model_override" | "model-routing" | "model_routing" => {
+                Some(self.supports_model_override)
+            }
+            "streaming" | "stream" => Some(self.supports_streaming),
+            "steering" | "steer" => Some(self.supports_steering),
+            "cancellation" | "cancel" => Some(self.supports_cancellation),
+            "sandbox" => Some(self.supports_sandbox),
+            "permission_gates" | "permission-gates" | "permissions" => {
+                Some(self.supports_permission_gates)
+            }
+            "mcp" | "mcp_tools" => Some(self.supports_mcp),
+            "cli" | "cli_tools" => Some(self.supports_cli_tools),
+            _ => None,
+        }
+    }
+}
+
+impl WorkerEngineKind {
+    /// Whether this configured engine can actually be dispatched by the goal
+    /// runner. ACP adapters speak a structured protocol and must never be
+    /// inferred to be plain CLIs merely because their binary name contains
+    /// `claude` or `codex`.
+    pub fn dispatchability_error(&self) -> Option<&'static str> {
+        match self {
+            Self::Pending => Some("engine pending"),
+            Self::ExternalCli { bin, .. }
+                if bin.to_ascii_lowercase().contains("-acp")
+                    || bin.to_ascii_lowercase().contains("_acp") =>
+            {
+                Some("ACP adapter configured as a plain external CLI")
+            }
+            _ => None,
+        }
+    }
+
+    pub fn is_dispatchable(&self) -> bool {
+        self.dispatchability_error().is_none()
+    }
+
+    /// Discover the bounded capability contract for this adapter.
+    ///
+    /// The result is intentionally conservative.  Generic external CLIs are
+    /// only credited with process cancellation and stdout streaming.  MCP,
+    /// steering, model overrides, and permission/sandbox claims require a
+    /// known adapter path; arbitrary agent.yaml args cannot manufacture those
+    /// guarantees.
+    pub fn capabilities(&self) -> WorkerCapabilities {
+        match self {
+            Self::InternalSubagent => WorkerCapabilities {
+                supports_model_override: true,
+                supports_streaming: false,
+                supports_steering: false,
+                supports_cancellation: true,
+                supports_sandbox: false,
+                supports_permission_gates: true,
+                supports_mcp: true,
+                supports_cli_tools: false,
+            },
+            Self::ExternalCli { bin, args } => {
+                let name = bin.to_ascii_lowercase();
+                if name.contains("-acp") || name.contains("_acp") {
+                    return WorkerCapabilities::default();
+                }
+                let is_claude = name.contains("claude");
+                let is_codex = name.contains("codex");
+                let is_cursor = name.contains("cursor-agent") || name == "cursor";
+                let has_unattended_bypass = args
+                    .iter()
+                    .any(|arg| arg == "--dangerously-skip-permissions" || arg == "--force");
+                let has_codex_sandbox = args.iter().any(|arg| {
+                    arg == "--sandbox"
+                        || arg == "-s"
+                        || arg.starts_with("sandbox_mode=")
+                        || arg.contains("sandbox_workspace_write")
+                });
+                let has_permission_prompt_tool = args.iter().any(|arg| {
+                    arg == "--permission-prompt-tool" || arg.contains("permission_prompt")
+                });
+                // Claude Code's non-interactive Build invocation uses this
+                // pair instead of a prompt-tool bridge. `auto` lets the
+                // bounded worker proceed, while `none` prevents an
+                // unattended process from hanging on an interactive prompt.
+                // Treat the pair as a validated permission boundary, not as
+                // an unverified free-form argument.
+                let has_claude_bounded_gate = args.windows(2).any(|pair| {
+                    pair[0] == "--permission-mode" && pair[1].eq_ignore_ascii_case("auto")
+                }) && args.windows(2).any(|pair| {
+                    pair[0] == "--permission-prompts" && pair[1].eq_ignore_ascii_case("none")
+                });
+                let has_cursor_sandbox = args
+                    .windows(2)
+                    .any(|pair| pair[0] == "--sandbox" && pair[1].eq_ignore_ascii_case("enabled"));
+                let has_cursor_review = args.iter().any(|arg| arg == "--auto-review");
+                let has_codex_review = args.iter().any(|arg| arg == "--approve-for-me");
+
+                WorkerCapabilities {
+                    // ExternalCliEngine does not pass a role model to the
+                    // child; a model-looking arg in a free-form template is
+                    // not enough to prove an override contract.
+                    supports_model_override: false,
+                    supports_streaming: is_claude || is_codex || is_cursor,
+                    supports_steering: is_claude,
+                    supports_cancellation: true,
+                    supports_sandbox: (is_codex && has_codex_sandbox)
+                        || (is_cursor && has_cursor_sandbox),
+                    // Claude's bypass flag and Cursor's force flag explicitly
+                    // defeat approval gates. Codex is credited only when its
+                    // invocation names the bounded review/approval policy,
+                    // which this adapter can validate from its args.
+                    supports_permission_gates: !has_unattended_bypass
+                        && ((is_claude && (has_permission_prompt_tool || has_claude_bounded_gate))
+                            || (is_codex
+                                && (has_codex_review
+                                    || args.iter().any(|arg| arg.contains("approval_policy="))))
+                            || (is_cursor && has_cursor_review)),
+                    // The goal-context bridge is per-invocation and currently
+                    // implemented only for Claude. Codex's global config and
+                    // Cursor's unsupported path must not be advertised.
+                    supports_mcp: is_claude,
+                    supports_cli_tools: is_claude || is_codex || is_cursor,
+                }
+            }
+            // The supervised launcher composes permission-prompt-tool and a
+            // visible stream-json terminal itself. It has no model override or
+            // project-scoped MCP bridge yet.
+            Self::SupervisedCli { .. } => WorkerCapabilities {
+                supports_streaming: true,
+                supports_cancellation: true,
+                supports_permission_gates: true,
+                supports_cli_tools: true,
+                ..Default::default()
+            },
+            Self::Pending => WorkerCapabilities::default(),
+        }
+    }
+}
+
+impl WorkerPersona {
+    /// Discover capabilities without trusting user-authored tool-kind prose.
+    pub fn capabilities(&self) -> WorkerCapabilities {
+        self.engine.capabilities()
+    }
 }
 
 impl WorkerEngineKind {
@@ -429,6 +659,14 @@ pub struct WorkerPersona {
     /// Cost classification: "local_free", "subscription", or "paid_api"
     #[serde(default = "default_cost_tier")]
     pub cost_tier: String,
+    /// Explicit runtime identity for external adapters. These fields are
+    /// metadata, not billing evidence; billing remains independently typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_identity: Option<String>,
     /// How this worker is run when dispatched. Absent → in-process subagent.
     #[serde(default)]
     pub engine: WorkerEngineKind,
@@ -454,6 +692,9 @@ impl Default for WorkerPersona {
             extension_grants: None,
             availability_check: default_availability(),
             cost_tier: default_cost_tier(),
+            provider: None,
+            model: None,
+            cli_identity: None,
             engine: WorkerEngineKind::default(),
             timeout_secs: None,
         }
@@ -461,6 +702,12 @@ impl Default for WorkerPersona {
 }
 
 impl WorkerPersona {
+    /// Parse the configured billing label without inferring from provider or
+    /// executable names. `cheap_api` is an explicit legacy alias for paid API.
+    pub fn configured_billing_class(&self) -> Result<WorkerBillingClass, String> {
+        WorkerBillingClass::parse(self.cost_tier.as_str())
+    }
+
     pub fn display_name(&self) -> String {
         compute_display_name(
             &self.first_name,
@@ -535,12 +782,19 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
             ],
             availability_check: "bin_exists:claude".to_string(),
             cost_tier: "subscription".to_string(),
+            provider: Some("anthropic".to_string()),
+            cli_identity: Some("claude".to_string()),
             engine: WorkerEngineKind::ExternalCli {
                 bin: "claude".to_string(),
                 args: vec![
                     "-p".to_string(),
                     "{prompt}".to_string(),
-                    "--dangerously-skip-permissions".to_string(),
+                    // Safe unattended mode: do not bypass permissions; deny
+                    // interactive prompts instead of hanging a headless goal.
+                    "--permission-mode".to_string(),
+                    "auto".to_string(),
+                    "--permission-prompts".to_string(),
+                    "none".to_string(),
                     "--output-format".to_string(),
                     "stream-json".to_string(),
                     "--verbose".to_string(),
@@ -558,6 +812,8 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
             tool_kinds: vec!["code_edit".to_string(), "shell".to_string()],
             availability_check: "bin_exists:codex".to_string(),
             cost_tier: "subscription".to_string(),
+            provider: Some("openai".to_string()),
+            cli_identity: Some("codex".to_string()),
             engine: WorkerEngineKind::ExternalCli {
                 // `-s workspace-write` is load-bearing, not a hardening knob.
                 // Verified against codex 0.146.0 on 2026-08-09: `codex exec`
@@ -571,13 +827,13 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
                 // which is the dispatch worktree. Proven in a real `git
                 // worktree add` tree, where `.git` is a FILE pointing at the
                 // parent repo: the worker created, staged and committed a file
-                // there, so the sandbox resolves the linked git dir. Approval
-                // is already `never` under `exec`; no bypass flag is needed,
-                // and none is used — the worker stays confined to its worktree,
-                // unlike claude's `--dangerously-skip-permissions`.
+                // there, so the sandbox resolves the linked git dir. The
+                // bounded `--approve-for-me` policy keeps a headless run moving
+                // without granting it a blanket filesystem bypass.
                 bin: "codex".to_string(),
                 args: vec![
                     "exec".to_string(),
+                    "--approve-for-me".to_string(),
                     "-s".to_string(),
                     "workspace-write".to_string(),
                     "{prompt}".to_string(),
@@ -606,6 +862,8 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
             // detect from the outside.
             availability_check: "bin_exists:cursor-agent".to_string(),
             cost_tier: "subscription".to_string(),
+            provider: Some("cursor".to_string()),
+            cli_identity: Some("cursor-agent".to_string()),
             engine: WorkerEngineKind::ExternalCli {
                 bin: "cursor-agent".to_string(),
                 // Flags verified against cursor-agent 2026.08.11-e8db854.
@@ -616,17 +874,17 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
                 // unflagged. Copying the claude arg shape would silently launch
                 // an interactive session with no prompt.
                 //
-                // `--force` is this CLI's "allow commands unless explicitly
-                // denied". It is the same trade Claude Code's
-                // --dangerously-skip-permissions makes, and it is needed for
-                // the same reason: an unattended worker cannot answer approval
-                // prompts. Unlike Codex there is no sandbox flag to confine it
-                // instead, so the isolated dispatch worktree is the only
-                // boundary — worth knowing before enabling this for a goal that
-                // matters.
+                // Do not add Cursor's `--force` here: it disables the CLI's
+                // permission checks for an unattended process. The worker is
+                // still isolated to a goal worktree, but that is not a
+                // substitute for the CLI's own approval boundary.
                 args: vec![
                     "-p".to_string(),
-                    "--force".to_string(),
+                    // Cursor's sandbox and automatic review are bounded
+                    // alternatives to the unsafe `--force` bypass.
+                    "--auto-review".to_string(),
+                    "--sandbox".to_string(),
+                    "enabled".to_string(),
                     "--output-format".to_string(),
                     "text".to_string(),
                     "{prompt}".to_string(),
@@ -925,7 +1183,7 @@ tone: concise
         assert_eq!(persona.role, "Fast parallel coding agent");
         assert!(persona.tool_kinds.is_empty());
         assert_eq!(persona.availability_check, "always");
-        assert_eq!(persona.cost_tier, "local_free");
+        assert_eq!(persona.cost_tier, "paid_api");
         assert_eq!(persona.extension_grants, None);
     }
 
@@ -1054,7 +1312,7 @@ first_name: Lib
 "#;
         let persona: WorkerPersona = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(persona.availability_check, "always");
-        assert_eq!(persona.cost_tier, "local_free");
+        assert_eq!(persona.cost_tier, "paid_api");
         assert!(persona.tool_kinds.is_empty());
         assert!(persona.role.is_empty());
         assert!(persona.traits.is_empty());
@@ -1137,7 +1395,7 @@ workers:
         let lib = &config.workers["librarian"];
         assert!(lib.tool_kinds.is_empty());
         assert_eq!(lib.availability_check, "always");
-        assert_eq!(lib.cost_tier, "local_free");
+        assert_eq!(lib.cost_tier, "paid_api");
     }
 
     #[test]
@@ -1399,6 +1657,36 @@ workers:
     }
 
     #[test]
+    fn external_roster_carries_explicit_subscription_identity() {
+        let roster = default_roster();
+        for (key, provider, cli) in [
+            ("claude_code", "anthropic", "claude"),
+            ("codex", "openai", "codex"),
+        ] {
+            let worker = &roster[key];
+            assert_eq!(
+                worker.configured_billing_class().unwrap(),
+                WorkerBillingClass::Subscription
+            );
+            assert_eq!(worker.provider.as_deref(), Some(provider));
+            assert_eq!(worker.cli_identity.as_deref(), Some(cli));
+        }
+    }
+
+    #[test]
+    fn billing_class_is_closed_and_legacy_cheap_api_is_paid() {
+        assert_eq!(
+            WorkerBillingClass::parse("cheap_api").unwrap(),
+            WorkerBillingClass::PaidApi
+        );
+        assert!(WorkerBillingClass::parse("anthropic").is_err());
+        assert!(WorkerBillingClass::parse("").is_err());
+        let mut malformed = WorkerPersona::default();
+        malformed.cost_tier = "mystery_provider".to_string();
+        assert!(malformed.configured_billing_class().is_err());
+    }
+
+    #[test]
     fn load_seeds_roster_when_workers_empty() {
         // The seeding branch load_agent_config runs when workers is empty.
         let mut config = AgentConfig::default();
@@ -1414,11 +1702,11 @@ workers:
     fn select_excludes_pending_and_picks_claude_code_for_a_code_goal() {
         use crate::goal_state::{select_best_worker, WorkerCandidate};
 
-        // Mirror select_worker's candidate build: Pending excluded, all probed
-        // available, no active sessions.
+        // Mirror select_worker's candidate build: non-dispatchable engines
+        // excluded, all remaining workers probed available, no active sessions.
         let candidates: Vec<WorkerCandidate> = default_roster()
             .iter()
-            .filter(|(_, p)| !matches!(p.engine, WorkerEngineKind::Pending))
+            .filter(|(_, persona)| persona.engine.is_dispatchable())
             .map(|(k, p)| WorkerCandidate {
                 key: k.clone(),
                 available: true,
@@ -1444,6 +1732,20 @@ workers:
         );
     }
 
+    #[test]
+    fn acp_adapter_cannot_masquerade_as_a_plain_cli_worker() {
+        let engine = WorkerEngineKind::ExternalCli {
+            bin: "claude-agent-acp".to_string(),
+            args: vec!["{prompt}".to_string()],
+        };
+        assert!(!engine.is_dispatchable());
+        assert_eq!(
+            engine.dispatchability_error(),
+            Some("ACP adapter configured as a plain external CLI")
+        );
+        assert_eq!(engine.capabilities(), WorkerCapabilities::default());
+    }
+
     /// #467: `timeout_secs` is an optional per-worker override; absent means
     /// the goal-engine default (2 h) applies at the dispatch site.
     #[test]
@@ -1459,5 +1761,63 @@ workers:
             2 * 60 * 60,
             "the #467 default is 2 h"
         );
+    }
+
+    #[test]
+    fn adapter_capabilities_are_conservative_and_serializable() {
+        let roster = default_roster();
+        let claude = roster["claude_code"].capabilities();
+        assert!(claude.supports_streaming);
+        assert!(claude.supports_steering);
+        assert!(claude.supports_cancellation);
+        assert!(claude.supports_mcp);
+        assert!(!claude.supports_model_override);
+        assert!(!claude.supports_sandbox);
+        assert!(claude.supports_permission_gates);
+
+        let codex = roster["codex"].capabilities();
+        assert!(codex.supports_sandbox);
+        assert!(codex.supports_permission_gates);
+        assert!(!codex.supports_steering);
+        assert!(!codex.supports_mcp);
+        assert!(codex.supports_cli_tools);
+
+        let cursor = roster["cursor"].capabilities();
+        assert!(cursor.supports_permission_gates);
+        assert!(cursor.supports_sandbox);
+
+        let internal = roster["permagent"].capabilities();
+        assert!(internal.supports_model_override);
+        assert!(internal.supports_permission_gates);
+        assert!(internal.supports_mcp);
+        assert!(!internal.supports_cli_tools);
+
+        let encoded = serde_json::to_value(internal).unwrap();
+        assert_eq!(encoded["supports_model_override"], true);
+        assert_eq!(encoded["supports_steering"], false);
+    }
+
+    #[test]
+    fn default_external_workers_never_enable_blanket_permission_bypass() {
+        let roster = default_roster();
+        for key in ["claude_code", "cursor"] {
+            let WorkerEngineKind::ExternalCli { args, .. } = &roster[key].engine else {
+                panic!("{key} must use an external CLI engine")
+            };
+            assert!(!args
+                .iter()
+                .any(|arg| { arg == "--dangerously-skip-permissions" || arg == "--force" }));
+        }
+        let claude_args = match &roster["claude_code"].engine {
+            WorkerEngineKind::ExternalCli { args, .. } => args,
+            _ => unreachable!(),
+        };
+        assert!(claude_args.iter().any(|arg| arg == "--permission-prompts"));
+        let cursor_args = match &roster["cursor"].engine {
+            WorkerEngineKind::ExternalCli { args, .. } => args,
+            _ => unreachable!(),
+        };
+        assert!(cursor_args.iter().any(|arg| arg == "--sandbox"));
+        assert!(cursor_args.iter().any(|arg| arg == "--auto-review"));
     }
 }

@@ -88,6 +88,18 @@ impl EditTools {
         params: FileWriteParams,
         working_dir: Option<&Path>,
     ) -> CallToolResult {
+        // An empty path resolves to the working directory itself, so the write
+        // reached the filesystem and came back as "Is a directory (os error
+        // 21)" — an error about a directory the model never named, which sent
+        // it looking for a path bug it did not have. Refuse here, and say which
+        // argument was wrong.
+        if params.path.trim().is_empty() {
+            return CallToolResult::error(vec![Content::text(
+                "The `path` argument was empty. Pass the file to write, relative to the \
+                 working directory (for example `src/main.rs`).",
+            )
+            .with_priority(0.0)]);
+        }
         let path = resolve_path(&params.path, working_dir);
 
         if let Some(parent) = path.parent() {
@@ -104,6 +116,7 @@ impl EditTools {
         }
 
         let is_new = !path.exists();
+        let previous_len = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
 
         match fs::write(&path, &params.content) {
             Ok(()) => {
@@ -114,11 +127,29 @@ impl EditTools {
                     Ok(on_disk) if on_disk == params.content.as_bytes() => {
                         let line_count = params.content.lines().count();
                         let action = if is_new { "Created" } else { "Wrote" };
-                        CallToolResult::success(vec![Content::text(format!(
-                            "{} {} ({} lines, verified on disk)",
-                            action, params.path, line_count
-                        ))
-                        .with_priority(0.0)])
+                        // Emptying a file that had content is a legal write, so
+                        // this stays a success — but it must not read like an
+                        // ordinary one. A local run erased its own already-correct
+                        // solution and got back "Wrote fizzbuzz.py (0 lines,
+                        // verified on disk)", which says nothing about the work
+                        // that just disappeared, and spent every remaining turn
+                        // verifying an empty file.
+                        let erased = previous_len > 0 && params.content.is_empty();
+                        let body = if erased {
+                            format!(
+                                "Wrote {} — but the content was EMPTY, so this replaced {} bytes \
+                                 with an empty file and that work is now gone. If you meant to \
+                                 change the file, read it and write the full intended content; \
+                                 if you meant to clear it, continue.",
+                                params.path, previous_len
+                            )
+                        } else {
+                            format!(
+                                "{} {} ({} lines, verified on disk)",
+                                action, params.path, line_count
+                            )
+                        };
+                        CallToolResult::success(vec![Content::text(body).with_priority(0.0)])
                     }
                     Ok(on_disk) => CallToolResult::error(vec![Content::text(format!(
                         "Write verification failed for {}: the write reported success but the \
@@ -1023,6 +1054,75 @@ mod tests {
         assert!(!result.is_error.unwrap_or(false));
         assert!(path.exists());
         assert_eq!(fs::read_to_string(&path).unwrap(), "Hello, world!\nLine 2");
+    }
+
+    #[test]
+    fn write_names_the_work_an_empty_content_erased() {
+        // Observed in a local harness run: the model wrote a correct solution,
+        // then wrote empty content over it and was told "Wrote fizzbuzz.py
+        // (0 lines, verified on disk)". It spent every remaining turn verifying
+        // an empty file, never told that its own answer had been erased.
+        let dir = setup();
+        let path = dir.path().join("solution.py");
+        fs::write(&path, "def fizzbuzz(n):\n    return str(n)\n").unwrap();
+        let tools = EditTools::new();
+
+        let result = tools.file_write(FileWriteParams {
+            path: path.to_string_lossy().to_string(),
+            content: String::new(),
+        });
+
+        // Still a success: emptying a file is a legal write.
+        assert!(!result.is_error.unwrap_or(false));
+        let text = extract_text(&result);
+        assert!(
+            text.contains("EMPTY") && text.contains("gone"),
+            "an erasing write must name what it destroyed, got: {text}"
+        );
+        assert!(
+            !text.contains("0 lines, verified on disk"),
+            "an erasing write must not read like an ordinary one, got: {text}"
+        );
+    }
+
+    #[test]
+    fn write_keeps_its_ordinary_message_when_creating_an_empty_file() {
+        // The warning is about destruction, not about emptiness: deliberately
+        // creating an empty file is unremarkable and must stay quiet.
+        let dir = setup();
+        let path = dir.path().join("placeholder.txt");
+        let tools = EditTools::new();
+
+        let result = tools.file_write(FileWriteParams {
+            path: path.to_string_lossy().to_string(),
+            content: String::new(),
+        });
+
+        assert!(!result.is_error.unwrap_or(false));
+        let text = extract_text(&result);
+        assert!(text.contains("verified on disk"), "got: {text}");
+        assert!(!text.contains("EMPTY"), "got: {text}");
+    }
+
+    #[test]
+    fn write_refuses_an_empty_path_instead_of_writing_the_directory() {
+        // The same run then sent `path: ""`, which resolved to the working
+        // directory and failed with "Is a directory (os error 21)" — an error
+        // naming a directory the model never mentioned. Refuse on the argument.
+        let tools = EditTools::new();
+
+        let result = tools.file_write(FileWriteParams {
+            path: "   ".to_string(),
+            content: "anything".to_string(),
+        });
+
+        assert!(result.is_error.unwrap_or(false));
+        let text = extract_text(&result);
+        assert!(text.contains("`path`"), "got: {text}");
+        assert!(
+            !text.contains("Is a directory"),
+            "the filesystem must not be reached at all, got: {text}"
+        );
     }
 
     #[test]

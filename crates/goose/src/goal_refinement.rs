@@ -18,6 +18,7 @@
 //! configured default ([`DEFAULT_REFINEMENT_BUDGET`]).
 
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::cost_router::snapshot::RoutingSnapshot;
 use crate::cost_router::tool_signals::ToolTranscriptSignals;
@@ -32,6 +33,10 @@ pub const REFINEMENT_SPENT_KEY: &str = "refinement_spent";
 pub const LAST_CHECK_OUTPUT_KEY: &str = "last_check_output";
 /// Metadata key: every rework round so far, oldest first.
 pub const REFINEMENT_HISTORY_KEY: &str = "refinement_history";
+/// Metadata key: digest of the last completion-check failure plus the worker's
+/// committed code tip.  A repeated digest means the same gate failed against
+/// the same code, so another automatic rework round cannot add evidence.
+pub const LAST_FAILURE_FINGERPRINT_KEY: &str = "last_failure_fingerprint";
 
 /// Rework rounds allowed when nobody configured otherwise.
 pub const DEFAULT_REFINEMENT_BUDGET: u64 = 3;
@@ -90,6 +95,25 @@ pub fn refinement_history(metadata: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// Build a deterministic failure identity.  The worker's `head_commit` is
+/// part of the identity when available, so a changed commit permits another
+/// attempt even when the check text is unchanged.  Legacy/pre-commit cards
+/// use an explicit `unknown-code` marker rather than guessing from timestamps.
+pub fn failure_fingerprint(metadata: &Value, check_output: &str) -> String {
+    let code_tip = metadata
+        .get("dispatch_evidence")
+        .and_then(|v| v.get("head_commit"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unknown-code");
+    let normalized = check_output
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let input = format!("code-tip={code_tip}\ncheck={normalized}");
+    hex::encode(Sha256::digest(input.as_bytes()))
+}
+
 /// Decide the next step given current metadata and a failing-check transcript.
 ///
 /// An empty transcript is never a failure worth spending budget on: the caller
@@ -102,6 +126,18 @@ pub fn decide(metadata: &Value, check_output: &str, default_budget: u64) -> Refi
     let budget = effective_budget(metadata, default_budget);
     if budget == 0 {
         return RefinementDecision::Skip;
+    }
+    // Do not spend another autonomous round on an identical gate failure when
+    // the worker has left the same code tip in place.  This is intentionally
+    // checked before incrementing the budget: suppression is a terminal
+    // handoff, not a hidden retry-budget charge.
+    if metadata
+        .get(LAST_FAILURE_FINGERPRINT_KEY)
+        .and_then(Value::as_str)
+        == Some(failure_fingerprint(metadata, check_output).as_str())
+    {
+        let spent = refinement_spent(metadata).saturating_add(1);
+        return RefinementDecision::Park { spent, budget };
     }
     let next = refinement_spent(metadata).saturating_add(1);
     if next <= budget {
@@ -152,6 +188,10 @@ pub async fn apply(
                 json!(truncate(check_output, CHECK_OUTPUT_CHARS)),
             );
             extra.insert(
+                LAST_FAILURE_FINGERPRINT_KEY.to_string(),
+                json!(failure_fingerprint(metadata, check_output)),
+            );
+            extra.insert(
                 REFINEMENT_HISTORY_KEY.to_string(),
                 Value::Array(appended_history(
                     metadata,
@@ -198,6 +238,10 @@ pub async fn apply(
                 Value::Array(history.clone()),
             );
             patch.insert(REFINEMENT_SPENT_KEY.to_string(), json!(spent));
+            patch.insert(
+                LAST_FAILURE_FINGERPRINT_KEY.to_string(),
+                json!(failure_fingerprint(metadata, check_output)),
+            );
             park_snapshot(spent, budget).write_into(&mut patch);
             // Failure-tolerant: a card that would not take the history still
             // has to park, or a failing goal silently sits in Review forever.
@@ -398,6 +442,54 @@ mod tests {
             decide(&json!({}), "   \n ", DEFAULT_REFINEMENT_BUDGET),
             RefinementDecision::Skip
         );
+    }
+
+    #[test]
+    fn failure_fingerprint_ignores_formatting_but_tracks_code_tip() {
+        let meta = json!({"dispatch_evidence": {"head_commit": "abc123"}});
+        assert_eq!(
+            failure_fingerprint(&meta, "error 42\n at line 8"),
+            failure_fingerprint(&meta, "error 42   at line 8")
+        );
+        let changed = json!({"dispatch_evidence": {"head_commit": "def456"}});
+        assert_ne!(
+            failure_fingerprint(&meta, "error 42"),
+            failure_fingerprint(&changed, "error 42")
+        );
+    }
+
+    #[test]
+    fn identical_failure_is_parked_without_another_rework_round() {
+        let base = json!({
+            REFINEMENT_BUDGET_KEY: 3,
+            REFINEMENT_SPENT_KEY: 1,
+            "dispatch_evidence": {"head_commit": "abc123"}
+        });
+        let mut metadata = base.clone();
+        metadata[LAST_FAILURE_FINGERPRINT_KEY] =
+            json!(failure_fingerprint(&base, "compile failed at line 7"));
+        assert_eq!(
+            decide(&metadata, "compile   failed at line 7", 3),
+            RefinementDecision::Park {
+                spent: 2,
+                budget: 3
+            }
+        );
+        // A new worker commit is evidence of a changed input and is allowed
+        // one bounded attempt, even when the check text is identical.
+        let changed = json!({
+            REFINEMENT_BUDGET_KEY: 3,
+            REFINEMENT_SPENT_KEY: 1,
+            LAST_FAILURE_FINGERPRINT_KEY: metadata[LAST_FAILURE_FINGERPRINT_KEY],
+            "dispatch_evidence": {"head_commit": "def456"}
+        });
+        assert!(matches!(
+            decide(&changed, "compile failed at line 7", 3),
+            RefinementDecision::Requeue {
+                spent: 2,
+                budget: 3
+            }
+        ));
     }
 
     #[test]

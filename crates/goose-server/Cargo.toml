@@ -57,6 +57,7 @@ native-tls = [
 [dependencies]
 async-trait = { workspace = true }
 permagent = { path = "../goose", default-features = false }
+permagent-eval = { path = "../permagent-eval" }
 permagent-mcp = { path = "../goose-mcp" }
 spectral = { workspace = true }
 rmcp = { workspace = true }

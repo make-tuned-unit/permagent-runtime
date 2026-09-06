@@ -422,8 +422,13 @@ pub async fn ingest_image(image_bytes: &[u8], filename: &str) -> anyhow::Result<
     if is_visual {
         // Too little / too low-confidence text → a visual image. Do not ingest;
         // the caller passes the bytes to the agent so visual Q&A still works.
+        // Preserve any partial OCR too: the image may be a screenshot whose
+        // small/low-contrast text fell below the visual threshold, and dropping
+        // those recognized lines made the agent depend entirely on provider
+        // vision support. This is deliberately extractive and bounded.
+        let partial_ocr = truncate(&joined_text(&lines), 4_000);
         return Ok(Digest {
-            summary: String::new(),
+            summary: partial_ocr,
             recall_query: String::new(),
             source: READER_SOURCE.to_string(),
             token_count: 0,
@@ -950,6 +955,22 @@ mod tests {
         let (is_visual, _chars, conf) = decide_visual(&lines);
         assert!(is_visual, "low mean confidence → visual");
         assert!(conf < DEFAULT_MIN_CONFIDENCE);
+    }
+
+    #[test]
+    fn visual_classification_keeps_partial_ocr_bounded_for_fallback() {
+        let lines = vec![vision_ocr::OcrLine {
+            text: "  visible screenshot text  ".to_string(),
+            confidence: 0.10,
+        }];
+        let (is_visual, _, _) = decide_visual(&lines);
+        assert!(is_visual);
+        // The visual branch must retain the extractive text that ingest_image
+        // returns, while applying the same bound used in production.
+        assert_eq!(
+            truncate(&joined_text(&lines), 4_000),
+            "visible screenshot text"
+        );
     }
 
     #[test]

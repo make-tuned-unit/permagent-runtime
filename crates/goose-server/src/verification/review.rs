@@ -621,9 +621,13 @@ pub async fn run_review(
             r.decision = ReviewDecision::Passed;
             r.rubber_stamp = rubber_stamp_logged;
             r.summary = if r.cross_family {
-                format!("{who}, from a different model family than the worker, reviewed this work and approved it")
+                format!(
+                    "{who}, from a different model family than the worker, reviewed this work and approved it"
+                )
             } else {
-                format!("{who} reviewed this work and approved it — note it shares the worker's model family, so this was not an independent cross-family review")
+                format!(
+                    "{who} reviewed this work and approved it — note it shares the worker's model family, so this was not an independent cross-family review"
+                )
             };
         }
         GateDecision::RequestChanges { findings } => {

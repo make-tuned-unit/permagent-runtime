@@ -24,12 +24,18 @@ fn list() -> Result<()> {
         println!("No workers defined.");
         return Ok(());
     }
-    println!("{:<15} {:<20} ROLE", "KEY", "DISPLAY_NAME");
+    println!("{:<15} {:<20} {:<18} ROLE", "KEY", "DISPLAY_NAME", "ENGINE");
     let mut keys: Vec<_> = config.workers.keys().collect();
     keys.sort();
     for key in keys {
         let w = &config.workers[key];
-        println!("{:<15} {:<20} {}", key, w.display_name(), w.role);
+        println!(
+            "{:<15} {:<20} {:<18} {}",
+            key,
+            w.display_name(),
+            w.engine.label(),
+            w.role
+        );
     }
     Ok(())
 }
@@ -52,6 +58,18 @@ fn show(key: &str) -> Result<()> {
     );
     println!("  display_name: {}", w.display_name());
     println!("  role:         {}", w.role);
+    let capabilities = w.capabilities();
+    println!("  engine:       {}", w.engine.label());
+    println!("  capabilities: model_override={}, streaming={}, steering={}, cancellation={}, sandbox={}, permission_gates={}, mcp={}, cli_tools={}",
+        capabilities.supports_model_override,
+        capabilities.supports_streaming,
+        capabilities.supports_steering,
+        capabilities.supports_cancellation,
+        capabilities.supports_sandbox,
+        capabilities.supports_permission_gates,
+        capabilities.supports_mcp,
+        capabilities.supports_cli_tools,
+    );
     println!(
         "  traits:       {}",
         if w.traits.is_empty() {

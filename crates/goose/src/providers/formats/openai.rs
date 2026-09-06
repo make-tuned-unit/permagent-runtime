@@ -820,6 +820,7 @@ fn extract_usage_with_output_tokens(chunk: &StreamingChunk) -> Option<ProviderUs
             chunk.model.as_ref().map(|model| ProviderUsage {
                 usage: get_usage(u),
                 model: model.clone(),
+                invocation_id: None,
             })
         })
         .filter(|u| u.usage.output_tokens.is_some())

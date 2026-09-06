@@ -136,16 +136,161 @@ pub async fn delete_attachment(
     Ok(path)
 }
 
-/// Link an attachment to a message (set message_id after sending).
-pub async fn link_to_message(
+/// Link an attachment to a message, scoped to the session that owns it.
+///
+/// Returns `false` when the attachment does not belong to `session_id`; this
+/// keeps a guessed attachment UUID from being rebound across conversations.
+pub async fn link_to_message_for_session(
     pool: &Pool<Sqlite>,
+    session_id: &str,
     attachment_id: &str,
     message_id: &str,
-) -> anyhow::Result<()> {
-    sqlx::query("UPDATE attachments SET message_id = ? WHERE id = ?")
-        .bind(message_id)
-        .bind(attachment_id)
-        .execute(pool)
-        .await?;
-    Ok(())
+) -> anyhow::Result<bool> {
+    let result =
+        sqlx::query("UPDATE attachments SET message_id = ? WHERE id = ? AND session_id = ?")
+            .bind(message_id)
+            .bind(attachment_id)
+            .bind(session_id)
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Atomically link a batch of attachments to one message. If any ID is not
+/// owned by the session, every update is rolled back.
+pub async fn link_many_to_message_for_session(
+    pool: &Pool<Sqlite>,
+    session_id: &str,
+    attachment_ids: &[String],
+    message_id: &str,
+) -> anyhow::Result<bool> {
+    let mut transaction = pool.begin().await?;
+    for attachment_id in attachment_ids {
+        let result =
+            sqlx::query("UPDATE attachments SET message_id = ? WHERE id = ? AND session_id = ?")
+                .bind(message_id)
+                .bind(attachment_id)
+                .bind(session_id)
+                .execute(&mut *transaction)
+                .await?;
+        if result.rows_affected() != 1 {
+            transaction.rollback().await?;
+            return Ok(false);
+        }
+    }
+    transaction.commit().await?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn message_link_cannot_cross_session_boundary() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE attachments (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                message_id TEXT,
+                filename TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                path TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        insert_attachment(
+            &pool,
+            "attachment-1",
+            "session-owner",
+            "story.png",
+            "image/png",
+            12,
+            "/private/attachment",
+        )
+        .await
+        .unwrap();
+
+        assert!(!link_to_message_for_session(
+            &pool,
+            "session-other",
+            "attachment-1",
+            "message-wrong",
+        )
+        .await
+        .unwrap());
+        assert!(link_to_message_for_session(
+            &pool,
+            "session-owner",
+            "attachment-1",
+            "message-right",
+        )
+        .await
+        .unwrap());
+
+        let record = get_attachment(&pool, "session-owner", "attachment-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.message_id.as_deref(), Some("message-right"));
+    }
+
+    #[tokio::test]
+    async fn batch_link_rolls_back_when_one_attachment_is_out_of_scope() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE attachments (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                message_id TEXT,
+                filename TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                path TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (id, session) in [("owned", "session-owner"), ("foreign", "session-other")] {
+            insert_attachment(
+                &pool,
+                id,
+                session,
+                "story.png",
+                "image/png",
+                12,
+                "/private/a",
+            )
+            .await
+            .unwrap();
+        }
+
+        let ids = vec!["owned".to_string(), "foreign".to_string()];
+        assert!(
+            !link_many_to_message_for_session(&pool, "session-owner", &ids, "message-1",)
+                .await
+                .unwrap()
+        );
+        let owned = get_attachment(&pool, "session-owner", "owned")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owned.message_id, None);
+    }
 }

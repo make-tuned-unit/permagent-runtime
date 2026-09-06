@@ -228,7 +228,7 @@ pub struct WorkerCandidate {
 ///
 /// Algorithm:
 /// 1. Filter by available == true
-/// 2. Filter by capability: worker.tool_kinds intersects required_kinds
+/// 2. Filter by capability: worker.tool_kinds covers every required kind
 ///    (workers with empty tool_kinds match everything)
 /// 3. Sort by cost_tier: local_free > subscription > paid_api
 /// 4. Within same tier: fewest active_sessions wins
@@ -245,9 +245,10 @@ pub fn select_best_worker(
                 // Workers with no declared tool_kinds match everything
                 true
             } else {
-                required_kinds
-                    .iter()
-                    .any(|req| w.tool_kinds.iter().any(|tk| tk == req))
+                required_kinds.is_empty()
+                    || required_kinds
+                        .iter()
+                        .all(|req| w.tool_kinds.iter().any(|tk| tk == req))
             }
         })
         .collect();
@@ -634,6 +635,17 @@ mod tests {
         let workers = vec![make_worker("general", true, &[], "local_free", 0)];
         let result = select_best_worker(&workers, &["code_edit".into(), "shell".into()]);
         assert_eq!(result.unwrap(), "general");
+    }
+
+    #[test]
+    fn select_requires_one_worker_to_cover_every_capability() {
+        let workers = vec![
+            make_worker("editor", true, &["code_edit"], "local_free", 0),
+            make_worker("shell", true, &["shell"], "local_free", 0),
+            make_worker("complete", true, &["code_edit", "shell"], "subscription", 0),
+        ];
+        let result = select_best_worker(&workers, &["code_edit".into(), "shell".into()]);
+        assert_eq!(result.unwrap(), "complete");
     }
 
     #[test]

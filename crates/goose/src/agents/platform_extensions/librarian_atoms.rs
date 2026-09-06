@@ -22,6 +22,7 @@
 
 use std::sync::Arc;
 
+use crate::agents::reply_parts::AccountedFastCompletion;
 use crate::brain_handle::SafeBrain;
 use crate::conversation::message::Message;
 use crate::providers::base::Provider;
@@ -159,7 +160,7 @@ pub async fn run_atom_consolidation(
         // deterministic extractive consolidation so layered recall still exists
         // at $0 when the provider is unavailable or the call fails/empties.
         let atom = match provider.as_ref() {
-            Some(p) => match generate_atom(p.as_ref(), &sources).await {
+            Some(p) => match generate_atom(p, &sources).await {
                 Ok(text) if !text.trim().is_empty() => Some(text),
                 Ok(_) => {
                     tracing::warn!(
@@ -232,7 +233,7 @@ pub async fn run_atom_consolidation(
 /// Uses the provider's lead/actor model config (`get_model_config`) — NOT the
 /// fast model — because the quality contract demands actor-tier or better.
 async fn generate_atom(
-    provider: &dyn Provider,
+    provider: &Arc<dyn Provider>,
     sources: &[(String, String)],
 ) -> anyhow::Result<String> {
     let mut body = String::from(
@@ -250,17 +251,21 @@ async fn generate_atom(
     );
 
     let user_message = Message::user().with_text(body);
-    let model_config = provider.get_model_config();
-    let (response, _usage) = provider
-        .complete(
-            &model_config,
-            "librarian-atoms",
-            ATOM_SYSTEM_PROMPT,
-            std::slice::from_ref(&user_message),
-            &[],
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("atom LLM call failed: {e}"))?;
+    let manager = Arc::new(crate::session::SessionManager::instance());
+    let session =
+        AccountedFastCompletion::ensure_background_session(Arc::clone(&manager), "librarian-atoms")
+            .await?;
+    let (response, _usage) = AccountedFastCompletion::complete_accounted(
+        manager,
+        session,
+        Arc::clone(provider),
+        ATOM_SYSTEM_PROMPT,
+        std::slice::from_ref(&user_message),
+        &[],
+        false,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("atom LLM call failed: {e}"))?;
 
     Ok(response.as_concat_text().trim().to_string())
 }
@@ -282,6 +287,14 @@ fn derive_target_key(member_keys: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn librarian_atoms_cannot_bypass_shared_paid_dispatch_boundary() {
+        let source = include_str!("librarian_atoms.rs");
+        let direct_call = [".", "complete("].concat();
+        assert!(source.contains("complete_accounted"));
+        assert!(!source.contains(&direct_call));
+    }
 
     #[test]
     fn target_key_is_deterministic_and_order_independent() {

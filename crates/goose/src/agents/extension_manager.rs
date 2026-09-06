@@ -327,6 +327,7 @@ async fn child_process_client(
 
     let (transport, mut stderr) = TokioChildProcess::builder(command)
         .stderr(Stdio::piped())
+        // permagent-dispatch: seam=mcp_extension_process_v1 class=excluded reason=tool_server_lifecycle authority=extension_timeout_supervision
         .spawn()?;
     let mut stderr = stderr.take().ok_or_else(|| {
         ExtensionError::SetupError("failed to attach child process stderr".to_owned())

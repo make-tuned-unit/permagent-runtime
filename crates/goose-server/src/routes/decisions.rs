@@ -207,6 +207,34 @@ pub(crate) async fn apply_jesse_answer(
     audit_principal: &str,
 ) -> Result<AnswerResponse, (StatusCode, String)> {
     let pool = pool_of(state).await?;
+    // Verification runs asynchronously after a goal enters Review. Refuse the
+    // tap before answering/auditing the decision when proof is not ready, so a
+    // fast user cannot consume the only approval while the verifier is still
+    // racing. The effect path repeats this check immediately before landing.
+    if answer.answer == "approve" {
+        if let Some(pending) = decisions::get_decision(&pool, decision_id)
+            .await
+            .map_err(internal)?
+        {
+            if pending.kind == "approve_review" {
+                if let Some(goal_id) = pending.goal_id.as_deref() {
+                    let status = permagent::decisions_effects::approve_review_verification_status(
+                        &pool, goal_id,
+                    )
+                    .await
+                    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+                    if status != "pass" {
+                        return Err((
+                            StatusCode::CONFLICT,
+                            format!(
+                                "verification is {status}; the goal remains in Review and the approval is still open"
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
     let (decision, proof) = decisions::answer_decision_with_principal(
         &pool,
         decision_id,

@@ -285,6 +285,7 @@ pub async fn forecast_batch_with_deadline(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // permagent-dispatch: seam=remote_forecast_worker_v1 class=excluded reason=remote_forecast_subprocess authority=forecast_deadline_supervision
         .spawn();
     let mut child = match spawned {
         Ok(c) => c,

@@ -40,6 +40,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Row, Sqlite};
 
+use crate::agents::reply_parts::AccountedFastCompletion;
 use crate::conversation::message::Message;
 use crate::cost_router::{role_map, WorkflowRole};
 use crate::finance_indicators as ind;
@@ -710,16 +711,24 @@ pub async fn judge_with_opus(
         "Session day {day}. CANDIDATES:\n{}",
         serde_json::to_string_pretty(candidates).unwrap_or_default()
     ));
-    let (response, _usage) = provider
-        .complete(
-            &crate::model::ModelConfig::new(&model_name).map_err(|e| e.to_string())?,
-            "financier-close",
-            &system,
-            std::slice::from_ref(&user),
-            &[],
-        )
-        .await
-        .map_err(|e| format!("Opus did not answer ({e}). No pick invented."))?;
+    let manager = std::sync::Arc::new(crate::session::SessionManager::instance());
+    let session = AccountedFastCompletion::ensure_background_session(
+        std::sync::Arc::clone(&manager),
+        "financier-close",
+    )
+    .await
+    .map_err(|e| format!("Financier session unavailable ({e}). No pick invented."))?;
+    let (response, _usage) = AccountedFastCompletion::complete_accounted(
+        manager,
+        session,
+        provider,
+        &system,
+        std::slice::from_ref(&user),
+        &[],
+        false,
+    )
+    .await
+    .map_err(|e| format!("Opus did not answer ({e}). No pick invented."))?;
     Ok(parse_judgment(
         day,
         &response.as_concat_text(),
@@ -852,6 +861,14 @@ pub fn notify_copy(pick: &DailyPick) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn financier_judge_cannot_bypass_shared_paid_dispatch_boundary() {
+        let source = include_str!("financier_close.rs");
+        let direct_call = [".", "complete("].concat();
+        assert!(source.contains("complete_accounted"));
+        assert!(!source.contains(&direct_call));
+    }
 
     fn cand(ticker: &str) -> CloseCandidate {
         CloseCandidate {

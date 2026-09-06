@@ -11,6 +11,8 @@
 //!   PUT /api/browser/bookmarks — replace the bookmark list (validated)
 //!   GET /api/browser/tab-sets  — persisted named tab sets
 //!   PUT /api/browser/tab-sets  — replace the tab-set list (validated)
+//!   GET /api/browser/history   — recent/frequent address suggestions
+//!   POST /api/browser/history  — record one visited address
 
 use axum::{routing::get, Json, Router};
 use permagent::config::paths::Paths;
@@ -55,6 +57,21 @@ pub struct TabSetsFile {
     pub tab_sets: Vec<TabSet>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntry {
+    pub url: String,
+    pub title: String,
+    pub last_visited: String,
+    pub visit_count: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryFile {
+    pub entries: Vec<HistoryEntry>,
+}
+
 // ── Validation ───────────────────────────────────────────────────────────────
 
 /// Bounds keep a corrupted/hostile client from growing the state file without
@@ -65,6 +82,7 @@ const MAX_TABS_PER_SET: usize = 100;
 const MAX_URL_LEN: usize = 2048;
 const MAX_TITLE_LEN: usize = 512;
 const MAX_NAME_LEN: usize = 128;
+const MAX_HISTORY_ENTRIES: usize = 100;
 
 fn validate_url(url: &str) -> Result<(), String> {
     if url.is_empty() {
@@ -134,6 +152,31 @@ fn validate_tab_sets(tab_sets: &[TabSet]) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_history_entry(entry: &HistoryEntry) -> Result<(), String> {
+    validate_url(&entry.url)?;
+    if entry.title.len() > MAX_TITLE_LEN {
+        return Err(format!("title exceeds {} characters", MAX_TITLE_LEN));
+    }
+    Ok(())
+}
+
+fn validate_history(entries: &[HistoryEntry]) -> Result<(), String> {
+    if entries.len() > MAX_HISTORY_ENTRIES {
+        return Err(format!(
+            "too many history entries (max {})",
+            MAX_HISTORY_ENTRIES
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for entry in entries {
+        validate_history_entry(entry)?;
+        if !seen.insert(entry.url.as_str()) {
+            return Err(format!("duplicate history url: {}", entry.url));
+        }
+    }
+    Ok(())
+}
+
 // ── Persistence (dashboard.rs layout pattern: read-or-default, atomic write) ─
 
 fn bookmarks_path() -> std::path::PathBuf {
@@ -142,6 +185,10 @@ fn bookmarks_path() -> std::path::PathBuf {
 
 fn tab_sets_path() -> std::path::PathBuf {
     Paths::in_data_dir("browser_tab_sets.json")
+}
+
+fn history_path() -> std::path::PathBuf {
+    Paths::in_data_dir("browser_history.json")
 }
 
 async fn read_state<T: Default + serde::de::DeserializeOwned>(path: &std::path::Path) -> T {
@@ -192,6 +239,41 @@ async fn put_tab_sets(Json(body): Json<TabSetsFile>) -> Result<Json<TabSetsFile>
     Ok(Json(body))
 }
 
+async fn get_history() -> Json<HistoryFile> {
+    Json(read_state(&history_path()).await)
+}
+
+/// Record one URL without exposing a full-replace write to the renderer. The
+/// daemon owns the bounded list and merges visits by URL, so a stale renderer
+/// cannot erase history recorded by another window.
+async fn record_history(
+    Json(mut entry): Json<HistoryEntry>,
+) -> Result<Json<HistoryFile>, ErrorResponse> {
+    validate_history_entry(&entry).map_err(ErrorResponse::bad_request)?;
+    let path = history_path();
+    let mut file: HistoryFile = read_state(&path).await;
+    if let Some(existing) = file.entries.iter_mut().find(|e| e.url == entry.url) {
+        existing.title = entry.title;
+        existing.last_visited = entry.last_visited;
+        existing.visit_count = existing
+            .visit_count
+            .saturating_add(entry.visit_count.max(1));
+    } else {
+        entry.visit_count = entry.visit_count.max(1);
+        file.entries.push(entry);
+    }
+    file.entries.sort_by(|a, b| {
+        b.visit_count
+            .cmp(&a.visit_count)
+            .then_with(|| b.last_visited.cmp(&a.last_visited))
+            .then_with(|| a.url.cmp(&b.url))
+    });
+    file.entries.truncate(MAX_HISTORY_ENTRIES);
+    validate_history(&file.entries).map_err(ErrorResponse::bad_request)?;
+    write_state(&path, &file).await?;
+    Ok(Json(file))
+}
+
 pub fn routes() -> Router {
     Router::new()
         .route(
@@ -199,6 +281,10 @@ pub fn routes() -> Router {
             get(get_bookmarks).put(put_bookmarks),
         )
         .route("/api/browser/tab-sets", get(get_tab_sets).put(put_tab_sets))
+        .route(
+            "/api/browser/history",
+            get(get_history).post(record_history),
+        )
 }
 
 #[cfg(test)]
@@ -315,6 +401,24 @@ mod tests {
             tab_set("Work", &["https://b.dev"]),
         ];
         assert!(validate_tab_sets(&sets).is_ok());
+    }
+
+    #[test]
+    fn history_rejects_non_web_schemes_and_duplicates() {
+        let bad = HistoryEntry {
+            url: "javascript:alert(1)".into(),
+            title: String::new(),
+            last_visited: "2026-09-04T00:00:00Z".into(),
+            visit_count: 1,
+        };
+        assert!(validate_history(&[bad]).is_err());
+        let good = HistoryEntry {
+            url: "https://example.com".into(),
+            title: "Example".into(),
+            last_visited: "2026-09-04T00:00:00Z".into(),
+            visit_count: 1,
+        };
+        assert!(validate_history(&[good.clone(), good]).is_err());
     }
 
     #[test]

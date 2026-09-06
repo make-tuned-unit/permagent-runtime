@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::agents::platform_extensions::developer;
+use crate::agents::reply_parts::AccountedFastCompletion;
 use crate::agents::ExtensionConfig;
 use crate::config::Config;
 use crate::conversation::message::Message;
@@ -8,7 +9,8 @@ use crate::model::ModelConfig;
 use crate::providers::base::Provider;
 use crate::providers::{self, errors::ProviderError};
 use crate::session::{
-    config_path, latest_llm_log_path, latest_server_log_path, read_capped, read_tail, SystemInfo,
+    config_path, latest_llm_log_path, latest_server_log_path, read_capped, read_tail, Session,
+    SessionManager, SystemInfo,
 };
 
 pub async fn run(agent: &crate::agents::Agent, session_id: &str) -> anyhow::Result<Message> {
@@ -60,6 +62,8 @@ async fn ensure_working_provider(
     agent: &crate::agents::Agent,
     session_id: &str,
 ) -> anyhow::Result<Option<Message>> {
+    let manager = Arc::clone(&agent.config.session_manager);
+    let session = manager.get_session(session_id, false).await?;
     let config = Config::global();
     let mut log: Vec<String> = Vec::new();
 
@@ -68,7 +72,7 @@ async fn ensure_working_provider(
 
     if let (Some(ref pname), Some(ref mname)) = (&provider_name, &model_name) {
         log.push(format!("Checking {} / {} ...", pname, mname));
-        match try_create_and_test(pname, mname).await {
+        match try_create_and_test(pname, mname, Arc::clone(&manager), session.clone()).await {
             Ok(_) => {
                 return Ok(None);
             }
@@ -78,7 +82,15 @@ async fn ensure_working_provider(
         }
 
         log.push(format!("Looking for alternative models on {} ...", pname));
-        if let Some(working) = try_other_models(pname, mname, &mut log).await {
+        if let Some(working) = try_other_models(
+            pname,
+            mname,
+            &mut log,
+            Arc::clone(&manager),
+            session.clone(),
+        )
+        .await
+        {
             let new_model = working.get_model_config().model_name.clone();
             save_and_set(agent, session_id, working).await?;
             let preamble = log.join("\n");
@@ -95,7 +107,7 @@ async fn ensure_working_provider(
 
     log.push("Looking for other configured providers ...".to_string());
     let skip = provider_name.as_deref().unwrap_or("");
-    if let Some(working) = try_other_providers(skip, &mut log).await {
+    if let Some(working) = try_other_providers(skip, &mut log, manager, session).await {
         let name = working.get_name().to_string();
         let model = working.get_model_config().model_name.clone();
         save_and_set(agent, session_id, working).await?;
@@ -148,23 +160,30 @@ async fn save_and_set(
     agent.update_provider(provider, session_id).await
 }
 
-async fn test_provider(provider: &dyn Provider) -> Result<(), ProviderError> {
+async fn test_provider(
+    manager: Arc<SessionManager>,
+    session: Session,
+    provider: Arc<dyn Provider>,
+) -> Result<(), ProviderError> {
     let messages = vec![Message::user().with_text("Say 'hello' and nothing else.")];
-    provider
-        .complete(
-            &provider.get_model_config(),
-            "doctor-check",
-            "Respond as briefly as possible.",
-            &messages,
-            &[],
-        )
-        .await?;
+    AccountedFastCompletion::complete_accounted(
+        manager,
+        session,
+        provider,
+        "Respond as briefly as possible.",
+        &messages,
+        &[],
+        false,
+    )
+    .await?;
     Ok(())
 }
 
 async fn try_create_and_test(
     provider_name: &str,
     model_name: &str,
+    manager: Arc<SessionManager>,
+    session: Session,
 ) -> Result<Arc<dyn Provider>, ProviderError> {
     let model_config = ModelConfig::new(model_name)
         .map_err(|e| ProviderError::ExecutionError(e.to_string()))?
@@ -174,7 +193,7 @@ async fn try_create_and_test(
         .await
         .map_err(|e| ProviderError::ExecutionError(e.to_string()))?;
 
-    test_provider(provider.as_ref()).await?;
+    test_provider(manager, session, Arc::clone(&provider)).await?;
     Ok(provider)
 }
 
@@ -182,6 +201,8 @@ async fn try_other_models(
     provider_name: &str,
     skip_model: &str,
     log: &mut Vec<String>,
+    manager: Arc<SessionManager>,
+    session: Session,
 ) -> Option<Arc<dyn Provider>> {
     let entry = providers::get_from_registry(provider_name).await.ok()?;
     let temp = entry.create_with_default_model(vec![]).await.ok()?;
@@ -189,7 +210,8 @@ async fn try_other_models(
 
     for model in models.iter().filter(|m| m.as_str() != skip_model).take(3) {
         log.push(format!("  Trying {} / {} ...", provider_name, model));
-        match try_create_and_test(provider_name, model).await {
+        match try_create_and_test(provider_name, model, Arc::clone(&manager), session.clone()).await
+        {
             Ok(p) => {
                 log.push(format!("  ✓ {} / {} works", provider_name, model));
                 return Some(p);
@@ -200,7 +222,12 @@ async fn try_other_models(
     None
 }
 
-async fn try_other_providers(skip: &str, log: &mut Vec<String>) -> Option<Arc<dyn Provider>> {
+async fn try_other_providers(
+    skip: &str,
+    log: &mut Vec<String>,
+    manager: Arc<SessionManager>,
+    session: Session,
+) -> Option<Arc<dyn Provider>> {
     for (meta, _) in providers::providers().await {
         if meta.name == skip {
             continue;
@@ -215,7 +242,7 @@ async fn try_other_providers(skip: &str, log: &mut Vec<String>) -> Option<Arc<dy
         };
         let model_name = provider.get_model_config().model_name.clone();
         log.push(format!("  Trying {} / {} ...", meta.name, model_name));
-        match test_provider(provider.as_ref()).await {
+        match test_provider(Arc::clone(&manager), session.clone(), Arc::clone(&provider)).await {
             Ok(()) => {
                 log.push(format!("  ✓ {} / {} works", meta.name, model_name));
                 return Some(provider);
@@ -251,5 +278,16 @@ fn describe_error(e: &ProviderError) -> String {
             "Provider server error — the service may be temporarily down.".to_string()
         }
         other => format!("{}", other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn doctor_provider_checks_cannot_bypass_shared_paid_dispatch_boundary() {
+        let source = include_str!("doctor.rs");
+        let direct_call = [".", "complete("].concat();
+        assert!(source.contains("complete_accounted"));
+        assert!(!source.contains(&direct_call));
     }
 }

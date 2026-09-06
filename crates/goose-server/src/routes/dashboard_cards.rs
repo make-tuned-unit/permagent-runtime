@@ -1070,6 +1070,27 @@ mod tests {
     }
 
     #[test]
+    fn free_space_boundaries_keep_df_kilobytes_as_bytes() {
+        // `df -k` reports 1024-byte blocks. Keep the 7.9/8/10 GiB boundary
+        // explicit so a future guard cannot accidentally apply a 512-byte
+        // threshold to this parser's input or display the wrong scale.
+        let gib = 1024u64 * 1024;
+        for (available_kib, expected) in [
+            (79 * gib / 10, "7.9 GB free"),
+            (8 * gib, "8.0 GB free"),
+            (10 * gib, "10.0 GB free"),
+        ] {
+            let df = format!(
+                "Filesystem  1024-blocks      Used Available Capacity  Mounted on\n\
+                 /dev/disk3s1  100000000 0 {available_kib}    1%    /\n"
+            );
+            let free = parse_df_available_bytes(&df).expect("df -k available parses");
+            assert_eq!(free, available_kib * 1024);
+            assert_eq!(fmt_free_space(free), expected);
+        }
+    }
+
+    #[test]
     fn the_disk_cell_says_free_first_then_the_percentage() {
         let g = 1024u64 * 1024 * 1024;
         assert_eq!(

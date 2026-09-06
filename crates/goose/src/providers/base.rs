@@ -56,6 +56,12 @@ pub fn local_session_title(messages: &Conversation) -> Option<String> {
     Some(safe_truncate(&extract_short_title(&cleaned), 100))
 }
 
+/// Deterministic title used by the session manager. Empty or attachment-only
+/// conversations remain local as well; they do not justify a provider call.
+pub fn local_session_title_or_default(messages: &Conversation) -> String {
+    local_session_title(messages).unwrap_or_else(|| "New Session".to_string())
+}
+
 fn extract_short_title(text: &str) -> String {
     let word_count = text.split_whitespace().count();
     if word_count <= 8 {
@@ -393,11 +399,25 @@ impl ConfigKey {
 pub struct ProviderUsage {
     pub model: String,
     pub usage: Usage,
+    /// Stable identity for the logical provider invocation that produced this
+    /// usage. Provider adapters do not have to know about accounting; the
+    /// Agent assigns this once per stream and carries it through retries.
+    #[serde(default)]
+    pub invocation_id: Option<String>,
 }
 
 impl ProviderUsage {
     pub fn new(model: String, usage: Usage) -> Self {
-        Self { model, usage }
+        Self {
+            model,
+            usage,
+            invocation_id: None,
+        }
+    }
+
+    pub fn with_invocation_id(mut self, invocation_id: impl Into<String>) -> Self {
+        self.invocation_id = Some(invocation_id.into());
+        self
     }
 
     /// Ensures this ProviderUsage has token counts, estimating them if necessary
@@ -425,6 +445,10 @@ impl ProviderUsage {
         ProviderUsage {
             model: self.model.clone(),
             usage: self.usage + other.usage,
+            invocation_id: self
+                .invocation_id
+                .clone()
+                .or_else(|| other.invocation_id.clone()),
         }
     }
 }
@@ -567,6 +591,15 @@ pub trait Provider: Send + Sync {
     /// Get the name of this provider instance
     fn get_name(&self) -> &str;
 
+    /// Billing classification for calls through this provider.
+    ///
+    /// This is independent of [`data_locality`](Provider::data_locality):
+    /// locality does not prove that an endpoint is free, and a subscription
+    /// service is not local. Unknown providers fail closed as chargeable.
+    fn cost_tier(&self) -> crate::session::CostTier {
+        crate::session::CostTier::PaidApi
+    }
+
     /// Primary streaming method that all providers must implement.
     ///
     /// Note: Do not add `#[instrument]` here — the call sites (`complete` and
@@ -635,6 +668,7 @@ pub trait Provider: Send + Sync {
         let fast_config = model_config.use_fast_model();
 
         let result = self
+            // permagent-dispatch: seam=provider_base_fast_transport_v1 class=excluded reason=caller_owned_fast_accounting authority=accounted_fast_completion
             .complete(&fast_config, session_id, system, messages, tools)
             .await;
 
@@ -648,6 +682,7 @@ pub trait Provider: Send + Sync {
                         e,
                         model_config.model_name
                     );
+                    // permagent-dispatch: seam=provider_base_fast_fallback_transport_v1 class=excluded reason=caller_owned_fast_accounting authority=accounted_fast_completion
                     self.complete(&model_config, session_id, system, messages, tools)
                         .await
                 } else {
@@ -797,50 +832,17 @@ pub trait Provider: Send + Sync {
             .collect()
     }
 
-    /// Generate a session name/description based on the conversation history
-    /// Creates a prompt asking for a concise description in 4 words or less.
+    /// Generate a session name from conversation history without model spend.
+    ///
+    /// Session naming is housekeeping, not user-requested inference. Keeping it
+    /// local prevents an empty/attachment-only first turn from bypassing the
+    /// task budget through a background `complete_fast` call.
     async fn generate_session_name(
         &self,
-        session_id: &str,
+        _session_id: &str,
         messages: &Conversation,
     ) -> Result<String, ProviderError> {
-        if let Some(title) = local_session_title(messages) {
-            return Ok(title);
-        }
-        let context = self.get_initial_user_messages(messages);
-        let system = crate::prompt_template::render_template(
-            "session_name.md",
-            &std::collections::HashMap::<String, String>::new(),
-        )
-        .map_err(|e| ProviderError::ContextLengthExceeded(e.to_string()))?;
-
-        use super::cli_common::{
-            SESSION_NAME_BEGIN_MARKER, SESSION_NAME_END_MARKER, SESSION_NAME_SUFFIX,
-        };
-        let user_text = format!(
-            "{}\n{}\n{}\n\n{}",
-            SESSION_NAME_BEGIN_MARKER,
-            context.join("\n"),
-            SESSION_NAME_END_MARKER,
-            SESSION_NAME_SUFFIX,
-        );
-        let message = Message::user().with_text(&user_text);
-        let result = self
-            .complete_fast(session_id, &system, &[message], &[])
-            .await?;
-
-        let raw: String = result
-            .0
-            .content
-            .iter()
-            .filter_map(|c| c.as_text())
-            .collect();
-        let description = strip_xml_tags(&raw)
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        Ok(safe_truncate(&extract_short_title(&description), 100))
+        Ok(local_session_title_or_default(messages))
     }
 
     /// Configure OAuth authentication for this provider
@@ -997,6 +999,26 @@ mod tests {
     fn local_session_title_none_when_user_text_empty() {
         let conv = Conversation::new_unvalidated(vec![Message::user().with_text("   ")]);
         assert_eq!(local_session_title(&conv), None);
+        assert_eq!(local_session_title_or_default(&conv), "New Session");
+    }
+
+    #[test]
+    fn session_name_generation_has_no_provider_dispatch_fallback() {
+        let source = include_str!("base.rs");
+        let method = source
+            .split("async fn generate_session_name")
+            .nth(1)
+            .and_then(|tail| tail.split("/// Configure OAuth authentication").next())
+            .expect("generate_session_name method body");
+        assert!(
+            !method.contains(".complete("),
+            "session naming dispatched a full model"
+        );
+        assert!(
+            !method.contains(".complete_fast("),
+            "session naming dispatched a fast model"
+        );
+        assert!(method.contains("local_session_title_or_default"));
     }
 
     #[test]

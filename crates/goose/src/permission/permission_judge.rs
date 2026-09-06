@@ -1,3 +1,4 @@
+use crate::agents::reply_parts::AccountedFastCompletion;
 use crate::conversation::message::{Message, MessageContent, ToolRequest};
 use crate::conversation::Conversation;
 use crate::prompt_template::render_template;
@@ -164,16 +165,24 @@ pub async fn detect_read_only_tools(
     let system_prompt = render_template("permission_judge.md", &context)
         .unwrap_or_else(|_| "You are a good analyst and can detect operations whether they have read-only operations.".to_string());
 
-    let model_config = provider.get_model_config();
-    let res = provider
-        .complete(
-            &model_config,
-            session_id,
-            &system_prompt,
-            check_messages.messages(),
-            std::slice::from_ref(&tool),
-        )
-        .await;
+    let manager = Arc::new(crate::session::SessionManager::instance());
+    let session = match manager.get_session(session_id, false).await {
+        Ok(session) => session,
+        Err(error) => {
+            tracing::warn!(session_id, "permission judge session unavailable: {error}");
+            return vec![];
+        }
+    };
+    let res = AccountedFastCompletion::complete_accounted(
+        manager,
+        session,
+        provider,
+        &system_prompt,
+        check_messages.messages(),
+        std::slice::from_ref(&tool),
+        false,
+    )
+    .await;
 
     // Process the response and return an empty vector if the response is invalid
     if let Ok((message, _usage)) = res {
@@ -187,6 +196,14 @@ pub async fn detect_read_only_tools(
 mod tests {
     use super::*;
     use rmcp::model::CallToolRequestParams;
+
+    #[test]
+    fn permission_judge_cannot_bypass_shared_paid_dispatch_boundary() {
+        let source = include_str!("permission_judge.rs");
+        let direct_call = [".", "complete("].concat();
+        assert!(source.contains("complete_accounted"));
+        assert!(!source.contains(&direct_call));
+    }
 
     fn request(id: &str, query: &str) -> ToolRequest {
         ToolRequest {

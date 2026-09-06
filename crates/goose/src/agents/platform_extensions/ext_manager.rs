@@ -138,6 +138,7 @@ pub const SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME: &str = "search_available_extens
 pub const MANAGE_EXTENSIONS_TOOL_NAME: &str = "manage_extensions";
 pub const MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE: &str = "extensionmanager__manage_extensions";
 pub const SEARCH_MEMORY_TOOL_NAME: &str = "search_memory";
+pub const GET_MEMORY_TOOL_NAME: &str = "get_memory";
 
 pub struct ExtensionManagerClient {
     info: InitializeResult,
@@ -459,6 +460,17 @@ impl ExtensionManagerClient {
                             "query": {
                                 "type": "string",
                                 "description": "Natural language search query for memories"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 20,
+                                "description": "Maximum number of matched memories (default 8)"
+                            },
+                            "depth": {
+                                "type": "string",
+                                "enum": ["budget", "abstract", "overview", "full", "narrative"],
+                                "description": "Result detail: budget (default), abstract, overview, full, or bounded narrative neighbors"
                             }
                         }
                     })
@@ -469,6 +481,39 @@ impl ExtensionManagerClient {
             )
             .annotate(ToolAnnotations::from_raw(
                 Some("Search memories".to_string()),
+                Some(true),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                GET_MEMORY_TOOL_NAME.to_string(),
+                "Load one exact Brain memory by its stable id or key. Returns the stored metadata and exact content; use this after search_memory identifies the memory you need to inspect.".to_string(),
+                Arc::new(
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "Stable Spectral memory id"
+                            },
+                            "key": {
+                                "type": "string",
+                                "description": "Stable logical memory key"
+                            }
+                        },
+                        "oneOf": [
+                            {"required": ["id"]},
+                            {"required": ["key"]}
+                        ]
+                    })
+                    .as_object()
+                    .expect("Schema must be an object")
+                    .clone(),
+                ),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Load exact memory".to_string()),
                 Some(true),
                 Some(false),
                 Some(false),
@@ -487,6 +532,7 @@ impl ExtensionManagerClient {
         LIST_RESOURCES_TOOL_NAME,
         READ_RESOURCE_TOOL_NAME,
         SEARCH_MEMORY_TOOL_NAME,
+        GET_MEMORY_TOOL_NAME,
     ];
 
     async fn get_tools(&self) -> Vec<Tool> {
@@ -507,6 +553,7 @@ impl ExtensionManagerClient {
         // search_memory — active memory search via Brain recall (available when Brain is loaded)
         if super::get_global_brain().is_some() {
             names.push(SEARCH_MEMORY_TOOL_NAME);
+            names.push(GET_MEMORY_TOOL_NAME);
         }
 
         Self::all_possible_tools()
@@ -565,7 +612,8 @@ impl McpClientTrait for ExtensionManagerClient {
             MANAGE_EXTENSIONS_TOOL_NAME => self.handle_manage_extensions(arguments).await,
             LIST_RESOURCES_TOOL_NAME => self.handle_list_resources(session_id, arguments).await,
             READ_RESOURCE_TOOL_NAME => self.handle_read_resource(session_id, arguments).await,
-            SEARCH_MEMORY_TOOL_NAME => handle_search_memory(arguments).await,
+            SEARCH_MEMORY_TOOL_NAME => handle_search_memory(session_id, arguments).await,
+            GET_MEMORY_TOOL_NAME => handle_get_memory(arguments).await,
             _ => Err(ExtensionManagerToolError::UnknownTool {
                 tool_name: name.to_string(),
             }),
@@ -607,18 +655,146 @@ impl McpClientTrait for ExtensionManagerClient {
     }
 }
 
-/// Handle the search_memory tool — active Brain recall via spawn_blocking.
-/// Brain methods use block_on() internally and MUST run off the async executor.
-async fn handle_search_memory(
-    arguments: Option<JsonObject>,
-) -> Result<Vec<Content>, ExtensionManagerToolError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchMemoryDepth {
+    Budget,
+    Abstract,
+    Overview,
+    Full,
+    Narrative,
+}
+
+fn parse_search_memory_options(
+    arguments: &JsonObject,
+) -> Result<(String, usize, SearchMemoryDepth), ExtensionManagerToolError> {
     let query = arguments
-        .as_ref()
-        .and_then(|a| a.get("query"))
+        .get("query")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let limit = arguments
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(8)
+        .clamp(1, 20);
+    let depth = match arguments.get("depth").and_then(|v| v.as_str()) {
+        None | Some("budget") => SearchMemoryDepth::Budget,
+        Some("abstract") => SearchMemoryDepth::Abstract,
+        Some("overview") => SearchMemoryDepth::Overview,
+        Some("full") => SearchMemoryDepth::Full,
+        Some("narrative") => SearchMemoryDepth::Narrative,
+        Some(other) => {
+            return Err(ExtensionManagerToolError::OperationFailed {
+                message: format!(
+                    "Invalid depth '{}'; use budget, abstract, overview, full, or narrative",
+                    other
+                ),
+            })
+        }
+    };
+    Ok((query, limit, depth))
+}
 
+fn first_sentence_for_search(text: &str) -> &str {
+    let text = text.trim();
+    text.find(['.', '!', '?'])
+        .and_then(|i| text.get(..=i))
+        .map(str::trim)
+        .filter(|s| s.chars().count() >= 8)
+        .unwrap_or(text)
+}
+
+fn take_search_chars(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
+/// Return the query terms found in the stored content and a bounded exact
+/// excerpt around the first matching term. This is deliberately extractive:
+/// search results must give the model evidence it can verify, not a new
+/// paraphrase that could be mistaken for the stored memory.
+fn exact_search_excerpt(content: &str, query: &str) -> (String, String) {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(|term| {
+            term.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|term| term.chars().count() >= 2)
+        .collect();
+    let lowered = content.to_lowercase();
+    let matched: Vec<&str> = terms
+        .iter()
+        .filter(|term| lowered.contains(term.as_str()))
+        .map(String::as_str)
+        .collect();
+    let Some(first_term) = matched.first() else {
+        return (String::new(), take_search_chars(content, 320));
+    };
+    let start = lowered.find(first_term).unwrap_or(0);
+    let window = 320usize;
+    let start = start.saturating_sub(window / 2);
+    let excerpt: String = content
+        .char_indices()
+        .filter(|(idx, _)| *idx >= start)
+        .map(|(_, ch)| ch)
+        .take(window)
+        .collect();
+    (matched.join(", "), excerpt)
+}
+
+fn explicit_search_text(
+    hit: &spectral::ingest::MemoryHit,
+    depth: SearchMemoryDepth,
+) -> (&'static str, String) {
+    match depth {
+        SearchMemoryDepth::Abstract => (
+            "abstract",
+            hit.description
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| first_sentence_for_search(&hit.content))
+                .to_string(),
+        ),
+        SearchMemoryDepth::Overview => ("overview", take_search_chars(&hit.content, 400)),
+        SearchMemoryDepth::Full => ("full", hit.content.clone()),
+        SearchMemoryDepth::Narrative => unreachable!("narrative is assembled separately"),
+        SearchMemoryDepth::Budget => unreachable!("budget is assembled separately"),
+    }
+}
+
+fn format_search_memory_hit(
+    index: usize,
+    hit: &spectral::ingest::MemoryHit,
+    text: &str,
+    layer: &str,
+    query: &str,
+) -> String {
+    let (matched, excerpt) = exact_search_excerpt(&hit.content, query);
+    format!(
+        "{}. [id: {}] [key: {}] [source: {}] [score: {:.2}] [layer: {}]\n   rendered {}: {}\n   matched: {}\n   exact excerpt: {}",
+        index,
+        hit.id,
+        hit.key,
+        hit.source.as_deref().unwrap_or("unknown"),
+        hit.signal_score,
+        layer,
+        layer,
+        text,
+        if matched.is_empty() { "(none)" } else { &matched },
+        excerpt,
+    )
+}
+
+/// Handle the search_memory tool — active Brain recall via spawn_blocking.
+/// Brain methods use block_on() internally and MUST run off the async executor.
+async fn handle_search_memory(
+    session_id: &str,
+    arguments: Option<JsonObject>,
+) -> Result<Vec<Content>, ExtensionManagerToolError> {
+    let arguments = arguments.unwrap_or_default();
+    let (query, limit, depth) = parse_search_memory_options(&arguments)?;
     if query.is_empty() {
         return Ok(vec![Content::text(
             "Please provide a search query.".to_string(),
@@ -641,15 +817,20 @@ async fn handle_search_memory(
     // hint-not-truth framing is the load-bearing difference from the read-time
     // pre-pass that regressed −9.2pp. Until the mini eval flips the flag this
     // branch is never taken, so actor behavior is unchanged.
-    if crate::config::Config::global()
-        .get_param::<bool>("LIBRARIAN_ATOMS_ENABLED")
-        .unwrap_or(false)
+    if matches!(depth, SearchMemoryDepth::Budget)
+        && crate::config::Config::global()
+            .get_param::<bool>("LIBRARIAN_ATOMS_ENABLED")
+            .unwrap_or(false)
     {
-        return handle_search_memory_layered(&brain, &query).await;
+        return handle_search_memory_layered(&brain, &query, limit).await;
     }
 
-    let ctx = spectral::graph::RecognitionContext::empty()
+    let mut ctx = spectral::graph::RecognitionContext::empty()
         .with_persona(crate::config::agent_identity::DEFAULT_PERSONA_KEY);
+    if !session_id.trim().is_empty() {
+        // Session is factual caller context; no project/wing is inferred here.
+        ctx = ctx.with_session(session_id);
+    }
     match brain.recall_cascade(&query, &ctx).await {
         Ok(recall_result) => {
             let hits = &recall_result.merged_hits;
@@ -666,9 +847,73 @@ async fn handle_search_memory(
                 ))]);
             }
 
-            let sources: Vec<crate::context_layers::AssembleSource<'_>> = hits
+            let selected = hits.iter().take(limit).collect::<Vec<_>>();
+            if matches!(depth, SearchMemoryDepth::Narrative) {
+                const MAX_NARRATIVE_NEIGHBORS: usize = 3;
+                let mut output = format!(
+                    "Found {} memories matching \"{}\" with bounded narrative context:\n\n",
+                    selected.len(),
+                    query
+                );
+                let mut seen = std::collections::HashSet::new();
+                for (i, hit) in selected.iter().enumerate() {
+                    seen.insert(hit.id.clone());
+                    let (_, excerpt) = exact_search_excerpt(&hit.content, &query);
+                    output.push_str(&format_search_memory_hit(
+                        i + 1,
+                        hit,
+                        &excerpt,
+                        "narrative",
+                        &query,
+                    ));
+                    output.push('\n');
+                    if let Some(episode_id) = hit.episode_id.as_deref() {
+                        if let Ok(neighbors) = brain.list_memories_by_episode(episode_id).await {
+                            let center = neighbors
+                                .iter()
+                                .position(|neighbor| {
+                                    neighbor.id == hit.id || neighbor.key == hit.key
+                                })
+                                .unwrap_or(0);
+                            let start = center.saturating_sub(MAX_NARRATIVE_NEIGHBORS / 2);
+                            let mut added = 0;
+                            for neighbor in neighbors.into_iter().skip(start) {
+                                if added >= MAX_NARRATIVE_NEIGHBORS || seen.contains(&neighbor.id) {
+                                    continue;
+                                }
+                                seen.insert(neighbor.id.clone());
+                                output.push_str(&format!(
+                                    "   neighbor [id: {}] [key: {}] [source: {}] [episode: {}] [created_at: {}]\n   exact excerpt: {}\n",
+                                    neighbor.id,
+                                    neighbor.key,
+                                    neighbor.source.as_deref().unwrap_or("unknown"),
+                                    episode_id,
+                                    neighbor.created_at.as_deref().unwrap_or("unknown"),
+                                    take_search_chars(&neighbor.content, 320),
+                                ));
+                                added += 1;
+                            }
+                        }
+                    }
+                }
+                return Ok(vec![Content::text(output)]);
+            }
+            if !matches!(depth, SearchMemoryDepth::Budget) {
+                let mut output = format!(
+                    "Found {} memories matching \"{}\":\n\n",
+                    selected.len(),
+                    query
+                );
+                for (i, hit) in selected.iter().enumerate() {
+                    let (layer, text) = explicit_search_text(hit, depth);
+                    output.push_str(&format_search_memory_hit(i + 1, hit, &text, layer, &query));
+                    output.push('\n');
+                }
+                return Ok(vec![Content::text(output)]);
+            }
+
+            let sources: Vec<crate::context_layers::AssembleSource<'_>> = selected
                 .iter()
-                .take(8)
                 .map(|hit| crate::context_layers::AssembleSource {
                     key: hit.key.as_str(),
                     abstract_text: hit.description.as_deref(),
@@ -686,19 +931,74 @@ async fn handle_search_memory(
                 query
             );
             for (i, hit) in layered.iter().enumerate() {
-                output.push_str(&format!(
-                    "{}. [{}] [score: {:.2}] {}\n",
-                    i + 1,
-                    hit.layer.as_str(),
-                    hit.score,
-                    hit.text
-                ));
+                if let Some(original) = selected.get(i) {
+                    output.push_str(&format_search_memory_hit(
+                        i + 1,
+                        original,
+                        &hit.text,
+                        hit.layer.as_str(),
+                        &query,
+                    ));
+                    output.push('\n');
+                }
             }
 
             Ok(vec![Content::text(output)])
         }
         Err(e) => Ok(vec![Content::text(format!("Memory search failed: {}", e))]),
     }
+}
+
+/// Load a single exact memory by stable id or logical key. Unlike search this
+/// path does not rank, summarize, or substitute a preview for the stored text.
+async fn handle_get_memory(
+    arguments: Option<JsonObject>,
+) -> Result<Vec<Content>, ExtensionManagerToolError> {
+    let args = arguments.unwrap_or_default();
+    let id = args
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let key = args
+        .get("key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    if id.is_some() == key.is_some() {
+        return Err(ExtensionManagerToolError::OperationFailed {
+            message: "Provide exactly one non-empty memory id or key".to_string(),
+        });
+    }
+
+    let brain =
+        super::get_global_brain().ok_or_else(|| ExtensionManagerToolError::OperationFailed {
+            message: "Memory lookup unavailable — Brain not loaded.".to_string(),
+        })?;
+    let memory = if let Some(id) = id {
+        brain.get_memory(id).await
+    } else {
+        brain
+            .get_memory_by_key(key.expect("key checked above"))
+            .await
+    }
+    .map_err(|e| ExtensionManagerToolError::OperationFailed {
+        message: format!("Memory lookup failed: {}", e),
+    })?;
+
+    let Some(memory) = memory else {
+        return Ok(vec![Content::text("Memory not found.".to_string())]);
+    };
+    let source = memory.source.as_deref().unwrap_or("unknown");
+    let output = format!(
+        "Memory\n[id: {}]\n[key: {}]\n[source: {}]\n[score: {:.2}]\n[layer: full]\n[episode: {}]\n[created_at: {}]\n\n{}",
+        memory.id,
+        memory.key,
+        source,
+        memory.signal_score,
+        memory.episode_id.as_deref().unwrap_or("none"),
+        memory.created_at.as_deref().unwrap_or("unknown"),
+        memory.content,
+    );
+    Ok(vec![Content::text(output)])
 }
 
 /// Layered recall: each hit paired with the raw sources it was distilled from.
@@ -709,6 +1009,7 @@ async fn handle_search_memory(
 async fn handle_search_memory_layered(
     brain: &crate::brain_handle::SafeBrain,
     query: &str,
+    limit: usize,
 ) -> Result<Vec<Content>, ExtensionManagerToolError> {
     const MAX_SOURCES_PER_HIT: usize = 3;
 
@@ -747,32 +1048,142 @@ async fn handle_search_memory_layered(
          CANDIDATE SET to VERIFY, not as ground truth: confirm each item against the raw \
          sessions before counting it, and add any items the atoms missed. When an atom \
          and its sources disagree, the raw sources win.\n\n",
-        hits.len(),
+        hits.len().min(limit.min(5)),
         query
     );
 
-    for (i, layered) in hits.iter().take(5).enumerate() {
+    for (i, layered) in hits.iter().take(limit.min(5)).enumerate() {
         let hit = &layered.hit;
         if layered.sources.is_empty() {
-            output.push_str(&format!(
-                "{}. [raw · score {:.2}] {}\n",
+            output.push_str(&format_search_memory_hit(
                 i + 1,
-                hit.signal_score,
-                hit.content
+                hit,
+                &hit.content,
+                "raw",
+                query,
             ));
+            output.push('\n');
         } else {
-            output.push_str(&format!(
-                "{}. [ATOM · score {:.2} · verify vs {} source(s) below] {}\n",
+            output.push_str(&format_search_memory_hit(
                 i + 1,
-                hit.signal_score,
-                layered.sources.len(),
-                hit.content
+                hit,
+                &hit.content,
+                "atom",
+                query,
+            ));
+            output.push_str(&format!(
+                "\n   verify vs {} raw source(s) below:\n",
+                layered.sources.len()
             ));
             for src in &layered.sources {
-                output.push_str(&format!("     - source: {}\n", src.content));
+                let (_, source_excerpt) = exact_search_excerpt(&src.content, query);
+                output.push_str(&format!(
+                    "     - source exact excerpt: {}\n",
+                    source_excerpt
+                ));
             }
         }
     }
 
     Ok(vec![Content::text(output)])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn synthetic_hit() -> spectral::ingest::MemoryHit {
+        serde_json::from_value(serde_json::json!({
+            "id": "mem-001",
+            "key": "episode:synthetic:beat-1",
+            "content": "Alpha beat: the gate opened after the verification step.",
+            "wing": null,
+            "hall": null,
+            "signal_score": 0.875,
+            "hits": 2,
+            "source": "synthetic_fixture",
+            "description": "A concise abstract of the alpha beat."
+        }))
+        .expect("synthetic MemoryHit should deserialize")
+    }
+
+    #[test]
+    fn search_options_have_bounded_defaults_and_depths() {
+        let args = serde_json::json!({"query": "alpha beat"});
+        assert_eq!(
+            parse_search_memory_options(args.as_object().unwrap()).unwrap(),
+            ("alpha beat".to_string(), 8, SearchMemoryDepth::Budget)
+        );
+
+        let args = serde_json::json!({
+            "query": "alpha",
+            "limit": 999,
+            "depth": "narrative"
+        });
+        assert_eq!(
+            parse_search_memory_options(args.as_object().unwrap()).unwrap(),
+            ("alpha".to_string(), 20, SearchMemoryDepth::Narrative)
+        );
+    }
+
+    #[test]
+    fn search_hit_has_stable_provenance_and_distinct_exact_excerpt() {
+        let hit = synthetic_hit();
+        let (matched, excerpt) = exact_search_excerpt(&hit.content, "alpha gate");
+        assert_eq!(matched, "alpha, gate");
+        assert!(excerpt.contains("Alpha beat"));
+
+        let rendered = format_search_memory_hit(
+            1,
+            &hit,
+            "A concise budget rendering.",
+            "abstract",
+            "alpha gate",
+        );
+        assert!(rendered.contains("[id: mem-001]"));
+        assert!(rendered.contains("[key: episode:synthetic:beat-1]"));
+        assert!(rendered.contains("[source: synthetic_fixture]"));
+        assert!(rendered.contains("[score: 0.88]"));
+        assert!(rendered.contains("rendered abstract: A concise budget rendering."));
+        assert!(rendered.contains("exact excerpt: Alpha beat"));
+    }
+
+    #[test]
+    fn invalid_search_depth_is_rejected() {
+        let args = serde_json::json!({"query": "alpha", "depth": "invented"});
+        let error = parse_search_memory_options(args.as_object().unwrap()).unwrap_err();
+        assert!(error.to_string().contains("Invalid depth"));
+    }
+
+    #[test]
+    fn golden_narrative_fixture_renders_every_ordered_beat_with_source_identity() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../goose-server/tests/fixtures/narrative_memory_replay.json"
+        ))
+        .unwrap();
+        let source = &fixture["source"];
+        let mut hit = synthetic_hit();
+        hit.id = source["memory_id"].as_str().unwrap().to_string();
+        hit.key = source["memory_key"].as_str().unwrap().to_string();
+        hit.content = source["content"].as_str().unwrap().to_string();
+        let rendered = format_search_memory_hit(
+            1,
+            &hit,
+            &hit.content,
+            "full",
+            fixture["queries"][0]["text"].as_str().unwrap(),
+        );
+
+        assert!(rendered.contains(&format!("[id: {}]", hit.id)));
+        assert!(rendered.contains(&format!("[key: {}]", hit.key)));
+        let mut cursor = 0;
+        for beat in fixture["ordered_beats"].as_array().unwrap() {
+            let beat = beat.as_str().unwrap();
+            let relative = rendered[cursor..]
+                .find(beat)
+                .unwrap_or_else(|| panic!("missing or out-of-order story beat: {beat}"));
+            cursor += relative + beat.len();
+        }
+        assert!(rendered.contains("remains unknown"));
+    }
 }

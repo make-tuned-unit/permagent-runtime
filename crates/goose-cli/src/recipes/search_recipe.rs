@@ -84,7 +84,9 @@ mod tests {
 
         // Pins the coding toolset explicitly: developer = edit + search + shell
         // + tree; analyze = the code-structure map; summon = the subagent seam
-        // for tiered cost-routing (delegate mechanical sub-work to a cheaper tier).
+        // for tiered cost-routing; orchestrator = executable DAGs;
+        // extensionmanager = on-demand research/MCP discovery without paying
+        // the tool-schema cost in every coding turn.
         assert!(
             rf.content.contains("name: developer"),
             "coding harness must enable the developer extension"
@@ -97,8 +99,16 @@ mod tests {
             rf.content.contains("name: summon"),
             "coding harness must enable the summon extension for tiered subagent routing"
         );
+        assert!(
+            rf.content.contains("name: orchestrator"),
+            "coding harness must create executable goal DAGs rather than static plans"
+        );
+        assert!(
+            rf.content.contains("name: extensionmanager"),
+            "coding harness must be able to discover user-configured MCPs"
+        );
 
-        // Parses into a valid recipe with a coding system prompt and three
+        // Parses into a valid recipe with a coding system prompt and six
         // pinned extensions.
         let (recipe, _) =
             parse_recipe_content(&rf.content, None).expect("built-in coding recipe should parse");
@@ -109,8 +119,8 @@ mod tests {
         );
         assert_eq!(
             recipe.extensions.map(|e| e.len()).unwrap_or_default(),
-            3,
-            "coding harness pins developer + analyze + summon"
+            6,
+            "coding harness pins developer, analyze, summon, orchestrator, council, and extensionmanager capabilities"
         );
     }
 }

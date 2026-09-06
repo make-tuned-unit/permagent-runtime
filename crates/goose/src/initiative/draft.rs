@@ -14,10 +14,12 @@
 //!      origination never depends on model availability and has a zero-token
 //!      floor.
 
+use crate::agents::reply_parts::AccountedFastCompletion;
 use crate::conversation::message::Message;
 use crate::initiative::command_counter::CommandPattern;
 use crate::providers::base::Provider;
 use crate::recognition;
+use crate::session::SessionManager;
 use sqlx::{Pool, Sqlite};
 use std::sync::Arc;
 
@@ -72,10 +74,24 @@ pub async fn model_draft(
         pattern.exemplars.join("\n")
     ));
 
-    let (response, _usage) = provider
-        .complete_fast(DRAFT_SESSION_ID, system, std::slice::from_ref(&user), &[])
-        .await
-        .ok()?;
+    let manager = std::sync::Arc::new(SessionManager::instance());
+    let session = AccountedFastCompletion::ensure_background_session(
+        std::sync::Arc::clone(&manager),
+        DRAFT_SESSION_ID,
+    )
+    .await
+    .ok()?;
+    let (response, _usage) = AccountedFastCompletion::complete_fast_accounted(
+        manager,
+        session,
+        std::sync::Arc::clone(provider),
+        system,
+        std::slice::from_ref(&user),
+        &[],
+        false,
+    )
+    .await
+    .ok()?;
     parse_draft(&response.as_concat_text())
 }
 
@@ -161,6 +177,17 @@ mod tests {
     fn parse_rejects_empty_fields() {
         assert!(parse_draft(r#"{"title":"","description":"x"}"#).is_none());
         assert!(parse_draft("no json here").is_none());
+    }
+
+    #[test]
+    fn model_draft_cannot_bypass_the_shared_paid_dispatch_boundary() {
+        let source = include_str!("draft.rs");
+        let direct_call = [".", "complete_fast("].concat();
+        assert!(source.contains("complete_fast_accounted"));
+        assert!(
+            !source.contains(&direct_call),
+            "initiative draft must not call Provider::complete_fast directly"
+        );
     }
 
     #[tokio::test]

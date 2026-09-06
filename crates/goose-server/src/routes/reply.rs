@@ -426,11 +426,22 @@ pub async fn reply(
             crate::brain_ops::RecallInjection::default()
         };
 
+        let persisted = timeout(Duration::from_millis(250), recall_trace.wait_persisted())
+            .await
+            .unwrap_or(false);
+        if !persisted {
+            tracing::debug!(
+                target: "permagentd::recognition",
+                "recognition row did not commit before reply settlement; attribution gap retained"
+            );
+        }
+        let recognition_retrieval_id = recall_trace.retrieval_id().map(str::to_owned);
         let mut stream = match agent
-            .reply(
+            .reply_with_recognition(
                 user_message.clone(),
                 session_config,
                 Some(task_cancel.clone()),
+                recognition_retrieval_id,
             )
             .await
         {
@@ -483,6 +494,7 @@ pub async fn reply(
                                 message: n,
                             }, &tx, &cancel_token).await;
                         }
+                        Ok(Some(Ok(AgentEvent::RuntimeOutcome(_)))) => {}
 
                         Ok(Some(Err(e))) => {
                             tracing::error!("Error processing message: {}", e);
@@ -542,15 +554,20 @@ pub async fn reply(
                 // that worked inside a project without naming it.
                 let tool_text = crate::brain_ops::turn_tool_call_text(all_messages.messages());
                 let pool = state.session_manager().pool_clone().await.ok();
-                crate::brain_ops::spawn_persist_chat_turn(
+                if let Err(error) = crate::brain_ops::persist_chat_turn(
                     brain.clone(),
                     pool,
                     session_id.clone(),
                     turn_idx,
+                    user_message.created,
                     user_text,
                     assistant_text,
                     tool_text,
-                );
+                )
+                .await
+                {
+                    tracing::warn!(target: "permagentd::brain", "chat memory enqueue failed: {error}");
+                }
             }
         }
 

@@ -1,6 +1,7 @@
 //! Meeting write-up routing — mesh/local first, cloud session last, skip when
 //! privacy mode forbids cloud and no off-device batch path exists.
 
+use crate::agents::reply_parts::AccountedFastCompletion;
 use crate::conversation::message::Message;
 use crate::cost_router::packs::{load_packs, ModelPack};
 use crate::mesh::{self, InferenceRoute, PrivacyApproach, Workload};
@@ -289,10 +290,24 @@ pub async fn run_writeup_plan(plan: &MeetingWriteupPlan, prompt: &str) -> Result
                 .await
                 .map_err(|e| format!("provider init failed: {e}"))?;
             let user = Message::user().with_text(prompt);
-            let (response, _usage) = provider
-                .complete_fast("meeting-todo-extraction", EXTRACTION_SYSTEM, &[user], &[])
-                .await
-                .map_err(|e| format!("model call failed: {e}"))?;
+            let manager = std::sync::Arc::new(crate::session::SessionManager::instance());
+            let session = AccountedFastCompletion::ensure_background_session(
+                std::sync::Arc::clone(&manager),
+                "meeting-todo-extraction",
+            )
+            .await
+            .map_err(|e| format!("background session init failed: {e}"))?;
+            let (response, _usage) = AccountedFastCompletion::complete_fast_accounted(
+                manager,
+                session,
+                provider,
+                EXTRACTION_SYSTEM,
+                &[user],
+                &[],
+                false,
+            )
+            .await
+            .map_err(|e| format!("model call failed: {e}"))?;
             Ok(response.as_concat_text())
         }
     }
@@ -416,6 +431,17 @@ mod tests {
         assert!(body.contains("Written on-device"));
         assert!(body.contains("they said hello"));
         assert!(body.contains("## Your notes"));
+    }
+
+    #[test]
+    fn session_writeup_cannot_bypass_the_shared_paid_dispatch_boundary() {
+        let source = include_str!("meeting_writeup.rs");
+        let direct_call = [".", "complete_fast("].concat();
+        assert!(source.contains("complete_fast_accounted"));
+        assert!(
+            !source.contains(&direct_call),
+            "meeting write-up must not call Provider::complete_fast directly"
+        );
     }
 
     #[test]

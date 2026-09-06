@@ -109,6 +109,48 @@ async fn henry_approve_effect(
         Some(g) => g,
         None => return Ok((None, None)),
     };
+
+    // A registered Council program has an exact successor frontier and a
+    // typed landing/evidence contract. Route it through the same authoritative
+    // effect seam used by the normal approval/outbox path. The legacy promoter
+    // below remains deliberately limited to cards with no registered program;
+    // mixing the two would allow an unrelated or approval-gated dependent to
+    // start merely because Henry's Tier-1 verifier path answered a decision.
+    let card = crate::cards::get_card(pool, goal_id)
+        .await
+        .map_err(GuardError::Db)?
+        .ok_or_else(|| GuardError::NotFound(format!("goal '{goal_id}' not found")))?;
+    let program_registered = match card.metadata_json.get("program") {
+        None => false,
+        Some(program) => {
+            let object = program.as_object().ok_or_else(|| {
+                GuardError::Invalid(format!(
+                    "goal '{goal_id}' has malformed registered program metadata"
+                ))
+            })?;
+            let manifest = object
+                .get("manifest")
+                .and_then(serde_json::Value::as_str)
+                .filter(|manifest| !manifest.trim().is_empty())
+                .ok_or_else(|| {
+                    GuardError::Invalid(format!(
+                        "goal '{goal_id}' has a registered program without a valid manifest"
+                    ))
+                })?;
+            let _ = manifest;
+            true
+        }
+    };
+    if program_registered {
+        return crate::decisions_effects::apply_decision_effect(
+            pool,
+            decision,
+            proof,
+            "approve_review",
+        )
+        .await;
+    }
+
     goal_transition::advance_goal_checked(
         pool,
         goal_id,
@@ -392,6 +434,285 @@ mod tests {
         assert!(approval.effect_error.is_none());
         assert!(approval.effect.is_some());
         assert_eq!(state_of(&pool, &goal.id).await, "complete");
+    }
+
+    #[tokio::test]
+    async fn henry_registered_program_uses_exact_a_to_b_handoff() {
+        use crate::agents::platform_extensions::{execution_receipt, orchestrator};
+        use permagent_eval::{
+            ApprovalPolicy, DeliveryMode, ProgramDag, ProgramNode, ProgramNodeStatus,
+        };
+
+        orchestrator::test_dispatch_recorder::install();
+        let pool = test_pool().await;
+        let mut evidence = serde_json::to_value(
+            crate::agents::platform_extensions::goal_engine::GoalEvidence::default(),
+        )
+        .unwrap();
+        evidence["verdict"] = serde_json::json!({
+            "status": "pass",
+            "finished_at": "henry-policy-verification"
+        });
+        let a = goal_in_state(
+            &pool,
+            "review",
+            serde_json::json!({
+                "depends_on": [],
+                "dispatch_evidence": evidence
+            }),
+        )
+        .await;
+        let b = goal_in_state(
+            &pool,
+            "triage",
+            serde_json::json!({"depends_on": [a.id.clone()]}),
+        )
+        .await;
+        // Outside the approved manifest: a broad dependent promoter would
+        // see this card, but the registered seam must leave it untouched.
+        let c = goal_in_state(
+            &pool,
+            "triage",
+            serde_json::json!({"depends_on": [a.id.clone()]}),
+        )
+        .await;
+        let program = ProgramDag {
+            schema: 1,
+            program_id: "henry-policy-a-to-b".to_string(),
+            objective: "prove registered Henry routing".to_string(),
+            terminal_node: "b".to_string(),
+            nodes: vec![
+                ProgramNode {
+                    id: "a".to_string(),
+                    child_dag: "a.md".to_string(),
+                    status: ProgramNodeStatus::Active,
+                    depends_on: Vec::new(),
+                    next_on_pass: vec!["b".to_string()],
+                    entry_gate: vec!["input".to_string()],
+                    exit_gate: vec!["a verified".to_string()],
+                    worker_policy: "cheap".to_string(),
+                    approval: ApprovalPolicy::None,
+                    delivery: DeliveryMode::NoWrite,
+                    blocked_reason: None,
+                },
+                ProgramNode {
+                    id: "b".to_string(),
+                    child_dag: "b.md".to_string(),
+                    status: ProgramNodeStatus::Planned,
+                    depends_on: vec!["a".to_string()],
+                    next_on_pass: Vec::new(),
+                    entry_gate: vec!["a passed".to_string()],
+                    exit_gate: vec!["b verified".to_string()],
+                    worker_policy: "cheap".to_string(),
+                    approval: ApprovalPolicy::None,
+                    delivery: DeliveryMode::NoWrite,
+                    blocked_reason: None,
+                },
+            ],
+        };
+        let manifest = serde_yaml::to_string(&program).unwrap();
+        let manifest_hash =
+            crate::agents::platform_extensions::program_bridge::manifest_identity_hash(&program)
+                .unwrap();
+        for (card, node_id) in [(&a, "a"), (&b, "b")] {
+            let current = crate::cards::get_card(&pool, &card.id)
+                .await
+                .unwrap()
+                .unwrap();
+            let mut metadata = current.metadata_json.as_object().cloned().unwrap();
+            metadata.insert(
+                "council_plan_id".to_string(),
+                serde_json::json!("henry-policy-plan"),
+            );
+            metadata.insert("council_node_id".to_string(), serde_json::json!(node_id));
+            sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+                .bind(serde_json::to_string(&metadata).unwrap())
+                .bind(&card.id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let council = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "council_action".to_string(),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Approve Henry routing fixture".to_string()),
+                detail: Some("exact A to B program".to_string()),
+                payload: serde_json::json!({
+                    "session_id": "henry-policy-fixture",
+                    "title": "Approve Henry routing fixture",
+                    "plan": {
+                        "proposal_id": "henry-policy-plan",
+                        "program_manifest_sha256": manifest_hash,
+                        "program_manifest": manifest.clone(),
+                        "project": {
+                            "project_id": PERSONAL_PROJECT_ID,
+                            "project_name": "Personal",
+                            "summary": "Henry routing fixture"
+                        },
+                        "budget_limit": 2,
+                        "nodes": [
+                            {
+                                "id": "a",
+                                "title": "Run A",
+                                "description": "Complete A",
+                                "acceptance_criteria": ["a complete"],
+                                "estimated_budget": 1,
+                                "risk": "low",
+                                "verification": {"command": "true", "required": true}
+                            },
+                            {
+                                "id": "b",
+                                "title": "Run B",
+                                "description": "Complete B",
+                                "acceptance_criteria": ["b complete"],
+                                "dependencies": ["a"],
+                                "estimated_budget": 1,
+                                "risk": "low",
+                                "verification": {"command": "true", "required": true}
+                            }
+                        ]
+                    }
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &council.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        crate::agents::platform_extensions::program_bridge::register_program(
+            &pool,
+            crate::agents::platform_extensions::program_bridge::ProgramRegistrationRequest {
+                manifest: manifest.clone(),
+                node_to_goal: std::collections::BTreeMap::from([
+                    ("a".to_string(), a.id.clone()),
+                    ("b".to_string(), b.id.clone()),
+                ]),
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut receipt = execution_receipt::ExecutionReceipt::new(
+            "fixture-worker",
+            format!("session-{}", a.id),
+            serde_json::json!({}),
+            "henry-policy-test",
+            "2026-09-06T00:00:00Z",
+            1,
+        );
+        receipt.finalize(
+            execution_receipt::ReceiptState::Completed,
+            "2026-09-06T00:01:00Z",
+        );
+        let current = crate::cards::get_card(&pool, &a.id).await.unwrap().unwrap();
+        let mut metadata = current.metadata_json.as_object().cloned().unwrap();
+        metadata.insert(
+            "execution_receipt".to_string(),
+            serde_json::to_value(receipt).unwrap(),
+        );
+        metadata.insert(
+            "program_receipts".to_string(),
+            serde_json::json!([{
+                "gate": "a verified",
+                "passed": true,
+                "verification_id": "henry-policy-verification"
+            }]),
+        );
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::to_string(&metadata).unwrap())
+            .bind(&a.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let approval = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(a.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Approve A".to_string()),
+                detail: Some("typed verifier pass".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let result = henry_approve_on_verifier_pass(&pool, &approval.id, "verified")
+            .await
+            .unwrap();
+        assert!(
+            result.effect_error.is_none(),
+            "registered handoff failed: {:?}",
+            result.effect_error
+        );
+        assert_eq!(state_of(&pool, &a.id).await, "complete");
+        assert!(orchestrator::test_dispatch_recorder::saw(&b.id));
+        assert_eq!(state_of(&pool, &c.id).await, "triage");
+        assert!(!orchestrator::test_dispatch_recorder::saw(&c.id));
+    }
+
+    #[tokio::test]
+    async fn henry_malformed_program_metadata_fails_closed_before_promotion() {
+        use crate::agents::platform_extensions::orchestrator;
+
+        orchestrator::test_dispatch_recorder::install();
+        let malformed_programs = [
+            ("null", serde_json::Value::Null),
+            ("object-without-manifest", serde_json::json!({})),
+            ("blank-manifest", serde_json::json!({"manifest": "   "})),
+            ("non-string-manifest", serde_json::json!({"manifest": 42})),
+        ];
+
+        for (label, program) in malformed_programs {
+            let pool = test_pool().await;
+            let goal =
+                goal_in_state(&pool, "review", serde_json::json!({"program": program})).await;
+            let dependent = goal_in_state(
+                &pool,
+                "triage",
+                serde_json::json!({"depends_on": [goal.id.clone()]}),
+            )
+            .await;
+            let decision = decisions::create_decision(
+                &pool,
+                decisions::NewDecision {
+                    kind: "approve_review".to_string(),
+                    goal_id: Some(goal.id.clone()),
+                    project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                    headline: Some(format!("Reject malformed program {label}")),
+                    detail: Some("the registered program mapping is invalid".to_string()),
+                    payload: serde_json::json!({}),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+            let result = henry_approve_on_verifier_pass(&pool, &decision.id, "verified")
+                .await
+                .unwrap();
+            assert!(
+                result.effect_error.is_some(),
+                "malformed program {label} must be visibly blocked"
+            );
+            assert_eq!(state_of(&pool, &goal.id).await, "review");
+            assert_eq!(state_of(&pool, &dependent.id).await, "triage");
+            assert!(!orchestrator::test_dispatch_recorder::saw(&dependent.id));
+        }
     }
 
     #[tokio::test]

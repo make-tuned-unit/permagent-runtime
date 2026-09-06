@@ -71,10 +71,35 @@ pub struct AnalyticsSummary {
     pub top_utm_sources: RankedCounts,
     pub top_utm_mediums: RankedCounts,
     pub top_utm_campaigns: RankedCounts,
+    /// Traffic-source domains, normalized to lowercase without `www.`.
+    pub top_referrers: RankedCounts,
     /// Ascending by date, one row per day that had traffic. Days with no
     /// traffic are absent rather than zero-filled — the caller knows the
     /// window, and inventing rows would imply measurement that did not happen.
     pub daily: Vec<AnalyticsDay>,
+}
+
+fn referrer_host(referrer: &str) -> Option<String> {
+    let trimmed = referrer.trim();
+    let authority = trimmed
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+    let host = authority
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .split('@')
+        .next_back()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("");
+    if host.is_empty() {
+        return None;
+    }
+    let host = host.to_ascii_lowercase();
+    Some(host.strip_prefix("www.").unwrap_or(&host).to_string())
 }
 
 fn analytics_where(including_bots: bool) -> String {
@@ -225,6 +250,45 @@ pub async fn analytics_summary(
     )
     .await?;
 
+    // Keep the bounded, normalized domain rollup in the shared app view so
+    // Grow and observe_app cannot disagree about traffic sources. Raw URLs
+    // remain available only to the explicit Grow drilldown, where they are
+    // actionable links rather than conversation context.
+    let referrer_rows = sqlx::query_as::<_, (String, i64)>(sqlx::AssertSqlSafe(format!(
+        "SELECT referrer, count(*) AS count
+           FROM analytics_events
+          WHERE project_id = ?1 AND kind = 'pageview'
+            AND referrer IS NOT NULL AND referrer <> ''{filter}
+          GROUP BY referrer
+          ORDER BY count DESC, referrer ASC
+          LIMIT {}",
+        limit.saturating_mul(20).saturating_add(1)
+    )))
+    .bind(project_id)
+    .bind(&since)
+    .fetch_all(pool)
+    .await?;
+    let mut by_referrer = BTreeMap::<String, i64>::new();
+    for (raw, count) in referrer_rows {
+        if let Some(host) = referrer_host(&raw) {
+            *by_referrer.entry(host).or_default() += count;
+        }
+    }
+    let mut referrer_items: Vec<_> = by_referrer
+        .into_iter()
+        .map(|(name, count)| RankedCount { name, count })
+        .collect();
+    referrer_items.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+    let referrer_total = referrer_items.len() as i64;
+    let referrer_truncated = referrer_items.len() > limit;
+    referrer_items.truncate(limit);
+    let top_referrers = RankedCounts {
+        items: referrer_items,
+        total: referrer_total,
+        limit,
+        truncated: referrer_truncated,
+    };
+
     // Daily drilldown. Same window and same bot filter as the headline, so a
     // reader can add the days up and land on the totals above — a series that
     // disagreed with its own headline would be worse than none.
@@ -266,6 +330,7 @@ pub async fn analytics_summary(
         top_utm_sources,
         top_utm_mediums,
         top_utm_campaigns,
+        top_referrers,
         daily,
     })
 }
@@ -508,6 +573,7 @@ mod tests {
                 path TEXT NOT NULL,
                 visitor_hash TEXT,
                 is_bot INTEGER NOT NULL,
+                referrer TEXT,
                 utm_source TEXT,
                 utm_medium TEXT,
                 utm_campaign TEXT,
@@ -527,9 +593,9 @@ mod tests {
         ] {
             sqlx::query(
                 "INSERT INTO analytics_events
-                    (project_id, kind, path, visitor_hash, is_bot, utm_source,
+                    (project_id, kind, path, visitor_hash, is_bot, referrer, utm_source,
                      utm_medium, utm_campaign, created_at)
-                 VALUES ('p1', ?, ?, ?, ?, nullif(?, ''), nullif(?, ''),
+                 VALUES ('p1', ?, ?, ?, ?, null, nullif(?, ''), nullif(?, ''),
                          nullif(?, ''), '2026-07-30T12:00:00Z')",
             )
             .bind(row.0)

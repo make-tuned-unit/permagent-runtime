@@ -246,6 +246,12 @@ struct FirstPartyStats {
     by_day: Vec<DayCount>,
     top_pages: Vec<NamedCount>,
     top_referrers: Vec<NamedCount>,
+    /// Bounded privacy-normalized external referrer URLs for the Grow
+    /// "referred chatter" drilldown. Domain totals above remain the canonical
+    /// aggregate used by observe_app; these links retain the origin/path so
+    /// the user can inspect the Reddit thread/blog page without exposing
+    /// query or fragment secrets.
+    top_referrer_links: Vec<NamedCount>,
     top_events: Vec<NamedCount>,
     // ── v40 / traffic attribution ──
     /// First-touch `"source / medium"` ranks. Prefers `session_attribution`
@@ -300,8 +306,22 @@ fn snippet_for(ingest_url: &str) -> String {
         r#"<script>
 (function () {{
   var E = "{ingest_url}";
+  function safeReferrer() {{
+    try {{
+      var raw = document.referrer;
+      if (!raw) return null;
+      var u = new URL(raw);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+      u.username = "";
+      u.password = "";
+      u.search = "";
+      u.hash = "";
+      return u.toString();
+    }} catch (e) {{ return null; }}
+  }}
   function send(kind, name) {{
-    var body = JSON.stringify({{ k: kind, p: location.pathname, r: document.referrer || null, n: name || null }});
+    var referrer = safeReferrer();
+    var body = JSON.stringify({{ k: kind, p: location.pathname, r: referrer, referrer: referrer, n: name || null }});
     if (!(navigator.sendBeacon && navigator.sendBeacon(E, body))) {{
       fetch(E, {{ method: "POST", body: body, keepalive: true }}).catch(function () {{}});
     }}
@@ -326,6 +346,19 @@ fn relay_snippet(collect_path: &str) -> String {
         r#"<script>
 (function () {{
   var E = "{collect_path}";
+  function safeReferrer() {{
+    try {{
+      var raw = document.referrer;
+      if (!raw) return null;
+      var u = new URL(raw);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+      u.username = "";
+      u.password = "";
+      u.search = "";
+      u.hash = "";
+      return u.toString();
+    }} catch (e) {{ return null; }}
+  }}
   // First-party session id: sessionStorage, no cookie, never cross-site, gone
   // when the tab closes. visitor_hash rotates daily, so without this there is
   // no bounce rate, pages per session or entry page.
@@ -344,6 +377,7 @@ fn relay_snippet(collect_path: &str) -> String {
       // stores the path WITHOUT the query, so pages still aggregate.
       p: location.pathname + location.search,
       r: ref || null,
+      referrer: ref || null,
       n: name || null,
       d: props || null,
       s: S
@@ -366,7 +400,7 @@ fn relay_snippet(collect_path: &str) -> String {
   function pageview() {{
     if (location.pathname === lastPath) return;
     lastPath = location.pathname;
-    var ref = sentRef ? null : (document.referrer || null);
+    var ref = sentRef ? null : safeReferrer();
     sentRef = true;
     send("pv", null, null, ref);
   }}
@@ -573,7 +607,7 @@ fn agent_prompt_for(
          permagent.event('session_attribution', {{\n\
            source: 'google',\n\
            medium: 'organic',\n\
-           referrer_raw: document.referrer || '',\n\
+           referrer_raw: (function () {{ try {{ var u = new URL(document.referrer); u.username = ''; u.password = ''; u.search = ''; u.hash = ''; return u.toString(); }} catch (_) {{ return ''; }} }})(),\n\
            landing_path: location.pathname,\n\
            timestamp: new Date().toISOString()\n\
          }});\n\
@@ -1356,8 +1390,10 @@ async fn first_party_stats(
         })
         .collect();
 
-    // Raw referrers, grouped by HOST rather than full URL — a hundred distinct
-    // deep links from one site are one source, not a hundred.
+    // Referrers, grouped by HOST rather than full URL — a hundred distinct
+    // deep links from one site are one source, not a hundred. Existing rows
+    // may predate write-time normalization, so display links are sanitized
+    // again below before they reach Grow.
     let referrer_rows = sqlx::query_as::<_, (String, i64)>(sqlx::AssertSqlSafe(format!(
         "SELECT referrer, count(*) FROM analytics_events
          WHERE project_id = ?1 AND kind = 'pageview' AND referrer IS NOT NULL
@@ -1374,12 +1410,16 @@ async fn first_party_stats(
     // document.referrer still holds the ORIGINAL external referrer after a
     // client-side route change, so without this every internal navigation
     // re-reports it and inflates the list.
-    let site_host = config
-        .as_ref()
-        .and_then(|c| c.drain_url.as_deref())
+    // `drain_url` is the relay endpoint, not necessarily the public site
+    // origin. Use the project's authoritative site URL; when it is absent,
+    // leave the host unknown rather than misclassifying the relay as the site.
+    let site_host = project
+        .site_url
+        .as_deref()
         .and_then(classify::referrer_host);
 
     let mut by_host: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut by_link: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     for (referrer, count) in &referrer_rows {
         let class = classify::classify_referrer(Some(referrer), site_host.as_deref());
         if class == classify::ReferrerClass::Internal {
@@ -1387,6 +1427,9 @@ async fn first_party_stats(
         }
         if let Some(host) = classify::referrer_host(referrer) {
             *by_host.entry(host).or_default() += count;
+            if let Some(link) = display_referrer_link(referrer) {
+                *by_link.entry(link).or_default() += count;
+            }
         }
     }
 
@@ -1397,6 +1440,12 @@ async fn first_party_stats(
     };
     let top_referrers = sort_desc(
         by_host
+            .into_iter()
+            .map(|(name, count)| NamedCount { name, count })
+            .collect(),
+    );
+    let top_referrer_links = sort_desc(
+        by_link
             .into_iter()
             .map(|(name, count)| NamedCount { name, count })
             .collect(),
@@ -1477,6 +1526,7 @@ async fn first_party_stats(
         by_day,
         top_pages,
         top_referrers,
+        top_referrer_links,
         top_events,
         top_sources,
         top_campaigns,
@@ -1486,6 +1536,13 @@ async fn first_party_stats(
         pages_per_session,
         top_entry_pages,
     }))
+}
+
+/// Read-path defense for rows collected before write-time referrer
+/// normalization was added. Keep legacy click-through links useful while
+/// preventing old query strings/fragments from leaking into Grow.
+fn display_referrer_link(raw: &str) -> Option<String> {
+    classify::sanitize_referrer(Some(raw))
 }
 
 // ── Install verification ─────────────────────────────────────────────────────
@@ -1727,6 +1784,12 @@ struct BeaconBody {
     p: Option<String>,
     #[serde(default)]
     r: Option<String>,
+    /// Descriptive spelling accepted by newer clients. When both fields are
+    /// present, this field wins deterministically; the generated clients send
+    /// identical values, while the precedence keeps the explicit field from
+    /// being silently ignored by a proxy or hand-authored beacon.
+    #[serde(default)]
+    referrer: Option<String>,
     #[serde(default)]
     n: Option<String>,
     /// Event properties (v40). Flat scalars only; sanitized server-side.
@@ -1742,9 +1805,26 @@ struct BeaconBody {
     s: Option<String>,
 }
 
+impl BeaconBody {
+    /// Resolve the two wire-compatible spellings without serde treating them
+    /// as duplicate aliases. `referrer` is the explicit modern spelling and
+    /// therefore takes precedence when both are present.
+    fn normalized_referrer(&self) -> Option<String> {
+        self.referrer.clone().or_else(|| self.r.clone())
+    }
+}
+
 fn clamp(s: Option<String>, max: usize) -> Option<String> {
     s.map(|v| v.chars().take(max).collect::<String>())
         .filter(|v| !v.is_empty())
+}
+
+/// Referrers are user-controlled input. Keep only privacy-normalized bounded
+/// absolute HTTP(S) URLs with a host so scripts, custom schemes, malformed
+/// values, credentials, query strings, and fragments can never be persisted
+/// or exposed as clickable Grow links.
+fn validated_referrer(raw: Option<String>) -> Option<String> {
+    classify::sanitize_referrer(raw.as_deref())
 }
 
 /// Resolve a site key to its project id by scanning project metadata. Personal
@@ -1824,15 +1904,16 @@ async fn collect(
     hasher.update(day.as_bytes());
     let visitor_hash = hex::encode(&hasher.finalize()[..16]);
 
-    // Classify server-side, at collect time, so the raw signal is never stored:
-    // the user agent decides is_bot and is then discarded, and only allowlisted
-    // campaign params survive out of the query string.
+    // Validate the user-controlled referrer at collect time before storing it;
+    // only bounded absolute HTTP(S) URLs survive. The user agent decides
+    // is_bot and is then discarded, and only allowlisted campaign params
+    // survive out of the query string.
     let raw_path = beacon.p.clone().unwrap_or_else(|| "/".to_string());
     let utm = classify::extract_utm(&raw_path);
     // The stored path drops the query, or every ?utm_source= variant becomes a
     // distinct "page" and the top-pages list fragments into near-duplicates.
     let path = classify::normalize_path(&raw_path);
-    let referrer = clamp(beacon.r, 512);
+    let referrer = validated_referrer(beacon.normalized_referrer());
     let name = clamp(beacon.n, 128);
     let is_bot = classify::is_bot(Some(ua)) as i64;
     let properties = beacon.d.as_ref().and_then(classify::sanitize_properties);
@@ -2033,6 +2114,16 @@ mod tests {
         ]);
         let (app, collect_app, pool, _state) = test_app().await;
         let project = seed_project(&pool, "fp-analytics-roundtrip").await;
+        projects::update_project(
+            &pool,
+            &project.id,
+            UpdateProject {
+                site_url: Some(Some("https://grocerysaver.ca".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
         // Enable mints a key and returns the setup payload.
         let (status, setup) = request(
@@ -2067,6 +2158,13 @@ mod tests {
         assert!(
             snippet.contains("lastPath"),
             "snippet must dedupe pageviews on pathname or every figure is ~2x high"
+        );
+        assert!(snippet.contains("function safeReferrer"));
+        assert!(snippet.contains("u.search = \"\""));
+        assert!(snippet.contains("u.hash = \"\""));
+        assert!(
+            !snippet.contains("r: document.referrer"),
+            "the beacon must not transmit the raw referrer before server normalization"
         );
         assert!(
             !snippet.contains("http://") && !snippet.contains("https://"),
@@ -2143,6 +2241,50 @@ mod tests {
             .await,
             StatusCode::ACCEPTED
         );
+        // The live collect path accepts both spellings. If they ever differ,
+        // the explicit descriptive field is the documented winner.
+        assert_eq!(
+            beacon(
+                &collect_app,
+                &format!("/collect/{site_key}"),
+                serde_json::json!({
+                    "k": "ev",
+                    "p": "/pricing",
+                    "r": "https://legacy.example/thread",
+                    "referrer": "https://reddit.com/r/example/comments/abc"
+                }),
+            )
+            .await,
+            StatusCode::ACCEPTED
+        );
+        // The project's public site URL, not the analytics relay URL, is the
+        // authority for self-referral filtering. This hit must not appear as
+        // a referred-chatter link or inflate the external host totals.
+        assert_eq!(
+            beacon(
+                &collect_app,
+                &format!("/collect/{site_key}"),
+                serde_json::json!({
+                    "k": "pv",
+                    "p": "/deals",
+                    "referrer": "https://grocerysaver.ca/pricing?session=private#top"
+                }),
+            )
+            .await,
+            StatusCode::ACCEPTED
+        );
+        let collected_referrer: Option<String> = sqlx::query_scalar(
+            "SELECT referrer FROM analytics_events WHERE project_id = ?1 AND kind = 'event' \
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(&project.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            collected_referrer.as_deref(),
+            Some("https://reddit.com/r/example/comments/abc")
+        );
 
         // Unknown key 404s; malformed body 400s.
         assert_eq!(
@@ -2178,7 +2320,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(stats["enabled"], serde_json::json!(true));
         assert_eq!(stats["receiving"], serde_json::json!(true));
-        assert_eq!(stats["pageviews"], serde_json::json!(1));
+        assert_eq!(stats["pageviews"], serde_json::json!(2));
         assert_eq!(stats["deviceSignatures"], serde_json::json!(1));
         // Bots are excluded by default, and the count of what was filtered is
         // surfaced so a filtered figure never reads as a quiet day.
@@ -2190,6 +2332,10 @@ mod tests {
         assert_eq!(
             stats["topReferrers"][0]["name"],
             serde_json::json!("news.ycombinator.com")
+        );
+        assert_eq!(
+            stats["topReferrerLinks"][0]["name"],
+            serde_json::json!("https://news.ycombinator.com/")
         );
         // First-touch source/medium from the shared referrer map (no utm_*).
         assert_eq!(
@@ -2209,6 +2355,65 @@ mod tests {
             last_error: None,
             relay_latest_id: latest.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn beacon_referrer_wire_variants_have_deterministic_precedence() {
+        let cases = [
+            (
+                r#"{"r":"https://legacy.example/thread"}"#,
+                Some("https://legacy.example/thread"),
+            ),
+            (
+                r#"{"referrer":"https://reddit.com/r/example/comments/abc"}"#,
+                Some("https://reddit.com/r/example/comments/abc"),
+            ),
+            (
+                r#"{"r":"https://reddit.com/r/example/comments/abc","referrer":"https://reddit.com/r/example/comments/abc"}"#,
+                Some("https://reddit.com/r/example/comments/abc"),
+            ),
+            (
+                r#"{"r":"https://legacy.example/thread","referrer":"https://reddit.com/r/example/comments/abc"}"#,
+                Some("https://reddit.com/r/example/comments/abc"),
+            ),
+        ];
+        for (json, expected) in cases {
+            let body: BeaconBody = serde_json::from_str(json).unwrap();
+            assert_eq!(body.normalized_referrer().as_deref(), expected);
+        }
+    }
+
+    #[test]
+    fn referrer_storage_is_bounded_and_http_only() {
+        assert_eq!(
+            validated_referrer(Some("https://www.example.com/thread".to_string())).as_deref(),
+            Some("https://www.example.com/thread")
+        );
+        assert_eq!(
+            validated_referrer(Some(
+                "https://www.reddit.com/r/example/comments/abc?token=private#comment-1".to_string(),
+            ))
+            .as_deref(),
+            Some("https://www.reddit.com/r/example/comments/abc")
+        );
+        assert!(validated_referrer(Some("javascript:alert(1)".to_string())).is_none());
+        assert!(validated_referrer(Some("file:///etc/passwd".to_string())).is_none());
+        assert!(validated_referrer(Some("not a url".to_string())).is_none());
+        let long = format!("https://example.com/{}", "x".repeat(700));
+        let bounded = validated_referrer(Some(long)).unwrap();
+        assert!(bounded.chars().count() <= 512);
+    }
+
+    #[test]
+    fn legacy_referrer_links_are_sanitized_before_grow_display() {
+        assert_eq!(
+            display_referrer_link(
+                "https://www.reddit.com/r/example/comments/abc?token=private#comment-1"
+            )
+            .as_deref(),
+            Some("https://www.reddit.com/r/example/comments/abc")
+        );
+        assert!(display_referrer_link("javascript:alert(1)").is_none());
     }
 
     /// Drain lag is only ever computed, never guessed. A pre-v41 relay (no

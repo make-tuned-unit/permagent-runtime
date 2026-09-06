@@ -200,19 +200,32 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
 /// Tracks cumulative MEASURED spend (from the ledger, not an estimate) across
 /// an eval session that may span many tiers and tasks, against an optional
 /// `--budget-usd` cap, and decides when the sweep must stop launching further
-/// tasks. Pure and side-effect free — the caller decides what to do with a
-/// tripped cap (skip the next task, print the stop line).
+/// tasks. This is post-run accounting, not a hard preauthorization: the task
+/// that crosses the cap has already completed before its cost is available.
+/// Pure and side-effect free — the caller decides what to do with a tripped
+/// cap (skip the next task, print the stop line).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BudgetTracker {
     cap_usd: Option<f64>,
     spent_usd: f64,
     attempted: usize,
-    /// Set the first time `spent_usd` exceeds `cap_usd`, to the attempted
-    /// count at that moment. Stays `Some` for the rest of the session.
+    /// Set when the cap is reached, an unpriced/invalid cost is observed, or
+    /// the cap configuration is invalid. The value is the attempted count at
+    /// that moment (zero for an invalid cap). Stays `Some` for the session.
     stopped_after: Option<usize>,
+    /// Why the posthoc stop occurred. Kept separately so a stop caused by an
+    /// unknown cost is not reported as though it were measured spend.
+    stop_reason: Option<BudgetStopReason>,
     /// Whether [`Self::take_stop_message`] has already handed out its one
     /// message for this trip.
     announced: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BudgetStopReason {
+    CapReached,
+    UnknownCost,
+    InvalidCap,
 }
 
 impl BudgetTracker {
@@ -221,12 +234,20 @@ impl BudgetTracker {
         Self::default()
     }
 
-    /// Stop once cumulative measured spend exceeds `cap_usd`.
+    /// Stop once cumulative measured spend reaches `cap_usd`.
+    ///
+    /// A non-finite or negative cap is invalid and fails closed: the first
+    /// task is blocked. A zero cap is valid and permits no measured spend.
     pub fn with_cap(cap_usd: f64) -> Self {
-        Self {
+        let mut tracker = Self {
             cap_usd: Some(cap_usd),
             ..Self::default()
+        };
+        if !cap_usd.is_finite() || cap_usd < 0.0 {
+            tracker.stopped_after = Some(0);
+            tracker.stop_reason = Some(BudgetStopReason::InvalidCap);
         }
+        tracker
     }
 
     /// Whether the cap has already tripped — i.e. whether the NEXT task
@@ -235,18 +256,44 @@ impl BudgetTracker {
         self.stopped_after.is_some()
     }
 
-    /// Record one attempted task's measured spend. An unknown (`None`) cost
-    /// counts as $0 spent but still as an attempt. Trips the stop the first
-    /// time cumulative spend exceeds the cap.
+    /// Record one attempted task's measured spend.
+    ///
+    /// Unknown (`None`) and invalid (negative, NaN, or infinite) costs do not
+    /// change measured spend, but fail closed for capped runs: without a
+    /// trustworthy cost there is no safe basis for launching another task.
+    /// A finite, non-negative cost trips when cumulative spend reaches the
+    /// cap, so an exact-boundary run cannot launch one more task.
     pub fn record(&mut self, cost_usd: Option<f64>) {
         self.attempted += 1;
-        self.spent_usd += cost_usd.unwrap_or(0.0);
+        let Some(cost) = cost_usd else {
+            self.stop_unpriced_if_capped();
+            return;
+        };
+        if !cost.is_finite() || cost < 0.0 {
+            self.stop_unpriced_if_capped();
+            return;
+        }
+
+        let next_spent = self.spent_usd + cost;
+        if !next_spent.is_finite() {
+            self.stop_unpriced_if_capped();
+            return;
+        }
+        self.spent_usd = next_spent;
         if self.stopped_after.is_none() {
             if let Some(cap) = self.cap_usd {
-                if self.spent_usd > cap {
+                if self.spent_usd >= cap {
                     self.stopped_after = Some(self.attempted);
+                    self.stop_reason = Some(BudgetStopReason::CapReached);
                 }
             }
+        }
+    }
+
+    fn stop_unpriced_if_capped(&mut self) {
+        if self.cap_usd.is_some() && self.stopped_after.is_none() {
+            self.stopped_after = Some(self.attempted);
+            self.stop_reason = Some(BudgetStopReason::UnknownCost);
         }
     }
 
@@ -261,10 +308,21 @@ impl BudgetTracker {
         let cap = self.cap_usd?;
         let n = self.stopped_after?;
         self.announced = true;
-        Some(format!(
-            "BUDGET STOP: spent ${:.4} of ${:.4} cap after {n} tasks",
-            self.spent_usd, cap
-        ))
+        Some(
+            match self.stop_reason.unwrap_or(BudgetStopReason::CapReached) {
+                BudgetStopReason::CapReached => format!(
+                    "BUDGET STOP: measured spend ${:.4} reached ${:.4} cap after {n} tasks",
+                    self.spent_usd, cap
+                ),
+                BudgetStopReason::UnknownCost => format!(
+                    "BUDGET STOP: unpriced or invalid cost after {n} tasks; measured spend ${:.4} of ${:.4} cap",
+                    self.spent_usd, cap
+                ),
+                BudgetStopReason::InvalidCap => {
+                    format!("BUDGET STOP: invalid cap ${cap:?}; no tasks launched")
+                }
+            },
+        )
     }
 }
 
@@ -811,15 +869,15 @@ mod tests {
     }
 
     #[test]
-    fn budget_tracker_trips_only_once_spend_strictly_exceeds_the_cap() {
+    fn budget_tracker_trips_at_the_exact_boundary() {
         let mut b = BudgetTracker::with_cap(1.00);
         assert!(!b.cap_exceeded());
         b.record(Some(0.50));
         assert!(!b.cap_exceeded());
-        b.record(Some(0.50)); // spent == cap: reaching it is not exceeding it.
-        assert!(!b.cap_exceeded());
-        b.record(Some(0.01)); // spent > cap: now it trips.
+        b.record(Some(0.50)); // spent == cap: no further task may launch.
         assert!(b.cap_exceeded());
+        let message = b.take_stop_message().unwrap();
+        assert!(message.contains("reached $1.0000 cap"), "{message}");
     }
 
     #[test]
@@ -833,10 +891,63 @@ mod tests {
     }
 
     #[test]
-    fn budget_tracker_treats_unknown_cost_as_zero_spend_but_still_an_attempt() {
-        let mut b = BudgetTracker::with_cap(0.0);
+    fn budget_tracker_unknown_cost_fails_closed_for_capped_runs() {
+        let mut b = BudgetTracker::with_cap(1.0);
         b.record(None);
-        assert!(!b.cap_exceeded(), "$0 spent does not exceed a $0 cap");
+        assert!(
+            b.cap_exceeded(),
+            "an unpriced task cannot authorize another task"
+        );
+        let message = b.take_stop_message().unwrap();
+        assert!(message.contains("unpriced or invalid cost"), "{message}");
+        assert!(message.contains("after 1 tasks"), "{message}");
+    }
+
+    #[test]
+    fn budget_tracker_zero_cap_blocks_at_zero_spend() {
+        let mut b = BudgetTracker::with_cap(0.0);
+        b.record(Some(0.0));
+        assert!(b.cap_exceeded());
+    }
+
+    #[test]
+    fn budget_tracker_invalid_costs_fail_closed_without_fabricating_spend() {
+        for cost in [Some(-1.0), Some(f64::NAN), Some(f64::INFINITY), None] {
+            let mut b = BudgetTracker::with_cap(10.0);
+            b.record(cost);
+            assert!(b.cap_exceeded(), "cost {cost:?} must stop a capped run");
+            let message = b.take_stop_message().unwrap();
+            assert!(message.contains("unpriced or invalid cost"), "{message}");
+            assert!(message.contains("$0.0000 of $10.0000 cap"), "{message}");
+        }
+    }
+
+    #[test]
+    fn budget_tracker_invalid_caps_fail_closed_before_launch() {
+        for cap in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut b = BudgetTracker::with_cap(cap);
+            assert!(b.cap_exceeded(), "cap {cap:?} must fail closed");
+            let message = b.take_stop_message().unwrap();
+            assert!(message.contains("invalid cap"), "{message}");
+            assert!(message.contains("no tasks launched"), "{message}");
+            // A later result cannot clear an invalid configuration or move its
+            // stop point past zero.
+            b.record(Some(0.01));
+            assert!(b.cap_exceeded());
+            assert!(b.take_stop_message().is_none());
+        }
+    }
+
+    #[test]
+    fn budget_tracker_repeated_attempts_preserve_first_stop_reason_and_point() {
+        let mut b = BudgetTracker::with_cap(10.0);
+        b.record(None);
+        b.record(Some(1.0));
+        b.record(Some(f64::NAN));
+        assert!(b.cap_exceeded());
+        let message = b.take_stop_message().unwrap();
+        assert!(message.contains("after 1 tasks"), "{message}");
+        assert!(message.contains("unpriced or invalid cost"), "{message}");
     }
 
     #[test]
@@ -844,13 +955,13 @@ mod tests {
         let mut b = BudgetTracker::with_cap(1.00);
         b.record(Some(0.40));
         assert!(b.take_stop_message().is_none(), "not tripped yet");
-        b.record(Some(2.00)); // spent 2.40 > 1.00 cap, trips on attempt 2.
+        b.record(Some(2.00)); // spent 2.40 >= 1.00 cap, trips on attempt 2.
         let msg = b
             .take_stop_message()
             .expect("must produce a message the moment it trips");
         assert_eq!(
             msg,
-            "BUDGET STOP: spent $2.4000 of $1.0000 cap after 2 tasks"
+            "BUDGET STOP: measured spend $2.4000 reached $1.0000 cap after 2 tasks"
         );
         assert!(
             b.take_stop_message().is_none(),
@@ -886,8 +997,8 @@ mod tests {
                 exit: Some(0),
             },
             oracle: &NeverOracle,
-            // $0.60/task: task 1 => spent 0.60 (<=1.00), task 2 => spent 1.20
-            // (>1.00, trips), task 3 must be skipped.
+            // $0.60/task: task 1 => spent 0.60 (<1.00), task 2 => spent 1.20
+            // (>=1.00, trips), task 3 must be skipped.
             cost: &FlatCost(0.60),
             recipe: &FakeRecipe,
         };
