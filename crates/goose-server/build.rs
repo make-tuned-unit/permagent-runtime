@@ -2,8 +2,8 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=src/");
-    println!("cargo:rerun-if-changed=../../.git/HEAD");
-    println!("cargo:rerun-if-changed=../../.git/refs/");
+    println!("cargo:rerun-if-changed=build.rs");
+    watch_git_head();
 
     // Runtime dylib discovery for the daemon binaries (macOS).
     //
@@ -51,6 +51,58 @@ fn main() {
     // Spectral pin — extract rev from Cargo.lock
     let spectral_pin = spectral_rev();
     println!("cargo:rustc-env=PERMAGENT_SPECTRAL_PIN={}", spectral_pin);
+}
+
+/// Watch whatever actually records HEAD, so the baked SHA invalidates when the
+/// checkout moves.
+///
+/// `../../.git` is a directory in a primary checkout but a FILE holding
+/// `gitdir: <path>` in a linked worktree. Watching `../../.git/HEAD` therefore
+/// watches nothing at all in a worktree — and because declaring ANY
+/// `rerun-if-changed` opts this script out of Cargo's default "rerun when the
+/// package changed", nothing else re-triggered it either. A release built from a
+/// worktree kept reporting the SHA of whichever commit was checked out the first
+/// time it was built, across every later checkout, silently. That matters
+/// because the release recipe builds from a worktree, so the DMG's
+/// `/api/version` could disagree with the code inside it.
+fn watch_git_head() {
+    let dot_git = std::path::Path::new("../../.git");
+    let git_dir = if dot_git.is_file() {
+        // Linked worktree: follow the pointer. This gitdir has its own HEAD,
+        // which is what a checkout in this worktree rewrites.
+        match std::fs::read_to_string(dot_git) {
+            Ok(text) => text
+                .lines()
+                .find_map(|l| l.strip_prefix("gitdir:"))
+                .map(|p| std::path::PathBuf::from(p.trim())),
+            Err(_) => None,
+        }
+    } else if dot_git.is_dir() {
+        Some(dot_git.to_path_buf())
+    } else {
+        None
+    };
+
+    let Some(git_dir) = git_dir else {
+        // No git metadata (a source tarball, a vendored build). Nothing to
+        // watch; the SHA falls back to "unknown" as it always has.
+        return;
+    };
+
+    println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
+
+    // In a worktree the refs live in the shared common dir, named by
+    // `commondir` (usually `../..` relative to the gitdir).
+    let common = std::fs::read_to_string(git_dir.join("commondir"))
+        .ok()
+        .map(|c| git_dir.join(c.trim()))
+        .unwrap_or_else(|| git_dir.clone());
+    println!("cargo:rerun-if-changed={}", common.join("refs").display());
+    // A packed ref moves without any file under refs/ changing.
+    println!(
+        "cargo:rerun-if-changed={}",
+        common.join("packed-refs").display()
+    );
 }
 
 fn git(args: &[&str]) -> String {
