@@ -175,7 +175,15 @@ impl Check {
     fn program_name(&self) -> String {
         match &self.exec {
             Exec::Direct { program, .. } => program.clone(),
-            Exec::Shell(_) => "shell".to_string(),
+            // The missing program is the one the command line names, not the
+            // shell that would have run it. Reporting "`shell` was not found on
+            // PATH ... Install it" sent a local run looking for a tool called
+            // `shell`; the tool actually missing was `npm`.
+            Exec::Shell(command) => command
+                .split_whitespace()
+                .next()
+                .unwrap_or("shell")
+                .to_string(),
         }
     }
 }
@@ -680,6 +688,15 @@ mod tests {
     }
 
     // ── Detection → the correct check command ──
+
+    #[test]
+    fn shell_check_names_the_missing_program_not_the_shell() {
+        // A local harness run was told "`shell` was not found on PATH, so `npm
+        // run test` could not run. Install it" -- there is no program called
+        // `shell`, and the advice was unfollowable.
+        assert_eq!(Check::shell("npm run test").program_name(), "npm");
+        assert_eq!(Check::shell("cargo test --lib").program_name(), "cargo");
+    }
 
     #[test]
     fn detects_rust() {
