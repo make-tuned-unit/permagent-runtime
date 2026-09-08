@@ -1858,6 +1858,7 @@ mod tests {
             result_hash,
             is_error: true,
             is_mutating: is_mutating(name),
+            is_guard_block: false,
         };
 
         // Two prior identical failures (same normalized output → same hash),

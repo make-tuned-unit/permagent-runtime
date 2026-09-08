@@ -177,6 +177,6 @@ extensions:
   - type: builtin
     name: orchestrator
   - type: builtin
-    name: council
+    name: deliberate
   - type: builtin
     name: extensionmanager

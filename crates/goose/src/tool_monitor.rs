@@ -153,6 +153,14 @@ pub struct ToolEvent {
     /// Whether the tool can change workspace state (write/edit/shell/…). Used by
     /// S3 to tell "looking around" (no-progress) from "doing work".
     pub is_mutating: bool,
+    /// True when this event is this SAME monitor's own synthesized block
+    /// response (an L1 nudge, L3 escalate-block, or the anti-gaming deny) —
+    /// recognized by [`GUARD_BLOCK_PREFIX`] — rather than a real tool
+    /// execution. A blocked retry never actually ran, so its distinct block
+    /// text must not read as "the result changed" (real progress) when the
+    /// model repeats the exact same call: see the S1 walk in
+    /// [`assess_tool_call`] and [`observed_verify_failure_run`].
+    pub is_guard_block: bool,
 }
 
 /// Which stall signal fired.
@@ -516,6 +524,16 @@ fn hash_str(s: &str) -> u64 {
     h.finish()
 }
 
+/// The text of a tool result's first text content block, if any. Used only to
+/// recognize the guard's own block responses via [`GUARD_BLOCK_PREFIX`] — the
+/// hashing/state-change machinery elsewhere never inspects tool text.
+fn response_text(result: &rmcp::model::CallToolResult) -> Option<&str> {
+    result.content.first().and_then(|c| match &c.raw {
+        rmcp::model::RawContent::Text(t) => Some(t.text.as_str()),
+        _ => None,
+    })
+}
+
 /// Reconstruct the ordered window of completed tool calls from the conversation.
 /// A call is "completed" once its `ToolResponse` (matched by id) has arrived; we
 /// emit events in response order (chronological) and keep only the last
@@ -540,15 +558,17 @@ pub fn reconstruct_window(messages: &[Message]) -> Vec<ToolEvent> {
                 }
                 MessageContent::ToolResponse(resp) => {
                     if let Some((name, args)) = pending.remove(&resp.id) {
-                        let (is_error, result_hash) = match &resp.tool_result {
+                        let (is_error, result_hash, is_guard_block) = match &resp.tool_result {
                             Ok(r) => {
                                 let err = r.is_error.unwrap_or(false);
                                 let body = serde_json::to_string(&r.content).unwrap_or_default();
-                                (err, hash_str(&body))
+                                let guard_block = response_text(r)
+                                    .is_some_and(|text| text.starts_with(GUARD_BLOCK_PREFIX));
+                                (err, hash_str(&body), guard_block)
                             }
                             Err(e) => {
                                 let body = serde_json::to_string(e).unwrap_or_default();
-                                (true, hash_str(&body))
+                                (true, hash_str(&body), false)
                             }
                         };
                         let is_mutating = is_mutating(&name);
@@ -558,6 +578,7 @@ pub fn reconstruct_window(messages: &[Message]) -> Vec<ToolEvent> {
                             result_hash,
                             is_error,
                             is_mutating,
+                            is_guard_block,
                         });
                     }
                 }
@@ -636,6 +657,15 @@ pub fn assess_tool_call(window: &[ToolEvent], name: &str, args: &Value) -> LoopA
     // Walk back over calls with this exact fingerprint while the result stays
     // identical. A changed result_hash (progress) or a different fingerprint
     // breaks the run — that is the false-positive guard.
+    //
+    // A prior identical call that THIS monitor itself blocked never actually
+    // ran, so its block-message text is a distinct "result" that is not real
+    // progress. Without special-casing it, that distinct hash reads as
+    // "the result changed" and resets `run` to 1 on every subsequent retry,
+    // so the guard nudges forever and never reaches S1_ESCALATE_AT (observed
+    // 2026-09-06: an identical failing `verify` re-ran three times and was
+    // never stopped). Count a guard-block attempt toward the run without
+    // letting it break the streak.
     if !exempt {
         let mut run = 0usize;
         let mut common_hash: Option<u64> = None;
@@ -643,6 +673,10 @@ pub fn assess_tool_call(window: &[ToolEvent], name: &str, args: &Value) -> LoopA
         for e in win.iter().rev() {
             if e.name != name || &e.args != args {
                 break;
+            }
+            if e.is_guard_block {
+                run += 1;
+                continue;
             }
             match common_hash {
                 None => common_hash = Some(e.result_hash),
@@ -734,6 +768,14 @@ pub fn observed_verify_failure_run(window: &[ToolEvent], name: &str, args: &Valu
         if e.name != name || &e.args != args || !e.is_error {
             break; // a different verify target, or a pass → progress
         }
+        // This monitor's own block for an earlier identical attempt never
+        // actually re-ran `verify` — its block text is not a new failure, and
+        // must not reset the run the same way a genuinely different failure
+        // does (see the identical S1 fix above).
+        if e.is_guard_block {
+            run += 1;
+            continue;
+        }
         match common_hash {
             None => common_hash = Some(e.result_hash),
             Some(h) if h == e.result_hash => {}
@@ -809,6 +851,14 @@ pub fn assess_monologue(consecutive_no_progress_turns: u32) -> LoopAction {
         LoopAction::Pass
     }
 }
+
+/// Prefix shared by every message this monitor synthesizes when it blocks a
+/// call — [`block_message`]'s four arms and [`test_gaming_message`]. Used
+/// ONLY for detection: [`reconstruct_window`] recognizes a tool response
+/// carrying this prefix as the guard's OWN artifact (not a real execution) so
+/// [`assess_tool_call`] and [`observed_verify_failure_run`] don't mistake a
+/// blocked retry's distinct block text for a changed (progressing) result.
+const GUARD_BLOCK_PREFIX: &str = "BLOCKED by the runaway-loop guard:";
 
 /// The block message injected as the tool result (L1) — actionable so the model
 /// self-corrects rather than repeating.
@@ -1381,6 +1431,22 @@ mod tests {
             result_hash,
             is_error,
             is_mutating: is_mutating(name),
+            is_guard_block: false,
+        }
+    }
+
+    /// This SAME monitor's own block response to an earlier identical call
+    /// for `name`/`args` — reconstructed the way [`reconstruct_window`] would
+    /// see it in the conversation (same fingerprint, distinct block-text
+    /// hash, always an error, never a real execution).
+    fn guard_block(name: &str, args: Value) -> ToolEvent {
+        ToolEvent {
+            name: name.to_string(),
+            args,
+            result_hash: hash_str("a runaway-loop guard block message"),
+            is_error: true,
+            is_mutating: is_mutating(name),
+            is_guard_block: true,
         }
     }
 
@@ -1453,6 +1519,31 @@ mod tests {
             assess_tool_call(&win, "developer__shell", &args),
             LoopAction::Escalate(Signal::SameFailure),
             "3 identical failures must escalate as SameFailure"
+        );
+    }
+
+    /// Reproduces the 2026-09-06 observation: a local-model harness run
+    /// carried an identical failing `npm run test` (via `verify`) through
+    /// THREE attempts and the runaway-loop guard "did not stop it". The 1st
+    /// attempt fails for real; the 2nd identical attempt is nudged (blocked)
+    /// by this SAME monitor, and that block response — not a real re-run —
+    /// lands in the conversation as the next `ToolEvent`. Before the fix, its
+    /// distinct block-message hash was indistinguishable from "the result
+    /// changed", so it reset the stall run to 1 and the 3rd identical attempt
+    /// only nudged again instead of escalating — the guard would nudge
+    /// forever rather than ever stopping the loop.
+    #[test]
+    fn guard_block_does_not_reset_the_stall_run_and_the_third_attempt_escalates() {
+        let args = json!({"command": "npm run test"});
+        let win = vec![
+            ev("developer__verify", args.clone(), 0xFA11, true), // 1st: real failure
+            guard_block("developer__verify", args.clone()),      // 2nd: blocked by this guard
+        ];
+        assert_eq!(
+            assess_tool_call(&win, "developer__verify", &args),
+            LoopAction::Escalate(Signal::SameFailure),
+            "the 3rd identical attempt must escalate even though the 2nd was \
+             itself a guard block rather than a real re-run"
         );
     }
 
@@ -1709,6 +1800,21 @@ mod tests {
         assert_eq!(
             observed_verify_failure_run(&win, "developer__verify", &json!({})),
             3
+        );
+    }
+
+    #[test]
+    fn observed_verify_failure_run_counts_a_guard_block_without_resetting() {
+        // Same shape as the S1 reproducer above, but for the S6 count the
+        // verifier-driven escalation reads directly: a real failure followed
+        // by this monitor's OWN block of the identical retry must still
+        // count as 2 (not reset to 1 by the block's distinct hash).
+        let args = json!({});
+        let win = vec![verr(0xF), guard_block("developer__verify", args.clone())];
+        assert_eq!(
+            observed_verify_failure_run(&win, "developer__verify", &args),
+            2,
+            "a guard-blocked retry must count toward the run, not reset it"
         );
     }
 
@@ -2093,6 +2199,89 @@ diff --git a/tests/math_tests.rs b/tests/math_tests.rs
             results[0].reason.contains("runaway-loop guard"),
             "reason must be the actionable block message, got: {}",
             results[0].reason
+        );
+    }
+
+    /// End-to-end reproduction of the 2026-09-06 observation, at the
+    /// `ProgressMonitor::inspect` level: build the conversation exactly the
+    /// way the real agent loop does — the guard's own block reason for
+    /// attempt 2 is appended to the conversation as that tool call's actual
+    /// response, because that IS what a denied call's response looks like
+    /// (see `agent.rs::handle_denied_tools`) — then assert the 3rd identical
+    /// failing `verify` attempt is ESCALATED, not nudged a second time.
+    #[tokio::test]
+    async fn identical_failing_verify_escalates_on_the_third_attempt() {
+        let monitor = ProgressMonitor::new(None); // no escalation dispatch in unit tests
+        let call_args = rmcp::object!({"command": "npm run test"});
+        let make_call =
+            || CallToolRequestParams::new("developer__verify").with_arguments(call_args.clone());
+
+        // Attempt 1: a real failing verify.
+        let mut messages = vec![
+            Message::assistant().with_tool_request("v1", Ok(make_call())),
+            Message::user().with_tool_response(
+                "v1",
+                Ok(rmcp::model::CallToolResult::error(vec![
+                    rmcp::model::Content::text(
+                        "FAIL - `npm run test` failed (exit 1).\n\nAssertionError",
+                    ),
+                ])),
+            ),
+        ];
+
+        // Attempt 2: the model retries identically. The guard must block it
+        // (a nudge, not yet an escalation) — confirming the pre-existing S1
+        // behavior still holds before the bug being pinned even applies.
+        let attempt2 = ToolRequest {
+            id: "v2".to_string(),
+            tool_call: Ok(make_call()),
+            metadata: None,
+            tool_meta: None,
+        };
+        let results2 = monitor
+            .inspect("sess-1", &[attempt2], &messages, GooseMode::Auto)
+            .await
+            .unwrap();
+        assert_eq!(results2.len(), 1);
+        assert_eq!(results2[0].action, InspectionAction::Deny);
+        assert_eq!(
+            results2[0].finding_id.as_deref(),
+            Some("LOOP-S1"),
+            "the 2nd identical attempt must be a nudge, not yet an escalation"
+        );
+
+        // The denied call's response, appended to the conversation exactly as
+        // `handle_denied_tools` does in production: the guard's OWN reason
+        // text as the tool result.
+        messages.push(Message::assistant().with_tool_request("v2", Ok(make_call())));
+        messages.push(Message::user().with_tool_response(
+            "v2",
+            Ok(rmcp::model::CallToolResult::error(vec![
+                rmcp::model::Content::text(results2[0].reason.clone()),
+            ])),
+        ));
+
+        // Attempt 3: the SAME identical call again. Before the fix, the
+        // guard's own attempt-2 block text read as "the result changed" and
+        // reset the stall run, so this only nudged again — the guard nudged
+        // forever and never stopped the loop, exactly the 2026-09-06
+        // observation ("ran three times identically ... did not stop it").
+        let attempt3 = ToolRequest {
+            id: "v3".to_string(),
+            tool_call: Ok(make_call()),
+            metadata: None,
+            tool_meta: None,
+        };
+        let results3 = monitor
+            .inspect("sess-1", &[attempt3], &messages, GooseMode::Auto)
+            .await
+            .unwrap();
+        assert_eq!(results3.len(), 1);
+        assert_eq!(results3[0].action, InspectionAction::Deny);
+        assert_eq!(
+            results3[0].finding_id.as_deref(),
+            Some("LOOP-S2"),
+            "the 3rd identical failing attempt must ESCALATE rather than nudge again"
         );
     }
 

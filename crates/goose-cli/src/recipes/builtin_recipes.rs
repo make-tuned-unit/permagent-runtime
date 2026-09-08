@@ -111,4 +111,47 @@ mod tests {
             "PERMAGENT_CODING_RECIPE_TITLE ({PERMAGENT_CODING_RECIPE_TITLE:?}) not found in the embedded recipe"
         );
     }
+
+    /// Observed 2026-09-06: `permagent run --recipe permagent-coding` logged
+    /// `Failed to start extension 'council'` and continued without it. The
+    /// recipe asked for a builtin named `council`, but the Council's registry
+    /// key is deliberately `deliberate` (see
+    /// `crates/goose/src/agents/platform_extensions/council.rs`'s module
+    /// docs: it does not collide with the `council` worker id in the
+    /// self-knowledge namespace) — so the lookup by `council` always misses.
+    /// This pins every builtin the shipped coding-harness recipe requests
+    /// against the actual registry so a future name drift fails the build
+    /// instead of only showing up as a silently-skipped extension at runtime.
+    #[test]
+    fn every_builtin_extension_the_coding_harness_recipe_requests_resolves() {
+        use permagent::agents::extension::ExtensionConfig;
+        use permagent::agents::platform_extensions::PLATFORM_EXTENSIONS;
+        use permagent::config::extensions::name_to_key;
+        use permagent::recipe::Recipe;
+
+        let recipe = Recipe::from_content(PERMAGENT_CODING_RECIPE)
+            .expect("the embedded coding-harness recipe must parse");
+        let extensions = recipe
+            .extensions
+            .expect("the coding-harness recipe declares extensions");
+        let builtin_names: Vec<&str> = extensions
+            .iter()
+            .filter_map(|ext| match ext {
+                ExtensionConfig::Builtin { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !builtin_names.is_empty(),
+            "the recipe must declare at least one builtin extension"
+        );
+        for name in builtin_names {
+            assert!(
+                PLATFORM_EXTENSIONS.contains_key(name_to_key(name).as_str()),
+                "recipe requests builtin extension '{name}', which is not registered — \
+                 it will silently fail to start (\"Failed to start extension '{name}'\") \
+                 and the recipe's promised tools will be missing"
+            );
+        }
+    }
 }
