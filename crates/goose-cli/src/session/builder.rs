@@ -373,6 +373,27 @@ fn first_configured(sources: [Option<String>; 5]) -> Option<String> {
         .find(|value| !value.trim().is_empty())
 }
 
+/// Whether `build_session` should install the headless goal-dispatch hook
+/// (harness loop, Lane S / M3-1).
+///
+/// `nudge_dispatch_ready_goals` (`orchestrator.rs`) only ever starts a root
+/// goal's worker through the process-global `GOAL_DISPATCH_HOOK` — the daemon
+/// installs it at startup (`goose-server/src/commands/agent.rs`), but headless
+/// `permagent run` never did, so a coding-harness session's `create_roadmap`
+/// always reported "0 root goal(s) dispatched to workers" and the recipe's
+/// NON-NEGOTIABLE protocol (coordinator presents/creates the roadmap; a
+/// dispatched DAG worker does the actual work) could never complete —
+/// confirmed live in 8/10 of Lane M3's measured fixtures.
+///
+/// Scoped to exactly the coding harness recipe running under `GooseMode::Auto`
+/// — the one launch shape whose NON-NEGOTIABLE protocol requires dispatch to
+/// happen with no human in the loop. An ordinary chat/run session (even one
+/// that happens to load the `orchestrator` extension) must not silently start
+/// spawning real worker subagents the operator never asked to auto-dispatch.
+fn wants_headless_goal_dispatch(coding_harness: bool, goose_mode: GooseMode) -> bool {
+    coding_harness && goose_mode == GooseMode::Auto
+}
+
 /// The coding harness's own model route, or `None` when the operator's session
 /// model should be used instead. Warns — once, loudly — on a half-configured
 /// pair, because `harness_provider` without `harness_model` cannot route and is
@@ -1230,6 +1251,21 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             process::exit(1);
         });
 
+    // Harness loop, Lane S / M3-1: a headless coding-harness Auto-mode launch
+    // has no daemon to install the real goal dispatcher, so root goals a
+    // `create_roadmap` call approves would otherwise sit in Ready forever
+    // (`nudge_dispatch_ready_goals` returns 0 with no hook installed). Install
+    // the SAME production hook the daemon installs at startup
+    // (`install_dispatch_hook`, idempotent — an OnceLock, so a second install
+    // anywhere else in this process is a harmless no-op) so the coordinator's
+    // own `create_roadmap` call can actually dispatch. See
+    // `wants_headless_goal_dispatch`'s doc comment for the scoping rationale.
+    if wants_headless_goal_dispatch(coding_harness, agent.config.goose_mode) {
+        permagent::agents::platform_extensions::orchestrator::install_dispatch_hook(
+            session_manager.clone(),
+        );
+    }
+
     if let Some(recipe) = session_config.recipe.clone() {
         if let Err(e) = session_manager
             .update(&session_id)
@@ -1309,6 +1345,24 @@ mod tests {
 
     fn s(v: &str) -> Option<String> {
         Some(v.to_string())
+    }
+
+    // ── headless goal dispatch (harness loop, Lane S / M3-1) ───────────────
+
+    #[test]
+    fn headless_goal_dispatch_wants_coding_harness_and_auto_mode_together() {
+        assert!(wants_headless_goal_dispatch(true, GooseMode::Auto));
+    }
+
+    #[test]
+    fn headless_goal_dispatch_skips_a_non_coding_harness_session_even_in_auto_mode() {
+        assert!(!wants_headless_goal_dispatch(false, GooseMode::Auto));
+    }
+
+    #[test]
+    fn headless_goal_dispatch_skips_the_coding_harness_outside_auto_mode() {
+        assert!(!wants_headless_goal_dispatch(true, GooseMode::Approve));
+        assert!(!wants_headless_goal_dispatch(true, GooseMode::Chat));
     }
 
     /// REPLACES a source-text grep.

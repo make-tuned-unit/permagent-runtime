@@ -511,6 +511,104 @@ async fn resolve_decompose_project(
     }
 }
 
+/// M3-1(b) (harness loop): `create_roadmap`'s own success text used to say
+/// only how many cards were created and how many root goals dispatched —
+/// never the ids. A model that later needed to check on, or manually
+/// dispatch, one of those goals had nothing real to call `goal_advance`/
+/// `goal_status` with, and guessed (a tweaked hex digit off the proposal
+/// hash/decision id, or a bare literal integer) every time — a silent no-op,
+/// confirmed live in Lane M3's transcripts. Reads each card back AFTER
+/// `nudge_dispatch_ready_goals` has run, so a root goal that just dispatched
+/// reports its real worker session id (`dispatch_goal_fn` stamps it onto
+/// `metadata_json.worker_session_ids` before this is called) rather than a
+/// stale pre-dispatch snapshot.
+async fn goal_card_listing_for_report(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_ids: &[String],
+) -> String {
+    let mut lines = Vec::with_capacity(card_ids.len());
+    for card_id in card_ids {
+        let Ok(Some(card)) = cards::get_card(pool, card_id).await else {
+            continue;
+        };
+        let state = match cards::get_column(pool, &card.column_id).await {
+            Ok(Some(col)) => col.state_binding.unwrap_or(col.name),
+            _ => "unknown".to_string(),
+        };
+        let worker_session = card
+            .metadata_json
+            .get("worker_session_ids")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.last())
+            .and_then(|v| v.as_str());
+        match worker_session {
+            Some(session_id) => lines.push(format!(
+                "  - {} (id={}, state={}, worker session={})",
+                card.title, card.id, state, session_id
+            )),
+            None => lines.push(format!(
+                "  - {} (id={}, state={})",
+                card.title, card.id, state
+            )),
+        }
+    }
+    if lines.is_empty() {
+        "Goal cards: (none could be read back)".to_string()
+    } else {
+        format!("Goal cards:\n{}", lines.join("\n"))
+    }
+}
+
+/// A visible, actionable error for an unresolvable goal card id (M3-1,
+/// harness loop): `goal_advance`/`goal_status` used to fail a fabricated or
+/// mistyped id with a bare `"Card 'X' not found"` — no hint of what a real id
+/// looked like, so a model with no real id kept guessing rather than
+/// recovering. Lists the known goal cards in the caller's own project
+/// (resolved the same cwd-then-personal way `decompose_roadmap` resolves its
+/// default project), so a model that mistyped or fabricated an id can pick a
+/// real one from the error itself instead of a fifth guess.
+async fn unknown_goal_card_error(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    context: &PlatformExtensionContext,
+    card_id: &str,
+) -> String {
+    let working_dir = context.session.as_ref().map(|s| s.working_dir.as_path());
+    let Ok((project, _)) = resolve_decompose_project(pool, working_dir, None).await else {
+        return format!("Card '{}' not found.", card_id);
+    };
+    let rows = sqlx::query_as::<_, (String, String, Option<String>)>(
+        "SELECT c.id, c.title, bc.state_binding
+           FROM cards c
+           JOIN board_columns bc ON c.column_id = bc.id
+          WHERE c.project_id = ? AND c.card_type = 'goal' AND c.archived_at IS NULL
+          ORDER BY c.id ASC
+          LIMIT 20",
+    )
+    .bind(&project.id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    if rows.is_empty() {
+        format!(
+            "Card '{}' not found. No goal cards exist yet in project '{}' — call \
+             decompose_roadmap first.",
+            card_id, project.name
+        )
+    } else {
+        let listing = rows
+            .iter()
+            .map(|(id, title, state)| {
+                format!("{id} ({title}, {})", state.as_deref().unwrap_or("unknown"))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "Card '{}' not found in project '{}'. Known goal card ids: {}",
+            card_id, project.name, listing
+        )
+    }
+}
+
 fn roadmap_proposal_hash(goals: &[goal_state::ProposedGoal]) -> String {
     let canonical = serde_json::to_vec(goals)
         .expect("ProposedGoal is serializable; roadmap hashing must be infallible");
@@ -3259,9 +3357,10 @@ impl OrchestratorClient {
             .map_err(|e| e.to_string())?;
 
         // Load card and verify it's a goal
-        let card = cards::get_card(&pool, &card_id)
-            .await?
-            .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+        let card = match cards::get_card(&pool, &card_id).await? {
+            Some(card) => card,
+            None => return Err(unknown_goal_card_error(&pool, &self.context, &card_id).await),
+        };
 
         if card.card_type != "goal" {
             return Err(format!(
@@ -3755,9 +3854,10 @@ impl OrchestratorClient {
             .await
             .map_err(|e| e.to_string())?;
 
-        let card = cards::get_card(&pool, &card_id)
-            .await?
-            .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+        let card = match cards::get_card(&pool, &card_id).await? {
+            Some(card) => card,
+            None => return Err(unknown_goal_card_error(&pool, &self.context, &card_id).await),
+        };
 
         if card.card_type != "goal" {
             return Err(format!(
@@ -4283,14 +4383,26 @@ impl OrchestratorClient {
         let dispatched = nudge_dispatch_ready_goals(&pool, &project.id, "roadmap approval").await;
         self.invalidate_kanban_cache().await;
 
+        // M3-1(b) (harness loop): the coordinator had no tool that returned
+        // the real goal-card ids `create_roadmap` just minted, so a model
+        // that needed to dispatch or check on one manually could only guess
+        // (a tweaked hex digit off `proposal_hash`/`approval_decision_id`, or
+        // a bare literal integer) — every guess a silent no-op. List the real
+        // id, current state, and (once dispatched) the worker session id for
+        // every card this call created, read back from what dispatch just
+        // wrote, so the model never has to fabricate one.
+        let goal_id_listing = goal_card_listing_for_report(&pool, &materialized.created_ids).await;
+
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Roadmap created: {} goal cards in project '{}'. \
              {} root goal(s) dispatched to workers. \
              Remaining goals will dispatch automatically as dependencies complete.\n\n\
+             {}\n\n\
              Use pause_roadmap to stop auto-dispatch. Use resume_roadmap to continue.",
             materialized.created_ids.len(),
             materialized.project_name,
-            dispatched
+            dispatched,
+            goal_id_listing
         ))]))
     }
 
@@ -13760,6 +13872,180 @@ mod tests {
         assert_eq!(
             err,
             "Roadmap creation requires an answered Decision Inbox approval by the user"
+        );
+    }
+
+    // ── M3-1: headless auto-dispatch (harness loop, Lane S) ────────────────
+
+    /// M3-1 pinning: before a headless CLI (`permagent run`) installs a goal
+    /// dispatcher, `create_roadmap` reports zero root goals dispatched even
+    /// though the roadmap has a genuine root (no-dependency) goal — the exact
+    /// defect Lane M3 quoted live in 8/10 measured fixtures ("the roadmap was
+    /// created but it says '0 root goal(s) dispatched to workers'"), because
+    /// `nudge_dispatch_ready_goals` (`orchestrator.rs`) only ever starts a
+    /// worker through the process-global `GOAL_DISPATCH_HOOK`, and only the
+    /// daemon installed it. Once a hook IS installed — Lane S's CLI fix
+    /// installs the daemon's own `install_dispatch_hook` when the recipe is
+    /// the coding harness and the session is `GooseMode::Auto`
+    /// (`goose-cli/src/session/builder.rs`'s `wants_headless_goal_dispatch`)
+    /// — the SAME `create_roadmap` call creates a real child session with
+    /// `parent_session_id` set to the coordinator session, with no further
+    /// coordinator tool call.
+    ///
+    /// This test installs a hook through the SAME `create_session_with_parent`
+    /// seam `delegate` (`summon.rs`) and the production dispatcher
+    /// (`dispatch_goal_fn`'s `InternalSubagentEngine::spawn`) both use as
+    /// their very first step, without a live worker roster, network, or
+    /// subprocess — that pins the WIRING this lane fixed (a hook, once
+    /// installed, is actually reached and actually creates a session), not
+    /// worker selection/spawn, which is separately covered where those
+    /// functions are tested directly.
+    ///
+    /// `GOAL_DISPATCH_HOOK` is a process-global `OnceLock`: both the
+    /// "no hook" and "hook installed" states are exercised in ONE test
+    /// function, in order, so this can never race another test over which
+    /// value wins the `.set()` (mirrors `test_dispatch_recorder`'s own
+    /// documented single-binary caveat).
+    #[tokio::test]
+    async fn create_roadmap_dispatches_a_real_child_session_once_a_dispatch_hook_is_installed() {
+        let (_tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
+        let pool = sm.pool_clone().await.unwrap();
+
+        // Phase 1: no dispatch hook installed anywhere in this process yet —
+        // reproduces the exact headless-CLI defect Lane M3 measured live.
+        let (_decompose_result, approval_decision_id, goals_json, proposal_hash) =
+            decompose_then_read_proof(&client, &pool, &session.id).await;
+        let result = client
+            .handle_create_roadmap(Some(create_roadmap_args(
+                &goals_json,
+                &proposal_hash,
+                &approval_decision_id,
+            )))
+            .await
+            .expect("roadmap creation with no worker dispatched must still succeed");
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("0 root goal(s) dispatched to workers"),
+            "no dispatch hook is installed yet — root-goal dispatch must report zero, matching \
+             Lane M3's live defect: {text}"
+        );
+        // M3-1(b): even with nothing dispatched, the real ids must be listed
+        // so a coordinator that must dispatch manually never has to guess one.
+        assert!(
+            text.contains("Goal cards:") && text.contains("id="),
+            "create_roadmap's result text must list the real goal-card ids: {text}"
+        );
+
+        // Phase 2: install a hook using the SAME `create_session_with_parent`
+        // seam `delegate` and the production dispatcher use, then create a
+        // second roadmap through the identical Auto-mode, no-human-answer path.
+        let hook_sm = sm.clone();
+        let parent_session_id = session.id.clone();
+        let _ = GOAL_DISPATCH_HOOK.set(Box::new(move |_card_id: String| {
+            let hook_sm = hook_sm.clone();
+            let parent_session_id = parent_session_id.clone();
+            Box::pin(async move {
+                let child = hook_sm
+                    .create_session_with_parent(
+                        Some(&parent_session_id),
+                        std::env::temp_dir(),
+                        "Dispatched goal".to_string(),
+                        SessionType::SubAgent,
+                        GooseMode::Auto,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(child.id)
+            }) as GoalDispatchFuture
+        }));
+
+        let (_decompose_result2, approval_decision_id2, goals_json2, proposal_hash2) =
+            decompose_then_read_proof(&client, &pool, &session.id).await;
+        let result2 = client
+            .handle_create_roadmap(Some(create_roadmap_args(
+                &goals_json2,
+                &proposal_hash2,
+                &approval_decision_id2,
+            )))
+            .await
+            .expect("roadmap creation must still succeed once a dispatch hook is installed");
+        let text2 = result2.content[0].as_text().unwrap().text.clone();
+        assert!(
+            !text2.contains("0 root goal(s) dispatched"),
+            "a real dispatch hook is installed — the root goal must be reported dispatched: {text2}"
+        );
+
+        // The child session genuinely exists with parent_session_id set to
+        // the SAME coordinator session that called create_roadmap — reading
+        // this back is not "a further coordinator tool call": it only
+        // confirms what create_roadmap's own call already wrote.
+        let children: Vec<(String,)> =
+            sqlx::query_as("SELECT id FROM sessions WHERE parent_session_id = ?")
+                .bind(&session.id)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(
+            !children.is_empty(),
+            "a worker session with parent_session_id set to the coordinator session must exist \
+             after create_roadmap, with no further coordinator tool call"
+        );
+    }
+
+    /// M3-1: `goal_advance`/`goal_status` on a fabricated or mistyped id used
+    /// to silently no-op with a bare `"Card 'X' not found"` — no hint of a
+    /// real id, so a model with no real id kept guessing (a tweaked hex digit
+    /// off the proposal hash, or a bare literal integer, per Lane M3's
+    /// transcripts). The error must now name the known goal card ids in the
+    /// caller's own project.
+    #[tokio::test]
+    async fn goal_advance_on_an_unknown_id_names_the_known_goal_card_ids() {
+        let (_tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
+        let pool = sm.pool_clone().await.unwrap();
+
+        let (_decompose_result, approval_decision_id, goals_json, proposal_hash) =
+            decompose_then_read_proof(&client, &pool, &session.id).await;
+        client
+            .handle_create_roadmap(Some(create_roadmap_args(
+                &goals_json,
+                &proposal_hash,
+                &approval_decision_id,
+            )))
+            .await
+            .expect("roadmap creation must succeed");
+        let real_root_id: String = sqlx::query_scalar("SELECT id FROM cards WHERE title = ?")
+            .bind("R2 fixture A")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert(
+            "card_id".to_string(),
+            serde_json::json!("01a08274-713c-73f1-8874-e28f98cf1a26"),
+        );
+        args.insert("action".to_string(), serde_json::json!("dispatch"));
+        let err = client
+            .handle_goal_advance(Some(args))
+            .await
+            .expect_err("a fabricated card id must never silently no-op");
+        assert!(
+            err.contains(&real_root_id),
+            "the error must name a real known goal card id instead of just failing blind: {err}"
+        );
+
+        let mut status_args = JsonObject::new();
+        status_args.insert(
+            "card_id".to_string(),
+            serde_json::json!("01a08274-713c-73f1-8874-e28f98cf1a26"),
+        );
+        let status_err = client
+            .handle_goal_status(Some(status_args))
+            .await
+            .expect_err("a fabricated card id must never silently no-op");
+        assert!(
+            status_err.contains(&real_root_id),
+            "goal_status's error must also name a real known goal card id: {status_err}"
         );
     }
 }
