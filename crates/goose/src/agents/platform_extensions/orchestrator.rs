@@ -389,8 +389,11 @@ struct MessageGoalParams {
 struct DecomposeRoadmapParams {
     /// The user's high-level objective to decompose into goals.
     objective: String,
-    /// Project ID (UUID) or slug to create the roadmap for.
-    project_id_or_slug: String,
+    /// Project ID (UUID) or slug to create the roadmap for; omit it to use
+    /// the session's own working directory (or the default project) instead
+    /// of guessing a slug.
+    #[serde(default)]
+    project_id_or_slug: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -412,6 +415,96 @@ struct CreateRoadmapParams {
 /// while the project stores only their canonical content hash. It is consumed
 /// when `create_roadmap` starts, so the same proposal cannot be replayed.
 const ROADMAP_PROPOSAL_METADATA_KEY: &str = "roadmap_proposal";
+
+/// Resolve the project a `decompose_roadmap` call targets (harness R2
+/// repair, HARNESS_LOOP_LOG.md Lane M2 Defect 2 — with no project-discovery
+/// tool exposed, models burned 1-4 calls guessing slugs like "workspace" or
+/// "getladle", and 2/10 tasks never found a working one).
+///
+/// Precedence:
+///   1. An explicit, non-empty `requested` slug/id that resolves — used
+///      as given, never silently overridden.
+///   2. `requested` omitted (or blank): the project whose `root_path`
+///      contains `working_dir` (deepest/longest matching root wins when
+///      several projects' roots contain it) — the session's own workspace
+///      names its project.
+///   3. Still nothing: the well-known default project (`PERSONAL_PROJECT_ID`
+///      / "personal"), seeded into every daemon's database and always
+///      present.
+///
+/// An explicit slug that does NOT resolve is a hard error — omission is what
+/// triggers auto-resolution, not a bad guess — and the error lists every
+/// slug actually registered, so a follow-up call is informed rather than
+/// blind.
+///
+/// Returns the resolved project and whether it was auto-resolved (vs.
+/// explicitly requested), so the caller can tell the model which project it
+/// used.
+async fn resolve_decompose_project(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    working_dir: Option<&std::path::Path>,
+    requested: Option<&str>,
+) -> Result<(crate::projects::Project, bool), String> {
+    async fn slug_list_suffix(pool: &sqlx::Pool<sqlx::Sqlite>) -> String {
+        let slugs: Vec<String> = crate::projects::list_projects(pool, None)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| p.slug)
+            .collect();
+        if slugs.is_empty() {
+            "(no projects are registered)".to_string()
+        } else {
+            format!("Available project slugs: {}", slugs.join(", "))
+        }
+    }
+
+    if let Some(id_or_slug) = requested.map(str::trim).filter(|s| !s.is_empty()) {
+        return match crate::projects::get_project_by_id_or_slug(pool, id_or_slug).await? {
+            Some(project) => Ok((project, false)),
+            None => Err(format!(
+                "Project '{}' not found. {}",
+                id_or_slug,
+                slug_list_suffix(pool).await
+            )),
+        };
+    }
+
+    if let Some(dir) = working_dir {
+        // Canonicalize before comparing: stored `root_path` values are
+        // canonicalized by `resolve_root_path` (symlinks resolved, e.g.
+        // macOS `/tmp` -> `/private/tmp`), so a raw working_dir would never
+        // match otherwise. Falls back to the raw path when it can't be
+        // resolved (e.g. it no longer exists) rather than failing outright.
+        let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        let dir_str = canonical_dir.to_string_lossy().into_owned();
+        let mut candidates: Vec<crate::projects::Project> =
+            crate::projects::list_projects(pool, None)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| {
+                    p.root_path.as_deref().is_some_and(|root| {
+                        !root.is_empty()
+                            && (dir_str == root || dir_str.starts_with(&format!("{root}/")))
+                    })
+                })
+                .collect();
+        candidates
+            .sort_by_key(|p| std::cmp::Reverse(p.root_path.as_deref().map(str::len).unwrap_or(0)));
+        if let Some(best) = candidates.into_iter().next() {
+            return Ok((best, true));
+        }
+    }
+
+    match crate::projects::get_project(pool, crate::projects::PERSONAL_PROJECT_ID).await? {
+        Some(project) => Ok((project, true)),
+        None => Err(format!(
+            "No project_id_or_slug was given and no default project could be resolved. {}",
+            slug_list_suffix(pool).await
+        )),
+    }
+}
 
 fn roadmap_proposal_hash(goals: &[goal_state::ProposedGoal]) -> String {
     let canonical = serde_json::to_vec(goals)
@@ -458,6 +551,7 @@ struct RoadmapMaterialization {
 /// point is test-only plumbing: it lets rollback be proven without corrupting
 /// the production path or relying on an unrelated constraint failure.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 async fn materialize_roadmap_transaction(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     project_id: &str,
@@ -466,6 +560,7 @@ async fn materialize_roadmap_transaction(
     proposal_hash: &str,
     approval_decision_id: &str,
     fail_after_cards: Option<usize>,
+    session_mode: GooseMode,
 ) -> Result<RoadmapMaterialization, String> {
     materialize_roadmap_transaction_with_budget(
         pool,
@@ -476,6 +571,7 @@ async fn materialize_roadmap_transaction(
         approval_decision_id,
         fail_after_cards,
         None,
+        session_mode,
     )
     .await
 }
@@ -484,6 +580,14 @@ async fn materialize_roadmap_transaction(
 /// durable budget identity is copied into each materialized card so later
 /// auto-dispatches remain attributable even after the approving session is no
 /// longer live.
+///
+/// `session_mode` is the `GooseMode` of the session calling `create_roadmap`
+/// *right now* — not the mode of whatever session decomposed/approved the
+/// roadmap. It is the second half of the R1 auto-launch gate (harness loop):
+/// an `ACTOR_AUTO_LAUNCH`-answered decision is only accepted here when the
+/// presenting session is itself `GooseMode::Auto`, so an auto-answered
+/// decision can never be replayed into, or handed to, an interactive
+/// Approve/Chat session.
 // Every argument is a distinct piece of settlement evidence; collapsing them
 // into a struct would only move the same fields behind one more name.
 #[allow(clippy::too_many_arguments)]
@@ -496,6 +600,7 @@ async fn materialize_roadmap_transaction_with_budget(
     approval_decision_id: &str,
     fail_after_cards: Option<usize>,
     budget_task_id: Option<&str>,
+    session_mode: GooseMode,
 ) -> Result<RoadmapMaterialization, String> {
     validate_roadmap_goals(goals)?;
     let mut tx = pool
@@ -546,11 +651,24 @@ async fn materialize_roadmap_transaction_with_budget(
         .try_get("answer_choice_id")
         .map_err(|e| e.to_string())?;
     let acted_by: Option<String> = decision.try_get("acted_by").map_err(|e| e.to_string())?;
+    // Two attributions can satisfy an "answered" roadmap decision:
+    //   - ACTOR_JESSE: a real human answered it, in any session mode.
+    //   - ACTOR_AUTO_LAUNCH: `decompose_roadmap` pre-approved its own proposal
+    //     because that call happened in an unattended GooseMode::Auto
+    //     session (R1 repair). It is accepted here ONLY when the session
+    //     calling create_roadmap right now is ALSO Auto — an Approve/Chat
+    //     session can never consume an auto-launch answer, whether it is
+    //     forged, replayed, or simply left over from a mode switch.
+    let actor_ok = match acted_by.as_deref() {
+        Some(decisions::ACTOR_JESSE) => true,
+        Some(decisions::ACTOR_AUTO_LAUNCH) => session_mode == GooseMode::Auto,
+        _ => false,
+    };
     let approved = kind.as_deref() == Some("choice")
         && status.as_deref() == Some("answered")
         && answer.as_deref() == Some("choice")
         && answer_choice_id.as_deref() == Some("approve-roadmap")
-        && acted_by.as_deref() == Some(decisions::ACTOR_JESSE);
+        && actor_ok;
     if !approved {
         return Err(
             "Roadmap creation requires an answered Decision Inbox approval by the user".to_string(),
@@ -878,6 +996,33 @@ impl OrchestratorClient {
 
     async fn get_provider(&self) -> Result<Arc<dyn Provider>, String> {
         get_provider_fn(&self.context).await
+    }
+
+    /// Resolve THIS session's own effective `GooseMode` — used by the R1
+    /// auto-launch roadmap-approval gate, which must know whether the
+    /// current call (not some parent or child session) is an unattended
+    /// headless launch. Same precedence as `inherited_sub_session_mode`
+    /// (re-enable-gate epic part B): the live cached agent mode (reflects
+    /// runtime forcing — a headless CLI run forces Auto even when nothing
+    /// has changed the persisted session row) beats the DB row, which beats
+    /// the context snapshot taken when this extension was built.
+    async fn current_session_mode(&self) -> GooseMode {
+        let session = match self.context.session.as_ref() {
+            Some(s) => s,
+            None => return GooseMode::default(),
+        };
+        let live_mode = match self.get_agent_manager().await {
+            Ok(manager) => manager.cached_agent_mode(&session.id).await,
+            Err(_) => None,
+        };
+        let db_mode = self
+            .context
+            .session_manager
+            .get_session(&session.id, false)
+            .await
+            .ok()
+            .map(|s| s.goose_mode);
+        inherited_sub_session_mode(live_mode, db_mode, Some(session.goose_mode))
     }
 
     /// Resolve the cheaper provider used for the roadmap decomposition pass
@@ -3641,7 +3786,7 @@ impl OrchestratorClient {
     ) -> Result<CallToolResult, String> {
         let args = arguments.ok_or("Missing arguments")?;
         let objective = extract_string(&args, "objective")?;
-        let id_or_slug = extract_string(&args, "project_id_or_slug")?;
+        let requested_id_or_slug = args.get("project_id_or_slug").and_then(|v| v.as_str());
 
         let pool = self
             .context
@@ -3650,9 +3795,13 @@ impl OrchestratorClient {
             .await
             .map_err(|e| e.to_string())?;
 
-        let project = crate::projects::get_project_by_id_or_slug(&pool, &id_or_slug)
-            .await?
-            .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?;
+        let working_dir = self
+            .context
+            .session
+            .as_ref()
+            .map(|s| s.working_dir.as_path());
+        let (project, project_defaulted) =
+            resolve_decompose_project(&pool, working_dir, requested_id_or_slug).await?;
 
         let root_path = project.root_path.as_deref().unwrap_or("(not specified)");
 
@@ -3907,6 +4056,24 @@ impl OrchestratorClient {
             ));
         }
 
+        // R1 auto-launch approval (harness loop, Lane M2 Defect 1): the
+        // recipe's own contract promises "in unattended/auto mode, the
+        // operator's launch is approval to call create_roadmap immediately"
+        // — but no human exists in a headless GooseMode::Auto session to
+        // answer the Decision Inbox item above. Pre-answer that exact
+        // decision now, under a distinct actor that `create_roadmap`'s
+        // approval check accepts ONLY while the presenting session is
+        // itself Auto. Interactive Approve/Chat/SmartApprove sessions are
+        // untouched: the decision is left open, exactly as before.
+        let auto_launched = if self.current_session_mode().await == GooseMode::Auto {
+            crate::decisions::auto_approve_roadmap_launch(&pool, &approval.id)
+                .await
+                .map_err(|e| e.to_string())?;
+            true
+        } else {
+            false
+        };
+
         // Format the proposal for user review
         let mut output = format!(
             "Proposed roadmap for \"{}\" ({} goals, project: {}):\n",
@@ -3914,6 +4081,13 @@ impl OrchestratorClient {
             goals.len(),
             project.name
         );
+        if project_defaulted {
+            output.push_str(&format!(
+                "(No project_id_or_slug was given; resolved to project '{}' (slug '{}'). \
+                 Pass this slug explicitly to create_roadmap.)\n",
+                project.name, project.slug
+            ));
+        }
 
         for &idx in &order {
             let g = &goals[idx];
@@ -3941,16 +4115,31 @@ impl OrchestratorClient {
             ));
         }
 
-        output.push_str(&format!(
-            "\nShall I create these as goal cards and begin execution? \
-             You can also ask me to add, remove, or modify goals.\n\n\
-             To approve, call create_roadmap with the goals JSON below and this \
-             proposal_hash and approval_decision_id returned here (both are required; \
-             approval must be answered in the Decision Inbox):\n\nproposal_hash: {}\napproval_decision_id: {}\ngoals_json:\n{}",
-            proposal_hash,
-            approval.id,
-            serde_json::to_string(&goals).unwrap_or_default()
-        ));
+        if auto_launched {
+            output.push_str(&format!(
+                "\nThis is an unattended auto-mode launch: the operator's launch is your \
+                 approval, so this exact roadmap is already pre-approved (Decision Inbox item \
+                 {} was auto-answered, actor '{}'). Call create_roadmap NOW with the goals JSON \
+                 below and this proposal_hash and approval_decision_id -- no further approval \
+                 step is needed or possible in this mode:\n\nproposal_hash: {}\napproval_decision_id: {}\ngoals_json:\n{}",
+                approval.id,
+                crate::decisions::ACTOR_AUTO_LAUNCH,
+                proposal_hash,
+                approval.id,
+                serde_json::to_string(&goals).unwrap_or_default()
+            ));
+        } else {
+            output.push_str(&format!(
+                "\nShall I create these as goal cards and begin execution? \
+                 You can also ask me to add, remove, or modify goals.\n\n\
+                 To approve, call create_roadmap with the goals JSON below and this \
+                 proposal_hash and approval_decision_id returned here (both are required; \
+                 approval must be answered in the Decision Inbox):\n\nproposal_hash: {}\napproval_decision_id: {}\ngoals_json:\n{}",
+                proposal_hash,
+                approval.id,
+                serde_json::to_string(&goals).unwrap_or_default()
+            ));
+        }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
@@ -3995,6 +4184,7 @@ impl OrchestratorClient {
             .session
             .as_ref()
             .and_then(|session| crate::session::budget_task_id(&session.extension_data));
+        let session_mode = self.current_session_mode().await;
         let materialized = materialize_roadmap_transaction_with_budget(
             &pool,
             &project.id,
@@ -4004,6 +4194,7 @@ impl OrchestratorClient {
             &approval_decision_id,
             None,
             budget_task_id.as_deref(),
+            session_mode,
         )
         .await?;
 
@@ -11301,6 +11492,347 @@ mod tests {
         (hash, decision.id)
     }
 
+    // ── R1: auto-mode launch roadmap approval (harness loop, Lane M2 Defect 1) ──
+
+    fn two_goal_roadmap(prefix: &str) -> Vec<goal_state::ProposedGoal> {
+        vec![
+            goal_state::ProposedGoal {
+                title: format!("{prefix} A"),
+                description: "first".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![],
+            },
+            goal_state::ProposedGoal {
+                title: format!("{prefix} B"),
+                description: "second".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![0],
+            },
+        ]
+    }
+
+    /// Same shape as `install_answered_roadmap_proof`, but the decision is
+    /// answered by an unattended auto-mode launch (`ACTOR_AUTO_LAUNCH`)
+    /// rather than a human -- exactly what `handle_decompose_roadmap` does
+    /// when the calling session is `GooseMode::Auto`.
+    async fn install_auto_launch_roadmap_proof(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        project_id: &str,
+        goals: &[goal_state::ProposedGoal],
+    ) -> (String, String) {
+        let hash = roadmap_proposal_hash(goals);
+        let decision = crate::decisions::create_decision(
+            pool,
+            crate::decisions::NewDecision {
+                kind: "choice".to_string(),
+                project_id: Some(project_id.to_string()),
+                headline: Some("Approve this roadmap?".to_string()),
+                detail: Some("Approve exact roadmap".to_string()),
+                payload: serde_json::json!({
+                    "question": "Create this exact roadmap?",
+                    "options": [
+                        {"id": "approve-roadmap", "label": "Approve and begin"},
+                        {"id": "reject-roadmap", "label": "Reject"}
+                    ],
+                    "proposal": crate::decisions::PROPOSAL_ROADMAP_CREATE,
+                    "roadmap_approval": {"proposal_hash": hash}
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::decisions::auto_approve_roadmap_launch(pool, &decision.id)
+            .await
+            .unwrap();
+
+        let project = crate::projects::get_project(pool, project_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut metadata = project.metadata_json;
+        metadata.as_object_mut().unwrap().insert(
+            ROADMAP_PROPOSAL_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "hash": hash,
+                "goal_count": goals.len(),
+                "approval_decision_id": decision.id,
+            }),
+        );
+        crate::projects::update_project(
+            pool,
+            project_id,
+            crate::projects::UpdateProject {
+                metadata_json: Some(metadata),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        (hash, decision.id)
+    }
+
+    /// Same shape, but the decision is left OPEN/unanswered -- what
+    /// `decompose_roadmap` leaves behind for a session that is NOT Auto (an
+    /// interactive Approve/Chat session genuinely waiting on a human).
+    async fn install_pending_roadmap_proof(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        project_id: &str,
+        goals: &[goal_state::ProposedGoal],
+    ) -> (String, String) {
+        let hash = roadmap_proposal_hash(goals);
+        let decision = crate::decisions::create_decision(
+            pool,
+            crate::decisions::NewDecision {
+                kind: "choice".to_string(),
+                project_id: Some(project_id.to_string()),
+                headline: Some("Approve this roadmap?".to_string()),
+                detail: Some("Approve exact roadmap".to_string()),
+                payload: serde_json::json!({
+                    "question": "Create this exact roadmap?",
+                    "options": [
+                        {"id": "approve-roadmap", "label": "Approve and begin"},
+                        {"id": "reject-roadmap", "label": "Reject"}
+                    ],
+                    "proposal": crate::decisions::PROPOSAL_ROADMAP_CREATE,
+                    "roadmap_approval": {"proposal_hash": hash}
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let project = crate::projects::get_project(pool, project_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut metadata = project.metadata_json;
+        metadata.as_object_mut().unwrap().insert(
+            ROADMAP_PROPOSAL_METADATA_KEY.to_string(),
+            serde_json::json!({
+                "hash": hash,
+                "goal_count": goals.len(),
+                "approval_decision_id": decision.id,
+            }),
+        );
+        crate::projects::update_project(
+            pool,
+            project_id,
+            crate::projects::UpdateProject {
+                metadata_json: Some(metadata),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        (hash, decision.id)
+    }
+
+    /// (a) An Auto-mode launch creates the roadmap with no human ever
+    /// answering the Decision Inbox -- the harness loop's headline defect
+    /// (HARNESS_LOOP_LOG.md Lane M2: `create_roadmap` called 0x in 9/10 FAIL
+    /// transcripts because nothing ever answers the decision headlessly).
+    #[tokio::test]
+    async fn auto_launch_session_creates_roadmap_with_no_human_answer() {
+        let pool = test_pool().await;
+        let goals = two_goal_roadmap("Auto");
+        let (hash, decision_id) =
+            install_auto_launch_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
+                .await;
+        let acted_by: String = sqlx::query_scalar("SELECT acted_by FROM decisions WHERE id = ?")
+            .bind(&decision_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            acted_by,
+            crate::decisions::ACTOR_AUTO_LAUNCH,
+            "no human answered this decision"
+        );
+
+        let order = goal_state::topological_order(&goals).unwrap();
+        let materialized = materialize_roadmap_transaction(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            None,
+            GooseMode::Auto,
+        )
+        .await
+        .expect("an Auto-mode launch must be able to create its own pre-approved roadmap");
+        assert_eq!(materialized.created_ids.len(), 2);
+    }
+
+    /// (b) An interactive Approve-mode session gets no auto-answer at all:
+    /// `decompose_roadmap` never calls `auto_approve_roadmap_launch` outside
+    /// Auto mode, so the decision is left open exactly as before the fix,
+    /// and `create_roadmap` fails with the SAME message it always has.
+    #[tokio::test]
+    async fn approve_mode_session_still_requires_a_human_answer() {
+        let pool = test_pool().await;
+        let goals = two_goal_roadmap("Approve");
+        let (hash, decision_id) =
+            install_pending_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
+                .await;
+        let order = goal_state::topological_order(&goals).unwrap();
+        let err = materialize_roadmap_transaction(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            None,
+            GooseMode::Approve,
+        )
+        .await
+        .expect_err("an unanswered decision must never create a roadmap, in any mode");
+        assert_eq!(
+            err,
+            "Roadmap creation requires an answered Decision Inbox approval by the user"
+        );
+    }
+
+    /// (c) Adversarial case: a decision auto-answered by an Auto-mode launch
+    /// must NOT be consumable by a session presenting it in Approve mode,
+    /// even though the decision itself is genuinely "answered" with the
+    /// right choice and hash -- otherwise a forged-in-auto-then-used-in-
+    /// approve replay would defeat the human gate entirely.
+    #[tokio::test]
+    async fn auto_launch_answer_is_rejected_when_presented_by_an_approve_session() {
+        let pool = test_pool().await;
+        let goals = two_goal_roadmap("Cross-mode");
+        let (hash, decision_id) =
+            install_auto_launch_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
+                .await;
+        let order = goal_state::topological_order(&goals).unwrap();
+        let err = materialize_roadmap_transaction(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            None,
+            GooseMode::Approve,
+        )
+        .await
+        .expect_err("an auto-launch answer must never be usable by a non-Auto session");
+        assert_eq!(
+            err,
+            "Roadmap creation requires an answered Decision Inbox approval by the user"
+        );
+
+        // A rejected attempt must not consume the single-use proof, so a
+        // later legitimate Auto attempt can still succeed.
+        let project = crate::projects::get_project(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            project.metadata_json[ROADMAP_PROPOSAL_METADATA_KEY]["hash"],
+            hash
+        );
+    }
+
+    /// (d) Replay: once an Auto-mode roadmap has been created, the exact
+    /// same proposal/decision can never be consumed a second time.
+    #[tokio::test]
+    async fn auto_launch_roadmap_cannot_be_replayed_after_consumption() {
+        let pool = test_pool().await;
+        let goals = two_goal_roadmap("Replay");
+        let (hash, decision_id) =
+            install_auto_launch_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
+                .await;
+        let order = goal_state::topological_order(&goals).unwrap();
+        materialize_roadmap_transaction(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            None,
+            GooseMode::Auto,
+        )
+        .await
+        .expect("first Auto-mode creation must succeed");
+
+        let replay = materialize_roadmap_transaction(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            None,
+            GooseMode::Auto,
+        )
+        .await
+        .expect_err("the same auto-launch proposal must be single-use");
+        assert!(
+            replay.contains("single-use") || replay.contains("Run decompose_roadmap again"),
+            "unexpected replay error: {replay}"
+        );
+
+        let cards: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cards WHERE project_id = ? AND card_type = 'goal'",
+        )
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            cards, 2,
+            "replay must not create a second set of goal cards"
+        );
+    }
+
+    /// (e) Hash mismatch: an auto-launch proof for one exact goal set must
+    /// never validate a create_roadmap call carrying a different hash.
+    #[tokio::test]
+    async fn auto_launch_proof_rejects_a_mismatched_hash() {
+        let pool = test_pool().await;
+        let goals = two_goal_roadmap("Hash");
+        let (hash, decision_id) =
+            install_auto_launch_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
+                .await;
+        let order = goal_state::topological_order(&goals).unwrap();
+        let wrong_hash = "0".repeat(hash.len());
+        assert_ne!(hash, wrong_hash);
+        let err = materialize_roadmap_transaction(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &wrong_hash,
+            &decision_id,
+            None,
+            GooseMode::Auto,
+        )
+        .await
+        .expect_err("a mismatched hash must never be accepted, auto-launch or not");
+        assert!(
+            err.contains("does not match the latest pending proposal"),
+            "unexpected hash-mismatch error: {err}"
+        );
+
+        let project = crate::projects::get_project(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            project.metadata_json[ROADMAP_PROPOSAL_METADATA_KEY]["hash"], hash,
+            "a rejected mismatch must not consume the real proof"
+        );
+    }
+
     #[tokio::test]
     async fn roadmap_materialization_failure_rolls_back_proof_and_cards() {
         let pool = test_pool().await;
@@ -11332,6 +11864,7 @@ mod tests {
             &hash,
             &decision_id,
             Some(1),
+            GooseMode::Approve,
         )
         .await
         .expect_err("injected failure must abort materialization");
@@ -11387,6 +11920,7 @@ mod tests {
             &hash,
             &decision_id,
             None,
+            GooseMode::Approve,
         );
         let right = materialize_roadmap_transaction(
             &pool,
@@ -11396,6 +11930,7 @@ mod tests {
             &hash,
             &decision_id,
             None,
+            GooseMode::Approve,
         );
         let (a, b) = tokio::join!(left, right);
         assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
@@ -11441,6 +11976,7 @@ mod tests {
             &decision_id,
             None,
             Some("approving-task"),
+            GooseMode::Approve,
         )
         .await
         .unwrap();
@@ -11579,6 +12115,7 @@ mod tests {
             &hash,
             &decision.id,
             None,
+            GooseMode::Approve,
         )
         .await
         .expect_err("cross-project approval must be rejected");
@@ -11590,6 +12127,96 @@ mod tests {
         assert_eq!(
             project.metadata_json[ROADMAP_PROPOSAL_METADATA_KEY]["hash"],
             hash
+        );
+    }
+
+    // ── R2: decompose_roadmap project discovery (harness loop, Lane M2 Defect 2) ──
+
+    #[tokio::test]
+    async fn decompose_project_resolution_defaults_to_personal_when_omitted() {
+        let pool = test_pool().await;
+        let (project, defaulted) = resolve_decompose_project(&pool, None, None).await.unwrap();
+        assert_eq!(project.id, crate::projects::PERSONAL_PROJECT_ID);
+        assert!(
+            defaulted,
+            "an omitted project must be reported as defaulted"
+        );
+    }
+
+    #[tokio::test]
+    async fn decompose_project_resolution_prefers_the_working_directory_project() {
+        let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Workspace Project".to_string(),
+                root_path: Some(root.to_str().unwrap().to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let working_dir = root.join("src");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        let (resolved, defaulted) =
+            resolve_decompose_project(&pool, Some(working_dir.as_path()), None)
+                .await
+                .unwrap();
+        assert_eq!(resolved.id, project.id);
+        assert!(defaulted);
+    }
+
+    #[tokio::test]
+    async fn decompose_project_resolution_bad_slug_lists_available_slugs() {
+        let pool = test_pool().await;
+        crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "GetLadle".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let err = resolve_decompose_project(&pool, None, Some("workspace"))
+            .await
+            .expect_err("an unresolvable explicit slug must be a hard error");
+        assert!(err.contains("workspace"));
+        assert!(
+            err.contains("personal"),
+            "error must list the resolvable default slug: {err}"
+        );
+        assert!(
+            err.contains("getladle"),
+            "error must list every registered slug: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn decompose_project_resolution_honors_an_explicit_resolvable_slug() {
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Explicit Target".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (resolved, defaulted) =
+            resolve_decompose_project(&pool, None, Some(project.slug.as_str()))
+                .await
+                .unwrap();
+        assert_eq!(resolved.id, project.id);
+        assert!(
+            !defaulted,
+            "an explicit resolvable slug must not be reported as defaulted"
         );
     }
 

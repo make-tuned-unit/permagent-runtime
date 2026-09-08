@@ -1254,6 +1254,20 @@ impl SummonClient {
         }
     }
 
+    // DAG-enforcement gap recorded, not fixed (harness loop R3,
+    // HARNESS_LOOP_LOG.md "Lane M2 report" Defect 3): `delegate` dispatches a
+    // real subagent unconditionally -- it does not require, and cannot
+    // check, an approved `orchestrator` roadmap node the way
+    // `create_roadmap` requires an answered Decision Inbox approval (see
+    // `orchestrator::handle_create_roadmap`). A coordinator that gives up on
+    // the roadmap pipeline can call this directly and it will dispatch real,
+    // unreviewed work -- observed live in Lane M2's one PASS
+    // (`harness-editapply-duplicate-discount-blocks`): 7 failed
+    // `decompose_roadmap` attempts, one denied direct `edit`, then
+    // `delegate source: codex` succeeded immediately with no roadmap ever
+    // created. Whether `delegate` should also require an approved roadmap
+    // node, or stays a deliberate escape hatch for mechanical sub-tasks, is
+    // a design decision for Jesse -- not picked unilaterally here.
     async fn handle_delegate(
         &self,
         session_id: &str,

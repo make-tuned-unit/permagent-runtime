@@ -23,6 +23,27 @@ pub const ACTOR_JESSE: &str = "jesse";
 pub const ACTOR_HENRY: &str = "henry-policy";
 pub const ACTOR_SYSTEM: &str = "system";
 
+/// Attribution for a `roadmap_create` choice decision that was answered
+/// automatically because the calling session is an unattended
+/// `GooseMode::Auto` launch, not a human (harness R1 repair,
+/// HARNESS_LOOP_LOG.md "Lane M2 report" Defect 1). The coding-harness
+/// recipe's own contract says "in unattended/auto mode, the operator's
+/// launch is approval to call `create_roadmap` immediately" — but no human
+/// exists in a headless session to answer the Decision Inbox item the
+/// approval gate requires, so `create_roadmap` could never succeed there.
+///
+/// This actor is deliberately NOT in [`VALID_ACTORS`]: it must never be
+/// usable through the general [`answer_decision`]/[`answer_decision_as_session`]
+/// family (the chat `answer_decisions` tool, an HTTP principal, etc), only
+/// through the single-purpose [`auto_approve_roadmap_launch`] below, which is
+/// itself scoped to `roadmap_create` choice decisions only. The consumer of
+/// this attribution (`materialize_roadmap_transaction_with_budget` in
+/// `orchestrator.rs`) accepts it only when the session calling
+/// `create_roadmap` is *itself* running `GooseMode::Auto` at that moment —
+/// so a decision auto-answered inside one Auto session can never be replayed
+/// or presented for consumption by an interactive Approve/Chat session.
+pub const ACTOR_AUTO_LAUNCH: &str = "auto-mode-launch";
+
 const VALID_ACTORS: &[&str] = &[ACTOR_JESSE, ACTOR_HENRY, ACTOR_SYSTEM];
 // `edit` = approve-with-edits: an acceptance that ALSO carries a revised draft
 // in `answer_input` (the original lives in `payload.draft`). The delta is
@@ -2206,6 +2227,141 @@ pub async fn answer_decision_as_session(
     .await
 }
 
+/// Auto-answer a JUST-CREATED `roadmap_create` choice decision on behalf of
+/// an unattended `GooseMode::Auto` launch (harness R1 repair). Deliberately a
+/// separate, narrower code path from [`answer_decision_as_session`] and the
+/// rest of the `answer_decision*` family — it does not touch [`VALID_ACTORS`]
+/// or the tier gate those share, so [`ACTOR_AUTO_LAUNCH`] remains permanently
+/// unusable through the general answer path (the chat `answer_decisions`
+/// tool, any HTTP principal). This function:
+///   - only accepts a `choice` decision whose payload names
+///     [`PROPOSAL_ROADMAP_CREATE`] and offers an `approve-roadmap` option;
+///   - only accepts a decision that is still `open` (no re-answering);
+///   - always answers `choice` / `approve-roadmap`, always attributes to
+///     [`ACTOR_AUTO_LAUNCH`] — there is no caller-supplied answer or actor to
+///     forge.
+///
+/// The caller (`handle_decompose_roadmap` in `orchestrator.rs`) must check
+/// the calling session's `GooseMode` is `Auto` before calling this at all;
+/// `create_roadmap`'s consumer independently re-checks that the session
+/// *presenting* an `ACTOR_AUTO_LAUNCH`-answered decision for consumption is
+/// itself running `GooseMode::Auto` at that moment, so an auto-launch answer
+/// minted in one Auto session can never be replayed by, or handed to, an
+/// interactive Approve/Chat session.
+pub async fn auto_approve_roadmap_launch(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+) -> Result<(Decision, DecisionProof), AnswerError> {
+    let decision = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+    if decision.status != "open" {
+        return Err(AnswerError::AlreadyResolved(decision.status));
+    }
+    if decision.kind != "choice" {
+        return Err(AnswerError::Invalid(
+            "auto-launch approval only applies to 'choice' decisions".to_string(),
+        ));
+    }
+    let payload: ChoicePayload = serde_json::from_value(decision.payload.clone())
+        .map_err(|e| AnswerError::Db(format!("stored choice payload unreadable: {}", e)))?;
+    if payload.proposal.as_deref() != Some(PROPOSAL_ROADMAP_CREATE) {
+        return Err(AnswerError::Invalid(
+            "auto-launch approval only applies to roadmap_create proposals".to_string(),
+        ));
+    }
+    if !payload.options.iter().any(|o| o.id == "approve-roadmap") {
+        return Err(AnswerError::Invalid(
+            "decision does not offer an 'approve-roadmap' option".to_string(),
+        ));
+    }
+
+    let resolved_at = now_timestamp();
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    // Atomic open -> answered, same shape as answer_decision_inner's update:
+    // zero rows affected means we lost a race (e.g. a human answered first).
+    let result = sqlx::query(
+        "UPDATE decisions SET status = 'answered', answer = 'choice', answer_note = ?, \
+         answer_choice_id = 'approve-roadmap', answer_input = NULL, acted_by = ?, resolved_at = ?, \
+         staged_answer_json = NULL \
+         WHERE id = ? AND status = 'open'",
+    )
+    .bind("Pre-approved: unattended auto-mode launch")
+    .bind(ACTOR_AUTO_LAUNCH)
+    .bind(&resolved_at)
+    .bind(decision_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AnswerError::Db(e.to_string()))?;
+    if result.rows_affected() == 0 {
+        return Err(AnswerError::AlreadyResolved("answered".to_string()));
+    }
+
+    append_audit_tx_with_principal(
+        &mut tx,
+        decision_id,
+        decision.goal_id.as_deref(),
+        ACTOR_AUTO_LAUNCH,
+        decision.tier,
+        "choice",
+        decision
+            .payload
+            .get("evidence_digest")
+            .and_then(|v| v.as_str()),
+        None,
+    )
+    .await
+    .map_err(AnswerError::Db)?;
+
+    if let Some(claim_key) = effect_outbox_claim_key(decision_id, &decision.kind) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO effect_outbox
+             (id, claim_key, kind, decision_id, payload_json, status)
+             VALUES (?, ?, ?, ?, '{}', 'pending')",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(claim_key)
+        .bind(&decision.kind)
+        .bind(decision_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    crate::events::emit(crate::events::decision_resolved(
+        decision_id,
+        &decision.kind,
+        "choice",
+        ACTOR_AUTO_LAUNCH,
+        decision.tier,
+    ));
+
+    let updated = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+
+    let proof = DecisionProof {
+        decision_id: decision_id.to_string(),
+        kind: decision.kind.clone(),
+        goal_id: decision.goal_id.clone(),
+        tier: decision.tier,
+        answer: "choice".to_string(),
+        acted_by: ACTOR_AUTO_LAUNCH.to_string(),
+    };
+
+    Ok((updated, proof))
+}
+
 /// Does `haystack` mention `needle` anywhere as a string, key, or substring of
 /// a string? Decision payloads are free-form JSON — a session id can appear as
 /// `worker_session_id`, inside a `run_id`, or embedded in a rendered evidence
@@ -3540,6 +3696,127 @@ mod tests {
         assert_eq!(answered.status, "answered");
         assert_eq!(proof.acted_by(), ACTOR_JESSE);
         assert_eq!(proof.tier(), 2);
+    }
+
+    // ── R1: auto-mode launch roadmap approval (harness loop) ──
+
+    fn roadmap_choice_decision(project_id: &str, hash: &str) -> NewDecision {
+        NewDecision {
+            kind: "choice".to_string(),
+            project_id: Some(project_id.to_string()),
+            headline: Some("Approve this roadmap?".to_string()),
+            detail: Some("Approve exact roadmap".to_string()),
+            payload: serde_json::json!({
+                "question": "Create this exact roadmap?",
+                "options": [
+                    {"id": "approve-roadmap", "label": "Approve and begin"},
+                    {"id": "reject-roadmap", "label": "Reject"}
+                ],
+                "proposal": PROPOSAL_ROADMAP_CREATE,
+                "roadmap_approval": {"proposal_hash": hash}
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_approve_roadmap_launch_answers_a_pending_proposal_unattended() {
+        let pool = test_pool().await;
+        let d = create_decision(
+            &pool,
+            roadmap_choice_decision(PERSONAL_PROJECT_ID, "deadbeef"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(d.status, "open");
+        assert!(
+            d.acted_by.is_none(),
+            "no one has answered this decision yet"
+        );
+
+        let (answered, proof) = auto_approve_roadmap_launch(&pool, &d.id).await.unwrap();
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.answer.as_deref(), Some("choice"));
+        assert_eq!(
+            answered.answer_choice_id.as_deref(),
+            Some("approve-roadmap")
+        );
+        assert_eq!(
+            answered.acted_by.as_deref(),
+            Some(ACTOR_AUTO_LAUNCH),
+            "auto-launch approval must attribute to the auto-launch actor, never a human"
+        );
+        assert_eq!(proof.acted_by(), ACTOR_AUTO_LAUNCH);
+        assert_eq!(proof.answer(), "choice");
+    }
+
+    #[tokio::test]
+    async fn auto_approve_roadmap_launch_is_scoped_to_roadmap_create_choices_only() {
+        let pool = test_pool().await;
+        // Not a 'choice' decision at all.
+        let d = create_decision(&pool, valid_unblock()).await.unwrap();
+        let err = auto_approve_roadmap_launch(&pool, &d.id).await.unwrap_err();
+        assert!(matches!(err, AnswerError::Invalid(_)));
+
+        // A 'choice' decision that isn't a roadmap_create proposal.
+        let other_choice = NewDecision {
+            kind: "choice".to_string(),
+            project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+            headline: Some("Pick a color".to_string()),
+            detail: Some("Just a plain choice".to_string()),
+            payload: serde_json::json!({
+                "question": "Which color?",
+                "options": [
+                    {"id": "red", "label": "Red"},
+                    {"id": "blue", "label": "Blue"}
+                ]
+            }),
+            ..Default::default()
+        };
+        let d = create_decision(&pool, other_choice).await.unwrap();
+        let err = auto_approve_roadmap_launch(&pool, &d.id).await.unwrap_err();
+        assert!(matches!(err, AnswerError::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn auto_approve_roadmap_launch_cannot_answer_an_already_resolved_decision() {
+        let pool = test_pool().await;
+        let d = create_decision(
+            &pool,
+            roadmap_choice_decision(PERSONAL_PROJECT_ID, "deadbeef"),
+        )
+        .await
+        .unwrap();
+        auto_approve_roadmap_launch(&pool, &d.id).await.unwrap();
+        let err = auto_approve_roadmap_launch(&pool, &d.id).await.unwrap_err();
+        assert!(matches!(err, AnswerError::AlreadyResolved(_)));
+    }
+
+    /// Defense in depth: ACTOR_AUTO_LAUNCH must remain permanently unusable
+    /// through the general answer path (the chat `answer_decisions` tool, any
+    /// HTTP principal) -- only `auto_approve_roadmap_launch` may mint it.
+    #[tokio::test]
+    async fn actor_auto_launch_is_rejected_by_the_general_answer_path() {
+        let pool = test_pool().await;
+        let d = create_decision(
+            &pool,
+            roadmap_choice_decision(PERSONAL_PROJECT_ID, "deadbeef"),
+        )
+        .await
+        .unwrap();
+        let ans = DecisionAnswer {
+            answer: "choice".to_string(),
+            choice_id: Some("approve-roadmap".to_string()),
+            ..Default::default()
+        };
+        let err = answer_decision(&pool, &d.id, &ans, ACTOR_AUTO_LAUNCH)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AnswerError::Invalid(_)),
+            "ACTOR_AUTO_LAUNCH must not be a valid actor for the general answer path: {:?}",
+            err
+        );
     }
 
     #[tokio::test]
