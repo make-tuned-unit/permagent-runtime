@@ -1008,7 +1008,9 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
                    security, performance, spec-fit, and test-integrity (were tests weakened or \
                    deleted to pass?). You are READ-ONLY: read and analyze, never edit. Default \
                    to reject — if you cannot confidently sign off, the verdict is UNCERTAIN, \
-                   not APPROVE"
+                   not APPROVE. A suggestion outside the task's own stated scope is a non-blocking \
+                   NOTE — never grounds for REQUEST_CHANGES; you are checking whether THIS diff \
+                   does what was asked, not proposing more work"
                 .to_string(),
             // `review` derives WorkflowRole::Review (cost_router::role_map::derive_role), so a
             // configured REVIEW role→model routes this delegate to a DIFFERENT-family model;
@@ -1596,6 +1598,16 @@ workers:
             reviewer.routing_role(),
             Some(crate::cost_router::WorkflowRole::Review),
             "the reviewer must route to the Review role for cross-vendor dispatch"
+        );
+        // E6: an out-of-scope suggestion is a non-blocking NOTE, never a
+        // REQUEST_CHANGES — pinned against Lane A's defect 2 (a reviewer
+        // suggesting an unrequested "discount larger than base" error case
+        // burned an entire turn budget on an already-solved, already-verified
+        // task).
+        assert!(
+            reviewer.role.contains("non-blocking"),
+            "the reviewer's mandate must say out-of-scope suggestions are non-blocking: {:?}",
+            reviewer.role
         );
 
         // Claude Code: external CLI, prompt token present, gated on the binary.

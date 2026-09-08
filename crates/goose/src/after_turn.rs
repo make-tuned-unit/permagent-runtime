@@ -388,6 +388,21 @@ impl ReviewerMandate {
             .unwrap_or(true)
     }
 
+    /// E1: is the pending diff trivial enough that the recipe's own contract
+    /// (`permagent-coding.yaml:88-91`, "skip trivial / test-only / docs-only /
+    /// formatting diffs") says to skip the mandate outright? Reads the
+    /// session's working dir to compute the actual `git diff`; the pure
+    /// decision is [`trivial_skip_reason_for_dir`], which a test drives
+    /// directly against a scratch repo.
+    async fn trivial_skip_reason(session_id: &str) -> Option<String> {
+        if !trivial_skip_enabled_by_env() {
+            return None;
+        }
+        let manager = crate::session::SessionManager::instance();
+        let session = manager.get_session(session_id, false).await.ok()?;
+        trivial_skip_reason_for_dir(&session.working_dir).await
+    }
+
     /// The live half: read this session's record for its author (provider,
     /// model) and working dir, size the pending change, then run the SAME
     /// reviewer selection + spend gate the goal path's `select_for_goal` /
@@ -443,6 +458,24 @@ impl ReviewerMandate {
             crate::cost_router::ReviewerSelection::Reviewer(pick) => pick,
         };
 
+        // E3: what the injected text will SAY, resolved through the same
+        // precedence the actual `delegate` dispatch uses — reusing `derived_map`
+        // (already fetched above) so this costs no extra probe, unlike calling
+        // `delegate_routing_live` a second time.
+        let author = worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str()));
+        let routing = crate::cost_router::delegate_routing(
+            Some(crate::cost_router::WorkflowRole::Review),
+            &derived_map,
+            None,
+            author,
+        );
+        let dispatch = crate::cost_router::reviewer_dispatch(
+            author.map(|(p, _)| p),
+            author.map(|(_, m)| m),
+            routing.role_model.clone(),
+        );
+        let actual_route = actual_reviewer_route(&dispatch, author);
+
         // Same-scope spend the goal path uses: the AUTHOR session's own running
         // cost against both ceilings (there is no separate "task" scope for an
         // interactive session, so — like `spend_for_goal` — one figure serves
@@ -451,7 +484,9 @@ impl ReviewerMandate {
         let cfg = crate::cost_router::budget::load_budget_config();
         let verdict = crate::cost_router::budget_verdict(spent, spent, &cfg);
         match crate::cost_router::reviewer_spend_gate(&pick, &verdict) {
-            crate::cost_router::SpendDecision::Allow => ReviewerAvailability::Ready(pick),
+            crate::cost_router::SpendDecision::Allow => {
+                ReviewerAvailability::Ready(pick, actual_route)
+            }
             // `reason` already names the refused reviewer (`reviewer_spend_gate`
             // formats it as "the reviewer (provider/model) has no published
             // price…" / the budget-band message) — nothing else to carry.
@@ -474,13 +509,60 @@ impl Default for ReviewerMandate {
 /// `reviewer_spend_gate`), so [`decide`] is exercised without a database.
 #[derive(Debug, Clone)]
 enum ReviewerAvailability {
-    /// A reviewer was chosen and its spend is allowed.
-    Ready(Box<crate::cost_router::ReviewerPick>),
+    /// A reviewer was chosen and its spend is allowed. Carries the pick
+    /// (capability/pricing) alongside what the delegate call will ACTUALLY
+    /// dispatch to (see [`ActualReviewerRoute`]) — two different resolutions,
+    /// because `select_reviewer` and `summon`'s dispatch precedence can (and,
+    /// per Lane A's ledger, reliably do) disagree.
+    Ready(Box<crate::cost_router::ReviewerPick>, ActualReviewerRoute),
     /// A reviewer was chosen but its spend must be refused (unpriced, or a
     /// Gate/Hard budget band) — never billed as free, never run anyway.
     SpendRefused { reason: String },
     /// No reviewer could be chosen at all (no cross-family model available).
     Unavailable { reason: String },
+}
+
+/// What the `delegate` call the mandate is about to inject will ACTUALLY
+/// route to — resolved through the IDENTICAL precedence
+/// `summon::resolve_provider` applies for `worker_persona: "reviewer"`
+/// (`cost_router::delegate_routing` + `cost_router::reviewer_dispatch`), not
+/// the independent `select_reviewer` pick used for capability/spend gating.
+///
+/// E3 / defect 1a: `select_reviewer` has no notion of `PERMAGENT_PACK_*`
+/// pins, so it can promise a genuinely cross-family model while the actual
+/// dispatch — which DOES honour a `PERMAGENT_PACK_HARD_*` pin, at a higher
+/// precedence than cross-family escalation (`delegate.rs`'s table, level 4
+/// over level 5) — lands the reviewer on the author's own family. Lane A's
+/// ledger showed this 3/3 times the reviewer actually ran. `same_family` is
+/// `true` whenever the real dispatch will not give an independent,
+/// different-family review — either because the resolved model shares the
+/// author's family, or because nothing routes it anywhere but the session
+/// model — so the injected text can say so plainly instead of promising
+/// independence it will not get.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActualReviewerRoute {
+    label: String,
+    same_family: bool,
+}
+
+/// Pure: derive the actual route from the delegate-side dispatch decision.
+/// Exercised directly by tests with a hand-built [`crate::cost_router::ReviewerDispatch`]
+/// so this never needs a database or a live pack-pin environment to pin the
+/// defect.
+fn actual_reviewer_route(
+    dispatch: &crate::cost_router::ReviewerDispatch,
+    author: Option<(&str, &str)>,
+) -> ActualReviewerRoute {
+    let label = match &dispatch.role_model {
+        Some(rm) => format!("{}/{}", rm.provider, rm.model),
+        None => author
+            .map(|(p, m)| format!("{p}/{m}"))
+            .unwrap_or_else(|| "your model".to_string()),
+    };
+    ActualReviewerRoute {
+        label,
+        same_family: dispatch.warning.is_some(),
+    }
 }
 
 /// Best-effort "how big is the pending change" signal for `select_reviewer`'s
@@ -521,6 +603,85 @@ fn parse_shortstat(text: &str) -> usize {
         }
     }
     total
+}
+
+/// E1 knob: whether the recipe's own trivial/docs-only/test-only/format-only
+/// review skip (`cost_router::review_required`) applies on this hook, the
+/// same way it already does on the goal-dispatch path
+/// (`goose-server::verification::review`). Default ON. A raw `std::env::var`
+/// read, not the `Config`/`get_param` house pattern used elsewhere in this
+/// file — deliberately, so an eval driver (`permagent-eval ab --knob`) can
+/// flip it per child process without touching global config precedence.
+pub const REVIEWER_MANDATE_SKIP_TRIVIAL_ENV: &str = "PERMAGENT_REVIEWER_MANDATE_SKIP_TRIVIAL";
+
+fn trivial_skip_enabled_by_env() -> bool {
+    match std::env::var(REVIEWER_MANDATE_SKIP_TRIVIAL_ENV) {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// Tracked + untracked paths changed relative to `HEAD` in `working_dir`'s
+/// repository — mirrors [`changed_lines`]'s discipline exactly: a git failure
+/// yields an empty list, which makes [`crate::cost_router::review_required`]
+/// answer `Review` (an empty path list looks like "no product source
+/// touched," which is also a skip — but an empty list only ever happens on a
+/// git error here, since a real trivial-or-skippable diff still names its own
+/// paths, so this never manufactures a false skip in practice; the
+/// leniency mirrors `changed_lines`' own worst-case of a weaker reviewer
+/// rather than a blocked one).
+async fn changed_paths(working_dir: &std::path::Path) -> Vec<String> {
+    let tracked = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(working_dir)
+        .args(["diff", "--name-only", "HEAD"])
+        .output()
+        .await;
+    let untracked = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(working_dir)
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .output()
+        .await;
+    let mut paths = Vec::new();
+    if let Ok(o) = &tracked {
+        if o.status.success() {
+            paths.extend(
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .map(str::to_string),
+            );
+        }
+    }
+    if let Ok(o) = &untracked {
+        if o.status.success() {
+            paths.extend(
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .map(str::to_string),
+            );
+        }
+    }
+    paths.retain(|p| !p.trim().is_empty());
+    paths
+}
+
+/// E1: the actual skip decision for a working directory — split out from
+/// [`ReviewerMandate::trivial_skip_reason`] so a unit test can drive it with a
+/// real scratch git repo instead of a live, database-backed session record.
+async fn trivial_skip_reason_for_dir(working_dir: &std::path::Path) -> Option<String> {
+    if !trivial_skip_enabled_by_env() {
+        return None;
+    }
+    let paths = changed_paths(working_dir).await;
+    let lines = changed_lines(working_dir).await;
+    match crate::cost_router::review_required(&paths, lines) {
+        crate::cost_router::ReviewTrigger::Skip { reason } => Some(reason),
+        crate::cost_router::ReviewTrigger::Review => None,
+    }
 }
 
 /// True when a `delegate` (or `*__delegate`) call carrying
@@ -587,6 +748,79 @@ fn is_reviewer_delegation(call: &rmcp::model::CallToolRequestParams) -> bool {
         .is_some_and(|p| p.eq_ignore_ascii_case("reviewer"))
 }
 
+/// What the LAST `delegate(worker_persona: "reviewer")` call after
+/// `after_position` actually came back with. E5 / defect 1b: Lane A observed a
+/// real, billed reviewer subagent call return a completely empty answer (or an
+/// error) — no verdict, approving or otherwise — which the mandate then
+/// treated identically to a genuine "reviewed and rejected" outcome and parked
+/// immediately. This distinguishes the two so an empty/errored call can be
+/// retried instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReviewerLastOutcome {
+    /// No `delegate(reviewer)` call at all after `after_position`.
+    NotCalled,
+    /// A call ran and returned real, non-empty content — whatever verdict it
+    /// carries (or fails to parse), something was actually reviewed.
+    Answered,
+    /// A call ran but its result was empty or an error: nothing was actually
+    /// reviewed despite the call happening.
+    Empty,
+}
+
+fn last_reviewer_outcome(messages: &[Message], after_position: usize) -> ReviewerLastOutcome {
+    use crate::conversation::message::MessageContent;
+    use std::collections::HashSet;
+
+    let mut index = 0usize;
+    let mut pending = HashSet::new();
+    let mut outcome = ReviewerLastOutcome::NotCalled;
+    for msg in messages {
+        for content in &msg.content {
+            index += 1;
+            if index <= after_position {
+                continue;
+            }
+            if let MessageContent::ToolRequest(req) = content {
+                if let Ok(call) = req.tool_call.as_ref() {
+                    if is_reviewer_delegation(call) {
+                        pending.insert(req.id.clone());
+                    }
+                }
+            } else if let MessageContent::ToolResponse(response) = content {
+                if !pending.remove(&response.id) {
+                    continue;
+                }
+                let is_empty = match response.tool_result.as_ref() {
+                    Ok(result) => {
+                        result.is_error == Some(true)
+                            || result
+                                .content
+                                .iter()
+                                .filter_map(|c| c.as_text().map(|t| t.text.trim().to_string()))
+                                .collect::<String>()
+                                .is_empty()
+                    }
+                    Err(_) => true,
+                };
+                outcome = if is_empty {
+                    ReviewerLastOutcome::Empty
+                } else {
+                    ReviewerLastOutcome::Answered
+                };
+            }
+        }
+    }
+    outcome
+}
+
+/// Injected when [`last_reviewer_outcome`] finds an empty/errored reviewer
+/// call: names the concrete problem (nothing was actually reviewed) and asks
+/// for exactly one thing, rather than repeating the full original ask.
+const REVIEWER_EMPTY_RETRY_TEXT: &str =
+    "The independent reviewer call returned no answer (an empty or errored response) — nothing \
+     was actually reviewed. Call the `delegate` tool again with `worker_persona: \"reviewer\"` \
+     and report its verdict before ending the turn.";
+
 /// True when this hook's own ask has already been injected after
 /// `after_position` — one ask per changed-files turn, whether or not the model
 /// obliged. Without this the hook would re-ask every time the model finished
@@ -615,15 +849,32 @@ fn reviewer_ask_pending(messages: &[Message], after_position: usize) -> bool {
 /// concrete reviewer, the tool, the persona, the data-fence format the recipe
 /// already specifies, and the strict verdict tokens — so the model has exactly
 /// what it needs to make the delegation in one shot.
-fn reviewer_inject_text(pick: &crate::cost_router::ReviewerPick) -> String {
+fn reviewer_inject_text(
+    pick: &crate::cost_router::ReviewerPick,
+    actual: &ActualReviewerRoute,
+) -> String {
     let warning = pick
         .warning
         .as_ref()
         .map(|w| format!("\n\nNote: {w}"))
         .unwrap_or_default();
+    // E3: say what the dispatch will ACTUALLY do, not what `select_reviewer`
+    // picked independently of the pack pin the dispatch honours.
+    let model_note = if actual.same_family {
+        format!(
+            "it will run on {label} — the same family as you, so this is not an \
+             independent, cross-family review",
+            label = actual.label
+        )
+    } else {
+        format!(
+            "it will run on {label}, a different model from yours",
+            label = actual.label
+        )
+    };
     format!(
         "{REVIEW_ASK_OPENING} Call the `delegate` tool now with `worker_persona: \"reviewer\"` \
-         (it will run on {label}, a different model from yours). Give it the task \
+         ({model_note}). Give it the task \
          spec, the diff, and the verify output, fenced exactly as the recipe \
          specifies:\n\
          BEGIN_TASK_SPEC\n<what was asked for>\nEND_TASK_SPEC\n\
@@ -631,42 +882,68 @@ fn reviewer_inject_text(pick: &crate::cost_router::ReviewerPick) -> String {
          BEGIN_VERIFY_OUTPUT\n<the verify output>\nEND_VERIFY_OUTPUT\n\
          Then report the reviewer's verdict — APPROVE, REQUEST_CHANGES, or \
          UNCERTAIN — before ending the turn. Do not end the turn until the \
-         reviewer has answered.{warning}",
-        label = pick.label(),
+         reviewer has answered.{warning}"
     )
+}
+
+/// Whether — and WHY — this hook considers itself already asked. Split out
+/// (E2) so the Park reason can be honest about which of the two applies: an
+/// ask that genuinely went out and got no APPROVE back, versus the shared
+/// hold-budget counter running out before this hook ever got to ask at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AskState {
+    /// The mandate's own [`REVIEW_ASK_OPENING`] text was found in the
+    /// conversation: a real ask went out.
+    Asked,
+    /// No ask was found, but the shared `prior_holds` counter is already at
+    /// its bound anyway (e.g. spent entirely by [`PrematureDoneGuard`] on
+    /// verify-fix cycles) — the loop must still stop, but the reviewer was
+    /// never actually consulted.
+    HoldBudgetExhausted,
+    /// Neither of the above: this turn has not been asked yet.
+    NotAsked,
 }
 
 /// Pure: what the mandate does once mutation/delegation/hold state and reviewer
 /// availability are already known. See [`ReviewerMandate::after_turn`] for the
 /// live gating order this mirrors — `mutated`, then `delegation_already_ran`,
-/// then `already_asked`, and ONLY THEN `availability`, so a turn that never
+/// then `ask_state`, and ONLY THEN `availability`, so a turn that never
 /// needed a reviewer (or already got one, or was already asked once) never has
 /// to have `availability` computed at all.
 fn decide(
     mutated: bool,
     reviewer_approved: bool,
-    already_asked: bool,
+    ask_state: AskState,
     availability: &ReviewerAvailability,
 ) -> AfterTurnAction {
     if !mutated || reviewer_approved {
         return AfterTurnAction::Allow;
     }
-    if already_asked {
-        return AfterTurnAction::Park {
+    match ask_state {
+        AskState::Asked => AfterTurnAction::Park {
             reason: format!(
                 "{REVIEW_PARK_PREFIX}the reviewer did not return a successful APPROVE verdict"
             ),
-        };
-    }
-    match availability {
-        ReviewerAvailability::Ready(pick) => AfterTurnAction::Continue {
-            inject: reviewer_inject_text(pick),
         },
-        ReviewerAvailability::SpendRefused { reason } => AfterTurnAction::Park {
-            reason: format!("{REVIEW_PARK_PREFIX}{reason}"),
+        // E2: honest about WHY the loop is stopping — the shared hold counter
+        // ran out, not a reviewer that answered and failed. Never claim a
+        // verdict that never came back.
+        AskState::HoldBudgetExhausted => AfterTurnAction::Park {
+            reason: format!(
+                "{REVIEW_PARK_PREFIX}the hold budget was exhausted before the reviewer could be \
+                 asked"
+            ),
         },
-        ReviewerAvailability::Unavailable { reason } => AfterTurnAction::Park {
-            reason: format!("{REVIEW_PARK_PREFIX}{reason}"),
+        AskState::NotAsked => match availability {
+            ReviewerAvailability::Ready(pick, actual) => AfterTurnAction::Continue {
+                inject: reviewer_inject_text(pick, actual),
+            },
+            ReviewerAvailability::SpendRefused { reason } => AfterTurnAction::Park {
+                reason: format!("{REVIEW_PARK_PREFIX}{reason}"),
+            },
+            ReviewerAvailability::Unavailable { reason } => AfterTurnAction::Park {
+                reason: format!("{REVIEW_PARK_PREFIX}{reason}"),
+            },
         },
     }
 }
@@ -702,19 +979,58 @@ impl AfterTurn for ReviewerMandate {
         }
 
         let reviewer_approved = reviewer_approved_after(ctx.messages, last_mutation);
+        if reviewer_approved {
+            return AfterTurnAction::Allow;
+        }
+
+        // E1: the recipe's own trivial/docs-only/test-only/format-only skip —
+        // previously enforced only on the goal-dispatch path
+        // (`goose-server::verification::review`), never here. Checked after
+        // `reviewer_approved` (an already-approved turn never needs it) and
+        // before everything else, so a trivial diff never pays for a reviewer
+        // pick or a `delegate` round-trip at all.
+        if let Some(reason) = Self::trivial_skip_reason(ctx.session_id).await {
+            tracing::info!(
+                session_id = %ctx.session_id,
+                "independent review skipped: {reason}"
+            );
+            return AfterTurnAction::Allow;
+        }
+
+        // E5: a `delegate(reviewer)` call that came back empty or errored
+        // asked nothing real — retry it, bounded by the same shared hold
+        // counter every other hook answers to, rather than treating "no
+        // answer" as a completed-but-failed review.
+        if last_reviewer_outcome(ctx.messages, last_mutation) == ReviewerLastOutcome::Empty {
+            return if ctx.prior_holds < crate::cost_router::MAX_HOLDS {
+                AfterTurnAction::Continue {
+                    inject: REVIEWER_EMPTY_RETRY_TEXT.to_string(),
+                }
+            } else {
+                AfterTurnAction::Park {
+                    reason: format!(
+                        "{REVIEW_PARK_PREFIX}the reviewer returned no answer and the hold \
+                         budget was exhausted before it could be asked again"
+                    ),
+                }
+            };
+        }
+
         // `prior_holds` is a shared, all-hooks counter and cannot answer "did I
         // already ask?" (see `REVIEW_ASK_OPENING`); it serves only as a hard
         // backstop against an unbounded loop if the injected ask ever stopped
         // being findable. 2, not 1, because the guard may legitimately have
         // spent one hold on verify before this hook ever ran.
-        let already_asked =
-            reviewer_ask_pending(ctx.messages, last_mutation) || ctx.prior_holds >= 2;
-        if reviewer_approved {
-            return AfterTurnAction::Allow;
-        }
+        let ask_state = if reviewer_ask_pending(ctx.messages, last_mutation) {
+            AskState::Asked
+        } else if ctx.prior_holds >= 2 {
+            AskState::HoldBudgetExhausted
+        } else {
+            AskState::NotAsked
+        };
 
         let availability = Self::assess(ctx.session_id).await;
-        decide(true, reviewer_approved, already_asked, &availability)
+        decide(true, reviewer_approved, ask_state, &availability)
     }
 }
 
@@ -1090,6 +1406,33 @@ mod tests {
         delegate_exchange_result(id, worker_persona, "APPROVE", true)
     }
 
+    /// A `delegate(worker_persona: reviewer)` call whose response carries NO
+    /// text content at all — `ok` controls whether it is a "successful" empty
+    /// response or an errored one; [`last_reviewer_outcome`] treats both as
+    /// [`ReviewerLastOutcome::Empty`]. Mirrors Lane A's live evidence: a real,
+    /// billed subagent call that returned nothing.
+    fn delegate_exchange_empty(id: &str, worker_persona: &str, ok: bool) -> Message {
+        let call = CallToolRequestParams::new("delegate".to_string()).with_arguments(
+            serde_json::Map::from_iter([(
+                "worker_persona".to_string(),
+                serde_json::Value::String(worker_persona.to_string()),
+            )]),
+        );
+        let result = if ok {
+            CallToolResult::success(vec![])
+        } else {
+            CallToolResult::error(vec![])
+        };
+        Message::new(
+            Role::Assistant,
+            0,
+            vec![
+                MessageContent::tool_request(id, Ok(call)),
+                MessageContent::tool_response(id, Ok(result)),
+            ],
+        )
+    }
+
     /// Two KB rows from different families — mirrors
     /// `cost_router::reviewer_pick`'s own test fixture so this suite never
     /// hard-codes a vendor.
@@ -1125,6 +1468,22 @@ mod tests {
             crate::cost_router::ReviewerSelection::Reviewer(p) => p,
             other => panic!("expected a reviewer, got {other:?}"),
         }
+    }
+
+    /// A neutral, cross-family `ActualReviewerRoute` for tests that only care
+    /// about the fixed parts of the injected text (E3 has its own dedicated
+    /// tests for the same-family wording).
+    fn cross_family_route(pick: &crate::cost_router::ReviewerPick) -> ActualReviewerRoute {
+        ActualReviewerRoute {
+            label: pick.label(),
+            same_family: false,
+        }
+    }
+
+    /// The route matching [`ready_pick`], for tests that need to reconstruct
+    /// the exact ask text [`ReviewerMandate::after_turn`] would have injected.
+    fn ready_route() -> ActualReviewerRoute {
+        cross_family_route(&ready_pick())
     }
 
     /// Case 1 — No mutating tool call → Allow, and no reviewer selection is
@@ -1171,8 +1530,9 @@ mod tests {
             crate::cost_router::ReviewerSelection::Reviewer(p) => p,
             other => panic!("expected a reviewer, got {other:?}"),
         };
-        let availability = ReviewerAvailability::Ready(pick);
-        match decide(true, false, false, &availability) {
+        let route = cross_family_route(&pick);
+        let availability = ReviewerAvailability::Ready(pick, route);
+        match decide(true, false, AskState::NotAsked, &availability) {
             AfterTurnAction::Continue { inject } => {
                 assert!(inject.contains("delegate"), "inject was {inject:?}");
                 let lower = inject.to_ascii_lowercase();
@@ -1219,7 +1579,7 @@ mod tests {
         let asked = vec![
             tool_exchange("developer__edit", "e1", true),
             tool_exchange("developer__verify", "v1", true),
-            Message::user().with_text(reviewer_inject_text(&ready_pick())),
+            Message::user().with_text(reviewer_inject_text(&ready_pick(), &ready_route())),
             Message::assistant().with_text("I would rather not."),
         ];
         assert!(matches!(
@@ -1239,11 +1599,14 @@ mod tests {
         ));
     }
 
+    /// A reviewer call that returned REAL content — just not an approval —
+    /// still parks once asked. (The is_error/empty case moved to the
+    /// dedicated E5 tests below: an errored or empty response is now
+    /// retried, not parked, because nothing was actually reviewed.)
     #[tokio::test]
     async fn failed_or_non_approving_reviewer_never_satisfies_the_mandate() {
         let mandate = ReviewerMandate::new();
         for review in [
-            delegate_exchange_result("d1", "reviewer", "APPROVE", false),
             delegate_exchange_result("d2", "reviewer", "REQUEST_CHANGES", true),
             delegate_exchange_result("d3", "reviewer", "UNCERTAIN", true),
             delegate_exchange_result("d4", "reviewer", "not a verdict", true),
@@ -1252,12 +1615,71 @@ mod tests {
                 tool_exchange("developer__edit", "e1", true),
                 tool_exchange("developer__verify", "v1", true),
                 review,
-                Message::user().with_text(reviewer_inject_text(&ready_pick())),
+                Message::user().with_text(reviewer_inject_text(&ready_pick(), &ready_route())),
             ];
             assert!(matches!(
                 mandate.after_turn(&ctx(&turn, 0)).await,
                 AfterTurnAction::Park { .. }
             ));
+        }
+    }
+
+    /// E5, pinned two ways: an empty/errored reviewer call is retried
+    /// (bounded), and only Parks — honestly — once the hold budget itself is
+    /// exhausted; it never claims a verdict came back when nothing was
+    /// actually reviewed.
+    ///
+    /// Before this repair, the failing assertion was:
+    /// `assert!(matches!(mandate.after_turn(&ctx(&turn, 0)).await, AfterTurnAction::Continue { .. }))`
+    /// — the old code treated ANY non-approving reviewer state (including a
+    /// genuinely empty/errored call) as "already asked" and Parked
+    /// immediately with "the reviewer did not return a successful APPROVE
+    /// verdict," even though no review had actually happened.
+    #[tokio::test]
+    async fn an_empty_reviewer_response_reopens_the_hold_instead_of_parking() {
+        let mandate = ReviewerMandate::new();
+        for empty in [
+            delegate_exchange_empty("d1", "reviewer", true), // success, but no content
+            delegate_exchange_empty("d2", "reviewer", false), // an error
+        ] {
+            let turn = vec![
+                tool_exchange("developer__edit", "e1", true),
+                tool_exchange("developer__verify", "v1", true),
+                empty,
+            ];
+            match mandate.after_turn(&ctx(&turn, 0)).await {
+                AfterTurnAction::Continue { inject } => {
+                    assert!(
+                        inject.to_ascii_lowercase().contains("no answer")
+                            || inject.to_ascii_lowercase().contains("empty"),
+                        "inject was {inject:?}"
+                    );
+                }
+                other => panic!("expected Continue (a bounded retry), got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_empty_reviewer_response_parks_honestly_once_the_hold_budget_is_exhausted() {
+        let mandate = ReviewerMandate::new();
+        let turn = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange("developer__verify", "v1", true),
+            delegate_exchange_empty("d1", "reviewer", true),
+        ];
+        match mandate
+            .after_turn(&ctx(&turn, crate::cost_router::MAX_HOLDS))
+            .await
+        {
+            AfterTurnAction::Park { reason } => {
+                assert!(reason.starts_with(REVIEW_PARK_PREFIX), "{reason:?}");
+                assert!(
+                    !reason.contains("did not return a successful APPROVE"),
+                    "reason must not claim a verdict came back: {reason:?}"
+                );
+            }
+            other => panic!("expected Park, got {other:?}"),
         }
     }
 
@@ -1304,7 +1726,7 @@ mod tests {
             other => panic!("expected Unavailable, got {other:?}"),
         };
         let availability = ReviewerAvailability::Unavailable { reason };
-        match decide(true, false, false, &availability) {
+        match decide(true, false, AskState::NotAsked, &availability) {
             AfterTurnAction::Park { reason } => {
                 assert!(
                     reason.starts_with(REVIEW_PARK_PREFIX),
@@ -1345,7 +1767,7 @@ mod tests {
         let availability = ReviewerAvailability::SpendRefused {
             reason: spend_reason,
         };
-        match decide(true, false, false, &availability) {
+        match decide(true, false, AskState::NotAsked, &availability) {
             AfterTurnAction::Park { reason } => {
                 assert!(reason.starts_with(REVIEW_PARK_PREFIX), "{reason:?}");
                 assert!(reason.contains("no published price"), "{reason:?}");
@@ -1373,5 +1795,211 @@ mod tests {
                 "unset means on — mandated review should not need a second opt-in"
             );
         }
+    }
+
+    // ── E1: honour the recipe's own trivial/docs/test/format-only skip ──────
+
+    /// A real scratch git repo, one commit deep — mirrors
+    /// `tool_monitor::inspector_flags_a_test_gaming_pass`'s pattern, since
+    /// [`trivial_skip_reason_for_dir`] shells out to `git` and cannot be
+    /// exercised without one.
+    fn scratch_git_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success());
+        };
+        git(&["-c", "init.defaultBranch=main", "init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        std::fs::write(dir.path().join("lib.rs"), "fn main() {}\n").unwrap();
+        git(&["add", "lib.rs"]);
+        git(&["commit", "--no-gpg-sign", "-qm", "init"]);
+        dir
+    }
+
+    /// Docs-only mutation + passing verify → the mandate must be skippable —
+    /// the recipe's own contract (`permagent-coding.yaml:88-91`).
+    ///
+    /// Before this repair, no such function existed: `ReviewerMandate::after_turn`
+    /// went straight from "edits verified" to `assess`/delegate for ANY
+    /// mutation, so a docs-only diff still asked for a reviewer. Pinned here
+    /// against the real `git`-backed helper rather than the DB-coupled
+    /// `after_turn`, per the task's own escape hatch.
+    #[tokio::test]
+    async fn trivial_skip_allows_a_docs_only_diff() {
+        let _g = env_lock::lock_env([(REVIEWER_MANDATE_SKIP_TRIVIAL_ENV, None::<&str>)]);
+        let repo = scratch_git_repo();
+        std::fs::write(
+            repo.path().join("NOTES.md"),
+            "one\ntwo\nthree\nfour\nfive\n",
+        )
+        .unwrap();
+        let reason = trivial_skip_reason_for_dir(repo.path()).await;
+        assert!(reason.is_some(), "a docs-only diff must be skippable");
+    }
+
+    /// ≤3 changed lines on a `.rs` file → skippable (`TRIVIAL_MAX_LINES`).
+    #[tokio::test]
+    async fn trivial_skip_allows_a_tiny_rust_diff() {
+        let _g = env_lock::lock_env([(REVIEWER_MANDATE_SKIP_TRIVIAL_ENV, None::<&str>)]);
+        let repo = scratch_git_repo();
+        std::fs::write(repo.path().join("lib.rs"), "fn main() {}\n// tiny\n").unwrap();
+        let reason = trivial_skip_reason_for_dir(repo.path()).await;
+        assert!(reason.is_some(), "a <=3-line rust diff must be skippable");
+    }
+
+    /// Regression guard: a substantive product-source diff must still require
+    /// review — the skip must never over-fire.
+    #[tokio::test]
+    async fn trivial_skip_still_requires_review_for_a_substantive_rust_diff() {
+        let _g = env_lock::lock_env([(REVIEWER_MANDATE_SKIP_TRIVIAL_ENV, None::<&str>)]);
+        let repo = scratch_git_repo();
+        let big: String = (0..20).map(|i| format!("// line {i}\n")).collect();
+        std::fs::write(repo.path().join("lib.rs"), format!("fn main() {{}}\n{big}")).unwrap();
+        let reason = trivial_skip_reason_for_dir(repo.path()).await;
+        assert!(
+            reason.is_none(),
+            "a substantive product-source diff must still require review, got {reason:?}"
+        );
+    }
+
+    /// The knob, off, restores the old always-review behaviour — the A/B
+    /// tool's escape hatch.
+    #[tokio::test]
+    async fn trivial_skip_knob_off_restores_old_behaviour() {
+        let _g = env_lock::lock_env([(REVIEWER_MANDATE_SKIP_TRIVIAL_ENV, Some("0"))]);
+        let repo = scratch_git_repo();
+        std::fs::write(
+            repo.path().join("NOTES.md"),
+            "one\ntwo\nthree\nfour\nfive\n",
+        )
+        .unwrap();
+        let reason = trivial_skip_reason_for_dir(repo.path()).await;
+        assert!(
+            reason.is_none(),
+            "the knob off must restore always-review behaviour, got {reason:?}"
+        );
+    }
+
+    // ── E2: honest Park reason when only the shared hold counter fired ──────
+
+    /// Before this repair, the failing assertion was:
+    /// `assert!(!reason.contains("did not return a successful APPROVE"))`
+    /// — `already_asked` collapsed "a real ask went unanswered" and "the
+    /// shared hold counter ran out before this hook ever asked" into the
+    /// same text, so a hold budget spent entirely by `PrematureDoneGuard` on
+    /// verify-fix cycles produced a false claim that a reviewer had answered
+    /// and failed.
+    #[tokio::test]
+    async fn hold_budget_exhausted_alone_parks_honestly_not_as_a_failed_review() {
+        let verified = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange("developer__verify", "v1", true),
+        ];
+        match ReviewerMandate::new()
+            .after_turn(&ctx(&verified, crate::cost_router::MAX_HOLDS))
+            .await
+        {
+            AfterTurnAction::Park { reason } => {
+                assert!(
+                    !reason.contains("did not return a successful APPROVE"),
+                    "reason was {reason:?}"
+                );
+                assert!(reason.contains("hold budget"), "reason was {reason:?}");
+            }
+            other => panic!("expected Park, got {other:?}"),
+        }
+    }
+
+    // ── E3: the injected text must not promise a model the dispatch won't use ──
+
+    /// Before this repair, `reviewer_inject_text` took only the `ReviewerPick`
+    /// from the INDEPENDENT `select_reviewer` and always said "a different
+    /// model from yours" — even when that pick's own provider/model are
+    /// identical to the author's, exactly the shape a `PERMAGENT_PACK_HARD_*`
+    /// pin to the author's own model produces at the real dispatch site
+    /// (3/3 in Lane A's ledger). The failing assertion against the OLD
+    /// single-argument signature was:
+    /// `assert!(!reviewer_inject_text(&same_family_pick).contains("a different model from yours"))`
+    /// — which failed because the old function had no way to know the pick
+    /// didn't match what would actually be dispatched.
+    #[test]
+    fn injected_text_admits_same_family_when_the_dispatch_will_share_it() {
+        let pick = ready_pick();
+        let same_family_route = ActualReviewerRoute {
+            label: "zai/glm-4.7".to_string(),
+            same_family: true,
+        };
+        let text = reviewer_inject_text(&pick, &same_family_route);
+        assert!(
+            !text.contains("a different model from yours"),
+            "text was {text:?}"
+        );
+        assert!(
+            text.to_ascii_lowercase().contains("same family"),
+            "text was {text:?}"
+        );
+    }
+
+    /// The honest case still reads as before: a genuinely different-family
+    /// route says so.
+    #[test]
+    fn injected_text_still_says_different_model_for_a_real_cross_family_route() {
+        let pick = ready_pick();
+        let route = cross_family_route(&pick);
+        let text = reviewer_inject_text(&pick, &route);
+        assert!(
+            text.contains("a different model from yours"),
+            "text was {text:?}"
+        );
+    }
+
+    /// Pins the actual resolution path (`delegate_routing` + `reviewer_dispatch`)
+    /// against a live `PERMAGENT_PACK_HARD_*` pin equal to the author's own
+    /// model — the exact shape observed 3/3 in Lane A's ledger — and confirms
+    /// [`actual_reviewer_route`] reports it honestly.
+    #[test]
+    fn actual_route_is_same_family_when_the_hard_pack_pins_the_authors_own_model() {
+        let author_provider = "zai";
+        let author_model = "glm-4.7";
+        let _g = env_lock::lock_env([
+            (
+                crate::cost_router::packs::KEY_HARD_PROVIDER,
+                Some(author_provider),
+            ),
+            (
+                crate::cost_router::packs::KEY_HARD_MODEL,
+                Some(author_model),
+            ),
+        ]);
+        let derived = crate::cost_router::DerivedRoleMap::empty();
+        let routing = crate::cost_router::delegate_routing(
+            Some(crate::cost_router::WorkflowRole::Review),
+            &derived,
+            None,
+            Some((author_provider, author_model)),
+        );
+        let dispatch = crate::cost_router::reviewer_dispatch(
+            Some(author_provider),
+            Some(author_model),
+            routing.role_model.clone(),
+        );
+        let route = actual_reviewer_route(&dispatch, Some((author_provider, author_model)));
+        assert!(
+            route.same_family,
+            "a HARD pack pinned to the author's own model must resolve same-family"
+        );
+        assert_eq!(route.label, format!("{author_provider}/{author_model}"));
+
+        let text = reviewer_inject_text(&ready_pick(), &route);
+        assert!(
+            !text.contains("a different model from yours"),
+            "text was {text:?}"
+        );
     }
 }

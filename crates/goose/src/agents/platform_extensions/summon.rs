@@ -1484,6 +1484,22 @@ impl SummonClient {
         session_id: &str,
         working_dir: &Path,
     ) -> Result<Recipe, String> {
+        // E4: `source: "reviewer"` alongside `worker_persona: "reviewer"` (or
+        // any other persona named twice this way) is not a real `source` — a
+        // worker persona key is not, in general, a recipe/agent source at
+        // all, and `worker_persona` already carries everything `source` would
+        // have added. Observed 2/2 producing a total silent no-op: no
+        // subagent, no visible error, the model narrating its own "reviewer
+        // unavailable" excuse. Treat it as persona-only — exactly as if
+        // `source` had never been set — rather than resolving (or failing to
+        // resolve) the persona key as a source.
+        let source_names_the_persona = match (&params.source, &params.worker_persona) {
+            (Some(source), Some(persona)) => source.eq_ignore_ascii_case(persona),
+            _ => false,
+        };
+        if source_names_the_persona {
+            return self.build_adhoc_recipe(params);
+        }
         if let Some(source_name) = &params.source {
             self.build_source_recipe(source_name, params, session_id, working_dir)
                 .await
@@ -2656,6 +2672,79 @@ mod tests {
             .expect_err("ad-hoc placeholder instructions must be refused");
         assert!(error.contains("placeholder text"), "{error}");
         assert!(error.contains("Nothing was started"), "{error}");
+    }
+
+    /// E4, pinned two ways: `source` equal to the same key as
+    /// `worker_persona` is treated as persona-only (the ad-hoc path, using
+    /// the caller's own instructions), and a genuinely unknown, unrelated
+    /// `source` still yields a visible error.
+    ///
+    /// Before this repair, the failing assertion here was:
+    /// `.expect("source naming the same persona must not fail the delegate call")`
+    /// — `build_delegate_recipe` took the `source` branch, called
+    /// `resolve_source(session_id, "reviewer", working_dir)` against a fresh
+    /// temp dir with no `reviewer` agent file registered, and returned
+    /// `Err("Source 'reviewer' not found")` instead of ever building a
+    /// recipe — the same silent-failure shape Lane A observed live (2/2): no
+    /// subagent spawned, and in the real harness no visible error text
+    /// either, with the model narrating its own "reviewer unavailable"
+    /// excuse.
+    #[tokio::test]
+    async fn source_naming_the_same_persona_is_treated_as_persona_only() {
+        let ext = SummonClient::new(create_test_context()).unwrap();
+        let dir = TempDir::new().unwrap();
+        let params = DelegateParams {
+            instructions: Some("Look for regressions in the diff".to_string()),
+            source: Some("reviewer".to_string()),
+            worker_persona: Some("reviewer".to_string()),
+            ..Default::default()
+        };
+        let recipe = ext
+            .build_delegate_recipe(&params, "fake-session-e4", dir.path())
+            .await
+            .expect("source naming the same persona must not fail the delegate call");
+        assert_eq!(
+            recipe.prompt.as_deref(),
+            Some("Look for regressions in the diff"),
+            "the ad-hoc path must use the caller's own instructions"
+        );
+    }
+
+    /// Case-insensitive: `source: "Reviewer"` / `worker_persona: "reviewer"`.
+    #[tokio::test]
+    async fn source_naming_the_persona_case_insensitively_is_also_persona_only() {
+        let ext = SummonClient::new(create_test_context()).unwrap();
+        let dir = TempDir::new().unwrap();
+        let params = DelegateParams {
+            instructions: Some("Look for regressions in the diff".to_string()),
+            source: Some("Reviewer".to_string()),
+            worker_persona: Some("reviewer".to_string()),
+            ..Default::default()
+        };
+        assert!(ext
+            .build_delegate_recipe(&params, "fake-session-e4", dir.path())
+            .await
+            .is_ok());
+    }
+
+    /// Regression pin: a genuinely unknown, unrelated `source` must still
+    /// surface a visible error — the repair narrows the special case to
+    /// `source == worker_persona`; it must not swallow real "not found"
+    /// errors.
+    #[tokio::test]
+    async fn an_unrelated_unknown_source_still_yields_a_visible_error() {
+        let ext = SummonClient::new(create_test_context()).unwrap();
+        let dir = TempDir::new().unwrap();
+        let params = DelegateParams {
+            instructions: Some("do the thing".to_string()),
+            source: Some("definitely-bogus-source-xyz".to_string()),
+            ..Default::default()
+        };
+        let error = ext
+            .build_delegate_recipe(&params, "fake-session-e4", dir.path())
+            .await
+            .expect_err("an unknown source must surface a visible error");
+        assert!(error.contains("not found"), "{error}");
     }
 
     fn create_test_context() -> PlatformExtensionContext {
