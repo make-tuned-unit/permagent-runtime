@@ -438,9 +438,17 @@ fn detect_checks(dir: &Path) -> Result<DetectOutcome, String> {
     if dir.join("package.json").exists() {
         return node_checks(dir);
     }
+    // A Python project marker alone is not evidence pytest is the test
+    // runner — `requirements.txt`/`setup.py`/etc. exist on plenty of Python
+    // projects that use `unittest`, a bespoke runner, or nothing yet.
+    // Confidently proposing pytest anyway is how a bare-assert test module
+    // with a `sys.exit()` at import time (a real shape seen live) ends in a
+    // 40-line pytest INTERNALERROR instead of an actionable result. Only
+    // commit to pytest when the project actually declares it.
     if PYTHON_MARKERS
         .iter()
         .any(|marker| dir.join(marker).exists())
+        && has_pytest_marker(dir)
     {
         return Ok(DetectOutcome::Checks(vec![Check::direct("pytest", &[])]));
     }
@@ -450,12 +458,161 @@ fn detect_checks(dir: &Path) -> Result<DetectOutcome, String> {
             &[target.as_str()],
         )]));
     }
+    // Manifestless shapes: no Cargo/go/npm/Python/Makefile marker at all (or a
+    // Python marker with no pytest evidence), but a single runnable file or an
+    // obviously-a-test file is sitting right there. Run THAT, directly, with
+    // the right runtime — never guess at a framework that might not even be
+    // installed, and never require a manifest just to run one script.
+    if let Some(checks) = manifestless_checks(dir) {
+        return Ok(DetectOutcome::Checks(checks));
+    }
     Err(
         "Could not detect the project type (looked for Cargo.toml, go.mod, \
          package.json, a Python project marker, or a Makefile with a test/check \
          target). Pass an explicit `command` to run this project's checks."
             .to_string(),
     )
+}
+
+/// True when the project actually declares pytest as its test runner:
+/// `pytest.ini`, a `[tool.pytest...]` table in `pyproject.toml`, or a
+/// `conftest.py` anywhere at the root. A bare Python marker
+/// (`requirements.txt`, `setup.py`, ...) is not enough on its own.
+fn has_pytest_marker(dir: &Path) -> bool {
+    if dir.join("pytest.ini").exists() || dir.join("conftest.py").exists() {
+        return true;
+    }
+    std::fs::read_to_string(dir.join("pyproject.toml"))
+        .map(|content| content.contains("[tool.pytest"))
+        .unwrap_or(false)
+}
+
+/// A file name that is obviously a test/check file by naming convention,
+/// independent of any manifest: `test_*.py`, `*_test.py`, `check.*`,
+/// `test*.mjs`, or anything with a `.test.` segment (`foo.test.js`).
+fn is_test_like_filename(name: &str) -> bool {
+    if name.starts_with("check.") {
+        return true;
+    }
+    if name.ends_with(".py") {
+        return name.starts_with("test_") || name.ends_with("_test.py");
+    }
+    if name.starts_with("test") && name.ends_with(".mjs") {
+        return true;
+    }
+    name.contains(".test.")
+}
+
+/// The path (relative to `dir` when possible) of the first manifestless test
+/// file found: preferring a `tests/` directory's own matches, falling back to
+/// the project root. Entries are sorted so the result is deterministic.
+fn find_manifestless_test_file(dir: &Path) -> Option<PathBuf> {
+    let matches_in = |scan_dir: &Path| -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(scan_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.is_file()
+                            && path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(is_test_like_filename)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        found.sort();
+        found
+    };
+
+    let tests_dir = dir.join("tests");
+    let candidates = if tests_dir.is_dir() {
+        matches_in(&tests_dir)
+    } else {
+        Vec::new()
+    };
+    let candidates = if candidates.is_empty() {
+        matches_in(dir)
+    } else {
+        candidates
+    };
+    candidates.into_iter().next()
+}
+
+/// `path` made relative to `dir` for a clean, non-absolute check label —
+/// falls back to the path as given when it is not actually under `dir`.
+fn relative_to(dir: &Path, path: &Path) -> String {
+    path.strip_prefix(dir)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The direct-run command for a manifestless file, chosen by extension. `None`
+/// for an extension with no safe default runtime (the caller falls back to
+/// the single-file heuristics below).
+fn direct_run_check(dir: &Path, path: &Path) -> Option<Check> {
+    let rel = relative_to(dir, path);
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("py") => Some(Check::direct_owned("python3", vec![rel])),
+        Some("mjs") | Some("js") => Some(Check::direct_owned("node", vec![rel])),
+        _ => None,
+    }
+}
+
+/// Every file directly in `dir` (non-recursive) whose extension is `ext`.
+fn files_with_extension(dir: &Path, ext: &str) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.is_file() && path.extension().and_then(|e| e.to_str()) == Some(ext)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The manifestless-project fallback: no Cargo/go/npm/Python/Makefile check
+/// applies, but the directory shape still has something obviously runnable.
+/// Tried in order: (a) a `tests/`-dir or test-named file, run directly; (b) a
+/// single lone `.py` file, syntax-smoke-checked (never run — it might not be
+/// a script meant to execute cleanly on its own); (c) a single lone `.mjs`/
+/// `.js` file, syntax-checked the same way. `None` when none of these shapes
+/// match, so the caller's actionable "could not detect" error still fires.
+fn manifestless_checks(dir: &Path) -> Option<Vec<Check>> {
+    if let Some(test_file) = find_manifestless_test_file(dir) {
+        if let Some(check) = direct_run_check(dir, &test_file) {
+            return Some(vec![check]);
+        }
+    }
+
+    let py_files = files_with_extension(dir, "py");
+    if py_files.len() == 1 {
+        let rel = relative_to(dir, &py_files[0]);
+        return Some(vec![Check::direct_owned(
+            "python3",
+            vec!["-m".to_string(), "py_compile".to_string(), rel],
+        )]);
+    }
+
+    let js_files: Vec<PathBuf> = files_with_extension(dir, "mjs")
+        .into_iter()
+        .chain(files_with_extension(dir, "js"))
+        .collect();
+    if js_files.len() == 1 {
+        let rel = relative_to(dir, &js_files[0]);
+        return Some(vec![Check::direct_owned(
+            "node",
+            vec!["--check".to_string(), rel],
+        )]);
+    }
+
+    None
 }
 
 /// Select checks for the current change set. This is intentionally separate
@@ -1531,15 +1688,55 @@ mod tests {
     }
 
     #[test]
-    fn detects_python_pytest_from_any_marker() {
-        for marker in ["pyproject.toml", "setup.py", "requirements.txt", "tox.ini"] {
+    fn detects_python_pytest_only_when_a_pytest_marker_also_exists() {
+        // A Python marker on its own is not evidence of pytest (see
+        // `python_marker_alone_does_not_propose_pytest` below) — pytest is only
+        // proposed once the project also declares it one of the three ways.
+        for (python_marker, pytest_marker, pytest_content) in [
+            ("requirements.txt", "pytest.ini", ""),
+            ("setup.py", "conftest.py", ""),
+            ("tox.ini", "pyproject.toml", "[tool.pytest.ini_options]\n"),
+        ] {
             let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join(marker), "").unwrap();
+            std::fs::write(dir.path().join(python_marker), "").unwrap();
+            std::fs::write(dir.path().join(pytest_marker), pytest_content).unwrap();
             assert_eq!(
                 checks_of(dir.path()),
                 vec![Check::direct("pytest", &[])],
-                "marker {marker} should map to pytest"
+                "marker {python_marker} + {pytest_marker} should map to pytest"
             );
+        }
+    }
+
+    /// F3(d): `requirements.txt`/`setup.py`/etc. establish "this is a Python
+    /// project", not "this project uses pytest" — plenty of Python projects
+    /// use `unittest`, a bespoke runner, or nothing yet. Confidently running
+    /// pytest anyway is how a bare-assert test module with a `sys.exit()` at
+    /// import time ends in an INTERNALERROR instead of an actionable result
+    /// (see `HARNESS_LOOP_LOG.md`'s `harness-testfix-inventory-suite-green`
+    /// evidence). Before this fix every one of these markers alone mapped
+    /// straight to `pytest`.
+    #[test]
+    fn python_marker_alone_does_not_propose_pytest() {
+        // Some of these markers (`setup.py`) are ALSO the only `.py` file in
+        // the directory, so the manifestless single-file fallback (b) can
+        // legitimately still return a `py_compile` syntax-smoke check — the
+        // invariant under test is narrower than "always errors": pytest must
+        // never be the answer without real evidence it is configured.
+        for marker in ["pyproject.toml", "setup.py", "requirements.txt", "tox.ini"] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(marker), "").unwrap();
+            match detect_checks(dir.path()) {
+                Err(error) => assert!(
+                    !error.to_ascii_lowercase().contains("pytest"),
+                    "marker {marker} alone must not propose pytest, got: {error}"
+                ),
+                Ok(DetectOutcome::Checks(checks)) => assert!(
+                    !checks.iter().any(|c| c.label.contains("pytest")),
+                    "marker {marker} alone must not propose pytest, got: {checks:?}"
+                ),
+                Ok(other) => panic!("unexpected outcome for marker {marker}: {other:?}"),
+            }
         }
     }
 
@@ -1572,6 +1769,178 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Makefile"), "build:\n\tgo build\n").unwrap();
         assert!(detect_checks(dir.path()).is_err());
+    }
+
+    // ── F3: manifestless shapes (no Cargo/go/npm/Python/Makefile marker) ──
+    //
+    // Live evidence (HARNESS_LOOP_LOG.md, Lane A2): a lone `.py` script, a
+    // vanilla `.mjs`+`.html` workspace, and a `tests/test_inventory.py` with no
+    // package manifest at all each wasted a turn on "Could not detect the
+    // project type ... Pass an explicit `command`" before this fix.
+
+    #[test]
+    fn manifestless_test_file_in_a_tests_dir_runs_directly() {
+        let dir = tempfile::tempdir().unwrap();
+        let tests_dir = dir.path().join("tests");
+        std::fs::create_dir(&tests_dir).unwrap();
+        std::fs::write(tests_dir.join("test_inventory.py"), "assert 1 + 1 == 2\n").unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("python3", &["tests/test_inventory.py"])]
+        );
+    }
+
+    #[test]
+    fn manifestless_test_file_at_the_root_runs_directly() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test_inventory.py"), "assert True\n").unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("python3", &["test_inventory.py"])]
+        );
+    }
+
+    #[test]
+    fn manifestless_check_dot_star_file_runs_directly() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("check.py"), "assert True\n").unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("python3", &["check.py"])]
+        );
+    }
+
+    #[test]
+    fn manifestless_test_mjs_runs_directly_with_node() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test.mjs"), "console.log('ok');\n").unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("node", &["test.mjs"])]
+        );
+    }
+
+    #[test]
+    fn manifestless_dot_test_dot_file_runs_directly_with_node() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("logfilter.test.js"), "console.log('ok');\n").unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("node", &["logfilter.test.js"])]
+        );
+    }
+
+    #[test]
+    fn manifestless_single_py_file_gets_an_honestly_named_syntax_smoke() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fizzbuzz.py"), "def fizzbuzz(): pass\n").unwrap();
+        let checks = checks_of(dir.path());
+        assert_eq!(
+            checks,
+            vec![Check::direct(
+                "python3",
+                &["-m", "py_compile", "fizzbuzz.py"]
+            )]
+        );
+        // Honest about what it is: a syntax check, never described as a test run.
+        assert!(checks[0].label.contains("py_compile"));
+    }
+
+    #[test]
+    fn manifestless_single_mjs_file_gets_a_node_check() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.mjs"), "export const x = 1;\n").unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("node", &["--check", "app.mjs"])]
+        );
+    }
+
+    #[test]
+    fn manifestless_single_js_file_gets_a_node_check() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.js"), "const x = 1;\n").unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("node", &["--check", "app.js"])]
+        );
+    }
+
+    #[test]
+    fn manifestless_shapes_never_propose_pytest_for_a_bare_assert_script() {
+        // The exact live crash this guards against: `python3 -m pytest` on a
+        // plain-assert test file with a `sys.exit()` at import time produced a
+        // 40-line INTERNALERROR. The manifestless path must never choose a
+        // framework — only ever a direct interpreter invocation.
+        let dir = tempfile::tempdir().unwrap();
+        let tests_dir = dir.path().join("tests");
+        std::fs::create_dir(&tests_dir).unwrap();
+        std::fs::write(
+            tests_dir.join("test_inventory.py"),
+            "import sys\nassert 1 == 1\nsys.exit(0)\n",
+        )
+        .unwrap();
+        let checks = checks_of(dir.path());
+        assert_eq!(checks.len(), 1);
+        assert!(
+            !checks[0].label.contains("pytest"),
+            "must never propose pytest for a manifestless test file, got: {:?}",
+            checks[0]
+        );
+    }
+
+    #[test]
+    fn ambiguous_manifestless_shape_with_multiple_py_files_is_still_not_detected() {
+        // More than one lone `.py` file with none of them test-named is not a
+        // safe single-file guess — this must fall through to the same
+        // actionable error as before, not pick one arbitrarily.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.py"), "x = 1\n").unwrap();
+        std::fs::write(dir.path().join("b.py"), "y = 2\n").unwrap();
+        assert!(detect_checks(dir.path()).is_err());
+    }
+
+    /// Regression guard for the F3 change: a real manifest still wins outright
+    /// and is never diverted into the new manifestless fallback, even when the
+    /// manifestless heuristics would also technically match something in the
+    /// same directory (e.g. a `.py` file living next to a `Cargo.toml`).
+    #[test]
+    fn existing_manifest_detections_are_unchanged_by_the_manifestless_fallback() {
+        let cargo_dir = tempfile::tempdir().unwrap();
+        std::fs::write(cargo_dir.path().join("Cargo.toml"), "[package]\nname=\"x\"").unwrap();
+        std::fs::write(cargo_dir.path().join("stray.py"), "x = 1\n").unwrap();
+        assert_eq!(
+            checks_of(cargo_dir.path()),
+            vec![Check::direct("cargo", &["test"])]
+        );
+
+        let go_dir = tempfile::tempdir().unwrap();
+        std::fs::write(go_dir.path().join("go.mod"), "module x\n").unwrap();
+        assert_eq!(
+            checks_of(go_dir.path()),
+            vec![
+                Check::direct("go", &["build", "./..."]),
+                Check::direct("go", &["test", "./..."]),
+            ]
+        );
+
+        let node_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            node_dir.path().join("package.json"),
+            r#"{"scripts":{"test":"jest"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            checks_of(node_dir.path()),
+            vec![Check::direct("npm", &["run", "test"])]
+        );
+
+        let make_dir = tempfile::tempdir().unwrap();
+        std::fs::write(make_dir.path().join("Makefile"), "test:\n\techo hi\n").unwrap();
+        assert_eq!(
+            checks_of(make_dir.path()),
+            vec![Check::direct("make", &["test"])]
+        );
     }
 
     #[test]

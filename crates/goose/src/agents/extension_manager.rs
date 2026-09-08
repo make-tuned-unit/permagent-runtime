@@ -2151,11 +2151,25 @@ impl ExtensionManager {
                 .config
                 .is_tool_available(&resolved.actual_tool_name)
             {
+                // F2: name the scope the call was refused under, not just that
+                // it was refused — a `worker_persona: reviewer` delegate whose
+                // `developer` extension is scoped to read-only tools should get
+                // an answer it can act on, not a bare "not available".
+                let allowed = extension.config.available_tools();
+                let scope = if allowed.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " — this session scopes '{}' to read-only tools: {}",
+                        resolved.extension_name,
+                        allowed.join(", ")
+                    )
+                };
                 return Err(ErrorData::new(
                     ErrorCode::RESOURCE_NOT_FOUND,
                     format!(
-                        "Tool '{}' is not available for extension '{}'",
-                        resolved.actual_tool_name, resolved.extension_name
+                        "Tool '{}' is not available for extension '{}'{}",
+                        resolved.actual_tool_name, resolved.extension_name, scope
                     ),
                     None,
                 )
@@ -3138,6 +3152,56 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
+    }
+
+    /// F2: a refused call must name what IS allowed, not just that the call
+    /// was refused — the `worker_persona: reviewer` delegate path scopes its
+    /// `developer` extension's `available_tools` down to read-only tools, and
+    /// this is the shared error path that scoping relies on to surface a
+    /// visible, actionable refusal instead of a bare "not available".
+    #[tokio::test]
+    async fn test_dispatch_unavailable_tool_error_names_the_allowed_scope() {
+        use super::super::tool_execution::ToolCallContext;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let extension_manager =
+            ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+
+        extension_manager
+            .add_mock_extension_with_tools(
+                "test_extension".to_string(),
+                Arc::new(MockClient {}),
+                vec!["available_tool".to_string()],
+            )
+            .await;
+
+        let ctx = ToolCallContext::new(
+            "test-session-id".to_string(),
+            None,
+            Some("test-req-id".to_string()),
+        );
+
+        let refused_call = CallToolRequestParams::new("test_extension__tool".to_string())
+            .with_arguments(object!({}));
+
+        let Err(err) = extension_manager
+            .dispatch_tool_call(&ctx, refused_call, CancellationToken::default())
+            .await
+        else {
+            panic!("a refused tool call must be an error");
+        };
+
+        let tool_err = err.downcast_ref::<ErrorData>().expect("Expected ErrorData");
+        assert!(
+            tool_err.message.contains("read-only"),
+            "refusal must name the scope, got: {}",
+            tool_err.message
+        );
+        assert!(
+            tool_err.message.contains("available_tool"),
+            "refusal must list what IS allowed, got: {}",
+            tool_err.message
+        );
     }
 
     #[tokio::test]

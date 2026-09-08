@@ -9,7 +9,7 @@ use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::ToolCallContext;
 use anyhow::Result;
 use async_trait::async_trait;
-use edit::{EditTools, FileEditParams, FileWriteParams};
+use edit::{EditTools, FileEditParams, FileReadParams, FileWriteParams};
 use indoc::indoc;
 use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
@@ -47,9 +47,9 @@ fn developer_instructions() -> &'static str {
 
             For editing software, prefer the flow of using tree to understand the codebase structure
             and file sizes. When you need to search, use the search tool - it returns summarized,
-            token-efficient matches grouped by file and respects .gitignore. Then use type or
-            Get-Content to gather the context you need, always reading before editing. Use write and
-            edit to efficiently make changes. Test and verify as appropriate.
+            token-efficient matches grouped by file and respects .gitignore. Then use read to gather
+            the context you need, always reading before editing. Use write and edit to efficiently
+            make changes. Test and verify as appropriate.
         "}
     } else {
         indoc! {"
@@ -63,7 +63,7 @@ fn developer_instructions() -> &'static str {
             For editing software, prefer the flow of using tree to understand the codebase structure
             and file sizes. When you need to search, use the search tool - it returns summarized,
             token-efficient matches grouped by file and respects .gitignore (drop to rg via shell for
-            raw matches). Then use cat or sed to gather the context you need, always reading before
+            raw matches). Then use read to gather the context you need, always reading before
             editing. Use write and edit to efficiently make changes. Test and verify as appropriate.
         "}
     }
@@ -104,6 +104,18 @@ impl DeveloperClient {
 
     pub(crate) fn get_tools() -> Vec<Tool> {
         vec![
+            Tool::new(
+                "read".to_string(),
+                "Read a file as text. Optional `start_line`/`end_line` (1-based, inclusive) page through large files; an unpaged read is capped with a truncation notice. Refuses directories and an empty path. A binary file gets a short notice instead of raw bytes.".to_string(),
+                Self::schema::<FileReadParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Read".to_string()),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+            )),
             Tool::new(
                 "write".to_string(),
                 "Create a new file or overwrite an existing file. Creates parent directories if needed. The written file is read back and verified against the intended content before success is reported.".to_string(),
@@ -218,6 +230,13 @@ impl McpClientTrait for DeveloperClient {
                 Ok(params) => Ok(self.shell_tool.shell_with_cwd(params, working_dir).await),
                 Err(error) => Ok(ShellTool::error_result(&format!("Error: {error}"), None)),
             },
+            "read" => match Self::parse_args::<FileReadParams>(arguments) {
+                Ok(params) => Ok(self.edit_tools.file_read_with_cwd(params, working_dir)),
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
             "write" => match Self::parse_args::<FileWriteParams>(arguments) {
                 Ok(params) => Ok(self.edit_tools.file_write_with_cwd(params, working_dir)),
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
@@ -282,7 +301,7 @@ mod tests {
 
         assert_eq!(
             names,
-            vec!["write", "edit", "shell", "tree", "search", "verify"]
+            vec!["read", "write", "edit", "shell", "tree", "search", "verify"]
         );
     }
 
@@ -345,6 +364,48 @@ mod tests {
             fs::read_to_string(cwd.join("notes.txt")).unwrap(),
             "updated line"
         );
+    }
+
+    // ── F1: `read` is wired end to end, not just a name in the tool surface ──
+    //
+    // Observed live (HARNESS_LOOP_LOG.md, Lane A2): glm-4.7 called a tool
+    // literally named `read` 11 times across 8 tasks and got `-32002: Tool
+    // 'read' not found` every time, because `get_tools()`/`call_tool` never
+    // registered one. `developer_tools_are_flat` pins the name is now listed;
+    // this pins the dispatch actually reads a real file through it.
+    #[tokio::test]
+    async fn developer_client_dispatches_read_with_working_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let client = DeveloperClient::new(test_context(temp.path().join("sessions"))).unwrap();
+        let cwd = temp.path().join("workspace");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::write(cwd.join("notes.txt"), "line1\nline2\nline3").unwrap();
+
+        let ctx = ToolCallContext::new("session".to_owned(), Some(cwd.clone()), None);
+
+        let full = client
+            .call_tool(
+                &ctx,
+                "read",
+                Some(object!({ "path": "notes.txt" })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(full.is_error, Some(false));
+        assert_eq!(first_text(&full), "line1\nline2\nline3");
+
+        let ranged = client
+            .call_tool(
+                &ctx,
+                "read",
+                Some(object!({ "path": "notes.txt", "start_line": 2, "end_line": 2 })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ranged.is_error, Some(false));
+        assert_eq!(first_text(&ranged), "line2\n");
     }
 
     #[cfg(not(windows))]

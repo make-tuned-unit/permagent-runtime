@@ -5,7 +5,7 @@ use crate::agents::platform_extensions::fanout;
 use crate::agents::subagent_handler::{run_subagent_task, OnMessageCallback, SubagentRunParams};
 use crate::agents::subagent_task_config::{TaskConfig, DEFAULT_SUBAGENT_MAX_TURNS};
 use crate::agents::tool_execution::ToolCallContext;
-use crate::agents::AgentRunnerConfig;
+use crate::agents::{AgentRunnerConfig, ExtensionConfig};
 use crate::config::paths::Paths;
 use crate::config::{Config, GooseMode};
 use crate::providers;
@@ -1400,6 +1400,49 @@ impl SummonClient {
         }
     }
 
+    /// The `developer` extension's own tool names, minus whatever
+    /// `after_turn::is_mutating_tool_name` calls a mutation. Derived from the
+    /// extension's real tool surface (not a second hand-kept list), so a new
+    /// read-only developer tool is granted to the reviewer automatically and
+    /// a new mutating one is withheld from it automatically.
+    fn reviewer_safe_developer_tools() -> Vec<String> {
+        super::developer::DeveloperClient::get_tools()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .filter(|name| !crate::after_turn::is_mutating_tool_name(name))
+            .collect()
+    }
+
+    /// F2: scope the `developer` extension in `extensions` to read-only tools
+    /// when the child recipe's worker persona is (case-insensitively) the
+    /// literal `reviewer` roster key — the same key `resolve_worker_persona`
+    /// and the default roster (`agent_identity::default_roster`) use for the
+    /// one persona the recipe documents as read-only. Every other extension
+    /// (including `analyze`, which the recipe already grants the reviewer) is
+    /// left untouched, and a non-reviewer persona is a no-op.
+    ///
+    /// This reuses the SAME allowlist mechanism (`ExtensionConfig::
+    /// available_tools` / `is_tool_available`) the extension manager already
+    /// enforces on every tool dispatch — no new enforcement path, just a new
+    /// caller of the existing one.
+    fn restrict_reviewer_tools(worker_persona: Option<&str>, extensions: &mut [ExtensionConfig]) {
+        let is_reviewer = worker_persona.is_some_and(|p| p.eq_ignore_ascii_case("reviewer"));
+        if !is_reviewer {
+            return;
+        }
+        let allowed = Self::reviewer_safe_developer_tools();
+        for ext in extensions.iter_mut() {
+            if ext.name() == super::developer::EXTENSION_NAME {
+                if let ExtensionConfig::Platform {
+                    available_tools, ..
+                } = ext
+                {
+                    *available_tools = allowed.clone();
+                }
+            }
+        }
+    }
+
     /// Instructions a worker cannot act on.
     ///
     /// Observed live on 2026-08-25: a GLM-5.3 harness session called
@@ -1706,6 +1749,15 @@ impl SummonClient {
                 extensions.retain(|ext| filter.contains(&ext.name()));
             }
         }
+
+        // F2: the recipe promises the `reviewer` persona is "scoped READ-ONLY
+        // (developer + analyze, no editing)" (`permagent-coding.yaml`), but
+        // until now that was a prompt-only claim — nothing stopped the
+        // delegated recipe's `developer` extension from exposing `write`/
+        // `edit`. Observed live (HARNESS_LOOP_LOG.md, Lane A2): a reviewer
+        // subagent called `edit` on `src/cache.rs` and the change shipped in
+        // the graded artifact. Enforce it below the prompt.
+        Self::restrict_reviewer_tools(params.worker_persona.as_deref(), &mut extensions);
 
         let max_turns = params
             .max_turns
@@ -2610,6 +2662,90 @@ mod tests {
     use std::fs;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    /// Build the same shape `build_task_config` sees: a `developer` platform
+    /// extension with no restriction yet, plus one unrelated extension that
+    /// must never be touched by reviewer scoping.
+    fn sample_extensions() -> Vec<ExtensionConfig> {
+        vec![
+            ExtensionConfig::Platform {
+                name: crate::agents::platform_extensions::developer::EXTENSION_NAME.to_string(),
+                description: "".to_string(),
+                display_name: None,
+                bundled: None,
+                available_tools: Vec::new(),
+            },
+            ExtensionConfig::Platform {
+                name: "analyze".to_string(),
+                description: "".to_string(),
+                display_name: None,
+                bundled: None,
+                available_tools: Vec::new(),
+            },
+        ]
+    }
+
+    fn developer_available_tools(extensions: &[ExtensionConfig]) -> &[String] {
+        extensions
+            .iter()
+            .find(|ext| ext.name() == crate::agents::platform_extensions::developer::EXTENSION_NAME)
+            .expect("developer extension must be present")
+            .available_tools()
+    }
+
+    /// F2 (Lane A2 evidence: a `worker_persona: reviewer` subagent called
+    /// `edit` on `src/cache.rs` and the change shipped). `restrict_reviewer_tools`
+    /// must scope `developer` down to read-only tools for the literal
+    /// `reviewer` persona, and must not touch any other extension.
+    #[test]
+    fn restrict_reviewer_tools_scopes_developer_to_read_only_for_the_reviewer_persona() {
+        let mut extensions = sample_extensions();
+
+        SummonClient::restrict_reviewer_tools(Some("reviewer"), &mut extensions);
+
+        let allowed = developer_available_tools(&extensions);
+        assert!(!allowed.is_empty(), "reviewer must get a real allowlist");
+        for mutating in ["write", "edit"] {
+            assert!(
+                !allowed.iter().any(|t| t == mutating),
+                "reviewer must not be granted '{mutating}', got: {allowed:?}"
+            );
+        }
+        for read_only in ["read", "shell", "tree", "search", "verify"] {
+            assert!(
+                allowed.iter().any(|t| t == read_only),
+                "reviewer must keep '{read_only}', got: {allowed:?}"
+            );
+        }
+
+        // Case-insensitive, matching `resolve_worker_persona`'s own lookup.
+        let mut extensions_upper = sample_extensions();
+        SummonClient::restrict_reviewer_tools(Some("Reviewer"), &mut extensions_upper);
+        assert!(!developer_available_tools(&extensions_upper).is_empty());
+
+        // Untouched: the `analyze` extension the recipe already grants the
+        // reviewer must stay unrestricted (empty allowlist == every tool).
+        let analyze = extensions
+            .iter()
+            .find(|ext| ext.name() == "analyze")
+            .unwrap();
+        assert!(analyze.available_tools().is_empty());
+    }
+
+    /// A non-reviewer persona (or no persona at all) must be a complete no-op:
+    /// this is scoping for one specific documented persona, not a general
+    /// tool restriction.
+    #[test]
+    fn restrict_reviewer_tools_is_a_no_op_for_a_non_reviewer_persona() {
+        for persona in [Some("permagent"), Some("debugger"), None] {
+            let mut extensions = sample_extensions();
+            SummonClient::restrict_reviewer_tools(persona, &mut extensions);
+            assert!(
+                developer_available_tools(&extensions).is_empty(),
+                "persona {persona:?} must leave developer's tools unrestricted"
+            );
+        }
+    }
 
     /// The live call that started this: a whole background subagent spun up on
     /// the word "placeholder".

@@ -539,7 +539,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: developer::EXTENSION_NAME,
                 display_name: "Developer",
-                description: "Write and edit files (write, edit), execute shell commands (shell), list a directory tree with line counts (tree), search file contents for a summarized, token-efficient view of matches (search), and run the project's build/test checks for a structured PASS/FAIL (verify)",
+                description: "Read files (read), write and edit files (write, edit), execute shell commands (shell), list a directory tree with line counts (tree), search file contents for a summarized, token-efficient view of matches (search), and run the project's build/test checks for a structured PASS/FAIL (verify)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
