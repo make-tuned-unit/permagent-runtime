@@ -298,6 +298,19 @@ pub struct CheckApprovalPayload {
 #[serde(deny_unknown_fields)]
 pub struct RoadmapApprovalPayload {
     pub proposal_hash: String,
+    /// The id of the session that minted this proposal (the session
+    /// `decompose_roadmap` was called from). R2 repair (harness loop, Lane
+    /// G3 finding 3): recorded unconditionally so an `ACTOR_AUTO_LAUNCH`
+    /// answer can be bound to the exact session that minted it, not merely
+    /// to "some session in `GooseMode::Auto`" — a second, unrelated Auto
+    /// session in the same project must not be able to consume a proof it
+    /// never asked for. `ACTOR_JESSE` answers ignore this field entirely: a
+    /// human approval is not scoped to the decomposing session. `#[serde(default)]`
+    /// keeps every pre-existing payload (minted before this field existed)
+    /// parseable, with the effect that an old auto-launch proof is treated
+    /// as unbound to any session and can never satisfy the new check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minting_session_id: Option<String>,
 }
 
 /// The concrete repo object a Steward git-health `risk_gate` targets
