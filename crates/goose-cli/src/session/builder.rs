@@ -1261,8 +1261,18 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // own `create_roadmap` call can actually dispatch. See
     // `wants_headless_goal_dispatch`'s doc comment for the scoping rationale.
     if wants_headless_goal_dispatch(coding_harness, agent.config.goose_mode) {
-        permagent::agents::platform_extensions::orchestrator::install_dispatch_hook(
+        // Harness loop, Lane T / T1+T2: NOT the daemon's `install_dispatch_hook`
+        // (that closure's context always carries `session: None`, so its
+        // InternalSubagentEngine worker-selection arm hard-fails with
+        // "Extension manager not available" — S1 in HARNESS_LOOP_LOG.md — and
+        // its ranked selection can pick an ExternalCli worker, spawning the
+        // operator's own Claude Code/Codex/Cursor CLI unattended). The CLI's
+        // own installer carries this coordinator session so the hook can
+        // resolve a provider from it and restrict ranked selection to
+        // in-process workers by default.
+        permagent::agents::platform_extensions::orchestrator::install_dispatch_hook_for_headless_session(
             session_manager.clone(),
+            session_id.clone(),
         );
     }
 

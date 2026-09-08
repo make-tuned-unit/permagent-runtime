@@ -1670,6 +1670,18 @@ async fn handle_run_command(
 
         let result = session.headless(contents).await;
         let succeeded = result.is_ok();
+
+        // Harness loop, Lane T / T3: wait (bounded) for any goals this run
+        // dispatched to reach a terminal state before the process exits — a
+        // no-op with no DB query when the session never dispatched anything.
+        // `PERMAGENT_HEADLESS_DRAIN_SECS` (default 600s; `0` disables).
+        let drain_cap_secs: u64 = Config::global()
+            .get_param("PERMAGENT_HEADLESS_DRAIN_SECS")
+            .unwrap_or(600);
+        session
+            .drain_dispatched_goals(std::time::Duration::from_secs(drain_cap_secs))
+            .await;
+
         log_session_completion(&session, session_start, session_type, succeeded).await;
         result
     } else {

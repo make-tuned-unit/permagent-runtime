@@ -383,6 +383,16 @@ pub fn split_quoted(input: &str) -> Result<Vec<String>> {
     Ok(parts)
 }
 
+/// Pure: should [`CliSession::drain_dispatched_goals`] even query the
+/// database? (harness loop, Lane T / T3). Mirrors `builder::
+/// wants_headless_goal_dispatch`'s scoping — only a coding-harness session
+/// ever installs the headless dispatch hook, so any other session has
+/// nothing to drain; `cap == 0` is the explicit `PERMAGENT_HEADLESS_DRAIN_SECS`
+/// escape hatch, and must cost no query or delay at all.
+fn wants_headless_goal_drain(coding_harness: bool, cap: std::time::Duration) -> bool {
+    coding_harness && !cap.is_zero()
+}
+
 impl CliSession {
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
@@ -1494,6 +1504,57 @@ impl CliSession {
         self.process_message(message, CancellationToken::default(), false)
             .await?;
         Ok(())
+    }
+
+    /// Harness loop, Lane T / T3: after a headless coding-harness Auto run's
+    /// coordinator turn ends, `handle_run_command` calls this to wait
+    /// (bounded) for any goals THIS session dispatched to reach a terminal
+    /// state before the process exits — S1
+    /// (`install_dispatch_hook_for_headless_session`) made `create_roadmap`
+    /// dispatch real goals whose workers run on a background task the CLI
+    /// process can outlive, so without this a dispatched goal could be left
+    /// silently `InProgress` forever.
+    ///
+    /// `cap` comes from `PERMAGENT_HEADLESS_DRAIN_SECS` (default 600s; `0`
+    /// disables the wait entirely — no query, no delay, matching "must never
+    /// block a run that dispatched nothing" for the common case where a
+    /// caller has opted all the way out). Not scoped further than
+    /// `coding_harness`: an ordinary chat/run session never installs the
+    /// headless dispatch hook, so it never has anything to drain, and the one
+    /// query costs nothing worth skipping.
+    pub async fn drain_dispatched_goals(&self, cap: std::time::Duration) {
+        if !wants_headless_goal_drain(self.coding_harness, cap) {
+            return;
+        }
+        let Ok(pool) = self.agent.config.session_manager.pool_clone().await else {
+            return;
+        };
+        let poll_interval = std::time::Duration::from_secs(2).min(cap);
+        let result = permagent::agents::platform_extensions::orchestrator::drain_dispatched_goals(
+            &pool,
+            &self.session_id,
+            cap,
+            poll_interval,
+            |worker_session_id, state| {
+                output::render_notice(&format!(
+                    "goal worker {worker_session_id}: {}",
+                    state.binding()
+                ));
+            },
+        )
+        .await;
+        match result {
+            Ok(summary) if summary.dispatched_anything() => {
+                output::render_notice(&format!(
+                    "{} goal(s) finished, {} still running at exit \u{2192} parked",
+                    summary.finished, summary.timed_out
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("post-run goal drain failed (non-fatal): {e}");
+            }
+        }
     }
 
     async fn process_agent_response(
@@ -2828,6 +2889,23 @@ mod tests {
     use permagent::config::ExtensionConfig;
     use std::time::Duration;
     use test_case::test_case;
+
+    // ── Harness loop, Lane T / T3: bounded post-run drain gate ──────────────
+
+    #[test]
+    fn drain_is_scoped_to_coding_harness_and_a_nonzero_cap() {
+        assert!(wants_headless_goal_drain(true, Duration::from_secs(600)));
+        assert!(
+            !wants_headless_goal_drain(false, Duration::from_secs(600)),
+            "an ordinary chat/run session never installed the headless dispatch \
+             hook — nothing to drain"
+        );
+        assert!(
+            !wants_headless_goal_drain(true, Duration::ZERO),
+            "PERMAGENT_HEADLESS_DRAIN_SECS=0 must disable the wait entirely"
+        );
+        assert!(!wants_headless_goal_drain(false, Duration::ZERO));
+    }
 
     // ── /model: only a provider/model pair reaches the switch ──────────────
 
