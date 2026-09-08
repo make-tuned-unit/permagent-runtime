@@ -187,8 +187,23 @@ fn optional_positive_rate(
     rate: Option<f64>,
     field: &'static str,
 ) -> Result<Option<f64>, ReservationBoundError> {
-    rate.map(|rate| positive_rate(Some(rate), field))
-        .transpose()
+    match rate {
+        None => Ok(None),
+        // H4 (Lane M, 2026-09-08 live evidence): a rate of exactly 0.0 is a
+        // provider legitimately charging nothing for this rate (e.g. no
+        // cache-write premium — `providers/canonical/cost.rs`'s "no
+        // premium" cases, observed with zai/glm-4.7), not a missing or
+        // invalid one. Treating it as invalid made every call to that
+        // provider get refused before it started: "provider budget is
+        // unknown; refusing call: cannot authorize provider call:
+        // cache_write pricing rate must be finite and positive". Free is
+        // excluded from the max-rate fold below the same way `None` already
+        // is. NaN/infinite/negative still fail closed via `positive_rate`,
+        // and this only touches the OPTIONAL cache_read/cache_write rates —
+        // the required input/output rates keep their strict positive check.
+        Some(0.0) => Ok(None),
+        Some(rate) => positive_rate(Some(rate), field).map(Some),
+    }
 }
 
 #[cfg(test)]
@@ -303,7 +318,10 @@ mod tests {
                 Err(ReservationBoundError::InvalidRate { field: "input" })
             );
         }
-        for bad in [Some(0.0), Some(-1.0), Some(f64::NAN), Some(f64::INFINITY)] {
+        // H4: 0.0 is no longer here — an optional rate of exactly zero is
+        // "free", not invalid (see `zero_cache_write_rate_is_treated_as_free_not_invalid`
+        // below).
+        for bad in [Some(-1.0), Some(f64::NAN), Some(f64::INFINITY)] {
             let mut p = pricing();
             p.cache_write = bad;
             assert_eq!(
@@ -316,6 +334,55 @@ mod tests {
                 Err(ReservationBoundError::InvalidRate {
                     field: "cache_write"
                 })
+            );
+        }
+    }
+
+    /// H4 (Lane M live evidence, 2026-09-08): every zai/glm-4.7 call was
+    /// refused in under a second with "provider budget is unknown; refusing
+    /// call: cannot authorize provider call: cache_write pricing rate must
+    /// be finite and positive" — that provider genuinely has no cache-write
+    /// premium (rate 0.0), and `optional_positive_rate` treated 0.0 the same
+    /// as missing/invalid. A rate of exactly zero must produce the SAME
+    /// bound as no rate at all (excluded from the max-rate fold either way),
+    /// not an error. Before the fix this failed with exactly the
+    /// `InvalidRate { field: "cache_write" }` error quoted above (see
+    /// `invalid_rates_fail_closed`, which asserted this same input was an
+    /// error prior to this change).
+    #[test]
+    fn zero_cache_write_rate_is_treated_as_free_not_invalid() {
+        let mut free = pricing();
+        free.cache_write = Some(0.0);
+        let mut absent = pricing();
+        absent.cache_write = None;
+        let cfg = config(Some(100), Some(20));
+
+        let free_bound = calculate_bound(&cfg, 1, free, PricingProvenance::CanonicalExact).unwrap();
+        let absent_bound =
+            calculate_bound(&cfg, 1, absent, PricingProvenance::CanonicalExact).unwrap();
+
+        assert_eq!(free_bound.amount_usd, absent_bound.amount_usd);
+    }
+
+    /// Regression guard alongside the fix above: a genuinely invalid
+    /// cache_write rate (negative, NaN, infinite) must still fail closed —
+    /// only exactly 0.0 is "free".
+    #[test]
+    fn negative_or_nan_cache_write_rate_still_fails_closed() {
+        for bad in [Some(-1.0), Some(f64::NAN), Some(f64::INFINITY)] {
+            let mut p = pricing();
+            p.cache_write = bad;
+            assert_eq!(
+                calculate_bound(
+                    &config(Some(100), Some(20)),
+                    1,
+                    p,
+                    PricingProvenance::CanonicalExact
+                ),
+                Err(ReservationBoundError::InvalidRate {
+                    field: "cache_write"
+                }),
+                "cache_write = {bad:?} must still fail closed"
             );
         }
     }

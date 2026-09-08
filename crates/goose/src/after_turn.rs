@@ -845,6 +845,27 @@ fn reviewer_ask_pending(messages: &[Message], after_position: usize) -> bool {
     false
 }
 
+/// G-3 (Lane G review, finding 3): whether the E1 trivial-diff skip is even
+/// allowed to run for this mutation. The skip must never fire once a
+/// reviewer ask has already gone out — whether it is still awaiting an
+/// answer, or was already answered with a real REQUEST_CHANGES/UNCERTAIN
+/// verdict — because `trivial_skip_reason` reads the CURRENT `git diff`
+/// live, and a diff that shrinks to trivial size between the ask and a later
+/// turn (e.g. via a `shell` mutation `is_mutating_tool_name` does not track,
+/// H2's own documented residual) would otherwise let the skip unconditionally
+/// return `Allow` and silently erase a negative verdict already sitting in
+/// the conversation — the exact bug Lane G found: `ask_state` would resolve
+/// to `Asked` → `Park` if it were ever consulted, but the skip ran first and
+/// returned before `ask_state` was computed at all.
+///
+/// `reviewer_ask_pending` already reports "an ask went out after this
+/// mutation" regardless of whether it was later answered, so it is the
+/// correct single signal here: once true, the diff's current triviality must
+/// never be consulted again for this mutation.
+fn trivial_skip_still_eligible(messages: &[Message], after_position: usize) -> bool {
+    !reviewer_ask_pending(messages, after_position)
+}
+
 /// The imperative instruction injected to re-enter the model loop: names the
 /// concrete reviewer, the tool, the persona, the data-fence format the recipe
 /// already specifies, and the strict verdict tokens — so the model has exactly
@@ -989,12 +1010,23 @@ impl AfterTurn for ReviewerMandate {
         // `reviewer_approved` (an already-approved turn never needs it) and
         // before everything else, so a trivial diff never pays for a reviewer
         // pick or a `delegate` round-trip at all.
-        if let Some(reason) = Self::trivial_skip_reason(ctx.session_id).await {
-            tracing::info!(
-                session_id = %ctx.session_id,
-                "independent review skipped: {reason}"
-            );
-            return AfterTurnAction::Allow;
+        //
+        // G-3: but ONLY when no reviewer ask is pending and no reviewer
+        // verdict has been recorded since the last mutation
+        // (`trivial_skip_still_eligible`, reusing the same
+        // `reviewer_ask_pending` `ask_state` will use below) — otherwise a
+        // diff that reads as trivial NOW could silently erase a real
+        // negative verdict already sitting in the conversation. This also
+        // means an already-asked mutation never touches the DB-backed
+        // `trivial_skip_reason` at all.
+        if trivial_skip_still_eligible(ctx.messages, last_mutation) {
+            if let Some(reason) = Self::trivial_skip_reason(ctx.session_id).await {
+                tracing::info!(
+                    session_id = %ctx.session_id,
+                    "independent review skipped: {reason}"
+                );
+                return AfterTurnAction::Allow;
+            }
         }
 
         // E5: a `delegate(reviewer)` call that came back empty or errored
@@ -1883,6 +1915,49 @@ mod tests {
         assert!(
             reason.is_none(),
             "the knob off must restore always-review behaviour, got {reason:?}"
+        );
+    }
+
+    // ── G-3: the trivial-diff skip must never erase a pending/negative
+    // reviewer verdict (Lane G review, finding 3) ──────────────────────────
+
+    /// The exact scenario Lane G found: a reviewer ask already went out for
+    /// this mutation and came back with a real, negative verdict — but the
+    /// diff, checked fresh every call, now reads as trivial (e.g. it shrank
+    /// via a `shell` edit `is_mutating_tool_name` cannot see — H2's own
+    /// documented residual). The trivial-diff skip must never even be
+    /// consulted in that case: `trivial_skip_still_eligible` must be
+    /// `false`, so `ReviewerMandate::after_turn` falls through to
+    /// `ask_state` — which resolves to `Asked` and `Park`s honestly —
+    /// instead of returning `Allow` unconditionally the way the old,
+    /// unguarded `trivial_skip_reason` call did.
+    ///
+    /// Before this repair `trivial_skip_still_eligible` did not exist at all
+    /// and `ReviewerMandate::after_turn` consulted `trivial_skip_reason`
+    /// unconditionally, ahead of any ask-state check — confirmed failing by
+    /// temporarily hard-coding this function's body to `true` (always
+    /// eligible, the old behaviour) and rerunning: the first assertion below
+    /// fails with "must never leave the trivial-diff skip eligible to fire"
+    /// against that reverted body, and passes once the real
+    /// `!reviewer_ask_pending(..)` body is restored.
+    #[test]
+    fn trivial_skip_is_not_eligible_once_a_reviewer_ask_is_already_pending() {
+        let already_asked_with_negative_verdict = vec![
+            Message::assistant().with_text(REVIEW_ASK_OPENING),
+            Message::assistant()
+                .with_text("Reviewer's verdict: REQUEST_CHANGES — off-by-one in the range check."),
+        ];
+        assert!(
+            !trivial_skip_still_eligible(&already_asked_with_negative_verdict, 0),
+            "an already-asked mutation with a recorded verdict must never \
+             leave the trivial-diff skip eligible to fire"
+        );
+
+        let never_asked: Vec<Message> = vec![];
+        assert!(
+            trivial_skip_still_eligible(&never_asked, 0),
+            "a mutation nobody has asked about yet must remain eligible for \
+             the trivial-diff skip"
         );
     }
 

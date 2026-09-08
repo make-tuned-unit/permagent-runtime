@@ -1425,19 +1425,55 @@ impl SummonClient {
     /// available_tools` / `is_tool_available`) the extension manager already
     /// enforces on every tool dispatch — no new enforcement path, just a new
     /// caller of the existing one.
+    ///
+    /// G-1 (Lane G review): this used to match ONLY `ExtensionConfig::
+    /// Platform`, but the real `permagent-coding` recipe declares `developer`
+    /// as `type: builtin` (`permagent-coding.yaml`), which deserializes to
+    /// `ExtensionConfig::Builtin` (`recipe_extension_adapter.rs`,
+    /// `extension.rs:190`) — a variant that was never covered here, so live
+    /// this was a no-op and the reviewer kept full `write`/`edit`. Now uses
+    /// `ExtensionConfig::available_tools_mut()`, which covers every variant
+    /// that carries an allowlist (matching `is_tool_available`'s own arms),
+    /// so a future extension-config shape is included automatically rather
+    /// than needing a matching update here.
+    ///
+    /// Known residual (H2): the reviewer keeps `shell` (needed to run
+    /// verify/tests), and `shell` is not itself read-only-enforced — a
+    /// reviewer can still mutate the tree via `sed -i`, redirection, `rm`,
+    /// or `git commit`/`checkout --` through it. There is no read-only shell
+    /// here; the mandate text (`config/agent_identity.rs`'s `reviewer`
+    /// persona `role`) instead states explicitly that READ-ONLY covers shell
+    /// too, and `is_tool_available` still blocks `write`/`edit` outright
+    /// regardless of what the model attempts through shell.
     fn restrict_reviewer_tools(worker_persona: Option<&str>, extensions: &mut [ExtensionConfig]) {
         let is_reviewer = worker_persona.is_some_and(|p| p.eq_ignore_ascii_case("reviewer"));
         if !is_reviewer {
             return;
         }
         let allowed = Self::reviewer_safe_developer_tools();
+        debug_assert!(
+            !allowed.is_empty(),
+            "an empty available_tools list means EVERY tool is available \
+             (ExtensionConfig::is_tool_available's own definition) — the \
+             reviewer allowlist must never be empty, or scoping becomes a \
+             no-op the opposite way"
+        );
+        // Defensive fail-closed fallback: an empty `available_tools` reads as
+        // "every tool available" to `is_tool_available` — the exact opposite
+        // of what this function exists to do. If `reviewer_safe_developer_
+        // tools` ever legitimately returns nothing (e.g. every developer
+        // tool becomes "mutating"), hand out a list that matches no real
+        // tool name instead of an empty one, so the reviewer loses `developer`
+        // entirely rather than silently regaining full access to it.
+        const NO_SAFE_TOOLS_SENTINEL: &str = "__no_read_only_developer_tools_available__";
         for ext in extensions.iter_mut() {
             if ext.name() == super::developer::EXTENSION_NAME {
-                if let ExtensionConfig::Platform {
-                    available_tools, ..
-                } = ext
-                {
-                    *available_tools = allowed.clone();
+                if let Some(available_tools) = ext.available_tools_mut() {
+                    *available_tools = if allowed.is_empty() {
+                        vec![NO_SAFE_TOOLS_SENTINEL.to_string()]
+                    } else {
+                        allowed.clone()
+                    };
                 }
             }
         }
@@ -2730,6 +2766,66 @@ mod tests {
             .find(|ext| ext.name() == "analyze")
             .unwrap();
         assert!(analyze.available_tools().is_empty());
+    }
+
+    /// G-1 (Lane G review, CRITICAL): the test above builds its own
+    /// `ExtensionConfig::Platform` fixture, but the REAL `permagent-coding`
+    /// recipe declares `developer` as `type: builtin`
+    /// (`permagent-coding.yaml:171-172`), which the crate's own
+    /// `#[serde(tag = "type")]` deserializer turns into
+    /// `ExtensionConfig::Builtin` (`recipe_extension_adapter.rs`,
+    /// `extension.rs:190`) — a variant `restrict_reviewer_tools` never
+    /// matched before this fix, so live the allowlist was never applied and
+    /// a reviewer subagent kept full `write`/`edit` (Lane A2's live
+    /// evidence: "a reviewer subagent called `edit` on src/cache.rs and the
+    /// change shipped"). This builds the extension list by parsing the
+    /// actual shipped recipe file — the same shape `build_task_config`
+    /// really produces — not a hand-built fixture, so a regression back to
+    /// covering only one `ExtensionConfig` variant fails here even if the
+    /// `Platform`-shaped test above still passes.
+    #[test]
+    fn restrict_reviewer_tools_scopes_the_real_recipes_builtin_developer_extension() {
+        const RECIPE_YAML: &str =
+            include_str!("../../../../goose-cli/src/recipes/builtin/permagent-coding.yaml");
+        let recipe: crate::recipe::Recipe =
+            serde_yaml::from_str(RECIPE_YAML).expect("the shipped recipe must parse as YAML");
+        let mut extensions = recipe
+            .extensions
+            .expect("permagent-coding.yaml declares an extensions list");
+
+        let developer = extensions
+            .iter()
+            .find(|ext| ext.name() == crate::agents::platform_extensions::developer::EXTENSION_NAME)
+            .expect("the recipe must declare the developer extension");
+        assert!(
+            matches!(developer, ExtensionConfig::Builtin { .. }),
+            "the recipe's `type: builtin` developer entry must deserialize to \
+             ExtensionConfig::Builtin, not {developer:?} — if the recipe's \
+             shape ever changes, restrict_reviewer_tools's coverage needs to \
+             change with it"
+        );
+
+        SummonClient::restrict_reviewer_tools(Some("reviewer"), &mut extensions);
+
+        let allowed = developer_available_tools(&extensions);
+        assert!(
+            !allowed.is_empty(),
+            "reviewer must get a real allowlist on the recipe's own builtin \
+             developer extension"
+        );
+        for mutating in ["write", "edit", "apply_patch"] {
+            assert!(
+                !allowed.iter().any(|t| t == mutating),
+                "reviewer must not be granted '{mutating}' on the real recipe's \
+                 builtin developer extension, got: {allowed:?}"
+            );
+        }
+        for read_only in ["read", "shell", "tree", "search", "verify"] {
+            assert!(
+                allowed.iter().any(|t| t == read_only),
+                "reviewer must keep '{read_only}', got: {allowed:?}"
+            );
+        }
     }
 
     /// A non-reviewer persona (or no persona at all) must be a complete no-op:

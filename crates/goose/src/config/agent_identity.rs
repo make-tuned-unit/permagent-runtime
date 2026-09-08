@@ -1006,11 +1006,14 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
                    assume a bug until you have checked, and treat the author's reasoning as a \
                    claim to test, not evidence. Review through five lenses — correctness, \
                    security, performance, spec-fit, and test-integrity (were tests weakened or \
-                   deleted to pass?). You are READ-ONLY: read and analyze, never edit. Default \
-                   to reject — if you cannot confidently sign off, the verdict is UNCERTAIN, \
-                   not APPROVE. A suggestion outside the task's own stated scope is a non-blocking \
-                   NOTE — never grounds for REQUEST_CHANGES; you are checking whether THIS diff \
-                   does what was asked, not proposing more work"
+                   deleted to pass?). You are READ-ONLY: read and analyze, never edit — and you \
+                   must not modify any file by any means, including through shell (no sed -i, no \
+                   output redirection, no rm, no git commit/checkout --); you keep shell only to \
+                   run read-only investigation and the verify command, never to change files. \
+                   Default to reject — if you cannot confidently sign off, the verdict is \
+                   UNCERTAIN, not APPROVE. A suggestion outside the task's own stated scope is a \
+                   non-blocking NOTE — never grounds for REQUEST_CHANGES; you are checking \
+                   whether THIS diff does what was asked, not proposing more work"
                 .to_string(),
             // `review` derives WorkflowRole::Review (cost_router::role_map::derive_role), so a
             // configured REVIEW role→model routes this delegate to a DIFFERENT-family model;
@@ -1607,6 +1610,19 @@ workers:
         assert!(
             reviewer.role.contains("non-blocking"),
             "the reviewer's mandate must say out-of-scope suggestions are non-blocking: {:?}",
+            reviewer.role
+        );
+        // H2 (Lane G review, finding 2): the reviewer keeps `shell` (needed
+        // to run verify/tests) with no read-only enforcement on it — a
+        // reviewer could otherwise `sed -i`/redirect/`rm`/`git commit`
+        // through shell and defeat the whole point of the allowlist. There
+        // is no read-only shell tool here, so the mandate text must say
+        // explicitly that READ-ONLY covers shell too, not just `write`/
+        // `edit`.
+        assert!(
+            reviewer.role.contains("shell"),
+            "the reviewer's mandate must say explicitly that it must not \
+             modify files through shell: {:?}",
             reviewer.role
         );
 
