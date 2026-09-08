@@ -1,0 +1,15 @@
+id: harness-env-broken-test-makefile
+title: "`make test` fails before any test runs"
+category: harness-lever-terminal-environment
+max_turns: 15
+harness_timeout_secs: 400
+oracle_timeout_secs: 60
+test: [bash, oracle_check.sh]
+# The oracle is a shell script, so the Python/Node import allowlist does not
+# apply; the overlay still makes it untamperable by the agent.
+deliverables: []
+# lang=ts difficulty=easy needs_repo_map=false needs_test_run=true
+prompt: |
+  Our test suite doesn't run anymore -- `make test` fails immediately instead
+  of showing any test results. We haven't changed the tests or the code, just
+  some tooling around them recently. Get `make test` passing again.

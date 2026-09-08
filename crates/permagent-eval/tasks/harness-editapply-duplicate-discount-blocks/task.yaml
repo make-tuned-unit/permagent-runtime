@@ -1,0 +1,16 @@
+id: harness-editapply-duplicate-discount-blocks
+title: "Gold tier is only discounting 15%, not 20%"
+category: harness-lever-edit-apply-reliability
+max_turns: 20
+harness_timeout_secs: 500
+oracle_timeout_secs: 90
+test: [bash, oracle_check.sh]
+# The oracle is a shell script, so the Python/Node import allowlist does not
+# apply; the overlay still makes it untamperable by the agent.
+deliverables: []
+# lang=ts difficulty=medium needs_repo_map=false needs_test_run=false
+prompt: |
+  Gold-tier members are supposed to get 20% off, capped at $50, but checkout
+  is only giving them 15% off with no complaints from any other tier. Fix
+  gold to match our published tier discounts: bronze 5% uncapped, silver 15%
+  capped at $20, gold 20% capped at $50, platinum 30% capped at $100.

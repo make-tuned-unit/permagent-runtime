@@ -1,0 +1,17 @@
+id: harness-refactor-shipping-quote-signature
+title: "Charge more to ship fragile packages, everywhere"
+category: harness-lever-multi-file-refactor
+max_turns: 30
+harness_timeout_secs: 600
+oracle_timeout_secs: 90
+test: [bash, oracle_check.sh]
+# The oracle is a shell script, so the Python/Node import allowlist does not
+# apply; the overlay still makes it untamperable by the agent.
+deliverables: []
+# lang=ts difficulty=medium needs_repo_map=true needs_test_run=false
+prompt: |
+  We need to charge 25% more to ship fragile packages, and it has to apply
+  everywhere a shipping cost gets quoted -- checkout, the cart preview, the
+  admin manual-quote tool, and the storefront's quote API. Right now none of
+  them account for whether a package is fragile at all. Add fragile-package
+  support end to end so every place that quotes shipping reflects it.

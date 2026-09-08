@@ -1,0 +1,16 @@
+id: harness-testfix-inventory-suite-green
+title: "Get the inventory test suite green again"
+category: harness-lever-test-driven
+max_turns: 20
+harness_timeout_secs: 400
+oracle_timeout_secs: 60
+test: [bash, oracle_check.sh]
+# The oracle test files (tests/test_inventory.py, hidden_extra_checks.py)
+# import `inventory`, the workspace module the agent must fix -- declared so
+# the import-discipline check doesn't reject it as a shadowing risk.
+deliverables: [inventory]
+# lang=py difficulty=medium needs_repo_map=false needs_test_run=true
+prompt: |
+  Our inventory test suite has two failing tests since a recent change --
+  please get it green again. Don't weaken, skip, or delete any of the
+  existing test assertions to do it; the tests are correct, the code isn't.

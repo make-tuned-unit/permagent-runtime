@@ -1,0 +1,17 @@
+id: harness-regression-trap-lru-cache-evict
+title: "RecentCache grows without bound"
+category: harness-lever-regression-trap
+max_turns: 25
+harness_timeout_secs: 600
+oracle_timeout_secs: 120
+test: [bash, oracle_check.sh]
+# The oracle is a shell script, so the Python/Node import allowlist does not
+# apply; the overlay still makes it untamperable by the agent.
+deliverables: []
+# lang=rs difficulty=medium needs_repo_map=false needs_test_run=true
+prompt: |
+  We've noticed RecentCache instances in production holding thousands of
+  entries instead of the small capacity they were constructed with -- memory
+  keeps climbing until we restart the process. Fix the cache so it never
+  exceeds its configured capacity, preserving its existing recency-tracking
+  behavior.
