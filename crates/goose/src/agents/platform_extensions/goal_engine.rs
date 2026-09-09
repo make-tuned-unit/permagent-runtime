@@ -446,6 +446,23 @@ impl GoalEngine for InternalSubagentEngine {
         .await?;
         let work_dir = worktree.clone();
 
+        // Y3: the session row above was created with `task.working_dir` — the
+        // PRIMARY checkout — because the worktree branch name (`goal/<session_id>`)
+        // can only be minted once the session id exists, so isolation can only be
+        // resolved *after* creation. Every downstream consumer of a session's
+        // `working_dir` reads this DB column directly: the developer tools'
+        // `ToolCallContext` (`agent.rs::dispatch_tool_call`, built from
+        // `session.working_dir.clone()`) and the write jail's containment root
+        // (`security/write_jail.rs::session_working_dir`). `TaskConfig::parent_working_dir`
+        // below is set to the worktree too, but nothing in the subagent reply loop
+        // (`subagent_handler.rs::get_agent_messages`) ever reads it back out for cwd
+        // purposes — it is inert. Without this repoint, the worker's shell/edit/write
+        // tools ran in the PRIMARY checkout (review-before-land isolation silently
+        // bypassed) while the write jail's boundary was inverted: it silently allowed
+        // writes to the primary tree and would have required approval for writes to
+        // the worker's own assigned worktree.
+        point_session_at_worktree(&self.session_manager, &session_id, &worktree).await?;
+
         // Route this goal to its workflow role's model (#730 wiring — configured,
         // else derived) when the orchestrator resolved one; otherwise clone the parent session's
         // provider+model — the single-model fallback, never a baked-in default.
@@ -1051,6 +1068,42 @@ pub(crate) async fn resolve_internal_isolation(
     let worktree = create_goal_worktree(working_dir, baseline, run_id).await?;
     let _ = install_work_base_hooks(&worktree).await;
     Ok((worktree, baseline.to_string()))
+}
+
+/// Y3: repoint an already-created internal-worker session's persisted
+/// `working_dir` at its resolved goal worktree.
+///
+/// [`InternalSubagentEngine::spawn`] must create the session (to mint a
+/// session id) *before* [`resolve_internal_isolation`] can run (the worktree's
+/// branch name is `goal/<session_id>`), so the session row is born pointed at
+/// the caller's `task.working_dir` — the PRIMARY checkout, never a worktree.
+/// This call closes that window before the subagent's reply loop starts.
+///
+/// This DB column is the one and only source every downstream consumer reads
+/// for the worker's tool cwd: `ToolCallContext` in
+/// `agent.rs::dispatch_tool_call` is built from `session.working_dir.clone()`,
+/// which the developer tools' shell/edit/write/tree/search clients all
+/// resolve relative paths against; the write jail's containment root
+/// (`security/write_jail.rs::WriteJailInspector::session_working_dir`) reads
+/// the identical column to decide what counts as "inside" vs. an
+/// approval-gated write "outside" the worker's sandbox.
+/// `TaskConfig::parent_working_dir`, set to this same worktree a few lines
+/// below in `spawn`, is NOT one of those consumers — nothing in
+/// `subagent_handler.rs::get_agent_messages`
+/// reads it back out for cwd purposes, so setting it alone (the prior state)
+/// left the worker running in, and the write jail silently allowing writes
+/// to, the primary checkout.
+async fn point_session_at_worktree(
+    session_manager: &SessionManager,
+    session_id: &str,
+    worktree: &Path,
+) -> Result<(), String> {
+    session_manager
+        .update(session_id)
+        .working_dir(worktree.to_path_buf())
+        .apply()
+        .await
+        .map_err(|e| format!("Failed to point goal session {session_id} at its worktree: {e}"))
 }
 
 /// Harness loop, Lane V (V3): a headless Auto roadmap's project may have no
@@ -3374,6 +3427,173 @@ mod tests {
 
         assert_eq!(worktree, tmp.path().join(GOAL_WORKTREES_DIR).join(run_id));
         assert_eq!(resolved_baseline, baseline);
+    }
+
+    // ── Lane Y3: internal worker isolation repair ────────────────────────────
+    //
+    // Lane Y2's kept scratch (glm47-merge-row-2048-*, glm47-defaults-rs-*)
+    // showed the in-process worker's commit landing directly on the PRIMARY
+    // checkout's branch while the goal worktree branch (`goal/<session>`)
+    // never advanced, and `dispatch_evidence` (which scans the worktree)
+    // reporting `files_changed:0` despite the real diff. Root cause:
+    // `InternalSubagentEngine::spawn` created the child session with
+    // `task.working_dir` (the PRIMARY checkout) and never repointed it once
+    // `resolve_internal_isolation` produced the real worktree — so
+    // `ToolCallContext::working_dir` (`agent.rs::dispatch_tool_call`,
+    // `session.working_dir.clone()`) and the write jail's containment root
+    // (`security/write_jail.rs`) both silently kept using the primary tree.
+
+    /// Direct test of the repair: repointing a session already created at one
+    /// directory to a different (worktree) directory persists, and every
+    /// later `get_session` sees the worktree — not the directory the session
+    /// was originally created with.
+    #[tokio::test]
+    async fn point_session_at_worktree_repoints_the_session_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let primary = tmp.path().join("primary-checkout");
+        let worktree = tmp.path().join("worktree");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        let manager = SessionManager::new(tmp.path().join("sessions"));
+
+        let session = manager
+            .create_session_with_parent(
+                None,
+                primary.clone(),
+                "goal session".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            session.working_dir, primary,
+            "precondition: the session is born pointed at the primary checkout \
+             (the branch name `goal/<session_id>` can only be minted once the \
+             session id exists, so isolation is always resolved after creation)"
+        );
+
+        point_session_at_worktree(&manager, &session.id, &worktree)
+            .await
+            .unwrap();
+
+        let reloaded = manager.get_session(&session.id, false).await.unwrap();
+        assert_eq!(
+            reloaded.working_dir, worktree,
+            "the session's persisted working_dir must be the worktree, not the \
+             primary checkout it was created with"
+        );
+    }
+
+    /// A stub whose registry name is deliberately unregistered, so
+    /// `providers::create` in `InternalSubagentEngine::spawn` fails fast
+    /// (a synchronous registry lookup — no network) right after isolation is
+    /// resolved. This lets the test exercise the REAL production `spawn`
+    /// path (not a fake engine) up through the worktree repoint without
+    /// running an actual agent loop.
+    #[derive(Clone)]
+    struct UnregisteredProvider {
+        model_config: crate::model::ModelConfig,
+    }
+
+    #[async_trait]
+    impl Provider for UnregisteredProvider {
+        fn get_name(&self) -> &str {
+            "y3-test-unregistered-provider"
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            self.model_config.clone()
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[crate::conversation::message::Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<crate::providers::base::MessageStream, crate::providers::errors::ProviderError>
+        {
+            unreachable!("the test provider is never registered, so stream() must never run")
+        }
+    }
+
+    fn internal_worker_task(root: &Path, baseline: &str) -> GoalTask {
+        GoalTask {
+            card_title: "y3 isolation repair".to_string(),
+            instructions: "do not actually run".to_string(),
+            working_dir: root.to_path_buf(),
+            baseline_commit: Some(baseline.to_string()),
+            timeout: Duration::from_secs(30),
+            output_tx: None,
+            parent_session_id: None,
+            goal_id: Some("goal-y3".to_string()),
+            budget_task_id: Some("task-y3".to_string()),
+            billing_class: None,
+            provider: None,
+            model: None,
+            cli_identity: None,
+            project_id: None,
+        }
+    }
+
+    /// The end-to-end defect: `InternalSubagentEngine::spawn`, run for real,
+    /// must leave the child session's `working_dir` at the resolved goal
+    /// worktree — never at `task.working_dir` (the primary checkout) — even
+    /// though session creation necessarily precedes worktree resolution.
+    /// Before the fix this failed: the session stayed pointed at `repo`
+    /// through to the (later, unrelated) provider-creation error.
+    #[tokio::test]
+    async fn internal_subagent_engine_points_child_session_at_worktree_not_primary_checkout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let manager = Arc::new(SessionManager::new(tmp.path().join("sessions")));
+
+        let engine = InternalSubagentEngine {
+            session_manager: manager.clone(),
+            provider: Arc::new(UnregisteredProvider {
+                model_config: crate::model::ModelConfig::new("y3-test-model").unwrap(),
+            }),
+            extensions: Vec::new(),
+            persona_override: None,
+            role: None,
+            model_override: None,
+        };
+
+        let error = match engine.spawn(internal_worker_task(&repo, &baseline)).await {
+            Err(error) => error,
+            Ok(_) => panic!("provider creation must fail fast for an unregistered provider name"),
+        };
+        assert!(
+            error.contains("Unknown provider"),
+            "the failure must come from provider creation, not something earlier: {error}"
+        );
+
+        // Exactly one subagent session was created for this dispatch — find it
+        // and assert its persisted working_dir is the worktree, not `repo`.
+        let sessions = manager
+            .list_sessions_by_types(&[SessionType::SubAgent])
+            .await
+            .expect("list subagent sessions");
+        assert_eq!(sessions.len(), 1, "exactly one worker session was created");
+        let session = &sessions[0];
+        // `create_goal_worktree` places the worktree at
+        // `<repo>/../.permagent-goal-worktrees/<run_id>` — a sibling of the
+        // repo, not of the session storage directory.
+        let expected_worktree = tmp.path().join(GOAL_WORKTREES_DIR).join(&session.id);
+        assert_eq!(
+            session.working_dir, expected_worktree,
+            "the worker session must be pointed at its own goal worktree"
+        );
+        assert_ne!(
+            session.working_dir, repo,
+            "the worker session must NOT still be pointed at the primary checkout"
+        );
+        assert!(
+            session.working_dir.is_dir(),
+            "the worktree the session now points at must actually exist on disk"
+        );
     }
 
     // ── Harness loop, Lane V (V3): headless Auto git-baseline fallback ──────

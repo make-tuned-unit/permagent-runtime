@@ -449,6 +449,83 @@ mod tests {
         assert!(results.is_empty(), "{:?}", results);
     }
 
+    /// Lane Y3: an internal goal worker's session is created at the PRIMARY
+    /// checkout (its id has to exist before a goal worktree branch name —
+    /// `goal/<session_id>` — can be minted) and only afterward repointed at
+    /// its resolved goal worktree
+    /// (`agents::platform_extensions::goal_engine::point_session_at_worktree`).
+    /// Once that repoint has happened, the jail's boundary must have moved
+    /// with it: a write back into the primary checkout now requires
+    /// approval, while a write inside the worker's own worktree passes
+    /// silently. Before Y3's fix the session never got repointed, so this
+    /// was inverted — the jail treated the primary checkout as "inside" and
+    /// silently allowed the worker to write there.
+    #[tokio::test]
+    async fn worktree_repointed_session_treats_primary_checkout_as_outside() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Deliberately NOT under the tempdir the harness itself runs in — the
+        // jail's builtin allowlist treats anything under a system temp
+        // directory as scratch space (see `temp_dirs_and_goal_worktrees_are_allowlisted`
+        // above), which would mask the very containment boundary this test
+        // exists to pin. Neither path needs to exist on disk:
+        // `canonical_for_containment` walks up to the nearest existing
+        // ancestor when the target doesn't exist yet.
+        let primary = PathBuf::from("/repos/y3-primary-checkout");
+        let worktree = PathBuf::from("/repos/.permagent-goal-worktrees/run-1");
+        let session_manager = Arc::new(SessionManager::new(tmp.path().join("sessions")));
+        let session = session_manager
+            .create_session(
+                primary.clone(),
+                "goal worker".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .expect("create session");
+
+        // The Y3 repoint: same mechanism as
+        // `goal_engine::point_session_at_worktree` — an `update(...).working_dir(...)`
+        // call after the worktree is resolved.
+        session_manager
+            .update(&session.id)
+            .working_dir(worktree.clone())
+            .apply()
+            .await
+            .expect("repoint session at worktree");
+
+        let jail = WriteJailInspector::new(Some(session_manager));
+
+        let inside_worktree = write_request(
+            "inside",
+            "write",
+            worktree.join("src/lib.rs").to_str().unwrap(),
+        );
+        let results = verdicts(&jail, &session.id, &[inside_worktree]).await;
+        assert!(
+            results.is_empty(),
+            "a write inside the worker's own (repointed) worktree must pass silently: {:?}",
+            results
+        );
+
+        let outside_to_primary = write_request(
+            "outside",
+            "write",
+            primary.join("src/lib.rs").to_str().unwrap(),
+        );
+        let results = verdicts(&jail, &session.id, &[outside_to_primary]).await;
+        assert_eq!(
+            results.len(),
+            1,
+            "a write back into the PRIMARY checkout must require approval now \
+             that the session is repointed at its worktree: {:?}",
+            results
+        );
+        assert!(matches!(
+            results[0].action,
+            InspectionAction::RequireApproval(Some(_))
+        ));
+    }
+
     #[tokio::test]
     async fn unknown_session_fails_open() {
         let tmp = tempfile::tempdir().unwrap();
