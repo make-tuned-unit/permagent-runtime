@@ -695,6 +695,56 @@ impl SessionManager {
         self.storage.append_cost_ledger(row).await
     }
 
+    /// Attach a turn's wall-clock timing breakdown to its already-settled
+    /// `cost_ledger` row (lane X-lat, coding-harness excellence iteration).
+    ///
+    /// Deliberately a follow-up UPDATE rather than a field on
+    /// [`CostLedgerRow`] carried through the original insert: the ledger row
+    /// is written mid-turn (fail-closed, before more turn work runs, so a
+    /// durable-accounting failure aborts the turn rather than losing spend),
+    /// but two of the timing components — the after-turn hook chain and the
+    /// tool-pair summarization await — only finish LATER in the same turn.
+    /// This call is best-effort observability, not money accounting: a
+    /// failure here must never fail the turn, so callers should log and
+    /// continue rather than propagate. A `call_id` with no matching row
+    /// (a non-turn cost_ledger writer, or a row that failed to insert) is a
+    /// harmless no-op — zero rows affected, no error.
+    pub async fn update_cost_ledger_timing(
+        &self,
+        call_id: &str,
+        timing: &crate::session::turn_timing::TurnTiming,
+    ) -> Result<()> {
+        let timing_json = serde_json::to_string(timing)?;
+        self.storage
+            .update_cost_ledger_timing(call_id, &timing_json)
+            .await
+    }
+
+    /// Session-level per-turn timing rollup (lane X-lat). Reads every
+    /// non-null `cost_ledger.timing_json` for the session, in chronological
+    /// (`ts`) order, and folds them with
+    /// [`crate::session::turn_timing::compute_rollup`]. Rows with no timing
+    /// recorded — pre-instrumentation history, or one of the handful of
+    /// non-turn `cost_ledger` writers (recovery compaction, tool-pair
+    /// summarization, council debate, orchestrator fan-out) — are skipped
+    /// rather than failing the rollup. This is what backs the headless CLI's
+    /// final `harness_overhead ...` line (`format_harness_overhead_line`).
+    pub async fn session_timing_rollup(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::turn_timing::SessionTimingRollup> {
+        let raw = self
+            .storage
+            .cost_ledger_timing_json_for_session(session_id)
+            .await?;
+        let records: Vec<crate::session::turn_timing::TurnTiming> = raw
+            .into_iter()
+            .flatten()
+            .filter_map(|json| serde_json::from_str(&json).ok())
+            .collect();
+        Ok(crate::session::turn_timing::compute_rollup(&records))
+    }
+
     /// Append one provider invocation and atomically update both token and
     /// money rollups. A repeated `call_id` is a successful no-op.
     // Every argument is a distinct piece of settlement evidence; collapsing them
@@ -1649,6 +1699,14 @@ impl SessionStorage {
                     if version < 53 {
                         spectral_schema::migrate_v52_to_v53(&self.pool).await?;
                     }
+                    // v54: cost_ledger.timing_json (coding-harness excellence
+                    // iteration, lane X-lat) — per-turn wall-clock breakdown
+                    // (model/tool/after-turn/context-mgmt) so the harness-
+                    // overhead gate can be measured instead of asserted.
+                    // PRAGMA-guarded ADD COLUMN, additive and base-independent.
+                    if version < 54 {
+                        spectral_schema::migrate_v53_to_v54(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB
@@ -2169,6 +2227,38 @@ impl SessionStorage {
         self.append_cost_ledger_with_usage(row, None, None)
             .await
             .map(|_| ())
+    }
+
+    /// Best-effort follow-up write: set `timing_json` on an existing
+    /// `cost_ledger` row. Not transactional with anything else — this is
+    /// diagnostic latency data, not money, and a missing row (a call_id the
+    /// reply loop timed but that never settled a ledger row) is a silent
+    /// no-op rather than an error.
+    async fn update_cost_ledger_timing(&self, call_id: &str, timing_json: &str) -> Result<()> {
+        let pool = self.pool().await?;
+        sqlx::query("UPDATE cost_ledger SET timing_json = ? WHERE call_id = ?")
+            .bind(timing_json)
+            .bind(call_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Every `timing_json` value for a session's `cost_ledger` rows, in
+    /// chronological (`ts`) order. `None` entries are rows with no timing
+    /// recorded (pre-instrumentation, or a non-turn writer).
+    async fn cost_ledger_timing_json_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<Option<String>>> {
+        let pool = self.pool().await?;
+        let rows: Vec<(Option<String>,)> = sqlx::query_as(
+            "SELECT timing_json FROM cost_ledger WHERE session_id = ? ORDER BY ts ASC",
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().map(|(json,)| json).collect())
     }
 
     // Every argument is a distinct piece of settlement evidence; collapsing them

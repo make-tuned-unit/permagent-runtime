@@ -1978,6 +1978,22 @@ pub async fn migrate_v52_to_v53(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// v54: `cost_ledger.timing_json` (coding-harness excellence iteration, lane
+/// X-lat). Reconciles the column onto existing DBs by re-running
+/// `apply_cost_ledger_schema`, which is idempotent (`CREATE TABLE IF NOT
+/// EXISTS` + PRAGMA-guarded `ADD COLUMN`) — fresh installs already get the
+/// column from `init_spectral_db`, which calls the same function. Purely
+/// additive and base-independent.
+pub async fn migrate_v53_to_v54(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v53 -> v54 (cost_ledger.timing_json)");
+    apply_cost_ledger_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (54)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v54 (cost_ledger.timing_json)");
+    Ok(())
+}
+
 /// The Council of LLMs: one debate session, the per-member positions across
 /// two rounds, and the chair's synthesised weekly report. New tables + indexes
 /// only — additive, idempotent, and base-independent so it can run on every
@@ -2796,6 +2812,32 @@ pub async fn apply_cost_ledger_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 .bind(col)
                 .fetch_one(&mut *tx)
                 .await?;
+        if has_column == 0 {
+            sqlx::query(ddl).execute(&mut *tx).await?;
+        }
+    }
+
+    // PRAGMA-guarded timing column on `cost_ledger` itself (lane X-lat,
+    // coding-harness excellence iteration): a nullable JSON blob holding the
+    // serialized `crate::session::turn_timing::TurnTiming` for the reply-loop
+    // turn that produced this row, set after the fact by
+    // `SessionManager::update_cost_ledger_timing` once the turn's after-turn
+    // hooks and context-management work have finished (the ledger row itself
+    // is written earlier, mid-turn, for fail-closed money accounting). `NULL`
+    // for every row written before this column existed, and for the small
+    // number of non-turn cost_ledger writers (compaction/tool-pair
+    // summarization side calls, council debate, orchestrator fan-out) that
+    // do not go through the reply loop's turn timer at all.
+    for (col, ddl) in [(
+        "timing_json",
+        "ALTER TABLE cost_ledger ADD COLUMN timing_json TEXT",
+    )] {
+        let has_column: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('cost_ledger') WHERE name = ?",
+        )
+        .bind(col)
+        .fetch_one(&mut *tx)
+        .await?;
         if has_column == 0 {
             sqlx::query(ddl).execute(&mut *tx).await?;
         }

@@ -54,6 +54,7 @@ use crate::security::egress_inspector::EgressInspector;
 use crate::security::security_inspector::SecurityInspector;
 use crate::security::write_jail::WriteJailInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
+use crate::session::turn_timing::TurnTimingRecorder;
 use crate::session::{Session, SessionManager};
 use crate::tool_inspection::ToolInspectionManager;
 use crate::tool_monitor::{assess_monologue, LoopAction, ProgressMonitor};
@@ -1912,6 +1913,14 @@ impl Agent {
                     break;
                 }
 
+                // Lane X-lat (coding-harness excellence iteration): one
+                // recorder per outer-loop turn attempt. `finish()` is called
+                // at the very end of this loop body, after the after-turn
+                // hooks and any context-management work, and the resulting
+                // record is attached to this turn's already-settled
+                // `cost_ledger` row via `update_cost_ledger_timing`.
+                let mut turn_timing = TurnTimingRecorder::start();
+
                 // TODO(S8): $-budget pre-turn stop. Once the cost ledger from
                 // PR #714 lands (in CI, unmerged), add the pre-turn spend check
                 // HERE beside S7: read the session's accumulated $-spend and, if
@@ -2005,6 +2014,7 @@ impl Agent {
                     }
                 };
 
+                turn_timing.start_model();
                 let mut stream = match Self::stream_response_from_provider(
                     turn_provider.clone(),
                     &session_config.id,
@@ -2083,6 +2093,7 @@ impl Agent {
                 let mut surfaced_thinking_in_turn = false;
 
                 while let Some(next) = stream.next().await {
+                    turn_timing.record_first_token();
                     if is_token_cancelled(&cancel_token) || exit_chat {
                         break;
                     }
@@ -2251,6 +2262,25 @@ impl Agent {
                                         }
                                     }
 
+                                    // Lane X-lat: per-tool-call name lookup for
+                                    // the timing detail recorded as each result
+                                    // arrives off `combined` below. Built once,
+                                    // before dispatch, since `request_id` is
+                                    // consumed by `add_tool_response_with_metadata`
+                                    // when its result lands.
+                                    let tool_name_by_request_id: HashMap<String, String> =
+                                        remaining_requests
+                                            .iter()
+                                            .map(|request| {
+                                                let name = request
+                                                    .tool_call
+                                                    .as_ref()
+                                                    .map(|call| call.name.to_string())
+                                                    .unwrap_or_else(|_| "unknown".to_string());
+                                                (request.id.clone(), name)
+                                            })
+                                            .collect();
+
                                     let mut tool_futures = self.handle_approved_and_denied_tools(
                                         &permission_check_result,
                                         &mut request_to_response_map,
@@ -2281,6 +2311,7 @@ impl Agent {
                                         })
                                         .collect::<Vec<_>>();
 
+                                    let tool_phase_start = std::time::Instant::now();
                                     let mut combined = stream::select_all(with_id);
                                     let mut all_install_successful = true;
 
@@ -2301,6 +2332,14 @@ impl Agent {
                                                     Some((request_id, item)) => {
                                                         match item {
                                                             ToolStreamItem::Result(output) => {
+                                                                if let Some(name) =
+                                                                    tool_name_by_request_id.get(&request_id)
+                                                                {
+                                                                    turn_timing.record_tool_call(
+                                                                        name.clone(),
+                                                                        tool_phase_start,
+                                                                    );
+                                                                }
                                                                 if let Ok(ref call_result) = output {
                                                                     if let Some(ref meta) = call_result.meta {
                                                                         if let Some(notification_data) = meta.0.get("platform_notification") {
@@ -2342,6 +2381,7 @@ impl Agent {
                                             }
                                         }
                                     }
+                                    turn_timing.record_tool_phase(tool_phase_start);
 
                                     // check for remaining elicitation messages after all tools complete
                                     for msg in self.drain_elicitation_messages(&session_config.id).await {
@@ -2483,14 +2523,16 @@ impl Agent {
                                 Arc::clone(&compact_provider),
                                 true,
                             );
-                            match compact_messages_accounted(
+                            let compaction_started = std::time::Instant::now();
+                            let compaction_result = compact_messages_accounted(
                                 &session_config.id,
                                 &conversation,
                                 false,
                                 compact_accounting.as_ref(),
                             )
-                            .await
-                            {
+                            .await;
+                            turn_timing.record_context_mgmt(compaction_started);
+                            match compaction_result {
                                 Ok((compacted_conversation, usage)) => {
                                     session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
                                     // Accounting occurred inside the reserved
@@ -2847,6 +2889,7 @@ impl Agent {
                         }
                     }
                 }
+                turn_timing.end_model();
                 if invocation.cost_tier.is_chargeable() {
                     let has_authoritative_usage = terminal_usage.as_ref().is_some_and(|usage| {
                         let u = usage.usage;
@@ -3064,7 +3107,10 @@ impl Agent {
                     tool_pair_summarization_task.abort();
                 }
 
-                if let Ok(summaries) = tool_pair_summarization_task.await {
+                let summarization_started = std::time::Instant::now();
+                let summarization_result = tool_pair_summarization_task.await;
+                turn_timing.record_context_mgmt(summarization_started);
+                if let Ok(summaries) = summarization_result {
                     let mut updated_messages = conversation.messages().clone();
 
                     for (summary_msg, tool_id) in summaries {
@@ -3108,6 +3154,7 @@ impl Agent {
                 // injected instruction instead of finishing — the interactive
                 // twin of `HoldOutcome::Hold { inject_plan }`, which until now
                 // only ever fired on a goal card's InProgress → Review edge.
+                let after_turn_started = std::time::Instant::now();
                 if exit_chat && !self.after_turn_manager.is_empty() {
                     let action = self
                         .after_turn_manager
@@ -3135,6 +3182,27 @@ impl Agent {
                             yield AgentEvent::Message(message);
                         }
                     }
+                }
+                turn_timing.record_after_turn(after_turn_started);
+
+                // Lane X-lat: attach this turn's wall-clock breakdown to its
+                // already-settled `cost_ledger` row. Best-effort — a call_id
+                // with no settled row (an unrecoverable pre-dispatch failure
+                // broke out of the loop earlier and never reaches this point;
+                // a recoverable error that produced no authoritative usage
+                // settles no row either) is a harmless no-op, and a write
+                // failure here must never fail the turn — this is
+                // observability, not money accounting.
+                let turn_timing_record = turn_timing.finish();
+                if let Err(error) = session_manager
+                    .update_cost_ledger_timing(&invocation_id, &turn_timing_record)
+                    .await
+                {
+                    debug!(
+                        session_id = %session_config.id,
+                        %error,
+                        "failed to persist per-turn harness timing (best-effort observability, not fatal)"
+                    );
                 }
 
                 if exit_chat {
@@ -4217,5 +4285,141 @@ mod tests {
             let msg = parse_recovery_text(&err);
             assert!(msg.chars().count() < MAX_PARSE_ERROR_ECHO_CHARS + 500);
         }
+    }
+
+    /// Lane X-lat (coding-harness excellence iteration): a provider with a
+    /// fixed, injected delay, driven through a REAL `Agent::reply()` call.
+    /// Proves the reply loop's timing wiring end to end — `start_model`/
+    /// `end_model`/`finish`/`update_cost_ledger_timing` — not just the
+    /// `TurnTimingRecorder` in isolation (see
+    /// `crate::session::turn_timing::tests` for that unit-level coverage,
+    /// including a fixed-delay fake tool).
+    struct FixedDelayProvider {
+        delay_ms: u64,
+    }
+
+    impl std::fmt::Debug for FixedDelayProvider {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("FixedDelayProvider").finish()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for FixedDelayProvider {
+        fn get_name(&self) -> &str {
+            "test-fixed-delay"
+        }
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            // Explicit context_limit/max_tokens: the reservation planner
+            // (`cost_router::reservation::calculate_bound`) requires both to
+            // authorize a chargeable call, and a bare `ModelConfig::new`
+            // leaves them `None` unless ambient global config happens to set
+            // `GOOSE_CONTEXT_LIMIT` — not something this test should depend
+            // on to reach the provider at all.
+            crate::model::ModelConfig::new("test")
+                .unwrap()
+                // Small on purpose: the reservation planner bounds on the
+                // FULL context capacity at the worst-case known rate across
+                // the whole bundled registry (no pricing exists for this
+                // unknown provider), so a large context here could exceed
+                // the default per-task budget ceiling ($2/$5/$10
+                // soft/gate/hard) before this test ever reaches the
+                // provider.
+                .with_context_limit(Some(4_096))
+                .with_max_tokens(Some(512))
+        }
+        async fn stream(
+            &self,
+            _: &crate::model::ModelConfig,
+            _: &str,
+            _: &str,
+            _: &[crate::conversation::message::Message],
+            _: &[rmcp::model::Tool],
+        ) -> Result<crate::providers::base::MessageStream, crate::providers::errors::ProviderError>
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            let usage = ProviderUsage::new(
+                "test-model".to_string(),
+                crate::providers::base::Usage::new(Some(5), Some(5), Some(10)),
+            );
+            let message = Message::assistant().with_text("done");
+            let stream = futures::stream::once(async move { Ok((Some(message), Some(usage))) });
+            Ok(Box::pin(stream))
+        }
+    }
+
+    #[tokio::test]
+    async fn reply_loop_persists_model_timing_close_to_the_providers_injected_delay() {
+        const DELAY_MS: u64 = 40;
+        // Real-clock test: generous slack for scheduler jitter under load
+        // (CI, a busy dev machine) without being so loose it stops meaning
+        // anything.
+        const TOLERANCE_MS: i64 = 250;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let config = AgentRunnerConfig::new(
+            session_manager.clone(),
+            PermissionManager::instance(),
+            None,
+            GooseMode::Auto,
+            true, // disable session naming: don't consume an extra provider call
+            GoosePlatform::GooseCli,
+        );
+        let agent = Agent::with_config(config);
+        let provider = Arc::new(FixedDelayProvider { delay_ms: DELAY_MS });
+
+        let session = session_manager
+            .create_session(
+                std::path::PathBuf::from("."),
+                "x-lat-timing-test".to_string(),
+                crate::session::SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .expect("create session");
+        let session_id = session.id.clone();
+        // A `Hidden` session is not "interactive", so `reply()`'s automatic
+        // `starts_new_budget_task` check never fires for it — without this,
+        // the paid-dispatch reservation is refused before the provider is
+        // ever called (see `reply_parts::tests::
+        // primary_stream_reservation_refuses_paid_dispatch_without_a_task`,
+        // which pins exactly this behaviour).
+        session_manager
+            .begin_budget_task(&session_id)
+            .await
+            .expect("begin budget task");
+        agent
+            .update_provider(provider, &session_id)
+            .await
+            .expect("update provider");
+
+        let session_config = SessionConfig {
+            id: session_id.clone(),
+            schedule_id: None,
+            max_turns: Some(1),
+            retry_config: None,
+        };
+
+        let reply_stream = agent
+            .reply(Message::user().with_text("hello"), session_config, None)
+            .await
+            .expect("reply starts");
+        tokio::pin!(reply_stream);
+        while let Some(event) = reply_stream.next().await {
+            event.expect("no error events");
+        }
+
+        let rollup = session_manager
+            .session_timing_rollup(&session_id)
+            .await
+            .expect("rollup reads back");
+        assert_eq!(rollup.turns, 1, "one provider turn was made");
+        assert!(
+            (rollup.model_ms_total - DELAY_MS as i64).abs() <= TOLERANCE_MS,
+            "model_ms_total {} not within tolerance of the injected {DELAY_MS}ms delay",
+            rollup.model_ms_total
+        );
+        assert_eq!(rollup.tool_exec_ms_total, 0, "no tool was called this turn");
     }
 }

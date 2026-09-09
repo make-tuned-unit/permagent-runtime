@@ -1503,7 +1503,43 @@ impl CliSession {
         let message = Message::user().with_text(&prompt);
         self.process_message(message, CancellationToken::default(), false)
             .await?;
+        self.print_harness_overhead_line().await;
         Ok(())
+    }
+
+    /// Lane X-lat-2 (coding-harness excellence iteration): print the
+    /// session's per-turn harness-overhead rollup as one stable plain-text
+    /// line so `permagent-eval`'s harness_log parser can read it without
+    /// touching JSON. Exact, stable format (see
+    /// `permagent::session::format_harness_overhead_line`):
+    ///
+    /// `harness_overhead p50=<ms> p95=<ms> model=<ms> tools=<ms> wall=<ms>`
+    ///
+    /// Best-effort: a rollup query failure is logged and swallowed rather
+    /// than failing an otherwise-successful headless run over an
+    /// observability read.
+    async fn print_harness_overhead_line(&self) {
+        match self
+            .agent
+            .config
+            .session_manager
+            .session_timing_rollup(&self.session_id)
+            .await
+        {
+            Ok(rollup) => {
+                println!(
+                    "{}",
+                    permagent::session::format_harness_overhead_line(&rollup)
+                );
+            }
+            Err(error) => {
+                tracing::debug!(
+                    session_id = %self.session_id,
+                    %error,
+                    "failed to read the per-turn harness timing rollup (best-effort observability, not fatal)"
+                );
+            }
+        }
     }
 
     /// Harness loop, Lane T / T3: after a headless coding-harness Auto run's

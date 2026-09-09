@@ -6,6 +6,7 @@ pub mod extension_data;
 pub mod session_manager;
 pub mod spectral_schema;
 pub mod thread_manager;
+pub mod turn_timing;
 
 pub use budget_projection::{
     BillingEvidence, BudgetProjection, BudgetScopeProjection, CapTriplet, ProjectionBand,
@@ -25,6 +26,10 @@ pub use session_manager::{
     REVIEWER_MUTATION_EXTENSION_VERSION,
 };
 pub use thread_manager::{Thread, ThreadManager, ThreadMetadata};
+pub use turn_timing::{
+    compute_rollup, format_harness_overhead_line, SessionTimingRollup, ToolCallTiming, TurnTiming,
+    TurnTimingRecorder,
+};
 
 /// Inherited only by a child CLI process launched for an existing session.
 /// The value is always an existing durable session id; callers must leave it
