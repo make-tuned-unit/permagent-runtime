@@ -1,37 +1,24 @@
-//! Executable skill packages — skills as runnable artifacts, not markdown.
+//! Path-containment utilities for on-disk skill packages under the skills
+//! root.
 //!
-//! A package is a directory with `manifest.toml` or `package.json` naming an
-//! `entrypoint`. The runner executes that entrypoint and returns structured
-//! stdout/stderr + exit code. Paths outside the skills root are refused.
+//! This module used to also carry the executable-skill *runner*
+//! (`run_named`/`run_skill`, gone as of the X-skill DAG) — it reached
+//! `tokio::process::Command` directly, with no registry, no inputs schema,
+//! and no `verification_approval::decide` call anywhere in the chain. That
+//! capability is replaced, not kept alongside, by `crate::skill_run`, which
+//! resolves a skill against the `skills` DB table and gates a `command`
+//! runner through the same approval ladder that already gates completion
+//! checks. What survives here is [`skills_root`] and [`resolve_skill_dir`]:
+//! the path-containment logic was already sound (refuses absolute paths and
+//! `..` escapes, canonicalizes and checks containment) and `skill_run` reuses
+//! it verbatim for a manifest's `skill_path`.
 
-use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tokio::process::Command;
-use tokio::time::{timeout, Duration};
 
 /// Default skills root relative to the process cwd (repo `skills/`).
 pub const DEFAULT_SKILLS_REL: &str = "skills";
 /// Env override for tests and deployments.
 pub const SKILLS_ROOT_ENV: &str = "PERMAGENT_EXECUTABLE_SKILLS_ROOT";
-const RUN_TIMEOUT: Duration = Duration::from_secs(30);
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub struct SkillManifest {
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    pub entrypoint: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct SkillRunResult {
-    pub name: String,
-    pub exit_code: i32,
-    pub stdout: String,
-    pub stderr: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parsed_json: Option<serde_json::Value>,
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum SkillRunError {
@@ -51,56 +38,6 @@ pub fn skills_root() -> PathBuf {
     std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join(DEFAULT_SKILLS_REL)
-}
-
-/// Load a skill directory's manifest (`package.json` preferred, then `manifest.toml`).
-pub fn load_manifest(dir: &Path) -> Result<SkillManifest, SkillRunError> {
-    let pkg = dir.join("package.json");
-    if pkg.is_file() {
-        let raw = std::fs::read_to_string(&pkg).map_err(|e| SkillRunError::Io(e.to_string()))?;
-        return serde_json::from_str(&raw)
-            .map_err(|e| SkillRunError::Io(format!("package.json: {e}")));
-    }
-    let toml_path = dir.join("manifest.toml");
-    if toml_path.is_file() {
-        let raw =
-            std::fs::read_to_string(&toml_path).map_err(|e| SkillRunError::Io(e.to_string()))?;
-        return parse_minimal_toml(&raw)
-            .ok_or_else(|| SkillRunError::Io("manifest.toml missing name/entrypoint".into()));
-    }
-    Err(SkillRunError::Io(format!(
-        "no package.json or manifest.toml in {}",
-        dir.display()
-    )))
-}
-
-/// Tiny TOML subset: `name = "..."`, `description = "..."`, `entrypoint = "..."`.
-fn parse_minimal_toml(raw: &str) -> Option<SkillManifest> {
-    let mut name = None;
-    let mut description = String::new();
-    let mut entrypoint = None;
-    for line in raw.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((k, v)) = line.split_once('=') else {
-            continue;
-        };
-        let k = k.trim();
-        let v = v.trim().trim_matches('"').to_string();
-        match k {
-            "name" => name = Some(v),
-            "description" => description = v,
-            "entrypoint" => entrypoint = Some(v),
-            _ => {}
-        }
-    }
-    Some(SkillManifest {
-        name: name?,
-        description,
-        entrypoint: entrypoint?,
-    })
 }
 
 /// Resolve `name` (a skill directory name or relative path) under `root`.
@@ -148,121 +85,35 @@ pub fn resolve_skill_dir(root: &Path, name: &str) -> Result<PathBuf, SkillRunErr
     Ok(skill_canon)
 }
 
-/// Execute one skill by name/path under `root`.
-pub async fn run_skill(root: &Path, name: &str) -> Result<SkillRunResult, SkillRunError> {
-    let dir = resolve_skill_dir(root, name)?;
-    let manifest = load_manifest(&dir)?;
-    let entry = dir.join(&manifest.entrypoint);
-    if !entry.is_file() {
-        return Err(SkillRunError::Io(format!(
-            "entrypoint '{}' not found in {}",
-            manifest.entrypoint,
-            dir.display()
-        )));
-    }
-
-    let mut cmd = if looks_like_shell(&manifest.entrypoint) {
-        let mut c = Command::new("sh");
-        c.arg(&entry);
-        c
-    } else {
-        Command::new(&entry)
-    };
-    cmd.current_dir(&dir);
-    crate::subprocess::configure_subprocess(&mut cmd);
-
-    let output = timeout(RUN_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| SkillRunError::Io("skill timed out".into()))?
-        .map_err(|e| SkillRunError::Io(e.to_string()))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let parsed_json = serde_json::from_str(stdout.trim()).ok();
-    let exit_code = output.status.code().unwrap_or(-1);
-
-    Ok(SkillRunResult {
-        name: manifest.name,
-        exit_code,
-        stdout,
-        stderr,
-        parsed_json,
-    })
-}
-
-fn looks_like_shell(entrypoint: &str) -> bool {
-    entrypoint.ends_with(".sh") || entrypoint.ends_with(".bash")
-}
-
-/// Convenience: run `name` against [`skills_root`].
-pub async fn run_named(name: &str) -> Result<SkillRunResult, SkillRunError> {
-    run_skill(&skills_root(), name).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
 
-    fn write_example(dir: &Path) {
-        let skill = dir.join("examples").join("hello-json");
-        fs::create_dir_all(&skill).unwrap();
-        fs::write(
-            skill.join("package.json"),
-            r#"{"name":"hello-json","description":"fixed JSON","entrypoint":"run.sh"}"#,
-        )
-        .unwrap();
-        fs::write(
-            skill.join("run.sh"),
-            "#!/bin/sh\necho '{\"ok\":true,\"skill\":\"hello-json\"}'\n",
-        )
-        .unwrap();
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn repo_example_skill_runs() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("skills");
-        let root = std::fs::canonicalize(&root).expect("repo skills/ dir");
-        let result = run_skill(&root, "examples/hello-json")
-            .await
-            .expect("repo example skill");
-        assert_eq!(result.exit_code, 0);
-        assert_eq!(result.parsed_json.unwrap()["skill"], "hello-json");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn runner_executes_example_skill_json() {
+    #[test]
+    fn path_outside_skills_root_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
-        write_example(tmp.path());
-        let result = run_skill(tmp.path(), "examples/hello-json")
-            .await
-            .expect("example skill should run");
-        assert_eq!(result.exit_code, 0);
-        let json = result.parsed_json.expect("stdout is JSON");
-        assert_eq!(json["ok"], true);
-        assert_eq!(json["skill"], "hello-json");
-    }
-
-    #[tokio::test]
-    async fn path_outside_skills_root_is_refused() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_example(tmp.path());
-        let err = run_skill(tmp.path(), "../hello-json").await.unwrap_err();
+        fs::create_dir_all(tmp.path().join("examples/hello-json")).unwrap();
+        let err = resolve_skill_dir(tmp.path(), "../hello-json").unwrap_err();
         match err {
             SkillRunError::Refused(msg) => assert!(msg.contains(".."), "{msg}"),
             other => panic!("expected refuse, got {other}"),
         }
     }
 
-    #[tokio::test]
-    async fn absolute_path_is_refused() {
+    #[test]
+    fn absolute_path_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
-        write_example(tmp.path());
-        let err = run_skill(tmp.path(), "/tmp").await.unwrap_err();
+        let err = resolve_skill_dir(tmp.path(), "/tmp").unwrap_err();
         assert!(matches!(err, SkillRunError::Refused(_)));
+    }
+
+    #[test]
+    fn a_valid_relative_path_resolves_under_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("examples/hello-json")).unwrap();
+        let root_canon = std::fs::canonicalize(tmp.path()).unwrap();
+        let resolved = resolve_skill_dir(tmp.path(), "examples/hello-json").unwrap();
+        assert!(resolved.starts_with(&root_canon));
     }
 }

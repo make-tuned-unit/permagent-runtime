@@ -302,6 +302,29 @@ pub struct CheckApprovalPayload {
     pub tier: String,
     /// Which project's ladder this decision updates.
     pub project_id: String,
+    /// The `skills.id` this card is about, when it was filed by `skill_run`
+    /// rather than a goal's completion check. Together with [`inputs_hash`]
+    /// this is the exact (skill, inputs) pair the card names — the X-skill
+    /// DAG's "bound to the exact (skill id, inputs hash)" requirement.
+    /// `#[serde(default)]` + skip-when-absent keeps every pre-existing
+    /// check_approval payload (filed by a goal's completion-check gate)
+    /// parsing and byte-identical on the wire.
+    ///
+    /// [`inputs_hash`]: CheckApprovalPayload::inputs_hash
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_id: Option<String>,
+    /// sha256 of the canonical `inputs` JSON `skill_run` was called with.
+    /// Present iff `skill_id` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inputs_hash: Option<String>,
+    /// The session that minted this card, when it was filed by `skill_run`.
+    /// Only [`auto_approve_skill_run`] reads it, and only to refuse consuming
+    /// a card some other session opened — the same binding
+    /// [`RoadmapApprovalPayload::minting_session_id`] uses for the same
+    /// reason. A human answering through the ordinary Decision Inbox ignores
+    /// this field entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minting_session_id: Option<String>,
 }
 
 /// The exact roadmap content a human is being asked to approve. The hash is
@@ -1709,6 +1732,35 @@ pub async fn find_open_decision_for_goal(
     Ok(row.as_ref().map(row_to_decision))
 }
 
+/// Find an open [`PROPOSAL_CHECK_APPROVAL`] decision filed by `skill_run` for
+/// the exact (skill, inputs) pair, to avoid filing a duplicate card every time
+/// a caller retries a still-parked skill. Skill-run decisions carry no
+/// `goal_id` (unlike a goal's completion-check gate), so the dedupe key lives
+/// in the payload instead of the `goal_id` column [`find_open_decision_for_goal`]
+/// uses.
+pub async fn find_open_decision_for_skill(
+    pool: &Pool<Sqlite>,
+    skill_id: &str,
+    inputs_hash: &str,
+) -> Result<Option<Decision>, String> {
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM decisions \
+         WHERE kind = 'choice' AND status = 'open' \
+           AND json_extract(payload_json, '$.proposal') = ? \
+           AND json_extract(payload_json, '$.check_approval.skill_id') = ? \
+           AND json_extract(payload_json, '$.check_approval.inputs_hash') = ? \
+         ORDER BY created_at DESC LIMIT 1",
+        DECISION_COLUMNS
+    )))
+    .bind(PROPOSAL_CHECK_APPROVAL)
+    .bind(skill_id)
+    .bind(inputs_hash)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.as_ref().map(row_to_decision))
+}
+
 /// Mark every open decision for a goal as `superseded` (#490). Used when a goal
 /// is cancelled: any pending approve_review / unblock item is moot, so it leaves
 /// the inbox rather than lingering against a terminal goal. Returns the number
@@ -2551,6 +2603,151 @@ pub async fn auto_approve_headless_goal_review(
             .get("minting_session_id")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
+    };
+
+    Ok((updated, proof))
+}
+
+/// Auto-answer a JUST-CREATED [`PROPOSAL_CHECK_APPROVAL`] card on behalf of an
+/// unattended `GooseMode::Auto` `skill_run` call (X-skill DAG, S3), gated by
+/// the caller behind an explicit policy switch that defaults OFF
+/// (`skill_run::HEADLESS_SKILL_RUN_ENV`) — same `ACTOR_AUTO_LAUNCH` pattern as
+/// [`auto_approve_roadmap_launch`] and [`auto_approve_headless_goal_review`]
+/// above, and the same reasons for being a separate, narrower path rather than
+/// a fork of [`answer_decision_inner`]: it does not touch [`VALID_ACTORS`] or
+/// the tier gate those share, so `ACTOR_AUTO_LAUNCH` remains permanently
+/// unusable through the general answer path.
+///
+/// Three checks beyond "still open": the decision must be a `choice` naming
+/// [`PROPOSAL_CHECK_APPROVAL`], its `check_approval.minting_session_id` must
+/// equal `session_id` — a decision `skill_run` opened in one session can never
+/// be auto-consumed by another, whether that is a forged call, a replay, or
+/// simply a second unattended session in the same project (the same binding
+/// [`RoadmapApprovalPayload::minting_session_id`] enforces) — and the card
+/// must actually offer [`CHECK_APPROVAL_ONCE`]. The answer is always
+/// "approve once": an unattended session can spend a single-use grant on the
+/// exact command it already showed the card, never widen the project
+/// allowlist — that stays a human-only act, same as everywhere else in this
+/// ladder.
+///
+/// Deliberately does **not** enqueue the generic `check_approval` effect
+/// (unlike the two functions above): `skill_run` consumes the returned
+/// [`DecisionProof`] by executing the command directly in the same call, so
+/// there is nothing left for the async effect drain to apply — enqueuing it
+/// anyway would only leave a redundant, never-spent `grant_once` sitting in
+/// the project's ladder state.
+pub async fn auto_approve_skill_run(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+    session_id: &str,
+) -> Result<(Decision, DecisionProof), AnswerError> {
+    let decision = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+    if decision.status != "open" {
+        return Err(AnswerError::AlreadyResolved(decision.status));
+    }
+    if decision.kind != "choice" {
+        return Err(AnswerError::Invalid(
+            "auto-launch approval only applies to 'choice' decisions".to_string(),
+        ));
+    }
+    let payload: ChoicePayload = serde_json::from_value(decision.payload.clone())
+        .map_err(|e| AnswerError::Db(format!("stored choice payload unreadable: {}", e)))?;
+    if payload.proposal.as_deref() != Some(PROPOSAL_CHECK_APPROVAL) {
+        return Err(AnswerError::Invalid(
+            "auto-launch skill approval only applies to check_approval proposals".to_string(),
+        ));
+    }
+    let Some(subject) = payload.check_approval.as_ref() else {
+        return Err(AnswerError::Invalid(
+            "check_approval decision carries no subject to approve".to_string(),
+        ));
+    };
+    if subject.minting_session_id.as_deref() != Some(session_id) {
+        return Err(AnswerError::Forbidden(
+            "this card was opened by a different session — an unattended approval cannot cross \
+             sessions"
+                .to_string(),
+        ));
+    }
+    if !payload.options.iter().any(|o| o.id == CHECK_APPROVAL_ONCE) {
+        return Err(AnswerError::Invalid(
+            "decision does not offer an approve-once option".to_string(),
+        ));
+    }
+
+    let resolved_at = now_timestamp();
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    // Atomic open -> answered, same shape as the other auto-launch answers:
+    // zero rows affected means we lost a race (e.g. a human answered first),
+    // or this exact proof is being replayed against an already-resolved card.
+    let result = sqlx::query(
+        "UPDATE decisions SET status = 'answered', answer = 'choice', answer_note = ?, \
+         answer_choice_id = ?, answer_input = NULL, acted_by = ?, resolved_at = ?, \
+         staged_answer_json = NULL \
+         WHERE id = ? AND status = 'open'",
+    )
+    .bind("Pre-approved: unattended auto-mode skill_run")
+    .bind(CHECK_APPROVAL_ONCE)
+    .bind(ACTOR_AUTO_LAUNCH)
+    .bind(&resolved_at)
+    .bind(decision_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AnswerError::Db(e.to_string()))?;
+    if result.rows_affected() == 0 {
+        return Err(AnswerError::AlreadyResolved("answered".to_string()));
+    }
+
+    append_audit_tx_with_principal(
+        &mut tx,
+        decision_id,
+        decision.goal_id.as_deref(),
+        ACTOR_AUTO_LAUNCH,
+        decision.tier,
+        "choice",
+        None,
+        None,
+    )
+    .await
+    .map_err(AnswerError::Db)?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    crate::events::emit(crate::events::decision_resolved(
+        decision_id,
+        &decision.kind,
+        "choice",
+        ACTOR_AUTO_LAUNCH,
+        decision.tier,
+    ));
+
+    let updated = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+
+    let proof = DecisionProof {
+        decision_id: decision_id.to_string(),
+        kind: decision.kind.clone(),
+        goal_id: decision.goal_id.clone(),
+        tier: decision.tier,
+        answer: "choice".to_string(),
+        acted_by: ACTOR_AUTO_LAUNCH.to_string(),
+        // The exact session this proof was already checked against above
+        // (`subject.minting_session_id == Some(session_id)`) — `skill_run`
+        // consumes this proof directly in the same call, so there is no
+        // second call site that needs to re-derive it from the raw payload
+        // the way `from_answered_row` does.
+        minting_session_id: Some(session_id.to_string()),
     };
 
     Ok((updated, proof))

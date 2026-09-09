@@ -113,6 +113,7 @@ pub mod session;
 pub mod session_context;
 pub mod session_wing;
 pub mod skill_md;
+pub mod skill_run;
 pub mod skills;
 pub mod slash_commands;
 pub mod sources;

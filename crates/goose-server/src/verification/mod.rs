@@ -1258,6 +1258,11 @@ async fn park_for_command_approval(
             deny: parked.deny.map(|d| d.as_str().to_string()),
             tier: parked.tier.as_str().to_string(),
             project_id: project.id.clone(),
+            // This card is filed by a goal's completion-check gate, not
+            // `skill_run` — no skill/inputs/session binding to carry.
+            skill_id: None,
+            inputs_hash: None,
+            minting_session_id: None,
         }),
         roadmap_approval: None,
     };

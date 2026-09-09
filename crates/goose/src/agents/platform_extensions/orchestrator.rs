@@ -316,9 +316,18 @@ struct SteerGoalParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-struct RunExecutableSkillParams {
-    /// Skill name or relative path under the skills root (e.g. `examples/hello-json`).
+struct SkillRunParams {
+    /// Registered skill name (looked up in the `skills` registry — not a
+    /// filesystem path).
     name: String,
+    /// Arguments for the skill, validated against its manifest's `inputs`
+    /// JSON Schema before anything runs. Omit for a skill with no inputs.
+    #[serde(default)]
+    inputs: Option<serde_json::Value>,
+    /// Project whose approval-ladder privilege (allowlist, earned trust) this
+    /// run is scoped to. Defaults to the personal project when omitted.
+    #[serde(default)]
+    project_id_or_slug: Option<String>,
 }
 
 /// Shared scope selector for the `context_*` tools.
@@ -3886,32 +3895,71 @@ impl OrchestratorClient {
         ))]))
     }
 
-    /// X-dag-3 (harness loop, coding-harness excellence iteration, record
-    /// only — this lane's scope is DAG enforcement + `delegate`, not this):
-    /// `crate::executable_skills::run_named` below reaches an arbitrary
-    /// shell command named by a skill file with NO approval ladder in front
-    /// of it — a recipe or skill definition names a `name`, and whatever
-    /// shell that skill was authored to run executes with no distinction
-    /// from a tool the coordinator itself was allowed to call. Still
-    /// unguarded as of this lane; the approval ladder
-    /// (`docs/orchestrator/PRIME_RLM_AND_SKILLS.md` Part B) is X-skill's own
-    /// node in the excellence-iteration DAG, not fixed here.
-    async fn handle_run_executable_skill(
+    /// The gated replacement for the old, ungated `run_executable_skill`
+    /// (X-skill DAG). X-dag-3 (harness loop, coding-harness excellence
+    /// iteration) recorded this exact hole without fixing it — this is that
+    /// fix. Every call now passes through `crate::skill_run::skill_run`,
+    /// which resolves the skill against the `skills` registry, validates
+    /// `inputs` against its manifest's JSON Schema, and — for a `command`
+    /// runner — the exact `verification_approval::decide` ladder that
+    /// already gates completion checks, filing a Decision Inbox card instead
+    /// of executing anything when it parks.
+    async fn handle_skill_run(
         &self,
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResult, String> {
         let args = arguments.ok_or("Missing arguments")?;
-        let name = extract_string(&args, "name")?;
-        match crate::executable_skills::run_named(&name).await {
+        let params: SkillRunParams =
+            serde_json::from_value(serde_json::Value::Object(args)).map_err(|e| e.to_string())?;
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+        let session_id = self.context.session.as_ref().map(|s| s.id.clone());
+        let session_mode_auto = self.current_session_mode().await == Some(GooseMode::Auto);
+
+        let req = crate::skill_run::SkillRunRequest {
+            name: params.name,
+            inputs: params.inputs.unwrap_or(serde_json::Value::Null),
+            project_id_or_slug: params.project_id_or_slug,
+            session_id,
+            session_mode_auto,
+        };
+
+        match crate::skill_run::skill_run(&pool, &crate::executable_skills::skills_root(), req)
+            .await
+        {
             Ok(result) => {
-                let text = serde_json::to_string_pretty(&result).unwrap_or_else(|_| {
-                    format!(
-                        "exit={} stdout={} stderr={}",
-                        result.exit_code, result.stdout, result.stderr
-                    )
-                });
+                let verdict = match result.verify_passed {
+                    Some(true) => "PASS",
+                    Some(false) => "FAIL",
+                    None => "n/a",
+                };
+                let text = format!(
+                    "skill '{}' ran (verify: {verdict}, exit={:?}, {} ms){}\n\nstdout:\n{}\n\nstderr:\n{}",
+                    result.name,
+                    result.exit_code,
+                    result.duration_ms,
+                    result
+                        .decision_id
+                        .as_ref()
+                        .map(|id| format!(" — authorized by Decision Inbox item {id} (actor {})", result.actor.as_deref().unwrap_or("?")))
+                        .unwrap_or_default(),
+                    result.stdout,
+                    result.stderr,
+                );
                 Ok(CallToolResult::success(vec![Content::text(text)]))
             }
+            Err(crate::skill_run::SkillRunError::Parked {
+                decision_id,
+                reason,
+            }) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Awaiting approval: this skill's command needs review before it can run. \
+                     A Decision Inbox item ({decision_id}) has been filed — {reason}. Call \
+                     skill_run again with the same name and inputs once it has been answered."
+            ))])),
             Err(e) => Err(e.to_string()),
         }
     }
@@ -5005,12 +5053,16 @@ impl OrchestratorClient {
                 schema::<SteerGoalParams>(),
             ),
             Tool::new(
-                "run_executable_skill".to_string(),
-                "Run a packaged executable skill by name or relative path under the skills \
-                 root (manifest.toml or package.json + entrypoint). Returns structured \
-                 stdout/stderr and exit code. Paths outside the skills directory are refused."
+                "skill_run".to_string(),
+                "Run a registered skill by name, with inputs validated against its manifest's \
+                 JSON Schema before anything runs. A 'command' skill passes through the same \
+                 approval ladder that gates completion-check commands: an allowlisted or \
+                 already-earned command runs immediately, anything else parks with a Decision \
+                 Inbox item and this call returns 'awaiting approval' instead of a result — \
+                 call it again with the same name and inputs once that item has been answered. \
+                 A skill's own [[verify]] checks decide pass/fail, never its exit code alone."
                     .to_string(),
-                schema::<RunExecutableSkillParams>(),
+                schema::<SkillRunParams>(),
             ),
             Tool::new(
                 "context_set".to_string(),
@@ -5156,7 +5208,7 @@ impl McpClientTrait for OrchestratorClient {
             "goal_advance" => self.handle_goal_advance(arguments).await,
             "goal_status" => self.handle_goal_status(arguments).await,
             "steer_goal" => self.handle_steer_goal(arguments).await,
-            "run_executable_skill" => self.handle_run_executable_skill(arguments).await,
+            "skill_run" => self.handle_skill_run(arguments).await,
             "context_set" => self.handle_context_set(arguments).await,
             "context_get" => self.handle_context_get(arguments).await,
             "context_list" => self.handle_context_list(arguments).await,
@@ -15389,7 +15441,7 @@ mod tests {
             .map(|t| t.name.to_string())
             .collect();
         for required in [
-            "run_executable_skill",
+            "skill_run",
             "message_goal",
             "steer_goal",
             "context_set",
@@ -15402,6 +15454,21 @@ mod tests {
                 "{required} must be in the orchestrator tool list, got {names:?}"
             );
         }
+    }
+
+    /// S6 (X-skill DAG): the old ungated `run_executable_skill` tool must no
+    /// longer be reachable from the model at all — `skill_run` replaces it,
+    /// not sits beside it.
+    #[test]
+    fn run_executable_skill_is_gone_from_the_tool_surface() {
+        let names: Vec<String> = OrchestratorClient::get_tools()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n == "run_executable_skill"),
+            "run_executable_skill must be removed, not kept alongside skill_run: {names:?}"
+        );
     }
 
     // ── D10: the dispatch nudge ─────────────────────────────────────────
