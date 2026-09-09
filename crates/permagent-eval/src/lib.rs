@@ -21,6 +21,9 @@
 //!   SQLite database, behind a [`cost::CostReader`] trait so it can be mocked.
 //! - [`harness_log`] — best-effort tool-call / rate-limit / turn-limit signal
 //!   extraction from the harness's captured stdout+stderr log.
+//! - [`graduate`] — D1 (`docs/orchestrator/CODING_HARNESS_ROLE_GRADUATION_DAG.md`
+//!   G2): turn retained eval-run JSON reports into durable capability-directory
+//!   `RoleEvidence` rows.
 //! - [`metrics`] — aggregation: pass-rate, $/solved, median $/task, with all the
 //!   awkward edge cases (0 solved, all solved, unknown/estimated costs).
 //! - [`report`] — deterministic text / markdown / JSON rendering.
@@ -30,6 +33,7 @@
 
 pub mod cost;
 pub mod dispatch_inventory;
+pub mod graduate;
 pub mod harness_log;
 pub mod invocation;
 pub mod iteration;
@@ -48,7 +52,17 @@ pub use dispatch_inventory::{
     scan_production_rust, DispatchInventory, DispatchSeam, SeamClassification, SeamKind,
     RULESET_VERSION as DISPATCH_INVENTORY_RULESET_VERSION,
 };
-pub use harness_log::{scan as scan_harness_log, LogSignals};
+pub use graduate::{
+    apply_role_evidence_json, build_run_evidence, compute_role_evidence, default_directory_path,
+    default_smoke_task_id, describe_change, empty_directory_json, existing_role_evidence,
+    graduate_runs_into_directory, load_directory_json, resolve_identity, resolve_run_id,
+    resolve_snapshot_date, run_qualifies, save_directory_json, select_tier, validate_graduation,
+    GraduateOutcome, GraduateRequest, RoleEvidence, RunEvidence, RunFile, SummaryRecord,
+    TaskRecord, TierRecord, WorkflowRole, DAG_SELECTION_FLOOR, DEFAULT_ORCHESTRATE_SMOKE_TASK_ID,
+    KB_SNAPSHOT_STALE_AFTER_DAYS, MICRO_SUITE_PASS_FLOOR,
+    SCHEMA_VERSION as CAPABILITY_DIRECTORY_SCHEMA_VERSION,
+};
+pub use harness_log::{scan as scan_harness_log, LogSignals, PlannerRoute};
 pub use invocation::{build_invocation, recipe_with_prompt, Invocation};
 pub use iteration::{
     run_training_loop, ArmRun, ArmRunner, DagEvidence, GraduationDecision, GraduationGates,

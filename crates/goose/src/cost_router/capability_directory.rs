@@ -311,6 +311,18 @@ impl RoleEvidence {
     pub fn snapshot_date(&self) -> Option<NaiveDate> {
         self.snapshot_date
     }
+    /// The evidence run's observed cost, USD. Added for Lane Z4's evidence
+    /// pipeline (`permagent-eval graduate`, G2): a run that reports no cost
+    /// for a field must be able to preserve a PRIOR observation rather than
+    /// silently zeroing it, which requires reading the existing value first.
+    pub fn observed_cost_usd(&self) -> Option<f64> {
+        self.observed_cost_usd
+    }
+    /// The evidence run's observed wall-clock latency, seconds. See
+    /// [`Self::observed_cost_usd`]'s doc for why this getter exists.
+    pub fn observed_latency_s(&self) -> Option<f64> {
+        self.observed_latency_s
+    }
 }
 
 /// One model's card: KB-heuristic strengths, billing class (never inferred

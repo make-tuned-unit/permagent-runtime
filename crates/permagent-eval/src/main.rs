@@ -9,6 +9,9 @@
 //! - `list`     — list the bundled tasks.
 //! - `validate` — load and validate every task spec.
 //! - `qualify`  — validate retained held-out evidence and emit a scorecard.
+//! - `graduate` — fold retained run reports into the capability directory's
+//!   durable per-role evidence (D1, `docs/orchestrator/
+//!   CODING_HARNESS_ROLE_GRADUATION_DAG.md` G2).
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -20,6 +23,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use permagent_eval::cost::LedgerCostReader;
+use permagent_eval::graduate::{
+    default_directory_path, describe_change, graduate_runs_into_directory, GraduateRequest,
+    WorkflowRole,
+};
 use permagent_eval::invocation::build_invocation;
 use permagent_eval::qualification::QualificationInput;
 use permagent_eval::report::{render_json, render_markdown, render_text, TierReport};
@@ -56,6 +63,10 @@ enum Command {
     Validate(TasksDirArg),
     /// Validate retained held-out evidence and emit its derived scorecard.
     Qualify(QualifyArgs),
+    /// D1: fold retained run reports into the capability directory's
+    /// durable per-role evidence (`docs/orchestrator/
+    /// CODING_HARNESS_ROLE_GRADUATION_DAG.md` G2).
+    Graduate(GraduateArgs),
     /// Inventory production provider/process dispatch seams without running a model.
     DispatchInventory(DispatchInventoryArgs),
     /// Inspect or advance the master program manifest. The existing Permagent
@@ -178,6 +189,55 @@ struct QualifyArgs {
     /// Also write the derived scorecard to this file.
     #[arg(long, value_name = "FILE")]
     out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct GraduateArgs {
+    /// One or more retained run report JSON files, as written by
+    /// `permagent-eval run --format json --out FILE` (repeatable; passed in
+    /// the order the streak should be evaluated, oldest first, when the
+    /// files don't carry their own `generated_at`).
+    #[arg(long = "run", value_name = "FILE", required = true)]
+    runs: Vec<PathBuf>,
+
+    /// Provider id, required only when a run record doesn't carry one.
+    #[arg(long)]
+    provider: Option<String>,
+
+    /// Model string, required only when a run record doesn't carry one.
+    #[arg(long)]
+    model: Option<String>,
+
+    /// Workflow role this evidence applies to: orchestrate (alias: hard),
+    /// edit, mechanical, review, or local. Defaults to `orchestrate` (a
+    /// `permagent-eval run --tier` invocation drives the harness's full
+    /// main loop end-to-end on each task) unless --worker is given.
+    #[arg(long)]
+    role: Option<String>,
+
+    /// This run represents worker-role (not coordinator) fixtures; role
+    /// defaults to `edit` when --role is omitted (routing_matrix::
+    /// capability_for_category's own doc: "EDIT ... is the evidence every
+    /// fixture capability here ultimately measures").
+    #[arg(long)]
+    worker: bool,
+
+    /// Fallback date (YYYY-MM-DD) for a run record with no `generated_at`.
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    snapshot_date: Option<String>,
+
+    /// Capability directory JSON file to read and update. Defaults to the
+    /// same path the running harness uses
+    /// (`permagent_eval::graduate::default_directory_path`, which mirrors
+    /// `crates/goose/src/cost_router/capability_directory.rs`'s
+    /// `CapabilityDirectory::default_path` by hand — see `graduate.rs`'s
+    /// module doc for why this crate cannot call that function directly).
+    #[arg(long, value_name = "FILE")]
+    directory: Option<PathBuf>,
+
+    /// Print the resulting card diff without writing anything.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Args, Debug)]
@@ -368,6 +428,7 @@ fn main() -> Result<()> {
         Command::List(arg) => cmd_list(&resolve_tasks_dir(&arg)),
         Command::Validate(arg) => cmd_validate(&resolve_tasks_dir(&arg)),
         Command::Qualify(args) => cmd_qualify(args),
+        Command::Graduate(args) => cmd_graduate(args),
         Command::DispatchInventory(args) => cmd_dispatch_inventory(args),
         Command::Program { command } => cmd_program(command),
     }
@@ -820,6 +881,64 @@ fn cmd_qualify(args: QualifyArgs) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the target role from `--role`/`--worker` (see [`GraduateArgs`]'s
+/// doc for the precedence). Never guesses beyond that documented default.
+fn resolve_graduate_role(args: &GraduateArgs) -> Result<WorkflowRole> {
+    if let Some(tag) = &args.role {
+        return WorkflowRole::from_tag(tag).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown role '{}' — expected one of: orchestrate (alias: hard), edit, \
+                 mechanical, review, local",
+                tag
+            )
+        });
+    }
+    if args.worker {
+        return Ok(WorkflowRole::Edit);
+    }
+    Ok(WorkflowRole::Orchestrate)
+}
+
+/// Thin CLI wrapper over the library entry point
+/// [`permagent_eval::graduate::graduate_runs_into_directory`]: resolve the
+/// `--role`/`--worker` flags and the default directory path (both
+/// CLI-specific), delegate the real read/compute/write work, then print the
+/// before/after summary. Kept thin deliberately — the read/compute/write
+/// core lives in the library so it is reachable from OUTSIDE this crate too
+/// (see that function's doc for why: `crates/goose`'s cross-crate
+/// schema-drift test).
+fn cmd_graduate(args: GraduateArgs) -> Result<()> {
+    let role = resolve_graduate_role(&args)?;
+    let directory_path = match &args.directory {
+        Some(p) => p.clone(),
+        None => default_directory_path()?,
+    };
+    let outcome = graduate_runs_into_directory(&GraduateRequest {
+        runs: &args.runs,
+        provider: args.provider.as_deref(),
+        model: args.model.as_deref(),
+        role,
+        snapshot_date: args.snapshot_date.as_deref(),
+        directory_path: &directory_path,
+        dry_run: args.dry_run,
+    })?;
+
+    let summary = describe_change(
+        &outcome.provider,
+        &outcome.model,
+        outcome.role,
+        outcome.before.as_ref(),
+        &outcome.after,
+    );
+    println!("{summary}");
+    if outcome.written {
+        println!("\nWrote {}", directory_path.display());
+    } else {
+        println!("\n(dry run — nothing written)");
+    }
+    Ok(())
+}
+
 fn cmd_list(tasks_dir: &Path) -> Result<()> {
     let tasks = load_task_set(tasks_dir)?;
     println!("{} tasks in {}", tasks.len(), tasks_dir.display());
@@ -884,6 +1003,25 @@ fn cmd_plan(args: PlanArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Add `run_id`/`generated_at` to a `render_json` report's top-level object
+/// — pure so it is unit-tested without shelling out to the harness (see
+/// `cmd_run`'s call site for why this is additive envelope metadata rather
+/// than a `report.rs` change).
+fn stamp_json_envelope(
+    mut value: serde_json::Value,
+    run_id: &str,
+    generated_at: chrono::DateTime<chrono::Utc>,
+) -> serde_json::Value {
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("run_id".to_string(), serde_json::json!(run_id));
+        obj.insert(
+            "generated_at".to_string(),
+            serde_json::json!(generated_at.to_rfc3339()),
+        );
+    }
+    value
 }
 
 fn cmd_run(args: RunArgs) -> Result<()> {
@@ -974,8 +1112,19 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         }
     }
 
+    // D2 (`docs/orchestrator/CODING_HARNESS_ROLE_GRADUATION_DAG.md` G2): stamp
+    // a run identity + timestamp onto the JSON report ONLY — `render_json`
+    // itself (report.rs, shared by every format and by its own tests) stays
+    // untouched; this is additive envelope metadata `permagent-eval
+    // graduate` (D1) reads to avoid needing --provider/--model/
+    // --snapshot-date flags on a fresh run.
+    let generated_at = chrono::Utc::now();
+    let run_id = format!("run-{}", generated_at.format("%Y%m%dT%H%M%SZ"));
     let rendered = match args.format.as_str() {
-        "json" => serde_json::to_string_pretty(&render_json(&reports))?,
+        "json" => {
+            let value = stamp_json_envelope(render_json(&reports), &run_id, generated_at);
+            serde_json::to_string_pretty(&value)?
+        }
         "md" => render_markdown(&reports),
         _ => render_text(&reports),
     };
@@ -1545,5 +1694,209 @@ nodes:
             permagent_eval::ProgramNodeStatus::Planned
         );
         assert_eq!(fs::read_to_string(&manifest).unwrap(), raw);
+    }
+
+    // ── D2: JSON envelope stamping ─────────────────────────────────────────
+
+    #[test]
+    fn stamp_json_envelope_adds_run_id_and_generated_at_without_touching_other_fields() {
+        let base = serde_json::json!({"tiers": []});
+        let when = chrono::DateTime::parse_from_rfc3339("2026-09-09T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let stamped = stamp_json_envelope(base, "run-20260909T100000Z", when);
+        assert_eq!(stamped["run_id"], "run-20260909T100000Z");
+        assert_eq!(stamped["generated_at"], "2026-09-09T10:00:00+00:00");
+        assert_eq!(stamped["tiers"], serde_json::json!([]));
+    }
+
+    // ── D1/D4: `graduate` subcommand ────────────────────────────────────────
+
+    #[test]
+    fn graduate_subcommand_parses_run_provider_model_role_and_dry_run() {
+        let cli = Cli::try_parse_from([
+            "permagent-eval",
+            "graduate",
+            "--run",
+            "a.json",
+            "--run",
+            "b.json",
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-sonnet-5",
+            "--role",
+            "edit",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Command::Graduate(args) = cli.command else {
+            panic!("expected Graduate");
+        };
+        assert_eq!(
+            args.runs,
+            vec![PathBuf::from("a.json"), PathBuf::from("b.json")]
+        );
+        assert_eq!(args.provider.as_deref(), Some("anthropic"));
+        assert_eq!(args.role.as_deref(), Some("edit"));
+        assert!(args.dry_run);
+    }
+
+    /// A retained run report shaped exactly like `render_json`'s output plus
+    /// the additive `generated_at`/`dag_selection_pct` fields, with the
+    /// fizzbuzz smoke solved and a high pass rate — a qualifying run for the
+    /// default ORCHESTRATE role.
+    fn qualifying_run_json(day: u32, pass: bool) -> serde_json::Value {
+        serde_json::json!({
+            "generated_at": format!("2026-09-{day:02}T00:00:00Z"),
+            "dag_selection_pct": if pass { 0.97 } else { 0.5 },
+            "tiers": [{
+                "tier": "sonnet5",
+                "provider": "anthropic",
+                "model": "claude-sonnet-5",
+                "pinned_packs": true,
+                "summary": {
+                    "attempted": 10,
+                    "solved": if pass { 9 } else { 5 },
+                    "total_cost_usd": 0.42,
+                    "median_duration_secs": 12.0,
+                },
+                "tasks": [{"task_id": "fizzbuzz", "solved": pass}],
+            }],
+        })
+    }
+
+    #[test]
+    fn cmd_graduate_dry_run_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory_path = dir.path().join("capability_directory.json");
+        let mut runs = Vec::new();
+        for day in 1..=3 {
+            let path = dir.path().join(format!("run{day}.json"));
+            fs::write(
+                &path,
+                serde_json::to_vec(&qualifying_run_json(day, true)).unwrap(),
+            )
+            .unwrap();
+            runs.push(path);
+        }
+        cmd_graduate(GraduateArgs {
+            runs,
+            provider: None,
+            model: None,
+            role: None,
+            worker: false,
+            snapshot_date: None,
+            directory: Some(directory_path.clone()),
+            dry_run: true,
+        })
+        .unwrap();
+        assert!(
+            !directory_path.exists(),
+            "dry-run must not write the directory file"
+        );
+    }
+
+    #[test]
+    fn cmd_graduate_three_qualifying_runs_graduate_the_orchestrate_role() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory_path = dir.path().join("capability_directory.json");
+        let mut runs = Vec::new();
+        for day in 1..=3 {
+            let path = dir.path().join(format!("run{day}.json"));
+            fs::write(
+                &path,
+                serde_json::to_vec(&qualifying_run_json(day, true)).unwrap(),
+            )
+            .unwrap();
+            runs.push(path);
+        }
+        cmd_graduate(GraduateArgs {
+            runs,
+            provider: None,
+            model: None,
+            role: None,
+            worker: false,
+            snapshot_date: None,
+            directory: Some(directory_path.clone()),
+            dry_run: false,
+        })
+        .unwrap();
+
+        let saved = permagent_eval::graduate::load_directory_json(&directory_path)
+            .expect("cmd_graduate must have written the directory");
+        let evidence = permagent_eval::graduate::existing_role_evidence(
+            &saved,
+            "anthropic",
+            "claude-sonnet-5",
+            WorkflowRole::Orchestrate,
+        )
+        .expect("the graded role must exist");
+        assert!(evidence.graduated, "three qualifying runs must graduate");
+        assert_eq!(evidence.evidence_run_ids.len(), 3);
+        assert!((evidence.micro_suite_pass_pct.unwrap() - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cmd_graduate_two_qualifying_runs_do_not_graduate() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory_path = dir.path().join("capability_directory.json");
+        let mut runs = Vec::new();
+        for day in 1..=2 {
+            let path = dir.path().join(format!("run{day}.json"));
+            fs::write(
+                &path,
+                serde_json::to_vec(&qualifying_run_json(day, true)).unwrap(),
+            )
+            .unwrap();
+            runs.push(path);
+        }
+        cmd_graduate(GraduateArgs {
+            runs,
+            provider: None,
+            model: None,
+            role: None,
+            worker: false,
+            snapshot_date: None,
+            directory: Some(directory_path.clone()),
+            dry_run: false,
+        })
+        .unwrap();
+        let saved = permagent_eval::graduate::load_directory_json(&directory_path).unwrap();
+        let evidence = permagent_eval::graduate::existing_role_evidence(
+            &saved,
+            "anthropic",
+            "claude-sonnet-5",
+            WorkflowRole::Orchestrate,
+        )
+        .unwrap();
+        assert!(!evidence.graduated);
+    }
+
+    #[test]
+    fn cmd_graduate_refuses_a_run_with_no_provider_model_and_no_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.json");
+        let raw = serde_json::json!({
+            "generated_at": "2026-09-01T00:00:00Z",
+            "tiers": [{
+                "summary": {"attempted": 1, "solved": 1},
+                "tasks": [{"task_id": "fizzbuzz", "solved": true}],
+            }],
+        });
+        fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+        let err = cmd_graduate(GraduateArgs {
+            runs: vec![path],
+            provider: None,
+            model: None,
+            role: None,
+            worker: false,
+            snapshot_date: None,
+            directory: Some(dir.path().join("capability_directory.json")),
+            dry_run: false,
+        })
+        .expect_err("missing provider/model with no flags must be refused");
+        let msg = err.to_string();
+        assert!(msg.contains("never guessed"), "{msg}");
     }
 }

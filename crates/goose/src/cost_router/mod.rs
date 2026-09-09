@@ -43,6 +43,15 @@ pub mod capability_directory;
 pub mod cheap;
 pub mod delegate;
 pub mod derived;
+// Cross-crate schema-drift guard for Lane Z4's `permagent-eval graduate`
+// evidence pipeline. `permagent-eval` cannot depend on this crate (a real
+// cyclic-package-dependency block — see `crates/permagent-eval/src/
+// graduate.rs`'s module doc), so it hand-mirrors this crate's capability-
+// directory schema; THIS crate already depends on `permagent-eval`
+// (`Cargo.toml:76`), so it is the only side that can see both schemas at
+// once and catch drift. Test-only: never built into the shipped binary.
+#[cfg(test)]
+mod directory_evidence_drift;
 pub mod escalation;
 pub mod fallback;
 pub mod hold_done;

@@ -22,6 +22,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+chrono = { workspace = true }
 clap = { workspace = true }
 dirs = { workspace = true }
 reqwest = { workspace = true, features = ["blocking", "json"] }
@@ -31,6 +32,15 @@ serde_yaml = { workspace = true }
 # Same declaration as `permagent` and `permagent-daemon` so the already-locked,
 # already-compiled crate is reused (no new packages, guaranteed to link).
 rusqlite = { version = "0.37", features = ["bundled"] }
+# NOTE (D1, Lane Z4): `crates/goose` (package `permagent`) already depends on
+# THIS crate (`permagent-eval = { path = "../permagent-eval" }`,
+# `crates/goose/Cargo.toml:76`, used by `program_bridge.rs`/
+# `decisions_effects.rs`/`decision_inbox/policy.rs`). Adding `permagent` as a
+# dependency here would be a cyclic package dependency Cargo refuses to
+# build. `graduate.rs` therefore reads/writes the capability-directory JSON
+# schema directly (`serde_json::Value`, surgically patched) rather than
+# through `cost_router::capability_directory`'s Rust API — see the module
+# doc for the exact interop contract this keeps.
 
 [dev-dependencies]
 tempfile = { workspace = true }

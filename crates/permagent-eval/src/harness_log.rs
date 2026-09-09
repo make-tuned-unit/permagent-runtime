@@ -49,6 +49,32 @@ pub struct LogSignals {
     pub max_turns_hit: bool,
     /// Distinct tool names invoked, in first-seen order.
     pub tool_names: Vec<String>,
+    /// The FIRST `planner=<provider/model> reason=<...> workers=<...>`
+    /// route-tracing line seen, if any (see [`parse_planner_line`] for the
+    /// exact grammar this is best-effort matched against). `None` for a run
+    /// whose harness build/version does not emit this line yet — this
+    /// module never fabricates a route from anything else.
+    pub planner: Option<PlannerRoute>,
+}
+
+/// One coordinator's routing decision, as best-effort parsed from a
+/// `planner=<provider>/<model> reason=<...> workers=<provider>/<model>,...`
+/// tracing line (D2, Lane Z4 brief — extends the harness's own
+/// `planner`-line convention so `permagent-eval graduate` can attribute a
+/// retained run's evidence to the coordinator AND any worker roles it
+/// actually delegated to, not just the tier's pinned model). `workers` is
+/// empty (never absent) when the run delegated to nobody.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlannerRoute {
+    pub provider: String,
+    pub model: String,
+    /// Free text, matched as a single whitespace-delimited token — the
+    /// grammar has no quoting, so a reason containing a space is truncated
+    /// at the first space (best-effort, like the rest of this module).
+    pub reason: String,
+    /// Each entry is `provider/model`, split verbatim on `/` (not
+    /// re-validated against the knowledge base here).
+    pub workers: Vec<String>,
 }
 
 /// The glyph `print_tool_header`/`render_subagent_tool_call` prefix every
@@ -83,9 +109,53 @@ pub fn scan(log_text: &str) -> LogSignals {
         if line.contains(MAX_TURNS_MARKER) {
             signals.max_turns_hit = true;
         }
+
+        if signals.planner.is_none() {
+            signals.planner = parse_planner_line(line);
+        }
     }
 
     signals
+}
+
+/// Best-effort parse of a `planner=<provider>/<model> reason=<...>
+/// workers=<provider>/<model>,...` line (see [`PlannerRoute`]'s doc for the
+/// grammar and why it exists). Matches the `planner=` token ANYWHERE on the
+/// line (not only as the first token) since a tracing line is normally
+/// prefixed by a timestamp/level the way the `console` crate's own styling
+/// prefixes the tool-call banner — see the module doc for that precedent.
+/// `reason=`/`workers=` are optional; `workers=` with nothing after the `=`
+/// parses as an empty (not absent) list. Returns `None` when no `planner=`
+/// token is found, or when it does not carry a `provider/model` pair.
+fn parse_planner_line(line: &str) -> Option<PlannerRoute> {
+    let stripped = strip_ansi(line);
+    let mut provider_model: Option<(String, String)> = None;
+    let mut reason: Option<String> = None;
+    let mut workers: Option<Vec<String>> = None;
+    for token in stripped.split_whitespace() {
+        if let Some(rest) = token.strip_prefix("planner=") {
+            if let Some((p, m)) = rest.split_once('/') {
+                if !p.is_empty() && !m.is_empty() {
+                    provider_model = Some((p.to_string(), m.to_string()));
+                }
+            }
+        } else if let Some(rest) = token.strip_prefix("reason=") {
+            reason = Some(rest.to_string());
+        } else if let Some(rest) = token.strip_prefix("workers=") {
+            workers = Some(if rest.is_empty() {
+                Vec::new()
+            } else {
+                rest.split(',').map(|s| s.to_string()).collect()
+            });
+        }
+    }
+    let (provider, model) = provider_model?;
+    Some(PlannerRoute {
+        provider,
+        model,
+        reason: reason.unwrap_or_default(),
+        workers: workers.unwrap_or_default(),
+    })
 }
 
 /// If `line` is a tool-call banner, return the tool name. Requires the
@@ -210,5 +280,63 @@ mod tests {
         let signals = scan(log);
         assert_eq!(signals.tool_calls, 1);
         assert_eq!(signals.tool_names, vec!["shell"]);
+    }
+
+    // ── D2/D4: the `planner=` route-tracing line ──────────────────────────
+
+    #[test]
+    fn parses_a_planner_line_with_reason_and_workers() {
+        let log = "2026-09-09T10:00:00Z INFO planner=anthropic/claude-sonnet-5 reason=strongest \
+                    workers=zai/glm-4.7,ollama/qwen3\n";
+        let signals = scan(log);
+        let route = signals.planner.expect("a planner= line must be captured");
+        assert_eq!(route.provider, "anthropic");
+        assert_eq!(route.model, "claude-sonnet-5");
+        assert_eq!(route.reason, "strongest");
+        assert_eq!(
+            route.workers,
+            vec!["zai/glm-4.7".to_string(), "ollama/qwen3".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_planner_line_with_empty_workers_parses_as_an_empty_list_not_none() {
+        let log = "planner=ollama/qwen2.5:7b reason=only_candidate workers=\n";
+        let signals = scan(log);
+        let route = signals.planner.expect("must still capture the route");
+        assert_eq!(route.provider, "ollama");
+        assert_eq!(route.model, "qwen2.5:7b");
+        assert!(route.workers.is_empty());
+    }
+
+    #[test]
+    fn a_planner_line_missing_reason_and_workers_still_captures_provider_model() {
+        let log = "planner=zai/glm-4.7\n";
+        let signals = scan(log);
+        let route = signals.planner.expect("must capture provider/model alone");
+        assert_eq!(route.provider, "zai");
+        assert_eq!(route.model, "glm-4.7");
+        assert_eq!(route.reason, "");
+        assert!(route.workers.is_empty());
+    }
+
+    #[test]
+    fn only_the_first_planner_line_is_captured() {
+        let log = "planner=anthropic/claude-sonnet-5 reason=first workers=\n\
+                    planner=openai/gpt-5.6 reason=second workers=\n";
+        let signals = scan(log);
+        assert_eq!(signals.planner.unwrap().reason, "first");
+    }
+
+    #[test]
+    fn no_planner_line_leaves_it_none() {
+        let signals = scan("nothing planner-shaped here\n");
+        assert!(signals.planner.is_none());
+    }
+
+    #[test]
+    fn a_malformed_planner_token_without_a_slash_is_ignored() {
+        let signals = scan("planner=not-a-pair reason=x workers=\n");
+        assert!(signals.planner.is_none());
     }
 }
