@@ -541,6 +541,22 @@ fn detect_checks(dir: &Path) -> Result<DetectOutcome, String> {
     )
 }
 
+/// The ordered check-command labels `detect_checks` would run for `dir`
+/// (e.g. `["cargo test"]`), exposed for callers outside this module that need
+/// to ground a claim in what this repo can actually verify (Z1, harness loop
+/// Round C — `decompose_roadmap`'s acceptance criteria previously referenced
+/// a command or file this repo does not have; see
+/// `orchestrator::RepoFacts`). Deliberately the same detector `verify` itself
+/// runs, so the two surfaces cannot drift apart. Empty when nothing could be
+/// detected — the caller decides how to degrade, never guesses a command
+/// here.
+pub(crate) fn detect_check_labels(dir: &Path) -> Vec<String> {
+    match detect_checks(dir) {
+        Ok(DetectOutcome::Checks(checks)) => checks.into_iter().map(|c| c.label).collect(),
+        Ok(DetectOutcome::NoChecksConfigured(_)) | Err(_) => Vec::new(),
+    }
+}
+
 /// True when the project actually declares pytest as its test runner:
 /// `pytest.ini`, a `[tool.pytest...]` table in `pyproject.toml`, or a
 /// `conftest.py` anywhere at the root. A bare Python marker
@@ -1783,6 +1799,19 @@ mod tests {
             checks_of(dir.path()),
             vec![Check::direct("cargo", &["test"])]
         );
+    }
+
+    #[test]
+    fn detect_check_labels_matches_detect_checks_for_rust() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
+        assert_eq!(detect_check_labels(dir.path()), vec!["cargo test"]);
+    }
+
+    #[test]
+    fn detect_check_labels_is_empty_for_an_undetectable_project() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_check_labels(dir.path()).is_empty());
     }
 
     #[test]

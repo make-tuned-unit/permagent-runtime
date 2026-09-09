@@ -625,9 +625,18 @@ fn roadmap_proposal_hash(goals: &[goal_state::ProposedGoal]) -> String {
 }
 
 fn validate_roadmap_goals(goals: &[goal_state::ProposedGoal]) -> Result<(), String> {
-    if !(2..=goal_state::MAX_ROADMAP_GOALS).contains(&goals.len()) {
+    // Z1-4 (harness loop, Lane M6 Defect #1 fixture "harness-editapply-
+    // duplicate-discount-blocks"): a roadmap used to REQUIRE at least 2
+    // goals, which forced a manufactured split even when the objective named
+    // exactly one behaviour in a tiny repo. The recipe's own contract already
+    // says "a tiny fix is a valid one-node roadmap" — a single, well-formed
+    // goal is not malformed.
+    if goals.is_empty() {
+        return Err("A roadmap must contain at least 1 goal".to_string());
+    }
+    if goals.len() > goal_state::MAX_ROADMAP_GOALS {
         return Err(format!(
-            "A roadmap must contain between 2 and {} goals",
+            "A roadmap must contain at most {} goals",
             goal_state::MAX_ROADMAP_GOALS
         ));
     }
@@ -650,6 +659,440 @@ fn validate_roadmap_goals(goals: &[goal_state::ProposedGoal]) -> Result<(), Stri
         }
     }
     Ok(())
+}
+
+// ── Roadmap grounding (Z1, harness loop Round C) ─────────────────────────
+//
+// `decompose_roadmap`'s planner model call had no view of the actual repo:
+// left unconstrained it invented acceptance criteria, goal splits, and
+// capability tags for a codebase shape the target repo does not have — a
+// Rust `struct` graded with `grep -q 'class RecentCache'`, a pure-Rust
+// backend split into fictional "frontend"/"backend" goals, a plain TS repo
+// handed a 5-goal DB-migration/ORM/cart roadmap, a goal tagged `search` when
+// no roster worker declares that `tool_kind` (HARNESS_LOOP_LOG.md, Lane M6
+// Defects #1 and #4 — 5 of 9 attempted tasks, an independently-correct
+// worker fix held or never dispatched in each). `RepoFacts` is the cheap,
+// synchronous probe of what is actually on disk; `ground_roadmap_goals` is
+// the pure post-processing pass applied to the model's raw proposal that
+// rewrites or rejects anything the probe cannot substantiate. Both are unit
+// tested directly against those pathologies below, with no model call.
+
+/// Below this many files, a multi-goal split needs the planner to have named
+/// real, distinct files per goal or the roadmap collapses to one (Z1-4).
+const SMALL_REPO_FILE_THRESHOLD: usize = 12;
+
+/// Directories never worth walking for repo-fact purposes: build output,
+/// dependency caches, and permagent's own goal worktrees.
+const REPO_FACT_SKIP_DIRS: &[&str] = &[
+    "target",
+    "node_modules",
+    "dist",
+    "build",
+    "vendor",
+    "__pycache__",
+    ".permagent-goal-worktrees",
+];
+
+/// Hard cap on how many files `RepoFacts::gather` will walk, so a huge
+/// monorepo cannot turn a `decompose_roadmap` call into a slow directory
+/// crawl. The count itself (capped) is still useful signal ("at least this
+/// many files"), and the goal-grounding file list only needs to cover
+/// plausible file references anyway.
+const REPO_FACT_SCAN_CAP: usize = 4000;
+
+/// How many levels of the tree go into the prompt block (root entries, plus
+/// one level inside each subdirectory).
+const REPO_FACT_TREE_DEPTH: usize = 2;
+
+/// Cap on how many tree lines are rendered into the prompt, so a wide
+/// top-level directory does not blow out the planner's context.
+const REPO_FACT_TREE_CAP: usize = 80;
+
+/// The repo shape gathered once per `decompose_roadmap` call: which
+/// language(s)/manifests are present, a depth-capped tree for the prompt, the
+/// check command(s) `verify` would run (reused from
+/// `developer::verify::detect_check_labels` so the two can never drift), and
+/// the real file list used to ground per-goal claims against.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RepoFacts {
+    pub languages: Vec<String>,
+    pub manifests: Vec<String>,
+    pub tree_lines: Vec<String>,
+    pub check_commands: Vec<String>,
+    pub file_count: usize,
+    pub files: Vec<String>,
+}
+
+impl RepoFacts {
+    /// Gather repo facts synchronously from `dir`. Best-effort: an unreadable
+    /// or missing directory yields an all-empty `RepoFacts` rather than an
+    /// error, since the planner call must still proceed (with an honest "no
+    /// facts available" prompt block) rather than fail the whole
+    /// decomposition on a probe that is inherently advisory.
+    pub(crate) fn gather(dir: &std::path::Path) -> Self {
+        let manifest_names = [
+            "Cargo.toml",
+            "package.json",
+            "go.mod",
+            "pyproject.toml",
+            "setup.py",
+            "requirements.txt",
+            "Makefile",
+        ];
+        let manifests: Vec<String> = manifest_names
+            .iter()
+            .filter(|name| dir.join(name).is_file())
+            .map(|name| name.to_string())
+            .collect();
+
+        let mut languages = Vec::new();
+        if dir.join("Cargo.toml").is_file() {
+            languages.push("rust".to_string());
+        }
+        if dir.join("package.json").is_file() {
+            languages.push(if dir.join("tsconfig.json").is_file() {
+                "typescript".to_string()
+            } else {
+                "javascript".to_string()
+            });
+        }
+        if dir.join("go.mod").is_file() {
+            languages.push("go".to_string());
+        }
+        if dir.join("pyproject.toml").is_file()
+            || dir.join("setup.py").is_file()
+            || dir.join("requirements.txt").is_file()
+        {
+            languages.push("python".to_string());
+        }
+
+        let check_commands = super::developer::verify::detect_check_labels(dir);
+        let (files, tree_lines) = Self::walk(dir);
+
+        RepoFacts {
+            languages,
+            manifests,
+            tree_lines,
+            check_commands,
+            file_count: files.len(),
+            files,
+        }
+    }
+
+    /// Depth- and count-capped directory walk. Returns (all files found
+    /// within the cap, the depth-`REPO_FACT_TREE_DEPTH` slice formatted for
+    /// the prompt). Deterministic ordering (sorted per directory) so the same
+    /// repo always produces the same prompt block.
+    fn walk(dir: &std::path::Path) -> (Vec<String>, Vec<String>) {
+        let mut files = Vec::new();
+        let mut tree = Vec::new();
+        let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(dir.to_path_buf(), 0)];
+        while let Some((current, depth)) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&current) else {
+                continue;
+            };
+            let mut entries: Vec<_> = entries.flatten().collect();
+            entries.sort_by_key(|e| e.file_name());
+            for entry in entries {
+                if files.len() >= REPO_FACT_SCAN_CAP {
+                    return (files, tree);
+                }
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let is_dir = path.is_dir();
+                if is_dir && (name.starts_with('.') || REPO_FACT_SKIP_DIRS.contains(&name.as_str()))
+                {
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(dir)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned();
+                if is_dir {
+                    if depth < REPO_FACT_TREE_DEPTH && tree.len() < REPO_FACT_TREE_CAP {
+                        tree.push(format!("{}/", rel));
+                    }
+                    stack.push((path, depth + 1));
+                } else {
+                    if depth < REPO_FACT_TREE_DEPTH && tree.len() < REPO_FACT_TREE_CAP {
+                        tree.push(rel.clone());
+                    }
+                    files.push(rel);
+                }
+            }
+        }
+        (files, tree)
+    }
+
+    /// Render as a "ground yourself in this" block appended to the planner's
+    /// user message. Explicit about what must NOT be invented, and states
+    /// the Z1-4 right-sizing rule directly so the model has a chance to
+    /// self-correct before `ground_roadmap_goals` has to do it after the
+    /// fact.
+    pub(crate) fn prompt_block(&self) -> String {
+        let languages = if self.languages.is_empty() {
+            "unknown".to_string()
+        } else {
+            self.languages.join(", ")
+        };
+        let manifests = if self.manifests.is_empty() {
+            "(none found)".to_string()
+        } else {
+            self.manifests.join(", ")
+        };
+        let checks = if self.check_commands.is_empty() {
+            "(none detected — do not invent a check command; write a criterion the reviewer \
+             can check by hand instead)"
+                .to_string()
+        } else {
+            self.check_commands.join("; ")
+        };
+        let tree = if self.tree_lines.is_empty() {
+            "(empty, unreadable, or the directory does not exist yet)".to_string()
+        } else {
+            self.tree_lines.join("\n")
+        };
+        format!(
+            "\n\nRepo facts (ground every goal, path, and acceptance criterion in ONLY what is \
+             listed here — never invent a language, framework, directory, or file this repo does \
+             not have):\n\
+             Language(s) detected: {languages}\n\
+             Manifest(s) present: {manifests}\n\
+             File count (capped at {cap}): {file_count}\n\
+             Detected check command(s) — use one of these VERBATIM as an acceptance criterion \
+             whenever it fits: {checks}\n\
+             Top-level tree (depth {depth}):\n{tree}\n\n\
+             Right-sizing: if this repo has {threshold} files or fewer, or the objective names a \
+             single behavior, propose ONE goal — do not manufacture additional goals to pad the \
+             count. A multi-goal split is only justified when each goal names a distinct file \
+             that actually exists above.",
+            languages = languages,
+            manifests = manifests,
+            cap = REPO_FACT_SCAN_CAP,
+            file_count = self.file_count,
+            checks = checks,
+            depth = REPO_FACT_TREE_DEPTH,
+            tree = tree,
+            threshold = SMALL_REPO_FILE_THRESHOLD,
+        )
+    }
+}
+
+/// True when `goal`'s own title, description, or acceptance criteria mention
+/// a file that actually exists in `facts` — the Z1-4 bar a multi-goal split
+/// must clear per goal, or the whole roadmap collapses to one.
+fn goal_names_existing_file(goal: &goal_state::ProposedGoal, facts: &RepoFacts) -> bool {
+    if facts.files.is_empty() {
+        return false;
+    }
+    let haystack = format!(
+        "{} {} {}",
+        goal.title,
+        goal.description,
+        goal.acceptance_criteria.join(" ")
+    )
+    .to_lowercase();
+    facts
+        .files
+        .iter()
+        .any(|f| !f.is_empty() && haystack.contains(&f.to_lowercase()))
+}
+
+/// Collapse a fictional multi-goal split (Z1-4) into the one-node roadmap the
+/// recipe already treats as valid for a small or single-behavior task. Union
+/// of acceptance criteria and tags (deduplicated, order-preserving); no
+/// dependencies survive since there is only one goal left.
+fn merge_goals_into_one(goals: &[goal_state::ProposedGoal]) -> goal_state::ProposedGoal {
+    let title = goals
+        .first()
+        .map(|g| g.title.clone())
+        .unwrap_or_else(|| "Complete the requested change".to_string());
+    let description = goals
+        .iter()
+        .map(|g| g.description.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let mut acceptance_criteria: Vec<String> = Vec::new();
+    for g in goals {
+        for c in &g.acceptance_criteria {
+            if !acceptance_criteria.contains(c) {
+                acceptance_criteria.push(c.clone());
+            }
+        }
+    }
+    let mut tags: Vec<String> = Vec::new();
+    for g in goals {
+        for t in &g.tags {
+            if !tags.contains(t) {
+                tags.push(t.clone());
+            }
+        }
+    }
+
+    goal_state::ProposedGoal {
+        title,
+        description,
+        acceptance_criteria,
+        tags,
+        depends_on: vec![],
+    }
+}
+
+/// Z1-3: keep only tags a currently-dispatchable roster worker declares
+/// (case-insensitive); everything else is dropped rather than left to zero
+/// out dispatch later with "No suitable worker available" (Lane M6 Defect
+/// #4). Dropping — rather than substituting a guessed nearest kind — is the
+/// safe direction here: `goal_required_kinds` treats an empty tag list as "no
+/// requirement", so a goal that loses every tag becomes dispatchable to any
+/// available worker instead of permanently blocked. Returns (kept tags,
+/// original-text of dropped tags) so the caller can leave a receipt.
+fn constrain_tags(
+    tags: &[String],
+    allowed: &std::collections::BTreeSet<String>,
+) -> (Vec<String>, Vec<String>) {
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for tag in tags {
+        let normalized = tag.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        if allowed.contains(&normalized) {
+            if !kept.contains(&normalized) {
+                kept.push(normalized);
+            }
+        } else {
+            dropped.push(tag.clone());
+        }
+    }
+    (kept, dropped)
+}
+
+/// True when `criterion` is executable HERE: it either names one of this
+/// repo's detected check commands, or it names a file that actually exists in
+/// this repo (Z1-2).
+fn is_grounded_criterion(criterion: &str, facts: &RepoFacts) -> bool {
+    let lower = criterion.to_lowercase();
+    if facts
+        .check_commands
+        .iter()
+        .any(|check| lower.contains(&check.to_lowercase()))
+    {
+        return true;
+    }
+    facts
+        .files
+        .iter()
+        .any(|f| !f.is_empty() && lower.contains(&f.to_lowercase()))
+}
+
+/// Z1-2: rewrite or reject any acceptance criterion this repo cannot
+/// substantiate. A criterion that already names a detected check command or
+/// an existing file passes through unchanged; anything else is rewritten to
+/// "run `<detected check>`" (or, when nothing was detected at all, kept but
+/// visibly marked UNVERIFIED for the human reviewer rather than silently
+/// dropped). Returns (grounded criteria, human-readable receipt per
+/// rewrite).
+fn ground_acceptance_criteria(
+    criteria: &[String],
+    facts: &RepoFacts,
+) -> (Vec<String>, Vec<String>) {
+    if criteria.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let mut grounded = Vec::new();
+    let mut notes = Vec::new();
+    let mut seen_replacement = HashSet::new();
+    for criterion in criteria {
+        if is_grounded_criterion(criterion, facts) {
+            grounded.push(criterion.clone());
+            continue;
+        }
+        let replacement = if let Some(check) = facts.check_commands.first() {
+            format!("run `{check}`")
+        } else {
+            format!(
+                "UNVERIFIED (no detected check command in this repo) — kept for human review: {criterion}"
+            )
+        };
+        notes.push(format!(
+            "acceptance criterion not grounded in this repo, rewritten: \"{criterion}\" -> \"{replacement}\""
+        ));
+        if seen_replacement.insert(replacement.clone()) {
+            grounded.push(replacement);
+        }
+    }
+    if grounded.is_empty() {
+        if let Some(check) = facts.check_commands.first() {
+            grounded.push(format!("run `{check}`"));
+        }
+    }
+    (grounded, notes)
+}
+
+/// The Z1 grounding pass: right-size (Z1-4), constrain capability tags to the
+/// live roster (Z1-3), and ground acceptance criteria in this repo's own
+/// checks/files (Z1-2). Pure and deterministic — no model call, no IO beyond
+/// what `facts` already captured — so it is unit-testable directly against a
+/// canned planner proposal. Returns the corrected goals plus one
+/// human-readable receipt per correction, so `decompose_roadmap`'s own output
+/// can show what changed and why instead of silently reshaping the proposal.
+pub(crate) fn ground_roadmap_goals(
+    mut goals: Vec<goal_state::ProposedGoal>,
+    facts: &RepoFacts,
+    allowed_tags: &std::collections::BTreeSet<String>,
+) -> (Vec<goal_state::ProposedGoal>, Vec<String>) {
+    let mut receipts = Vec::new();
+
+    // Z1-4: decide right-sizing BEFORE any acceptance-criteria rewrite below
+    // erases the file references a "names a real file" check depends on.
+    // Gated on a recognized manifest (Cargo.toml/package.json/...), not bare
+    // file count alone: an arbitrary directory with a handful of incidental
+    // files (a session's own scratch/storage dir, say) is not evidence this
+    // is a small REPO whose multi-goal split should be second-guessed —
+    // only a directory `RepoFacts` actually recognizes as a project root is.
+    if goals.len() > 1
+        && !facts.manifests.is_empty()
+        && facts.file_count > 0
+        && facts.file_count <= SMALL_REPO_FILE_THRESHOLD
+    {
+        let every_goal_names_a_file = goals.iter().all(|g| goal_names_existing_file(g, facts));
+        if !every_goal_names_a_file {
+            let titles: Vec<String> = goals.iter().map(|g| g.title.clone()).collect();
+            receipts.push(format!(
+                "right-sized {} goals ({}) into 1: this repo has only {} file(s) and not every \
+                 goal named a file that actually exists here",
+                goals.len(),
+                titles.join(" / "),
+                facts.file_count
+            ));
+            goals = vec![merge_goals_into_one(&goals)];
+        }
+    }
+
+    for goal in goals.iter_mut() {
+        let (kept_tags, dropped_tags) = constrain_tags(&goal.tags, allowed_tags);
+        if !dropped_tags.is_empty() {
+            receipts.push(format!(
+                "goal '{}': dropped capability tag(s) [{}] — no currently-dispatchable roster \
+                 worker declares them",
+                goal.title,
+                dropped_tags.join(", ")
+            ));
+        }
+        goal.tags = kept_tags;
+
+        let (grounded_criteria, notes) =
+            ground_acceptance_criteria(&goal.acceptance_criteria, facts);
+        for note in notes {
+            receipts.push(format!("goal '{}': {}", goal.title, note));
+        }
+        goal.acceptance_criteria = grounded_criteria;
+    }
+
+    (goals, receipts)
 }
 
 #[derive(Debug)]
@@ -4324,24 +4767,54 @@ impl OrchestratorClient {
              \"tags\": [\"code_edit\", \"shell\", ...],\n      \
              \"depends_on\": []  // indices of prerequisite goals (0-based)\n    }\n  ]\n}\n\n\
              Rules:\n\
-             - 2 to 15 goals (reject if scope needs more than 15)\n\
+             - 1 to 15 goals (reject if scope needs more than 15). A tiny fix or a single named \
+             behavior is a valid ONE-goal roadmap — do not manufacture additional goals just to \
+             reach a larger count.\n\
              - Each goal completable in a single agent session (< 30 min of work)\n\
              - depends_on uses 0-based indices referencing other goals in the array\n\
              - No circular dependencies\n\
-             - Tags describe required capabilities: code_edit, shell, web_search, etc.\n\
+             - Tags describe required capabilities and MUST come only from the live worker \
+             roster's declared capabilities, listed below under 'Available capability tags' — a \
+             tag no roster worker declares will be dropped before dispatch.\n\
              - acceptance_criteria are COMPILED INTO CHECKS THE DAEMON RUNS in the goal's \
              worktree before the goal can be approved — they are enforced, not just advisory. \
-             Write each one measurable and tech-agnostic, and phrase mechanically-checkable \
-             ones so they map to a check: 'the project builds' / '`cargo test` passes' (a \
-             command exits 0), 'GET /health returns 200' (a loopback endpoint status), \
-             'docs/guide.md exists' (a file is created), 'no TODO remains in src/lib.rs' (a \
-             pattern is absent from a named file). Criteria that cannot be mechanically \
-             verified are still recorded for the human reviewer, but prefer verifiable ones.";
+             Ground every criterion in the 'Repo facts' block below: prefer the detected check \
+             command(s) verbatim ('`cargo test` passes'), or name a file that block shows \
+             actually exists ('docs/guide.md exists', 'no TODO remains in src/lib.rs'). Never \
+             invent a language, framework, directory, class name, or test file this repo does \
+             not have — an ungrounded criterion will be rewritten or rejected before the goal can \
+             be approved.";
+
+        let facts_dir = project
+            .root_path
+            .as_deref()
+            .map(std::path::Path::new)
+            .or(working_dir);
+        let facts = facts_dir.map(RepoFacts::gather).unwrap_or_default();
+
+        // Reuses the same capability set the Council DAG path already
+        // validates plan proposals against (`decisions.rs`,
+        // `decisions_effects.rs`) rather than re-deriving it: one
+        // authoritative "what can the live roster actually do" query.
+        let allowed_tags = crate::council::plan::configured_worker_capabilities();
 
         let mut user_text = format!(
             "Objective: {}\nProject: {}\nProject root: {}",
             objective, project.name, root_path
         );
+        user_text.push_str(&facts.prompt_block());
+        user_text.push_str(&format!(
+            "\n\nAvailable capability tags (only these are ever dispatchable): {}",
+            if allowed_tags.is_empty() {
+                "(no dispatchable worker is currently registered)".to_string()
+            } else {
+                allowed_tags
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        ));
 
         // L3 Learn recall: inject the user's past decisions AND how they have revised
         // past drafts (edit-as-training) for this project, each as a quoted
@@ -4505,6 +4978,11 @@ impl OrchestratorClient {
             }
         };
 
+        // Z1: ground the raw proposal in this repo and the live roster
+        // before any validation or approval — see the "Roadmap grounding"
+        // block above `ground_roadmap_goals`.
+        let (goals, grounding_receipts) = ground_roadmap_goals(goals, &facts, &allowed_tags);
+
         validate_roadmap_goals(&goals)?;
 
         // Validate via topological sort
@@ -4626,6 +5104,16 @@ impl OrchestratorClient {
                 deps,
                 tags
             ));
+        }
+
+        if !grounding_receipts.is_empty() {
+            output.push_str(
+                "\nGrounding corrections (applied automatically against this repo and the live \
+                 worker roster — Z1, harness loop):\n",
+            );
+            for note in &grounding_receipts {
+                output.push_str(&format!("  - {}\n", note));
+            }
         }
 
         if auto_launched {
@@ -15636,16 +16124,24 @@ mod tests {
 
     #[test]
     fn roadmap_validation_rejects_empty_and_wrong_sized_proposals() {
-        let empty = vec![goal_state::ProposedGoal {
-            title: "".to_string(),
-            description: "description".to_string(),
-            acceptance_criteria: vec![],
-            tags: vec![],
-            depends_on: vec![],
-        }];
-        assert!(validate_roadmap_goals(&empty)
+        let zero: Vec<goal_state::ProposedGoal> = vec![];
+        assert!(validate_roadmap_goals(&zero)
             .unwrap_err()
-            .contains("between 2 and"));
+            .contains("at least 1"));
+
+        let too_many: Vec<goal_state::ProposedGoal> = (0..goal_state::MAX_ROADMAP_GOALS + 1)
+            .map(|i| goal_state::ProposedGoal {
+                title: format!("Goal {i}"),
+                description: "description".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![],
+            })
+            .collect();
+        assert!(validate_roadmap_goals(&too_many)
+            .unwrap_err()
+            .contains("at most"));
+
         let malformed = vec![
             goal_state::ProposedGoal {
                 title: "A".to_string(),
@@ -15665,6 +16161,374 @@ mod tests {
         assert!(validate_roadmap_goals(&malformed)
             .unwrap_err()
             .contains("empty description"));
+    }
+
+    /// Z1-4 (harness loop, Lane M6 Defect #1 fixture
+    /// "harness-editapply-duplicate-discount-blocks"): a roadmap used to
+    /// REQUIRE at least 2 goals, forcing a manufactured split even for a
+    /// tiny, single-behavior fix. The recipe's own contract already says a
+    /// tiny fix is a valid one-node roadmap.
+    #[test]
+    fn a_single_well_formed_goal_is_a_valid_roadmap() {
+        let one = vec![goal_state::ProposedGoal {
+            title: "Fix the duplicate discount block".to_string(),
+            description: "gold tier reuses the silver percentOff".to_string(),
+            acceptance_criteria: vec!["`cargo test` passes".to_string()],
+            tags: vec!["code_edit".to_string()],
+            depends_on: vec![],
+        }];
+        assert!(validate_roadmap_goals(&one).is_ok());
+        assert_eq!(goal_state::topological_order(&one).unwrap(), vec![0]);
+    }
+
+    // ── Z1 grounding: RepoFacts + ground_roadmap_goals ────────────────────
+    //
+    // Pinning tests against the exact pathologies HARNESS_LOOP_LOG.md's Lane
+    // M6 report quotes verbatim for Defects #1 and #4 — no model call, all
+    // pure post-processing over a canned planner proposal.
+
+    fn goal(
+        title: &str,
+        description: &str,
+        acceptance_criteria: &[&str],
+        tags: &[&str],
+    ) -> goal_state::ProposedGoal {
+        goal_state::ProposedGoal {
+            title: title.to_string(),
+            description: description.to_string(),
+            acceptance_criteria: acceptance_criteria.iter().map(|s| s.to_string()).collect(),
+            tags: tags.iter().map(|s| s.to_string()).collect(),
+            depends_on: vec![],
+        }
+    }
+
+    fn tags(kinds: &[&str]) -> std::collections::BTreeSet<String> {
+        kinds.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn repo_facts_gather_detects_a_rust_repo_and_its_check_command() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+        std::fs::create_dir(dir.path().join("tests")).unwrap();
+        std::fs::write(dir.path().join("tests/refund_tests.rs"), "// tests\n").unwrap();
+
+        let facts = RepoFacts::gather(dir.path());
+        assert_eq!(facts.languages, vec!["rust".to_string()]);
+        assert_eq!(facts.check_commands, vec!["cargo test".to_string()]);
+        assert!(facts.files.iter().any(|f| f == "tests/refund_tests.rs"));
+        assert_eq!(facts.file_count, facts.files.len());
+        assert!(facts.file_count >= 3);
+    }
+
+    #[test]
+    fn repo_facts_gather_on_a_missing_directory_is_an_honest_empty() {
+        let facts = RepoFacts::gather(std::path::Path::new(
+            "/does/not/exist/permagent-z1-repo-facts-test",
+        ));
+        assert!(facts.languages.is_empty());
+        assert!(facts.check_commands.is_empty());
+        assert_eq!(facts.file_count, 0);
+    }
+
+    /// Lane M6 Defect #1, fixture `harness-regression-trap-lru-cache-evict`:
+    /// "`decompose_roadmap` ... 4 goals, JS-flavored acceptance criteria on a
+    /// pure-Rust project — `grep -q 'class RecentCache' $(cat
+    /// .cache_path.txt)` on a Rust `struct`, never satisfiable." An AC that
+    /// names neither a detected check command nor a real file must be
+    /// rewritten, not passed through.
+    #[test]
+    fn ground_acceptance_criteria_rewrites_a_js_class_grep_on_a_rust_repo() {
+        let facts = RepoFacts {
+            check_commands: vec!["cargo test".to_string()],
+            files: vec!["src/lru_cache.rs".to_string()],
+            file_count: 1,
+            ..Default::default()
+        };
+        let (grounded, notes) = ground_acceptance_criteria(
+            &["grep -q 'class RecentCache' $(cat .cache_path.txt)".to_string()],
+            &facts,
+        );
+        assert_eq!(grounded, vec!["run `cargo test`".to_string()]);
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("class RecentCache"));
+    }
+
+    /// A criterion that already names a detected check command passes
+    /// through unchanged — grounding must not rewrite what is already
+    /// executable here.
+    #[test]
+    fn ground_acceptance_criteria_keeps_a_criterion_naming_the_detected_check() {
+        let facts = RepoFacts {
+            check_commands: vec!["cargo test".to_string()],
+            ..Default::default()
+        };
+        let (grounded, notes) =
+            ground_acceptance_criteria(&["`cargo test` passes".to_string()], &facts);
+        assert_eq!(grounded, vec!["`cargo test` passes".to_string()]);
+        assert!(notes.is_empty());
+    }
+
+    /// A criterion that names a file which actually exists in this repo also
+    /// passes through unchanged (harness-loc-refund-cents-drift's worker
+    /// used a real path, `tests/refund_tests.rs`, that the fixture's own
+    /// acceptance criteria refused to recognize).
+    #[test]
+    fn ground_acceptance_criteria_keeps_a_criterion_naming_an_existing_file() {
+        let facts = RepoFacts {
+            files: vec!["tests/refund_tests.rs".to_string()],
+            file_count: 1,
+            ..Default::default()
+        };
+        let (grounded, notes) = ground_acceptance_criteria(
+            &["tests/refund_tests.rs contains a new failing rounding test".to_string()],
+            &facts,
+        );
+        assert_eq!(
+            grounded,
+            vec!["tests/refund_tests.rs contains a new failing rounding test".to_string()]
+        );
+        assert!(notes.is_empty());
+    }
+
+    /// With no detected check command at all, an ungrounded criterion is
+    /// kept but visibly marked for the human reviewer rather than silently
+    /// dropped (the system prompt's own "Criteria that cannot be
+    /// mechanically verified are still recorded for the human reviewer").
+    #[test]
+    fn ground_acceptance_criteria_marks_unverified_when_nothing_was_detected() {
+        let facts = RepoFacts::default();
+        let (grounded, notes) =
+            ground_acceptance_criteria(&["the widget looks nicer".to_string()], &facts);
+        assert_eq!(grounded.len(), 1);
+        assert!(grounded[0].starts_with("UNVERIFIED"));
+        assert_eq!(notes.len(), 1);
+    }
+
+    /// Lane M6 Defect #4, fixture `harness-editapply-duplicate-discount-
+    /// blocks`: "`decompose_roadmap` tagged goal 1 `[\"search\",
+    /// \"code_edit\"]`; no roster worker ... declares a `search` tool_kind"
+    /// — `goal_advance{dispatch}` returned "No suitable worker available" on
+    /// every attempt, 0/1 goals ever dispatched. A tag no live roster worker
+    /// declares must be dropped, never left standing to zero out dispatch.
+    #[test]
+    fn constrain_tags_drops_a_tag_no_roster_worker_declares() {
+        let allowed = tags(&["code_edit", "shell", "git"]);
+        let (kept, dropped) =
+            constrain_tags(&["search".to_string(), "code_edit".to_string()], &allowed);
+        assert_eq!(kept, vec!["code_edit".to_string()]);
+        assert_eq!(dropped, vec!["search".to_string()]);
+    }
+
+    /// A goal that loses every tag to `constrain_tags` must still be
+    /// dispatchable: `goal_required_kinds` treats an empty tag list as "no
+    /// requirement" (any available worker matches), never as
+    /// "undispatchable".
+    #[test]
+    fn constrain_tags_dropping_every_tag_leaves_no_requirement_not_a_block() {
+        let allowed = tags(&["code_edit", "shell"]);
+        let (kept, dropped) = constrain_tags(&["search".to_string()], &allowed);
+        assert!(kept.is_empty());
+        assert_eq!(dropped, vec!["search".to_string()]);
+    }
+
+    /// Once `search`/`testing` are honestly declared (Z1-3's roster widening
+    /// in `agent_identity::default_roster`), the same tag now survives
+    /// grounding instead of being dropped.
+    #[test]
+    fn constrain_tags_keeps_a_tag_the_roster_now_declares() {
+        let allowed = tags(&["code_edit", "shell", "git", "search", "testing"]);
+        let (kept, dropped) = constrain_tags(&["search".to_string()], &allowed);
+        assert_eq!(kept, vec!["search".to_string()]);
+        assert!(dropped.is_empty());
+    }
+
+    /// Lane M6 Defect #1, fixture `harness-overreach-narrow-coupon-trim`:
+    /// "Roadmap generated a fictional split: 'Implement Backend Coupon
+    /// Trimming' + 'Implement Frontend Input Trimming' for a project that is
+    /// pure Rust backend with no frontend at all." On a small repo, a
+    /// multi-goal split where not every goal names a real file must collapse
+    /// to one goal.
+    #[test]
+    fn ground_roadmap_goals_collapses_a_fictional_split_on_a_small_repo() {
+        let facts = RepoFacts {
+            manifests: vec!["Cargo.toml".to_string()],
+            files: vec!["src/coupon.rs".to_string(), "src/lib.rs".to_string()],
+            file_count: 2,
+            check_commands: vec!["cargo test".to_string()],
+            ..Default::default()
+        };
+        let allowed = tags(&["code_edit", "shell"]);
+        let goals = vec![
+            goal(
+                "Implement Backend Coupon Trimming",
+                "trim coupon codes in src/coupon.rs",
+                &["`cargo test` passes"],
+                &["code_edit"],
+            ),
+            goal(
+                "Implement Frontend Input Trimming",
+                "trim the input box on the coupon form",
+                &["the input trims whitespace on blur"],
+                &["code_edit"],
+            ),
+        ];
+        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed);
+        assert_eq!(
+            grounded.len(),
+            1,
+            "a fictional split on a tiny repo must collapse to one goal"
+        );
+        assert!(receipts.iter().any(|r| r.contains("right-sized")));
+    }
+
+    /// Positive control: when every goal in a multi-goal split names a real,
+    /// distinct file, the split survives — right-sizing must not collapse a
+    /// genuinely justified multi-goal roadmap.
+    #[test]
+    fn ground_roadmap_goals_keeps_a_split_when_every_goal_names_a_real_file() {
+        let facts = RepoFacts {
+            manifests: vec!["Cargo.toml".to_string()],
+            files: vec!["src/a.rs".to_string(), "src/b.rs".to_string()],
+            file_count: 2,
+            check_commands: vec!["cargo test".to_string()],
+            ..Default::default()
+        };
+        let allowed = tags(&["code_edit", "shell"]);
+        let goals = vec![
+            goal(
+                "Fix src/a.rs",
+                "edit src/a.rs",
+                &["`cargo test` passes"],
+                &["code_edit"],
+            ),
+            goal(
+                "Fix src/b.rs",
+                "edit src/b.rs",
+                &["`cargo test` passes"],
+                &["code_edit"],
+            ),
+        ];
+        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed);
+        assert_eq!(grounded.len(), 2);
+        assert!(!receipts.iter().any(|r| r.contains("right-sized")));
+    }
+
+    /// Right-sizing is scoped to small repos (Z1-4's "≤ ~12 files"): a large
+    /// repo's multi-goal split is left alone even when a goal doesn't name a
+    /// file, since the size signal that justifies collapsing is absent.
+    #[test]
+    fn ground_roadmap_goals_does_not_collapse_a_large_repo_split() {
+        let files: Vec<String> = (0..50).map(|i| format!("src/f{i}.rs")).collect();
+        let facts = RepoFacts {
+            manifests: vec!["Cargo.toml".to_string()],
+            file_count: files.len(),
+            files,
+            check_commands: vec!["cargo test".to_string()],
+            ..Default::default()
+        };
+        let allowed = tags(&["code_edit", "shell"]);
+        let goals = vec![
+            goal("Goal A", "do the first thing", &[], &["code_edit"]),
+            goal("Goal B", "do the second thing", &[], &["code_edit"]),
+        ];
+        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed);
+        assert_eq!(grounded.len(), 2);
+        assert!(!receipts.iter().any(|r| r.contains("right-sized")));
+    }
+
+    /// Regression pin for a real bug this lane's own end-to-end orchestrator
+    /// tests caught: right-sizing must NOT fire on bare file count alone. A
+    /// directory with a handful of incidental files but no recognized
+    /// manifest (Cargo.toml/package.json/...) is not evidence this is a
+    /// small REPO — e.g. the harness's own session-storage scratch directory
+    /// in `roadmap_handler_fixture`'s tests, which happens to hold a few
+    /// SQLite files and nothing else. Collapsing there corrupted the
+    /// `roadmap_proposal_hash` these tests independently recompute.
+    #[test]
+    fn ground_roadmap_goals_does_not_collapse_a_small_but_unrecognized_directory() {
+        let facts = RepoFacts {
+            manifests: vec![],
+            files: vec![
+                "sessions.sqlite".to_string(),
+                "sessions.sqlite-wal".to_string(),
+            ],
+            file_count: 2,
+            check_commands: vec![],
+            ..Default::default()
+        };
+        let allowed = tags(&["code_edit", "shell"]);
+        let goals = vec![
+            goal("R2 fixture A", "first", &[], &[]),
+            goal("R2 fixture B", "second", &[], &[]),
+        ];
+        let (grounded, receipts) = ground_roadmap_goals(goals.clone(), &facts, &allowed);
+        assert_eq!(
+            grounded, goals,
+            "no manifest was detected, so an unrecognized directory's incidental file count \
+             must never collapse or otherwise mutate the goals"
+        );
+        assert!(receipts.is_empty());
+    }
+
+    /// Lane M6 Defect #1, fixture `harness-refactor-shipping-quote-
+    /// signature`: "Roadmap generated a 5-goal DB-migration/ORM/frontend-
+    /// cart/order-history plan for a project whose `workspace/` root is
+    /// `package.json` + `src/` + `README.md`." End-to-end: a small TS repo's
+    /// fictional multi-goal split collapses to one goal, its capability tags
+    /// are constrained to the live roster, and its acceptance criteria are
+    /// grounded in the repo's own detected check.
+    #[test]
+    fn ground_roadmap_goals_end_to_end_on_a_small_ts_repo_pathology() {
+        let facts = RepoFacts {
+            languages: vec!["typescript".to_string()],
+            manifests: vec!["package.json".to_string()],
+            files: vec!["package.json".to_string(), "src/index.ts".to_string()],
+            file_count: 3,
+            check_commands: vec!["npm test".to_string()],
+            ..Default::default()
+        };
+        let allowed = tags(&["code_edit", "shell"]);
+        let goals = vec![
+            goal(
+                "Add is_fragile migration",
+                "add a migration adding is_fragile to the orders table",
+                &["Migration script adding 'is_fragile' column exists in the migrations directory"],
+                &["code_edit", "database"],
+            ),
+            goal(
+                "Update the cart UI",
+                "surface the fragile surcharge on the cart page",
+                &["the cart page shows the fragile surcharge"],
+                &["code_edit", "frontend"],
+            ),
+        ];
+        let (grounded, receipts) = ground_roadmap_goals(goals, &facts, &allowed);
+
+        assert_eq!(
+            grounded.len(),
+            1,
+            "neither goal names a real file on this tiny repo"
+        );
+        let only = &grounded[0];
+        assert!(
+            only.tags.iter().all(|t| t == "code_edit"),
+            "unknown tags (database, frontend) must be dropped: {:?}",
+            only.tags
+        );
+        assert!(
+            only.acceptance_criteria
+                .iter()
+                .all(|c| c.contains("npm test") || facts.files.iter().any(|f| c.contains(f))),
+            "every surviving criterion must be grounded in the detected check or a real file: {:?}",
+            only.acceptance_criteria
+        );
+        assert!(receipts.iter().any(|r| r.contains("right-sized")));
+        assert!(receipts
+            .iter()
+            .any(|r| r.contains("database") || r.contains("frontend")));
     }
 
     #[tokio::test]

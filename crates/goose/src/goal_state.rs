@@ -307,7 +307,7 @@ pub const MAX_ROADMAP_GOALS: usize = 15;
 
 /// A goal proposed by the LLM decomposition, before card creation.
 /// Dependencies are index-based (referencing other goals in the same proposal).
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ProposedGoal {
     pub title: String,
     pub description: String,

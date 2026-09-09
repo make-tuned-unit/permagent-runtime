@@ -973,10 +973,23 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
             // every code goal before cost is even considered, and the routing
             // below can never be exercised. The only InternalSubagent worker
             // before this was the read-only `reviewer`.
+            //
+            // `search`/`testing` (Z1-3, harness loop Lane M6 Defect #4): honest
+            // additions, not aspirational ones — the `developer` extension this
+            // worker inherits already exposes a literal `search` tool
+            // (ripgrep-backed, `developer/search.rs`) and a `verify` tool that
+            // runs this project's own test command (`developer/verify.rs`,
+            // reused by `RepoFacts`). Before this, a goal tagged `search` or
+            // `testing` — a tag `decompose_roadmap`'s planner reaches for
+            // often, since it names a real activity — zeroed out dispatch
+            // entirely with "No suitable worker available" even though the one
+            // always-available internal worker could already do it.
             tool_kinds: vec![
                 "code_edit".to_string(),
                 "shell".to_string(),
                 "git".to_string(),
+                "search".to_string(),
+                "testing".to_string(),
             ],
             // Derives WorkflowRole::Edit, so PERMAGENT_ROLE_EDIT_PROVIDER +
             // _MODEL choose the engine behind it — Kimi (moonshot), Grok (xai),
@@ -1474,6 +1487,28 @@ workers:
             harness.availability_check, "always",
             "in-process: there is no binary to probe"
         );
+    }
+
+    /// Z1-3 (harness loop, Lane M6 Defect #4): `decompose_roadmap`'s planner
+    /// tags a goal `search` or `testing` often, since those are real
+    /// activities — but before this the roster had zero dispatchable workers
+    /// declaring either, so `select_best_worker` returned "No suitable
+    /// worker available" and the goal never dispatched at all, no work of any
+    /// kind attempted. Permagent's own `developer` extension already exposes
+    /// a ripgrep-backed `search` tool and a `verify` tool that runs this
+    /// project's own test command, so declaring these is the honest fix, not
+    /// an aspirational widening.
+    #[test]
+    fn the_permagent_harness_declares_search_and_testing_it_can_already_service() {
+        let roster = default_roster();
+        let harness = &roster["permagent"];
+        for kind in ["search", "testing"] {
+            assert!(
+                harness.tool_kinds.iter().any(|k| k == kind),
+                "the harness must declare '{kind}' or a goal tagged with it can never dispatch \
+                 to any worker"
+            );
+        }
     }
 
     /// Ruling (2026-08-09): a flat-rate subscription call costs nothing
