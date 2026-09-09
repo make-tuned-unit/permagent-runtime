@@ -7725,6 +7725,7 @@ name = "permagent-eval"
 version = "1.31.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "dirs",
  "reqwest 0.13.4",

@@ -8,9 +8,10 @@
 //! `permagent-eval` (for `ProgramDag`/`ProgramNode`), so the reverse
 //! dependency would be a cyclic package dependency Cargo refuses to build.
 //! `graduate.rs` therefore hand-mirrors this crate's capability-directory
-//! schema (`RoleEvidence`, `MICRO_SUITE_PASS_FLOOR`,
-//! `KB_SNAPSHOT_STALE_AFTER_DAYS`, `SCHEMA_VERSION`, `default_path`, the
-//! atomic-save shape) — real duplication with a real drift risk.
+//! schema (`RoleEvidence`, `validate_graduation`, `MICRO_SUITE_PASS_FLOOR`,
+//! `DAG_SELECTION_PASS_FLOOR`, `KB_SNAPSHOT_STALE_AFTER_DAYS`,
+//! `SCHEMA_VERSION`, `default_path`, the atomic-save shape) — real
+//! duplication with a real drift risk.
 //!
 //! THIS crate, going the other direction, already depends on
 //! `permagent-eval` as an ordinary (non-dev) dependency, so it is the one
@@ -24,7 +25,8 @@
 use chrono::NaiveDate;
 
 use super::capability_directory::{
-    validate_graduation, CapabilityDirectory, RoleEvidence, MICRO_SUITE_PASS_FLOOR, SCHEMA_VERSION,
+    validate_graduation, CapabilityDirectory, RoleEvidence, DAG_SELECTION_PASS_FLOOR,
+    MICRO_SUITE_PASS_FLOOR, SCHEMA_VERSION,
 };
 use super::knowledge::KB_SNAPSHOT_STALE_AFTER_DAYS;
 use super::recommend::{AvailableModel, WorkflowRole};
@@ -51,10 +53,10 @@ fn qualifying_run_json(day: u32) -> serde_json::Value {
 }
 
 /// D1's own duplicated-constant list (see the module doc's table in the
-/// lane report), checked against this crate's real values. `DAG_SELECTION_
-/// FLOOR` is NOT checked here — it has no counterpart in this crate today
-/// (G3 tool/DAG-selection fixtures don't exist yet), so there is nothing to
-/// drift against.
+/// lane report), checked against this crate's real values, including
+/// `DAG_SELECTION_PASS_FLOOR` — added by Lane Z-fix's G7 finding F3 fix
+/// (`2ebf7d8b`) after this lane's original constant table was written, so
+/// this is exactly the kind of drift this test exists to catch.
 #[test]
 fn duplicated_constants_stay_equal() {
     assert_eq!(
@@ -73,6 +75,12 @@ fn duplicated_constants_stay_equal() {
         permagent_eval::graduate::SCHEMA_VERSION,
         SCHEMA_VERSION,
         "permagent-eval's mirror of SCHEMA_VERSION (graduate.rs) has drifted from \
+         capability_directory.rs's real constant"
+    );
+    assert_eq!(
+        permagent_eval::graduate::DAG_SELECTION_PASS_FLOOR,
+        DAG_SELECTION_PASS_FLOOR,
+        "permagent-eval's mirror of DAG_SELECTION_PASS_FLOOR (graduate.rs) has drifted from \
          capability_directory.rs's real constant"
     );
 }
@@ -152,6 +160,9 @@ fn graduate_runs_into_directory_writes_evidence_the_real_crate_accepts() {
     // on that side effect alone).
     validate_graduation(
         role_evidence.graduated(),
+        role_evidence.smoke_passed(),
+        role_evidence.micro_suite_pass_pct(),
+        role_evidence.dag_selection_pct(),
         role_evidence.evidence_run_ids(),
         role_evidence.snapshot_date(),
         today(),

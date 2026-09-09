@@ -72,7 +72,7 @@
 //!   include the smoke task does NOT qualify (never fabricate a pass from
 //!   absence).
 //! - `pass_pct >= MICRO_SUITE_PASS_FLOOR` (0.80).
-//! - `dag_selection_pct >= DAG_SELECTION_FLOOR` (0.95) — **carried by the
+//! - `dag_selection_pct >= DAG_SELECTION_PASS_FLOOR` (0.95) — **carried by the
 //!   run itself**. No retained run produces this today (the G3 tool/DAG-
 //!   selection micro-fixtures do not exist yet, per the DAG doc's G2
 //!   table), so no role graduates through this pipeline until G3 lands.
@@ -109,7 +109,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// (`dag_selection_pct` — "≥ 95% required (Excellence gate)") and the DAG's
 /// Objective line ("...plus ... 95% of tool/DAG-selection checks"), applied
 /// uniformly to every role per that same sentence — not just Orchestrate.
-pub const DAG_SELECTION_FLOOR: f64 = 0.95;
+pub const DAG_SELECTION_PASS_FLOOR: f64 = 0.95;
 
 /// The one coordinator smoke this repo has retained evidence for today:
 /// `docs/orchestrator/CODING_HARNESS_EXCELLENCE_DAG.md:207`'s "FizzBuzz-class
@@ -202,18 +202,48 @@ pub struct RoleEvidence {
     pub snapshot_date: Option<NaiveDate>,
 }
 
-/// Mirrors `capability_directory.rs`'s `validate_graduation` exactly: a
-/// `graduated=true` claim needs at least one evidence-run id AND a
-/// `snapshot_date` no older than [`KB_SNAPSHOT_STALE_AFTER_DAYS`] as of
-/// `today`. `graduated=false` needs nothing (the default, unrated state).
+/// Mirrors `capability_directory.rs`'s `validate_graduation` exactly
+/// (updated to match Lane Z-fix's G7 finding F3 fix, `2ebf7d8b`): a
+/// `graduated=true` claim needs a passed smoke test; a `micro_suite_pass_pct`
+/// present AND at/above [`MICRO_SUITE_PASS_FLOOR`]; a `dag_selection_pct`,
+/// when present, at/above [`DAG_SELECTION_PASS_FLOOR`] (absent is skipped,
+/// not required — only Orchestrate's evidence populates it); at least one
+/// evidence-run id; AND a `snapshot_date` no older than
+/// [`KB_SNAPSHOT_STALE_AFTER_DAYS`] as of `today`. `graduated=false` needs
+/// nothing (the default, unrated state).
+#[allow(clippy::too_many_arguments)]
 pub fn validate_graduation(
     graduated: bool,
+    smoke_passed: bool,
+    micro_suite_pass_pct: Option<f64>,
+    dag_selection_pct: Option<f64>,
     evidence_run_ids: &[String],
     snapshot_date: Option<NaiveDate>,
     today: NaiveDate,
 ) -> Result<(), String> {
     if !graduated {
         return Ok(());
+    }
+    if !smoke_passed {
+        return Err("graduated=true requires smoke_passed".to_string());
+    }
+    match micro_suite_pass_pct {
+        None => return Err("graduated=true requires a micro_suite_pass_pct".to_string()),
+        Some(p) if p < MICRO_SUITE_PASS_FLOOR => {
+            return Err(format!(
+                "graduated=true requires micro_suite_pass_pct >= {MICRO_SUITE_PASS_FLOOR:.2} \
+                 (got {p:.2})"
+            ));
+        }
+        Some(_) => {}
+    }
+    if let Some(d) = dag_selection_pct {
+        if d < DAG_SELECTION_PASS_FLOOR {
+            return Err(format!(
+                "graduated=true requires dag_selection_pct >= {DAG_SELECTION_PASS_FLOOR:.2} \
+                 when present (got {d:.2})"
+            ));
+        }
     }
     if evidence_run_ids.is_empty() {
         return Err("graduated=true requires at least one evidence_run_id".to_string());
@@ -248,7 +278,15 @@ impl RoleEvidence {
         snapshot_date: Option<NaiveDate>,
         today: NaiveDate,
     ) -> Result<Self, String> {
-        validate_graduation(graduated, &evidence_run_ids, snapshot_date, today)?;
+        validate_graduation(
+            graduated,
+            smoke_passed,
+            micro_suite_pass_pct,
+            dag_selection_pct,
+            &evidence_run_ids,
+            snapshot_date,
+            today,
+        )?;
         Ok(Self {
             graduated,
             smoke_passed,
@@ -513,7 +551,7 @@ pub fn run_qualifies(run: &RunEvidence) -> bool {
     let micro_ok = run.pass_pct >= MICRO_SUITE_PASS_FLOOR;
     let dag_ok = run
         .dag_selection_pct
-        .map(|p| p >= DAG_SELECTION_FLOOR)
+        .map(|p| p >= DAG_SELECTION_PASS_FLOOR)
         .unwrap_or(false);
     smoke_ok && micro_ok && dag_ok
 }
@@ -1429,7 +1467,19 @@ mod tests {
         apply_role_evidence_json(&mut dir, "acme", "m1", WorkflowRole::Review, &evidence).unwrap();
         let read_back = existing_role_evidence(&dir, "acme", "m1", WorkflowRole::Review).unwrap();
         assert_eq!(read_back, evidence);
-        assert!(existing_role_evidence(&dir, "acme", "m1", WorkflowRole::Edit).is_none());
+        // A sibling role on the SAME (newly created) card is explicit but
+        // unrated — `new_card_json` seeds every role, matching the real
+        // crate's "unrated is never an absent key" philosophy
+        // (`capability_directory.rs`'s own doc). It is `Some(default)`, not
+        // `None` — a card genuinely absent from the directory is the only
+        // case `existing_role_evidence` returns `None` for (see the next
+        // assertion).
+        let sibling = existing_role_evidence(&dir, "acme", "m1", WorkflowRole::Edit)
+            .expect("every role on an existing card is explicit, never absent");
+        assert_eq!(sibling, RoleEvidence::default());
+        assert!(
+            existing_role_evidence(&dir, "acme", "no-such-model", WorkflowRole::Review).is_none()
+        );
     }
 
     #[test]

@@ -58,8 +58,8 @@ pub use graduate::{
     graduate_runs_into_directory, load_directory_json, resolve_identity, resolve_run_id,
     resolve_snapshot_date, run_qualifies, save_directory_json, select_tier, validate_graduation,
     GraduateOutcome, GraduateRequest, RoleEvidence, RunEvidence, RunFile, SummaryRecord,
-    TaskRecord, TierRecord, WorkflowRole, DAG_SELECTION_FLOOR, DEFAULT_ORCHESTRATE_SMOKE_TASK_ID,
-    KB_SNAPSHOT_STALE_AFTER_DAYS, MICRO_SUITE_PASS_FLOOR,
+    TaskRecord, TierRecord, WorkflowRole, DAG_SELECTION_PASS_FLOOR,
+    DEFAULT_ORCHESTRATE_SMOKE_TASK_ID, KB_SNAPSHOT_STALE_AFTER_DAYS, MICRO_SUITE_PASS_FLOOR,
     SCHEMA_VERSION as CAPABILITY_DIRECTORY_SCHEMA_VERSION,
 };
 pub use harness_log::{scan as scan_harness_log, LogSignals, PlannerRoute};
