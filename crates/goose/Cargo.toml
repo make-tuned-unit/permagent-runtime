@@ -104,7 +104,7 @@ tiktoken-rs = "0.12.0"
 chrono = { workspace = true }
 clap = { workspace = true }
 indoc = { workspace = true }
-nanoid = "0.4"
+nanoid = "0.5"
 sha2 = { workspace = true }
 hex = "0.4.3"
 # Reader (#296) Phase 2: PDF text-layer extraction (same lopdf approach as the
