@@ -2531,6 +2531,14 @@ pub(crate) async fn dispatch_goal_fn(
     let tracker_card_id = card_id.to_string();
     let tracker_project_id = card.project_id.clone();
     let tracker_pool = pool.clone();
+    // Harness loop, Lane V (V1): an owned copy of "was this dispatch reached
+    // through a headless Auto policy at all" — not the policy's own borrowed
+    // lifetime, which cannot cross into this `'static` task. `handle_goal_completion`
+    // uses this to decide whether it may even ATTEMPT to auto-land the goal;
+    // it never decides landing eligibility itself (see that function's own
+    // doc comment) and `policy: None` (every non-headless dispatch site,
+    // daemon included) always yields `false` here, unchanged.
+    let tracker_headless_auto_land = policy.is_some();
     tokio::spawn(async move {
         if tracker_start_rx.await.is_err() {
             return;
@@ -2615,8 +2623,14 @@ pub(crate) async fn dispatch_goal_fn(
                         ),
                     }
                 }
-                handle_goal_completion(&tracker_pool, &tracker_card_id, &tracker_project_id, Ok(()))
-                    .await
+                handle_goal_completion(
+                    &tracker_pool,
+                    &tracker_card_id,
+                    &tracker_project_id,
+                    Ok(()),
+                    tracker_headless_auto_land,
+                )
+                .await
             }
             goal_engine::GoalOutcome::Failed(error) => {
                 handle_goal_completion(
@@ -2624,6 +2638,7 @@ pub(crate) async fn dispatch_goal_fn(
                     &tracker_card_id,
                     &tracker_project_id,
                     Err(error),
+                    tracker_headless_auto_land,
                 )
                 .await
             }
@@ -4506,6 +4521,42 @@ impl OrchestratorClient {
             .await?
             .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?;
 
+        // Harness loop, Lane V (V3): `resolve_internal_isolation` (goal_engine.rs)
+        // fatally refuses to dispatch into a project with no git baseline —
+        // correct everywhere else, but the eval/dogfood workspace a fresh
+        // headless Auto roadmap targets may genuinely have no git history yet.
+        // Only under an installed headless dispatch policy (the SAME source
+        // of truth `dispatch_goal_to`/`resume_roadmap` already read, via
+        // `current_headless_dispatch_policy` — never a new global) does this
+        // initialise one; outside headless Auto (no policy: the daemon, an
+        // interactive session, every existing caller) this is a no-op and the
+        // ordinary refusal is unchanged. Runs BEFORE materialization/dispatch
+        // below so the very first root-goal dispatch already sees a real
+        // baseline, and the receipt is reported on this call's own result —
+        // never a silent side effect.
+        let baseline_receipt =
+            match current_headless_dispatch_policy(&self.context.session_manager).await {
+                Some(_) => match project.root_path.as_deref() {
+                    Some(root) => goal_engine::ensure_headless_git_baseline(
+                        std::path::Path::new(root),
+                        &approval_decision_id,
+                    )
+                    .await
+                    .map(|sha| {
+                        let short: String = sha.chars().take(9).collect();
+                        format!(
+                            "\n\nNote: project '{}' had no git history — initialised one and \
+                                 committed a baseline ({}) before dispatch, so worker isolation \
+                                 can proceed.",
+                            project.name, short
+                        )
+                    }),
+                    None => None,
+                },
+                None => None,
+            }
+            .unwrap_or_default();
+
         let budget_task_id = self
             .context
             .session
@@ -4593,13 +4644,14 @@ impl OrchestratorClient {
             "Roadmap created: {} goal cards in project '{}'. \
              {} root goal(s) dispatched to workers. \
              Remaining goals will dispatch automatically as dependencies complete.\n\n\
-             {}{}\n\n\
+             {}{}{}\n\n\
              Use pause_roadmap to stop auto-dispatch. Use resume_roadmap to continue.",
             materialized.created_ids.len(),
             materialized.project_name,
             dispatched,
             goal_id_listing,
-            wait_notice
+            wait_notice,
+            baseline_receipt
         ))]))
     }
 
@@ -6615,11 +6667,24 @@ async fn record_decision_create_failure(
 /// needs_human_attention. Otherwise leaves in InProgress for retry.
 ///
 /// Gracefully no-ops if the card is no longer in InProgress (manual intervention).
+///
+/// `headless_auto_land`: harness loop, Lane V (V1). `true` only for a goal
+/// dispatched through an installed [`HeadlessDispatchPolicy`] (the real
+/// completion tracker in `dispatch_goal_fn` passes `policy.is_some()`; every
+/// other caller — daemon reconciliation, every existing test — passes
+/// `false`, byte-identical to this function's behavior before V1). When
+/// `true` AND the goal's own worker session produced a durable, deterministic
+/// verifier pass, [`auto_land_headless_goal`] attempts to land the work the
+/// instant its `approve_review` decision is filed, the same way a human's
+/// approval would — see that function's doc comment for why this can never
+/// relax G4 (durable-verifier-pass-before-landing). `false` (the default)
+/// leaves the decision open for a human exactly as before this lane.
 pub async fn handle_goal_completion(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
     project_id: &str,
     result: Result<(), String>,
+    headless_auto_land: bool,
 ) -> Result<(), String> {
     let card = cards::get_card(pool, card_id)
         .await?
@@ -6733,7 +6798,7 @@ pub async fn handle_goal_completion(
                 // it in the inbox must not fail (or retry) the completion, but
                 // it MUST be visible: retry once, then error-log + durable
                 // metadata trace (bug-sweep wave 1; was `let _ =`).
-                if let Err(e) = create_decision_with_retry(
+                match create_decision_with_retry(
                     pool,
                     decisions::NewDecision {
                         kind: "approve_review".to_string(),
@@ -6747,17 +6812,28 @@ pub async fn handle_goal_completion(
                 )
                 .await
                 {
-                    tracing::error!(
-                        target: "permagentd::brain",
-                        goal_id = %card_id,
-                        project_id = %project_id,
-                        "Goal '{}' moved to Review but its approve_review decision could not \
-                         be created — the finished work will NOT appear in the Decision Inbox \
-                         until re-surfaced: {}",
-                        card.title,
-                        e
-                    );
-                    record_decision_create_failure(pool, card_id, "approve_review", &e).await;
+                    Ok(decision) => {
+                        // Harness loop, Lane V (V1): only a headless Auto
+                        // dispatch (see this function's own doc comment) ever
+                        // attempts this — every other caller passes `false`
+                        // and the decision stays open for a human, unchanged.
+                        if headless_auto_land {
+                            auto_land_headless_goal(pool, &decision.id, &card).await;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            target: "permagentd::brain",
+                            goal_id = %card_id,
+                            project_id = %project_id,
+                            "Goal '{}' moved to Review but its approve_review decision could not \
+                             be created — the finished work will NOT appear in the Decision Inbox \
+                             until re-surfaced: {}",
+                            card.title,
+                            e
+                        );
+                        record_decision_create_failure(pool, card_id, "approve_review", &e).await;
+                    }
                 }
             }
 
@@ -6828,6 +6904,143 @@ pub async fn handle_goal_completion(
     }
 
     Ok(())
+}
+
+// ── Harness loop, Lane V: land headless Auto work with no human in the loop ─
+
+/// Attempt to land a headless Auto goal the instant its `approve_review`
+/// decision is filed — the smallest honest closer of the M4 defect: a
+/// headless `permagent run` dispatches real work (Lane S/T/U) but nothing
+/// ever lands, because `resolve_internal_isolation` puts every worker in an
+/// isolated WORKTREE and only an *approved* `approve_review` decision fast-
+/// forwards it onto the project's checked-out branch
+/// (`goal_landing::land`, called from `decisions_effects::apply_decision_effect`).
+/// In a headless run nothing ever answers that decision, so nothing ever
+/// lands and the working directory an eval oracle inspects never changes.
+///
+/// This function only decides WHEN to attempt an automatic answer — never
+/// whether the work is fit to land. It requires the goal's own worker
+/// session to have already produced a durable, deterministic verifier pass:
+/// the SAME `session_had_successful_verify` signal `maybe_hold_review`
+/// already gates the Review transition on for most roles (a real, structured
+/// `VERIFICATION_OBSERVATION_KIND` pass from the `verify` tool, not free
+/// text — see `developer::verify::is_authoritative_pass`). Absent that
+/// signal, this function does nothing at all: the decision stays open,
+/// exactly as it would with no headless policy installed. This is a
+/// necessary, not sufficient, check — a bug in this function's own judgement
+/// can at most make it ANSWER a decision it should not have; it can never by
+/// itself make anything land, because [`decisions_effects::apply_decision_effect`]'s
+/// `approve_review` arm independently re-reads
+/// `decisions_effects::approve_review_verification_status` (G4: no landing
+/// without a durable verifier pass) before it will call `goal_landing::land`
+/// — the exact same gate a human's approval goes through. That is also why
+/// this records the receipt via `cards::set_goal_verdict_and_program_receipts`
+/// (the sanctioned, narrow verifier-write API) BEFORE answering: it makes the
+/// pass this function already found durably visible to that independent
+/// re-check, rather than asking `apply_decision_effect` to trust this
+/// function's word for it.
+///
+/// The decision is auto-answered under [`decisions::ACTOR_AUTO_LAUNCH`] via
+/// [`decisions::auto_approve_headless_goal_review`] — the landing counterpart
+/// to Lane R's `auto_approve_roadmap_launch`, same single-use/session-bound
+/// proof pattern, reused rather than forked. Every failure path here is
+/// logged and simply leaves the decision (or the goal) wherever it already
+/// was — never a panic, never a retry loop; the ordinary Decision Inbox is
+/// always the fallback.
+async fn auto_land_headless_goal(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    decision_id: &str,
+    card: &cards::Card,
+) {
+    let worker_session_id = card
+        .metadata_json
+        .get("worker_session_id")
+        .and_then(|v| v.as_str());
+    if !session_had_successful_verify(pool, worker_session_id).await {
+        tracing::info!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            decision_id = %decision_id,
+            "headless Auto: goal '{}' completed with no durable verifier pass in its worker \
+             session — leaving the approve_review decision open for review, not auto-landing",
+            card.title
+        );
+        return;
+    }
+
+    if let Err(e) = cards::set_goal_verdict_and_program_receipts(
+        pool,
+        &card.id,
+        serde_json::json!({
+            "status": "pass",
+            "source": "headless_auto_worker_verify_tool",
+            "recorded_at": chrono::Utc::now().to_rfc3339(),
+        }),
+        None,
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "headless Auto: could not record the auto-land verifier receipt for goal '{}' \
+             ({e}) — leaving the approve_review decision open",
+            card.title
+        );
+        return;
+    }
+
+    let (answered, proof) =
+        match decisions::auto_approve_headless_goal_review(pool, decision_id, &card.id).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    goal_id = %card.id,
+                    decision_id = %decision_id,
+                    "headless Auto: could not auto-answer the approve_review decision for \
+                     goal '{}': {:?}",
+                    card.title,
+                    e
+                );
+                return;
+            }
+        };
+
+    match crate::decisions_effects::apply_decision_effect(pool, &answered, proof, "approve_review")
+        .await
+    {
+        Ok((effect, warning)) => {
+            tracing::info!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                decision_id = %decision_id,
+                "headless Auto auto-landed goal '{}': {}",
+                card.title,
+                effect.unwrap_or_default()
+            );
+            if let Some(warning) = warning {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    goal_id = %card.id,
+                    "headless Auto auto-land follow-on warning for goal '{}': {}",
+                    card.title,
+                    warning
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                decision_id = %decision_id,
+                "headless Auto: decision auto-answered for goal '{}' but the landing effect \
+                 was refused ({e}) — the goal remains wherever the effect left it, not silently \
+                 lost",
+                card.title
+            );
+        }
+    }
 }
 
 /// Park a goal whose worker exceeded its time bound.
@@ -7174,6 +7387,56 @@ pub async fn park_dispatched_goals_now(
         finished,
         timed_out,
     })
+}
+
+/// The worker's landed head commit for a card already in `Complete` state,
+/// read straight from `dispatch_evidence.head_commit` — the same field
+/// `goal_landing::land` fast-forwarded the trunk onto. `None` when the card
+/// carries no recorded evidence (never happens for a goal that reached
+/// Complete through the landing path; a defensive read rather than a panic
+/// for any other way a card could reach Complete).
+async fn goal_landed_head_commit(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) -> Option<String> {
+    let card = cards::get_card(pool, card_id).await.ok()??;
+    card.metadata_json
+        .pointer("/dispatch_evidence/head_commit")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+}
+
+/// Harness loop, Lane V (V2): every goal `coordinator_session_id` dispatched
+/// (any descendant, the SAME wait set [`drain_dispatched_goals`] uses) that
+/// has already landed on the project trunk — `(card_id, head_commit)`.
+///
+/// `Complete` is already the only "landed" terminal state in this codebase:
+/// a goal reaches Complete exclusively through
+/// `decisions_effects::apply_decision_effect`'s `approve_review` "approve"
+/// arm, which calls `goal_transition::advance_goal_checked(..., Approve,
+/// ...)` and `land_approved_goal` in the same sequence — so by the time
+/// `drain_dispatched_goals` (or this function) ever OBSERVES Complete, the
+/// landing has already happened, whether a human answered the decision or
+/// (Lane V's V1) it auto-landed under a headless Auto policy. This is
+/// therefore a plain read-back, not a fresh landing decision, and is
+/// harmless (empty) for a daemon/interactive session, where nothing calls
+/// it. Used by the CLI's post-drain summary to print "landed `<id>` →
+/// `<sha>`" lines.
+pub async fn landed_goals_for_session(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    coordinator_session_id: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for session_id in descendant_session_ids(pool, coordinator_session_id).await? {
+        let Some((card_id, _project_id)) = goal_card_for_worker_session(pool, &session_id).await?
+        else {
+            continue;
+        };
+        if goal_state_for_card(pool, &card_id).await? != GoalState::Complete {
+            continue;
+        }
+        if let Some(sha) = goal_landed_head_commit(pool, &card_id).await {
+            out.push((card_id, sha));
+        }
+    }
+    Ok(out)
 }
 
 /// Park a goal whose worker committed credential-shaped content (#508).
@@ -9225,7 +9488,7 @@ async fn try_complete_dead_worker_from_worktree(
         );
         return false;
     }
-    match handle_goal_completion(pool, &card.id, project_id, Ok(())).await {
+    match handle_goal_completion(pool, &card.id, project_id, Ok(()), false).await {
         Ok(()) => {
             tracing::info!(
                 target: "permagentd::brain",
@@ -9910,7 +10173,7 @@ mod tests {
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
         stamp_verify_exchange(&pool, &card.id, false).await;
 
-        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
             .await
             .unwrap();
         let after = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
@@ -9935,7 +10198,7 @@ mod tests {
             .unwrap();
         stamp_worker_session(&pool, &card.id, &current_session).await;
 
-        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
             .await
             .unwrap();
         let after = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
@@ -10303,7 +10566,7 @@ mod tests {
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
         stamp_successful_verify(&pool, &card.id).await;
 
-        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
             .await
             .unwrap();
 
@@ -10325,7 +10588,7 @@ mod tests {
         let pool = test_pool().await;
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
 
-        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
             .await
             .unwrap();
 
@@ -10388,7 +10651,7 @@ mod tests {
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
 
         for expected_count in 1..=crate::cost_router::MAX_HOLDS {
-            handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+            handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
                 .await
                 .unwrap();
             let held = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
@@ -10400,7 +10663,7 @@ mod tests {
             force_goal_in_progress(&pool, &card.id).await;
         }
 
-        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
             .await
             .unwrap();
         let parked = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
@@ -10446,7 +10709,7 @@ mod tests {
         .unwrap();
         stamp_successful_verify(&pool, &card.id).await;
 
-        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
             .await
             .unwrap();
 
@@ -10498,7 +10761,7 @@ mod tests {
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
         stamp_successful_verify(&pool, &card.id).await;
 
-        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
             .await
             .unwrap();
 
@@ -10531,6 +10794,7 @@ mod tests {
             &failed.id,
             &failed.project_id,
             Err("boom".to_string()),
+            false,
         )
         .await
         .unwrap();
@@ -10542,7 +10806,7 @@ mod tests {
         // Success path fires it after the Review move.
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
         stamp_successful_verify(&pool, &card.id).await;
-        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
             .await
             .unwrap();
         assert!(
@@ -10561,6 +10825,7 @@ mod tests {
             &card.id,
             &card.project_id,
             Err("Worker crashed".to_string()),
+            false,
         )
         .await
         .unwrap();
@@ -10569,6 +10834,7 @@ mod tests {
             &card.id,
             &card.project_id,
             Err("Worker crashed".to_string()),
+            false,
         )
         .await
         .unwrap();
@@ -10607,6 +10873,7 @@ mod tests {
             &card.id,
             &card.project_id,
             Err("Worker crashed again".to_string()),
+            false,
         )
         .await
         .unwrap();
@@ -10659,6 +10926,7 @@ mod tests {
             &card.id,
             &card.project_id,
             Err("Worker crashed".to_string()),
+            false,
         )
         .await
         .unwrap();
@@ -11421,6 +11689,145 @@ mod tests {
         assert_eq!(observed, vec![(child.id.clone(), GoalState::Complete)]);
     }
 
+    /// Harness loop, Lane V (V2): "drain waits for landing" — a goal that
+    /// completed but has NOT been landed (it sits in `Review`, exactly where
+    /// V1 leaves an unverified goal, or where any goal sits before a human
+    /// approves it) must never be mistaken for a terminal state. `Review` is
+    /// deliberately absent from `drain_dispatched_goals`'s own `TERMINAL`
+    /// array — this test pins that a goal parked there is waited on (never
+    /// treated as "already done") and, at the cap, is parked exactly like any
+    /// other still-running goal — never silently counted as finished.
+    #[tokio::test]
+    async fn drain_dispatched_goals_does_not_treat_review_as_landed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: fake".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        // Review, not Complete: the goal finished its worker run and has an
+        // open approve_review decision (V1 left it here because it had no
+        // durable verifier pass), but nothing has landed it yet.
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+
+        let cap = std::time::Duration::from_millis(80);
+        let start = std::time::Instant::now();
+        let summary = drain_dispatched_goals(
+            &pool,
+            &coordinator.id,
+            cap,
+            std::time::Duration::from_millis(20),
+            |_, _| {},
+        )
+        .await
+        .unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed >= cap,
+            "a goal sitting in Review (not landed) must be waited on, not treated as terminal: \
+             returned after {elapsed:?} against a {cap:?} cap"
+        );
+        assert_eq!(
+            summary,
+            DrainSummary {
+                finished: 0,
+                timed_out: 1
+            },
+            "an un-landed goal must be counted as timed-out/parked, never as finished"
+        );
+        assert!(
+            landed_goals_for_session(&pool, &coordinator.id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a goal that only reached Review must never be reported as landed"
+        );
+    }
+
+    /// Harness loop, Lane V (V2): `landed_goals_for_session` is the CLI's own
+    /// source for its "landed `<id>` → `<sha>`" summary lines — reads back
+    /// the head commit `goal_landing::land` fast-forwarded, for every
+    /// dispatched goal that reached Complete.
+    #[tokio::test]
+    async fn landed_goals_for_session_reads_back_the_head_commit_of_a_complete_goal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let landed_child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: landed".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let landed_card = setup_goal_in_state(&pool, "complete", 1).await;
+        attach_worker_session_to_card(&pool, &landed_card.id, &landed_child.id).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &landed_card.id,
+            serde_json::json!({"head_commit": "deadbeefcafe", "commits": ["one"]}),
+        )
+        .await
+        .unwrap();
+
+        // A second dispatched goal that is still Review (not landed) must
+        // never appear in the result.
+        let unlanded_child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: not landed".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let unlanded_card = setup_goal_in_state(&pool, "review", 1).await;
+        attach_worker_session_to_card(&pool, &unlanded_card.id, &unlanded_child.id).await;
+
+        let landed = landed_goals_for_session(&pool, &coordinator.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            landed,
+            vec![(landed_card.id.clone(), "deadbeefcafe".to_string())]
+        );
+    }
+
     /// T3, "one that never completes → returns at cap and the goal is
     /// marked": this is the "process would exit with the goal InProgress"
     /// case, shown failing first below — pins the cap-expiry path AND that
@@ -11764,7 +12171,7 @@ mod tests {
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
         stamp_successful_verify(&pool, &card.id).await;
 
-        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
             .await
             .unwrap();
 
@@ -11775,6 +12182,252 @@ mod tests {
         assert_eq!(d.tier, 1, "goal_approve_standard seeds at tier 1");
         assert!(!d.headline.is_empty());
         assert!(!d.detail.is_empty());
+    }
+
+    // ── Harness loop, Lane V (V1): land on completion in headless Auto ──────
+
+    fn git_v1(root: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .expect("git must be on PATH for this test");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A trunk on `main` and a `goal/<run_id>` branch one commit ahead of it
+    /// — the exact shape `goal_landing::land` fast-forwards, mirroring
+    /// `decisions_effects::tests::repo_with_finished_goal_branch`. Returns
+    /// (repo root, the branch's head commit).
+    fn v1_repo_with_finished_goal_branch(run_id: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_v1(root, &["init", "-b", "main"]);
+        git_v1(root, &["config", "user.email", "test@example.com"]);
+        git_v1(root, &["config", "user.name", "Test"]);
+        git_v1(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("README.md"), "base\n").unwrap();
+        git_v1(root, &["add", "-A"]);
+        git_v1(root, &["commit", "-m", "base"]);
+        let branch = format!("goal/{run_id}");
+        git_v1(root, &["checkout", "-b", &branch]);
+        std::fs::write(root.join("work.txt"), "the goal's work\n").unwrap();
+        git_v1(root, &["add", "-A"]);
+        git_v1(root, &["commit", "-m", "the work"]);
+        let head = git_v1(root, &["rev-parse", "HEAD"]);
+        git_v1(root, &["checkout", "main"]);
+        (dir, head)
+    }
+
+    /// The `dispatch_evidence` shape the real completion tracker persists
+    /// (`cards::set_goal_dispatch_evidence`) BEFORE calling
+    /// `handle_goal_completion`, for a worker whose worktree directory name
+    /// is `run_id` (so `goal_landing::land_request_from_metadata` derives
+    /// branch `goal/<run_id>`, matching [`v1_repo_with_finished_goal_branch`]).
+    async fn v1_stamp_dispatch_evidence(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        card_id: &str,
+        run_id: &str,
+        head_commit: &str,
+    ) {
+        cards::set_goal_dispatch_evidence(
+            pool,
+            card_id,
+            serde_json::json!({
+                "worktree_path": format!("/tmp/.permagent-goal-worktrees/{run_id}"),
+                "head_commit": head_commit,
+                "commits": ["abc123 the work"],
+                "baseline_commit": "0000000000000000000000000000000000000000",
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+                "diffstat": " work.txt | 1 +\n",
+                "worker_summary": "did the work",
+            }),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// V1 positive: a headless Auto goal whose worker session produced a
+    /// real, durable verifier pass lands with NO human ever touching the
+    /// Decision Inbox — the working directory's HEAD advances to the
+    /// worker's commit, exactly as the brief's contract requires.
+    /// The `approve_review` decision `handle_goal_completion` would have
+    /// filed for a card already in Review — created directly so this test
+    /// exercises `auto_land_headless_goal` in isolation, decoupled from the
+    /// pre-existing (unrelated) `maybe_hold_review`/`decide_hold` gate that
+    /// `handle_goal_completion` also runs: that gate ALWAYS holds/parks a
+    /// first-attempt completion with no verify pass rather than ever letting
+    /// it reach Review at all (`cost_router::hold_done::decide_hold` grants
+    /// `Allow` only when `verify_ran`), so driving the full
+    /// `handle_goal_completion` flow can never actually produce the "reached
+    /// Review with no verifier pass" case V1's own gate additionally guards.
+    async fn v1_review_decision(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        card_id: &str,
+    ) -> decisions::Decision {
+        decisions::create_decision(
+            pool,
+            decisions::NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(card_id.to_string()),
+                project_id: Some(crate::projects::PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    // Harness loop, Lane V (V1) — PENDING a decision from Jesse, tracked in
+    // this lane's report ("Lane V report", HARNESS_LOOP_LOG.md): landing
+    // itself is refused by a SEPARATE, pre-existing tier gate this lane did
+    // NOT touch — `goal_transition::check_proof`'s Tier-1 arm
+    // (`goal_transition.rs`, ~line 295) hardcodes `acted_by` to
+    // `ACTOR_JESSE`/`ACTOR_HENRY`; it does not (yet) accept
+    // `ACTOR_AUTO_LAUNCH`, so `apply_decision_effect`'s call into
+    // `advance_goal_checked` fails with `Denied("Tier-1 transition requires
+    // a decision answered by 'jesse' or 'henry-policy' (got
+    // 'auto-mode-launch')")` even though `auto_land_headless_goal` itself
+    // (this file) and `auto_approve_headless_goal_review` (decisions.rs)
+    // both work exactly as intended up to that point — the decision answers
+    // and the verdict receipt is recorded, but the trunk never actually
+    // fast-forwards. Widening that gate is a security-relevant
+    // authorization-boundary change the harness's own permission classifier
+    // refused to let this lane make unattended; the proposed narrow diff
+    // (Tier-1 only, Tier-2 deliberately untouched) and the safety argument
+    // for it are in the Lane V report. `#[ignore]` until that question is
+    // settled, rather than deleting a test that correctly demonstrates the
+    // one remaining gap between "dispatches real work" and "lands real
+    // work" in headless Auto.
+    #[tokio::test]
+    #[ignore = "blocked on Jesse's Tier-1 ACTOR_AUTO_LAUNCH decision — see Lane V report in HARNESS_LOOP_LOG.md"]
+    async fn headless_auto_land_lands_a_goal_with_a_durable_verifier_pass() {
+        let (repo, head) = v1_repo_with_finished_goal_branch("v1-land-run");
+        let root = repo.path().to_string_lossy().into_owned();
+
+        let pool = test_pool().await;
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(&root)
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        v1_stamp_dispatch_evidence(&pool, &card.id, "v1-land-run", &head).await;
+        stamp_successful_verify(&pool, &card.id).await;
+        let decision = v1_review_decision(&pool, &card.id).await;
+        // Re-fetch: `stamp_successful_verify` stamped `worker_session_id`
+        // onto the card row AFTER `card` above was captured, and
+        // `auto_land_headless_goal` (like the real completion tracker's own
+        // `handle_goal_completion`, which always fetches its `card` AFTER
+        // dispatch already stamped `worker_session_id`) reads that field off
+        // the `cards::Card` it is GIVEN rather than re-querying — passing the
+        // stale snapshot here would make it see no worker session at all.
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        auto_land_headless_goal(&pool, &decision.id, &card).await;
+
+        assert_eq!(
+            git_v1(repo.path(), &["rev-parse", "HEAD"]),
+            head,
+            "headless Auto completion with a durable verifier pass must fast-forward the \
+             working directory onto the worker's commit with no human answer"
+        );
+        assert!(
+            repo.path().join("work.txt").exists(),
+            "the worker's file must be present in the working directory after auto-landing"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("complete"),
+            "an auto-landed goal must reach Complete, not sit in Review"
+        );
+        assert_eq!(
+            updated
+                .metadata_json
+                .pointer("/dispatch_evidence/verdict/status")
+                .and_then(|v| v.as_str()),
+            Some("pass"),
+            "the auto-land receipt must be durably recorded on the card"
+        );
+
+        let d = decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+            .await
+            .unwrap();
+        assert!(
+            d.is_none(),
+            "the approve_review decision must be resolved (answered), not left open"
+        );
+    }
+
+    /// V1 negative: a goal in Review with no durable verifier pass in its
+    /// worker session must NOT be landed — the decision stays open in the
+    /// inbox exactly as it would with no headless policy at all.
+    #[tokio::test]
+    async fn headless_auto_land_does_not_land_a_goal_with_no_verifier_pass() {
+        let (repo, head) = v1_repo_with_finished_goal_branch("v1-noland-run");
+        let root = repo.path().to_string_lossy().into_owned();
+
+        let pool = test_pool().await;
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(&root)
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        v1_stamp_dispatch_evidence(&pool, &card.id, "v1-noland-run", &head).await;
+        // Deliberately no `stamp_successful_verify` — the worker never ran an
+        // authoritative `verify` pass.
+        let decision = v1_review_decision(&pool, &card.id).await;
+
+        auto_land_headless_goal(&pool, &decision.id, &card).await;
+
+        assert_ne!(
+            git_v1(repo.path(), &["rev-parse", "HEAD"]),
+            head,
+            "with no durable verifier pass, the working directory must NOT advance"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("review"),
+            "an unverified completion must stay in Review, not auto-advance to Complete"
+        );
+
+        let d = decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+            .await
+            .unwrap()
+            .expect("the approve_review decision must remain open for a human");
+        assert_eq!(d.status, "open");
+        assert!(
+            d.acted_by.is_none(),
+            "an unverified completion must never be auto-answered"
+        );
     }
 
     #[tokio::test]
@@ -11791,7 +12444,7 @@ mod tests {
             .unwrap();
         stamp_successful_verify(&pool, &card.id).await;
 
-        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
             .await
             .unwrap();
 
@@ -11999,7 +12652,7 @@ mod tests {
         // Card is in Review (someone already approved manually)
         let card = setup_goal_in_state(&pool, "review", 1).await;
 
-        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
             .await
             .unwrap();
 
@@ -15425,6 +16078,38 @@ mod tests {
              after create_roadmap, with no further coordinator tool call"
         );
     }
+
+    // Harness loop, Lane V (V3): `handle_create_roadmap`'s own git-init gate
+    // (guarded on `current_headless_dispatch_policy(...).is_some()`, right
+    // after `project` resolves) is deliberately NOT exercised end-to-end
+    // here through the real `install_dispatch_hook_for_headless_session`
+    // installer. That installer sets `HEADLESS_DISPATCH_POLICY_CONFIG` —
+    // like `GOAL_DISPATCH_HOOK`, a process-global `OnceLock` that, once set
+    // by ANY test, stays set for the rest of this binary's `cargo test`
+    // invocation (no unsetter exists). A `create_roadmap_initialises_a_
+    // missing_git_baseline_under_a_headless_auto_policy` test built exactly
+    // that way was written and run while developing this lane: it passed in
+    // isolation but, run as part of the FULL `orchestrator::` suite,
+    // non-deterministically broke the pre-existing (Lane S)
+    // `create_roadmap_dispatches_a_real_child_session_once_a_dispatch_hook_is_installed`
+    // — whichever test's installer call happened to run first that pass won
+    // the shared `OnceLock`s, and the other test's own "Phase 1: nothing
+    // installed yet" assumption broke. That collision risk already exists
+    // between two Lane-U-committed tests
+    // (`dispatch_goal_to_and_resume_roadmap_consult_the_installed_headless_policy`
+    // and the Lane-S test above) even without this lane's addition; adding a
+    // THIRD installer-calling test only raised the odds of it firing. Rather
+    // than add another test onto an already-cracked global, this lane
+    // verifies the git-init gate two other ways: `ensure_headless_git_baseline`
+    // itself is pinned directly above (fail-first, zero shared state); the
+    // three-line gate in `handle_create_roadmap` that calls it is a thin,
+    // already-reviewed composition of that function and
+    // `current_headless_dispatch_policy` (Lane U's own primitive, already
+    // covered by the test named above). A future lane that wants true
+    // end-to-end coverage should first give every test touching
+    // `HEADLESS_DISPATCH_POLICY_CONFIG`/`GOAL_DISPATCH_HOOK` a SHARED
+    // `#[serial_test::serial("headless_policy_globals")]` key so they can
+    // never interleave with a test that assumes a clean process.
 
     /// M3-1: `goal_advance`/`goal_status` on a fabricated or mistyped id used
     /// to silently no-op with a bare `"Card 'X' not found"` — no hint of a

@@ -2375,6 +2375,139 @@ pub async fn auto_approve_roadmap_launch(
     Ok((updated, proof))
 }
 
+/// Auto-answer a JUST-CREATED `approve_review` decision on behalf of an
+/// unattended headless Auto goal completion (harness loop, Lane V / V1) —
+/// the landing counterpart to [`auto_approve_roadmap_launch`] above, same
+/// [`ACTOR_AUTO_LAUNCH`] pattern and the same reasons for being a separate,
+/// narrower path rather than a fork of [`answer_decision_inner`]: it does not
+/// touch [`VALID_ACTORS`] or the tier gate, so `ACTOR_AUTO_LAUNCH` stays
+/// permanently unusable through the general answer path (the chat
+/// `answer_decisions` tool, any HTTP principal).
+///
+/// This function only answers the decision — it does NOT decide whether the
+/// goal deserves to land. That judgement belongs entirely to the caller
+/// (`orchestrator.rs`'s `auto_land_headless_goal`, which only reaches this
+/// after confirming the goal's worker session produced a durable verifier
+/// pass and recording it on the card), and it is re-checked independently, a
+/// second time, once the caller applies the effect this decision authorises:
+/// `decisions_effects::apply_decision_effect`'s `approve_review` arm reads
+/// `approve_review_verification_status` itself (G4) before it will call
+/// `goal_landing::land`. A bug in the caller's judgement can make this
+/// function answer a decision it should not have; it can never, by itself,
+/// make anything land.
+///
+/// Accepts only a still-`open` `approve_review` decision belonging to the
+/// exact `goal_id` given — a decision for a different goal, a decision of
+/// any other kind, or one already resolved (by a human, or a prior call), is
+/// rejected rather than answered.
+pub async fn auto_approve_headless_goal_review(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+    goal_id: &str,
+) -> Result<(Decision, DecisionProof), AnswerError> {
+    let decision = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+    if decision.status != "open" {
+        return Err(AnswerError::AlreadyResolved(decision.status));
+    }
+    if decision.kind != "approve_review" {
+        return Err(AnswerError::Invalid(
+            "headless auto-land only applies to approve_review decisions".to_string(),
+        ));
+    }
+    if decision.goal_id.as_deref() != Some(goal_id) {
+        return Err(AnswerError::Invalid(
+            "decision does not belong to the given goal".to_string(),
+        ));
+    }
+
+    let resolved_at = now_timestamp();
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    // Atomic open -> answered, same shape as answer_decision_inner's update:
+    // zero rows affected means we lost a race (e.g. a human answered first).
+    let result = sqlx::query(
+        "UPDATE decisions SET status = 'answered', answer = 'approve', answer_note = ?, \
+         answer_choice_id = NULL, answer_input = NULL, acted_by = ?, resolved_at = ?, \
+         staged_answer_json = NULL \
+         WHERE id = ? AND status = 'open'",
+    )
+    .bind("Pre-approved: unattended headless Auto landing — durable verifier pass confirmed")
+    .bind(ACTOR_AUTO_LAUNCH)
+    .bind(&resolved_at)
+    .bind(decision_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AnswerError::Db(e.to_string()))?;
+    if result.rows_affected() == 0 {
+        return Err(AnswerError::AlreadyResolved("answered".to_string()));
+    }
+
+    append_audit_tx_with_principal(
+        &mut tx,
+        decision_id,
+        decision.goal_id.as_deref(),
+        ACTOR_AUTO_LAUNCH,
+        decision.tier,
+        "approve",
+        decision
+            .payload
+            .get("evidence_digest")
+            .and_then(|v| v.as_str()),
+        None,
+    )
+    .await
+    .map_err(AnswerError::Db)?;
+
+    if let Some(claim_key) = effect_outbox_claim_key(decision_id, &decision.kind) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO effect_outbox
+             (id, claim_key, kind, decision_id, payload_json, status)
+             VALUES (?, ?, ?, ?, '{}', 'pending')",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(claim_key)
+        .bind(&decision.kind)
+        .bind(decision_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    crate::events::emit(crate::events::decision_resolved(
+        decision_id,
+        &decision.kind,
+        "approve",
+        ACTOR_AUTO_LAUNCH,
+        decision.tier,
+    ));
+
+    let updated = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+
+    let proof = DecisionProof {
+        decision_id: decision_id.to_string(),
+        kind: decision.kind.clone(),
+        goal_id: decision.goal_id.clone(),
+        tier: decision.tier,
+        answer: "approve".to_string(),
+        acted_by: ACTOR_AUTO_LAUNCH.to_string(),
+    };
+
+    Ok((updated, proof))
+}
+
 /// Does `haystack` mention `needle` anywhere as a string, key, or substring of
 /// a string? Decision payloads are free-form JSON — a session id can appear as
 /// `worker_session_id`, inside a `run_id`, or embedded in a rendered evidence
@@ -3820,6 +3953,147 @@ mod tests {
         let ans = DecisionAnswer {
             answer: "choice".to_string(),
             choice_id: Some("approve-roadmap".to_string()),
+            ..Default::default()
+        };
+        let err = answer_decision(&pool, &d.id, &ans, ACTOR_AUTO_LAUNCH)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AnswerError::Invalid(_)),
+            "ACTOR_AUTO_LAUNCH must not be a valid actor for the general answer path: {:?}",
+            err
+        );
+    }
+
+    /// A real goal card in Review (`create_decision`'s `goal_id` FK is
+    /// best-effort — it silently drops any `goal_id` that names no existing
+    /// card, per its own doc comment — so a fabricated id would never
+    /// actually round-trip onto the decision) plus the matching
+    /// `approve_review` decision request. Returns (`request`, `goal_id`).
+    async fn approve_review_decision_for_real_goal(pool: &Pool<Sqlite>) -> (NewDecision, String) {
+        crate::cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let col = crate::cards::get_goal_column(pool, PERSONAL_PROJECT_ID, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let card = crate::cards::create_card(
+            pool,
+            crate::cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "V1 auto-land test goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({})),
+            },
+        )
+        .await
+        .unwrap();
+        let goal_id = card.id.clone();
+        (
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal_id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Review the finished work on the test goal".to_string()),
+                detail: Some("evidence: the worker's own verify tool call passed".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+            goal_id,
+        )
+    }
+
+    /// Harness loop, Lane V (V1) — the landing counterpart to
+    /// `auto_approve_roadmap_launch_answers_a_pending_proposal_unattended`
+    /// above: a freshly-filed `approve_review` decision can be answered with
+    /// no human ever touching the Decision Inbox.
+    #[tokio::test]
+    async fn auto_approve_headless_goal_review_answers_a_pending_review_unattended() {
+        let pool = test_pool().await;
+        let (req, goal_id) = approve_review_decision_for_real_goal(&pool).await;
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(d.status, "open");
+        assert!(
+            d.acted_by.is_none(),
+            "no one has answered this decision yet"
+        );
+
+        let (answered, proof) = auto_approve_headless_goal_review(&pool, &d.id, &goal_id)
+            .await
+            .unwrap();
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.answer.as_deref(), Some("approve"));
+        assert_eq!(
+            answered.acted_by.as_deref(),
+            Some(ACTOR_AUTO_LAUNCH),
+            "auto-land approval must attribute to the auto-launch actor, never a human"
+        );
+        assert_eq!(proof.acted_by(), ACTOR_AUTO_LAUNCH);
+        assert_eq!(proof.answer(), "approve");
+    }
+
+    #[tokio::test]
+    async fn auto_approve_headless_goal_review_is_scoped_to_approve_review_decisions_for_the_given_goal(
+    ) {
+        let pool = test_pool().await;
+        // Not an 'approve_review' decision at all.
+        let d = create_decision(&pool, valid_unblock()).await.unwrap();
+        let err = auto_approve_headless_goal_review(&pool, &d.id, "goal-1")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AnswerError::Invalid(_)));
+
+        // An 'approve_review' decision, but for a DIFFERENT goal than the one
+        // the caller claims to be landing — must never be answerable by
+        // naming the wrong goal.
+        let (req, goal_id) = approve_review_decision_for_real_goal(&pool).await;
+        let d = create_decision(&pool, req).await.unwrap();
+        let err = auto_approve_headless_goal_review(&pool, &d.id, "some-other-goal-id")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AnswerError::Invalid(_)));
+        let unchanged = get_decision(&pool, &d.id).await.unwrap().unwrap();
+        assert_eq!(
+            unchanged.status, "open",
+            "a mismatched goal_id must never answer the decision"
+        );
+        // The genuinely matching goal_id still works — proves the rejection
+        // above was the mismatch, not something else about the fixture.
+        auto_approve_headless_goal_review(&pool, &d.id, &goal_id)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn auto_approve_headless_goal_review_cannot_answer_an_already_resolved_decision() {
+        let pool = test_pool().await;
+        let (req, goal_id) = approve_review_decision_for_real_goal(&pool).await;
+        let d = create_decision(&pool, req).await.unwrap();
+        auto_approve_headless_goal_review(&pool, &d.id, &goal_id)
+            .await
+            .unwrap();
+        let err = auto_approve_headless_goal_review(&pool, &d.id, &goal_id)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AnswerError::AlreadyResolved(_)));
+    }
+
+    /// Defense in depth, mirroring
+    /// `actor_auto_launch_is_rejected_by_the_general_answer_path` for the
+    /// `approve_review` kind specifically: `ACTOR_AUTO_LAUNCH` stays
+    /// permanently unusable through the general answer path regardless of
+    /// which decision kind is targeted.
+    #[tokio::test]
+    async fn actor_auto_launch_is_rejected_by_the_general_answer_path_for_approve_review() {
+        let pool = test_pool().await;
+        let (req, _goal_id) = approve_review_decision_for_real_goal(&pool).await;
+        let d = create_decision(&pool, req).await.unwrap();
+        let ans = DecisionAnswer {
+            answer: "approve".to_string(),
             ..Default::default()
         };
         let err = answer_decision(&pool, &d.id, &ans, ACTOR_AUTO_LAUNCH)

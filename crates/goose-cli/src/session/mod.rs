@@ -1572,6 +1572,28 @@ impl CliSession {
                     "{} goal(s) finished, {} still running at exit \u{2192} parked",
                     summary.finished, summary.timed_out
                 ));
+                // Harness loop, Lane V (V2): print exactly which of this
+                // run's dispatched goals actually LANDED (fast-forwarded
+                // onto the working directory's checked-out branch), not just
+                // that they reached a terminal card state — "finished" above
+                // already covers Cancelled/Failed too, neither of which put
+                // anything on disk.
+                match permagent::agents::platform_extensions::orchestrator::landed_goals_for_session(
+                    &pool,
+                    &self.session_id,
+                )
+                .await
+                {
+                    Ok(landed) => {
+                        for (card_id, head_commit) in landed {
+                            let short: String = head_commit.chars().take(9).collect();
+                            output::render_notice(&format!("landed {card_id} \u{2192} {short}"));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("post-run landed-goal summary failed (non-fatal): {e}");
+                    }
+                }
             }
             Ok(_) => {}
             Err(e) => {

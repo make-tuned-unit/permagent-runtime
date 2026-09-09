@@ -1053,6 +1053,110 @@ pub(crate) async fn resolve_internal_isolation(
     Ok((worktree, baseline.to_string()))
 }
 
+/// Harness loop, Lane V (V3): a headless Auto roadmap's project may have no
+/// git history at all — a fresh eval workspace, or any brand-new non-git
+/// directory a real dogfood project could equally start from.
+/// [`resolve_internal_isolation`] refuses dispatch outright when that
+/// happens (P1-5, above), which is correct for every other caller: the
+/// project root not being a repo used to mean a worker's commits landed
+/// straight in the user's real repo, unscanned. Only for a headless Auto
+/// roadmap does creating the missing baseline become the caller's job rather
+/// than a hard refusal — the caller (`orchestrator.rs`'s
+/// `handle_create_roadmap`) checks the installed `HeadlessDispatchPolicy`
+/// before ever calling this; this function itself has no opinion on who may
+/// call it and performs no such check.
+///
+/// `git init`, a LOCAL-only identity (`git -C <root> config`, never
+/// `--global` — this must never touch the user's own git identity, and must
+/// never fail on a machine with no global `user.name`/`user.email`
+/// configured, exactly the state a fresh headless sandbox is in), stage
+/// everything, and commit once (`--allow-empty`, so a genuinely empty
+/// directory still gets a valid baseline rather than a confusing "nothing to
+/// commit" failure).
+///
+/// Returns the new HEAD commit id on success. Returns `None` when `root` is
+/// already inside a git repository (nothing to do — never double-init) or
+/// when the init/commit sequence itself failed for any reason (the caller
+/// then falls through to `resolve_internal_isolation`'s ordinary, unchanged
+/// refusal — this function is additive, never a replacement for that
+/// safety invariant).
+pub(crate) async fn ensure_headless_git_baseline(root: &Path, roadmap_id: &str) -> Option<String> {
+    // Already a repo (or nested inside one) — nothing to do. Any OTHER
+    // reason `git` failed here still lands on the unchanged refusal path
+    // below via a `None` return; never double-init.
+    if !git_text(root, &["rev-parse", "--is-inside-work-tree"])
+        .await
+        .is_empty()
+    {
+        return None;
+    }
+
+    let mut init = Command::new("git");
+    init.arg("-C")
+        .arg(root)
+        .arg("init")
+        .arg("--quiet")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    configure_subprocess(&mut init);
+    if !init.status().await.map(|s| s.success()).unwrap_or(false) {
+        return None;
+    }
+
+    for (key, value) in [
+        ("user.name", "permagent"),
+        ("user.email", "permagent@localhost"),
+    ] {
+        let mut cfg = Command::new("git");
+        cfg.arg("-C")
+            .arg(root)
+            .arg("config")
+            .arg(key)
+            .arg(value)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_subprocess(&mut cfg);
+        if !cfg.status().await.map(|s| s.success()).unwrap_or(false) {
+            return None;
+        }
+    }
+
+    let mut add = Command::new("git");
+    add.arg("-C")
+        .arg(root)
+        .arg("add")
+        .arg("-A")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    configure_subprocess(&mut add);
+    if !add.status().await.map(|s| s.success()).unwrap_or(false) {
+        return None;
+    }
+
+    let mut commit = Command::new("git");
+    commit
+        .arg("-C")
+        .arg(root)
+        .arg("commit")
+        .arg("--quiet")
+        .arg("--allow-empty")
+        .arg("-m")
+        .arg(format!("permagent: baseline before roadmap {roadmap_id}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    configure_subprocess(&mut commit);
+    if !commit.status().await.map(|s| s.success()).unwrap_or(false) {
+        return None;
+    }
+
+    let head = git_text(root, &["rev-parse", "HEAD"]).await;
+    (!head.is_empty()).then_some(head)
+}
+
 /// Fix (#523): install per-worktree git hooks that record the worker's TRUE base
 /// commit — the parent of its FIRST commit, re-captured if the worker rebases
 /// (e.g. to integrate a concurrent push before re-pushing). This is the only
@@ -3270,6 +3374,72 @@ mod tests {
 
         assert_eq!(worktree, tmp.path().join(GOAL_WORKTREES_DIR).join(run_id));
         assert_eq!(resolved_baseline, baseline);
+    }
+
+    // ── Harness loop, Lane V (V3): headless Auto git-baseline fallback ──────
+
+    /// A non-git temp dir (with a real file in it, the shape a copied-in eval
+    /// task workspace actually has) gets a real baseline commit, and
+    /// `resolve_internal_isolation` — completely unmodified by this lane —
+    /// then proceeds instead of refusing, exactly matching the "temp dir
+    /// without .git → dispatch proceeds and the baseline commit exists"
+    /// contract.
+    #[tokio::test]
+    async fn ensure_headless_git_baseline_initialises_a_missing_repo_and_dispatch_then_proceeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("fixture.txt"), "eval fixture content").unwrap();
+        assert!(
+            !workspace.join(".git").exists(),
+            "precondition: this must start as a genuinely non-git directory"
+        );
+
+        let head = ensure_headless_git_baseline(&workspace, "roadmap-123")
+            .await
+            .expect("a fresh non-git directory must get a real baseline commit");
+        assert!(!head.is_empty());
+        assert!(workspace.join(".git").is_dir());
+
+        let log = git_text(&workspace, &["log", "-1", "--format=%s"]).await;
+        assert_eq!(
+            log, "permagent: baseline before roadmap roadmap-123",
+            "the baseline commit message must name the roadmap it precedes"
+        );
+        let head_from_git = git_text(&workspace, &["rev-parse", "HEAD"]).await;
+        assert_eq!(head_from_git, head);
+
+        // The exact defect this closes: `resolve_internal_isolation` refused
+        // outright with no baseline; with the freshly-created one, it now
+        // proceeds and creates the isolated worktree.
+        let (worktree, resolved_baseline) =
+            resolve_internal_isolation(&workspace, Some(&head), "v3-after-init")
+                .await
+                .expect("dispatch must proceed once the baseline commit exists");
+        assert_eq!(resolved_baseline, head);
+        assert!(worktree.is_dir());
+    }
+
+    /// Already a git repo (any baseline state) — never double-init, never
+    /// touch it. `resolve_internal_isolation`'s own (unmodified) tests above
+    /// already pin the "no policy at all → still refuses with the same
+    /// message" half of this lane's contract, since this function is never
+    /// called on that path.
+    #[tokio::test]
+    async fn ensure_headless_git_baseline_is_a_no_op_on_an_existing_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+
+        let result = ensure_headless_git_baseline(&repo, "roadmap-should-not-run").await;
+        assert!(
+            result.is_none(),
+            "an existing repo must never be re-initialised or re-committed"
+        );
+        let head = git_text(&repo, &["rev-parse", "HEAD"]).await;
+        assert_eq!(
+            head, baseline,
+            "HEAD must be untouched — no extra baseline commit added"
+        );
     }
 
     // ── #522 push-ownership inversion ───────────────────────────────────────
