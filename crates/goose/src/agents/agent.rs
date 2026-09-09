@@ -466,10 +466,19 @@ impl Agent {
     /// files end without an independent, cross-family reviewer having been
     /// asked (or a `Park` explaining why none could be). Same applicability
     /// gate as `PrematureDoneGuard` — ordinary conversation never triggers it.
+    ///
+    /// `RoadmapDispatchGuard` runs third (X-dag-2, coding-harness excellence
+    /// iteration): it refuses to let a turn end claiming a roadmap's goals
+    /// are dispatched/in-progress when the durable goal-card state says
+    /// otherwise — Lane M3's Defect M3-2. Its own applicability gate is
+    /// durable state, not the transcript: a session that never called
+    /// `create_roadmap` has no cards attributed to it, so ordinary
+    /// conversation and non-harness sessions never trigger it either.
     fn create_after_turn_manager() -> crate::after_turn::AfterTurnManager {
         let mut manager = crate::after_turn::AfterTurnManager::new();
         manager.add_hook(Box::new(crate::after_turn::PrematureDoneGuard::new()));
         manager.add_hook(Box::new(crate::after_turn::ReviewerMandate::new()));
+        manager.add_hook(Box::new(crate::after_turn::RoadmapDispatchGuard::new()));
         manager
     }
 

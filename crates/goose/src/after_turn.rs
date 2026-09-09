@@ -1066,6 +1066,110 @@ impl AfterTurn for ReviewerMandate {
     }
 }
 
+// ── Third implementor: no "dispatched" claim without a child ───────────────
+
+/// Refuses to let a turn end claiming a roadmap's work is dispatched or in
+/// progress when the durable goal-card state says otherwise.
+///
+/// Lane M3's Defect M3-2 (harness loop): a coordinator ended its turn with
+/// *"The root goals are dispatched and will run in isolated worktrees ... I
+/// will monitor progress and report results once completed and verified. No
+/// further action is needed on this loop until workers report back"* having
+/// called neither `goal_advance` nor `delegate` at all that session — the
+/// roadmap's only root goal was still sitting Ready. Unlike
+/// [`PrematureDoneGuard`] and [`ReviewerMandate`], this is not a
+/// transcript-shaped signal (a coordinator's own closing claim is not
+/// evidence of anything happening) — it reads the durable card state
+/// `create_roadmap` stamps with `metadata_json.created_by_session_id`
+/// (X-dag-1, coding-harness excellence iteration) and asks a purely factual
+/// question: does ANY goal this session created look stuck?
+///
+///   - a ROOT goal sitting Ready with no worker session ever recorded (the
+///     exact M3-2 shape: dispatch never happened at all), or
+///   - ANY goal (root or not) claiming InProgress with no worker session
+///     recorded — a state that should be unreachable through the sanctioned
+///     `dispatch_goal_fn` transition, which stamps the worker session id in
+///     the SAME transaction as the Ready→InProgress move.
+///
+/// A session that never called `create_roadmap` has no cards attributed to
+/// it at all, so this is a no-op for ordinary conversation — the same
+/// applicability discipline [`PrematureDoneGuard`] and [`ReviewerMandate`]
+/// hold themselves to, just keyed on durable state instead of the
+/// transcript. Bounded by the shared `MAX_HOLDS` counter like the other two
+/// hooks; `Park`s with an honest, specific reason once exhausted rather than
+/// holding forever.
+pub struct RoadmapDispatchGuard;
+
+impl RoadmapDispatchGuard {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// The live half, pool-parameterised so it is directly testable against
+    /// an isolated in-memory database — unlike [`ReviewerMandate::assess`],
+    /// this does not need the process-global `SessionManager::instance()`
+    /// singleton to be exercised by a test; only the trait impl below reaches
+    /// for it, keeping that seam as thin as possible.
+    async fn undispatched_goal_for(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        session_id: &str,
+    ) -> Result<Option<crate::cards::SessionGoalCard>, String> {
+        let cards = crate::cards::goal_cards_created_by_session(pool, session_id).await?;
+        Ok(crate::cards::first_undispatched_goal(&cards).cloned())
+    }
+
+    /// The message injected on hold, and reused verbatim as the `Park`
+    /// reason once the hold budget is exhausted — the brief's own wording,
+    /// naming the session as the roadmap's identity (this crate has no
+    /// separate "roadmap id"; a roadmap IS the set of goal cards one
+    /// session's `create_roadmap` call minted) and the stuck card's real id
+    /// (never a fabricated one — the same discoverability fix M3-1(b) made
+    /// for `create_roadmap`'s own result text).
+    fn message(session_id: &str, goal: &crate::cards::SessionGoalCard) -> String {
+        format!(
+            "roadmap {session_id}: goal {} is not dispatched; call goal_advance dispatch or explain",
+            goal.card_id
+        )
+    }
+}
+
+impl Default for RoadmapDispatchGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl AfterTurn for RoadmapDispatchGuard {
+    fn name(&self) -> &'static str {
+        "roadmap_dispatch"
+    }
+
+    async fn after_turn(&self, ctx: &AfterTurnContext<'_>) -> AfterTurnAction {
+        let manager = crate::session::SessionManager::instance();
+        let pool = match manager.pool_clone().await {
+            Ok(p) => p,
+            // Cannot check — the same storage layer `create_roadmap`/
+            // `goal_advance` themselves depend on. Failing open here matches
+            // `summon::restrict_delegate_for_active_roadmap`'s own choice:
+            // an unrelated DB outage must not turn every turn end into a
+            // hold.
+            Err(_) => return AfterTurnAction::Allow,
+        };
+        match Self::undispatched_goal_for(&pool, ctx.session_id).await {
+            Ok(None) | Err(_) => AfterTurnAction::Allow,
+            Ok(Some(goal)) => {
+                let message = Self::message(ctx.session_id, &goal);
+                if ctx.prior_holds < crate::cost_router::MAX_HOLDS {
+                    AfterTurnAction::Continue { inject: message }
+                } else {
+                    AfterTurnAction::Park { reason: message }
+                }
+            }
+        }
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2075,6 +2179,317 @@ mod tests {
         assert!(
             !text.contains("a different model from yours"),
             "text was {text:?}"
+        );
+    }
+
+    // ── RoadmapDispatchGuard (X-dag-2): no "dispatched" claim without a child ──
+
+    /// An isolated in-memory DB, independent of the process-global
+    /// `SessionManager::instance()` singleton every other test in this file
+    /// shares — `RoadmapDispatchGuard::undispatched_goal_for` takes the pool
+    /// as a parameter specifically so this is possible.
+    async fn roadmap_guard_test_pool() -> sqlx::Pool<sqlx::Sqlite> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+        crate::cards::seed_goal_columns(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// Inserts one goal card attributed to `session_id` in the given
+    /// lifecycle state, optionally with a worker session already recorded.
+    async fn insert_session_goal_card(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        project_id: &str,
+        session_id: &str,
+        state_binding: &str,
+        is_root: bool,
+        worker_session_id: Option<&str>,
+    ) -> String {
+        let column_id: String = sqlx::query_scalar(
+            "SELECT id FROM board_columns WHERE project_id = ? AND state_binding = ?",
+        )
+        .bind(project_id)
+        .bind(state_binding)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let card_id = uuid::Uuid::now_v7().to_string();
+        let mut meta = serde_json::json!({
+            "depends_on": if is_root { serde_json::json!([]) } else { serde_json::json!(["some-other-card"]) },
+            "created_by_session_id": session_id,
+        });
+        if let Some(worker) = worker_session_id {
+            meta.as_object_mut()
+                .unwrap()
+                .insert("worker_session_id".to_string(), serde_json::json!(worker));
+        }
+        sqlx::query(
+            "INSERT INTO cards (id, project_id, card_type, title, description, column_id, \
+                                 position, created_by, metadata_json) \
+             VALUES (?, ?, 'goal', 'goal', '', ?, 0, 'user', ?)",
+        )
+        .bind(&card_id)
+        .bind(project_id)
+        .bind(&column_id)
+        .bind(meta.to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+        card_id
+    }
+
+    // ── the pool-parameterised query, in isolation ───────────────────────────
+
+    /// Root, Ready, no worker session → flagged. M3-2's exact shape at the
+    /// query level: `create_roadmap` succeeded, dispatch never landed.
+    #[tokio::test]
+    async fn undispatched_goal_for_finds_an_undispatched_root_goal() {
+        let pool = roadmap_guard_test_pool().await;
+        let session_id = format!("query-m3-2-{}", uuid::Uuid::now_v7());
+        let card_id = insert_session_goal_card(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &session_id,
+            "ready",
+            true,
+            None,
+        )
+        .await;
+
+        let goal = RoadmapDispatchGuard::undispatched_goal_for(&pool, &session_id)
+            .await
+            .unwrap();
+        assert_eq!(goal.map(|g| g.card_id), Some(card_id));
+    }
+
+    /// InProgress with no worker session recorded — a claim with nothing
+    /// behind it, the guard's second condition — is flagged even when the
+    /// goal is not a root.
+    #[tokio::test]
+    async fn undispatched_goal_for_finds_an_orphaned_in_progress_goal_even_if_not_root() {
+        let pool = roadmap_guard_test_pool().await;
+        let session_id = format!("query-orphaned-{}", uuid::Uuid::now_v7());
+        let card_id = insert_session_goal_card(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &session_id,
+            "in_progress",
+            false,
+            None,
+        )
+        .await;
+
+        let goal = RoadmapDispatchGuard::undispatched_goal_for(&pool, &session_id)
+            .await
+            .unwrap();
+        assert_eq!(goal.map(|g| g.card_id), Some(card_id));
+    }
+
+    /// A root goal that actually dispatched (a worker session recorded) is
+    /// never flagged.
+    #[tokio::test]
+    async fn undispatched_goal_for_ignores_a_dispatched_root_goal() {
+        let pool = roadmap_guard_test_pool().await;
+        let session_id = format!("query-dispatched-{}", uuid::Uuid::now_v7());
+        insert_session_goal_card(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &session_id,
+            "in_progress",
+            true,
+            Some("worker-sess-1"),
+        )
+        .await;
+
+        let goal = RoadmapDispatchGuard::undispatched_goal_for(&pool, &session_id)
+            .await
+            .unwrap();
+        assert!(
+            goal.is_none(),
+            "a root goal with a recorded worker session must not be flagged"
+        );
+    }
+
+    /// A session with no cards at all (never called `create_roadmap`) has
+    /// nothing to flag.
+    #[tokio::test]
+    async fn undispatched_goal_for_ignores_a_session_with_no_cards() {
+        let pool = roadmap_guard_test_pool().await;
+        let session_id = format!("query-no-roadmap-{}", uuid::Uuid::now_v7());
+
+        let goal = RoadmapDispatchGuard::undispatched_goal_for(&pool, &session_id)
+            .await
+            .unwrap();
+        assert!(goal.is_none());
+    }
+
+    // ── the trait impl end to end, via `SessionManager::instance()` ─────────
+    //
+    // `RoadmapDispatchGuard::after_turn` reads the SAME process-global
+    // singleton `ReviewerMandate`'s live tests above already share (there is
+    // no injection seam at the trait boundary, matching that precedent) — so,
+    // like those, these fixtures go through it directly rather than the
+    // isolated pool above. Each test also gets its OWN fresh project (never
+    // `PERSONAL_PROJECT_ID`): dozens of other tests across this crate
+    // exercise that exact project's `board_columns` concurrently under
+    // `cargo test`'s default parallelism, and `seed_goal_columns`'s
+    // check-then-insert is not race-safe against concurrent callers on the
+    // SAME project — confirmed live (`RowNotFound` on the "ready" column
+    // lookup, intermittent). A session id alone is not enough isolation,
+    // since the race is over the COLUMNS, not the cards.
+
+    async fn singleton_pool_with_fresh_project() -> (sqlx::Pool<sqlx::Sqlite>, String) {
+        let pool = crate::session::SessionManager::instance()
+            .pool_clone()
+            .await
+            .unwrap();
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: format!("x-dag-2-test-{}", uuid::Uuid::now_v7()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        (pool, project.id)
+    }
+
+    /// M3-2's exact shape end to end: `create_roadmap` succeeded (a root
+    /// goal card exists, attributed to this session), no dispatch call ever
+    /// landed (still Ready, no worker session recorded), and the model's
+    /// own turn claims otherwise. Must hold the turn with the brief's own
+    /// message, not let the "dispatched" claim stand.
+    #[tokio::test]
+    async fn m3_2_shape_an_undispatched_root_goal_holds_the_turn() {
+        let (pool, project_id) = singleton_pool_with_fresh_project().await;
+        let session_id = format!("m3-2-{}", uuid::Uuid::now_v7());
+        let card_id =
+            insert_session_goal_card(&pool, &project_id, &session_id, "ready", true, None).await;
+
+        // The false-completion transcript itself (M3-2's own quoted text) —
+        // irrelevant to the guard's decision, which is DB-driven, not
+        // transcript-driven; included so this test pins the exact scenario
+        // the defect report described, not just the underlying query.
+        let claim = vec![Message::assistant().with_text(
+            "The root goals are dispatched and will run in isolated worktrees. I will \
+             monitor progress and report results once completed and verified. No further \
+             action is needed on this loop until workers report back.",
+        )];
+        let guard = RoadmapDispatchGuard::new();
+        match guard
+            .after_turn(&AfterTurnContext {
+                session_id: &session_id,
+                messages: &claim,
+                prior_holds: 0,
+            })
+            .await
+        {
+            AfterTurnAction::Continue { inject } => {
+                assert_eq!(
+                    inject,
+                    format!(
+                        "roadmap {session_id}: goal {card_id} is not dispatched; call \
+                         goal_advance dispatch or explain"
+                    )
+                );
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    /// Bounded like the other two hooks: once the shared hold budget is
+    /// exhausted, this Parks with the same honest, specific reason instead
+    /// of holding forever.
+    #[tokio::test]
+    async fn an_undispatched_root_goal_parks_once_the_hold_budget_is_exhausted() {
+        let (pool, project_id) = singleton_pool_with_fresh_project().await;
+        let session_id = format!("m3-2-exhausted-{}", uuid::Uuid::now_v7());
+        let card_id =
+            insert_session_goal_card(&pool, &project_id, &session_id, "ready", true, None).await;
+
+        let guard = RoadmapDispatchGuard::new();
+        let empty: Vec<Message> = vec![];
+        match guard
+            .after_turn(&AfterTurnContext {
+                session_id: &session_id,
+                messages: &empty,
+                prior_holds: crate::cost_router::MAX_HOLDS,
+            })
+            .await
+        {
+            AfterTurnAction::Park { reason } => {
+                assert_eq!(
+                    reason,
+                    format!(
+                        "roadmap {session_id}: goal {card_id} is not dispatched; call \
+                         goal_advance dispatch or explain"
+                    )
+                );
+            }
+            other => panic!("expected Park, got {other:?}"),
+        }
+    }
+
+    /// All roots dispatched (a worker session recorded) → Allow.
+    #[tokio::test]
+    async fn all_roots_dispatched_allows_the_turn_to_end() {
+        let (pool, project_id) = singleton_pool_with_fresh_project().await;
+        let session_id = format!("dispatched-{}", uuid::Uuid::now_v7());
+        insert_session_goal_card(
+            &pool,
+            &project_id,
+            &session_id,
+            "in_progress",
+            true,
+            Some("worker-sess-1"),
+        )
+        .await;
+
+        let guard = RoadmapDispatchGuard::new();
+        let empty: Vec<Message> = vec![];
+        assert_eq!(
+            guard
+                .after_turn(&AfterTurnContext {
+                    session_id: &session_id,
+                    messages: &empty,
+                    prior_holds: 0,
+                })
+                .await,
+            AfterTurnAction::Allow
+        );
+    }
+
+    /// No roadmap at all (this session never called `create_roadmap`, so it
+    /// has no cards) → Allow. The applicability gate: ordinary conversation
+    /// must never be held by a guard whose entire premise is "this session
+    /// has a roadmap".
+    #[tokio::test]
+    async fn no_roadmap_allows_the_turn_to_end() {
+        let _fresh_project = singleton_pool_with_fresh_project().await;
+        let session_id = format!("no-roadmap-{}", uuid::Uuid::now_v7());
+
+        let guard = RoadmapDispatchGuard::new();
+        let empty: Vec<Message> = vec![];
+        assert_eq!(
+            guard
+                .after_turn(&AfterTurnContext {
+                    session_id: &session_id,
+                    messages: &empty,
+                    prior_holds: 0,
+                })
+                .await,
+            AfterTurnAction::Allow
         );
     }
 }

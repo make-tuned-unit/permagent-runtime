@@ -1505,6 +1505,113 @@ pub async fn list_goals_for_worker(
     Ok(rows.into_iter().map(|r| active_goal_from_row(&r)).collect())
 }
 
+/// One of this session's own goal cards, with just enough state to answer
+/// "is this roadmap actually dispatched" — never the full [`Card`], since the
+/// state that matters here is the CURRENT column's `state_binding` (the same
+/// source [`sweep_orphaned_goal_worktrees`](crate::agents::platform_extensions::orchestrator::sweep_orphaned_goal_worktrees)
+/// treats as canonical), not the `metadata_json.goal_state` field, which is
+/// stamped once at creation and never updated on transition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionGoalCard {
+    pub card_id: String,
+    pub state_binding: String,
+    /// No `depends_on` entries — a root goal, per `goal_state::topological_order`'s
+    /// own definition of one.
+    pub is_root: bool,
+    /// A worker session id (`metadata_json.worker_session_id`/`worker_session_ids`,
+    /// stamped by `dispatch_goal_fn`'s Ready→InProgress transition, in the SAME
+    /// transaction as the state change) has been recorded for at least one
+    /// dispatch attempt.
+    pub has_worker_session: bool,
+}
+
+/// Every non-archived goal card `session_id` created
+/// (`metadata_json.created_by_session_id`, stamped by
+/// `materialize_roadmap_transaction_with_budget` at roadmap creation — see
+/// X-dag-1, coding-harness excellence iteration). Backs two independent
+/// decisions off the SAME read, so the "does this session have a live
+/// roadmap" answer can never disagree between them:
+///   - [`session_has_an_active_roadmap`] — X-dag-1: gate a coordinator's
+///     `delegate` call to non-mutating tools while its own roadmap is open.
+///   - [`first_undispatched_goal`] — X-dag-2: refuse a false "dispatched"
+///     completion claim.
+pub async fn goal_cards_created_by_session(
+    pool: &Pool<Sqlite>,
+    session_id: &str,
+) -> Result<Vec<SessionGoalCard>, String> {
+    let rows = sqlx::query(
+        "SELECT c.id, bc.state_binding, c.metadata_json \
+         FROM cards c JOIN board_columns bc ON c.column_id = bc.id \
+         WHERE c.card_type = 'goal' AND c.archived_at IS NULL \
+           AND json_extract(c.metadata_json, '$.created_by_session_id') = ?",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let card_id: String = r.get("id");
+            let state_binding: String = r
+                .get::<Option<String>, _>("state_binding")
+                .unwrap_or_default();
+            let meta_text: Option<String> = r.get("metadata_json");
+            let meta: serde_json::Value = meta_text
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            let is_root = meta
+                .get("depends_on")
+                .and_then(|v| v.as_array())
+                .is_none_or(|a| a.is_empty());
+            let has_worker_session = meta
+                .get("worker_session_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty())
+                || meta
+                    .get("worker_session_ids")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|a| !a.is_empty());
+            SessionGoalCard {
+                card_id,
+                state_binding,
+                is_root,
+                has_worker_session,
+            }
+        })
+        .collect())
+}
+
+/// X-dag-1: is `session_id`'s own roadmap still active — any of its goal
+/// cards not yet in a terminal state? Terminal = Complete/Cancelled only;
+/// Failed is deliberately NOT terminal (see `goal_state::GoalState`'s own
+/// doc — answering its open `unblock` decision retries it). An empty
+/// roadmap (no cards — this session never called `create_roadmap`) is not
+/// active.
+pub fn session_has_an_active_roadmap(cards: &[SessionGoalCard]) -> bool {
+    cards
+        .iter()
+        .any(|c| !matches!(c.state_binding.as_str(), "complete" | "cancelled"))
+}
+
+/// X-dag-2: the first goal card among `cards` that backs up a "dispatched" /
+/// "in progress" claim with nothing real behind it —
+///   - a ROOT goal sitting Ready with no worker session ever recorded (Lane
+///     M3's Defect M3-2: the roadmap was created, no dispatch call ever
+///     landed, and the coordinator claimed otherwise anyway), or
+///   - ANY goal (root or not) claiming InProgress with no worker session
+///     recorded — a state that should be unreachable through the sanctioned
+///     `dispatch_goal_fn` transition, which stamps `worker_session_id` in the
+///     SAME transaction as the Ready→InProgress move, so seeing one without
+///     the other means the claim did not go through it.
+pub fn first_undispatched_goal(cards: &[SessionGoalCard]) -> Option<&SessionGoalCard> {
+    cards.iter().find(|c| {
+        (c.is_root && c.state_binding == "ready" && !c.has_worker_session)
+            || (c.state_binding == "in_progress" && !c.has_worker_session)
+    })
+}
+
 #[derive(Debug, Default)]
 pub struct UpdateCard {
     pub title: Option<String>,
@@ -3304,6 +3411,113 @@ mod tests {
             .await
             .unwrap();
         assert!(nonexistent.is_none());
+    }
+
+    // ── X-dag-1 / X-dag-2: session-attributed goal cards ────────────────────
+
+    fn goal_card(state_binding: &str, is_root: bool, has_worker_session: bool) -> SessionGoalCard {
+        SessionGoalCard {
+            card_id: "c1".to_string(),
+            state_binding: state_binding.to_string(),
+            is_root,
+            has_worker_session,
+        }
+    }
+
+    #[test]
+    fn session_has_an_active_roadmap_is_false_for_no_cards_or_all_terminal() {
+        assert!(!session_has_an_active_roadmap(&[]));
+        assert!(!session_has_an_active_roadmap(&[
+            goal_card("complete", true, true),
+            goal_card("cancelled", false, false),
+        ]));
+    }
+
+    #[test]
+    fn session_has_an_active_roadmap_is_true_for_any_non_terminal_card() {
+        assert!(session_has_an_active_roadmap(&[
+            goal_card("complete", true, true),
+            goal_card("ready", false, false),
+        ]));
+        // Failed is deliberately not terminal.
+        assert!(session_has_an_active_roadmap(&[goal_card(
+            "failed", true, false
+        )]));
+    }
+
+    #[test]
+    fn first_undispatched_goal_flags_a_ready_root_with_no_worker() {
+        let cards = [goal_card("ready", true, false)];
+        assert_eq!(
+            first_undispatched_goal(&cards).map(|c| c.card_id.as_str()),
+            Some("c1")
+        );
+    }
+
+    #[test]
+    fn first_undispatched_goal_flags_an_in_progress_goal_with_no_worker_even_if_not_root() {
+        let cards = [goal_card("in_progress", false, false)];
+        assert_eq!(
+            first_undispatched_goal(&cards).map(|c| c.card_id.as_str()),
+            Some("c1")
+        );
+    }
+
+    #[test]
+    fn first_undispatched_goal_ignores_a_ready_non_root_goal() {
+        // A non-root goal sitting Ready is normal (waiting on its
+        // dependency) — only ROOT Ready goals are ever flagged.
+        let cards = [goal_card("ready", false, false)];
+        assert!(first_undispatched_goal(&cards).is_none());
+    }
+
+    #[test]
+    fn first_undispatched_goal_ignores_dispatched_or_terminal_cards() {
+        let cards = [
+            goal_card("ready", true, true),
+            goal_card("in_progress", true, true),
+            goal_card("complete", true, false),
+            goal_card("triage", true, false),
+        ];
+        assert!(first_undispatched_goal(&cards).is_none());
+    }
+
+    #[tokio::test]
+    async fn goal_cards_created_by_session_reads_back_the_stamped_attribution() {
+        let pool = test_pool().await;
+        seed_goal_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+        let ready_column: String = sqlx::query_scalar(
+            "SELECT id FROM board_columns WHERE project_id = ? AND state_binding = 'ready'",
+        )
+        .bind(PERSONAL_PROJECT_ID)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO cards (id, project_id, card_type, title, description, column_id, \
+                                 position, created_by, metadata_json) \
+             VALUES ('card-1', ?, 'goal', 'root', '', ?, 0, 'user', ?)",
+        )
+        .bind(PERSONAL_PROJECT_ID)
+        .bind(&ready_column)
+        .bind(serde_json::json!({"depends_on": [], "created_by_session_id": "sess-x"}).to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mine = goal_cards_created_by_session(&pool, "sess-x")
+            .await
+            .unwrap();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].card_id, "card-1");
+        assert_eq!(mine[0].state_binding, "ready");
+        assert!(mine[0].is_root);
+        assert!(!mine[0].has_worker_session);
+
+        let others = goal_cards_created_by_session(&pool, "sess-y")
+            .await
+            .unwrap();
+        assert!(others.is_empty());
     }
 }
 

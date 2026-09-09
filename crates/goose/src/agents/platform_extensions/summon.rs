@@ -100,6 +100,11 @@ struct PreparedChild {
     task_config: TaskConfig,
     routing_receipt: serde_json::Value,
     persona_override: Option<(String, String)>,
+    /// X-dag-1: set when this child's tools were restricted to non-mutating
+    /// ones because the fanning-out session has an active roadmap of its
+    /// own. Prepended to the child's result text so the restriction is
+    /// visible in-band, not only in `_meta`.
+    roadmap_gate_note: Option<String>,
 }
 
 pub struct BackgroundTask {
@@ -637,7 +642,7 @@ impl SummonClient {
                 .build_delegate_recipe(&child, session_id, &working_dir)
                 .await
                 .map_err(|e| format!("child {index} ({label}): {e}"))?;
-            let (task_config, routing_receipt) = self
+            let (task_config, routing_receipt, roadmap_gate_note) = self
                 .build_task_config(&child, &recipe, &session)
                 .await
                 .map_err(|e| {
@@ -651,6 +656,7 @@ impl SummonClient {
                 task_config,
                 routing_receipt,
                 persona_override: Self::resolve_worker_persona(child.worker_persona.as_deref()),
+                roadmap_gate_note,
             });
         }
 
@@ -683,6 +689,7 @@ impl SummonClient {
                         task_config,
                         routing_receipt,
                         persona_override,
+                        roadmap_gate_note,
                     } = child;
 
                     let subagent_session = match session_manager
@@ -741,7 +748,13 @@ impl SummonClient {
                     .await;
 
                     let (status, text) = match result {
-                        Ok(text) => (fanout::ChildStatus::Ok, text),
+                        Ok(text) => {
+                            let text = match &roadmap_gate_note {
+                                Some(note) => format!("{note}\n\n{text}"),
+                                None => text,
+                            };
+                            (fanout::ChildStatus::Ok, text)
+                        }
                         Err(e) if token.is_cancelled() => {
                             (fanout::ChildStatus::Cancelled, format!("cancelled: {e}"))
                         }
@@ -1310,7 +1323,7 @@ impl SummonClient {
             .build_delegate_recipe(&params, session_id, &working_dir)
             .await?;
 
-        let (task_config, routing_receipt) = self
+        let (task_config, routing_receipt, roadmap_gate_note) = self
             .build_task_config(&params, &recipe, &session)
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
@@ -1380,6 +1393,15 @@ impl SummonClient {
 
         match result {
             Ok(text) => {
+                // X-dag-1: a restricted delegate must say so in the text a
+                // model actually reads — the routing receipt above only ever
+                // rode in `_meta`, which is exactly why the earlier
+                // `model_routing` note was invisible to the coordinator in
+                // live transcripts (Lane S/T evidence).
+                let text = match &roadmap_gate_note {
+                    Some(note) => format!("{note}\n\n{text}"),
+                    None => text,
+                };
                 Ok(CallToolResult::success(vec![Content::text(text)]).with_meta(Some(meta)))
             }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
@@ -1464,12 +1486,21 @@ impl SummonClient {
         if !is_reviewer {
             return;
         }
+        Self::restrict_to_non_mutating(extensions);
+    }
+
+    /// X-dag-1 (harness loop, coding-harness excellence iteration): the same
+    /// mechanism `restrict_reviewer_tools` uses, generalised so a second
+    /// caller — `restrict_delegate_for_active_roadmap`, below — can scope a
+    /// NON-reviewer delegate down to non-mutating tools too, rather than
+    /// growing a second, parallel allowlist implementation.
+    fn restrict_to_non_mutating(extensions: &mut [ExtensionConfig]) {
         let allowed = Self::reviewer_safe_developer_tools();
         debug_assert!(
             !allowed.is_empty(),
             "an empty available_tools list means EVERY tool is available \
              (ExtensionConfig::is_tool_available's own definition) — the \
-             reviewer allowlist must never be empty, or scoping becomes a \
+             non-mutating allowlist must never be empty, or scoping becomes a \
              no-op the opposite way"
         );
         // Defensive fail-closed fallback: an empty `available_tools` reads as
@@ -1477,7 +1508,7 @@ impl SummonClient {
         // of what this function exists to do. If `reviewer_safe_developer_
         // tools` ever legitimately returns nothing (e.g. every developer
         // tool becomes "mutating"), hand out a list that matches no real
-        // tool name instead of an empty one, so the reviewer loses `developer`
+        // tool name instead of an empty one, so the caller loses `developer`
         // entirely rather than silently regaining full access to it.
         const NO_SAFE_TOOLS_SENTINEL: &str = "__no_read_only_developer_tools_available__";
         for ext in extensions.iter_mut() {
@@ -1491,6 +1522,58 @@ impl SummonClient {
                 }
             }
         }
+    }
+
+    /// X-dag-1: while a roadmap THIS session created (`create_roadmap`,
+    /// stamping `metadata_json.created_by_session_id` — see
+    /// `cards::goal_cards_created_by_session`) still has open work, a
+    /// coordinator's `delegate` call must not be usable to run mutating
+    /// tools. Dispatching a root goal (`goal_advance`/the auto-dispatch nudge)
+    /// is the sanctioned path for real edits once a roadmap exists; a
+    /// coordinator that gives up on the DAG dance and calls `delegate`
+    /// directly must not get a side door around it — Lane R's Defect 3 /
+    /// Lane M3's Defect M3-3, where the ungated `delegate` call was the ONLY
+    /// path that landed real work in the whole slice, entirely bypassing the
+    /// roadmap it had just been denied for.
+    ///
+    /// A no-op for:
+    ///   - an explicit `worker_persona: "reviewer"` — already read-only via
+    ///     `restrict_reviewer_tools` above; scoping it a second time here
+    ///     would be redundant, not a behavior change, but skipping it keeps
+    ///     "today's behaviour" for that persona legible as ONE code path.
+    ///   - a `SessionType::SubAgent` session — `handle_delegate` already
+    ///     refuses these outright ("Delegated tasks cannot spawn further
+    ///     delegations"), so a goal worker dispatched via the hook can never
+    ///     reach this function at all; checked again here so this gate's own
+    ///     correctness does not silently depend on staying downstream of
+    ///     that unrelated refusal.
+    ///   - a session with no active roadmap of its own — nothing to bypass.
+    ///
+    /// Returns a note for the delegate's result text when it restricts,
+    /// per the brief: a session that loses `write`/`edit` here must be told
+    /// why, not left to guess from a suddenly-refusing tool.
+    async fn restrict_delegate_for_active_roadmap(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        session: &crate::session::Session,
+        worker_persona: Option<&str>,
+        extensions: &mut [ExtensionConfig],
+    ) -> Result<Option<String>, String> {
+        let is_reviewer = worker_persona.is_some_and(|p| p.eq_ignore_ascii_case("reviewer"));
+        if is_reviewer || session.session_type == SessionType::SubAgent {
+            return Ok(None);
+        }
+        let cards = crate::cards::goal_cards_created_by_session(pool, &session.id).await?;
+        if !crate::cards::session_has_an_active_roadmap(&cards) {
+            return Ok(None);
+        }
+        Self::restrict_to_non_mutating(extensions);
+        Ok(Some(
+            "Note: this delegate call was restricted to non-mutating tools because this \
+             session has an active roadmap of its own — dispatch its goals with \
+             `goal_advance` (action: dispatch) instead of editing directly through a \
+             delegated worker."
+                .to_string(),
+        ))
     }
 
     /// Instructions a worker cannot act on.
@@ -1784,7 +1867,7 @@ impl SummonClient {
         params: &DelegateParams,
         recipe: &Recipe,
         session: &crate::session::Session,
-    ) -> Result<(TaskConfig, serde_json::Value), anyhow::Error> {
+    ) -> Result<(TaskConfig, serde_json::Value, Option<String>), anyhow::Error> {
         let (provider, routing_receipt) = self.resolve_provider(params, recipe, session).await?;
 
         let mut extensions = EnabledExtensionsState::extensions_or_default(
@@ -1809,6 +1892,28 @@ impl SummonClient {
         // the graded artifact. Enforce it below the prompt.
         Self::restrict_reviewer_tools(params.worker_persona.as_deref(), &mut extensions);
 
+        // X-dag-1: close the `delegate` side door around an active roadmap.
+        // Best-effort: `pool_clone()` only fails when the storage layer
+        // cannot be reached at all — a condition that would also break
+        // `create_roadmap`/`goal_advance` themselves, not something this
+        // check alone can meaningfully guard against. Rather than turn every
+        // delegate into a hard failure over an unrelated DB outage, an
+        // unreachable pool leaves this call unrestricted; the roadmap system
+        // itself (goal-transition guard, worktree isolation) remains the
+        // primary boundary this is defense-in-depth for, not a replacement
+        // for it.
+        let roadmap_gate_note = match self.context.session_manager.pool_clone().await {
+            Ok(pool) => Self::restrict_delegate_for_active_roadmap(
+                &pool,
+                session,
+                params.worker_persona.as_deref(),
+                &mut extensions,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?,
+            Err(_) => None,
+        };
+
         let max_turns = params
             .max_turns
             .or_else(|| recipe.settings.as_ref().and_then(|s| s.max_turns))
@@ -1825,7 +1930,7 @@ impl SummonClient {
         let task_config = TaskConfig::new(provider, &session.id, &session.working_dir, extensions)
             .with_max_turns(Some(max_turns));
 
-        Ok((task_config, routing_receipt))
+        Ok((task_config, routing_receipt, roadmap_gate_note))
     }
 
     /// The workflow role a delegate's worker persona plays, for cost routing.
@@ -2234,7 +2339,7 @@ impl SummonClient {
             .build_delegate_recipe(&params, session_id, &working_dir)
             .await?;
 
-        let (task_config, routing_receipt) = self
+        let (task_config, routing_receipt, roadmap_gate_note) = self
             .build_task_config(&params, &recipe, &session)
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
@@ -2331,7 +2436,10 @@ impl SummonClient {
 
         // The routing receipt on the start line: a background delegate spends money
         // on a model the caller never named, so the caller is told which one.
-        let content = vec![Content::text(format!(
+        // X-dag-1: the roadmap-gate note (when present) rides the same
+        // visible line, since this task's own result text is not seen until
+        // `load(source: ...)` returns it later.
+        let mut ack = format!(
             "Task {} started in background: \"{}\"\n\
              {}\n\
              Continue with other work. When you need the result, use load(source: \"{}\").",
@@ -2342,7 +2450,11 @@ impl SummonClient {
                 .and_then(|v| v.as_str())
                 .unwrap_or("routing receipt unavailable"),
             task_id
-        ))];
+        );
+        if let Some(note) = &roadmap_gate_note {
+            ack = format!("{note}\n\n{ack}");
+        }
+        let content = vec![Content::text(ack)];
         Ok((content, task_id))
     }
 }
@@ -2855,6 +2967,184 @@ mod tests {
                 "persona {persona:?} must leave developer's tools unrestricted"
             );
         }
+    }
+
+    // ── X-dag-1: `delegate` may not bypass an active roadmap ────────────────
+
+    /// A throwaway `SessionManager` + a real ready-goal card attributed to
+    /// `session.id` — the exact shape `create_roadmap` leaves behind for a
+    /// session whose root goal has not been dispatched yet. Returns the
+    /// manager (kept alive for the pool), the coordinator's own session, and
+    /// the created card id.
+    async fn active_roadmap_fixture(
+        session_type: SessionType,
+    ) -> (
+        TempDir,
+        Arc<crate::session::SessionManager>,
+        crate::session::Session,
+        String,
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "x-dag-1-fixture".to_string(),
+                session_type,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+        crate::cards::seed_goal_columns(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let ready_column: String = sqlx::query_scalar(
+            "SELECT id FROM board_columns WHERE project_id = ? AND state_binding = 'ready'",
+        )
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let card_id = uuid::Uuid::now_v7().to_string();
+        sqlx::query(
+            "INSERT INTO cards (id, project_id, card_type, title, description, column_id, \
+                                 position, created_by, metadata_json) \
+             VALUES (?, ?, 'goal', 'root goal', '', ?, 0, 'user', ?)",
+        )
+        .bind(&card_id)
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .bind(&ready_column)
+        .bind(
+            serde_json::json!({
+                "depends_on": [],
+                "created_by_session_id": session.id,
+            })
+            .to_string(),
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        (tmp, sm, session, card_id)
+    }
+
+    /// X-dag-1's headline case: a coordinator session whose own roadmap has
+    /// a root goal sitting Ready, never dispatched, must have `delegate`
+    /// restricted to non-mutating tools — the exact side door Lane M3's
+    /// Defect M3-3 found (`delegate` was the ONLY path that landed real
+    /// work, entirely bypassing the roadmap).
+    #[tokio::test]
+    async fn a_coordinator_delegate_with_an_active_roadmap_is_restricted_to_non_mutating_tools() {
+        let (_tmp, sm, session, _card_id) = active_roadmap_fixture(SessionType::User).await;
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            note.is_some(),
+            "a restricted delegate must return a note explaining why"
+        );
+        let allowed = developer_available_tools(&extensions);
+        for mutating in ["write", "edit", "apply_patch"] {
+            assert!(
+                !allowed.iter().any(|t| t == mutating),
+                "must not be granted '{mutating}', got: {allowed:?}"
+            );
+        }
+    }
+
+    /// No active roadmap (no cards ever attributed to this session) → no
+    /// restriction, no note, extensions untouched — "unchanged" per the
+    /// brief's own test spec.
+    #[tokio::test]
+    async fn a_coordinator_delegate_with_no_active_roadmap_is_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let sm = crate::session::SessionManager::new(tmp.path().to_path_buf());
+        let session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "no-roadmap-fixture".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+
+        assert!(note.is_none());
+        assert!(
+            developer_available_tools(&extensions).is_empty(),
+            "no active roadmap must leave developer's tools unrestricted (empty == every tool)"
+        );
+    }
+
+    /// A goal-WORKER session (`SessionType::SubAgent`, the shape
+    /// `dispatch_goal_fn`/the auto-dispatch hook creates) must never be
+    /// restricted by this gate, even if (hypothetically) it were attributed
+    /// its own active-roadmap cards — `handle_delegate` already refuses
+    /// SubAgent callers outright, and this gate must not depend on staying
+    /// downstream of that refusal to be correct.
+    #[tokio::test]
+    async fn a_goal_worker_session_is_unaffected_by_the_active_roadmap_gate() {
+        let (_tmp, sm, session, _card_id) = active_roadmap_fixture(SessionType::SubAgent).await;
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+
+        assert!(note.is_none());
+        assert!(developer_available_tools(&extensions).is_empty());
+    }
+
+    /// An explicit `worker_persona: "reviewer"` keeps today's behaviour: this
+    /// gate is a no-op (the persona is already read-only via
+    /// `restrict_reviewer_tools`), even while a roadmap is active.
+    #[tokio::test]
+    async fn an_explicit_reviewer_persona_is_unaffected_by_the_active_roadmap_gate() {
+        let (_tmp, sm, session, _card_id) = active_roadmap_fixture(SessionType::User).await;
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            Some("reviewer"),
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            note.is_none(),
+            "the reviewer persona is handled by restrict_reviewer_tools, not this gate"
+        );
     }
 
     /// The live call that started this: a whole background subagent spun up on

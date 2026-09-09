@@ -864,6 +864,22 @@ async fn materialize_roadmap_transaction_with_budget(
         meta.insert("depends_on".to_string(), serde_json::json!(depends_on_ids));
         meta.insert("goal_state".to_string(), serde_json::json!("triage"));
         meta.insert("attempt_count".to_string(), serde_json::json!(0));
+        // X-dag-1 (harness loop, coding-harness excellence iteration): which
+        // session's `create_roadmap` call minted this card. Read back by
+        // `cards::goal_cards_created_by_session` to answer "does this session
+        // have an active roadmap of its own" — gating a coordinator's
+        // `delegate` call (summon::restrict_delegate_for_active_roadmap) and
+        // the after-turn false-"dispatched"-claim guard
+        // (after_turn::RoadmapDispatchGuard). `None` (no session presenting
+        // this call — every existing non-headless caller before this lane)
+        // simply means no card ever satisfies either check, which is the
+        // pre-existing behavior: nothing new to gate.
+        if let Some(session_id) = calling_session_id.filter(|id| !id.trim().is_empty()) {
+            meta.insert(
+                "created_by_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+        }
         if let Some(budget_task_id) = budget_task_id.filter(|id| !id.trim().is_empty()) {
             meta.insert(
                 "budget_task_id".to_string(),
@@ -3806,6 +3822,16 @@ impl OrchestratorClient {
         ))]))
     }
 
+    /// X-dag-3 (harness loop, coding-harness excellence iteration, record
+    /// only — this lane's scope is DAG enforcement + `delegate`, not this):
+    /// `crate::executable_skills::run_named` below reaches an arbitrary
+    /// shell command named by a skill file with NO approval ladder in front
+    /// of it — a recipe or skill definition names a `name`, and whatever
+    /// shell that skill was authored to run executes with no distinction
+    /// from a tool the coordinator itself was allowed to call. Still
+    /// unguarded as of this lane; the approval ladder
+    /// (`docs/orchestrator/PRIME_RLM_AND_SKILLS.md` Part B) is X-skill's own
+    /// node in the excellence-iteration DAG, not fixed here.
     async fn handle_run_executable_skill(
         &self,
         arguments: Option<JsonObject>,
@@ -14064,6 +14090,99 @@ mod tests {
         .await
         .expect("an Auto-mode launch must be able to create its own pre-approved roadmap");
         assert_eq!(materialized.created_ids.len(), 2);
+    }
+
+    /// X-dag-1 (harness loop, coding-harness excellence iteration): every
+    /// card `materialize_roadmap_transaction` creates must be stamped with
+    /// the presenting session's id, so `cards::goal_cards_created_by_session`
+    /// / `cards::session_has_an_active_roadmap` can later answer "does this
+    /// session have an active roadmap of its own" off durable state, not a
+    /// second, parallel bookkeeping mechanism a future caller could forget
+    /// to update.
+    #[tokio::test]
+    async fn materialized_goal_cards_are_stamped_with_the_creating_session_id() {
+        let pool = test_pool().await;
+        let goals = two_goal_roadmap("Stamp");
+        let (hash, decision_id) = install_auto_launch_roadmap_proof(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            "stamping-session-1",
+        )
+        .await;
+        let order = goal_state::topological_order(&goals).unwrap();
+        let materialized = materialize_roadmap_transaction(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            None,
+            GooseMode::Auto,
+            Some("stamping-session-1"),
+        )
+        .await
+        .unwrap();
+
+        let cards = crate::cards::goal_cards_created_by_session(&pool, "stamping-session-1")
+            .await
+            .unwrap();
+        assert_eq!(
+            cards.len(),
+            materialized.created_ids.len(),
+            "every card this call created must be attributed to the calling session"
+        );
+        assert!(
+            crate::cards::session_has_an_active_roadmap(&cards),
+            "a freshly materialized, undispatched roadmap must read as active"
+        );
+        // The dependent goal (index 1, `depends_on: [0]`) is not a root.
+        assert_eq!(cards.iter().filter(|c| c.is_root).count(), 1);
+        // A different session id must see none of these cards as its own.
+        let other = crate::cards::goal_cards_created_by_session(&pool, "some-other-session")
+            .await
+            .unwrap();
+        assert!(other.is_empty());
+    }
+
+    /// X-dag-1, negative half: a `calling_session_id` of `None` (the
+    /// daemon's own shape, and every existing non-headless caller before
+    /// this lane) stamps nothing on any card — the pre-existing behavior is
+    /// unchanged, not silently gated behind a session nobody presented.
+    #[tokio::test]
+    async fn no_calling_session_id_stamps_no_card_with_any_session() {
+        let pool = test_pool().await;
+        let goals = two_goal_roadmap("NoSession");
+        let (hash, decision_id) =
+            install_answered_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
+                .await;
+        let order = goal_state::topological_order(&goals).unwrap();
+        let materialized = materialize_roadmap_transaction(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &goals,
+            &order,
+            &hash,
+            &decision_id,
+            None,
+            GooseMode::Approve,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(materialized.created_ids.len(), 2);
+        for card_id in &materialized.created_ids {
+            let card = crate::cards::get_card(&pool, card_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                card.metadata_json.get("created_by_session_id").is_none(),
+                "no calling_session_id was given; nothing should be stamped, got {:?}",
+                card.metadata_json
+            );
+        }
     }
 
     /// (b) An interactive Approve-mode session gets no auto-answer at all:

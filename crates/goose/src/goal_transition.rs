@@ -49,6 +49,11 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     "completed_at",
     "depends_on",
     "auto_approve",
+    // X-dag-1 (harness loop, coding-harness excellence iteration): which
+    // session created this roadmap card, stamped once at materialization.
+    // Protected so a mutating worker cannot launder a card into (or out of)
+    // "this session's active roadmap" after the fact.
+    "created_by_session_id",
     // Program registration and transition claims are authoritative roadmap
     // bindings. They may only be written by the program bridge's validated
     // transaction, never by card CRUD or an agent tool.
