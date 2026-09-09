@@ -2352,6 +2352,99 @@ impl SessionStorage {
         Ok(result.rows_affected() == 1)
     }
 
+    /// Resolve every stale `unknown`-state reservation belonging to
+    /// `task_id`, inside the caller's already-open transaction.
+    ///
+    /// `mark_provider_invocation_unknown` and the lease-expiry sweep above
+    /// both put a reservation into `unknown` deliberately: at the moment it
+    /// happens, nothing proves whether the provider call it authorized was
+    /// ever billed, so treating it as free (`released`) or as spent
+    /// (`settled`) would both be a guess. But `unknown` had no path back to
+    /// either state, so one ambiguous failure consumed the task's authorization
+    /// forever — not just its budget headroom (which `task_held`/`session_held`
+    /// already account for correctly), but the ability to authorize ANY
+    /// future call under the task, unconditionally (B7, Lane Y1 2026-09-09:
+    /// `regression-trap-lru-cache-evict`/`harness-testfix-inventory-suite-green`/
+    /// `harness-cli-argparse-log-filter`, 3/10 fixtures, all killed by
+    /// `"an expired provider reservation is unresolved"` — traced to
+    /// `handle_decompose_roadmap`'s internal planner completion
+    /// (`orchestrator.rs::run_decomposition` → `AccountedFastCompletion::
+    /// complete_one`, `reply_parts.rs:1339-1407`) failing after a long call
+    /// and marking its own reservation `unknown`; `dispatch_goal_fn` then
+    /// died on the SAME task identity, per `dispatch_budget_task_id`).
+    ///
+    /// By the time a FRESH call is being authorized for this task, ambiguity
+    /// can be resolved with real evidence: a `cost_ledger` row for the stale
+    /// reservation's `invocation_id` (`call_id`) is proof the provider call
+    /// completed and was accounted, so that hold is settled to the ledger's
+    /// own `cost_usd` — the recorded spend is preserved, never dropped, and
+    /// keeps counting toward the task/session ceilings exactly like any other
+    /// settled call. No ledger row means nothing durable proves the call was
+    /// ever billed, so the hold is released — holding it forever recovers no
+    /// spend, it only refuses honest future work.
+    async fn reconcile_stale_reservations(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        task_id: &str,
+        now: &str,
+    ) -> Result<()> {
+        let stale: Vec<(String, String)> = sqlx::query_as(
+            "SELECT reservation_id, invocation_id FROM cost_reservations
+             WHERE task_id = ? AND state = 'unknown'",
+        )
+        .bind(task_id)
+        .fetch_all(&mut **tx)
+        .await?;
+
+        for (reservation_id, invocation_id) in stale {
+            let ledger_cost: Option<f64> =
+                sqlx::query_scalar("SELECT cost_usd FROM cost_ledger WHERE call_id = ?")
+                    .bind(&invocation_id)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            match ledger_cost {
+                Some(cost_usd) => {
+                    sqlx::query(
+                        "UPDATE cost_reservations
+                         SET state = 'settled', settled_cost_usd = ?, updated_at = ?
+                         WHERE reservation_id = ? AND state = 'unknown'",
+                    )
+                    .bind(cost_usd)
+                    .bind(now)
+                    .bind(&reservation_id)
+                    .execute(&mut **tx)
+                    .await?;
+                    tracing::info!(
+                        target: "permagent::cost_router",
+                        reservation_id = %reservation_id,
+                        invocation_id = %invocation_id,
+                        task_id,
+                        settled_cost_usd = cost_usd,
+                        "reconciled a stale unknown provider reservation to settled from its recorded ledger spend"
+                    );
+                }
+                None => {
+                    sqlx::query(
+                        "UPDATE cost_reservations
+                         SET state = 'released', updated_at = ?
+                         WHERE reservation_id = ? AND state = 'unknown'",
+                    )
+                    .bind(now)
+                    .bind(&reservation_id)
+                    .execute(&mut **tx)
+                    .await?;
+                    tracing::info!(
+                        target: "permagent::cost_router",
+                        reservation_id = %reservation_id,
+                        invocation_id = %invocation_id,
+                        task_id,
+                        "reconciled a stale unknown provider reservation to released; no ledger evidence it was ever billed"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn reserve_provider_invocation(
         &self,
         invocation_id: &str,
@@ -2420,6 +2513,21 @@ impl SessionStorage {
         .bind(&now)
         .execute(&mut *tx)
         .await?;
+
+        // B7 (Lane Y1, 2026-09-09 harness evidence): `unknown` exists to fail
+        // closed while a call's outcome is genuinely unproven, but nothing
+        // ever moved a row back out of it — so a single ambiguous failure
+        // (a stalled `decompose_roadmap` internal completion in the observed
+        // fixtures) permanently refused every later provider call under the
+        // SAME task, including `dispatch_goal_fn`'s own worker dispatch,
+        // since a dispatched goal inherits the coordinator's task identity
+        // (`dispatch_budget_task_id`, orchestrator.rs). Resolve every stale
+        // `unknown` hold for THIS task before evaluating this call's own
+        // authorization: settle it to its recorded ledger cost when one
+        // exists (spend is never silently dropped), otherwise release it
+        // (nothing durable proves it was ever billed, and holding it forever
+        // recovers no spend — it only blocks honest future work).
+        Self::reconcile_stale_reservations(&mut tx, task_id, &now).await?;
 
         let reservation_id = format!("invocation:{invocation_id}");
         if let Some((existing_id, existing_session, existing_task, state)) =
@@ -5447,7 +5555,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reservation_requires_task_and_expiry_becomes_unknown() {
+    async fn reservation_requires_task_and_expiry_reconciles_on_next_call() {
         let temp_dir = TempDir::new().unwrap();
         let sm = SessionManager::new(temp_dir.path().to_path_buf());
         let session = sm
@@ -5508,6 +5616,15 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        // B7 (Lane Y1, 2026-09-09): a FRESH invocation for the same task is
+        // no longer refused forever once the earlier lease has expired. The
+        // sweep above turns 'expired-call' unknown, and
+        // `reconcile_stale_reservations` — run at the very start of THIS
+        // `reserve_provider_invocation` call — resolves it (no ledger row
+        // for it, so released) before this call's own authorization is
+        // evaluated, exactly the P0 defect #1 repair: a stalled internal
+        // completion must not permanently block every later provider call
+        // under the same task.
         assert!(matches!(
             sm.reserve_provider_invocation(
                 "after-expiry",
@@ -5519,8 +5636,18 @@ mod tests {
             )
             .await
             .unwrap(),
-            CostReservationOutcome::Unknown { .. }
+            CostReservationOutcome::Granted { .. }
         ));
+        let expired_state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'expired-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            expired_state, "released",
+            "the expired hold must be resolved to a receipt, not stuck unknown"
+        );
     }
 
     /// B6.1: transient failures may retry only within the configured physical
@@ -5625,12 +5752,20 @@ mod tests {
         );
     }
 
-    /// B6.3: a daemon death after authorization must reconcile the durable
-    /// hold on restart. Replaying the physical invocation is not dispatch
-    /// permission, and a fresh invocation remains fail-closed while the
-    /// unknown hold consumes the task allowance.
+    /// B6.3 (updated by B7, Lane Y1 2026-09-09 — see
+    /// `reconcile_stale_reservations`): a daemon death after authorization
+    /// must still refuse to replay the SAME physical invocation once its
+    /// hold is stale — that identity already reached a terminal outcome
+    /// (`released`, once reconciled) and re-authorizing it would be a second,
+    /// unbudgeted dispatch under one invocation id. But a DIFFERENT physical
+    /// invocation under the same task must NOT stay fail-closed forever just
+    /// because an earlier, unrelated call was left ambiguous: on the next
+    /// reservation attempt the stale hold is reconciled (settled to its
+    /// ledger cost if one exists, else released — see
+    /// `reconcile_stale_reservations`) and the fresh invocation is then
+    /// authorized normally against the now-accurate budget.
     #[tokio::test]
-    async fn b6_restart_reconciles_unknown_hold_and_blocks_replay() {
+    async fn b6_restart_reconciles_unknown_hold_and_a_fresh_invocation_succeeds() {
         let temp_dir = TempDir::new().unwrap();
         let db_dir = temp_dir.path().to_path_buf();
         let sm = SessionManager::new(db_dir.clone());
@@ -5680,7 +5815,14 @@ mod tests {
         .await
         .unwrap();
 
-        // The same durable invocation id is now unknown, never a fresh grant.
+        // Replaying the SAME durable invocation id is still refused: by the
+        // time this call runs, the sweep above has already turned it
+        // `unknown` (its lease expired), and `reconcile_stale_reservations`
+        // (run at the very start of THIS SAME `reserve_provider_invocation`
+        // call, before the duplicate-invocation check) resolves it to
+        // `released` — there is no ledger row for 'b6-restart-call', so
+        // there is no evidence to settle. Either way the identical
+        // invocation id must never come back as a fresh `Granted`.
         assert!(matches!(
             reopened
                 .reserve_provider_invocation(
@@ -5696,8 +5838,12 @@ mod tests {
             CostReservationOutcome::Unknown { .. }
         ));
 
-        // A different physical invocation is also refused fail-closed while
-        // the unresolved hold remains budget-consuming after restart.
+        // A DIFFERENT physical invocation now succeeds: reconciliation above
+        // already released the stale hold (B7), so it no longer consumes the
+        // task's authorization budget. This is the fix under test — before
+        // B7 this assertion was `Unknown{..}` forever, which is exactly the
+        // P0 availability bug (`dispatch_goal_fn` dying on the SAME stale
+        // hold via the shared task identity).
         assert!(matches!(
             reopened
                 .reserve_provider_invocation(
@@ -5710,7 +5856,7 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            CostReservationOutcome::Unknown { .. }
+            CostReservationOutcome::Granted { .. }
         ));
 
         let (state, amount): (String, f64) = sqlx::query_as(
@@ -5720,17 +5866,31 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(state, "unknown");
+        assert_eq!(
+            state, "released",
+            "a stale hold with no ledger evidence is released, not left unknown forever"
+        );
         assert!((amount - 0.75).abs() < 1e-12);
+        let fresh_state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'b6-restart-fresh'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(fresh_state, "pending");
         let reservation_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cost_reservations")
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(reservation_count, 1, "replay must not create a second hold");
+        assert_eq!(
+            reservation_count, 2,
+            "one released receipt for the stale hold, one pending row for the fresh grant — replay of the same id must not create a second row"
+        );
 
         let projection = reopened.budget_projection(&session.id, cfg).await.unwrap();
-        assert!((projection.task.unknown_usd.unwrap() - 0.75).abs() < 1e-12);
-        assert!((projection.task.remaining_usd.unwrap() - 0.25).abs() < 1e-12);
+        assert_eq!(projection.task.unknown_usd, Some(0.0));
+        assert!((projection.task.held_usd.unwrap() - 0.10).abs() < 1e-12);
+        assert!((projection.task.remaining_usd.unwrap() - 0.90).abs() < 1e-12);
 
         // B5.5 producer contract: the real restart projection is the shared
         // JSON consumed by downstream event/store/UI tests. Only identities
@@ -5745,6 +5905,209 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(actual, expected, "B5.5 budget projection contract drifted");
+    }
+
+    /// B7 (Lane Y1, 2026-09-09 harness evidence, P0 defect #1): a stale
+    /// `unknown` hold with a matching `cost_ledger` row — proof the provider
+    /// call really was accounted — must be SETTLED to that recorded cost on
+    /// the next reservation attempt for the same task, never silently
+    /// released to zero. The settled amount keeps counting toward the task
+    /// ceiling exactly like any other settled call, so a fresh reservation
+    /// that would push the total over budget is still correctly refused —
+    /// that refusal is the load-bearing proof the recorded spend was
+    /// unblocked, not dropped.
+    #[tokio::test]
+    async fn b7_stale_unknown_hold_with_recorded_ledger_spend_settles_not_drops() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "stale hold with recorded spend".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+
+        // A loose cap for the setup grant only — the ceiling that matters is
+        // enforced on the fresh call below.
+        let loose = reservation_config(5.0, 5.0, 5.0, 5.0);
+        let reservation_id = match sm
+            .reserve_provider_invocation(
+                "b7-recorded-call",
+                &session.id,
+                Some(&task_id),
+                0.95,
+                "2099-01-01T00:00:00Z",
+                &loose,
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            other => panic!("setup reservation was not granted: {other:?}"),
+        };
+
+        // Fail-closed path: the provider call's outcome could not be
+        // durably confirmed through the normal settle path, so the hold is
+        // marked unknown...
+        assert!(sm
+            .mark_provider_invocation_unknown(&reservation_id)
+            .await
+            .unwrap());
+        // ...but real spend WAS in fact recorded for it independently (the
+        // durable evidence `reconcile_stale_reservations` looks for).
+        sm.append_cost_ledger(&reservation_row(
+            &session.id,
+            &task_id,
+            "b7-recorded-call",
+            0.95,
+        ))
+        .await
+        .unwrap();
+
+        // A tight cap: 0.95 already-recorded spend plus a 0.10 fresh request
+        // exceeds the 1.00 hard ceiling. If reconciliation dropped the
+        // recorded spend instead of settling it, this fresh call would
+        // wrongly succeed.
+        let tight = reservation_config(0.90, 1.00, 0.90, 1.00);
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "b7-fresh-call",
+                &session.id,
+                Some(&task_id),
+                0.10,
+                "2099-01-01T00:00:00Z",
+                &tight,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Refused { .. }
+        ));
+
+        let pool = sm.pool_clone().await.unwrap();
+        let (state, settled_cost): (String, Option<f64>) = sqlx::query_as(
+            "SELECT state, settled_cost_usd FROM cost_reservations
+             WHERE invocation_id = 'b7-recorded-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            state, "settled",
+            "a hold with a matching ledger row must be settled, not released"
+        );
+        assert!((settled_cost.unwrap() - 0.95).abs() < 1e-12);
+
+        let ledger_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger WHERE task_id = ?")
+                .bind(&task_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ledger_rows, 1, "the recorded spend must not be duplicated");
+    }
+
+    /// B7 (Lane Y1, 2026-09-09, P0 defect #1 part (c)): `dispatch_goal_fn`
+    /// dispatches a goal's worker under the SAME durable task identity as
+    /// the coordinator that created the card (`dispatch_budget_task_id`,
+    /// `orchestrator.rs`) — not necessarily the same session lineage. In the
+    /// harness evidence, a stale `unknown` hold left by the coordinator's
+    /// own internal completion (the pattern behind
+    /// `handle_decompose_roadmap`'s planner call,
+    /// `orchestrator.rs::run_decomposition`) then refused the WORKER's very
+    /// first reservation too — card 2's own `last_error` carried the exact
+    /// same `"an expired provider reservation is unresolved"` string,
+    /// proving the refusal reached `dispatch_goal_fn` itself. Reconciliation
+    /// runs at the start of every `reserve_provider_invocation` call for the
+    /// task, regardless of which session makes it, so the worker's
+    /// dispatch reservation now succeeds.
+    #[tokio::test]
+    async fn b7_dispatch_under_shared_task_succeeds_after_coordinator_hold_is_stale() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let coordinator = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&coordinator.id).await.unwrap();
+
+        // A dispatched worker session, unrelated to the coordinator's own
+        // session lineage, bound to the SAME task identity — exactly how
+        // `dispatch_goal_fn` stamps a card's worker.
+        let worker = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "dispatched worker".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        {
+            let mut extension_data = worker.extension_data.clone();
+            extension_data.set_extension_state(
+                crate::session::BUDGET_TASK_EXTENSION_NAME,
+                crate::session::BUDGET_TASK_EXTENSION_VERSION,
+                serde_json::Value::String(task_id.clone()),
+            );
+            sm.update(&worker.id)
+                .extension_data(extension_data)
+                .apply()
+                .await
+                .unwrap();
+        }
+
+        let cfg = reservation_config(0.90, 1.00, 0.90, 1.00);
+
+        // The coordinator's own internal completion (mirroring
+        // `handle_decompose_roadmap`'s planner call) is granted, then fails
+        // in a way that cannot prove whether the provider billed it.
+        let coordinator_reservation = match sm
+            .reserve_provider_invocation(
+                "coordinator-decompose-call",
+                &coordinator.id,
+                Some(&task_id),
+                0.20,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            other => panic!("coordinator setup reservation was not granted: {other:?}"),
+        };
+        assert!(sm
+            .mark_provider_invocation_unknown(&coordinator_reservation)
+            .await
+            .unwrap());
+
+        // Before B7 this died with "an expired provider reservation is
+        // unresolved" — the exact string observed in `dispatch_goal_fn`'s
+        // own card `last_error` in the harness evidence. Now it succeeds:
+        // the stale coordinator hold is reconciled (no ledger row for it, so
+        // released) at the start of THIS call.
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "worker-dispatch-call",
+                &worker.id,
+                Some(&task_id),
+                0.10,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Granted { .. }
+        ));
     }
 
     /// B6.2: compaction and continuation keep the same durable task identity,
