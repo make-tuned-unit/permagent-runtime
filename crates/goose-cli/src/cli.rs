@@ -38,6 +38,18 @@ use std::io::Read;
 use std::path::PathBuf;
 use tracing::warn;
 
+/// Default `PERMAGENT_HEADLESS_DRAIN_SECS` cap for `handle_run_command`'s
+/// post-headless drain (Lane U / U3, HARNESS_LOOP_LOG.md "Lane G4 review"
+/// finding 3, MEDIUM): the prior 600s default sat AT OR ABOVE the
+/// coding-harness eval's own measured per-task `harness_timeout`
+/// (400.1s/500.1s per Lane M3's results), so the eval's SIGKILL fired before
+/// drain's own cap-expiry park path ever could — drain's "never leave a
+/// goal silently InProgress" guarantee was moot under the exact harness
+/// meant to measure it. Lowered well under that floor; an explicit
+/// `PERMAGENT_HEADLESS_DRAIN_SECS` still overrides this for any run whose
+/// own timeout differs.
+pub(crate) const DEFAULT_HEADLESS_DRAIN_SECS: u64 = 240;
+
 #[derive(Parser)]
 #[command(name = "permagent", author, version, display_name = "", about, long_about = None)]
 pub struct Cli {
@@ -48,6 +60,18 @@ pub struct Cli {
 #[cfg(test)]
 mod worker_session_tests {
     use super::*;
+
+    /// Lane U / U3, the default value itself: pins the exact repair (600 →
+    /// 240) so a future edit cannot silently drift the default back above
+    /// the eval's measured harness_timeout floor.
+    #[test]
+    fn default_headless_drain_secs_is_well_under_the_evals_harness_timeout_floor() {
+        assert_eq!(DEFAULT_HEADLESS_DRAIN_SECS, 240);
+        assert!(
+            DEFAULT_HEADLESS_DRAIN_SECS < 400,
+            "the default must stay under the eval's smallest measured harness_timeout (400.1s)"
+        );
+    }
 
     #[tokio::test]
     async fn inherited_worker_id_must_resolve_to_a_durable_session() {
@@ -1674,10 +1698,17 @@ async fn handle_run_command(
         // Harness loop, Lane T / T3: wait (bounded) for any goals this run
         // dispatched to reach a terminal state before the process exits — a
         // no-op with no DB query when the session never dispatched anything.
-        // `PERMAGENT_HEADLESS_DRAIN_SECS` (default 600s; `0` disables).
+        // `PERMAGENT_HEADLESS_DRAIN_SECS` (default `DEFAULT_HEADLESS_DRAIN_SECS`;
+        // `0` disables). Lane U / U3 (HARNESS_LOOP_LOG.md, "Lane G4 review"
+        // finding 3, MEDIUM): the old 600s default sat AT OR ABOVE the eval's
+        // own measured per-task harness_timeout (400.1s/500.1s), so the eval's
+        // own SIGKILL fired before drain's cap-expiry park path ever could —
+        // lowered well under that floor. `CliSession::drain_dispatched_goals`
+        // additionally races the wait against a SIGTERM/SIGINT so a kill
+        // during the drain still parks whatever is still running first.
         let drain_cap_secs: u64 = Config::global()
             .get_param("PERMAGENT_HEADLESS_DRAIN_SECS")
-            .unwrap_or(600);
+            .unwrap_or(DEFAULT_HEADLESS_DRAIN_SECS);
         session
             .drain_dispatched_goals(std::time::Duration::from_secs(drain_cap_secs))
             .await;

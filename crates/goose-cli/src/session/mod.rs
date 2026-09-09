@@ -1515,13 +1515,24 @@ impl CliSession {
     /// process can outlive, so without this a dispatched goal could be left
     /// silently `InProgress` forever.
     ///
-    /// `cap` comes from `PERMAGENT_HEADLESS_DRAIN_SECS` (default 600s; `0`
-    /// disables the wait entirely — no query, no delay, matching "must never
-    /// block a run that dispatched nothing" for the common case where a
-    /// caller has opted all the way out). Not scoped further than
-    /// `coding_harness`: an ordinary chat/run session never installs the
-    /// headless dispatch hook, so it never has anything to drain, and the one
-    /// query costs nothing worth skipping.
+    /// `cap` comes from `PERMAGENT_HEADLESS_DRAIN_SECS` (default
+    /// `crate::cli::DEFAULT_HEADLESS_DRAIN_SECS`; `0` disables the wait
+    /// entirely — no query, no delay, matching "must never block a run that
+    /// dispatched nothing" for the common case where a caller has opted all
+    /// the way out). Not scoped further than `coding_harness`: an ordinary
+    /// chat/run session never installs the headless dispatch hook, so it
+    /// never has anything to drain, and the one query costs nothing worth
+    /// skipping.
+    ///
+    /// Lane U / U3 (HARNESS_LOOP_LOG.md, "Lane G4 review" finding 3): races
+    /// the poll loop against a SIGTERM/SIGINT (the eval's own
+    /// harness-timeout kill, or an operator Ctrl+C) — the same source
+    /// `crate::signal::shutdown_signal` the daemon's own graceful-shutdown
+    /// path uses. When the signal wins the race, every goal this run
+    /// dispatched that is still non-terminal is parked immediately (no
+    /// remaining poll wait) through the same `handle_goal_timeout` path a
+    /// cap expiry would have used, so a kill mid-drain still cannot leave a
+    /// goal silently `InProgress`.
     pub async fn drain_dispatched_goals(&self, cap: std::time::Duration) {
         if !wants_headless_goal_drain(self.coding_harness, cap) {
             return;
@@ -1530,19 +1541,31 @@ impl CliSession {
             return;
         };
         let poll_interval = std::time::Duration::from_secs(2).min(cap);
-        let result = permagent::agents::platform_extensions::orchestrator::drain_dispatched_goals(
-            &pool,
-            &self.session_id,
-            cap,
-            poll_interval,
-            |worker_session_id, state| {
-                output::render_notice(&format!(
-                    "goal worker {worker_session_id}: {}",
-                    state.binding()
-                ));
-            },
-        )
-        .await;
+        let result = tokio::select! {
+            result = permagent::agents::platform_extensions::orchestrator::drain_dispatched_goals(
+                &pool,
+                &self.session_id,
+                cap,
+                poll_interval,
+                |worker_session_id, state| {
+                    output::render_notice(&format!(
+                        "goal worker {worker_session_id}: {}",
+                        state.binding()
+                    ));
+                },
+            ) => result,
+            _ = crate::signal::shutdown_signal() => {
+                output::render_notice(
+                    "shutdown signal received during goal drain — parking still-running \
+                     goals before exit",
+                );
+                permagent::agents::platform_extensions::orchestrator::park_dispatched_goals_now(
+                    &pool,
+                    &self.session_id,
+                )
+                .await
+            }
+        };
         match result {
             Ok(summary) if summary.dispatched_anything() => {
                 output::render_notice(&format!(

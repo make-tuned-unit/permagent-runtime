@@ -1277,17 +1277,29 @@ impl OrchestratorClient {
 
     /// Dispatch, optionally PINNING the worker instead of letting cost ranking
     /// choose. `requested_worker` is the roster key (e.g. `"permagent"`).
+    ///
+    /// Lane U / U1: consults [`current_headless_dispatch_policy`] instead of
+    /// hardcoding `policy: None` — a headless coding-harness session that
+    /// installed [`install_dispatch_hook_for_headless_session`] gets the same
+    /// T1 provider-fallback and T2 internal-engine restriction here as the
+    /// auto-dispatch nudge, so `goal_advance(dispatch)` and
+    /// `resume_roadmap` (via [`dispatch_eligible_goals`], which calls
+    /// [`OrchestratorClient::dispatch_goal`] → here) can no longer spawn an
+    /// unrestricted external-CLI worker or hit "Extension manager not
+    /// available" the way the nudge-only path already avoided. A daemon
+    /// session (no policy installed) reads `None` here, unchanged.
     pub async fn dispatch_goal_to(
         &self,
         card_id: &str,
         requested_worker: Option<&str>,
     ) -> Result<String, String> {
+        let policy = current_headless_dispatch_policy(&self.context.session_manager).await;
         let result = dispatch_goal_fn(
             &self.context,
             &self.probe_cache,
             card_id,
             requested_worker,
-            None,
+            policy.as_ref(),
         )
         .await;
         self.invalidate_kanban_cache().await;
@@ -1358,6 +1370,49 @@ pub(crate) struct HeadlessDispatchPolicy {
     /// (`goal_advance`'s `worker` argument) is always honoured regardless —
     /// this flag only narrows the RANKED candidate pool.
     pub restrict_ranked_selection_to_internal_engine: bool,
+}
+
+/// The durable (non-session) half of a [`HeadlessDispatchPolicy`]: which
+/// coordinator session to refresh on every dispatch, and whether ranked
+/// selection is restricted. Lane U / U1 (HARNESS_LOOP_LOG.md, "Lane G4
+/// review" finding 1): this is the SINGLE SOURCE OF TRUTH the installed
+/// `GOAL_DISPATCH_HOOK` closure and [`OrchestratorClient::dispatch_goal_to`]
+/// both read through [`current_headless_dispatch_policy`], so a headless
+/// coordinator's own `goal_advance(dispatch)` / `resume_roadmap` calls get
+/// the identical T1 provider-fallback and T2 internal-engine restriction the
+/// auto-dispatch nudge already gets — instead of `dispatch_goal_to`
+/// hardcoding `policy: None` and silently bypassing both. Set only by
+/// [`install_dispatch_hook_for_headless_session`] — the daemon's
+/// [`install_dispatch_hook`] never sets it, so `current_headless_dispatch_policy`
+/// returns `None` forever in a daemon process, unchanged.
+struct HeadlessDispatchPolicyConfig {
+    coordinator_session_id: String,
+    restrict_ranked_selection_to_internal_engine: bool,
+}
+
+static HEADLESS_DISPATCH_POLICY_CONFIG: std::sync::OnceLock<HeadlessDispatchPolicyConfig> =
+    std::sync::OnceLock::new();
+
+/// Build a fresh [`HeadlessDispatchPolicy`] from the installed headless
+/// config, re-fetching the coordinator's session on every call — never a
+/// stale snapshot, matching the hook closure's own contract. Returns `None`
+/// when no headless policy was installed (the daemon, tests, or any process
+/// other than a coding-harness Auto `permagent run`), which callers must
+/// treat exactly like the pre-U1 hardcoded `None` — no behavior change.
+async fn current_headless_dispatch_policy(
+    session_manager: &std::sync::Arc<crate::session::SessionManager>,
+) -> Option<HeadlessDispatchPolicy> {
+    let config = HEADLESS_DISPATCH_POLICY_CONFIG.get()?;
+    let session = session_manager
+        .get_session(&config.coordinator_session_id, false)
+        .await
+        .ok()
+        .map(Arc::new);
+    Some(HeadlessDispatchPolicy {
+        session_for_provider_fallback: session,
+        restrict_ranked_selection_to_internal_engine: config
+            .restrict_ranked_selection_to_internal_engine,
+    })
 }
 
 /// Resolve the provider for an InternalSubagentEngine-routed worker (T1).
@@ -2271,6 +2326,20 @@ pub(crate) async fn dispatch_goal_fn(
             // keyed providers and installed local models. The map is computed
             // ONCE per dispatch (cached process-wide) and the routing receipt
             // records which source picked the model.
+            //
+            // Lane U / U4 (HARNESS_LOOP_LOG.md, "Lane G4 review" finding 4,
+            // LOW/record-only): `role_model_or_derived`/`derived_role_map`
+            // consult `PERMAGENT_ROLE_*` and this recommender-derived map
+            // only — NEVER `PERMAGENT_PACK_*` (`role_map.rs`'s own doc:
+            // that family "feeds only the internal tier ladder ... never
+            // consulted by the dispatch path"). A caller that pins only
+            // `PERMAGENT_PACK_*` expecting it to steer a dispatched worker's
+            // model will silently not get that; `PERMAGENT_ROLE_EDIT_*` (or
+            // the derived map) is what actually wins here. This is
+            // pre-existing and unchanged by Lane U — flagged because T1
+            // (harness loop) is what first made this dispatch path reachable
+            // in headless mode at all, and the eval's own T1 pinning test
+            // asserts against `PERMAGENT_ROLE_EDIT_*`, not `PACK_EDIT_*`.
             let derived = crate::cost_router::derived_role_map().await;
             let worker_role = worker_cfg.and_then(|w| w.routing_role());
             let mut role = worker_role;
@@ -5251,31 +5320,37 @@ fn headless_worker_restricted_to_internal_from_env() -> bool {
 /// Idempotent per the same `GOAL_DISPATCH_HOOK` `OnceLock` as
 /// [`install_dispatch_hook`] — whichever installer runs first in a process
 /// wins. A daemon process must never call this one.
+///
+/// Lane U / U1: also sets [`HEADLESS_DISPATCH_POLICY_CONFIG`], the durable
+/// config [`current_headless_dispatch_policy`] reads — so the SAME policy
+/// this closure uses is available to `OrchestratorClient::dispatch_goal_to`
+/// for `goal_advance(dispatch)` and `resume_roadmap`, not just the
+/// auto-dispatch nudge that installs and calls this hook. The closure itself
+/// now builds its policy through that same helper rather than duplicating
+/// the session re-fetch, so there is exactly one place a headless dispatch
+/// policy is assembled from.
 pub fn install_dispatch_hook_for_headless_session(
     session_manager: std::sync::Arc<crate::session::SessionManager>,
     coordinator_session_id: String,
 ) {
     let restrict_to_internal_engine = headless_worker_restricted_to_internal_from_env();
+    let _ = HEADLESS_DISPATCH_POLICY_CONFIG.set(HeadlessDispatchPolicyConfig {
+        coordinator_session_id: coordinator_session_id.clone(),
+        restrict_ranked_selection_to_internal_engine: restrict_to_internal_engine,
+    });
     let _ = GOAL_DISPATCH_HOOK.set(Box::new(move |card_id: String| {
         let session_manager = std::sync::Arc::clone(&session_manager);
-        let coordinator_session_id = coordinator_session_id.clone();
         Box::pin(async move {
-            let session = session_manager
-                .get_session(&coordinator_session_id, false)
-                .await
-                .ok()
-                .map(Arc::new);
+            let policy = current_headless_dispatch_policy(&session_manager).await;
             let context = PlatformExtensionContext {
                 extension_manager: None,
+                session: policy
+                    .as_ref()
+                    .and_then(|p| p.session_for_provider_fallback.clone()),
                 session_manager,
-                session: session.clone(),
             };
             let probe_cache = crate::config::worker_probe::ProbeCache::new();
-            let policy = HeadlessDispatchPolicy {
-                session_for_provider_fallback: session,
-                restrict_ranked_selection_to_internal_engine: restrict_to_internal_engine,
-            };
-            dispatch_goal_fn(&context, &probe_cache, &card_id, None, Some(&policy)).await
+            dispatch_goal_fn(&context, &probe_cache, &card_id, None, policy.as_ref()).await
         }) as GoalDispatchFuture
     }));
 }
@@ -6900,9 +6975,36 @@ async fn goal_state_for_card(
         .unwrap_or(GoalState::Triage))
 }
 
+/// Every descendant (child, grandchild, ...) of `coordinator_session_id`,
+/// via `sessions.parent_session_id`, as of THIS call. Lane U / U2
+/// (HARNESS_LOOP_LOG.md, "Lane G4 review" finding 2): a single upfront query
+/// only ever sees what was already dispatched when the caller asked, so a
+/// goal auto-dispatched mid-drain — a dependency-chain goal
+/// `promote_and_dispatch_dependents` starts when an earlier one completes,
+/// or (defensively) a goal a worker session itself dispatches as its own
+/// child — needs a fresh answer on every poll, not a one-time snapshot.
+/// A recursive CTE answers both shapes in one query without an iterative
+/// per-level scan.
+async fn descendant_session_ids(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    coordinator_session_id: &str,
+) -> Result<Vec<String>, String> {
+    sqlx::query_scalar(
+        "WITH RECURSIVE descendants(id) AS ( \
+             SELECT id FROM sessions WHERE parent_session_id = ? \
+             UNION \
+             SELECT s.id FROM sessions s JOIN descendants d ON s.parent_session_id = d.id \
+         ) SELECT id FROM descendants",
+    )
+    .bind(coordinator_session_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Wait (bounded by `cap`) for every goal `coordinator_session_id` dispatched
-/// this run — child sessions with `sessions.parent_session_id ==
-/// coordinator_session_id` — to reach a terminal goal state
+/// this run — every descendant session, via `sessions.parent_session_id`, not
+/// just its direct children — to reach a terminal goal state
 /// (Complete/Cancelled/Failed; the last of these is the "parked" state a
 /// timeout or budget exhaustion produces). Returns immediately, with an empty
 /// [`DrainSummary`], when nothing was dispatched — never blocks a run that
@@ -6911,40 +7013,100 @@ async fn goal_state_for_card(
 /// transition without polling noise. On cap expiry, every still-non-terminal
 /// goal is parked through the existing [`handle_goal_timeout`] path — nothing
 /// is left silently `InProgress`.
+///
+/// Lane U / U2: the descendant set is re-queried on every iteration (not
+/// snapshotted once before the loop), so a goal dispatched mid-drain joins
+/// the wait set and is either waited on to completion or parked at the cap,
+/// exactly like one dispatched before the drain started. The loop only stops
+/// once a pass finds the set BOTH empty (nothing left running) AND stable
+/// (that same pass discovered nothing new) — a pass that discovers a new
+/// descendant never stops the loop on that same pass, even if everything
+/// already known just finished, precisely to give a completion-triggered
+/// dependent dispatch a chance to appear on the very next re-query.
 pub async fn drain_dispatched_goals(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     coordinator_session_id: &str,
     cap: std::time::Duration,
     poll_interval: std::time::Duration,
-    mut on_status: impl FnMut(&str, GoalState),
+    on_status: impl FnMut(&str, GoalState),
 ) -> Result<DrainSummary, String> {
-    let child_session_ids: Vec<String> =
-        sqlx::query_scalar("SELECT id FROM sessions WHERE parent_session_id = ?")
-            .bind(coordinator_session_id)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| e.to_string())?;
+    drain_dispatched_goals_with(
+        pool,
+        coordinator_session_id,
+        cap,
+        poll_interval,
+        on_status,
+        None,
+    )
+    .await
+}
 
-    if child_session_ids.is_empty() {
+/// Future returned by a [`DrainIterationHook`] — same shape as
+/// [`GoalDispatchFuture`], reused here for the identical reason: a test
+/// needs to run real `.await`ed work (creating a session/card) from inside
+/// the drain loop.
+type DrainIterationFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+/// Test-only injection point, called once at the START of every poll
+/// iteration, BEFORE that iteration's re-query — lets a test deterministically
+/// simulate "a goal got dispatched mid-drain" on an exact iteration number,
+/// with no dependency on wall-clock scheduling of a separately spawned task.
+/// `None` (every real caller, via [`drain_dispatched_goals`]) costs nothing.
+type DrainIterationHook = Box<dyn FnMut() -> DrainIterationFuture + Send>;
+
+/// [`drain_dispatched_goals`] with a testable per-iteration hook. See that
+/// function's docs for the real contract; this one exists so a test can
+/// pin the G4 #2 "mid-drain dispatch" case deterministically (no sleeping
+/// background task racing the poll loop's own timing).
+async fn drain_dispatched_goals_with(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    coordinator_session_id: &str,
+    cap: std::time::Duration,
+    poll_interval: std::time::Duration,
+    mut on_status: impl FnMut(&str, GoalState),
+    mut on_iteration: Option<DrainIterationHook>,
+) -> Result<DrainSummary, String> {
+    // Fast path: nothing dispatched at all — never sleep out any part of the
+    // cap. (A later mid-drain dispatch cannot happen if nothing was ever
+    // dispatched: there is no running worker/completion-tracker to trigger
+    // one.)
+    if descendant_session_ids(pool, coordinator_session_id)
+        .await?
+        .is_empty()
+    {
         return Ok(DrainSummary::default());
     }
 
-    // (session_id -> (card_id, project_id)) for every child that maps to a
-    // real goal card. A child with no matching card (e.g. hard-deleted) is
-    // dropped from the wait set rather than waited on forever.
     let mut pending: HashMap<String, (String, String)> = HashMap::new();
-    for session_id in &child_session_ids {
-        if let Some(card) = goal_card_for_worker_session(pool, session_id).await? {
-            pending.insert(session_id.clone(), card);
-        }
-    }
-
-    let start = std::time::Instant::now();
+    let mut accounted: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut last_state: HashMap<String, GoalState> = HashMap::new();
     let mut finished = 0usize;
     const TERMINAL: [GoalState; 3] = [GoalState::Complete, GoalState::Cancelled, GoalState::Failed];
 
+    let start = std::time::Instant::now();
     loop {
+        if let Some(hook) = on_iteration.as_mut() {
+            hook().await;
+        }
+
+        // Re-query every iteration (G4 #2): a goal dispatched mid-drain must
+        // join the wait set, not just whatever was already dispatched when
+        // the loop started.
+        let mut discovered_new = false;
+        for session_id in descendant_session_ids(pool, coordinator_session_id).await? {
+            if accounted.contains(&session_id) {
+                continue;
+            }
+            discovered_new = true;
+            accounted.insert(session_id.clone());
+            // A descendant with no matching goal card (e.g. hard-deleted, or
+            // not a goal worker at all) is accounted for so it is never
+            // rechecked, but never waited on.
+            if let Some(card) = goal_card_for_worker_session(pool, &session_id).await? {
+                pending.insert(session_id, card);
+            }
+        }
+
         let mut still_pending = HashMap::new();
         for (session_id, (card_id, project_id)) in pending {
             let state = goal_state_for_card(pool, &card_id).await?;
@@ -6959,7 +7121,8 @@ pub async fn drain_dispatched_goals(
             }
         }
         pending = still_pending;
-        if pending.is_empty() || start.elapsed() >= cap {
+
+        if (pending.is_empty() && !discovered_new) || start.elapsed() >= cap {
             break;
         }
         tokio::time::sleep(poll_interval.min(cap.saturating_sub(start.elapsed()))).await;
@@ -6973,6 +7136,40 @@ pub async fn drain_dispatched_goals(
         let _ = handle_goal_timeout(pool, &card_id, &project_id, cap.as_secs()).await;
     }
 
+    Ok(DrainSummary {
+        finished,
+        timed_out,
+    })
+}
+
+/// Lane U / U3: an immediate (no polling, no sleep) park pass over every
+/// still-non-terminal goal `coordinator_session_id` has ever dispatched —
+/// the drain's own signal-triggered escape hatch. Called when a SIGTERM/
+/// SIGINT arrives mid-drain (the eval's own harness-timeout kill, or an
+/// operator Ctrl+C) instead of waiting out the remainder of `drain_dispatched_goals`'s
+/// cap: a goal still running when the process is about to be killed gets
+/// exactly the same [`handle_goal_timeout`] park a cap-expiry would have
+/// given it, just sooner.
+pub async fn park_dispatched_goals_now(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    coordinator_session_id: &str,
+) -> Result<DrainSummary, String> {
+    const TERMINAL: [GoalState; 3] = [GoalState::Complete, GoalState::Cancelled, GoalState::Failed];
+    let mut finished = 0usize;
+    let mut timed_out = 0usize;
+    for session_id in descendant_session_ids(pool, coordinator_session_id).await? {
+        let Some((card_id, project_id)) = goal_card_for_worker_session(pool, &session_id).await?
+        else {
+            continue;
+        };
+        let state = goal_state_for_card(pool, &card_id).await?;
+        if TERMINAL.contains(&state) {
+            finished += 1;
+        } else {
+            let _ = handle_goal_timeout(pool, &card_id, &project_id, 0).await;
+            timed_out += 1;
+        }
+    }
     Ok(DrainSummary {
         finished,
         timed_out,
@@ -10845,6 +11042,137 @@ mod tests {
         assert!(!session_id.is_empty());
     }
 
+    /// Lane U / U1 (HARNESS_LOOP_LOG.md, "Lane G4 review" finding 1,
+    /// CRITICAL): before this fix, `OrchestratorClient::dispatch_goal_to`
+    /// hardcoded `policy: None` no matter what
+    /// `install_dispatch_hook_for_headless_session` had installed, so
+    /// `goal_advance(dispatch)` (`handle_goal_advance`'s
+    /// `GoalAction::Dispatch` arm, which calls `dispatch_goal_to` directly)
+    /// and `resume_roadmap` (`handle_resume_roadmap` → `dispatch_eligible_goals`
+    /// → `OrchestratorClient::dispatch_goal` → `dispatch_goal_to`) never got
+    /// T1's provider fallback or T2's internal-engine restriction — only the
+    /// auto-dispatch nudge (through `GOAL_DISPATCH_HOOK` directly) did.
+    ///
+    /// Both calls below are safe by construction rather than by hoping no
+    /// external CLI is on `PATH`: the `goal_advance(dispatch)` call is
+    /// pinned to `permagent` (bypasses ranked selection entirely — the
+    /// SAME technique
+    /// `dispatch_goal_fn_dispatches_an_internal_worker_through_a_headless_policy_with_no_extension_manager`
+    /// uses), and the `resume_roadmap` call relies on structural safety, not
+    /// luck: T2's `restrict_ranked_selection_to_internal_engine` (the
+    /// installer's default) filters every ExternalCli/SupervisedCli worker
+    /// out of the candidate list BEFORE `select_worker_detailed` ever probes
+    /// one, so ranked selection cannot reach Claude Code/Codex/Cursor once
+    /// the policy is installed — the exact hazard Lane T's own T2 test found
+    /// real on this machine.
+    ///
+    /// Pre-fix repro: reverting `dispatch_goal_to`'s `policy` argument back
+    /// to a literal `None` and running this test panics at the first
+    /// `.expect(...)` below with
+    /// `"goal_advance(dispatch) must reach the installed headless policy \
+    /// through dispatch_goal_to instead of the hardcoded \`policy: None\` \
+    /// G4 finding 1 flagged: \"Extension manager not available\""` — the
+    /// InternalSubagent branch's `resolve_worker_provider_fn(context, None)`
+    /// fails exactly like the original S1 defect, on a path S1/T1 never
+    /// touched.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn dispatch_goal_to_and_resume_roadmap_consult_the_installed_headless_policy() {
+        std::env::set_var("PERMAGENT_ROLE_EDIT_PROVIDER", "ollama");
+        std::env::set_var("PERMAGENT_ROLE_EDIT_MODEL", "qwen3");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+
+        let repo = tmp.path().join("proj");
+        init_git_repo_for_dispatch_test(&repo);
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(repo.to_str().unwrap())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        sm.update(&coordinator.id)
+            .provider_name("ollama")
+            .model_config(crate::model::ModelConfig::new("qwen3").unwrap())
+            .apply()
+            .await
+            .unwrap();
+
+        // The SAME production installer `permagent run` calls — this test
+        // must exercise the real seam, not a hand-rolled substitute.
+        install_dispatch_hook_for_headless_session(sm.clone(), coordinator.id.clone());
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let orchestrator = OrchestratorClient::new(context).unwrap();
+
+        // `goal_advance(dispatch)`. Marked `read_only` so it never trips
+        // `write_scope_conflict` against goal B below (two undeclared-scope
+        // goals in the same project would otherwise refuse to run
+        // concurrently — orthogonal to what this test pins).
+        let card_a = setup_goal_in_state(&pool, "ready", 0).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.read_only', json('true')) \
+             WHERE id = ?",
+        )
+        .bind(&card_a.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let result_a = orchestrator
+            .dispatch_goal_to(&card_a.id, Some("permagent"))
+            .await;
+        let session_a = result_a.expect(
+            "goal_advance(dispatch) must reach the installed headless policy through \
+             dispatch_goal_to instead of the hardcoded `policy: None` G4 finding 1 flagged",
+        );
+        assert!(!session_a.is_empty());
+
+        // `resume_roadmap` → `dispatch_eligible_goals` → `dispatch_goal` →
+        // `dispatch_goal_to(id, None)` (ranked selection).
+        let card_b = setup_goal_in_state(&pool, "ready", 0).await;
+        let dispatched =
+            dispatch_eligible_goals(&pool, crate::projects::PERSONAL_PROJECT_ID, &orchestrator)
+                .await
+                .expect("dispatch_eligible_goals must not error");
+
+        std::env::remove_var("PERMAGENT_ROLE_EDIT_PROVIDER");
+        std::env::remove_var("PERMAGENT_ROLE_EDIT_MODEL");
+
+        assert_eq!(
+            dispatched, 1,
+            "resume_roadmap's dispatch_eligible_goals must reach the installed headless \
+             policy too — a bypass here reports 0 dispatched instead of failing loudly"
+        );
+        let updated_b = cards::get_card(&pool, &card_b.id).await.unwrap().unwrap();
+        let col_b = cards::get_column(&pool, &updated_b.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col_b.state_binding.as_deref(),
+            Some("in_progress"),
+            "the resume_roadmap goal must have actually been dispatched, not just counted"
+        );
+    }
+
     /// T2 pinning (pure): `worker_engine_allowed_for_ranked_dispatch` — the
     /// filter `select_worker_detailed` applies to its candidate list — must
     /// keep every worker when unrestricted (today's behavior, unchanged) and
@@ -11167,6 +11495,228 @@ mod tests {
             "a timed-out drain must not leave the goal silently in_progress"
         );
         assert_eq!(col.state_binding.as_deref(), Some("failed"));
+    }
+
+    /// Lane U / U2 (HARNESS_LOOP_LOG.md, "Lane G4 review" finding 2, HIGH):
+    /// before this fix, `drain_dispatched_goals` queried
+    /// `sessions.parent_session_id` exactly ONCE, before the poll loop — a
+    /// goal auto-dispatched mid-drain (the common `create_roadmap` shape:
+    /// "Remaining goals will dispatch automatically as dependencies
+    /// complete") was in neither the initial snapshot nor ever re-queried,
+    /// so it was never waited on AND never parked at the cap: the exact
+    /// "left silently InProgress" failure T3 exists to close, reintroduced
+    /// for every multi-root or dependency-chained roadmap.
+    ///
+    /// Goal A is dispatched (and stays `in_progress`, never completing)
+    /// before the drain starts. Goal B — standing in for a dependent
+    /// `promote_and_dispatch_dependents` auto-dispatches once an earlier
+    /// goal finishes — is dispatched from a [`DrainIterationHook`] on the
+    /// loop's SECOND iteration, deterministically: no sleeping background
+    /// task racing the poll loop's own timing, no wall-clock margin to get
+    /// wrong under load. Both goals deliberately never reach a terminal
+    /// state, so the drain can only return by hitting the cap. The drain
+    /// must discover B (created after the loop already started) and park it
+    /// at the cap alongside A, not ignore it because it didn't exist when
+    /// the loop began.
+    ///
+    /// Pre-fix repro: temporarily stubbing `drain_dispatched_goals_with` to
+    /// snapshot `descendant_session_ids` once before the loop (the pre-U2
+    /// shape) makes this panic at `"assertion `left == right` failed: ...
+    /// left: DrainSummary { finished: 0, timed_out: 1 }\n right:
+    /// DrainSummary { finished: 0, timed_out: 2 }"` — goal B never gets
+    /// discovered, so it is never parked and its card is left `in_progress`
+    /// after the drain returns.
+    #[tokio::test]
+    async fn drain_dispatched_goals_waits_for_a_goal_dispatched_mid_drain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        // Goal A: in_progress for the whole drain, never completes.
+        let child_a = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: fake a".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card_a = setup_goal_in_state(&pool, "in_progress", 0).await;
+        attach_worker_session_to_card(&pool, &card_a.id, &child_a.id).await;
+
+        // Deterministic mid-drain dispatch: on the loop's 2nd iteration
+        // (never sooner — the 1st iteration only discovers goal A), create
+        // goal B and stash it for the assertions below. Goal B never
+        // completes either.
+        let card_b_cell: Arc<tokio::sync::Mutex<Option<cards::Card>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+        let sm_bg = sm.clone();
+        let pool_bg = pool.clone();
+        let coordinator_id_bg = coordinator.id.clone();
+        let tmp_path = tmp.path().to_path_buf();
+        let card_b_cell_hook = card_b_cell.clone();
+        let mut iteration = 0u32;
+        let hook: DrainIterationHook = Box::new(move || {
+            iteration += 1;
+            let fire = iteration == 2;
+            let sm_bg = sm_bg.clone();
+            let pool_bg = pool_bg.clone();
+            let coordinator_id_bg = coordinator_id_bg.clone();
+            let tmp_path = tmp_path.clone();
+            let card_b_cell_hook = card_b_cell_hook.clone();
+            Box::pin(async move {
+                if !fire {
+                    return;
+                }
+                let child_b = sm_bg
+                    .create_session_with_parent(
+                        Some(&coordinator_id_bg),
+                        tmp_path,
+                        "Goal: fake b".to_string(),
+                        SessionType::SubAgent,
+                        GooseMode::Auto,
+                    )
+                    .await
+                    .unwrap();
+                let card_b = setup_goal_in_state(&pool_bg, "in_progress", 0).await;
+                attach_worker_session_to_card(&pool_bg, &card_b.id, &child_b.id).await;
+                *card_b_cell_hook.lock().await = Some(card_b);
+            })
+        });
+
+        // The cap only needs to cover a handful of poll iterations — nothing
+        // here depends on wall-clock scheduling of a separate task.
+        let cap = std::time::Duration::from_millis(500);
+        let summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator.id,
+            cap,
+            std::time::Duration::from_millis(10),
+            |_, _| {},
+            Some(hook),
+        )
+        .await
+        .unwrap();
+
+        let card_b = card_b_cell.lock().await.clone().unwrap();
+
+        assert_eq!(
+            summary,
+            DrainSummary {
+                finished: 0,
+                timed_out: 2
+            },
+            "the mid-drain goal must be tracked and parked too, not just the one already \
+             dispatched when the drain started"
+        );
+
+        let updated_b = cards::get_card(&pool, &card_b.id).await.unwrap().unwrap();
+        let col_b = cards::get_column(&pool, &updated_b.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col_b.state_binding.as_deref(),
+            Some("in_progress"),
+            "a goal dispatched mid-drain must be tracked and parked, not silently left \
+             in_progress"
+        );
+    }
+
+    /// Lane U / U3 (HARNESS_LOOP_LOG.md, "Lane G4 review" finding 3): the
+    /// immediate park pass `CliSession::drain_dispatched_goals` runs when a
+    /// SIGTERM/SIGINT interrupts the drain — no polling, no sleep, one
+    /// snapshot. Pinned directly at this level (rather than through the
+    /// actual `tokio::signal` wiring in `crates/goose-cli/src/session/mod.rs`)
+    /// because raising a real signal from a unit test would race every other
+    /// test in this binary over process-wide signal delivery.
+    #[tokio::test]
+    async fn park_dispatched_goals_now_parks_every_still_running_goal_immediately() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        let child_running = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: running".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card_running = setup_goal_in_state(&pool, "in_progress", 0).await;
+        attach_worker_session_to_card(&pool, &card_running.id, &child_running.id).await;
+
+        let child_done = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: done".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card_done = setup_goal_in_state(&pool, "complete", 0).await;
+        attach_worker_session_to_card(&pool, &card_done.id, &child_done.id).await;
+
+        let start = std::time::Instant::now();
+        let summary = park_dispatched_goals_now(&pool, &coordinator.id)
+            .await
+            .unwrap();
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "must not poll or sleep: took {:?}",
+            start.elapsed()
+        );
+        assert_eq!(
+            summary,
+            DrainSummary {
+                finished: 1,
+                timed_out: 1
+            }
+        );
+
+        let updated = cards::get_card(&pool, &card_running.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "a running goal must be parked immediately on a shutdown signal, not left \
+             in_progress"
+        );
     }
 
     #[tokio::test]
