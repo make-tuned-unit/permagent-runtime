@@ -96,22 +96,30 @@ impl Drop for CancelTokenGuard {
 
 const DEFAULT_LIST_LIMIT: usize = 10;
 
-// Cost-aware routing for roadmap decomposition (#249).
+// Planner routing for roadmap decomposition (#249, re-ruled 2026-09-09 — Round
+// C Lane Z3, `HARNESS_LOOP_LOG.md` Lane M6: the OLD default below routed the
+// PLAN to `ollama/qwen2.5:7b`, the cheapest model configured, which is the
+// exact opposite of the ruling "plan on the strongest model, work on the
+// cheapest graduated one". Lane M6 traced 0/9 landed roadmaps that round to
+// ungrounded acceptance criteria a cheap, ineligible planner wrote.
 //
-// Decomposition (objective -> dependency-ordered goals) is a structured,
-// low-creativity task that a cheap/local model handles well. We route it to a
-// cheaper model by default — mirroring the #360 tiered cost model — and escalate
-// to the session's default (strong) provider only if the cheap pass fails to
-// produce parseable goals. The route is config-surfaced, not hidden:
-//   ORCHESTRATOR_DECOMPOSITION_PROVIDER  (default: "ollama")
-//   ORCHESTRATOR_DECOMPOSITION_MODEL     (default: "qwen2.5:7b")
-// Set either to an empty string to disable cheap routing and always use the
-// session provider. A configured candidate must be the trusted harness route
-// (or gain an explicit benchmark-backed graduation record in a future loop);
-// knowledge-table scores are only heuristics. Unrated or below-floor local
-// models remain valid mechanical workers but do not own the roadmap pass.
-const DEFAULT_DECOMPOSITION_PROVIDER: &str = "ollama";
-const DEFAULT_DECOMPOSITION_MODEL: &str = "qwen2.5:7b";
+// There is no compiled-in default provider/model here anymore. Precedence
+// (`resolve_decomposition_provider`, `capability_directory::resolve_planner`):
+//   1. ORCHESTRATOR_DECOMPOSITION_PROVIDER/MODEL — an explicit pin, kept for
+//      back-compat and treated as an ORCHESTRATE-role pin.
+//   2. PERMAGENT_ROLE_ORCHESTRATE_PROVIDER/MODEL — the ordinary role pin.
+//   3. The capability directory's planner() — strongest model above the
+//      ORCHESTRATE floor (0.80), cost only breaking a near-tie inside
+//      `capability_directory::PLANNER_STRENGTH_BAND`.
+//   4. `None` — the session coordinator runs it, with a VISIBLE reason
+//      (`tracing::info`, not a silent `warn`).
+// Either pin key set to an empty string disables cheap/pinned routing for
+// that level and falls through to the next. A pin still must clear the
+// ORCHESTRATE floor or carry graduated evidence
+// (`capability_directory::pin_clears_orchestrate_floor`) — this replaces the
+// old "must be the compiled TrustedDefault" gate for THIS path only; the
+// session-coordinator gate (`config::model_roles::assess_harness_coordinator`)
+// is unchanged and serves a different, narrower purpose (see its doc comment).
 
 /// Failure mode of a single decomposition pass, used to decide escalation.
 enum DecompositionError {
@@ -1640,52 +1648,119 @@ impl OrchestratorClient {
         ))
     }
 
-    /// Resolve the cheaper provider used for the roadmap decomposition pass
-    /// (#249). Returns `None` when cheap routing is disabled (empty config) or
-    /// the cheap provider can't be built — callers then use the default
-    /// session provider, so this never blocks decomposition.
-    async fn resolve_decomposition_provider(&self) -> Option<Arc<dyn Provider>> {
+    /// Resolve the provider that PLANS the roadmap decomposition — the
+    /// 2026-09-09 ruling ("plan on the strongest model, work on the cheapest
+    /// graduated one"), see the module-level comment above for the full
+    /// precedence and rationale. `None` means the caller falls through to the
+    /// session coordinator — always with a visible `tracing::info` reason,
+    /// never a silent `warn`.
+    /// Resolve the planner ROUTE (not yet a live provider): the same
+    /// precedence and eligibility gate `resolve_decomposition_provider` turns
+    /// into a `Provider`, shared with the roadmap-creation receipt/tracing
+    /// line so both read the exact same decision — no second source of
+    /// truth. `None` route means the session coordinator; `reason` is always
+    /// a visible string, never only a `tracing::warn`.
+    async fn resolve_planner_route(
+        &self,
+    ) -> (
+        Option<crate::cost_router::RoleModel>,
+        crate::cost_router::PlannerReason,
+    ) {
         let config = Config::global();
-        let provider_name = config
-            .get_param::<String>("ORCHESTRATOR_DECOMPOSITION_PROVIDER")
-            .unwrap_or_else(|_| DEFAULT_DECOMPOSITION_PROVIDER.to_string());
-        let model_name = config
-            .get_param::<String>("ORCHESTRATOR_DECOMPOSITION_MODEL")
-            .unwrap_or_else(|_| DEFAULT_DECOMPOSITION_MODEL.to_string());
+        let read_pin = |provider_key: &str, model_key: &str| {
+            let provider = config
+                .get_param::<String>(provider_key)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let model = config
+                .get_param::<String>(model_key)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            match (provider, model) {
+                (Some(provider), Some(model)) => {
+                    Some(crate::cost_router::RoleModel { provider, model })
+                }
+                _ => None,
+            }
+        };
+        let decomposition_pin = read_pin(
+            "ORCHESTRATOR_DECOMPOSITION_PROVIDER",
+            "ORCHESTRATOR_DECOMPOSITION_MODEL",
+        );
+        let role_pin =
+            crate::cost_router::role_model(crate::cost_router::WorkflowRole::Orchestrate);
 
-        // Explicit opt-out: empty provider/model disables cheap routing.
-        if provider_name.trim().is_empty() || model_name.trim().is_empty() {
-            return None;
+        let available = crate::cost_router::discover_available_models_async().await;
+        let directory = crate::cost_router::CapabilityDirectory::build(&available);
+
+        let (route, reason) =
+            crate::cost_router::resolve_planner(decomposition_pin, role_pin, &directory);
+
+        let Some(rm) = route else {
+            return (None, reason);
+        };
+
+        // A PIN (either level) still must clear the ORCHESTRATE floor or carry
+        // graduated evidence — this replaces the old "must be the compiled
+        // TrustedDefault" gate for this path only (see the module comment;
+        // `config::model_roles::assess_harness_coordinator` is unchanged and
+        // serves the session-coordinator gate, a different, narrower purpose).
+        if matches!(reason, crate::cost_router::PlannerReason::Pinned { .. })
+            && !crate::cost_router::pin_clears_orchestrate_floor(
+                &rm.provider,
+                &rm.model,
+                &directory,
+            )
+        {
+            return (
+                None,
+                crate::cost_router::PlannerReason::SessionFallback {
+                    reason: format!(
+                        "pinned planner {}/{} is unrated/below the ORCHESTRATE floor",
+                        rm.provider, rm.model
+                    ),
+                },
+            );
         }
 
-        let eligibility = crate::config::assess_harness_coordinator(&provider_name, &model_name);
-        if !eligibility.is_eligible() {
-            tracing::warn!(
+        (Some(rm), reason)
+    }
+
+    /// Resolve the provider that PLANS the roadmap decomposition — the
+    /// 2026-09-09 ruling ("plan on the strongest model, work on the cheapest
+    /// graduated one"), see the module-level comment above for the full
+    /// precedence and rationale. `None` means the caller falls through to the
+    /// session coordinator — always with a visible `tracing::info` reason,
+    /// never a silent `warn`.
+    async fn resolve_decomposition_provider(&self) -> Option<Arc<dyn Provider>> {
+        let (route, reason) = self.resolve_planner_route().await;
+
+        let Some(rm) = route else {
+            tracing::info!(
                 target: "permagentd::orchestrator",
-                provider = %provider_name,
-                model = %model_name,
-                reason = eligibility.reason(),
-                "Skipping ungraduated roadmap decomposition model; using the session coordinator"
+                reason = %reason.describe(),
+                "roadmap decomposition: no eligible planner — using the session coordinator",
             );
             return None;
-        }
+        };
 
-        match providers::create_with_named_model(&provider_name, &model_name, Vec::new()).await {
-            Ok(provider) => {
-                tracing::debug!(
-                    target: "permagentd::orchestrator",
-                    "Routing roadmap decomposition to cheap model {}/{}",
-                    provider_name,
-                    model_name
-                );
-                Some(provider)
-            }
+        tracing::info!(
+            target: "permagentd::orchestrator",
+            planner = %format!("{}/{}", rm.provider, rm.model),
+            reason = %reason.describe(),
+            "roadmap decomposition: planner selected",
+        );
+
+        match providers::create_with_named_model(&rm.provider, &rm.model, Vec::new()).await {
+            Ok(provider) => Some(provider),
             Err(e) => {
                 tracing::warn!(
                     target: "permagentd::orchestrator",
-                    "Cheap decomposition provider {}/{} unavailable ({}); using default provider",
-                    provider_name,
-                    model_name,
+                    "Planner provider {}/{} unavailable ({}); using the session coordinator",
+                    rm.provider,
+                    rm.model,
                     e
                 );
                 None
@@ -4938,14 +5013,15 @@ impl OrchestratorClient {
             .map_err(|e| format!("Could not load decomposition session: {e}"))?;
         let manager = Arc::clone(&self.context.session_manager);
 
-        // Cost-aware routing (#249): try a cheaper/local model first, escalate
-        // to the session's default provider only if the cheap pass fails.
+        // Planner routing (#249, re-ruled 2026-09-09 — see the module comment
+        // above): try the resolved planner first, escalate to the session's
+        // default provider only if that pass fails.
         let goals = match self.resolve_decomposition_provider().await {
-            Some(cheap) => {
-                match run_decomposition(&cheap, &manager, &session, system, &user_message).await {
+            Some(planner) => {
+                match run_decomposition(&planner, &manager, &session, system, &user_message).await {
                     Ok(g) => DecompositionOutcome::Goals(g),
-                    Err(cheap_err) => {
-                        let reason = match &cheap_err {
+                    Err(planner_err) => {
+                        let reason = match &planner_err {
                             DecompositionError::Provider(e) => e.clone(),
                             DecompositionError::Unparseable { err, .. } => {
                                 format!("unparseable output ({})", err)
@@ -4953,7 +5029,7 @@ impl OrchestratorClient {
                         };
                         tracing::warn!(
                             target: "permagentd::orchestrator",
-                            "Cheap decomposition failed ({}); escalating to default provider",
+                            "Planner decomposition failed ({}); escalating to default provider",
                             reason
                         );
                         let default = self.get_provider().await?;
@@ -4993,6 +5069,34 @@ impl OrchestratorClient {
         // Validate via topological sort
         let order = goal_state::topological_order(&goals).map_err(|e| e.to_string())?;
 
+        // The planner + worker routing receipt (D2, 2026-09-09 ruling): who
+        // planned this roadmap and why, plus which model each other role
+        // currently routes to — read from the SAME directory-derived map
+        // dispatch uses, so this can never disagree with what actually runs.
+        let (planner_route, planner_reason) = self.resolve_planner_route().await;
+        let planner_label = planner_route
+            .as_ref()
+            .map(|rm| format!("{}/{}", rm.provider, rm.model))
+            .unwrap_or_else(|| "session".to_string());
+        let worker_map = crate::cost_router::derived_role_map().await;
+        let workers_label = crate::cost_router::WorkflowRole::all()
+            .iter()
+            .filter(|r| **r != crate::cost_router::WorkflowRole::Orchestrate)
+            .filter_map(|r| {
+                worker_map
+                    .get(*r)
+                    .map(|(rm, _)| format!("{}={}/{}", r.as_str(), rm.provider, rm.model))
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        tracing::info!(
+            target: "permagentd::orchestrator",
+            planner = %planner_label,
+            reason = %planner_reason.describe(),
+            workers = %workers_label,
+            "roadmap created",
+        );
+
         // Leave a durable proposal record and put the actual consent question
         // in the Decision Inbox. Keeping the record on the project survives a
         // daemon restart; the create path still requires the answered decision
@@ -5020,6 +5124,11 @@ impl OrchestratorClient {
                     "roadmap_approval": {
                         "proposal_hash": proposal_hash,
                         "minting_session_id": session_id,
+                        "planner": {
+                            "model": planner_label,
+                            "reason": planner_reason.describe(),
+                        },
+                        "workers": workers_label,
                     }
                 }),
                 ..Default::default()
@@ -11202,6 +11311,33 @@ mod tests {
     use super::*;
     use crate::conversation::message::MessageContent;
     use rmcp::model::Role;
+
+    /// D4 (Lane Z3, Round C): the OLD compiled-in cheap decomposition default
+    /// (`ollama`/`qwen2.5:7b`, #249) is gone from the source — the planner is
+    /// resolved from the capability directory (`resolve_planner_route`), never
+    /// a hardcoded cheap model. Source-grep, mirroring `derived.rs`'s
+    /// `main_loop_model_path_never_consults_the_derived_map` convention.
+    #[test]
+    fn decomposition_default_is_no_longer_qwen() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/agents/platform_extensions/orchestrator.rs");
+        let src = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !src.contains("qwen2.5:7b"),
+            "the compiled-in cheap decomposition default must be gone from {}",
+            path.display()
+        );
+        assert!(
+            !src.contains("DEFAULT_DECOMPOSITION_PROVIDER")
+                && !src.contains("DEFAULT_DECOMPOSITION_MODEL"),
+            "the DEFAULT_DECOMPOSITION_* consts must be gone from {}",
+            path.display()
+        );
+        // Positive control: the planner precedence IS present, so the negative
+        // assertions above are not vacuous (e.g. from a botched find/replace).
+        assert!(src.contains("resolve_planner_route"));
+        assert!(src.contains("CapabilityDirectory::build"));
+    }
 
     #[test]
     fn exact_session_refs_distinguish_persisted_ids_from_legacy_locators() {

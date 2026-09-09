@@ -39,6 +39,7 @@ pub mod assess;
 pub mod best_of_n;
 pub mod budget;
 pub mod cache;
+pub mod capability_directory;
 pub mod cheap;
 pub mod delegate;
 pub mod derived;
@@ -72,6 +73,11 @@ pub use cache::{
     may_swap_main_loop_model, model_change_breaks_cache, prefix_is_cache_stable, ModelKey,
     PrefixSegment, CANONICAL_PREFIX, HARNESS_PREFIX,
 };
+pub use capability_directory::{
+    billing_class_for, evidence_excludes_role, pin_clears_orchestrate_floor, resolve_planner,
+    validate_graduation, CapabilityCard, CapabilityDirectory, CardSource, PlannerReason,
+    RoleEvidence, StrengthProfile, MICRO_SUITE_PASS_FLOOR, PLANNER_STRENGTH_BAND, SCHEMA_VERSION,
+};
 pub use cheap::{
     build_ladder, default_anchor, discover_priced_candidates, is_key_configured, load_ladder,
     reference_cost_for, CheapCandidate, CheapLadder, PricedCandidate,
@@ -82,8 +88,9 @@ pub use delegate::{
     DelegateSource, EscalationRefusal, KEY_ALLOW_ESCALATION,
 };
 pub use derived::{
-    config_key_affects_derived_map, derive_role_map, derived_role_map, invalidate_derived_role_map,
-    model_routing_receipt, DerivedRoleMap, Provenance, RoleSource, DERIVED_ROLE_MAP_TTL,
+    config_key_affects_derived_map, derive_role_map, derive_role_map_from_directory,
+    derived_role_map, invalidate_derived_role_map, model_routing_receipt, DerivedRoleMap,
+    Provenance, RoleSource, DERIVED_ROLE_MAP_TTL,
 };
 pub use escalation::{
     build_handoff, decide_escalation, load_max_escalations, max_escalations_from,

@@ -12,25 +12,25 @@
 //! candidate is denied outright, never chosen as a fallback, no matter how
 //! cheap.
 //!
-//! ## Not yet wired to real selection — on purpose
+//! ## Not yet wired to real dispatch — on purpose
 //!
-//! There is no capability-card / graduation registry in-tree today
-//! ([`super::packs`] and [`super::role_map`] carry provider/model PINS, not
-//! a graduated/ungraduated verdict). Building that registry is
-//! `CODING_HARNESS_EXCELLENCE_ITERATION_DAG.md`'s **X-grad** node ("a
-//! capability card per provider/model built from retained eval results ...
-//! consulted at dispatch: ungraduated coordinators are refused, graduated
-//! mechanical roles allowed"), scheduled for Round C+ — after this lane.
-//! Wiring [`choose_worker`] into a real dispatch path now would mean
-//! inventing that registry ad hoc inside a cost-routing lane, which is
-//! exactly the kind of scope creep the lane brief asks to avoid ("wire it to
-//! real selection only if a clean seam exists"). No such seam exists yet, so
-//! this stays a pure decision function over caller-supplied candidates —
-//! **TODO(X-grad)**: once the real capability card exists, build its
-//! [`RoutingCandidate`] rows from it and call [`choose_worker`] at dispatch,
-//! rather than reimplementing selection there.
+//! The capability-card / graduation registry now exists
+//! ([`super::capability_directory::CapabilityCard`], Round C Lane Z3) and
+//! [`RoutingCandidate`] has a [`From`] impl for it below — the TODO(X-grad)
+//! that used to sit here is resolved at that ONE seam. `choose_worker` itself
+//! is still NOT wired into a real dispatch path: no clean seam exists yet
+//! (real dispatch routes by [`super::recommend::WorkflowRole`] via
+//! [`super::derived::derive_role_map`] and
+//! [`super::capability_directory::CapabilityDirectory::planner`], not by
+//! [`FixtureCapability`]), and rewiring it would be exactly the scope
+//! creep the lane briefs ask to avoid ("wire it to real selection only if a
+//! clean seam exists"). This stays a pure decision function over
+//! caller-supplied candidates, now buildable from real cards.
 
 use serde::{Deserialize, Serialize};
+
+use super::capability_directory::CapabilityCard;
+use super::recommend::WorkflowRole;
 
 /// A bundled eval fixture's routing-relevant capability need. Mirrors
 /// `crates/permagent-eval/tasks/*/task.yaml`'s `category` field (free text
@@ -95,6 +95,33 @@ pub struct RoutingCandidate {
     /// work, not just its base capability — a `Hard` fixture requires both.
     /// Ignored for a [`RoutingDifficulty::Standard`] fixture.
     pub graduated_for_hard: bool,
+}
+
+impl From<&CapabilityCard> for RoutingCandidate {
+    /// TODO(X-grad) resolved at this seam: build a routing row from a real
+    /// capability card. `capability` is fixed to [`FixtureCapability::CodeEdit`]
+    /// and `graduated`/`graduated_for_hard` come from the card's EDIT-role
+    /// evidence — a card carries evidence for five [`WorkflowRole`]s, not
+    /// three [`FixtureCapability`] buckets, and EDIT ("can this model
+    /// correctly edit code") is the evidence every fixture capability here
+    /// ultimately measures. A caller that needs a `LanguageIdiom`/
+    /// `HarnessLever` row clones the result with `.capability` overridden.
+    /// Not wired into real dispatch — see the module doc.
+    fn from(card: &CapabilityCard) -> Self {
+        let edit = card.role(WorkflowRole::Edit);
+        let graduated = edit.map(|e| e.graduated()).unwrap_or(false);
+        RoutingCandidate {
+            name: format!("{}/{}", card.provider, card.model),
+            graduated,
+            capability: FixtureCapability::CodeEdit,
+            cost_per_1k_tokens: card.blended_cost_per_mtok() / 1000.0,
+            graduated_for_hard: graduated
+                && card.strengths.orchestration
+                    >= WorkflowRole::Orchestrate
+                        .capability_floor()
+                        .orchestration_min,
+        }
+    }
 }
 
 /// Pure: choose the cheapest GRADUATED candidate for a fixture.
@@ -412,5 +439,85 @@ mod tests {
                 "{category}: must not pick the cheaper ungraduated option"
             );
         }
+    }
+
+    // ── From<&CapabilityCard> for RoutingCandidate (TODO(X-grad) seam) ──────
+
+    fn card_with_edit_graduation(
+        provider: &str,
+        model: &str,
+        orchestration: f64,
+        graduated: bool,
+    ) -> super::super::capability_directory::CapabilityCard {
+        use super::super::capability_directory::{
+            CapabilityCard, CardSource, RoleEvidence, StrengthProfile,
+        };
+        let mut roles = std::collections::BTreeMap::new();
+        for r in WorkflowRole::all() {
+            roles.insert(r.as_str().to_string(), RoleEvidence::default());
+        }
+        if graduated {
+            roles.insert(
+                WorkflowRole::Edit.as_str().to_string(),
+                RoleEvidence::new(
+                    true,
+                    true,
+                    Some(0.95),
+                    Some(0.98),
+                    vec!["run-1".to_string()],
+                    None,
+                    None,
+                    Some(chrono::Utc::now().date_naive()),
+                    chrono::Utc::now().date_naive(),
+                )
+                .unwrap(),
+            );
+        }
+        CapabilityCard {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            display_name: model.to_string(),
+            family: provider.to_string(),
+            billing_class: crate::config::agent_identity::WorkerBillingClass::PaidApi,
+            is_local: false,
+            context_window: 128_000,
+            input_usd_per_mtok: 1.0,
+            output_usd_per_mtok: 4.0,
+            strengths: StrengthProfile {
+                orchestration,
+                edit_format: 0.95,
+                mechanical: true,
+                review: true,
+            },
+            roles,
+            source: CardSource::KnowledgeBase,
+        }
+    }
+
+    #[test]
+    fn routing_candidate_from_capability_card_reads_edit_graduation() {
+        let ungraduated = card_with_edit_graduation("openai", "gpt-5.6-mini", 0.60, false);
+        let rc: RoutingCandidate = (&ungraduated).into();
+        assert_eq!(rc.name, "openai/gpt-5.6-mini");
+        assert!(!rc.graduated);
+        assert_eq!(rc.capability, FixtureCapability::CodeEdit);
+        assert!(!rc.graduated_for_hard);
+
+        let graduated_strong =
+            card_with_edit_graduation("anthropic", "claude-opus-4-8", 0.886, true);
+        let rc: RoutingCandidate = (&graduated_strong).into();
+        assert!(rc.graduated);
+        assert!(
+            rc.graduated_for_hard,
+            "graduated AND above the ORCHESTRATE floor must also clear Hard"
+        );
+        // input(1.0) + output(4.0) = 5.0 $/Mtok blended, / 1000 = $/1k tokens.
+        assert!((rc.cost_per_1k_tokens - 0.005).abs() < 1e-9);
+
+        // Graduated but below the ORCHESTRATE floor: eligible, not Hard-graduated.
+        let graduated_weak = card_with_edit_graduation("zai", "glm-4.5-air", 0.62, true);
+        let rc: RoutingCandidate = (&graduated_weak).into();
+        assert!(rc.graduated);
+        assert!(!rc.graduated_for_hard);
     }
 }
