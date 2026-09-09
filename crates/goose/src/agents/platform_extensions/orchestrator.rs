@@ -1370,6 +1370,19 @@ pub(crate) struct HeadlessDispatchPolicy {
     /// (`goal_advance`'s `worker` argument) is always honoured regardless —
     /// this flag only narrows the RANKED candidate pool.
     pub restrict_ranked_selection_to_internal_engine: bool,
+    /// Harness loop, Lane V2 — Jesse's ruling (HARNESS_LOOP_LOG.md "JESSE
+    /// RULING (2026-09-08 23:55): Tier-1 landing → option 3"): DEFAULT OFF,
+    /// read once from [`PERMAGENT_HEADLESS_AUTOLAND_ENV`] at install time
+    /// by [`install_dispatch_hook_for_headless_session`] — never re-read per
+    /// dispatch, and never set at all outside that one CLI-only installer.
+    /// `true` only when this exact env var was on for the process that
+    /// installed this policy; `handle_goal_completion` and
+    /// `auto_land_headless_goal` are the only readers, and both treat
+    /// `false` (the default, and the ONLY value a daemon process — which
+    /// never installs a [`HeadlessDispatchPolicy`] at all — can ever see) as
+    /// "leave the approve_review decision open for a human", byte-identical
+    /// to every pre-V2 headless run.
+    pub auto_land: bool,
 }
 
 /// The durable (non-session) half of a [`HeadlessDispatchPolicy`]: which
@@ -1388,10 +1401,27 @@ pub(crate) struct HeadlessDispatchPolicy {
 struct HeadlessDispatchPolicyConfig {
     coordinator_session_id: String,
     restrict_ranked_selection_to_internal_engine: bool,
+    auto_land: bool,
 }
 
 static HEADLESS_DISPATCH_POLICY_CONFIG: std::sync::OnceLock<HeadlessDispatchPolicyConfig> =
     std::sync::OnceLock::new();
+
+/// Whether headless auto-land ([`PERMAGENT_HEADLESS_AUTOLAND_ENV`]) is
+/// switched on for this process's installed headless dispatch policy
+/// (harness loop, Lane V2). `None` when no policy is installed at all (the
+/// daemon, an interactive session) — exactly the shape a caller must treat
+/// as "not headless", not as "off but headless". Exposed publicly (unlike
+/// [`current_headless_dispatch_policy`] itself) so `permagent-cli`'s
+/// post-drain summary can say plainly whether this run could land its own
+/// work, without needing its own copy of the policy-assembly logic.
+pub async fn headless_auto_land_status(
+    session_manager: &std::sync::Arc<crate::session::SessionManager>,
+) -> Option<bool> {
+    current_headless_dispatch_policy(session_manager)
+        .await
+        .map(|p| p.auto_land)
+}
 
 /// Build a fresh [`HeadlessDispatchPolicy`] from the installed headless
 /// config, re-fetching the coordinator's session on every call — never a
@@ -1412,6 +1442,7 @@ async fn current_headless_dispatch_policy(
         session_for_provider_fallback: session,
         restrict_ranked_selection_to_internal_engine: config
             .restrict_ranked_selection_to_internal_engine,
+        auto_land: config.auto_land,
     })
 }
 
@@ -2531,14 +2562,16 @@ pub(crate) async fn dispatch_goal_fn(
     let tracker_card_id = card_id.to_string();
     let tracker_project_id = card.project_id.clone();
     let tracker_pool = pool.clone();
-    // Harness loop, Lane V (V1): an owned copy of "was this dispatch reached
-    // through a headless Auto policy at all" — not the policy's own borrowed
-    // lifetime, which cannot cross into this `'static` task. `handle_goal_completion`
-    // uses this to decide whether it may even ATTEMPT to auto-land the goal;
-    // it never decides landing eligibility itself (see that function's own
-    // doc comment) and `policy: None` (every non-headless dispatch site,
-    // daemon included) always yields `false` here, unchanged.
-    let tracker_headless_auto_land = policy.is_some();
+    // Harness loop, Lane V (V1) / V2: an owned copy of "was this dispatch
+    // reached through a headless Auto policy with landing switched on" — not
+    // the policy's own borrowed lifetime, which cannot cross into this
+    // `'static` task. `handle_goal_completion` uses this to decide whether it
+    // may even ATTEMPT to auto-land the goal; it never decides landing
+    // eligibility itself (see that function's own doc comment) and
+    // `policy: None` (every non-headless dispatch site, daemon included), or
+    // a headless policy with `PERMAGENT_HEADLESS_AUTOLAND` off, always yields
+    // `false` here — byte-identical to V1's pre-V2 shape in both cases.
+    let tracker_headless_auto_land = policy.is_some_and(|p| p.auto_land);
     tokio::spawn(async move {
         if tracker_start_rx.await.is_err() {
             return;
@@ -4534,28 +4567,42 @@ impl OrchestratorClient {
         // below so the very first root-goal dispatch already sees a real
         // baseline, and the receipt is reported on this call's own result —
         // never a silent side effect.
-        let baseline_receipt =
-            match current_headless_dispatch_policy(&self.context.session_manager).await {
-                Some(_) => match project.root_path.as_deref() {
-                    Some(root) => goal_engine::ensure_headless_git_baseline(
-                        std::path::Path::new(root),
-                        &approval_decision_id,
+        let headless_policy = current_headless_dispatch_policy(&self.context.session_manager).await;
+        let baseline_receipt = if headless_policy.is_some() {
+            match project.root_path.as_deref() {
+                Some(root) => goal_engine::ensure_headless_git_baseline(
+                    std::path::Path::new(root),
+                    &approval_decision_id,
+                )
+                .await
+                .map(|sha| {
+                    let short: String = sha.chars().take(9).collect();
+                    format!(
+                        "\n\nNote: project '{}' had no git history — initialised one and \
+                             committed a baseline ({}) before dispatch, so worker isolation \
+                             can proceed.",
+                        project.name, short
                     )
-                    .await
-                    .map(|sha| {
-                        let short: String = sha.chars().take(9).collect();
-                        format!(
-                            "\n\nNote: project '{}' had no git history — initialised one and \
-                                 committed a baseline ({}) before dispatch, so worker isolation \
-                                 can proceed.",
-                            project.name, short
-                        )
-                    }),
-                    None => None,
-                },
+                }),
                 None => None,
             }
-            .unwrap_or_default();
+        } else {
+            None
+        }
+        .unwrap_or_default();
+        // Harness loop, Lane V2: say plainly whether a headless run can land
+        // its own work — so a transcript shows the policy Jesse ruled on
+        // (HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55): Tier-1
+        // landing → option 3") rather than leaving the coordinator to
+        // discover it only when an approve_review decision stays open (or
+        // does not) later. Absent for every non-headless call (no policy at
+        // all — the daemon, an interactive session) exactly as before.
+        let auto_land_notice = headless_policy.as_ref().map(|p| {
+            format!(
+                "\n\nHeadless auto-land is {} for this run (PERMAGENT_HEADLESS_AUTOLAND).",
+                if p.auto_land { "ON" } else { "off" }
+            )
+        });
 
         let budget_task_id = self
             .context
@@ -4644,14 +4691,15 @@ impl OrchestratorClient {
             "Roadmap created: {} goal cards in project '{}'. \
              {} root goal(s) dispatched to workers. \
              Remaining goals will dispatch automatically as dependencies complete.\n\n\
-             {}{}{}\n\n\
+             {}{}{}{}\n\n\
              Use pause_roadmap to stop auto-dispatch. Use resume_roadmap to continue.",
             materialized.created_ids.len(),
             materialized.project_name,
             dispatched,
             goal_id_listing,
             wait_notice,
-            baseline_receipt
+            baseline_receipt,
+            auto_land_notice.unwrap_or_default()
         ))]))
     }
 
@@ -5341,6 +5389,25 @@ fn headless_worker_restricted_to_internal_from_env() -> bool {
         .unwrap_or(false)
 }
 
+/// Env switch for headless Auto landing (harness loop, Lane V2 — Jesse's
+/// ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55): Tier-1
+/// landing → option 3"). DEFAULT OFF: accepts `"1"`/`"true"`/`"yes"`/`"on"`
+/// (case-insensitive); `"0"`/`"false"`/`"no"`/`"off"` and anything else,
+/// including unset, keep it off. Read once by
+/// [`install_dispatch_hook_for_headless_session`] at install time (same
+/// idiom as [`PERMAGENT_HEADLESS_WORKER_ENV`]) and surfaced on
+/// [`HeadlessDispatchPolicy::auto_land`] — the daemon never installs a
+/// headless policy at all, so this env var can never affect it, whatever its
+/// process environment happens to carry.
+pub const PERMAGENT_HEADLESS_AUTOLAND_ENV: &str = "PERMAGENT_HEADLESS_AUTOLAND";
+
+fn headless_auto_land_from_env() -> bool {
+    match std::env::var(PERMAGENT_HEADLESS_AUTOLAND_ENV) {
+        Ok(v) => matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Err(_) => false,
+    }
+}
+
 /// Install the CLI's OWN headless dispatch hook (harness loop, Lane T / T1 +
 /// T2) — distinct from [`install_dispatch_hook`], the daemon's, and NEVER
 /// called from the daemon. `permagent run` calls this instead when a
@@ -5362,6 +5429,11 @@ fn headless_worker_restricted_to_internal_from_env() -> bool {
 ///     `PERMAGENT_HEADLESS_WORKER=roster` opts back into the full roster. An
 ///     explicitly requested worker (`goal_advance`'s `worker` argument) is
 ///     always honoured regardless.
+///   - Lane V2: [`HeadlessDispatchPolicy::auto_land`] is read ONCE, here,
+///     from `PERMAGENT_HEADLESS_AUTOLAND` (default off) — never re-read per
+///     dispatch. It is the sole source of the `auto_land_allowed` flag
+///     `goal_transition::check_proof`'s Tier-1 arm requires before it will
+///     ever accept `decisions::ACTOR_AUTO_LAUNCH`.
 ///
 /// Also populates `context.session` with the SAME fetched session, so
 /// `dispatch_goal_fn`'s `task.parent_session_id` is set — the durable link a
@@ -5386,9 +5458,11 @@ pub fn install_dispatch_hook_for_headless_session(
     coordinator_session_id: String,
 ) {
     let restrict_to_internal_engine = headless_worker_restricted_to_internal_from_env();
+    let auto_land = headless_auto_land_from_env();
     let _ = HEADLESS_DISPATCH_POLICY_CONFIG.set(HeadlessDispatchPolicyConfig {
         coordinator_session_id: coordinator_session_id.clone(),
         restrict_ranked_selection_to_internal_engine: restrict_to_internal_engine,
+        auto_land,
     });
     let _ = GOAL_DISPATCH_HOOK.set(Box::new(move |card_id: String| {
         let session_manager = std::sync::Arc::clone(&session_manager);
@@ -6668,17 +6742,22 @@ async fn record_decision_create_failure(
 ///
 /// Gracefully no-ops if the card is no longer in InProgress (manual intervention).
 ///
-/// `headless_auto_land`: harness loop, Lane V (V1). `true` only for a goal
-/// dispatched through an installed [`HeadlessDispatchPolicy`] (the real
-/// completion tracker in `dispatch_goal_fn` passes `policy.is_some()`; every
-/// other caller — daemon reconciliation, every existing test — passes
-/// `false`, byte-identical to this function's behavior before V1). When
-/// `true` AND the goal's own worker session produced a durable, deterministic
-/// verifier pass, [`auto_land_headless_goal`] attempts to land the work the
-/// instant its `approve_review` decision is filed, the same way a human's
-/// approval would — see that function's doc comment for why this can never
-/// relax G4 (durable-verifier-pass-before-landing). `false` (the default)
-/// leaves the decision open for a human exactly as before this lane.
+/// `headless_auto_land`: harness loop, Lane V (V1) / V2. `true` only for a
+/// goal dispatched through an installed [`HeadlessDispatchPolicy`] with
+/// [`HeadlessDispatchPolicy::auto_land`] on (the real completion tracker in
+/// `dispatch_goal_fn` passes `policy.is_some_and(|p| p.auto_land)` — V1
+/// originally passed `policy.is_some()`; V2 added the
+/// `PERMAGENT_HEADLESS_AUTOLAND` gate per Jesse's ruling, HARNESS_LOOP_LOG.md
+/// "JESSE RULING (2026-09-08 23:55): Tier-1 landing → option 3"); every other
+/// caller — daemon reconciliation, every existing test — passes `false`,
+/// byte-identical to this function's behavior before V1). When `true` AND
+/// the goal's own worker session produced a durable, deterministic verifier
+/// pass, [`auto_land_headless_goal`] attempts to land the work the instant
+/// its `approve_review` decision is filed, the same way a human's approval
+/// would — see that function's doc comment for why this can never relax G4
+/// (durable-verifier-pass-before-landing) or the Tier-1 gate itself
+/// (`goal_transition::check_proof`). `false` (the default) leaves the
+/// decision open for a human exactly as before this lane.
 pub async fn handle_goal_completion(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
@@ -6790,10 +6869,33 @@ pub async fn handle_goal_completion(
                     let folded = super::review_fanout::run_parallel_reviews(&card).await;
                     detail = super::review_fanout::append_to_detail(&detail, &folded);
                 }
-                let payload = match evidence.and_then(format_dispatch_evidence_brief) {
+                let mut payload = match evidence.and_then(format_dispatch_evidence_brief) {
                     Some(proof) => serde_json::json!({ "completion_check": proof }),
                     None => serde_json::json!({}),
                 };
+                // Harness loop, Lane V2: stamp the coordinator session onto
+                // the decision BEFORE it is ever answered, reusing R2's
+                // `minting_session_id` binding — this is the only place that
+                // ever writes this field, so `check_proof`'s Tier-1 arm can
+                // later confirm an `ACTOR_AUTO_LAUNCH` answer is being
+                // consumed by the exact session it was minted for, not some
+                // other headless session in the same process. Read directly
+                // from the installed config (never re-derived from `policy`,
+                // which does not cross into this detached tracker task) —
+                // `headless_auto_land` is only ever `true` when this exact
+                // config is the one that produced it, and every
+                // `handle_goal_completion` test passes `headless_auto_land:
+                // false`, so this global is never touched from a test.
+                let coordinator_session_id = if headless_auto_land {
+                    HEADLESS_DISPATCH_POLICY_CONFIG
+                        .get()
+                        .map(|c| c.coordinator_session_id.clone())
+                } else {
+                    None
+                };
+                if let Some(session_id) = coordinator_session_id.as_deref() {
+                    payload["minting_session_id"] = serde_json::json!(session_id);
+                }
                 // The goal has already moved to Review — a failure to surface
                 // it in the inbox must not fail (or retry) the completion, but
                 // it MUST be visible: retry once, then error-log + durable
@@ -6818,7 +6920,14 @@ pub async fn handle_goal_completion(
                         // attempts this — every other caller passes `false`
                         // and the decision stays open for a human, unchanged.
                         if headless_auto_land {
-                            auto_land_headless_goal(pool, &decision.id, &card).await;
+                            auto_land_headless_goal(
+                                pool,
+                                &decision.id,
+                                &card,
+                                headless_auto_land,
+                                coordinator_session_id.as_deref(),
+                            )
+                            .await;
                         }
                     }
                     Err(e) => {
@@ -6947,10 +7056,22 @@ pub async fn handle_goal_completion(
 /// logged and simply leaves the decision (or the goal) wherever it already
 /// was — never a panic, never a retry loop; the ordinary Decision Inbox is
 /// always the fallback.
+///
+/// `auto_land_allowed` / `calling_session_id` (harness loop, Lane V2 —
+/// Jesse's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55):
+/// Tier-1 landing → option 3"): threaded straight through to
+/// [`decisions_effects::apply_decision_effect_with_auto_land`], which threads
+/// them into `goal_transition::check_proof`'s Tier-1 arm — the ONLY place
+/// [`decisions::ACTOR_AUTO_LAUNCH`] can ever satisfy that gate. This function
+/// still only decides WHEN to attempt the auto-answer (the verifier-pass
+/// check above); it is the tier gate itself, two calls downstream, that
+/// decides whether the answer this function mints is actually honoured.
 async fn auto_land_headless_goal(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     decision_id: &str,
     card: &cards::Card,
+    auto_land_allowed: bool,
+    calling_session_id: Option<&str>,
 ) {
     let worker_session_id = card
         .metadata_json
@@ -7007,8 +7128,15 @@ async fn auto_land_headless_goal(
             }
         };
 
-    match crate::decisions_effects::apply_decision_effect(pool, &answered, proof, "approve_review")
-        .await
+    match crate::decisions_effects::apply_decision_effect_with_auto_land(
+        pool,
+        &answered,
+        proof,
+        "approve_review",
+        auto_land_allowed,
+        calling_session_id,
+    )
+    .await
     {
         Ok((effect, warning)) => {
             tracing::info!(
@@ -11170,6 +11298,7 @@ mod tests {
         let empty_policy = HeadlessDispatchPolicy {
             session_for_provider_fallback: None,
             restrict_ranked_selection_to_internal_engine: true,
+            auto_land: false,
         };
         let err = match resolve_worker_provider_fn(&context, Some(&empty_policy)).await {
             Ok(_) => panic!("a policy with no session must still fail, not panic"),
@@ -11188,6 +11317,7 @@ mod tests {
         let policy = HeadlessDispatchPolicy {
             session_for_provider_fallback: Some(Arc::new(session)),
             restrict_ranked_selection_to_internal_engine: true,
+            auto_land: false,
         };
         let provider = resolve_worker_provider_fn(&context, Some(&policy))
             .await
@@ -11286,6 +11416,7 @@ mod tests {
         let policy = HeadlessDispatchPolicy {
             session_for_provider_fallback: Some(Arc::new(session)),
             restrict_ranked_selection_to_internal_engine: true,
+            auto_land: false,
         };
 
         // Pin the worker explicitly ("permagent" — InternalSubagent) so this
@@ -12273,6 +12404,24 @@ mod tests {
         pool: &sqlx::Pool<sqlx::Sqlite>,
         card_id: &str,
     ) -> decisions::Decision {
+        v2_review_decision(pool, card_id, None).await
+    }
+
+    /// V2: same fixture as [`v1_review_decision`], with an optional
+    /// `minting_session_id` stamped into the payload — the field
+    /// `orchestrator::handle_goal_completion` writes when it files a
+    /// decision under a headless auto-land policy, and the ONLY thing
+    /// `goal_transition::check_proof`'s Tier-1 arm will ever accept an
+    /// `ACTOR_AUTO_LAUNCH` proof against.
+    async fn v2_review_decision(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        card_id: &str,
+        minting_session_id: Option<&str>,
+    ) -> decisions::Decision {
+        let payload = match minting_session_id {
+            Some(session_id) => serde_json::json!({ "minting_session_id": session_id }),
+            None => serde_json::json!({}),
+        };
         decisions::create_decision(
             pool,
             decisions::NewDecision {
@@ -12281,7 +12430,7 @@ mod tests {
                 project_id: Some(crate::projects::PERSONAL_PROJECT_ID.to_string()),
                 headline: Some("Review the finished work".to_string()),
                 detail: Some("evidence".to_string()),
-                payload: serde_json::json!({}),
+                payload,
                 ..Default::default()
             },
         )
@@ -12289,29 +12438,17 @@ mod tests {
         .unwrap()
     }
 
-    // Harness loop, Lane V (V1) — PENDING a decision from Jesse, tracked in
-    // this lane's report ("Lane V report", HARNESS_LOOP_LOG.md): landing
-    // itself is refused by a SEPARATE, pre-existing tier gate this lane did
-    // NOT touch — `goal_transition::check_proof`'s Tier-1 arm
-    // (`goal_transition.rs`, ~line 295) hardcodes `acted_by` to
-    // `ACTOR_JESSE`/`ACTOR_HENRY`; it does not (yet) accept
-    // `ACTOR_AUTO_LAUNCH`, so `apply_decision_effect`'s call into
-    // `advance_goal_checked` fails with `Denied("Tier-1 transition requires
-    // a decision answered by 'jesse' or 'henry-policy' (got
-    // 'auto-mode-launch')")` even though `auto_land_headless_goal` itself
-    // (this file) and `auto_approve_headless_goal_review` (decisions.rs)
-    // both work exactly as intended up to that point — the decision answers
-    // and the verdict receipt is recorded, but the trunk never actually
-    // fast-forwards. Widening that gate is a security-relevant
-    // authorization-boundary change the harness's own permission classifier
-    // refused to let this lane make unattended; the proposed narrow diff
-    // (Tier-1 only, Tier-2 deliberately untouched) and the safety argument
-    // for it are in the Lane V report. `#[ignore]` until that question is
-    // settled, rather than deleting a test that correctly demonstrates the
-    // one remaining gap between "dispatches real work" and "lands real
-    // work" in headless Auto.
+    // Harness loop, Lane V (V1) found landing refused by a SEPARATE,
+    // pre-existing tier gate it did not touch — `goal_transition::check_proof`'s
+    // Tier-1 arm hardcoded `acted_by` to `ACTOR_JESSE`/`ACTOR_HENRY` and did
+    // not accept `ACTOR_AUTO_LAUNCH`. Jesse ruled (HARNESS_LOOP_LOG.md
+    // "JESSE RULING (2026-09-08 23:55): Tier-1 landing → option 3") for a
+    // policy switch, default off: `PERMAGENT_HEADLESS_AUTOLAND`. Lane V2
+    // implements it (`auto_land_allowed`/`calling_session_id` threaded into
+    // `check_proof` via `advance_goal_checked_with_auto_land`) and un-ignores
+    // this test, which now exercises the positive case with the switch on
+    // and a matching minting session.
     #[tokio::test]
-    #[ignore = "blocked on Jesse's Tier-1 ACTOR_AUTO_LAUNCH decision — see Lane V report in HARNESS_LOOP_LOG.md"]
     async fn headless_auto_land_lands_a_goal_with_a_durable_verifier_pass() {
         let (repo, head) = v1_repo_with_finished_goal_branch("v1-land-run");
         let root = repo.path().to_string_lossy().into_owned();
@@ -12327,7 +12464,7 @@ mod tests {
         let card = setup_goal_in_state(&pool, "review", 1).await;
         v1_stamp_dispatch_evidence(&pool, &card.id, "v1-land-run", &head).await;
         stamp_successful_verify(&pool, &card.id).await;
-        let decision = v1_review_decision(&pool, &card.id).await;
+        let decision = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
         // Re-fetch: `stamp_successful_verify` stamped `worker_session_id`
         // onto the card row AFTER `card` above was captured, and
         // `auto_land_headless_goal` (like the real completion tracker's own
@@ -12337,7 +12474,7 @@ mod tests {
         // stale snapshot here would make it see no worker session at all.
         let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
 
-        auto_land_headless_goal(&pool, &decision.id, &card).await;
+        auto_land_headless_goal(&pool, &decision.id, &card, true, Some("coord-session-1")).await;
 
         assert_eq!(
             git_v1(repo.path(), &["rev-parse", "HEAD"]),
@@ -12400,7 +12537,7 @@ mod tests {
         // authoritative `verify` pass.
         let decision = v1_review_decision(&pool, &card.id).await;
 
-        auto_land_headless_goal(&pool, &decision.id, &card).await;
+        auto_land_headless_goal(&pool, &decision.id, &card, true, Some("coord-session-1")).await;
 
         assert_ne!(
             git_v1(repo.path(), &["rev-parse", "HEAD"]),

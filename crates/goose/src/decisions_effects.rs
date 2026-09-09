@@ -592,11 +592,41 @@ async fn ensure_needs_merge_decision(
 /// Apply an outbox-eligible decision effect without daemon `AppState`.
 ///
 /// `tool_approval` and `session_gate` deliberately are not handled here.
+///
+/// Thin wrapper over [`apply_decision_effect_with_auto_land`] with headless
+/// auto-land off — every pre-existing caller (`goose-server`'s
+/// verification/decisions routes, `overbought`, `decision_inbox`, the effect
+/// outbox drain below, and every test) keeps this exact signature and this
+/// exact behavior; none of them needed to change for Lane V2.
 pub async fn apply_decision_effect(
     pool: &Pool<Sqlite>,
     decision: &Decision,
     proof: DecisionProof,
     kind: &str,
+) -> Result<EffectResult, GuardError> {
+    apply_decision_effect_with_auto_land(pool, decision, proof, kind, false, None).await
+}
+
+/// [`apply_decision_effect`], plus the two arguments its `approve_review`
+/// "approve" arm needs to pass into
+/// `goal_transition::advance_goal_checked_with_auto_land` so
+/// `check_proof`'s Tier-1 arm can ever accept
+/// [`decisions::ACTOR_AUTO_LAUNCH`] (harness loop, Lane V2 — Jesse's ruling,
+/// HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55): Tier-1 landing →
+/// option 3"). `auto_land_allowed: false` (what [`apply_decision_effect`]
+/// always passes) makes this byte-identical to the pre-V2 function. The ONLY
+/// caller that ever passes `true` is
+/// `orchestrator::auto_land_headless_goal`, itself reached only when a
+/// headless Auto dispatch policy has `PERMAGENT_HEADLESS_AUTOLAND` on. Every
+/// other match arm in this function ignores both new arguments entirely —
+/// they are meaningful only to the `("approve_review", Some("approve"))` arm.
+pub async fn apply_decision_effect_with_auto_land(
+    pool: &Pool<Sqlite>,
+    decision: &Decision,
+    proof: DecisionProof,
+    kind: &str,
+    auto_land_allowed: bool,
+    calling_session_id: Option<&str>,
 ) -> Result<EffectResult, GuardError> {
     if decision.kind != kind {
         return Err(GuardError::Invalid(format!(
@@ -682,7 +712,7 @@ pub async fn apply_decision_effect(
                     ));
                 }
             }
-            goal_transition::advance_goal_checked(
+            goal_transition::advance_goal_checked_with_auto_land(
                 pool,
                 goal_id,
                 GoalAction::Approve,
@@ -692,6 +722,8 @@ pub async fn apply_decision_effect(
                     review_notes: decision.answer_note.clone(),
                     ..Default::default()
                 },
+                auto_land_allowed,
+                calling_session_id,
             )
             .await?;
             // Approving used to move the card and merge NOTHING, so the work

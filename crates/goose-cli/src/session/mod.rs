@@ -1540,6 +1540,24 @@ impl CliSession {
         let Ok(pool) = self.agent.config.session_manager.pool_clone().await else {
             return;
         };
+        // Harness loop, Lane V2: say plainly whether this run could land its
+        // own dispatched work before the process exits — Jesse's ruling
+        // (HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55): Tier-1
+        // landing → option 3") made this an explicit, default-off switch, and
+        // a transcript should show which way it was set for this run rather
+        // than leave a reader to infer it from whether goals stayed in
+        // Review.
+        if let Some(auto_land) =
+            permagent::agents::platform_extensions::orchestrator::headless_auto_land_status(
+                &self.agent.config.session_manager,
+            )
+            .await
+        {
+            output::render_notice(&format!(
+                "headless auto-land is {} for this run (PERMAGENT_HEADLESS_AUTOLAND)",
+                if auto_land { "ON" } else { "off" }
+            ));
+        }
         let poll_interval = std::time::Duration::from_secs(2).min(cap);
         let result = tokio::select! {
             result = permagent::agents::platform_extensions::orchestrator::drain_dispatched_goals(

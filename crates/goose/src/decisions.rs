@@ -199,6 +199,19 @@ pub struct ApproveReviewPayload {
     /// Result of the completion check, if one ran.
     #[serde(default)]
     pub completion_check: Option<String>,
+    /// The coordinator session dispatching this goal under a headless Auto
+    /// policy with landing switched on (harness loop, Lane V2 — Jesse's
+    /// ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55): Tier-1
+    /// landing → option 3"). Stamped only by `orchestrator::handle_goal_completion`
+    /// when it files this decision under a headless auto-land policy; binds
+    /// an eventual `ACTOR_AUTO_LAUNCH` answer to the exact session it was
+    /// minted for, reusing R2's `RoadmapApprovalPayload::minting_session_id`
+    /// binding rather than forking it. `#[serde(default)]` keeps every
+    /// pre-existing `approve_review` payload (minted before this field
+    /// existed) parseable; a human's `ACTOR_JESSE`/`ACTOR_HENRY` answer never
+    /// reads this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minting_session_id: Option<String>,
 }
 
 /// Why a goal is blocked (`kind='unblock'`).
@@ -2079,6 +2092,14 @@ pub struct DecisionProof {
     tier: i64,
     answer: String,
     acted_by: String,
+    /// Harness loop, Lane V2: `approve_review`'s `minting_session_id`
+    /// (`ApproveReviewPayload`), read straight off the raw payload rather
+    /// than a full typed deserialize — mirrors how the roadmap-approval
+    /// binding (Lane R2) reads its own `minting_session_id` from
+    /// `payload_json` rather than trusting a second strict parse. `None` for
+    /// every decision kind that doesn't carry this field, and for every
+    /// `approve_review` payload minted before this field existed.
+    minting_session_id: Option<String>,
 }
 
 impl DecisionProof {
@@ -2097,6 +2118,11 @@ impl DecisionProof {
             tier: decision.tier,
             answer: decision.answer.clone()?,
             acted_by: decision.acted_by.clone()?,
+            minting_session_id: decision
+                .payload
+                .get("minting_session_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
         })
     }
 
@@ -2117,6 +2143,9 @@ impl DecisionProof {
     }
     pub fn acted_by(&self) -> &str {
         &self.acted_by
+    }
+    pub fn minting_session_id(&self) -> Option<&str> {
+        self.minting_session_id.as_deref()
     }
 }
 
@@ -2370,6 +2399,13 @@ pub async fn auto_approve_roadmap_launch(
         tier: decision.tier,
         answer: "choice".to_string(),
         acted_by: ACTOR_AUTO_LAUNCH.to_string(),
+        // Not carried at this level for the roadmap-approval proof: R2's
+        // minting-session binding is enforced separately, from the raw
+        // `roadmap_approval.minting_session_id` payload field
+        // (`orchestrator::materialize_roadmap_transaction_with_budget`), not
+        // through `DecisionProof`. Lane V2 reuses that binding for landing
+        // via this field instead, so it stays `None` here.
+        minting_session_id: None,
     };
 
     Ok((updated, proof))
@@ -2503,6 +2539,18 @@ pub async fn auto_approve_headless_goal_review(
         tier: decision.tier,
         answer: "approve".to_string(),
         acted_by: ACTOR_AUTO_LAUNCH.to_string(),
+        // Lane V2: carry whatever `orchestrator::handle_goal_completion`
+        // stamped into this decision's payload at creation time (the
+        // coordinator session dispatching under a headless auto-land
+        // policy), the same way `DecisionProof::from_answered_row` reads it
+        // — `goal_transition::check_proof`'s Tier-1 arm compares this against
+        // the caller's own `calling_session_id` before ever accepting
+        // `ACTOR_AUTO_LAUNCH`.
+        minting_session_id: updated
+            .payload
+            .get("minting_session_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
     };
 
     Ok((updated, proof))
@@ -2786,6 +2834,15 @@ async fn answer_decision_inner(
         tier: decision.tier,
         answer: answer.answer.clone(),
         acted_by: acted_by.to_string(),
+        // The general answer path can never produce `ACTOR_AUTO_LAUNCH`
+        // (`VALID_ACTORS` excludes it), so `check_proof`'s minting-session
+        // binding never consults this for a proof minted here — populated
+        // for consistency with `from_answered_row` regardless.
+        minting_session_id: updated
+            .payload
+            .get("minting_session_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
     };
 
     Ok((updated, proof))

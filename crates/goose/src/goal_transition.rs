@@ -258,11 +258,31 @@ fn apply_patch(
 }
 
 /// Validate a proof against a tier gate and the target card/action.
+///
+/// `auto_land_allowed` / `calling_session_id` (harness loop, Lane V2 —
+/// Jesse's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55):
+/// Tier-1 landing → option 3"): the ONLY way [`decisions::ACTOR_AUTO_LAUNCH`]
+/// can ever satisfy the Tier-1 gate. `auto_land_allowed` is an explicit bool
+/// the CALLER passes — never read from an env var or global inside this
+/// function — so every existing call site keeps it `false` (byte-identical
+/// pre-V2 behavior) unless it deliberately opts in. Even when `true`, the
+/// proof must ALSO be a single-use `approve_review` decision (the only kind
+/// [`decisions::auto_approve_headless_goal_review`] ever mints under this
+/// actor) whose `minting_session_id` matches `calling_session_id` — the same
+/// minting-session binding Lane R2 added for the roadmap-approval proof
+/// (`RoadmapApprovalPayload::minting_session_id`), reused here rather than
+/// forked, so an auto-land proof minted for one headless session can never be
+/// consumed by presenting it through another. Tier 2 (the `_ =>` arm below)
+/// is deliberately untouched: `ACTOR_AUTO_LAUNCH` never satisfies it,
+/// whatever `auto_land_allowed` says — landing stays the only Tier-1 action
+/// this actor can ever authorize.
 fn check_proof(
     tier: i64,
     proof: Option<&DecisionProof>,
     card_id: &str,
     action: GoalAction,
+    auto_land_allowed: bool,
+    calling_session_id: Option<&str>,
 ) -> Result<(), GuardError> {
     if let Some(p) = proof {
         if let Some(gid) = p.goal_id() {
@@ -301,6 +321,26 @@ fn check_proof(
             {
                 Ok(())
             }
+            Some(p) if p.acted_by() == decisions::ACTOR_AUTO_LAUNCH => {
+                if !auto_land_allowed {
+                    return Err(GuardError::Denied(
+                        "headless auto-land is off (PERMAGENT_HEADLESS_AUTOLAND)".to_string(),
+                    ));
+                }
+                if p.kind() != "approve_review" {
+                    return Err(GuardError::Denied(format!(
+                        "headless auto-land only authorizes 'approve_review' decisions, not \
+                         '{}'",
+                        p.kind()
+                    )));
+                }
+                match (p.minting_session_id(), calling_session_id) {
+                    (Some(minted), Some(calling)) if minted == calling => Ok(()),
+                    _ => Err(GuardError::Denied(
+                        "headless auto-land proof is not bound to the calling session".to_string(),
+                    )),
+                }
+            }
             Some(p) => Err(GuardError::Denied(format!(
                 "Tier-1 transition requires a decision answered by 'jesse' or 'henry-policy' \
                  (got '{}')",
@@ -332,6 +372,11 @@ fn check_proof(
 /// lookup → tier gate (proof) → write (metadata + column) → audit append.
 /// The proof is consumed by value: one answered decision authorizes at most
 /// one transition.
+///
+/// Thin wrapper over [`advance_goal_checked_with_auto_land`] with headless
+/// auto-land off — every pre-existing caller (and there are many, across
+/// `goose-server` and `goose`) keeps this exact signature and this exact
+/// behavior; none of them needed to change for Lane V2.
 pub async fn advance_goal_checked(
     pool: &Pool<Sqlite>,
     card_id: &str,
@@ -339,6 +384,31 @@ pub async fn advance_goal_checked(
     actor: &str,
     proof: Option<DecisionProof>,
     effects: TransitionEffects,
+) -> Result<GoalState, GuardError> {
+    advance_goal_checked_with_auto_land(pool, card_id, action, actor, proof, effects, false, None)
+        .await
+}
+
+/// [`advance_goal_checked`], plus the two arguments [`check_proof`] needs to
+/// ever accept [`decisions::ACTOR_AUTO_LAUNCH`] at Tier 1 (harness loop, Lane
+/// V2 — Jesse's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08
+/// 23:55): Tier-1 landing → option 3"). `auto_land_allowed: false` (what
+/// [`advance_goal_checked`] always passes) makes this byte-identical to the
+/// pre-V2 function; the ONLY caller that ever passes `true` is
+/// `decisions_effects::apply_decision_effect_with_auto_land`'s
+/// `approve_review`/"approve" arm, itself reached only from
+/// `orchestrator::auto_land_headless_goal`, itself reached only when a
+/// headless Auto dispatch policy has `PERMAGENT_HEADLESS_AUTOLAND` on.
+#[allow(clippy::too_many_arguments)]
+pub async fn advance_goal_checked_with_auto_land(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    action: GoalAction,
+    actor: &str,
+    proof: Option<DecisionProof>,
+    effects: TransitionEffects,
+    auto_land_allowed: bool,
+    calling_session_id: Option<&str>,
 ) -> Result<GoalState, GuardError> {
     // BEGIN IMMEDIATE, not the default BEGIN DEFERRED. This transaction reads the
     // goal + its column binding + the risk tier, THEN upgrades to a write
@@ -385,7 +455,14 @@ pub async fn advance_goal_checked(
         .map_err(db_err)?
         .unwrap_or(2);
 
-    check_proof(tier, proof.as_ref(), card_id, action)?;
+    check_proof(
+        tier,
+        proof.as_ref(),
+        card_id,
+        action,
+        auto_land_allowed,
+        calling_session_id,
+    )?;
 
     let (decision_id, audit_actor) = match proof.as_ref() {
         Some(p) => (p.decision_id().to_string(), p.acted_by().to_string()),
@@ -531,7 +608,7 @@ pub(crate) async fn advance_goal_checked_in_tx(
         .await
         .map_err(db_err)?
         .unwrap_or(2);
-    check_proof(tier, proof.as_ref(), card_id, action)?;
+    check_proof(tier, proof.as_ref(), card_id, action, false, None)?;
 
     let (decision_id, audit_actor) = match proof.as_ref() {
         Some(p) => (p.decision_id().to_string(), p.acted_by().to_string()),
@@ -2241,6 +2318,229 @@ mod tests {
         .unwrap();
         assert_eq!(new, GoalState::Complete);
     }
+
+    // ── Harness loop, Lane V2: headless auto-land, ACTOR_AUTO_LAUNCH at Tier 1
+    // (Jesse's ruling, HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55):
+    // Tier-1 landing → option 3") ──
+
+    /// Mint a genuine `ACTOR_AUTO_LAUNCH` proof for an `approve_review`
+    /// decision the same way production does: through
+    /// `decisions::auto_approve_headless_goal_review`, never a hand-built
+    /// `DecisionProof` — the general `answer_decision` path can never
+    /// produce this actor (`VALID_ACTORS` excludes it), so this is the only
+    /// legitimate way to obtain one in a test.
+    async fn auto_land_decision_proof(
+        pool: &Pool<Sqlite>,
+        goal_id: &str,
+        minting_session_id: Option<&str>,
+    ) -> crate::decisions::DecisionProof {
+        let payload = match minting_session_id {
+            Some(session_id) => serde_json::json!({ "minting_session_id": session_id }),
+            None => serde_json::json!({}),
+        };
+        let d = create_decision(
+            pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal_id.to_string()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Review the finished work on the test goal".to_string()),
+                detail: Some("evidence: durable verifier pass".to_string()),
+                payload,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (_, proof) = crate::decisions::auto_approve_headless_goal_review(pool, &d.id, goal_id)
+            .await
+            .unwrap();
+        proof
+    }
+
+    #[tokio::test]
+    async fn tier1_auto_launch_lands_when_allowed_and_session_matches() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "review", 1).await;
+        let proof = auto_land_decision_proof(&pool, &goal.id, Some("coord-session-1")).await;
+        let new = advance_goal_checked_with_auto_land(
+            &pool,
+            &goal.id,
+            GoalAction::Approve,
+            decisions::ACTOR_AUTO_LAUNCH,
+            Some(proof),
+            TransitionEffects::default(),
+            true,
+            Some("coord-session-1"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(new, GoalState::Complete);
+        assert_eq!(state_of(&pool, &goal.id).await, "complete");
+    }
+
+    /// Pre-fix, this exact scenario (an `ACTOR_AUTO_LAUNCH` proof, switch
+    /// off) fell through to the generic "requires jesse or henry-policy"
+    /// message — dishonest about WHY it was refused, since a headless
+    /// auto-land attempt genuinely happened. Post-fix it must name the
+    /// switch.
+    #[tokio::test]
+    async fn tier1_auto_launch_is_denied_when_the_switch_is_off() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "review", 1).await;
+        let proof = auto_land_decision_proof(&pool, &goal.id, Some("coord-session-1")).await;
+        let err = advance_goal_checked_with_auto_land(
+            &pool,
+            &goal.id,
+            GoalAction::Approve,
+            decisions::ACTOR_AUTO_LAUNCH,
+            Some(proof),
+            TransitionEffects::default(),
+            false,
+            Some("coord-session-1"),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            GuardError::Denied(msg) => assert_eq!(
+                msg, "headless auto-land is off (PERMAGENT_HEADLESS_AUTOLAND)",
+                "the denial must name the switch, not the generic jesse/henry message"
+            ),
+            other => panic!("expected Denied, got {:?}", other),
+        }
+        assert_eq!(state_of(&pool, &goal.id).await, "review", "no state change");
+    }
+
+    /// Every pre-existing call site — daemon reconciliation included — only
+    /// ever calls the plain [`advance_goal_checked`], which always passes
+    /// `auto_land_allowed: false, calling_session_id: None`. No daemon code
+    /// path can ever produce an `ACTOR_AUTO_LAUNCH` proof in the first place
+    /// (only `auto_approve_headless_goal_review` mints one, and only
+    /// `orchestrator::auto_land_headless_goal` calls it), but this pins that
+    /// even if one were somehow presented here, the daemon's own call shape
+    /// refuses it exactly like every other unset switch — unchanged from
+    /// what a bare `advance_goal_checked` call has always done.
+    #[tokio::test]
+    async fn tier1_auto_launch_through_the_plain_advance_goal_checked_is_denied_like_a_daemon() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "review", 1).await;
+        let proof = auto_land_decision_proof(&pool, &goal.id, Some("coord-session-1")).await;
+        let err = advance_goal_checked(
+            &pool,
+            &goal.id,
+            GoalAction::Approve,
+            decisions::ACTOR_AUTO_LAUNCH,
+            Some(proof),
+            TransitionEffects::default(),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            GuardError::Denied(msg) => assert_eq!(
+                msg,
+                "headless auto-land is off (PERMAGENT_HEADLESS_AUTOLAND)"
+            ),
+            other => panic!("expected Denied, got {:?}", other),
+        }
+        assert_eq!(state_of(&pool, &goal.id).await, "review");
+    }
+
+    #[tokio::test]
+    async fn tier2_auto_launch_is_denied_even_with_the_switch_on() {
+        let pool = test_pool().await;
+        sqlx::query("UPDATE risk_policy SET tier = 2 WHERE action_class = 'goal_approve_standard'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let goal = goal_in_state(&pool, "review", 1).await;
+        let proof = auto_land_decision_proof(&pool, &goal.id, Some("coord-session-1")).await;
+        let err = advance_goal_checked_with_auto_land(
+            &pool,
+            &goal.id,
+            GoalAction::Approve,
+            decisions::ACTOR_AUTO_LAUNCH,
+            Some(proof),
+            TransitionEffects::default(),
+            true,
+            Some("coord-session-1"),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            GuardError::Denied(msg) => assert_eq!(
+                msg,
+                "Tier-2 transition requires a decision answered by 'jesse' (got 'auto-mode-launch')",
+                "Tier 2 must stay human-only regardless of the auto-land switch"
+            ),
+            other => panic!("expected Denied, got {:?}", other),
+        }
+        assert_eq!(state_of(&pool, &goal.id).await, "review");
+    }
+
+    #[tokio::test]
+    async fn tier1_auto_launch_is_denied_when_the_minting_session_does_not_match() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "review", 1).await;
+        let proof = auto_land_decision_proof(&pool, &goal.id, Some("session-A")).await;
+        let err = advance_goal_checked_with_auto_land(
+            &pool,
+            &goal.id,
+            GoalAction::Approve,
+            decisions::ACTOR_AUTO_LAUNCH,
+            Some(proof),
+            TransitionEffects::default(),
+            true,
+            Some("session-B"),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            GuardError::Denied(msg) => assert_eq!(
+                msg,
+                "headless auto-land proof is not bound to the calling session"
+            ),
+            other => panic!("expected Denied, got {:?}", other),
+        }
+        assert_eq!(state_of(&pool, &goal.id).await, "review");
+    }
+
+    /// A proof with no `minting_session_id` at all (e.g. minted before this
+    /// field existed) must never be treated as bound to whatever session
+    /// happens to call — absence on either side is a mismatch, not a
+    /// wildcard match.
+    #[tokio::test]
+    async fn tier1_auto_launch_is_denied_when_no_minting_session_was_recorded() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "review", 1).await;
+        let proof = auto_land_decision_proof(&pool, &goal.id, None).await;
+        let err = advance_goal_checked_with_auto_land(
+            &pool,
+            &goal.id,
+            GoalAction::Approve,
+            decisions::ACTOR_AUTO_LAUNCH,
+            Some(proof),
+            TransitionEffects::default(),
+            true,
+            Some("coord-session-1"),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, GuardError::Denied(_)));
+        assert_eq!(state_of(&pool, &goal.id).await, "review");
+    }
+
+    // Note: `check_proof`'s "only 'approve_review' decisions" kind check
+    // (the third condition in its doc comment) has no dedicated test here.
+    // `auto_approve_roadmap_launch` — the only OTHER function that can ever
+    // mint an `ACTOR_AUTO_LAUNCH` proof — hardcodes `answer: "choice"`, which
+    // already fails this function's earlier, pre-existing
+    // "Action 'approve' requires a decision answered 'approve'" check before
+    // the tier match is ever reached; no legitimate minter can produce a
+    // proof that clears the answer check with any kind other than
+    // `approve_review`, and `DecisionProof`'s private fields mean no test
+    // outside `decisions.rs` can hand-build one that would. The check is
+    // still correct defense-in-depth against a future minter, verified by
+    // code review rather than by an executable pin.
 
     #[tokio::test]
     async fn proof_for_other_goal_is_rejected() {
