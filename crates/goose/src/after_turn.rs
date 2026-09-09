@@ -525,10 +525,22 @@ impl ReviewerMandate {
             crate::cost_router::ReviewerSelection::Reviewer(pick) => pick,
         };
 
-        // E3: what the injected text will SAY, resolved through the same
-        // precedence the actual `delegate` dispatch uses — reusing `derived_map`
-        // (already fetched above) so this costs no extra probe, unlike calling
-        // `delegate_routing_live` a second time.
+        // Same-scope spend the goal path uses: the AUTHOR session's own running
+        // cost against both ceilings (there is no separate "task" scope for an
+        // interactive session, so — like `spend_for_goal` — one figure serves
+        // both budget scopes `reviewer_spend_gate` checks, and now also the
+        // review's own cross-family escalation gate below).
+        let spent = session.accumulated_cost_usd.unwrap_or(0.0);
+        let cfg = crate::cost_router::budget::load_budget_config();
+        let verdict = crate::cost_router::budget_verdict(spent, spent, &cfg);
+
+        // X-cost-2: what the injected text will SAY, resolved through the
+        // IDENTICAL decision function the REAL dispatch uses
+        // (`summon::resolve_provider`'s `resolve_review_dispatch`, both
+        // calling `cost_router::resolve_actual_review_dispatch`) — reusing
+        // `derived_map`/`derived` (already fetched above for `select_reviewer`)
+        // so this costs no extra probe, unlike calling `delegate_routing_live`
+        // a second time.
         let author = worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str()));
         let routing = crate::cost_router::delegate_routing(
             Some(crate::cost_router::WorkflowRole::Review),
@@ -536,20 +548,23 @@ impl ReviewerMandate {
             None,
             author,
         );
-        let dispatch = crate::cost_router::reviewer_dispatch(
-            author.map(|(p, _)| p),
-            author.map(|(_, m)| m),
+        let routing_is_role_pin = routing.source == crate::cost_router::DelegateSource::RolePin;
+        let review_pin = if routing_is_role_pin {
+            None
+        } else {
+            crate::cost_router::review_pack_pin().map(crate::cost_router::pack_to_role_model)
+        };
+        let dispatch = crate::cost_router::resolve_actual_review_dispatch(
+            routing_is_role_pin,
             routing.role_model.clone(),
+            author,
+            review_pin,
+            derived.clone(),
+            &|p| crate::cost_router::is_provider_configured(p),
+            Some(verdict.band),
         );
         let actual_route = actual_reviewer_route(&dispatch, author);
 
-        // Same-scope spend the goal path uses: the AUTHOR session's own running
-        // cost against both ceilings (there is no separate "task" scope for an
-        // interactive session, so — like `spend_for_goal` — one figure serves
-        // both budget scopes `reviewer_spend_gate` checks).
-        let spent = session.accumulated_cost_usd.unwrap_or(0.0);
-        let cfg = crate::cost_router::budget::load_budget_config();
-        let verdict = crate::cost_router::budget_verdict(spent, spent, &cfg);
         match crate::cost_router::reviewer_spend_gate(&pick, &verdict) {
             crate::cost_router::SpendDecision::Allow => {
                 ReviewerAvailability::Ready(pick, actual_route)
@@ -590,22 +605,29 @@ enum ReviewerAvailability {
 }
 
 /// What the `delegate` call the mandate is about to inject will ACTUALLY
-/// route to — resolved through the IDENTICAL precedence
-/// `summon::resolve_provider` applies for `worker_persona: "reviewer"`
-/// (`cost_router::delegate_routing` + `cost_router::reviewer_dispatch`), not
-/// the independent `select_reviewer` pick used for capability/spend gating.
+/// route to — resolved through the IDENTICAL decision function
+/// `summon::resolve_provider` calls for `worker_persona: "reviewer"`
+/// (`cost_router::resolve_actual_review_dispatch`), not the independent
+/// `select_reviewer` pick used for capability/spend gating.
 ///
-/// E3 / defect 1a: `select_reviewer` has no notion of `PERMAGENT_PACK_*`
-/// pins, so it can promise a genuinely cross-family model while the actual
-/// dispatch — which DOES honour a `PERMAGENT_PACK_HARD_*` pin, at a higher
-/// precedence than cross-family escalation (`delegate.rs`'s table, level 4
-/// over level 5) — lands the reviewer on the author's own family. Lane A's
-/// ledger showed this 3/3 times the reviewer actually ran. `same_family` is
-/// `true` whenever the real dispatch will not give an independent,
-/// different-family review — either because the resolved model shares the
-/// author's family, or because nothing routes it anywhere but the session
-/// model — so the injected text can say so plainly instead of promising
-/// independence it will not get.
+/// E3 / defect 1a (original defect): `select_reviewer` has no notion of
+/// `PERMAGENT_PACK_*` pins, so it could promise a genuinely cross-family
+/// model while the actual dispatch — which honours a `PERMAGENT_PACK_HARD_*`
+/// pin at a higher precedence than cross-family escalation
+/// (`delegate.rs`'s table, level 4 over level 5) — landed the reviewer on the
+/// author's own family. Lane A's ledger showed this 3/3 times the reviewer
+/// actually ran. X-cost-2 closed the ROOT cause (the real dispatch now runs
+/// review's own precedence — a dedicated `PERMAGENT_PACK_REVIEW_*` pin, else
+/// genuine cross-family escalation, else an honestly-labeled same-family
+/// fallback — instead of silently inheriting `Role::Hard`'s pin); this struct
+/// still exists because `select_reviewer`'s independent pick and the real
+/// dispatch's resolution remain two different code paths that COULD diverge
+/// again, and the mandate must never promise independence the dispatch will
+/// not deliver. `same_family` is `true` whenever the real dispatch will not
+/// give an independent, different-family review — either because the
+/// resolved model shares the author's family, or because nothing routes it
+/// anywhere but the session model — so the injected text can say so plainly
+/// instead of promising independence it will not get.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ActualReviewerRoute {
     label: String,
@@ -2761,10 +2783,14 @@ mod tests {
         );
     }
 
-    /// Pins the actual resolution path (`delegate_routing` + `reviewer_dispatch`)
+    /// Pins the actual resolution path
+    /// (`delegate_routing` + `resolve_actual_review_dispatch` — the SAME
+    /// function `summon::resolve_provider`'s real dispatch calls, X-cost-2)
     /// against a live `PERMAGENT_PACK_HARD_*` pin equal to the author's own
-    /// model — the exact shape observed 3/3 in Lane A's ledger — and confirms
-    /// [`actual_reviewer_route`] reports it honestly.
+    /// model, with NO cross-family candidate offered (an empty derived map) —
+    /// the exact shape observed 3/3 in Lane A's ledger — and confirms
+    /// [`actual_reviewer_route`] reports it honestly: with nothing else
+    /// available, the HARD pin is still the honest same-family answer.
     #[test]
     fn actual_route_is_same_family_when_the_hard_pack_pins_the_authors_own_model() {
         let author_provider = "zai";
@@ -2786,21 +2812,90 @@ mod tests {
             None,
             Some((author_provider, author_model)),
         );
-        let dispatch = crate::cost_router::reviewer_dispatch(
-            Some(author_provider),
-            Some(author_model),
+        let routing_is_role_pin = routing.source == crate::cost_router::DelegateSource::RolePin;
+        let dispatch = crate::cost_router::resolve_actual_review_dispatch(
+            routing_is_role_pin,
             routing.role_model.clone(),
+            Some((author_provider, author_model)),
+            None, // no dedicated PERMAGENT_PACK_REVIEW_* pin
+            None, // no cross-family candidate available (empty derived map)
+            &|_: &str| true,
+            Some(crate::cost_router::BudgetBand::Ok),
         );
         let route = actual_reviewer_route(&dispatch, Some((author_provider, author_model)));
         assert!(
             route.same_family,
-            "a HARD pack pinned to the author's own model must resolve same-family"
+            "no cross-family candidate is available, so a HARD pack pinned to \
+             the author's own model must still resolve same-family"
         );
         assert_eq!(route.label, format!("{author_provider}/{author_model}"));
 
         let text = reviewer_inject_text(&ready_pick(), &route);
         assert!(
             !text.contains("a different model from yours"),
+            "text was {text:?}"
+        );
+    }
+
+    /// X-cost-2's actual fix, exercised from `after_turn`'s own prediction
+    /// path: the SAME HARD-pinned-to-the-author's-family shape as the test
+    /// above, but NOW with a genuinely cross-family candidate available,
+    /// its provider configured, and spend `Ok` — the injected text must
+    /// switch to honestly promising independence, because the real dispatch
+    /// (`resolve_actual_review_dispatch`) now actually escalates instead of
+    /// silently inheriting the HARD pin.
+    #[test]
+    fn actual_route_escalates_cross_family_when_a_candidate_is_available() {
+        let author_provider = "zai";
+        let author_model = "glm-4.7";
+        let _g = env_lock::lock_env([
+            (
+                crate::cost_router::packs::KEY_HARD_PROVIDER,
+                Some(author_provider),
+            ),
+            (
+                crate::cost_router::packs::KEY_HARD_MODEL,
+                Some(author_model),
+            ),
+        ]);
+        let derived = crate::cost_router::DerivedRoleMap::empty();
+        let routing = crate::cost_router::delegate_routing(
+            Some(crate::cost_router::WorkflowRole::Review),
+            &derived,
+            None,
+            Some((author_provider, author_model)),
+        );
+        let routing_is_role_pin = routing.source == crate::cost_router::DelegateSource::RolePin;
+        let cross_family_candidate = crate::cost_router::RoleModel {
+            provider: "openai".to_string(),
+            model: "gpt-5.4-mini".to_string(),
+        };
+        let dispatch = crate::cost_router::resolve_actual_review_dispatch(
+            routing_is_role_pin,
+            routing.role_model.clone(),
+            Some((author_provider, author_model)),
+            None,
+            Some(cross_family_candidate.clone()),
+            &|_: &str| true,
+            Some(crate::cost_router::BudgetBand::Ok),
+        );
+        let route = actual_reviewer_route(&dispatch, Some((author_provider, author_model)));
+        assert!(
+            !route.same_family,
+            "a configured, spend-Ok cross-family candidate must win over the \
+             HARD pin"
+        );
+        assert_eq!(
+            route.label,
+            format!(
+                "{}/{}",
+                cross_family_candidate.provider, cross_family_candidate.model
+            )
+        );
+
+        let text = reviewer_inject_text(&ready_pick(), &route);
+        assert!(
+            text.contains("a different model from yours"),
             "text was {text:?}"
         );
     }

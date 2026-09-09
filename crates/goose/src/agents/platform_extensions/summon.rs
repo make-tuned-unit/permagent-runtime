@@ -2061,6 +2061,88 @@ impl SummonClient {
         )
     }
 
+    /// X-cost-2 (HARNESS_LOOP_LOG.md "Lane A report" Defect 1a / "Lane E
+    /// report" E3): fetch the live inputs and hand them to
+    /// [`crate::cost_router::resolve_actual_review_dispatch`] — the SAME
+    /// decision function `after_turn::ReviewerMandate::assess` calls to
+    /// predict what this dispatch will do (so the mandate's injected
+    /// "honesty" text and this REAL dispatch can never drift apart again).
+    ///
+    /// `routing` is the ordinary `delegate_routing_live` result already
+    /// computed for the Review role (role pin → `Role::Hard` pack pin →
+    /// gated escalation → session). When `routing.source` is `RolePin`, the
+    /// operator's `PERMAGENT_ROLE_REVIEW_*` mapping already resolved this
+    /// correctly and wins unconditionally. For every OTHER source
+    /// (`PackPin`/`Escalated`/`Session` — none of them review-aware, since
+    /// `PackPin` here means `Role::Hard`'s pin), review's OWN dispatch
+    /// precedence takes over: a dedicated `PERMAGENT_PACK_REVIEW_*` pin,
+    /// else cross-family escalation against the derived map's Review
+    /// candidate, else the ordinary chain's answer honestly labeled
+    /// same-family.
+    async fn resolve_review_dispatch(
+        &self,
+        session: &crate::session::Session,
+        routing: &crate::cost_router::DelegateRouting,
+        spend: Option<crate::cost_router::BudgetBand>,
+    ) -> crate::cost_router::ReviewerDispatch {
+        let author_provider = session.provider_name.as_deref();
+        let author_model = session.model_config.as_ref().map(|m| m.model_name.as_str());
+        let routing_is_role_pin = routing.source == crate::cost_router::DelegateSource::RolePin;
+        // The dedicated review pin / cross-family candidate / spend band are
+        // only fetched when they can change the answer — a `RolePin` source
+        // already resolved correctly and `resolve_actual_review_dispatch`
+        // passes it straight through, so a pinned dispatch must not pay for
+        // an answer it will not use.
+        let (review_pin, derived_candidate, review_spend) = if routing_is_role_pin {
+            (None, None, None)
+        } else {
+            let review_pin =
+                crate::cost_router::review_pack_pin().map(crate::cost_router::pack_to_role_model);
+            let derived_candidate = crate::cost_router::derived_role_map()
+                .await
+                .get(crate::cost_router::WorkflowRole::Review)
+                .map(|(rm, _)| rm.clone());
+            // Review's cross-family escalation is not behind the general
+            // `PERMAGENT_DELEGATE_ALLOW_ESCALATION` knob (review's whole
+            // value IS the cross-family check), so its spend band is read
+            // regardless of whether ordinary escalation is enabled — reusing
+            // `spend` when the caller already fetched it (escalation on)
+            // avoids a second DB round trip.
+            let review_spend = if spend.is_some() {
+                spend
+            } else {
+                self.escalation_spend_band(session).await
+            };
+            (review_pin, derived_candidate, review_spend)
+        };
+        let dispatch = crate::cost_router::resolve_actual_review_dispatch(
+            routing_is_role_pin,
+            routing.role_model.clone(),
+            author_provider.zip(author_model),
+            review_pin,
+            derived_candidate,
+            &|p| crate::cost_router::is_provider_configured(p),
+            review_spend,
+        );
+        tracing::info!(
+            target: "permagentd::brain",
+            role = "review",
+            cross_family = dispatch.warning.is_none(),
+            provider = dispatch
+                .role_model
+                .as_ref()
+                .map(|rm| rm.provider.as_str())
+                .unwrap_or_else(|| author_provider.unwrap_or("session")),
+            model = dispatch
+                .role_model
+                .as_ref()
+                .map(|rm| rm.model.as_str())
+                .unwrap_or_else(|| author_model.unwrap_or("session")),
+            "review dispatch resolved",
+        );
+        dispatch
+    }
+
     async fn resolve_provider(
         &self,
         params: &DelegateParams,
@@ -2107,27 +2189,24 @@ impl SummonClient {
         let role_model = routing.role_model.clone().map(|rm| (rm, routing.source));
 
         // The review gate's cross-vendor routing sits HERE for the `reviewer`
-        // persona: `reviewer_dispatch` composes `reviewer_routing` with the
-        // author's (session) pair. It slots the SAME REVIEW-role model the block
-        // above resolved — hand-configured first, else the derived best fit —
-        // (neither ⇒ `None` ⇒ the review inherits the session model exactly as
-        // before), so the (provider, model) outcome and its provenance are
-        // unchanged — what it adds is the diversity warning, logged below on the
-        // channel the target reconciliation already uses.
-        let review_dispatch = (role == Some(crate::cost_router::WorkflowRole::Review)).then(|| {
-            crate::cost_router::reviewer_dispatch(
-                session.provider_name.as_deref(),
-                session.model_config.as_ref().map(|m| m.model_name.as_str()),
-                role_model.as_ref().map(|(rm, _)| rm.clone()),
-            )
-        });
+        // persona. X-cost-2: `resolve_review_dispatch` reuses the operator's
+        // `PERMAGENT_ROLE_REVIEW_*` pin unchanged (when that is what
+        // `routing` resolved to), but for every other source it now runs
+        // review's OWN dispatch precedence instead of blindly slotting
+        // whatever `Role::Hard`'s pack pin produced — a HARD pin no longer
+        // silently swallows review's cross-family requirement.
+        let review_dispatch = if role == Some(crate::cost_router::WorkflowRole::Review) {
+            Some(self.resolve_review_dispatch(session, &routing, spend).await)
+        } else {
+            None
+        };
         let role_model = match &review_dispatch {
-            // `reviewer_dispatch` passes a configured/derived pick through
-            // unchanged and yields `None` for none, so the source travels with it.
-            Some(dispatch) => dispatch
-                .role_model
-                .clone()
-                .and_then(|rm| role_model.as_ref().map(|(_, source)| (rm, *source))),
+            // The resolved (provider, model) may be genuinely NEW here (a
+            // dedicated review pin, or a cross-family escalation) rather
+            // than whatever `routing` produced for the generic role, so this
+            // is taken directly rather than gated on `role_model` already
+            // being `Some` — `routing.source` still labels the receipt.
+            Some(dispatch) => dispatch.role_model.clone().map(|rm| (rm, routing.source)),
             None => role_model,
         };
         // The routing receipt (#1090's pattern): one line naming the model and

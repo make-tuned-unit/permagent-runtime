@@ -53,6 +53,7 @@ pub mod reservation;
 pub mod review_gate;
 pub mod reviewer_pick;
 pub mod role_map;
+pub mod routing_matrix;
 pub mod snapshot;
 pub mod tier;
 pub mod tool_signals;
@@ -77,8 +78,8 @@ pub use cheap::{
 };
 pub use delegate::{
     decide_delegate_model, delegate_routing, delegate_routing_live,
-    escalation_allowed as delegate_escalation_allowed, DelegateRouting, DelegateSource,
-    EscalationRefusal, KEY_ALLOW_ESCALATION,
+    escalation_allowed as delegate_escalation_allowed, pack_to_role_model, DelegateRouting,
+    DelegateSource, EscalationRefusal, KEY_ALLOW_ESCALATION,
 };
 pub use derived::{
     config_key_affects_derived_map, derive_role_map, derived_role_map, invalidate_derived_role_map,
@@ -98,8 +99,9 @@ pub use mesh::{
     gate as mesh_gate, MeshGateInputs, MeshIneligible, MeshRoute, MeshWorkload, PoolHealth,
 };
 pub use packs::{
-    configured_pack_pin, load_packs, pack_pin, pack_role_for_workflow_role, packs_from,
-    resolve as resolve_model, role_for_tier, ModelPack, ModelPacks, Role,
+    configured_pack_pin, configured_review_pack_pin, load_packs, pack_pin,
+    pack_role_for_workflow_role, packs_from, resolve as resolve_model, review_pack_pin,
+    role_for_tier, ModelPack, ModelPacks, Role,
 };
 pub use recommend::{
     available_from, discover_available_models, discover_available_models_async,
@@ -112,10 +114,11 @@ pub use reservation::{
     plan_reservation_bound, PricingProvenance, ReservationBound, ReservationBoundError,
 };
 pub use review_gate::{
-    build_review_prompt, classify_path, gate_decision, parse_review, review_required,
-    reviewer_dispatch, reviewer_routing, FileClass, GateDecision, ReviewFinding, ReviewLens,
-    ReviewOutcome, ReviewTrigger, ReviewerDispatch, ReviewerRouting, Verdict as ReviewVerdict,
-    REVIEWER_DIVERSITY_WARNING, REVIEWER_EXTENSIONS, REVIEW_ESCALATE_AT, REVIEW_SYSTEM_PROMPT,
+    build_review_prompt, classify_path, decide_review_route, gate_decision, parse_review,
+    resolve_actual_review_dispatch, review_required, reviewer_dispatch, reviewer_routing,
+    FileClass, GateDecision, ReviewFinding, ReviewLens, ReviewOutcome, ReviewRoute, ReviewTrigger,
+    ReviewerDispatch, ReviewerRouting, Verdict as ReviewVerdict, REVIEWER_DIVERSITY_WARNING,
+    REVIEWER_EXTENSIONS, REVIEW_ESCALATE_AT, REVIEW_SYSTEM_PROMPT,
 };
 pub use review_gate::{build_rubric_prompt, REVIEW_RUBRIC_SYSTEM_PROMPT};
 pub use reviewer_pick::{
@@ -127,6 +130,10 @@ pub use role_map::{
     cache_guard_should_warn, clear_role_model, configured as configured_role_models, derive_role,
     mappings_to_persist, resolve_role_model, resolve_role_model_or_derived, role_model,
     role_model_or_derived, set_role_model, should_prompt_role_routing, RoleModel,
+};
+pub use routing_matrix::{
+    capability_for_category, choose_worker, Fixture, FixtureCapability, RoutingCandidate,
+    RoutingDifficulty,
 };
 pub use snapshot::{RoutingSnapshot, ROUTING_SNAPSHOT_KEY};
 pub use tier::{

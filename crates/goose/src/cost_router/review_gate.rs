@@ -691,6 +691,172 @@ fn shares_family(
     }
 }
 
+// ── X-cost-2: review's OWN dispatch precedence ────────────────────────────────
+
+/// The outcome of [`decide_review_route`]: the model the review dispatch will
+/// ACTUALLY use, whether that is a genuine cross-family review, and the
+/// receipt line explaining why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewRoute {
+    /// `Some` ⇒ route the review to this model; `None` ⇒ inherit the session
+    /// pair exactly as `reviewer_dispatch`'s own `FallbackToMain` does.
+    pub role_model: Option<RoleModel>,
+    /// The property the whole review gate rests on. `false` ⇒ the review
+    /// still runs (an operator's explicit pin, or the ordinary same-family
+    /// fallback, is never refused outright) but it is recorded honestly.
+    pub cross_family: bool,
+    /// One line naming the model and why — for the routing receipt and log.
+    pub receipt: String,
+}
+
+/// The review role's OWN dispatch precedence (HARNESS_LOOP_LOG.md "Lane A
+/// report" Defect 1a / "Lane E report" E3 / X-cost-2), kept separate from
+/// `cost_router::packs::pack_role_for_workflow_role`'s `Role::Hard` mapping:
+/// a `PERMAGENT_PACK_HARD_*` pin — set for planning/hard-reasoning work, a
+/// wholly different concern — must never silently swallow the review role's
+/// cross-family requirement. Lane A's ledger showed exactly this: the
+/// reviewer landed same-family 3/3 times a HARD pack pin was set, because the
+/// old dispatch path fed whatever `Role::Hard` resolved to straight into
+/// [`reviewer_dispatch`], which only WARNS on same-family — it never actually
+/// re-routes.
+///
+/// Order:
+/// 1. `PERMAGENT_PACK_REVIEW_*` (`packs::review_pack_pin`) — a DEDICATED pin,
+///    distinct from `Role::Hard`'s. Honoured even when it happens to share
+///    the author's family (an explicit operator choice is never
+///    second-guessed), but the receipt still says so honestly.
+/// 2. Cross-family escalation: `cross_family_candidate` — the caller's
+///    already-resolved best-fit REVIEW candidate (e.g. the derived map's
+///    Review entry) — taken ONLY when it is genuinely a DIFFERENT family
+///    than the author's, its provider is CONFIGURED, and the spend band is
+///    `Ok`. This does NOT require `PERMAGENT_DELEGATE_ALLOW_ESCALATION`:
+///    review's entire value is the cross-family check, so it is not gated
+///    behind the general opt-in escalation knob the other workflow roles use
+///    (`cost_router::delegate::KEY_ALLOW_ESCALATION`).
+/// 3. Otherwise: SAME-FAMILY. `same_family_fallback` — whatever the ordinary
+///    chain (a `Role::Hard` pack pin, cost-router escalation, or the
+///    session) already resolved for Review — is still used, honestly labeled
+///    `cross_family: false` with the receipt line
+///    "review not independent: same family".
+#[allow(clippy::too_many_arguments)]
+pub fn decide_review_route(
+    review_pack_pin: Option<RoleModel>,
+    author: Option<(&str, &str)>,
+    cross_family_candidate: Option<RoleModel>,
+    is_provider_configured: &impl Fn(&str) -> bool,
+    spend: Option<super::budget::BudgetBand>,
+    same_family_fallback: Option<RoleModel>,
+) -> ReviewRoute {
+    let author_provider = author.map(|(p, _)| p);
+    let author_model = author.map(|(_, m)| m);
+
+    // 1. The dedicated review pack pin.
+    if let Some(rm) = review_pack_pin {
+        let cross_family = !shares_family(author_provider, author_model, &rm);
+        let receipt = if cross_family {
+            format!(
+                "review → {}/{} · dedicated review pack pin (PERMAGENT_PACK_REVIEW_*)",
+                rm.provider, rm.model
+            )
+        } else {
+            format!(
+                "review → {}/{} · dedicated review pack pin (PERMAGENT_PACK_REVIEW_*); \
+                 review not independent: same family",
+                rm.provider, rm.model
+            )
+        };
+        return ReviewRoute {
+            role_model: Some(rm),
+            cross_family,
+            receipt,
+        };
+    }
+
+    // 2. Cross-family escalation — genuinely a different family, its
+    //    provider configured, and the spend band clear.
+    if let Some(rm) = cross_family_candidate {
+        let cross_family = !shares_family(author_provider, author_model, &rm);
+        if cross_family
+            && is_provider_configured(&rm.provider)
+            && spend == Some(super::budget::BudgetBand::Ok)
+        {
+            let receipt = format!(
+                "review → {}/{} · cross-family escalation (configured provider, spend Ok)",
+                rm.provider, rm.model
+            );
+            return ReviewRoute {
+                role_model: Some(rm),
+                cross_family: true,
+                receipt,
+            };
+        }
+    }
+
+    // 3. Same-family fallback: whatever the ordinary chain already resolved
+    //    (a HARD pack pin, cost-router escalation, or the session itself).
+    let label = same_family_fallback
+        .as_ref()
+        .map(|rm| format!("{}/{}", rm.provider, rm.model))
+        .or_else(|| author.map(|(p, m)| format!("{p}/{m}")))
+        .unwrap_or_else(|| "the session model".to_string());
+    ReviewRoute {
+        role_model: same_family_fallback,
+        cross_family: false,
+        receipt: format!("review → {label} · review not independent: same family"),
+    }
+}
+
+/// The ACTUAL review dispatch decision — combining the `RolePin` passthrough
+/// special case with [`decide_review_route`] into ONE function.
+///
+/// Two callers need the exact same answer and must never drift apart again
+/// (that drift IS defect 1a/E3): the REAL dispatch seam
+/// (`summon::resolve_provider`, for a `worker_persona: "reviewer"` delegate)
+/// and the reviewer mandate's "what will the delegate call actually do"
+/// prediction (`after_turn::ReviewerMandate::assess`, which injects that
+/// prediction into the coordinator's prompt). Both call this SAME function
+/// rather than each re-deriving the branch.
+///
+/// `routing_is_role_pin` / `routing_role_model` are the caller's own
+/// `cost_router::delegate::delegate_routing`(_live) result for the Review
+/// role: when the source was `RolePin` (`PERMAGENT_ROLE_REVIEW_*`), that
+/// mapping already resolved correctly and wins unconditionally — passed
+/// straight to [`reviewer_dispatch`], exactly as before this function
+/// existed. For every other source (`PackPin`/`Escalated`/`Session` — none
+/// review-aware, since a `PackPin` source here means `Role::Hard`'s pin),
+/// [`decide_review_route`] takes over, with `routing_role_model` as its
+/// same-family fallback.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_actual_review_dispatch(
+    routing_is_role_pin: bool,
+    routing_role_model: Option<RoleModel>,
+    author: Option<(&str, &str)>,
+    review_pack_pin: Option<RoleModel>,
+    cross_family_candidate: Option<RoleModel>,
+    is_provider_configured: &impl Fn(&str) -> bool,
+    spend: Option<super::budget::BudgetBand>,
+) -> ReviewerDispatch {
+    if routing_is_role_pin {
+        return reviewer_dispatch(
+            author.map(|(p, _)| p),
+            author.map(|(_, m)| m),
+            routing_role_model,
+        );
+    }
+    let route = decide_review_route(
+        review_pack_pin,
+        author,
+        cross_family_candidate,
+        is_provider_configured,
+        spend,
+        routing_role_model,
+    );
+    ReviewerDispatch {
+        role_model: route.role_model,
+        warning: (!route.cross_family).then_some(route.receipt),
+    }
+}
+
 // ── Prompts (data-fenced; adversarial diverse-lens core) ──────────────────────
 
 /// The reviewer's system prompt: a DIFFERENT engineer instructed to REFUTE the
@@ -1244,6 +1410,146 @@ mod tests {
         // No author at all ⇒ nothing to compare against ⇒ no warning.
         let d = reviewer_dispatch(None, None, Some(rm("openai", "gpt-x")));
         assert_eq!(d.warning, None);
+    }
+
+    // ── X-cost-2: review's OWN dispatch precedence ──────────────────────────
+
+    fn all_configured(_: &str) -> bool {
+        true
+    }
+
+    fn only_openai(p: &str) -> bool {
+        p == "openai"
+    }
+
+    /// The measured defect, as a test: a `Role::Hard` pin (fed in here as the
+    /// same-family fallback, exactly what the old dispatch path did) must NOT
+    /// win when a genuinely cross-family candidate is available and spend is
+    /// `Ok` — Lane A's ledger showed the reviewer landing on the HARD pin's
+    /// family 3/3 times.
+    #[test]
+    fn hard_pinned_to_one_family_still_escalates_to_a_configured_different_family() {
+        let hard_pin_same_family = rm("anthropic", "claude-opus-4-8"); // stands in for Role::Hard's pin
+        let route = decide_review_route(
+            None, // no dedicated PERMAGENT_PACK_REVIEW_* pin
+            Some(("anthropic", "claude-sonnet-5")),
+            Some(rm("openai", "gpt-5.4-mini")), // the cross-family candidate
+            &all_configured,
+            Some(super::super::budget::BudgetBand::Ok),
+            Some(hard_pin_same_family),
+        );
+        assert_eq!(route.role_model, Some(rm("openai", "gpt-5.4-mini")));
+        assert!(route.cross_family);
+        assert!(
+            route.receipt.contains("cross-family escalation"),
+            "{}",
+            route.receipt
+        );
+    }
+
+    /// The cross-family candidate's provider is NOT configured ⇒ falls back
+    /// to the same-family pin, honestly labeled — never refused outright.
+    #[test]
+    fn an_unconfigured_cross_family_candidate_falls_back_to_same_family_with_a_receipt() {
+        let hard_pin_same_family = rm("anthropic", "claude-opus-4-8");
+        let route = decide_review_route(
+            None,
+            Some(("anthropic", "claude-sonnet-5")),
+            Some(rm("openai", "gpt-5.4-mini")),
+            &|p: &str| p == "anthropic", // openai is NOT configured
+            Some(super::super::budget::BudgetBand::Ok),
+            Some(hard_pin_same_family.clone()),
+        );
+        assert_eq!(route.role_model, Some(hard_pin_same_family));
+        assert!(!route.cross_family);
+        assert!(
+            route
+                .receipt
+                .contains("review not independent: same family"),
+            "{}",
+            route.receipt
+        );
+    }
+
+    /// Control case for the test above: the SAME cross-family candidate,
+    /// with its provider actually configured, DOES escalate.
+    #[test]
+    fn a_configured_cross_family_candidate_escalates() {
+        let route = decide_review_route(
+            None,
+            Some(("anthropic", "claude-sonnet-5")),
+            Some(rm("openai", "gpt-5.4-mini")),
+            &only_openai,
+            Some(super::super::budget::BudgetBand::Ok),
+            Some(rm("anthropic", "claude-opus-4-8")),
+        );
+        assert!(route.cross_family);
+        assert_eq!(route.role_model, Some(rm("openai", "gpt-5.4-mini")));
+    }
+
+    /// The dedicated `PERMAGENT_PACK_REVIEW_*` pin outranks cross-family
+    /// escalation entirely — an explicit review pin is operator intent.
+    #[test]
+    fn a_dedicated_review_pack_pin_wins_even_when_a_cross_family_candidate_exists() {
+        let route = decide_review_route(
+            Some(rm("mistral", "mistral-large")),
+            Some(("anthropic", "claude-sonnet-5")),
+            Some(rm("openai", "gpt-5.4-mini")),
+            &all_configured,
+            Some(super::super::budget::BudgetBand::Ok),
+            None,
+        );
+        assert_eq!(route.role_model, Some(rm("mistral", "mistral-large")));
+        assert!(route.cross_family);
+        assert!(
+            route.receipt.contains("PERMAGENT_PACK_REVIEW_*"),
+            "{}",
+            route.receipt
+        );
+    }
+
+    /// A dedicated review pin is honoured even same-family — never
+    /// second-guessed — but the receipt still says so honestly.
+    #[test]
+    fn a_dedicated_review_pack_pin_same_family_is_honoured_and_labeled() {
+        let route = decide_review_route(
+            Some(rm("anthropic", "claude-sonnet-5")),
+            Some(("anthropic", "claude-sonnet-5")),
+            Some(rm("openai", "gpt-5.4-mini")),
+            &all_configured,
+            Some(super::super::budget::BudgetBand::Ok),
+            None,
+        );
+        assert!(!route.cross_family);
+        assert!(
+            route
+                .receipt
+                .contains("review not independent: same family"),
+            "{}",
+            route.receipt
+        );
+    }
+
+    /// A non-`Ok` spend band refuses the escalation, fail-closed — same-family
+    /// fallback still runs.
+    #[test]
+    fn escalation_refuses_when_spend_is_not_ok() {
+        for band in [
+            None,
+            Some(super::super::budget::BudgetBand::Soft),
+            Some(super::super::budget::BudgetBand::Gate),
+            Some(super::super::budget::BudgetBand::Hard),
+        ] {
+            let route = decide_review_route(
+                None,
+                Some(("anthropic", "claude-sonnet-5")),
+                Some(rm("openai", "gpt-5.4-mini")),
+                &all_configured,
+                band,
+                Some(rm("anthropic", "claude-opus-4-8")),
+            );
+            assert!(!route.cross_family, "band {band:?} must not escalate");
+        }
     }
 
     // ── Data-fencing present ──────────────────────────────────────────────────

@@ -259,6 +259,11 @@ pub enum RoleSource {
     Configured,
     /// The recommender-derived best-fit map (this module).
     Derived,
+    /// An explicit `PERMAGENT_PACK_*` pin, consulted only by a HEADLESS
+    /// dispatch's `resolve_dispatch_role_model` (X-cost-1) — a daemon
+    /// dispatch's `role_model_or_derived` never produces this variant, since
+    /// it does not consult the pack pins at all.
+    PackPin,
 }
 
 impl RoleSource {
@@ -266,6 +271,7 @@ impl RoleSource {
         match self {
             RoleSource::Configured => "configured",
             RoleSource::Derived => "derived",
+            RoleSource::PackPin => "pack_pin",
         }
     }
 }
@@ -312,6 +318,13 @@ pub fn model_routing_receipt(
                 "summary": summary,
             })
         }
+        Some((rm, RoleSource::PackPin)) => serde_json::json!({
+            "role": role.as_str(),
+            "provider": rm.provider,
+            "model": rm.model,
+            "source": RoleSource::PackPin.as_str(),
+            "summary": "pack pin (PERMAGENT_PACK_*, headless dispatch — X-cost-1)",
+        }),
         None => serde_json::json!({
             "role": role.as_str(),
             "source": "session",

@@ -1499,6 +1499,73 @@ async fn resolve_worker_provider_fn(
     }
 }
 
+/// X-cost-1 (HARNESS_LOOP_LOG.md "Lane G4 review" finding 4 / Lane U's U4):
+/// resolve a workflow role's dispatch model for `dispatch_goal_fn`'s
+/// InternalSubagent arm.
+///
+/// A HEADLESS coding-harness dispatch (`policy` installed by
+/// `install_dispatch_hook_for_headless_session`) now routes through the SAME
+/// precedence `cost_router::delegate::decide_delegate_model` applies to an
+/// ordinary `delegate`/`summon` call: role pin (`PERMAGENT_ROLE_*`) → pack pin
+/// (`PERMAGENT_PACK_*` — PREVIOUSLY never consulted on this path at all) →
+/// cost-router escalation (opt-in, and fail-closed here since goal dispatch
+/// has no computed spend band yet — see `decide_delegate_model`'s own
+/// fail-closed-on-`None`-spend contract) → the session fallback
+/// (`policy.session_for_provider_fallback`, Lane T's T1 provider fallback,
+/// kept as the FINAL step, unchanged).
+///
+/// A DAEMON dispatch (`policy: None`) is UNCHANGED: it still calls
+/// [`crate::cost_router::role_model_or_derived`] directly — the
+/// derived-map-always-on behavior every other daemon call site keeps
+/// byte-identical (Lane U's report; `goose-server/src/commands/agent.rs:60`).
+fn resolve_dispatch_role_model(
+    role: crate::cost_router::WorkflowRole,
+    derived: &crate::cost_router::DerivedRoleMap,
+    policy: Option<&HeadlessDispatchPolicy>,
+) -> Option<(
+    crate::cost_router::RoleModel,
+    crate::cost_router::RoleSource,
+)> {
+    let Some(hp) = policy else {
+        return crate::cost_router::role_model_or_derived(role, derived);
+    };
+    let session = hp.session_for_provider_fallback.as_ref();
+    let session_pair = session.and_then(|s| {
+        s.provider_name.as_deref().map(|p| {
+            (
+                p,
+                s.model_config
+                    .as_ref()
+                    .map(|m| m.model_name.as_str())
+                    .unwrap_or("the session model"),
+            )
+        })
+    });
+    let routing = crate::cost_router::delegate_routing(Some(role), derived, None, session_pair);
+    routing.role_model.map(|rm| {
+        let source = match routing.source {
+            crate::cost_router::DelegateSource::RolePin => {
+                crate::cost_router::RoleSource::Configured
+            }
+            crate::cost_router::DelegateSource::PackPin => crate::cost_router::RoleSource::PackPin,
+            // Escalation is fail-closed here (`spend: None` above) so
+            // `decide_delegate_model` never actually returns `Escalated` with
+            // a `Some` role_model from this call site — kept exhaustive
+            // (no wildcard) so a future spend-aware caller must reconsider
+            // this mapping rather than silently inheriting it.
+            crate::cost_router::DelegateSource::Escalated => {
+                crate::cost_router::RoleSource::Derived
+            }
+            crate::cost_router::DelegateSource::Session => {
+                unreachable!(
+                    "decide_delegate_model returns role_model: None whenever source is Session"
+                )
+            }
+        };
+        (rm, source)
+    })
+}
+
 /// The parent session's enabled extensions (free-fn form of
 /// `OrchestratorClient::parent_extensions`).
 fn parent_extensions_fn(context: &PlatformExtensionContext) -> Vec<ExtensionConfig> {
@@ -2374,24 +2441,23 @@ pub(crate) async fn dispatch_goal_fn(
             // ONCE per dispatch (cached process-wide) and the routing receipt
             // records which source picked the model.
             //
-            // Lane U / U4 (HARNESS_LOOP_LOG.md, "Lane G4 review" finding 4,
-            // LOW/record-only): `role_model_or_derived`/`derived_role_map`
-            // consult `PERMAGENT_ROLE_*` and this recommender-derived map
-            // only — NEVER `PERMAGENT_PACK_*` (`role_map.rs`'s own doc:
-            // that family "feeds only the internal tier ladder ... never
-            // consulted by the dispatch path"). A caller that pins only
-            // `PERMAGENT_PACK_*` expecting it to steer a dispatched worker's
-            // model will silently not get that; `PERMAGENT_ROLE_EDIT_*` (or
-            // the derived map) is what actually wins here. This is
-            // pre-existing and unchanged by Lane U — flagged because T1
-            // (harness loop) is what first made this dispatch path reachable
-            // in headless mode at all, and the eval's own T1 pinning test
-            // asserts against `PERMAGENT_ROLE_EDIT_*`, not `PACK_EDIT_*`.
+            // X-cost-1 (HARNESS_LOOP_LOG.md "Lane G4 review" finding 4 /
+            // Lane U's U4): a HEADLESS dispatch (`policy` installed) now
+            // routes through `resolve_dispatch_role_model`, which consults
+            // `PERMAGENT_PACK_*` (via `cost_router::delegate::delegate_routing`)
+            // at the same precedence an ordinary `delegate`/`summon` call
+            // uses — role pin → pack pin → gated escalation → the T1 session
+            // fallback. A DAEMON dispatch (`policy: None`) is unchanged: it
+            // still calls `role_model_or_derived` directly (configured, else
+            // the always-on derived best-fit map, else the session) —
+            // `PERMAGENT_PACK_*` is still never consulted there, matching
+            // every other daemon call site's byte-identical-behavior
+            // contract (Lane U's report).
             let derived = crate::cost_router::derived_role_map().await;
             let worker_role = worker_cfg.and_then(|w| w.routing_role());
             let mut role = worker_role;
             let mut resolved =
-                worker_role.and_then(|r| crate::cost_router::role_model_or_derived(r, &derived));
+                worker_role.and_then(|r| resolve_dispatch_role_model(r, &derived, policy));
 
             // Verify-loop escalation override: an escalated re-dispatch runs
             // the model for the climbed tier (configured, else derived). This is
@@ -2404,7 +2470,7 @@ pub(crate) async fn dispatch_goal_fn(
                 .and_then(|s| s.current_tier)
             {
                 let esc_role = crate::cost_router::workflow_role_for_tier(tier);
-                if let Some(hit) = crate::cost_router::role_model_or_derived(esc_role, &derived) {
+                if let Some(hit) = resolve_dispatch_role_model(esc_role, &derived, policy) {
                     role = Some(esc_role);
                     resolved = Some(hit);
                 }
@@ -2427,9 +2493,7 @@ pub(crate) async fn dispatch_goal_fn(
                     &card.metadata_json,
                 );
                 let assessed_role = crate::cost_router::workflow_role_for_tier(assessment.tier);
-                if let Some(hit) =
-                    crate::cost_router::role_model_or_derived(assessed_role, &derived)
-                {
+                if let Some(hit) = resolve_dispatch_role_model(assessed_role, &derived, policy) {
                     tracing::info!(
                         target: "permagentd::brain",
                         card_id,
@@ -11355,6 +11419,143 @@ mod tests {
         assert_eq!(provider.get_model_config().model_name, "qwen3");
     }
 
+    // ── X-cost-1: headless goal dispatch consults PERMAGENT_PACK_* ──────────
+    //
+    // HARNESS_LOOP_LOG.md "Lane G4 review" finding 4 / "Lane U report" U4:
+    // goal dispatch never consulted `PERMAGENT_PACK_*` at all, on either the
+    // headless or the daemon path — `role_model_or_derived` only ever reads
+    // `PERMAGENT_ROLE_*` plus the always-on derived best-fit map.
+    // `resolve_dispatch_role_model` fixes the HEADLESS path only (`policy:
+    // Some(..)`), routing it through `delegate_routing`'s pin precedence;
+    // the daemon path (`policy: None`) is left calling `role_model_or_derived`
+    // directly, unchanged.
+
+    fn headless_policy_with_session(provider: &str, model: &str) -> HeadlessDispatchPolicy {
+        let session = crate::session::Session {
+            provider_name: Some(provider.to_string()),
+            model_config: Some(crate::model::ModelConfig::new(model).unwrap()),
+            ..crate::session::Session::default()
+        };
+        HeadlessDispatchPolicy {
+            session_for_provider_fallback: Some(Arc::new(session)),
+            restrict_ranked_selection_to_internal_engine: true,
+            auto_land: false,
+        }
+    }
+
+    /// With only `PERMAGENT_PACK_EDIT_*` pinned (no `PERMAGENT_ROLE_*`), a
+    /// headless dispatch's Edit-role resolution must record the PACK model —
+    /// pre-fix, `role_model_or_derived` never reads `PERMAGENT_PACK_*` at
+    /// all, so this pin had zero effect on the goal-dispatch path.
+    #[test]
+    #[serial_test::serial]
+    fn headless_dispatch_honours_a_pack_only_pin() {
+        std::env::remove_var("PERMAGENT_ROLE_EDIT_PROVIDER");
+        std::env::remove_var("PERMAGENT_ROLE_EDIT_MODEL");
+        std::env::set_var("PERMAGENT_PACK_EDIT_PROVIDER", "openai");
+        std::env::set_var("PERMAGENT_PACK_EDIT_MODEL", "gpt-5.4-mini");
+
+        let policy = headless_policy_with_session("ollama", "qwen3");
+        let derived = crate::cost_router::DerivedRoleMap::empty();
+        let got = resolve_dispatch_role_model(
+            crate::cost_router::WorkflowRole::Edit,
+            &derived,
+            Some(&policy),
+        );
+
+        std::env::remove_var("PERMAGENT_PACK_EDIT_PROVIDER");
+        std::env::remove_var("PERMAGENT_PACK_EDIT_MODEL");
+
+        let (rm, source) = got.expect("a pack pin must resolve a model");
+        assert_eq!(rm.provider, "openai");
+        assert_eq!(rm.model, "gpt-5.4-mini");
+        assert_eq!(source, crate::cost_router::RoleSource::PackPin);
+    }
+
+    /// A `PERMAGENT_ROLE_*` pin outranks a `PERMAGENT_PACK_*` pin — the same
+    /// precedence `cost_router::delegate::decide_delegate_model` documents.
+    #[test]
+    #[serial_test::serial]
+    fn headless_dispatch_role_pin_outranks_pack_pin() {
+        std::env::set_var("PERMAGENT_ROLE_EDIT_PROVIDER", "anthropic");
+        std::env::set_var("PERMAGENT_ROLE_EDIT_MODEL", "claude-sonnet-5");
+        std::env::set_var("PERMAGENT_PACK_EDIT_PROVIDER", "openai");
+        std::env::set_var("PERMAGENT_PACK_EDIT_MODEL", "gpt-5.4-mini");
+
+        let policy = headless_policy_with_session("ollama", "qwen3");
+        let derived = crate::cost_router::DerivedRoleMap::empty();
+        let got = resolve_dispatch_role_model(
+            crate::cost_router::WorkflowRole::Edit,
+            &derived,
+            Some(&policy),
+        );
+
+        std::env::remove_var("PERMAGENT_ROLE_EDIT_PROVIDER");
+        std::env::remove_var("PERMAGENT_ROLE_EDIT_MODEL");
+        std::env::remove_var("PERMAGENT_PACK_EDIT_PROVIDER");
+        std::env::remove_var("PERMAGENT_PACK_EDIT_MODEL");
+
+        let (rm, source) = got.expect("a role pin must resolve a model");
+        assert_eq!(rm.provider, "anthropic");
+        assert_eq!(rm.model, "claude-sonnet-5");
+        assert_eq!(source, crate::cost_router::RoleSource::Configured);
+    }
+
+    /// Nothing pinned, headless: the session fallback wins (T1) — never a
+    /// silent escalation to the derived best-fit map, which `delegate_routing`
+    /// only offers behind the opt-in `PERMAGENT_DELEGATE_ALLOW_ESCALATION`
+    /// knob (off by default, and this test does not set it).
+    #[test]
+    #[serial_test::serial]
+    fn headless_dispatch_with_nothing_pinned_inherits_the_session_model() {
+        std::env::remove_var("PERMAGENT_ROLE_EDIT_PROVIDER");
+        std::env::remove_var("PERMAGENT_ROLE_EDIT_MODEL");
+        std::env::remove_var("PERMAGENT_PACK_EDIT_PROVIDER");
+        std::env::remove_var("PERMAGENT_PACK_EDIT_MODEL");
+
+        let policy = headless_policy_with_session("ollama", "qwen3");
+        let derived = crate::cost_router::DerivedRoleMap::empty();
+        let got = resolve_dispatch_role_model(
+            crate::cost_router::WorkflowRole::Edit,
+            &derived,
+            Some(&policy),
+        );
+        assert_eq!(
+            got, None,
+            "None means the InternalSubagentEngine clones the parent/session \
+             model — the T1 fallback, not a baked-in escalation"
+        );
+    }
+
+    /// The daemon path (`policy: None`) is UNCHANGED: it must resolve
+    /// byte-identically to calling `role_model_or_derived` directly, pack pin
+    /// or not — `PERMAGENT_PACK_*` still has no effect there.
+    #[test]
+    #[serial_test::serial]
+    fn daemon_dispatch_ignores_pack_pins_exactly_like_role_model_or_derived() {
+        std::env::remove_var("PERMAGENT_ROLE_EDIT_PROVIDER");
+        std::env::remove_var("PERMAGENT_ROLE_EDIT_MODEL");
+        std::env::set_var("PERMAGENT_PACK_EDIT_PROVIDER", "openai");
+        std::env::set_var("PERMAGENT_PACK_EDIT_MODEL", "gpt-5.4-mini");
+
+        let derived = crate::cost_router::DerivedRoleMap::empty();
+        let via_helper =
+            resolve_dispatch_role_model(crate::cost_router::WorkflowRole::Edit, &derived, None);
+        let direct = crate::cost_router::role_model_or_derived(
+            crate::cost_router::WorkflowRole::Edit,
+            &derived,
+        );
+
+        std::env::remove_var("PERMAGENT_PACK_EDIT_PROVIDER");
+        std::env::remove_var("PERMAGENT_PACK_EDIT_MODEL");
+
+        assert_eq!(via_helper, direct);
+        assert_eq!(
+            via_helper, None,
+            "a daemon dispatch must not honour a pack-only pin"
+        );
+    }
+
     /// T1, end-to-end: `dispatch_goal_fn` itself (not just the provider
     /// resolver in isolation) must reach a real dispatch — no "Extension
     /// manager not available" error — when driven with a
@@ -11465,6 +11666,114 @@ mod tests {
              'Extension manager not available' error",
         );
         assert!(!session_id.is_empty());
+    }
+
+    /// X-cost-1, end-to-end: a fresh goal dispatched through a headless
+    /// policy with ONLY `PERMAGENT_PACK_MECHANICAL_*` pinned (no
+    /// `PERMAGENT_ROLE_*`) must record the PACK model on the goal card's
+    /// routing receipt (`capability_snapshot.model_routing`), written
+    /// SYNCHRONOUSLY by `advance_goal_checked` before `engine.spawn` even
+    /// runs — unlike the dispatched child session's own `model_config`,
+    /// which the spawned subagent task updates later and is not safe to
+    /// assert against right after `dispatch_goal_fn` returns. A vanilla
+    /// `setup_goal_in_state` card ("Test goal in ready" / "test") hits
+    /// `assess_goal`'s no-strong-signal default (`Tier::CheapCloud` →
+    /// `WorkflowRole::Mechanical`) on this, its first dispatch — no
+    /// escalation state exists yet — so the assessed-role branch of
+    /// `dispatch_goal_fn`'s InternalSubagent arm is what must consult the
+    /// pack pin. Pre-fix, `role_model_or_derived` never read
+    /// `PERMAGENT_PACK_*` at all, so this pin had zero effect and the
+    /// receipt would have shown the T1 session fallback instead.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn dispatch_goal_fn_honours_a_pack_only_pin_for_a_fresh_headless_goal() {
+        std::env::remove_var("PERMAGENT_ROLE_MECHANICAL_PROVIDER");
+        std::env::remove_var("PERMAGENT_ROLE_MECHANICAL_MODEL");
+        std::env::set_var("PERMAGENT_PACK_MECHANICAL_PROVIDER", "ollama");
+        std::env::set_var("PERMAGENT_PACK_MECHANICAL_MODEL", "qwen3-coder");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+
+        let repo = tmp.path().join("proj");
+        init_git_repo_for_dispatch_test(&repo);
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(repo.to_str().unwrap())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "ready", 0).await;
+
+        // The T1 session fallback is a DIFFERENT model from the pack pin, so
+        // the assertion below is exact: if the pin were ignored, the child
+        // would land on "ollama"/"qwen3" (the fallback), not "qwen3-coder"
+        // (the pin).
+        let fallback_session = crate::session::Session {
+            provider_name: Some("ollama".to_string()),
+            model_config: Some(crate::model::ModelConfig::new("qwen3").unwrap()),
+            ..crate::session::Session::default()
+        };
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let probe_cache = ProbeCache::new();
+        let policy = HeadlessDispatchPolicy {
+            session_for_provider_fallback: Some(Arc::new(fallback_session)),
+            restrict_ranked_selection_to_internal_engine: true,
+            auto_land: false,
+        };
+
+        let result = dispatch_goal_fn(
+            &context,
+            &probe_cache,
+            &card.id,
+            Some("permagent"),
+            Some(&policy),
+        )
+        .await;
+
+        std::env::remove_var("PERMAGENT_PACK_MECHANICAL_PROVIDER");
+        std::env::remove_var("PERMAGENT_PACK_MECHANICAL_MODEL");
+
+        let _session_id = result.expect("dispatch must succeed");
+
+        let updated = cards::get_card(&pool, &card.id)
+            .await
+            .unwrap()
+            .expect("the card must still exist");
+        let routing = updated
+            .metadata_json
+            .get("capability_snapshot")
+            .and_then(|s| s.get("model_routing"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a model_routing receipt, got {:?}",
+                    updated.metadata_json
+                )
+            });
+        assert_eq!(
+            routing.get("source").and_then(|v| v.as_str()),
+            Some("pack_pin"),
+            "{routing:?}"
+        );
+        assert_eq!(
+            routing.get("provider").and_then(|v| v.as_str()),
+            Some("ollama"),
+            "{routing:?}"
+        );
+        assert_eq!(
+            routing.get("model").and_then(|v| v.as_str()),
+            Some("qwen3-coder"),
+            "the receipt must name the PACK-pinned model, not the T1 session \
+             fallback ('qwen3'): {routing:?}"
+        );
     }
 
     /// Lane U / U1 (HARNESS_LOOP_LOG.md, "Lane G4 review" finding 1,

@@ -42,6 +42,19 @@ pub const KEY_MECHANICAL_MODEL: &str = "PERMAGENT_PACK_MECHANICAL_MODEL";
 pub const KEY_LOCAL_PROVIDER: &str = "PERMAGENT_PACK_LOCAL_PROVIDER";
 pub const KEY_LOCAL_MODEL: &str = "PERMAGENT_PACK_LOCAL_MODEL";
 
+/// X-cost-2: a DEDICATED review-only pack pin, deliberately separate from
+/// `Role::Hard`'s `PERMAGENT_PACK_HARD_*` keys. `pack_role_for_workflow_role`
+/// maps `WorkflowRole::Review` to `Role::Hard` so "I pinned all four packs"
+/// leaves no role free to route elsewhere, but that mapping means a HARD pin
+/// set for planning/hard-reasoning work was also silently swallowing the
+/// review role's cross-family requirement (measured: Lane A's ledger showed
+/// the reviewer landing same-family 3/3 times a HARD pack pin was set). An
+/// operator who wants review pinned to a SPECIFIC model — same-family or
+/// not — sets these keys; `cost_router::review_gate::decide_review_route` is
+/// the only reader.
+pub const KEY_REVIEW_PROVIDER: &str = "PERMAGENT_PACK_REVIEW_PROVIDER";
+pub const KEY_REVIEW_MODEL: &str = "PERMAGENT_PACK_REVIEW_MODEL";
+
 // ── Default models (the shipped tiered packs) ────────────────────────────────────
 
 /// The Anthropic provider id (see `providers::anthropic`).
@@ -305,6 +318,28 @@ pub fn pack_pin(role: Role) -> Option<ModelPack> {
     configured_pack_pin(role, |k| cfg.get_param::<String>(k).ok())
 }
 
+/// Pure: the DEDICATED review pack pin (X-cost-2), read from
+/// `PERMAGENT_PACK_REVIEW_*` — NOT `Role::Hard`'s keys. Same half-configured
+/// discipline as [`configured_pack_pin`]: both keys must be present and
+/// non-empty, or the pin is treated as unset.
+pub fn configured_review_pack_pin(read: impl Fn(&str) -> Option<String>) -> Option<ModelPack> {
+    let non_empty = |k: &str| {
+        read(k)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    Some(ModelPack {
+        provider: non_empty(KEY_REVIEW_PROVIDER)?,
+        model: non_empty(KEY_REVIEW_MODEL)?,
+    })
+}
+
+/// Live [`configured_review_pack_pin`] against the global config.
+pub fn review_pack_pin() -> Option<ModelPack> {
+    let cfg = crate::config::Config::global();
+    configured_review_pack_pin(|k| cfg.get_param::<String>(k).ok())
+}
+
 // ── Compose: route → tier → pack ─────────────────────────────────────────────
 
 /// The full "which model runs this sub-task" decision: classify + gate the work
@@ -397,6 +432,51 @@ mod tests {
                 None,
                 "{env:?}"
             );
+        }
+    }
+
+    // ── X-cost-2: the dedicated review pack pin ─────────────────────────────
+
+    /// The whole point: `PERMAGENT_PACK_REVIEW_*` is its OWN keyspace, not an
+    /// alias for `Role::Hard`'s `PERMAGENT_PACK_HARD_*`.
+    #[test]
+    fn review_pack_pin_reads_its_own_dedicated_keys() {
+        assert_eq!(configured_review_pack_pin(reader(&[])), None);
+        let env = [
+            (KEY_REVIEW_PROVIDER, "openai"),
+            (KEY_REVIEW_MODEL, "gpt-5.4-mini"),
+        ];
+        assert_eq!(
+            configured_review_pack_pin(reader(&env)),
+            Some(ModelPack::new("openai", "gpt-5.4-mini"))
+        );
+    }
+
+    /// A HARD pin alone must never be read as a review pin — that IS the
+    /// measured defect (Lane A's ledger): `Role::Hard`'s pin swallowed
+    /// review's cross-family requirement because `pack_pin(Role::Hard)` was
+    /// the only signal the old dispatch path consulted for the Review role.
+    #[test]
+    fn a_hard_pin_alone_is_not_a_review_pin() {
+        let env = [
+            (KEY_HARD_PROVIDER, "anthropic"),
+            (KEY_HARD_MODEL, "claude-opus-4-8"),
+        ];
+        assert_eq!(configured_review_pack_pin(reader(&env)), None);
+    }
+
+    /// Half a review pin is not a pin — same discipline as every other pack.
+    #[test]
+    fn a_half_configured_review_pin_is_unset() {
+        for env in [
+            vec![(KEY_REVIEW_PROVIDER, "openai")],
+            vec![(KEY_REVIEW_MODEL, "gpt-5.4-mini")],
+            vec![
+                (KEY_REVIEW_PROVIDER, "  "),
+                (KEY_REVIEW_MODEL, "gpt-5.4-mini"),
+            ],
+        ] {
+            assert_eq!(configured_review_pack_pin(reader(&env)), None, "{env:?}");
         }
     }
 
