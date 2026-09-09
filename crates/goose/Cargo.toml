@@ -214,7 +214,7 @@ shell-words = { workspace = true }
 # omission, but `cargo clippy -p permagent` alone does not.
 rusqlite = { version = "0.37", features = ["bundled", "backup"] }
 process-wrap = { version = "9.1.0", features = ["std"] }
-pem = { version = "3", optional = true }
+pem = { version = "4", optional = true }
 pkcs1 = { version = "0.7", default-features = false, features = ["pkcs8"], optional = true }
 pkcs8 = { version = "0.11", default-features = false, features = ["alloc"], optional = true }
 sec1 = { version = "0.7", default-features = false, features = ["der", "pkcs8"], optional = true }
