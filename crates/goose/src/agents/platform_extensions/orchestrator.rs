@@ -7219,16 +7219,59 @@ async fn auto_land_headless_goal(
         .metadata_json
         .get("worker_session_id")
         .and_then(|v| v.as_str());
-    if !session_had_successful_verify(pool, worker_session_id).await {
-        tracing::info!(
-            target: "permagentd::brain",
-            goal_id = %card.id,
-            decision_id = %decision_id,
-            "headless Auto: goal '{}' completed with no durable verifier pass in its worker \
-             session — leaving the approve_review decision open for review, not auto-landing",
-            card.title
-        );
-        return;
+    match session_verify_evidence(pool, worker_session_id).await {
+        VerifyEvidence::Genuine => {}
+        VerifyEvidence::None => {
+            tracing::info!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                decision_id = %decision_id,
+                "headless Auto: goal '{}' completed with no durable verifier pass in its worker \
+                 session — leaving the approve_review decision open for review, not auto-landing",
+                card.title
+            );
+            return;
+        }
+        VerifyEvidence::Vacuous(reason) => {
+            // G5 finding 1: a smoke-only or zero-tests PASS is authoritative
+            // on the wire but verified nothing real. Refuse to auto-land —
+            // and, unlike the "no pass at all" case above, leave a durable
+            // receipt naming WHY, so a human reviewing the goal sees exactly
+            // what the worker's own verify tool reported rather than a
+            // generic "nothing ran" silence.
+            let vacuous_note = format!("verify pass was vacuous: {reason}");
+            if let Err(e) = cards::set_goal_verdict_and_program_receipts(
+                pool,
+                &card.id,
+                serde_json::json!({
+                    "status": "vacuous",
+                    "source": "headless_auto_worker_verify_tool",
+                    "reason": vacuous_note,
+                    "recorded_at": chrono::Utc::now().to_rfc3339(),
+                }),
+                None,
+            )
+            .await
+            {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    goal_id = %card.id,
+                    "headless Auto: could not record the vacuous-verify receipt for goal '{}' \
+                     ({e})",
+                    card.title
+                );
+            }
+            tracing::info!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                decision_id = %decision_id,
+                "headless Auto: goal '{}' completed with only a vacuous verifier pass ({}) — \
+                 leaving the approve_review decision open for review, not auto-landing",
+                card.title,
+                vacuous_note
+            );
+            return;
+        }
     }
 
     if let Err(e) = cards::set_goal_verdict_and_program_receipts(
@@ -8285,16 +8328,47 @@ pub fn is_verify_tool_name(name: &str) -> bool {
         || name.contains("__verify_")
 }
 
-/// True only when a verify-named tool request has a paired, successful tool
-/// response. Plain prose, an unpaired request, an RPC error, and a
-/// `CallToolResult` carrying `is_error=true` are all non-evidence.
-fn messages_have_successful_verify(
+/// G5 finding 1: what a transcript's verify-tool evidence amounts to once a
+/// vacuous pass (`developer::verify::vacuous_pass_reason` — a syntax-only
+/// smoke check, a "nothing to verify yet" no-checks pass, or a real command
+/// that itself reported zero tests) is treated as exactly what it is: not
+/// real coverage. `Genuine` is the only variant a completion gate may act
+/// on. `Vacuous` keeps the reason from the LAST such pass observed so a
+/// refusing caller (`auto_land_headless_goal`) can name it in its receipt
+/// instead of silently behaving as if verify had never run at all.
+enum VerifyEvidence {
+    Genuine,
+    Vacuous(String),
+    None,
+}
+
+impl VerifyEvidence {
+    fn is_genuine(&self) -> bool {
+        matches!(self, VerifyEvidence::Genuine)
+    }
+}
+
+/// Scan for verify-tool evidence: a genuine, paired, successful
+/// (`is_error != true`) response to a verify-named request wins outright the
+/// instant it's found. A vacuous pass never short-circuits the scan — a
+/// LATER genuine pass in the same transcript still counts — but its reason
+/// is remembered in case no genuine pass ever turns up. Plain prose, an
+/// unpaired request, an RPC error, and a `CallToolResult` carrying
+/// `is_error=true` are all non-evidence — same as before this function
+/// existed. `.is_genuine()` on the result is what `maybe_hold_review` and
+/// `auto_land_headless_goal` — the ONLY two consumers of verify evidence —
+/// both gate on; G5 finding 1: before this function existed, both callers
+/// went through a predicate that checked `is_authoritative_pass` alone, so a
+/// smoke-only or zero-tests PASS satisfied it identically to a real one.
+fn verify_evidence_in_messages(
     messages: &[crate::conversation::message::MessageContent],
-) -> bool {
+) -> VerifyEvidence {
+    use crate::agents::platform_extensions::developer::verify;
     use crate::conversation::message::MessageContent;
     use std::collections::HashSet;
 
     let mut pending = HashSet::new();
+    let mut vacuous_reason = None;
     for content in messages {
         match content {
             MessageContent::ToolRequest(request) => {
@@ -8306,26 +8380,31 @@ fn messages_have_successful_verify(
                     pending.insert(request.id.as_str());
                 }
             }
-            MessageContent::ToolResponse(response)
-                if pending.remove(response.id.as_str())
-                    && response.tool_result.as_ref().is_ok_and(
-                        crate::agents::platform_extensions::developer::verify::is_authoritative_pass,
-                    ) =>
-            {
-                return true;
+            MessageContent::ToolResponse(response) if pending.remove(response.id.as_str()) => {
+                if let Ok(result) = response.tool_result.as_ref() {
+                    if verify::is_genuine_pass(result) {
+                        return VerifyEvidence::Genuine;
+                    }
+                    if let Some(reason) = verify::vacuous_pass_reason(result) {
+                        vacuous_reason = Some(reason);
+                    }
+                }
             }
             _ => {}
         }
     }
-    false
+    match vacuous_reason {
+        Some(reason) => VerifyEvidence::Vacuous(reason),
+        None => VerifyEvidence::None,
+    }
 }
 
-async fn session_had_successful_verify(
+async fn session_verify_evidence(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     session_id: Option<&str>,
-) -> bool {
+) -> VerifyEvidence {
     let Some(sid) = session_id else {
-        return false;
+        return VerifyEvidence::None;
     };
     let Ok(rows) = sqlx::query_scalar::<_, String>(
         "SELECT content_json FROM messages WHERE session_id = ? ORDER BY created_timestamp, id",
@@ -8334,7 +8413,7 @@ async fn session_had_successful_verify(
     .fetch_all(pool)
     .await
     else {
-        return false;
+        return VerifyEvidence::None;
     };
     let contents: Vec<crate::conversation::message::MessageContent> = rows
         .iter()
@@ -8343,7 +8422,14 @@ async fn session_had_successful_verify(
         })
         .flatten()
         .collect();
-    messages_have_successful_verify(&contents)
+    verify_evidence_in_messages(&contents)
+}
+
+async fn session_had_successful_verify(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: Option<&str>,
+) -> bool {
+    session_verify_evidence(pool, session_id).await.is_genuine()
 }
 
 /// Hold a premature InProgress → Review. `None` means allow the transition.
@@ -10395,6 +10481,75 @@ mod tests {
         stamp_verify_exchange(pool, card_id, true).await;
     }
 
+    /// G5 finding 1: a worker session whose verify tool returned an
+    /// authoritative PASS that is nonetheless vacuous (here: a real command
+    /// that reported zero tests) — the case `is_authoritative_pass` alone
+    /// used to let through both `maybe_hold_review` and
+    /// `auto_land_headless_goal`.
+    async fn stamp_vacuous_verify_exchange(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) {
+        use crate::conversation::message::MessageContent;
+        use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+
+        let session_id = format!("verify-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(&session_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        stamp_worker_session(pool, card_id, &session_id).await;
+        let call_id = format!("call-{}", uuid::Uuid::new_v4());
+        append_tool_message(
+            pool,
+            &session_id,
+            "assistant",
+            MessageContent::tool_request(
+                &call_id,
+                Ok(CallToolRequestParams::new("developer__verify")),
+            ),
+        )
+        .await;
+        let mut result = CallToolResult::success(vec![Content::text(
+            "test result: ok. 0 passed; 0 failed; 0 ignored",
+        )]);
+        result.structured_content = Some(serde_json::json!({
+            "kind": crate::agents::platform_extensions::developer::verify::VERIFICATION_OBSERVATION_KIND,
+            "command": "test",
+            "verdict": "pass",
+            "evidence": "test result: ok. 0 passed; 0 failed; 0 ignored",
+            "vacuous_reason": "the command reported zero tests run",
+        }));
+        append_tool_message(
+            pool,
+            &session_id,
+            "user",
+            MessageContent::tool_response(&call_id, Ok(result)),
+        )
+        .await;
+    }
+
+    fn vacuous_verify_exchange() -> Vec<crate::conversation::message::MessageContent> {
+        use crate::conversation::message::MessageContent;
+        use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+
+        let mut result = CallToolResult::success(vec![Content::text(
+            "test result: ok. 0 passed; 0 failed; 0 ignored",
+        )]);
+        result.structured_content = Some(serde_json::json!({
+            "kind": crate::agents::platform_extensions::developer::verify::VERIFICATION_OBSERVATION_KIND,
+            "command": "test",
+            "verdict": "pass",
+            "evidence": "test result: ok. 0 passed; 0 failed; 0 ignored",
+            "vacuous_reason": "the command reported zero tests run",
+        }));
+        vec![
+            MessageContent::tool_request(
+                "verify-call",
+                Ok(CallToolRequestParams::new("developer__verify")),
+            ),
+            MessageContent::tool_response("verify-call", Ok(result)),
+        ]
+    }
+
     fn verify_exchange(successful: bool) -> Vec<crate::conversation::message::MessageContent> {
         use crate::conversation::message::MessageContent;
         use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
@@ -10424,17 +10579,28 @@ mod tests {
         let contents = vec![crate::conversation::message::MessageContent::text(
             "I will verify this later",
         )];
-        assert!(!messages_have_successful_verify(&contents));
+        assert!(!verify_evidence_in_messages(&contents).is_genuine());
     }
 
     #[test]
     fn failed_verify_response_is_not_verification_evidence() {
-        assert!(!messages_have_successful_verify(&verify_exchange(false)));
+        assert!(!verify_evidence_in_messages(&verify_exchange(false)).is_genuine());
     }
 
     #[test]
     fn paired_successful_verify_response_is_verification_evidence() {
-        assert!(messages_have_successful_verify(&verify_exchange(true)));
+        assert!(verify_evidence_in_messages(&verify_exchange(true)).is_genuine());
+    }
+
+    /// G5 finding 1: a vacuous pass (here: a real command that reported zero
+    /// tests) is authoritative on the wire but must NOT count as
+    /// verification evidence — this is the exact signal both
+    /// `maybe_hold_review` and `auto_land_headless_goal` consult, and prior
+    /// to this fix this predicate called `is_authoritative_pass` alone, so a
+    /// vacuous pass satisfied it identically to a real one.
+    #[test]
+    fn vacuous_verify_response_is_not_verification_evidence() {
+        assert!(!verify_evidence_in_messages(&vacuous_verify_exchange()).is_genuine());
     }
 
     #[tokio::test]
@@ -10452,6 +10618,31 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(col.state_binding.as_deref(), Some("ready"));
+    }
+
+    /// G5 finding 1, `maybe_hold_review` half: a worker session whose only
+    /// verify pass is vacuous must be held back to Ready exactly like a
+    /// worker session with a real failure or no verify at all — never
+    /// treated as "verified" just because the wire result says PASS.
+    #[tokio::test]
+    async fn vacuous_verify_exchange_requeues_instead_of_reviewing() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_vacuous_verify_exchange(&pool, &card.id).await;
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+        let after = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &after.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "a vacuous verify pass must hold the goal back to Ready, not let it reach Review"
+        );
     }
 
     #[tokio::test]
@@ -12951,6 +13142,83 @@ mod tests {
         assert!(
             d.acted_by.is_none(),
             "an unverified completion must never be auto-answered"
+        );
+    }
+
+    /// G5 finding 1: a goal whose worker session's ONLY verify pass is
+    /// vacuous (a smoke-only or zero-tests PASS — authoritative on the wire,
+    /// but not real coverage) must be refused exactly like the no-pass-at-all
+    /// case above: the working directory must not advance, the decision
+    /// stays open for a human, and — unlike the no-pass case — a durable
+    /// receipt naming the reason is recorded on the card so a reviewer sees
+    /// why headless landing declined to act.
+    #[tokio::test]
+    async fn headless_auto_land_does_not_land_a_goal_with_only_a_vacuous_verifier_pass() {
+        let (repo, head) = v1_repo_with_finished_goal_branch("v1-vacuous-noland-run");
+        let root = repo.path().to_string_lossy().into_owned();
+
+        let pool = test_pool().await;
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(&root)
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        v1_stamp_dispatch_evidence(&pool, &card.id, "v1-vacuous-noland-run", &head).await;
+        stamp_vacuous_verify_exchange(&pool, &card.id).await;
+        let decision = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
+        // Re-fetch for the same reason the positive landing test does: the
+        // vacuous-verify stamp above set `worker_session_id` on the card row
+        // AFTER `card` was captured.
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        auto_land_headless_goal(&pool, &decision.id, &card, true, Some("coord-session-1")).await;
+
+        assert_ne!(
+            git_v1(repo.path(), &["rev-parse", "HEAD"]),
+            head,
+            "with only a vacuous verifier pass, the working directory must NOT advance"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("review"),
+            "a vacuous-only completion must stay in Review, not auto-advance to Complete"
+        );
+
+        assert_eq!(
+            updated
+                .metadata_json
+                .pointer("/dispatch_evidence/verdict/status")
+                .and_then(|v| v.as_str()),
+            Some("vacuous"),
+            "the refusal must leave a durable receipt on the card"
+        );
+        let reason = updated
+            .metadata_json
+            .pointer("/dispatch_evidence/verdict/reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            reason.starts_with("verify pass was vacuous: "),
+            "the receipt must name the vacuous reason, got {reason:?}"
+        );
+
+        let d = decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+            .await
+            .unwrap()
+            .expect("the approve_review decision must remain open for a human");
+        assert_eq!(d.status, "open");
+        assert!(
+            d.acted_by.is_none(),
+            "a vacuous-only completion must never be auto-answered"
         );
     }
 

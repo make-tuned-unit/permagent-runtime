@@ -105,6 +105,13 @@ struct PreparedChild {
     /// own. Prepended to the child's result text so the restriction is
     /// visible in-band, not only in `_meta`.
     roadmap_gate_note: Option<String>,
+    /// G5 finding 2: `worker_persona: "reviewer"` (case-insensitive), same
+    /// test `handle_delegate` uses. Drives the fan-out closure's
+    /// snapshot-before/diff-after reviewer-mutation backstop — before this
+    /// field existed, a `delegate_many` child never got that check at all,
+    /// so a coordinator could route a reviewer through the fan-out path to
+    /// bypass X-verify-1 entirely.
+    is_reviewer_persona: bool,
 }
 
 pub struct BackgroundTask {
@@ -649,6 +656,11 @@ impl SummonClient {
                     format!("child {index} ({label}): failed to build task config: {e}")
                 })?;
 
+            let is_reviewer_persona = child
+                .worker_persona
+                .as_deref()
+                .is_some_and(|p| p.eq_ignore_ascii_case("reviewer"));
+
             prepared.push(PreparedChild {
                 label,
                 working_dir: working_dir.clone(),
@@ -657,6 +669,7 @@ impl SummonClient {
                 routing_receipt,
                 persona_override: Self::resolve_worker_persona(child.worker_persona.as_deref()),
                 roadmap_gate_note,
+                is_reviewer_persona,
             });
         }
 
@@ -674,6 +687,7 @@ impl SummonClient {
 
         let session_manager = self.context.session_manager.clone();
         let subscribers = Arc::clone(&self.notification_subscribers);
+        let parent_session_id = session_id.to_string();
         let outcomes = fanout::run_bounded(
             prepared,
             concurrency,
@@ -681,6 +695,7 @@ impl SummonClient {
             move |index, child, token| {
                 let session_manager = session_manager.clone();
                 let subscribers = Arc::clone(&subscribers);
+                let parent_session_id = parent_session_id.clone();
                 async move {
                     let PreparedChild {
                         label,
@@ -690,7 +705,26 @@ impl SummonClient {
                         routing_receipt,
                         persona_override,
                         roadmap_gate_note,
+                        is_reviewer_persona,
                     } = child;
+
+                    // G5 finding 2: snapshot the working tree BEFORE this
+                    // child runs when it is a reviewer persona — the exact
+                    // check `handle_delegate` already does for the single-
+                    // call path, now shared via
+                    // `detect_and_record_reviewer_mutation` so a
+                    // `delegate_many` reviewer child cannot route around it.
+                    let reviewer_snapshot_dir = working_dir.clone();
+                    let reviewer_before_snapshot = if is_reviewer_persona {
+                        Some(
+                            crate::agents::platform_extensions::reviewer_integrity::snapshot(
+                                &reviewer_snapshot_dir,
+                            )
+                            .await,
+                        )
+                    } else {
+                        None
+                    };
 
                     let subagent_session = match session_manager
                         .create_session(
@@ -747,6 +781,24 @@ impl SummonClient {
                     })
                     .await;
 
+                    // G5 finding 2: the subagent has now run to completion —
+                    // diff the post-run snapshot against the pre-run one
+                    // captured above (if any) and record the mutation
+                    // receipt, exactly what `handle_delegate` does for the
+                    // single-call path, via the SAME shared helper.
+                    let mutated_paths = if let Some(before) = &reviewer_before_snapshot {
+                        Self::detect_and_record_reviewer_mutation(
+                            &session_manager,
+                            &parent_session_id,
+                            &reviewer_snapshot_dir,
+                            before,
+                            &subagent_id,
+                        )
+                        .await
+                    } else {
+                        None
+                    };
+
                     let (status, text) = match result {
                         Ok(text) => {
                             let text = match &roadmap_gate_note {
@@ -762,6 +814,17 @@ impl SummonClient {
                             fanout::ChildStatus::Failed,
                             format!("delegation failed: {e}"),
                         ),
+                    };
+                    // A mutation voids the verdict regardless of whether the
+                    // child's own call succeeded or errored (same rule as
+                    // the single `delegate` path) — the aggregate `status`
+                    // is left as-is (matching `handle_delegate`, which
+                    // returns `CallToolResult::success` even for a voided
+                    // reviewer), and only the returned text carries the void
+                    // signal a coordinator actually reads.
+                    let text = match &mutated_paths {
+                        Some(paths) => crate::after_turn::reviewer_mutation_void_text(paths, &text),
+                        None => text,
                     };
                     fanout::ChildOutcome {
                         index,
@@ -1420,50 +1483,21 @@ impl SummonClient {
         // difference here is independent of whatever tool the reviewer used
         // (the F2 allowlist restriction, or its absence, is irrelevant to
         // this check) and independent of what the reviewer's own text
-        // claims.
+        // claims. G5 finding 2: this is now the SAME shared helper
+        // `handle_delegate_many`'s fan-out closure calls, so the two
+        // reviewer-dispatch paths cannot drift apart again.
         let mutated_paths = if let Some(before) = &reviewer_before_snapshot {
-            let after = crate::agents::platform_extensions::reviewer_integrity::snapshot(
+            Self::detect_and_record_reviewer_mutation(
+                &self.context.session_manager,
+                session_id,
                 &reviewer_snapshot_dir,
+                before,
+                &subagent_session_id,
             )
-            .await;
-            let paths =
-                crate::agents::platform_extensions::reviewer_integrity::diff(before, &after);
-            if paths.is_empty() {
-                None
-            } else {
-                Some(paths)
-            }
+            .await
         } else {
             None
         };
-
-        if let Some(paths) = &mutated_paths {
-            tracing::warn!(
-                target: "permagentd::brain",
-                paths = ?paths,
-                subagent_session_id = %subagent_session_id,
-                "reviewer subagent mutated the working tree; voiding its verdict"
-            );
-            // (a) Record a receipt on the PARENT session — best-effort: a
-            // failure to persist it must never block returning the (still
-            // correctly voided) result below.
-            if let Err(e) = self
-                .context
-                .session_manager
-                .record_reviewer_mutation(
-                    session_id,
-                    paths.clone(),
-                    Some(subagent_session_id.clone()),
-                )
-                .await
-            {
-                tracing::warn!(
-                    target: "permagentd::brain",
-                    error = %e,
-                    "failed to record the reviewer-mutation receipt on the session (non-fatal)"
-                );
-            }
-        }
 
         // (b) A mutation voids the verdict regardless of whether the
         // subagent's own call succeeded or errored — either way its text
@@ -1502,6 +1536,57 @@ impl SummonClient {
                 Ok(CallToolResult::error(vec![Content::text(original_text)]).with_meta(Some(meta)))
             }
         }
+    }
+
+    /// G5 finding 2: diff a reviewer-persona child's pre-run tree snapshot
+    /// against a fresh post-run snapshot of the same working directory and,
+    /// if anything changed, record the mutation receipt on the PARENT
+    /// session. This is the ONE place that decides what "the reviewer
+    /// mutated the tree" means and how it gets recorded — shared by
+    /// `handle_delegate` (the single-call reviewer path X-verify-1
+    /// originally wired this into) and `handle_delegate_many`'s fan-out
+    /// closure (which had no such backstop at all before this fix, so a
+    /// coordinator could route a `worker_persona: "reviewer"` child through
+    /// `delegate_many` to bypass X-verify-1 entirely). Returns the mutated
+    /// paths (`None` for an empty diff) so the caller can void the child's
+    /// own result text via `after_turn::reviewer_mutation_void_text`.
+    async fn detect_and_record_reviewer_mutation(
+        session_manager: &crate::session::SessionManager,
+        parent_session_id: &str,
+        working_dir: &Path,
+        before: &crate::agents::platform_extensions::reviewer_integrity::TreeSnapshot,
+        subagent_session_id: &str,
+    ) -> Option<Vec<String>> {
+        let after =
+            crate::agents::platform_extensions::reviewer_integrity::snapshot(working_dir).await;
+        let paths = crate::agents::platform_extensions::reviewer_integrity::diff(before, &after);
+        if paths.is_empty() {
+            return None;
+        }
+        tracing::warn!(
+            target: "permagentd::brain",
+            paths = ?paths,
+            subagent_session_id = %subagent_session_id,
+            "reviewer subagent mutated the working tree; voiding its verdict"
+        );
+        // Record a receipt on the PARENT session — best-effort: a failure to
+        // persist it must never block returning the (still correctly
+        // voided) result to the caller.
+        if let Err(e) = session_manager
+            .record_reviewer_mutation(
+                parent_session_id,
+                paths.clone(),
+                Some(subagent_session_id.to_string()),
+            )
+            .await
+        {
+            tracing::warn!(
+                target: "permagentd::brain",
+                error = %e,
+                "failed to record the reviewer-mutation receipt on the session (non-fatal)"
+            );
+        }
+        Some(paths)
     }
 
     /// Resolve worker_persona key to a (block, display_name) tuple.
@@ -4019,6 +4104,149 @@ You review code."#;
             .await
             .expect_err("zero children is not a fan-out");
         assert!(err.contains("at least one child"), "{err}");
+    }
+
+    // ── G5 finding 2: reviewer mutation detection in `delegate_many` ────────
+    //
+    // `handle_delegate_many` fans a child out through `run_subagent_task`,
+    // which needs a real model provider — there is no in-process fake for it
+    // in this crate's unit tests (the same constraint X-verify-1's own tests
+    // worked within: it pinned `reviewer_integrity::{snapshot,diff}` and
+    // `after_turn::reviewer_mutation_void_text` directly rather than driving
+    // a full `handle_delegate` call end to end). So these tests pin the
+    // extracted helper `detect_and_record_reviewer_mutation` directly — the
+    // EXACT function both `handle_delegate` and `handle_delegate_many`'s
+    // fan-out closure now call — proving the fan-out path has the identical
+    // detection-and-receipt behavior the single-call path already had.
+    // Before this fix, no equivalent of this function was reachable from
+    // `handle_delegate_many` at all: a reviewer-persona child's mutation
+    // went completely undetected there.
+
+    fn reviewer_git_repo() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .current_dir(dir.path())
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["-c", "init.defaultBranch=main", "init", "-q"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "test"]);
+        fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "--no-gpg-sign", "-qm", "init"]);
+        dir
+    }
+
+    #[tokio::test]
+    async fn delegate_many_reviewer_mutation_is_detected_and_voids_via_the_shared_helper() {
+        let repo = reviewer_git_repo();
+        let before =
+            crate::agents::platform_extensions::reviewer_integrity::snapshot(repo.path()).await;
+
+        // Simulate what a reviewer-persona child in `delegate_many`'s
+        // fan-out did during its run: edit a tracked file instead of only
+        // reviewing it.
+        fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+
+        let temp_dir = TempDir::new().unwrap();
+        let session_manager = crate::session::SessionManager::new(temp_dir.path().to_path_buf());
+        let parent = session_manager
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        let mutated = SummonClient::detect_and_record_reviewer_mutation(
+            &session_manager,
+            &parent.id,
+            repo.path(),
+            &before,
+            "delegate-many-child-1",
+        )
+        .await;
+
+        assert_eq!(
+            mutated,
+            Some(vec!["a.txt".to_string()]),
+            "delegate_many's reviewer child must be caught by the same detector as \
+             handle_delegate's single-call path"
+        );
+
+        let text = crate::after_turn::reviewer_mutation_void_text(
+            mutated.as_deref().unwrap(),
+            "VERDICT: APPROVE",
+        );
+        assert!(
+            text.contains("a.txt"),
+            "the voided text must name the mutated path: {text}"
+        );
+        assert!(
+            text.starts_with(crate::after_turn::REVIEWER_MUTATION_VOID_PREFIX),
+            "the void sentinel must be the first line of the returned text: {text}"
+        );
+
+        let reloaded = session_manager
+            .get_session(&parent.id, false)
+            .await
+            .unwrap();
+        let receipts = crate::session::reviewer_mutation_receipts(&reloaded.extension_data);
+        assert_eq!(
+            receipts.len(),
+            1,
+            "the receipt must land on the PARENT session"
+        );
+        assert_eq!(receipts[0].paths, vec!["a.txt".to_string()]);
+        assert_eq!(
+            receipts[0].subagent_session_id.as_deref(),
+            Some("delegate-many-child-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn delegate_many_reviewer_with_a_clean_tree_is_not_voided() {
+        let repo = reviewer_git_repo();
+        let before =
+            crate::agents::platform_extensions::reviewer_integrity::snapshot(repo.path()).await;
+        // No mutation this time — a genuine, read-only review.
+
+        let temp_dir = TempDir::new().unwrap();
+        let session_manager = crate::session::SessionManager::new(temp_dir.path().to_path_buf());
+        let parent = session_manager
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        let mutated = SummonClient::detect_and_record_reviewer_mutation(
+            &session_manager,
+            &parent.id,
+            repo.path(),
+            &before,
+            "delegate-many-child-2",
+        )
+        .await;
+
+        assert_eq!(mutated, None, "a clean reviewer child must never be voided");
+        let reloaded = session_manager
+            .get_session(&parent.id, false)
+            .await
+            .unwrap();
+        assert!(
+            crate::session::reviewer_mutation_receipts(&reloaded.extension_data).is_empty(),
+            "no receipt may be recorded when nothing changed"
+        );
     }
 
     #[test]

@@ -111,6 +111,19 @@ pub fn vacuous_pass_reason(result: &CallToolResult) -> Option<String> {
     observation.vacuous_reason
 }
 
+/// G5 finding 1: the ONE predicate that means "this verify result is real
+/// evidence a completion gate may act on" — an authoritative pass (see
+/// [`is_authoritative_pass`]) that is ALSO not vacuous (see
+/// [`vacuous_pass_reason`]). `messages_have_successful_verify`
+/// (`orchestrator.rs`) is the sole caller and, through it, both
+/// `maybe_hold_review` (the Review-transition gate) and
+/// `auto_land_headless_goal` (the unattended landing path) — a smoke-only or
+/// zero-tests pass must refuse both exactly as if verify had never run at
+/// all, never just one of them.
+pub fn is_genuine_pass(result: &CallToolResult) -> bool {
+    is_authoritative_pass(result) && vacuous_pass_reason(result).is_none()
+}
+
 /// The verification boundary requested by the caller. `Auto` is deliberately
 /// conservative: it scopes checks to the changed files and never upgrades a
 /// docs or package change into a workspace-wide Rust test.
@@ -1660,6 +1673,56 @@ mod tests {
         let failed = fail_result(&Check::direct("cargo", &["test"]), Some(1), "0 passed");
         assert!(!is_authoritative_pass(&failed));
         assert_eq!(vacuous_pass_reason(&failed), None);
+    }
+
+    // ── G5 finding 1: the shared genuine-pass predicate ─────────────────────
+
+    #[test]
+    fn is_genuine_pass_rejects_a_smoke_only_pass() {
+        let result = pass_result(
+            &[Check::direct_owned(
+                "python3",
+                vec![
+                    "-m".to_string(),
+                    "py_compile".to_string(),
+                    "a.py".to_string(),
+                ],
+            )
+            .smoke_only()],
+            &[String::new()],
+        );
+        assert!(
+            is_authoritative_pass(&result),
+            "the underlying wire result is still an authoritative pass"
+        );
+        assert!(
+            !is_genuine_pass(&result),
+            "a smoke-only pass must never read as a genuine, actionable pass"
+        );
+    }
+
+    #[test]
+    fn is_genuine_pass_rejects_a_zero_tests_pass() {
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &["test result: ok. 0 passed; 0 failed; 0 ignored".to_string()],
+        );
+        assert!(!is_genuine_pass(&result));
+    }
+
+    #[test]
+    fn is_genuine_pass_accepts_a_real_multi_test_pass() {
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &["test result: ok. 120 passed; 0 failed; 0 ignored".to_string()],
+        );
+        assert!(is_genuine_pass(&result));
+    }
+
+    #[test]
+    fn is_genuine_pass_rejects_a_failure() {
+        let failed = fail_result(&Check::direct("cargo", &["test"]), Some(1), "boom");
+        assert!(!is_genuine_pass(&failed));
     }
 
     #[test]
