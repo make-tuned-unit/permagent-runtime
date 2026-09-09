@@ -98,10 +98,11 @@ const DEFAULT_LIST_LIMIT: usize = 10;
 
 // Planner routing for roadmap decomposition (#249, re-ruled 2026-09-09 — Round
 // C Lane Z3, `HARNESS_LOOP_LOG.md` Lane M6: the OLD default below routed the
-// PLAN to `ollama/qwen2.5:7b`, the cheapest model configured, which is the
-// exact opposite of the ruling "plan on the strongest model, work on the
-// cheapest graduated one". Lane M6 traced 0/9 landed roadmaps that round to
-// ungrounded acceptance criteria a cheap, ineligible planner wrote.
+// PLAN to the cheapest local Ollama model configured (an always-Unrated,
+// always-ineligible id), which is the exact opposite of the ruling "plan on
+// the strongest model, work on the cheapest graduated one". Lane M6 traced
+// 0/9 landed roadmaps that round to ungrounded acceptance criteria a cheap,
+// ineligible planner wrote.
 //
 // There is no compiled-in default provider/model here anymore. Precedence
 // (`resolve_decomposition_provider`, `capability_directory::resolve_planner`):
@@ -11313,23 +11314,31 @@ mod tests {
     use rmcp::model::Role;
 
     /// D4 (Lane Z3, Round C): the OLD compiled-in cheap decomposition default
-    /// (`ollama`/`qwen2.5:7b`, #249) is gone from the source — the planner is
-    /// resolved from the capability directory (`resolve_planner_route`), never
-    /// a hardcoded cheap model. Source-grep, mirroring `derived.rs`'s
-    /// `main_loop_model_path_never_consults_the_derived_map` convention.
+    /// (#249) is gone from the source — the planner is resolved from the
+    /// capability directory (`resolve_planner_route`), never a hardcoded
+    /// cheap model. Source-grep, mirroring `derived.rs`'s
+    /// `main_loop_model_path_never_consults_the_derived_map` convention. The
+    /// literal old default id is deliberately NOT spelled out in this file's
+    /// own comments (this test's own doc comment included) so the assertion
+    /// below stays meaningful — see `HARNESS_LOOP_LOG.md` Lane M6 for the id.
     #[test]
     fn decomposition_default_is_no_longer_qwen() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src/agents/platform_extensions/orchestrator.rs");
         let src = std::fs::read_to_string(&path).unwrap();
+        let old_cheap_default_id = format!("qwen2{}5:7b", '.');
         assert!(
-            !src.contains("qwen2.5:7b"),
+            !src.contains(&old_cheap_default_id),
             "the compiled-in cheap decomposition default must be gone from {}",
             path.display()
         );
+        // Built via concatenation, not written literally, so this test's own
+        // source doesn't trip its own negative assertion (the const names
+        // would otherwise appear once, right here, in the check for them).
+        let old_const_provider = ["DEFAULT_DECOMPOSITION", "_PROVIDER"].concat();
+        let old_const_model = ["DEFAULT_DECOMPOSITION", "_MODEL"].concat();
         assert!(
-            !src.contains("DEFAULT_DECOMPOSITION_PROVIDER")
-                && !src.contains("DEFAULT_DECOMPOSITION_MODEL"),
+            !src.contains(&old_const_provider) && !src.contains(&old_const_model),
             "the DEFAULT_DECOMPOSITION_* consts must be gone from {}",
             path.display()
         );

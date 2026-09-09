@@ -200,7 +200,7 @@ impl TryFrom<RoleEvidenceRaw> for RoleEvidence {
 /// (direct calls) or deserializing a persisted file (via the guarded
 /// `try_from`), both of which run [`validate_graduation`]. `Default` is the
 /// unrated state every role starts in.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RoleEvidenceRaw")]
 pub struct RoleEvidence {
     graduated: bool,
@@ -211,21 +211,6 @@ pub struct RoleEvidence {
     observed_cost_usd: Option<f64>,
     observed_latency_s: Option<f64>,
     snapshot_date: Option<NaiveDate>,
-}
-
-impl Default for RoleEvidence {
-    fn default() -> Self {
-        Self {
-            graduated: false,
-            smoke_passed: false,
-            micro_suite_pass_pct: None,
-            dag_selection_pct: None,
-            evidence_run_ids: Vec::new(),
-            observed_cost_usd: None,
-            observed_latency_s: None,
-            snapshot_date: None,
-        }
-    }
 }
 
 impl RoleEvidence {
@@ -518,14 +503,13 @@ impl CapabilityDirectory {
         if candidates.is_empty() {
             return None;
         }
-        let ord = |a: &&CapabilityCard, b: &&CapabilityCard| {
+        let strongest = *candidates.iter().max_by(|a, b| {
             a.strengths
                 .orchestration
                 .total_cmp(&b.strengths.orchestration)
                 .then_with(|| a.provider.cmp(&b.provider))
                 .then_with(|| a.model.cmp(&b.model))
-        };
-        let strongest = *candidates.iter().max_by(ord)?;
+        })?;
         let band_floor = strongest.strengths.orchestration - PLANNER_STRENGTH_BAND;
         let pick = *candidates
             .iter()
