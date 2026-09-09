@@ -4212,7 +4212,12 @@ impl OrchestratorClient {
                 ))]))
             }
             GoalAction::Review => {
-                if let Some(held) = maybe_hold_review(&pool, &card).await? {
+                // A manual `goal_advance{action: review}` call is never a
+                // headless auto-land dispatch (that path always routes
+                // through `handle_goal_completion`) — same `false, None` this
+                // call site has always passed to the hold gate, now spelled
+                // out explicitly for the credit path's benefit.
+                if let Some(held) = maybe_hold_review(&pool, &card, false, None).await? {
                     self.invalidate_kanban_cache().await;
                     return Ok(CallToolResult::success(vec![Content::text(held)]));
                 }
@@ -5433,15 +5438,82 @@ impl OrchestratorClient {
 
         let draft = escalate_tool::draft_from_payload(raw, &source);
         let sink = escalate_tool::global_decision_sink();
-        let recorded = sink
-            .record(draft.clone())
-            .await
-            .map_err(|e| format!("Failed to record escalation: {}", e))?;
-
-        Ok(CallToolResult::success(vec![Content::text(
-            escalate_tool::tool_result_text(&draft, &recorded.decision_id),
-        )]))
+        // Whether THIS process is a headless coding-harness session — never
+        // true for the daemon (see `HeadlessDispatchPolicyConfig`'s own doc
+        // comment: the daemon never installs one).
+        let headless = HEADLESS_DISPATCH_POLICY_CONFIG.get().is_some();
+        let text = record_escalation(sink.as_ref(), draft, headless).await?;
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
+}
+
+/// Z2-2 (harness loop, coding-harness excellence iteration, Round C, M6 #3):
+/// record `draft` through `sink`, then shape the tool result around whether
+/// this call is running in a headless session — the actual logic
+/// `handle_escalate` delegates to. Extracted so it is unit-testable against
+/// an INJECTED sink/headless flag rather than the two shared, process-global
+/// `OnceLock`s `handle_escalate` itself reads
+/// (`decision_inbox::escalate::GLOBAL_SINK`, `HEADLESS_DISPATCH_POLICY_CONFIG`)
+/// — the same reason the git-init-gate tests above avoid touching
+/// `HEADLESS_DISPATCH_POLICY_CONFIG` a third time: any `--lib` unit test that
+/// installs a value into either global stays set for the rest of that
+/// binary's `cargo test` run and can silently collide with an unrelated
+/// test.
+///
+/// M6 report, NEW Defect #3: `escalate{resume: auto}` in a headless run
+/// never produced a resolvable decision — 0/2 calls left a `decisions` row
+/// behind, and the coordinator's own narration ("It is now in the decision
+/// inbox; work resumes automatically") was the only trace, so the task
+/// stalled silently until the outer cap. `sink.record` below always mints
+/// the row now (the root cause was that a headless CLI session never
+/// installed the SQL-backed sink at all — see
+/// `install_decision_sink_for_headless_session`'s own doc comment — so this
+/// alone fixes "no row exists"). Separately: no escalate-originated decision
+/// kind can be safely AUTO-ANSWERED under `ACTOR_AUTO_LAUNCH` — a
+/// `capability` escalation is hardcoded Tier 2
+/// (`DecisionKind::minimum_tier` — a single human owner only, never
+/// auto-launch, by design),
+/// and a `decision`/`choice` escalation exists specifically because the
+/// system does not know which option is right, so auto-picking one would
+/// defeat the entire reason it escalated. Every existing `ACTOR_AUTO_LAUNCH`
+/// precedent (`auto_approve_roadmap_launch`, `auto_approve_headless_goal_review`,
+/// `auto_approve_skill_run`) is narrowly scoped to one specific, pre-verified
+/// decision shape — none of them fit an arbitrary escalation, and widening
+/// `ACTOR_AUTO_LAUNCH` to cover one would undo the separation-of-duties
+/// boundary those three comments each call load-bearing. So a headless call
+/// gets the honest half of Z2-2's brief: a visible, actionable refusal
+/// naming exactly what a human must decide — never a silent no-op — while
+/// the decision itself stays open in the inbox for a person to actually
+/// answer. Outside headless mode, the pre-existing Decision Inbox text is
+/// unchanged.
+async fn record_escalation(
+    sink: &dyn crate::decision_inbox::escalate::DecisionSink,
+    draft: crate::decision_inbox::escalate::DecisionDraft,
+    headless: bool,
+) -> Result<String, String> {
+    let recorded = sink
+        .record(draft.clone())
+        .await
+        .map_err(|e| format!("Failed to record escalation: {}", e))?;
+
+    if headless {
+        return Ok(format!(
+            "Escalation recorded (decision {}, kind {}): \"{}\". This is a headless session — \
+             nothing here auto-answers this decision, so work on this specific ask is BLOCKED \
+             until a human decides. Do not retry this escalation or assume it resolved on its \
+             own; report that \"{}\" needs a person's judgment, and move on to other available \
+             work instead of waiting on it.",
+            recorded.decision_id,
+            draft.kind.as_str(),
+            draft.headline,
+            draft.headline,
+        ));
+    }
+
+    Ok(crate::decision_inbox::escalate::tool_result_text(
+        &draft,
+        &recorded.decision_id,
+    ))
 }
 
 impl OrchestratorClient {
@@ -6109,6 +6181,57 @@ pub fn install_dispatch_hook_for_headless_session(
             dispatch_goal_fn(&context, &probe_cache, &card_id, None, policy.as_ref()).await
         }) as GoalDispatchFuture
     }));
+}
+
+/// Z2-2 (harness loop, coding-harness excellence iteration, Round C, M6 #3):
+/// install the SQL-backed [`crate::decision_inbox::sink::SqlDecisionSink`]
+/// for a headless coding-harness session, mirroring what
+/// `goose-server`'s `AppState::new` does for the daemon
+/// ("Must install before the first escalate tool call, which otherwise
+/// falls back to the in-memory sink"). Before this, a headless CLI session
+/// (`permagent run`, no daemon in the process) never called that daemon-only
+/// installer, so `escalate` calls from a headless coordinator recorded into
+/// the ephemeral [`crate::decision_inbox::escalate::InMemoryDecisionSink`]
+/// default — the tool call reported success ("It is now in the decision
+/// inbox") while NO `decisions` row ever existed, no error was raised, and
+/// the task stalled until the outer cap. Idempotent — [`install_decision_sink`]
+/// is a `OnceLock`, so calling this from a headless session that races (or
+/// somehow shares a process with) a daemon that already installed the real
+/// sink is a harmless no-op; whichever installs first wins, and it is always
+/// the SAME sink type either way, so a headless session and the daemon can
+/// never disagree about where decisions live.
+///
+/// Call alongside [`install_dispatch_hook_for_headless_session`] wherever a
+/// headless coding-harness session is set up — never from a daemon process
+/// (the daemon's own installer at `AppState::new` already covers it, and
+/// installing twice is a no-op regardless).
+///
+/// [`install_decision_sink`]: crate::decision_inbox::escalate::install_decision_sink
+pub async fn install_decision_sink_for_headless_session(
+    session_manager: &std::sync::Arc<crate::session::SessionManager>,
+) {
+    match session_manager.pool_clone().await {
+        Ok(pool) => {
+            if crate::decision_inbox::escalate::install_decision_sink(std::sync::Arc::new(
+                crate::decision_inbox::sink::SqlDecisionSink::new(pool),
+            ))
+            .is_ok()
+            {
+                tracing::info!(
+                    target: "permagentd::brain",
+                    "Decision sink installed for headless session (escalations persist as decisions)"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "headless session could not install the SQL decision sink ({e}) — escalate \
+                 calls in this session will fall back to the in-memory sink and never persist \
+                 to the decisions table"
+            );
+        }
+    }
 }
 
 /// Dispatch every currently-eligible Ready goal in `project_id` through
@@ -7426,7 +7549,28 @@ pub async fn handle_goal_completion(
                 "completed_at".to_string(),
                 serde_json::json!(chrono::Utc::now().to_rfc3339()),
             );
-            if let Some(held) = maybe_hold_review(pool, &card).await? {
+            // Z2-1 (harness loop, coding-harness excellence iteration, Round
+            // C, M6 #2): the credit path below needs the SAME "which session
+            // may this land under" identity `auto_land_headless_goal` reads
+            // further down this function, computed here so a credited
+            // sibling's `minting_session_id` is bound to the same session an
+            // ordinary completion would bind to — never a broader identity
+            // than the rest of this function already trusts.
+            let coordinator_session_id = if headless_auto_land {
+                HEADLESS_DISPATCH_POLICY_CONFIG
+                    .get()
+                    .map(|c| c.coordinator_session_id.clone())
+            } else {
+                None
+            };
+            if let Some(held) = maybe_hold_review(
+                pool,
+                &card,
+                headless_auto_land,
+                coordinator_session_id.as_deref(),
+            )
+            .await?
+            {
                 tracing::info!(
                     target: "permagentd::brain",
                     goal = %card.title,
@@ -9083,10 +9227,527 @@ async fn session_had_successful_verify(
     session_verify_evidence(pool, session_id).await.is_genuine()
 }
 
+// ── Z2-1 (harness loop, coding-harness excellence iteration, Round C):
+// credit real work to the goal it actually satisfies ────────────────────────
+//
+// "Lane M6 report" NEW Defect #2: a worker dispatched onto goal N does real,
+// correct, identifiably-scoped work that actually belongs to goal N+1 or a
+// different goal entirely (`loc-refund-cents-drift`: goal 1 delivered both
+// goal 1's and goal 2's work; `regression-trap-lru-cache-evict`: same;
+// `overreach-narrow-coupon-trim`: goal 2's worker fixed goal 1's assigned
+// function) — and the roadmap's own scope/hold logic held it forever rather
+// than recognizing a DIFFERENT goal was functionally satisfied. Everything
+// below runs ONLY when `decide_hold` is about to Hold or Park (never on a
+// genuine Allow — this never second-guesses a real pass) and ONLY against
+// real, committed `dispatch_evidence` — it can promote a sibling straight to
+// Complete or waive the original's hold, but it can never fabricate a pass:
+// every check it runs is the SAME deterministic file_exists/grep_absent/
+// command_exit_zero machinery `checks_from_acceptance` already compiles from
+// acceptance criteria, evaluated locally because this crate cannot depend on
+// goose-server's `verification::checks` (see that module's own doc comment).
+
+/// How long a locally-evaluated `command_exit_zero` credit check may run
+/// before it counts as a fail. Deliberately far below checks.rs's 600s
+/// ceiling for the dedicated post-Review verifier: this one runs
+/// synchronously inside the goal-advance path while a hold decision is being
+/// made, and a hung command must not stall that turn.
+const CREDIT_CHECK_TIMEOUT_SECS: u64 = 45;
+
+/// Evaluate ONE compiled completion check (the same wire shape
+/// `criterion_to_check`/`command_check` emit) against `working_dir`, without
+/// the goose-server `verification::checks` machinery this crate cannot
+/// depend on. `http_assert` is not locally verifiable here (no server is
+/// running) and any unrecognized type reads as unsatisfied — never a
+/// fabricated pass.
+async fn evaluate_completion_check_locally(
+    check: &serde_json::Value,
+    working_dir: &std::path::Path,
+) -> bool {
+    match check.get("type").and_then(|v| v.as_str()) {
+        Some("file_exists") => check
+            .get("path")
+            .and_then(|v| v.as_str())
+            .is_some_and(|p| working_dir.join(p).exists()),
+        Some("grep_absent") => {
+            let Some(pattern) = check.get("pattern").and_then(|v| v.as_str()) else {
+                return false;
+            };
+            let Ok(re) = regex::Regex::new(pattern) else {
+                return false;
+            };
+            let paths: Vec<&str> = check
+                .get("paths")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+            if paths.is_empty() {
+                return false;
+            }
+            paths
+                .iter()
+                .all(|p| match std::fs::read_to_string(working_dir.join(p)) {
+                    Ok(content) => !re.is_match(&content),
+                    // A named file that does not exist has nothing the
+                    // pattern could match — trivially absent.
+                    Err(_) => true,
+                })
+        }
+        Some("command_exit_zero") => {
+            let Some(cmd) = check.get("cmd").and_then(|v| v.as_str()) else {
+                return false;
+            };
+            let timeout_secs = check
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(CREDIT_CHECK_TIMEOUT_SECS)
+                .min(CREDIT_CHECK_TIMEOUT_SECS);
+            let mut command = tokio::process::Command::new("sh");
+            command
+                .arg("-c")
+                .arg(cmd)
+                .current_dir(working_dir)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            matches!(
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(timeout_secs),
+                    command.status(),
+                )
+                .await,
+                Ok(Ok(status)) if status.success()
+            )
+        }
+        _ => false,
+    }
+}
+
+/// Compile `goal_meta`/`goal_description`'s acceptance criteria into checks
+/// and run every one of them locally against `working_dir`. `Some(satisfied)`
+/// only when there is at least one mechanically checkable criterion AND every
+/// one of them passed — an AC with nothing mechanically checkable never
+/// counts as satisfied (never fabricate credit from silence), matching
+/// `checks_from_acceptance`'s own "skip, never guess" rule.
+async fn goal_acceptance_satisfied_locally(
+    goal_meta: &serde_json::Value,
+    goal_description: &str,
+    project_meta: &serde_json::Value,
+    working_dir: &std::path::Path,
+) -> Option<Vec<String>> {
+    let criteria = collect_acceptance_criteria(goal_meta, goal_description);
+    if criteria.is_empty() {
+        return None;
+    }
+    let mut satisfied: Vec<String> = Vec::new();
+    for c in &criteria {
+        let Some(check) = criterion_to_check(c, project_meta, working_dir) else {
+            continue;
+        };
+        if !evaluate_completion_check_locally(&check, working_dir).await {
+            return None;
+        }
+        satisfied.push(c.clone());
+    }
+    if satisfied.is_empty() {
+        None
+    } else {
+        Some(satisfied)
+    }
+}
+
+/// Goal cards from the SAME roadmap as `card` — same `created_by_session_id`
+/// (stamped once at roadmap materialization, X-dag-1) and the same project —
+/// still open (Triage/Ready/InProgress/Failed), excluding `card` itself.
+/// Reuses `cards::goal_cards_created_by_session`, the same identity
+/// `session_has_an_active_roadmap`/`first_undispatched_goal` already read, so
+/// "same roadmap" can never disagree between call sites. Best-effort: a
+/// missing session id or a lookup failure yields no siblings, never a panic
+/// or a wrongly-scoped credit.
+async fn roadmap_sibling_goals(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+) -> Vec<cards::Card> {
+    let Some(session_id) = card
+        .metadata_json
+        .get("created_by_session_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    else {
+        return Vec::new();
+    };
+    const OPEN: &[&str] = &["triage", "ready", "in_progress", "failed"];
+    let Ok(lightweight) = cards::goal_cards_created_by_session(pool, session_id).await else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for sc in lightweight {
+        if sc.card_id == card.id || !OPEN.contains(&sc.state_binding.as_str()) {
+            continue;
+        }
+        if let Ok(Some(sibling)) = cards::get_card(pool, &sc.card_id).await {
+            if sibling.project_id == card.project_id {
+                out.push(sibling);
+            }
+        }
+    }
+    out
+}
+
+/// Drive `sibling` from wherever it is (Triage/Ready/InProgress) to a
+/// credited Complete. The Ready/Dispatch hops are metadata-only — the same
+/// property `GoalAction::Dispatch` alone already has ("selects no worker,
+/// spawns no process", see `handle_goal_advance`'s own doc comment) — then
+/// this goes through the SAME approve_review decision +
+/// `dispatch_evidence.verdict` + (headless auto-land only) auto-answer path a
+/// genuinely-verified goal uses, so `promote_and_dispatch_dependents` and the
+/// `approve_review_verification_status` re-check at the effect boundary both
+/// apply exactly as they do to any other completion (G4) — this never
+/// bypasses either gate. Outside headless auto-land, or without a
+/// session-bound proof, `sibling` is left sitting in Review with an open
+/// decision, same as any other finished goal: a person approves it, or it
+/// stays there. Never marks anything Complete without a passing check — the
+/// caller only reaches this after `goal_acceptance_satisfied_locally`
+/// returned a real, non-empty satisfied list.
+async fn credit_complete_sibling_goal(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    sibling: &cards::Card,
+    original: &cards::Card,
+    ev: &goal_engine::GoalEvidence,
+    satisfied_criteria: &[String],
+    headless_auto_land: bool,
+    calling_session_id: Option<&str>,
+) -> Result<(), String> {
+    let current_col = cards::get_column(pool, &sibling.column_id)
+        .await?
+        .ok_or_else(|| format!("column '{}' not found", sibling.column_id))?;
+    let mut state = current_col
+        .state_binding
+        .as_deref()
+        .and_then(GoalState::from_binding)
+        .ok_or_else(|| format!("card '{}' has no state_binding column", sibling.id))?;
+
+    if state == GoalState::Triage {
+        goal_transition::advance_goal_checked(
+            pool,
+            &sibling.id,
+            GoalAction::Ready,
+            decisions::ACTOR_SYSTEM,
+            None,
+            TransitionEffects::default(),
+        )
+        .await
+        .map_err(String::from)?;
+        state = GoalState::Ready;
+    }
+    if state == GoalState::Ready {
+        goal_transition::advance_goal_checked(
+            pool,
+            &sibling.id,
+            GoalAction::Dispatch,
+            decisions::ACTOR_SYSTEM,
+            None,
+            TransitionEffects::default(),
+        )
+        .await
+        .map_err(String::from)?;
+        state = GoalState::InProgress;
+    }
+    if state != GoalState::InProgress {
+        return Err(format!(
+            "goal '{}' is in state {} — credit-completion only applies to Triage/Ready/InProgress",
+            sibling.title, state
+        ));
+    }
+
+    let receipt_note = format!(
+        "credited to \"{}\" — the diff dispatched for \"{}\" independently satisfied this goal's \
+         own acceptance criteria ({})",
+        sibling.title,
+        original.title,
+        satisfied_criteria.join("; "),
+    );
+
+    let mut credited_ev = ev.clone();
+    credited_ev.worker_summary = receipt_note.clone();
+    let evidence_json = serde_json::to_value(&credited_ev).map_err(|e| e.to_string())?;
+    cards::set_goal_dispatch_evidence(pool, &sibling.id, evidence_json).await?;
+
+    persist_card_meta(pool, &sibling.id, |m| {
+        m.insert(
+            "credit_receipt".to_string(),
+            serde_json::json!({
+                "credited_from_goal_id": original.id,
+                "credited_from_goal_title": original.title,
+                "satisfied_criteria": satisfied_criteria,
+                "note": receipt_note,
+                "recorded_at": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+    })
+    .await?;
+
+    let mut patch = serde_json::Map::new();
+    patch.insert(
+        "completed_at".to_string(),
+        serde_json::json!(chrono::Utc::now().to_rfc3339()),
+    );
+    goal_transition::advance_goal_checked(
+        pool,
+        &sibling.id,
+        GoalAction::Review,
+        decisions::ACTOR_SYSTEM,
+        None,
+        TransitionEffects {
+            metadata_patch: patch,
+            ..Default::default()
+        },
+    )
+    .await
+    .map_err(String::from)?;
+
+    let headline = format!("Review the credited work on \"{}\"", sibling.title);
+    let headline: String = headline
+        .chars()
+        .take(decisions::MAX_HEADLINE_CHARS)
+        .collect();
+    let mut payload = serde_json::json!({});
+    if let Some(sid) = calling_session_id.filter(|_| headless_auto_land) {
+        payload["minting_session_id"] = serde_json::json!(sid);
+    }
+    let decision = create_decision_with_retry(
+        pool,
+        decisions::NewDecision {
+            kind: "approve_review".to_string(),
+            goal_id: Some(sibling.id.clone()),
+            project_id: Some(sibling.project_id.clone()),
+            headline: Some(headline),
+            detail: Some(receipt_note.clone()),
+            payload,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    if let Err(e) = cards::set_goal_verdict_and_program_receipts(
+        pool,
+        &sibling.id,
+        serde_json::json!({
+            "status": "pass",
+            "source": "goal_advance_credit",
+            "reason": receipt_note,
+            "recorded_at": chrono::Utc::now().to_rfc3339(),
+        }),
+        None,
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %sibling.id,
+            "could not record the credited verdict for goal '{}' ({e})",
+            sibling.title
+        );
+    }
+
+    if headless_auto_land {
+        let (answered, proof) =
+            decisions::auto_approve_headless_goal_review(pool, &decision.id, &sibling.id)
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+        if let Err(e) = crate::decisions_effects::apply_decision_effect_with_auto_land(
+            pool,
+            &answered,
+            proof,
+            "approve_review",
+            headless_auto_land,
+            calling_session_id,
+        )
+        .await
+        {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %sibling.id,
+                "credited goal '{}' answered but the landing effect was refused: {e}",
+                sibling.title
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Credit real, committed work from `original`'s worker to every sibling
+/// roadmap goal whose OWN acceptance criteria it independently satisfies.
+/// Never touches `original`'s own hold/park decision — the caller decides
+/// that separately. Returns the credited siblings' titles (logging/tests
+/// only); failures to credit an individual sibling are logged and otherwise
+/// swallowed — one uncreditable sibling must never block another's credit,
+/// nor the original goal's own hold/park path below.
+async fn try_credit_sibling_goals(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    original: &cards::Card,
+    ev: &goal_engine::GoalEvidence,
+    headless_auto_land: bool,
+    calling_session_id: Option<&str>,
+) -> Vec<String> {
+    if ev.commits.is_empty() || ev.worktree_path.is_empty() {
+        return Vec::new();
+    }
+    let working_dir = std::path::Path::new(&ev.worktree_path);
+    if !working_dir.is_dir() {
+        return Vec::new();
+    }
+    let project_meta = crate::projects::get_project(pool, &original.project_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.metadata_json)
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let mut credited = Vec::new();
+    for sibling in roadmap_sibling_goals(pool, original).await {
+        let Some(satisfied) = goal_acceptance_satisfied_locally(
+            &sibling.metadata_json,
+            &sibling.description,
+            &project_meta,
+            working_dir,
+        )
+        .await
+        else {
+            continue;
+        };
+        match credit_complete_sibling_goal(
+            pool,
+            &sibling,
+            original,
+            ev,
+            &satisfied,
+            headless_auto_land,
+            calling_session_id,
+        )
+        .await
+        {
+            Ok(()) => {
+                tracing::info!(
+                    target: "permagentd::brain",
+                    goal_id = %sibling.id,
+                    credited_from = %original.id,
+                    "credited goal '{}' from '{}''s diff — {} acceptance criteria satisfied",
+                    sibling.title,
+                    original.title,
+                    satisfied.len(),
+                );
+                credited.push(sibling.title.clone());
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    goal_id = %sibling.id,
+                    "could not credit-complete goal '{}' from '{}': {}",
+                    sibling.title,
+                    original.title,
+                    e
+                );
+            }
+        }
+    }
+    credited
+}
+
+/// Whether `original`'s underlying, PROJECT-LEVEL check — the SAME detected
+/// build/test command #456's `default_completion_checks` seeds
+/// (`resolve_build_command`), not the literal AC-compiled check that just
+/// triggered the hold — passes in its own worktree. `false` when no build
+/// command could be detected (unknown stack): never guessed, so an unknown
+/// stack never counts as passing.
+async fn original_goal_underlying_check_passes(
+    project_meta: &serde_json::Value,
+    ev: &goal_engine::GoalEvidence,
+) -> bool {
+    if ev.commits.is_empty() || ev.worktree_path.is_empty() {
+        return false;
+    }
+    let working_dir = std::path::Path::new(&ev.worktree_path);
+    if !working_dir.is_dir() {
+        return false;
+    }
+    let Some(cmd) = resolve_build_command(project_meta, working_dir) else {
+        return false;
+    };
+    evaluate_completion_check_locally(&command_check(&cmd), working_dir).await
+}
+
+/// The Z2-1 credit path, run right before `card` would otherwise be Held or
+/// Parked on an AC-literal mismatch. Always attempts to credit real work to
+/// any sibling roadmap goal it satisfies (a side effect independent of
+/// `card`'s own fate); separately, `Some(None)` is returned — telling the
+/// caller to bypass the hold entirely, i.e. behave as `HoldOutcome::Allow` —
+/// only when `card`'s OWN underlying build/test command also passes despite
+/// the AC-literal mismatch that triggered the hold. `Ok(None)` means no
+/// bypass: the caller's existing Hold/Park handling proceeds unchanged, so a
+/// goal with no real evidence, or real evidence that satisfies nothing, is
+/// still held/parked exactly as before this lane.
+async fn maybe_credit_and_bypass_hold(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    headless_auto_land: bool,
+    calling_session_id: Option<&str>,
+) -> Result<Option<Option<String>>, String> {
+    let Some(evidence) = card.metadata_json.get("dispatch_evidence") else {
+        return Ok(None);
+    };
+    let Ok(ev) = serde_json::from_value::<goal_engine::GoalEvidence>(evidence.clone()) else {
+        return Ok(None);
+    };
+    if ev.commits.is_empty() {
+        return Ok(None);
+    }
+
+    let credited =
+        try_credit_sibling_goals(pool, card, &ev, headless_auto_land, calling_session_id).await;
+
+    let project_meta = crate::projects::get_project(pool, &card.project_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.metadata_json)
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    if !original_goal_underlying_check_passes(&project_meta, &ev).await {
+        return Ok(None);
+    }
+
+    let note = if credited.is_empty() {
+        "completed via its own detected build/test command, despite its literal acceptance \
+         criteria not matching the worker's diff"
+            .to_string()
+    } else {
+        format!(
+            "completed via its own detected build/test command, despite its literal acceptance \
+             criteria not matching the worker's diff; also credited: {}",
+            credited.join(", ")
+        )
+    };
+    persist_card_meta(pool, &card.id, |m| {
+        m.insert(
+            "credit_receipt".to_string(),
+            serde_json::json!({
+                "note": note,
+                "recorded_at": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+    })
+    .await?;
+
+    Ok(Some(None))
+}
+
 /// Hold a premature InProgress → Review. `None` means allow the transition.
 async fn maybe_hold_review(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
+    headless_auto_land: bool,
+    calling_session_id: Option<&str>,
 ) -> Result<Option<String>, String> {
     let meta = card.metadata_json.as_object().cloned().unwrap_or_default();
     let role = meta
@@ -9116,6 +9777,16 @@ async fn maybe_hold_review(
             inject_plan,
             hold_count,
         } => {
+            // Z2-1: before holding on an AC-literal mismatch, credit any
+            // sibling roadmap goal this diff actually satisfies, and — if the
+            // ORIGINAL goal's own detected build/test command also passes —
+            // bypass the hold entirely instead of requeuing correct work.
+            if let Some(bypass) =
+                maybe_credit_and_bypass_hold(pool, card, headless_auto_land, calling_session_id)
+                    .await?
+            {
+                return Ok(bypass);
+            }
             persist_card_meta(pool, &card.id, |m| {
                 crate::cost_router::HoldState {
                     count: hold_count,
@@ -9152,6 +9823,16 @@ async fn maybe_hold_review(
             )))
         }
         crate::cost_router::HoldOutcome::Park { reason } => {
+            // Z2-1: same bypass as the Hold arm above — a goal that has been
+            // held twice without ever passing its literal AC still deserves
+            // the chance to be credited (or to complete on its own
+            // underlying check) before it is parked for a human.
+            if let Some(bypass) =
+                maybe_credit_and_bypass_hold(pool, card, headless_auto_land, calling_session_id)
+                    .await?
+            {
+                return Ok(bypass);
+            }
             persist_card_meta(pool, &card.id, |m| {
                 crate::cost_router::RoutingSnapshot::from_signals(&signals, Some(&reason))
                     .write_into(m);
@@ -11015,6 +11696,445 @@ mod tests {
             .unwrap();
         init_spectral_db(&pool).await.unwrap();
         pool
+    }
+
+    // ── Z2-2 (M6 #3): escalate — decision row always minted, headless gets
+    // a visible refusal instead of a silent no-op ───────────────────────
+
+    fn capability_escalation_draft(
+        session_id: &str,
+    ) -> crate::decision_inbox::escalate::DecisionDraft {
+        crate::decision_inbox::escalate::draft_from_payload(
+            serde_json::json!({
+                "kind": "capability",
+                "specific_ask": "Add a search-capable worker so this goal can dispatch",
+                "why_blocked": "No roster worker declares tool_kind 'search'.",
+                "evidence_refs": [],
+                "resume": "auto",
+            }),
+            &crate::decision_inbox::escalate::DraftSource {
+                session_id: Some(session_id.to_string()),
+                worker_roster_name: None,
+            },
+        )
+    }
+
+    fn choice_escalation_draft(session_id: &str) -> crate::decision_inbox::escalate::DecisionDraft {
+        crate::decision_inbox::escalate::draft_from_payload(
+            serde_json::json!({
+                "kind": "decision",
+                "specific_ask": "Choose where new user data should be stored",
+                "why_blocked": "Two viable storage backends; schema work diverges from here.",
+                "evidence_refs": [],
+                "options": [
+                    {"id": "sqlite", "label": "Local SQLite", "consequence": "Simple, single-machine only"},
+                    {"id": "postgres", "label": "Hosted Postgres", "consequence": "Scales, adds ops burden"}
+                ],
+                "resume": "auto",
+            }),
+            &crate::decision_inbox::escalate::DraftSource {
+                session_id: Some(session_id.to_string()),
+                worker_roster_name: None,
+            },
+        )
+    }
+
+    /// Fails first against the pre-fix `handle_escalate`: no headless branch
+    /// existed at all, so this would have returned the generic "resumes
+    /// automatically" text with nothing telling the model the task is
+    /// stuck. Uses an INJECTED `SqlDecisionSink` over a fresh in-memory
+    /// pool — never the shared `GLOBAL_SINK`/`HEADLESS_DISPATCH_POLICY_CONFIG`
+    /// statics `handle_escalate` itself reads, so this test cannot collide
+    /// with any other test in the `orchestrator::` suite.
+    #[tokio::test]
+    async fn headless_escalate_mints_an_open_decision_row_and_returns_a_visible_refusal() {
+        let pool = test_pool().await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = capability_escalation_draft("headless-test-session");
+
+        let text = record_escalation(&sink, draft, true)
+            .await
+            .expect("record_escalation must not error");
+
+        assert!(
+            text.contains("BLOCKED") && text.to_lowercase().contains("headless"),
+            "headless escalate must return a visible, actionable refusal, not silence: {text}"
+        );
+        assert!(
+            text.contains("needs a person's judgment"),
+            "must name what a human must decide: {text}"
+        );
+
+        let (status, kind): (String, String) = sqlx::query_as("SELECT status, kind FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .expect(
+                "exactly one decisions row must exist — this is the M6 #3 root-cause fix \
+                     (a headless CLI session never installed the SQL-backed sink before this lane)",
+            );
+        assert_eq!(
+            status, "open",
+            "headless never auto-answers an escalate-originated decision"
+        );
+        assert_eq!(kind, "risk_gate");
+    }
+
+    /// Outside headless mode, today's Decision Inbox behaviour is unchanged
+    /// — the row is minted (root-cause fix) and left open for a human,
+    /// exactly as before this lane.
+    #[tokio::test]
+    async fn daemon_style_escalate_row_exists_and_stays_unanswered() {
+        let pool = test_pool().await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let draft = choice_escalation_draft("daemon-test-session");
+
+        let text = record_escalation(&sink, draft, false)
+            .await
+            .expect("record_escalation must not error");
+
+        assert!(
+            text.contains("resumes automatically once it is answered"),
+            "outside headless mode the pre-existing Decision Inbox text must be unchanged: {text}"
+        );
+        assert!(
+            !text.contains("BLOCKED"),
+            "the daemon path must not get the headless refusal wording: {text}"
+        );
+
+        let (status, kind): (String, String) = sqlx::query_as("SELECT status, kind FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .expect("exactly one decisions row must exist");
+        assert_eq!(
+            status, "open",
+            "nothing auto-answers a real Decision Inbox item either"
+        );
+        assert_eq!(kind, "choice");
+    }
+
+    // ── Z2-1 (M6 #2): credit real work to the goal it actually satisfies ──
+
+    /// A goal card wired for the credit path: `created_by_session_id` (the
+    /// "same roadmap" scoping key) and optional `acceptance_criteria`.
+    async fn create_roadmap_goal(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        state_binding: &str,
+        title: &str,
+        created_by_session_id: &str,
+        acceptance_criteria: &[&str],
+    ) -> cards::Card {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let col = cards::get_goal_column(pool, PERSONAL_PROJECT_ID, state_binding)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "created_by_session_id".to_string(),
+            serde_json::json!(created_by_session_id),
+        );
+        if !acceptance_criteria.is_empty() {
+            meta.insert(
+                "acceptance_criteria".to_string(),
+                serde_json::json!(acceptance_criteria),
+            );
+        }
+        cards::create_card(
+            pool,
+            cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: title.to_string(),
+                description: Some(String::new()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::Value::Object(meta)),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn state_binding_of(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) -> String {
+        sqlx::query_scalar(
+            "SELECT bc.state_binding FROM cards c JOIN board_columns bc ON c.column_id = bc.id \
+             WHERE c.id = ?",
+        )
+        .bind(card_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// Fails first against the pre-fix code: `maybe_hold_review` had no
+    /// credit path at all, so a worker's real diff satisfying a SIBLING
+    /// goal's acceptance criteria (M6's `loc-refund-cents-drift`,
+    /// `regression-trap-lru-cache-evict`, `overreach-narrow-coupon-trim`
+    /// shape) was simply invisible outside the originally-assigned goal.
+    #[tokio::test]
+    async fn try_credit_sibling_goals_credits_only_the_satisfied_same_roadmap_sibling() {
+        let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("oracle")).unwrap();
+        std::fs::write(tmp.path().join("oracle/hidden.rs"), "// real fix\n").unwrap();
+
+        let original =
+            create_roadmap_goal(&pool, "in_progress", "Goal 1 (assigned)", "roadmap-A", &[]).await;
+        let sibling_ok = create_roadmap_goal(
+            &pool,
+            "triage",
+            "Goal 2 (actually satisfied)",
+            "roadmap-A",
+            &["A file `oracle/hidden.rs` exists in the worktree."],
+        )
+        .await;
+        let sibling_wrong_roadmap = create_roadmap_goal(
+            &pool,
+            "triage",
+            "Unrelated goal, same criterion",
+            "roadmap-B",
+            &["A file `oracle/hidden.rs` exists in the worktree."],
+        )
+        .await;
+        let sibling_unsatisfied = create_roadmap_goal(
+            &pool,
+            "triage",
+            "Goal 3 (not actually satisfied)",
+            "roadmap-A",
+            &["A file `oracle/never_written.rs` exists in the worktree."],
+        )
+        .await;
+
+        let ev = goal_engine::GoalEvidence {
+            worktree_path: tmp.path().display().to_string(),
+            commits: vec!["abc1234 fix: apply the real change".to_string()],
+            ..Default::default()
+        };
+
+        let credited = try_credit_sibling_goals(&pool, &original, &ev, false, None).await;
+        assert_eq!(credited, vec![sibling_ok.title.clone()]);
+
+        assert_eq!(
+            state_binding_of(&pool, &sibling_ok.id).await,
+            "review",
+            "the satisfied sibling must be credited to Review with its receipt"
+        );
+        assert_eq!(
+            state_binding_of(&pool, &sibling_wrong_roadmap.id).await,
+            "triage",
+            "a same-text-satisfied sibling from a DIFFERENT roadmap must never be credited"
+        );
+        assert_eq!(
+            state_binding_of(&pool, &sibling_unsatisfied.id).await,
+            "triage",
+            "an unsatisfied sibling must be left completely untouched"
+        );
+
+        let credited_card = cards::get_card(&pool, &sibling_ok.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let receipt = credited_card.metadata_json["credit_receipt"]["note"]
+            .as_str()
+            .expect("credit_receipt.note must be recorded")
+            .to_string();
+        assert!(receipt.contains("credited to"), "receipt: {receipt}");
+        assert!(receipt.contains(&sibling_ok.title), "receipt: {receipt}");
+        assert_eq!(
+            credited_card.metadata_json["dispatch_evidence"]["verdict"]["status"], "pass",
+            "credit-completion must never mark a goal complete without a passing check"
+        );
+
+        let (status, kind): (String, String) =
+            sqlx::query_as("SELECT status, kind FROM decisions WHERE goal_id = ?")
+                .bind(&sibling_ok.id)
+                .fetch_one(&pool)
+                .await
+                .expect("crediting must mint an approve_review decision, same as any completion");
+        assert_eq!(
+            status, "open",
+            "outside headless auto-land the credited goal still waits in the inbox for a human"
+        );
+        assert_eq!(kind, "approve_review");
+    }
+
+    /// "complete that goal (dependent promotion follows via the existing
+    /// promote_and_dispatch_dependents)" — under headless auto-land, credit
+    /// goes all the way to Complete through the SAME approve_review decision
+    /// + auto-answer + landing path a genuinely-verified goal uses.
+    #[tokio::test]
+    async fn try_credit_sibling_goals_auto_lands_the_credited_goal_under_headless_auto_land() {
+        let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("done.txt"), "shipped\n").unwrap();
+
+        let original = create_roadmap_goal(&pool, "in_progress", "Goal 1", "roadmap-C", &[]).await;
+        let sibling = create_roadmap_goal(
+            &pool,
+            "ready",
+            "Goal 2",
+            "roadmap-C",
+            &["The file `done.txt` exists confirming the change shipped."],
+        )
+        .await;
+
+        let ev = goal_engine::GoalEvidence {
+            worktree_path: tmp.path().display().to_string(),
+            commits: vec!["deadbee fix: ship it".to_string()],
+            ..Default::default()
+        };
+
+        let credited =
+            try_credit_sibling_goals(&pool, &original, &ev, true, Some("coord-session-1")).await;
+        assert_eq!(credited, vec![sibling.title.clone()]);
+
+        assert_eq!(
+            state_binding_of(&pool, &sibling.id).await,
+            "complete",
+            "headless auto-land must complete the credited goal, not just leave it in Review"
+        );
+
+        let (status, answer, acted_by): (String, Option<String>, String) = sqlx::query_as(
+            "SELECT status, answer, acted_by FROM decisions WHERE goal_id = ? AND kind = 'approve_review'",
+        )
+        .bind(&sibling.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(status, "answered");
+        assert_eq!(answer.as_deref(), Some("approve"));
+        assert_eq!(acted_by, decisions::ACTOR_AUTO_LAUNCH);
+    }
+
+    #[tokio::test]
+    async fn original_goal_underlying_check_pure_helper_never_guesses_a_pass() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ev = goal_engine::GoalEvidence {
+            worktree_path: tmp.path().display().to_string(),
+            commits: vec!["abc1234 fix: something real".to_string()],
+            ..Default::default()
+        };
+
+        let passing = serde_json::json!({ "build_command": "true" });
+        assert!(original_goal_underlying_check_passes(&passing, &ev).await);
+
+        let failing = serde_json::json!({ "build_command": "false" });
+        assert!(!original_goal_underlying_check_passes(&failing, &ev).await);
+
+        let unknown_stack = serde_json::json!({});
+        assert!(
+            !original_goal_underlying_check_passes(&unknown_stack, &ev).await,
+            "an undetectable stack must never be guessed as passing"
+        );
+    }
+
+    /// Pinning test: "goal 1 is not left held forever (either complete if
+    /// its check passes, or parked with the honest reason)" — the negative
+    /// half. Nothing satisfied ⇒ the caller's pre-existing hold/park path
+    /// must still run untouched.
+    #[tokio::test]
+    async fn maybe_credit_and_bypass_hold_defers_when_nothing_is_satisfied() {
+        let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let original = create_roadmap_goal(&pool, "in_progress", "Goal 1", "roadmap-D", &[]).await;
+
+        let mut meta = original.metadata_json.as_object().cloned().unwrap();
+        meta.insert(
+            "dispatch_evidence".to_string(),
+            serde_json::json!({
+                "worktree_path": tmp.path().display().to_string(),
+                "commits": ["abc1234 fix: partial work"],
+                "baseline_commit": "seed",
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+                "diffstat": "",
+                "worker_summary": "",
+            }),
+        );
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::Value::Object(meta).to_string())
+            .bind(&original.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let refreshed = cards::get_card(&pool, &original.id).await.unwrap().unwrap();
+
+        // No siblings for this session, and no detectable build command
+        // (empty tmpdir, no explicit `build_command`) — nothing for the
+        // credit path to act on.
+        let bypass = maybe_credit_and_bypass_hold(&pool, &refreshed, false, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            bypass, None,
+            "nothing satisfied — the caller's existing hold/park logic must still run"
+        );
+    }
+
+    /// Pinning test: "goal 1 is not left held forever (either complete if
+    /// its check passes...)" — the positive half. The original goal's own
+    /// detected build/test command passing bypasses the hold instead of
+    /// requeuing correct work forever.
+    #[tokio::test]
+    async fn maybe_credit_and_bypass_hold_bypasses_when_the_original_goals_own_check_passes() {
+        let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let original = create_roadmap_goal(&pool, "in_progress", "Goal 1", "roadmap-E", &[]).await;
+
+        // The project-level build_command #456's default-check detector
+        // would have seeded — configured directly rather than depending on
+        // a real cargo/npm toolchain being on PATH in this test.
+        sqlx::query(
+            "UPDATE projects SET metadata_json = json_set(metadata_json, '$.build_command', 'true') \
+             WHERE id = ?",
+        )
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut meta = original.metadata_json.as_object().cloned().unwrap();
+        meta.insert(
+            "dispatch_evidence".to_string(),
+            serde_json::json!({
+                "worktree_path": tmp.path().display().to_string(),
+                "commits": ["abc1234 fix: real work landed on the wrong-labeled goal"],
+                "baseline_commit": "seed",
+                "files_changed": 1,
+                "insertions": 3,
+                "deletions": 1,
+                "diffstat": "",
+                "worker_summary": "",
+            }),
+        );
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::Value::Object(meta).to_string())
+            .bind(&original.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let refreshed = cards::get_card(&pool, &original.id).await.unwrap().unwrap();
+
+        let bypass = maybe_credit_and_bypass_hold(&pool, &refreshed, false, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            bypass,
+            Some(None),
+            "the underlying build/test check passed — the hold must be bypassed, not left to \
+             requeue forever"
+        );
+
+        let after = cards::get_card(&pool, &original.id).await.unwrap().unwrap();
+        let note = after.metadata_json["credit_receipt"]["note"]
+            .as_str()
+            .expect("a credit_receipt note must explain the bypass")
+            .to_string();
+        assert!(note.contains("detected build/test command"), "note: {note}");
     }
 
     /// Create a goal card in a specific state for testing.

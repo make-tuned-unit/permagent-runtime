@@ -1274,6 +1274,19 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             session_manager.clone(),
             session_id.clone(),
         );
+        // Z2-2 (harness loop, coding-harness excellence iteration, Round C,
+        // M6 #3): same idea as the dispatch hook above, for the `escalate`
+        // tool's decision sink. The daemon installs the SQL-backed sink at
+        // `AppState::new`; a headless CLI session never runs that path, so
+        // without this an `escalate` call here recorded into the ephemeral
+        // in-memory default sink — success reported, no `decisions` row ever
+        // existed, no error, the task stalled until the outer cap. Idempotent
+        // (`OnceLock`) — harmless if a daemon in the same process already
+        // installed it.
+        permagent::agents::platform_extensions::orchestrator::install_decision_sink_for_headless_session(
+            &session_manager,
+        )
+        .await;
     }
 
     if let Some(recipe) = session_config.recipe.clone() {
