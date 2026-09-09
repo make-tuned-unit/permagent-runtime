@@ -7780,25 +7780,25 @@ pub async fn park_dispatched_goals_now(
     })
 }
 
-/// The worker's landed head commit for a card already in `Complete` state,
-/// read straight from `dispatch_evidence.head_commit` — the same field
-/// `goal_landing::land` fast-forwarded the trunk onto. `None` when the card
-/// carries no recorded evidence, OR (Y2-1, HARNESS_LOOP_LOG.md "Lane M5
-/// report" NEW Defect #3) when `dispatch_evidence.commits` is empty — the
-/// SAME emptiness gate `goal_landing::land_request_from_metadata` itself
-/// uses to refuse building a `LandRequest` at all. A card can reach
-/// `Complete` (Review → Complete is an unconditional transition; landing
-/// is a best-effort step AFTER it, in `decisions_effects::land_approved_goal`,
-/// which returns `(None, None)` — nothing persisted, nothing landed —
-/// whenever there is nothing real to land) with zero commits ever having
-/// been made in its own isolated worktree. Trusting `head_commit` in that
-/// case hands back the worker's own BASELINE commit dressed up as a landed
-/// sha — confirmed against a real run's kept git state (`merge-row-2048`,
-/// 2026-09-09: `dispatch_evidence` read `head_commit == baseline_commit`,
-/// `commits: []`, yet the CLI printed `landed <id> → <that same seed sha>`).
-/// Mirroring `land_request_from_metadata`'s own gate here means this
-/// function only ever hands back a sha for a goal that genuinely had
-/// something to land, whether or not `land()` itself was ever reached.
+/// The worker's landed head commit for a card already in `Complete` state.
+/// `None` when the card carries no recorded evidence, OR (Y2-1,
+/// HARNESS_LOOP_LOG.md "Lane M5 report" NEW Defect #3) when
+/// `dispatch_evidence.commits` is empty — the SAME emptiness gate
+/// `goal_landing::land_request_from_metadata` itself uses to refuse
+/// building a `LandRequest` at all — OR (YF2, G6 review, Lane Y-fix
+/// 2026-09-09, finding #2) when `dispatch_evidence.landing.outcome` is
+/// anything other than `"landed"`. A card can reach `Complete` (Review →
+/// Complete is an unconditional transition; landing is a best-effort step
+/// AFTER it, in `decisions_effects::land_approved_goal`) with real commits
+/// whose `land()` call nonetheless returned `NeedsMerge` (the trunk moved
+/// since the worker branched — routine when a second goal in the same
+/// roadmap lands first) or `Skipped` (a dirty/detached project root); the
+/// commits-non-empty check alone cannot tell that apart from a genuine
+/// landing. `land_approved_goal` now persists the real outcome onto
+/// `dispatch_evidence.landing`, so this function hands back a sha only for
+/// a goal that both had real commits AND whose landing attempt actually
+/// succeeded — `landing.landed_head`, the post-landing trunk sha, not the
+/// worker's own pre-landing `head_commit`.
 async fn goal_landed_head_commit(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) -> Option<String> {
     let card = cards::get_card(pool, card_id).await.ok()??;
     let evidence = card.metadata_json.pointer("/dispatch_evidence")?;
@@ -7809,7 +7809,73 @@ async fn goal_landed_head_commit(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str)
     if !has_real_commits {
         return None;
     }
-    evidence.get("head_commit")?.as_str().map(String::from)
+    let landing = evidence.get("landing")?;
+    if landing.get("outcome").and_then(|value| value.as_str()) != Some("landed") {
+        return None;
+    }
+    landing
+        .get("landed_head")
+        .and_then(|value| value.as_str())
+        .map(String::from)
+}
+
+/// YF2 (G6 review, Lane Y-fix 2026-09-09, finding #2): a `Complete` goal
+/// with real commits whose landing outcome was `NeedsMerge`/`Skipped`, not
+/// `landed` — `(card_id, human-readable reason)`. Companion to
+/// [`landed_goals_for_session`], which deliberately excludes these: the CLI
+/// drain summary uses this to print `needs merge: <id> (<reason>)` honestly
+/// instead of staying silent (which reads as "nothing left to check") or
+/// printing a fabricated `landed` line.
+pub async fn needs_merge_goals_for_session(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    coordinator_session_id: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for session_id in descendant_session_ids(pool, coordinator_session_id).await? {
+        let Some((card_id, _project_id)) = goal_card_for_worker_session(pool, &session_id).await?
+        else {
+            continue;
+        };
+        if goal_state_for_card(pool, &card_id).await? != GoalState::Complete {
+            continue;
+        }
+        // Already reported as a genuine landing — never double-report.
+        if goal_landed_head_commit(pool, &card_id).await.is_some() {
+            continue;
+        }
+        let Some(card) = cards::get_card(pool, &card_id).await.ok().flatten() else {
+            continue;
+        };
+        let Some(evidence) = card.metadata_json.pointer("/dispatch_evidence") else {
+            continue;
+        };
+        let has_real_commits = evidence
+            .get("commits")
+            .and_then(|value| value.as_array())
+            .is_some_and(|commits| !commits.is_empty());
+        if !has_real_commits {
+            // Nothing was ever committed — not "needs merge", just nothing
+            // to land at all.
+            continue;
+        }
+        let Some(landing) = evidence.get("landing") else {
+            continue;
+        };
+        let outcome = landing
+            .get("outcome")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if outcome == "landed" {
+            continue;
+        }
+        let reason = landing
+            .get("describe")
+            .and_then(|value| value.as_str())
+            .unwrap_or(outcome)
+            .to_string();
+        out.push((card_id, reason));
+    }
+    Ok(out)
 }
 
 /// Harness loop, Lane V (V2): every goal `coordinator_session_id` dispatched
@@ -12602,10 +12668,24 @@ mod tests {
             .unwrap();
         let landed_card = setup_goal_in_state(&pool, "complete", 1).await;
         attach_worker_session_to_card(&pool, &landed_card.id, &landed_child.id).await;
+        // YF2 (G6 review, Lane Y-fix 2026-09-09): `head_commit`/`commits`
+        // alone are no longer sufficient — `goal_landed_head_commit` also
+        // requires `dispatch_evidence.landing.outcome == "landed"`, the
+        // field `land_approved_goal` now persists once `goal_landing::land`
+        // actually succeeds.
         cards::set_goal_dispatch_evidence(
             &pool,
             &landed_card.id,
-            serde_json::json!({"head_commit": "deadbeefcafe", "commits": ["one"]}),
+            serde_json::json!({
+                "head_commit": "deadbeefcafe",
+                "commits": ["one"],
+                "landing": {
+                    "outcome": "landed",
+                    "landed_head": "deadbeefcafe",
+                    "describe": "landed: main fast-forwarded to deadbeefc (goal/run-1)",
+                    "at": "2026-09-09T00:00:00Z",
+                },
+            }),
         )
         .await
         .unwrap();
@@ -12693,6 +12773,82 @@ mod tests {
             landed.is_empty(),
             "a Complete goal with no real commits must never be reported as landed, \
              got {landed:?}"
+        );
+    }
+
+    /// YF2 (G6 review, Lane Y-fix 2026-09-09, finding #2): a `Complete` goal
+    /// with REAL commits whose `land()` outcome was `NeedsMerge` (the trunk
+    /// moved since the worker branched — a second goal in the same roadmap
+    /// landing first is a routine, not edge-case, way to hit this) must
+    /// never be reported as landed either — the commits-non-empty check
+    /// alone cannot tell a genuine landing apart from an attempted-but-
+    /// failed one. `landed_goals_for_session` must exclude it, and
+    /// `needs_merge_goals_for_session` must report it honestly instead of
+    /// the card going silently missing from both summaries.
+    #[tokio::test]
+    async fn needs_merge_outcome_is_excluded_from_landed_and_reported_by_needs_merge_goals() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: diverged trunk".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "complete", 1).await;
+        attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "head_commit": "cafef00d",
+                "commits": ["one"],
+                "landing": {
+                    "outcome": "needs_merge",
+                    "landed_head": null,
+                    "describe": "NOT landed: main has moved since the worker branched, so goal/run-1 cannot fast-forward. The work is intact on that branch — merge or rebase it.",
+                    "at": "2026-09-09T00:00:00Z",
+                },
+            }),
+        )
+        .await
+        .unwrap();
+
+        let landed = landed_goals_for_session(&pool, &coordinator.id)
+            .await
+            .unwrap();
+        assert!(
+            landed.is_empty(),
+            "a NeedsMerge outcome must never print as landed, got {landed:?}"
+        );
+
+        let needs_merge = needs_merge_goals_for_session(&pool, &coordinator.id)
+            .await
+            .unwrap();
+        assert_eq!(needs_merge.len(), 1);
+        assert_eq!(needs_merge[0].0, card.id);
+        assert!(
+            needs_merge[0]
+                .1
+                .contains("has moved since the worker branched"),
+            "the reported reason must carry the actual cause, got {:?}",
+            needs_merge[0].1
         );
     }
 

@@ -1648,6 +1648,26 @@ impl CliSession {
                         tracing::warn!("post-run landed-goal summary failed (non-fatal): {e}");
                     }
                 }
+                // YF2 (G6 review, Lane Y-fix 2026-09-09, finding #2): a
+                // Complete goal with real commits whose landing outcome was
+                // NeedsMerge/Skipped must never be silently absent from this
+                // summary — that reads as "nothing to check" when a human
+                // merge is actually required.
+                match permagent::agents::platform_extensions::orchestrator::needs_merge_goals_for_session(
+                    &pool,
+                    &self.session_id,
+                )
+                .await
+                {
+                    Ok(needs_merge) => {
+                        for (card_id, reason) in needs_merge {
+                            output::render_notice(&format!("needs merge: {card_id} ({reason})"));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("post-run needs-merge summary failed (non-fatal): {e}");
+                    }
+                }
             }
             Ok(_) => {}
             Err(e) => {

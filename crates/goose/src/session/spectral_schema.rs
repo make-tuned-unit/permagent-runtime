@@ -2828,10 +2828,24 @@ pub async fn apply_cost_ledger_schema(pool: &Pool<Sqlite>) -> Result<()> {
     // number of non-turn cost_ledger writers (compaction/tool-pair
     // summarization side calls, council debate, orchestrator fan-out) that
     // do not go through the reply loop's turn timer at all.
-    for (col, ddl) in [(
-        "timing_json",
-        "ALTER TABLE cost_ledger ADD COLUMN timing_json TEXT",
-    )] {
+    for (col, ddl) in [
+        (
+            "timing_json",
+            "ALTER TABLE cost_ledger ADD COLUMN timing_json TEXT",
+        ),
+        (
+            // YF1 (G6 review, Lane Y-fix 2026-09-09): a reservation that was
+            // already reconciled away (settled to $0 / released, no ledger
+            // evidence at the time) can still have its provider call
+            // complete for real afterward. `append_cost_ledger_with_usage`
+            // now accepts that late settlement instead of hard-erroring, so
+            // the real spend lands in the ledger and keeps counting toward
+            // the ceiling; this column flags those rows for audit rather
+            // than silently mixing them into ordinary on-time settlements.
+            "late_settlement",
+            "ALTER TABLE cost_ledger ADD COLUMN late_settlement INTEGER NOT NULL DEFAULT 0",
+        ),
+    ] {
         let has_column: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('cost_ledger') WHERE name = ?",
         )
@@ -2886,6 +2900,29 @@ pub async fn apply_cost_reservations_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(&mut *tx)
     .await?;
+
+    // YF1 (G6 review, Lane Y-fix 2026-09-09): distinguishes the two ways a
+    // reservation reaches `state = 'unknown'`. `mark_provider_invocation_unknown`
+    // sets this column (to its own `updated_at`) because that path only runs
+    // after the caller has locally concluded the attempt is over (a stream
+    // setup failure, missing authoritative usage, or a failed settlement
+    // write) — reconciling it immediately is safe. The lease-expiry sweep in
+    // `reserve_provider_invocation` leaves it NULL, because a lease expiring
+    // proves nothing about whether the provider call itself is still
+    // genuinely in flight; `reconcile_stale_reservations` uses NULL here to
+    // hold those rows until they clear a grace window, instead of releasing
+    // a hold whose spend may still land.
+    let has_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = 'unknown_marked_at'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_column == 0 {
+        sqlx::query("ALTER TABLE cost_reservations ADD COLUMN unknown_marked_at TEXT")
+            .execute(&mut *tx)
+            .await?;
+    }
+
     tx.commit().await?;
     Ok(())
 }

@@ -79,6 +79,31 @@ impl LandOutcome {
             Self::FastForwarded { .. } | Self::AlreadyLanded { .. }
         )
     }
+
+    /// A short, stable key for persisting this outcome on a goal card (YF2,
+    /// G6 review, Lane Y-fix 2026-09-09) — `dispatch_evidence.landing.outcome`
+    /// — so a later reader (`goal_landed_head_commit`, the CLI drain
+    /// summary) can tell "landing was attempted and actually succeeded"
+    /// apart from "attempted but did nothing" without re-deriving it from
+    /// the variant's prose.
+    pub fn outcome_key(&self) -> &'static str {
+        if self.is_landed() {
+            "landed"
+        } else if matches!(self, Self::NeedsMerge { .. }) {
+            "needs_merge"
+        } else {
+            "skipped"
+        }
+    }
+
+    /// The trunk sha the work actually landed at, when it did.
+    pub fn landed_head(&self) -> Option<&str> {
+        match self {
+            Self::FastForwarded { head, .. } => Some(head.as_str()),
+            Self::AlreadyLanded { trunk } => Some(trunk.as_str()),
+            _ => None,
+        }
+    }
 }
 
 /// The inputs landing needs, read off the goal card's `dispatch_evidence`.

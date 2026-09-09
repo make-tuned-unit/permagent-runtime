@@ -2340,9 +2340,15 @@ impl SessionStorage {
     async fn mark_provider_invocation_unknown(&self, reservation_id: &str) -> Result<bool> {
         let pool = self.pool().await?;
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        // `unknown_marked_at` records that THIS path concluded the attempt
+        // is over (as opposed to the lease-expiry sweep, which never sets
+        // it) — `reconcile_stale_reservations` uses it to reconcile an
+        // explicit mark immediately while holding a merely lease-expired row
+        // until it clears a grace window (YF1, G6 review, Lane Y-fix
+        // 2026-09-09).
         let result = sqlx::query(
             "UPDATE cost_reservations
-             SET state = 'unknown', updated_at = datetime('now')
+             SET state = 'unknown', updated_at = datetime('now'), unknown_marked_at = datetime('now')
              WHERE reservation_id = ? AND state = 'pending'",
         )
         .bind(reservation_id)
@@ -2382,20 +2388,66 @@ impl SessionStorage {
     /// settled call. No ledger row means nothing durable proves the call was
     /// ever billed, so the hold is released — holding it forever recovers no
     /// spend, it only refuses honest future work.
+    ///
+    /// YF1 (G6 review, Lane Y-fix 2026-09-09): the above is only safe for a
+    /// row `mark_provider_invocation_unknown` put into `unknown` — that path
+    /// runs only once the caller has locally concluded the attempt is over.
+    /// A row the LEASE-EXPIRY sweep alone put into `unknown` proves nothing
+    /// of the sort: the provider call may still be genuinely streaming past
+    /// its lease, and releasing that hold the instant the next call comes in
+    /// hands its budget headroom to someone else while the real spend is
+    /// still in flight — when it later tries to settle,
+    /// `append_cost_ledger_with_usage` would find the hold already
+    /// `released`/re-`unknown` and (pre-YF1) hard-error, dropping the real
+    /// spend on the floor entirely (G6 finding #1). So a merely
+    /// lease-expired row (`unknown_marked_at IS NULL`) is left alone here
+    /// until it has been stale for `RECONCILE_GRACE` — well beyond the
+    /// longest legitimate call, approximating 3x the standard 2h paid-call
+    /// lease used by `reply_parts.rs` — keeping `reserve_provider_invocation`
+    /// fail-closed (refusing new calls under the task) for a bounded window
+    /// instead of releasing on a guess. `append_cost_ledger_with_usage` no
+    /// longer errors on a late settlement either way (see YF1 there): if the
+    /// real spend does land after this reconciliation already ran, it is
+    /// still recorded and still counts toward the ceiling, flagged
+    /// `late_settlement`.
     async fn reconcile_stale_reservations(
         tx: &mut sqlx::Transaction<'_, Sqlite>,
         task_id: &str,
         now: &str,
     ) -> Result<()> {
-        let stale: Vec<(String, String)> = sqlx::query_as(
-            "SELECT reservation_id, invocation_id FROM cost_reservations
+        let stale: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT reservation_id, invocation_id, unknown_marked_at, lease_until
+             FROM cost_reservations
              WHERE task_id = ? AND state = 'unknown'",
         )
         .bind(task_id)
         .fetch_all(&mut **tx)
         .await?;
 
-        for (reservation_id, invocation_id) in stale {
+        let now_dt = chrono::DateTime::parse_from_rfc3339(now)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Utc));
+        let grace = chrono::Duration::hours(6);
+
+        for (reservation_id, invocation_id, unknown_marked_at, lease_until) in stale {
+            let eligible = if unknown_marked_at.is_some() {
+                // Explicitly marked unknown: the attempt already concluded
+                // locally, so real evidence (or the lack of it) can be
+                // trusted right away.
+                true
+            } else {
+                // Lease-expiry sweep only — hold until well past any
+                // realistic in-flight completion.
+                match (now_dt, chrono::DateTime::parse_from_rfc3339(&lease_until)) {
+                    (Some(now_dt), Ok(lease_until)) => {
+                        now_dt - lease_until.with_timezone(&chrono::Utc) >= grace
+                    }
+                    _ => false,
+                }
+            };
+            if !eligible {
+                continue;
+            }
             let ledger_cost: Option<f64> =
                 sqlx::query_scalar("SELECT cost_usd FROM cost_ledger WHERE call_id = ?")
                     .bind(&invocation_id)
@@ -2738,6 +2790,14 @@ impl SessionStorage {
         let pool = self.pool().await?;
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
+        // YF1 (G6 review, Lane Y-fix 2026-09-09): captured outside the `if
+        // let` below so the late-settlement UPDATEs further down can still
+        // see the reservation's state as of this transaction, and know
+        // whether this settlement is "on time" (state was `pending`) or
+        // "late" (the reservation was already reconciled to `unknown` or
+        // `released` before the real spend arrived).
+        let mut reservation_state: Option<String> = None;
+
         if let Some(reservation_id) = reservation_id {
             let Some((
                 reservation_invocation,
@@ -2789,15 +2849,25 @@ impl SessionStorage {
                     return Ok(false);
                 }
                 "pending" => {}
-                "unknown" => {
-                    return Err(anyhow::anyhow!(
-                        "provider reservation '{reservation_id}' expired before settlement"
-                    ));
-                }
-                "released" => {
-                    return Err(anyhow::anyhow!(
-                        "provider reservation '{reservation_id}' was released"
-                    ));
+                // YF1: a reservation already reconciled away (settled to $0
+                // / released because no ledger evidence existed at the
+                // time) can still have its provider call complete for real
+                // afterward. Erroring here (the pre-YF1 behavior) would
+                // drop that real spend on the floor entirely — the budget
+                // headroom was already given back, and now the actual bill
+                // goes unrecorded too. Instead this settlement is accepted
+                // as a LATE one: recorded in the ledger (flagged
+                // `late_settlement`) so it still counts toward the ceiling,
+                // never silently dropped (G6 finding #1).
+                "unknown" | "released" => {
+                    tracing::info!(
+                        target: "permagent::cost_router",
+                        reservation_id,
+                        state = %state,
+                        call_id = %row.call_id,
+                        cost_usd = row.cost_usd,
+                        "settling a provider call whose reservation was already reconciled away; recording as a late settlement rather than dropping the spend"
+                    );
                 }
                 _ => {
                     return Err(anyhow::anyhow!(
@@ -2805,7 +2875,12 @@ impl SessionStorage {
                     ));
                 }
             }
+            reservation_state = Some(state);
         }
+        let is_late_settlement = matches!(
+            reservation_state.as_deref(),
+            Some("unknown") | Some("released")
+        );
 
         let inserted = sqlx::query(
             "INSERT INTO cost_ledger (
@@ -2813,13 +2888,13 @@ impl SessionStorage {
                 subagent_id, turn_index, provider, model, cost_tier, is_chargeable,
                 is_headless, input_tokens, output_tokens, cache_read_tokens,
                 cache_write_tokens, input_cost, output_cost, cache_read_cost,
-                cache_write_cost, cost_usd, is_estimated
+                cache_write_cost, cost_usd, is_estimated, late_settlement
             ) VALUES (
                 ?, ?, ?, ?, ?, ?,
                 ?, (SELECT COUNT(*) FROM cost_ledger WHERE session_id = ?), ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
-                ?, ?, ?
+                ?, ?, ?, ?
             ) ON CONFLICT(call_id) DO NOTHING",
         )
         .bind(&row.call_id)
@@ -2845,13 +2920,14 @@ impl SessionStorage {
         .bind(row.cache_write_cost)
         .bind(row.cost_usd)
         .bind(row.is_estimated)
+        .bind(is_late_settlement)
         .execute(&mut *tx)
         .await?
         .rows_affected()
             == 1;
 
         if !inserted {
-            if let Some(reservation_id) = reservation_id {
+            if let (Some(reservation_id), Some(from_state)) = (reservation_id, &reservation_state) {
                 let Some((existing_session, existing_task, existing_cost)) =
                     sqlx::query_as::<_, (String, Option<String>, f64)>(
                         "SELECT session_id, task_id, cost_usd FROM cost_ledger WHERE call_id = ?",
@@ -2875,10 +2951,11 @@ impl SessionStorage {
                 sqlx::query(
                     "UPDATE cost_reservations SET state = 'settled',
                         settled_cost_usd = ?, updated_at = datetime('now')
-                     WHERE reservation_id = ? AND state = 'pending'",
+                     WHERE reservation_id = ? AND state = ?",
                 )
                 .bind(row.cost_usd)
                 .bind(reservation_id)
+                .bind(from_state)
                 .execute(&mut *tx)
                 .await?;
             }
@@ -2940,14 +3017,15 @@ impl SessionStorage {
         .execute(&mut *tx)
         .await?;
 
-        if let Some(reservation_id) = reservation_id {
+        if let (Some(reservation_id), Some(from_state)) = (reservation_id, &reservation_state) {
             let settled = sqlx::query(
                 "UPDATE cost_reservations SET state = 'settled',
                     settled_cost_usd = ?, updated_at = datetime('now')
-                 WHERE reservation_id = ? AND state = 'pending'",
+                 WHERE reservation_id = ? AND state = ?",
             )
             .bind(row.cost_usd)
             .bind(reservation_id)
+            .bind(from_state)
             .execute(&mut *tx)
             .await?;
             if settled.rows_affected() != 1 {
@@ -6107,6 +6185,281 @@ mod tests {
             .await
             .unwrap(),
             CostReservationOutcome::Granted { .. }
+        ));
+    }
+
+    /// YF1 (G6 review, Lane Y-fix 2026-09-09, finding #1): a hold whose
+    /// LEASE merely expired must NOT be released by the very next call's
+    /// reconciliation — the provider call it authorized may still be
+    /// genuinely streaming past its lease. Releasing it immediately (the
+    /// pre-fix behavior) hands its budget headroom to someone else while
+    /// real spend is still in flight; when that spend later tries to
+    /// settle, the pre-fix code hard-errored and dropped it. Until the hold
+    /// has been stale for well beyond the longest legitimate call
+    /// (`RECONCILE_GRACE` in `reconcile_stale_reservations`), it must stay
+    /// `unknown` and keep refusing fresh calls under the same task — bounded
+    /// fail-closed, not indefinite, but never a fast release on a guess.
+    #[tokio::test]
+    async fn yf1_lease_expired_pending_hold_is_not_released_within_grace_window() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "lease expired in flight".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let cfg = reservation_config(10.0, 20.0, 10.0, 20.0);
+
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "yf1-in-flight-call",
+                &session.id,
+                Some(&task_id),
+                1.0,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Granted { .. }
+        ));
+
+        // Simulate the lease-expiry sweep alone (no explicit
+        // `mark_provider_invocation_unknown` call) by backdating the lease
+        // to just a few minutes ago — well within any realistic grace
+        // window, unlike the deep-past ('2000-01-01') lease used by the
+        // other reconciliation tests, which is deliberately far past grace.
+        let pool = sm.pool_clone().await.unwrap();
+        let recent_expiry = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+        sqlx::query(
+            "UPDATE cost_reservations SET lease_until = ?
+             WHERE invocation_id = 'yf1-in-flight-call'",
+        )
+        .bind(&recent_expiry)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // A fresh call under the same task triggers both the lease sweep
+        // (pending -> unknown) and reconciliation. Pre-fix, reconciliation
+        // released the hold unconditionally and this call would be
+        // `Granted`. Post-fix, the stale hold is still within its grace
+        // window and must keep refusing.
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "yf1-fresh-call",
+                &session.id,
+                Some(&task_id),
+                1.0,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Unknown { .. }
+        ));
+
+        let (state, unknown_marked_at): (String, Option<String>) = sqlx::query_as(
+            "SELECT state, unknown_marked_at FROM cost_reservations
+             WHERE invocation_id = 'yf1-in-flight-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            state, "unknown",
+            "a merely lease-expired hold must not be released while still within its grace window"
+        );
+        assert!(
+            unknown_marked_at.is_none(),
+            "the lease-expiry sweep must never set unknown_marked_at — only an explicit mark_provider_invocation_unknown call does"
+        );
+    }
+
+    /// YF1 companion: the same lease-expired hold, once it has genuinely
+    /// been stale for longer than any legitimate call could still be
+    /// running, IS reconciled — the grace window is bounded, not
+    /// permanent refusal.
+    #[tokio::test]
+    async fn yf1_lease_expired_pending_hold_reconciles_after_grace_window_elapses() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "lease expired past grace".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let cfg = reservation_config(10.0, 20.0, 10.0, 20.0);
+
+        sm.reserve_provider_invocation(
+            "yf1-long-stale-call",
+            &session.id,
+            Some(&task_id),
+            1.0,
+            "2099-01-01T00:00:00Z",
+            &cfg,
+        )
+        .await
+        .unwrap();
+
+        let pool = sm.pool_clone().await.unwrap();
+        // Well past the 6h grace window (3x the standard 2h paid-call
+        // lease), unlike the 5-minute backdate above.
+        let long_past_expiry = (chrono::Utc::now() - chrono::Duration::hours(7)).to_rfc3339();
+        sqlx::query(
+            "UPDATE cost_reservations SET lease_until = ?
+             WHERE invocation_id = 'yf1-long-stale-call'",
+        )
+        .bind(&long_past_expiry)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "yf1-fresh-after-grace",
+                &session.id,
+                Some(&task_id),
+                1.0,
+                "2099-01-01T00:00:00Z",
+                &cfg,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Granted { .. }
+        ));
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'yf1-long-stale-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "released");
+    }
+
+    /// YF1 (G6 review, Lane Y-fix 2026-09-09, finding #1): a late settlement
+    /// — the provider call for a hold that was ALREADY reconciled away
+    /// (released, no ledger evidence at the time) completing for real
+    /// afterward — must land in the ledger and keep counting toward the
+    /// ceiling, not hard-error and vanish. Pre-fix,
+    /// `append_cost_ledger_with_usage` refused any settlement against a
+    /// `released`/`unknown` reservation; this is the exact "real spend never
+    /// recorded" half of G6 finding #1.
+    #[tokio::test]
+    async fn yf1_late_settlement_after_reconciliation_lands_in_ledger_and_counts() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "late settlement".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let loose = reservation_config(5.0, 5.0, 5.0, 5.0);
+
+        let reservation_id = match sm
+            .reserve_provider_invocation(
+                "yf1-late-call",
+                &session.id,
+                Some(&task_id),
+                0.50,
+                "2099-01-01T00:00:00Z",
+                &loose,
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            other => panic!("setup reservation was not granted: {other:?}"),
+        };
+
+        // Deep in the past — well past the grace window — so the next
+        // reservation call reconciles this hold to `released` with no
+        // ledger evidence yet, exactly as the other deep-past tests above.
+        let pool = sm.pool_clone().await.unwrap();
+        sqlx::query(
+            "UPDATE cost_reservations SET lease_until = '2000-01-01T00:00:00Z'
+             WHERE invocation_id = 'yf1-late-call'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sm.reserve_provider_invocation(
+            "yf1-late-trigger",
+            &session.id,
+            Some(&task_id),
+            0.01,
+            "2099-01-01T00:00:00Z",
+            &loose,
+        )
+        .await
+        .unwrap();
+        let pre_settlement_state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'yf1-late-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            pre_settlement_state, "released",
+            "setup: the hold must already be reconciled away before the late settlement arrives"
+        );
+
+        // The provider call actually completes now, well after reconciliation
+        // already ran. Pre-fix this returned Err("... was released").
+        let row = reservation_row(&session.id, &task_id, "yf1-late-call", 0.50);
+        let inserted = sm
+            .settle_provider_invocation(&reservation_id, &row, None, None, None, None, 15, 10, 5)
+            .await
+            .unwrap();
+        assert!(
+            inserted,
+            "the late settlement must be recorded, not dropped"
+        );
+
+        let (cost_usd, late_settlement): (f64, i64) = sqlx::query_as(
+            "SELECT cost_usd, late_settlement FROM cost_ledger WHERE call_id = 'yf1-late-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!((cost_usd - 0.50).abs() < 1e-12);
+        assert_eq!(
+            late_settlement, 1,
+            "a settlement against an already-reconciled reservation must be flagged late_settlement"
+        );
+
+        // And it must count: task spend is now 0.50 (late) + 0.01 (trigger)
+        // = 0.51 against a 0.55 hard ceiling, so a fresh 0.10 request must be
+        // refused — if the late spend had vanished instead, this would
+        // wrongly succeed.
+        let tight = reservation_config(0.50, 0.55, 0.50, 0.55);
+        assert!(matches!(
+            sm.reserve_provider_invocation(
+                "yf1-post-late-call",
+                &session.id,
+                Some(&task_id),
+                0.10,
+                "2099-01-01T00:00:00Z",
+                &tight,
+            )
+            .await
+            .unwrap(),
+            CostReservationOutcome::Refused { .. } | CostReservationOutcome::NeedsGate { .. }
         ));
     }
 

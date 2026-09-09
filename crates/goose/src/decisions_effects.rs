@@ -480,6 +480,47 @@ async fn land_approved_goal(
         return (None, None);
     };
     let outcome = crate::goal_landing::land(&req).await;
+
+    // YF2 (G6 review, Lane Y-fix 2026-09-09, finding #2): this outcome used
+    // to be computed and then discarded — only folded into a one-shot
+    // response string. Review -> Complete is unconditional, so a card could
+    // reach Complete with real commits whose `land()` call returned
+    // `NeedsMerge`/`Skipped`, and every later reader
+    // (`goal_landed_head_commit`, the CLI drain summary) had no durable way
+    // to tell that apart from a genuine landing — printing a fabricated
+    // `landed <id> → <sha>` line whenever the trunk had moved out from
+    // under the worker (e.g. a second goal in the same roadmap landing
+    // first). Persist it onto the card so those readers can gate on whether
+    // landing actually happened, not merely whether it was attempted.
+    let landing_json = serde_json::json!({
+        "outcome": outcome.outcome_key(),
+        "landed_head": outcome.landed_head(),
+        "describe": outcome.describe(),
+        "at": chrono::Utc::now().to_rfc3339(),
+    });
+    if let Some(mut evidence) = card
+        .metadata_json
+        .get("dispatch_evidence")
+        .and_then(|value| value.as_object())
+        .cloned()
+    {
+        evidence.insert("landing".to_string(), landing_json);
+        if let Err(error) = crate::cards::merge_card_metadata(
+            pool,
+            goal_id,
+            serde_json::json!({ "dispatch_evidence": serde_json::Value::Object(evidence) }),
+            false,
+        )
+        .await
+        {
+            tracing::warn!(
+                goal_id,
+                %error,
+                "could not persist the landing outcome onto dispatch_evidence"
+            );
+        }
+    }
+
     let warning = if let crate::goal_landing::LandOutcome::NeedsMerge { branch, trunk } = &outcome {
         ensure_needs_merge_decision(pool, goal_id, &card.title, &card.project_id, branch, trunk)
             .await
@@ -2670,6 +2711,162 @@ mod tests {
         assert!(
             effect.contains("main"),
             "the landing outcome must be reported on the approval, not left silent: {effect}"
+        );
+
+        // YF2 (G6 review, Lane Y-fix 2026-09-09): the outcome must also be
+        // durably persisted on the card — a one-shot response string is not
+        // enough for `goal_landed_head_commit`/the CLI drain summary to
+        // read back later.
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = card
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect("land_approved_goal must persist the outcome onto dispatch_evidence.landing");
+        assert_eq!(
+            landing.get("outcome").and_then(|v| v.as_str()),
+            Some("landed")
+        );
+        assert_eq!(
+            landing.get("landed_head").and_then(|v| v.as_str()),
+            Some(head.as_str())
+        );
+    }
+
+    /// A trunk on `main` that has moved (a second commit) since
+    /// `goal/run-1` branched off it — `goal_landing::land` must report
+    /// `NeedsMerge`, not fast-forward.
+    fn repo_with_diverged_trunk() -> (tempfile::TempDir, String) {
+        let (dir, head) = repo_with_finished_goal_branch();
+        let root = dir.path();
+        // `repo_with_finished_goal_branch` leaves the checkout on `main`.
+        std::fs::write(root.join("trunk-moved.txt"), "someone else landed first\n").unwrap();
+        git_in(root, &["add", "-A"]);
+        git_in(root, &["commit", "-m", "trunk moved"]);
+        (dir, head)
+    }
+
+    /// YF2 (G6 review, Lane Y-fix 2026-09-09, finding #2): approving a goal
+    /// whose branch the trunk has since diverged from must persist the real
+    /// `NeedsMerge` outcome onto the card — not just report it in the
+    /// one-shot approval response and then discard it, which is exactly
+    /// what let a later `Complete` card print a fabricated `landed` line
+    /// for work that never reached the trunk.
+    #[tokio::test]
+    async fn needs_merge_outcome_is_persisted_on_the_card_and_never_reported_as_landed() {
+        let (repo, head) = repo_with_diverged_trunk();
+        let root = repo.path().to_string_lossy().into_owned();
+
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Needs-merge landing test".to_string(),
+                root_path: Some(root.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let goal = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Diverged goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 0,
+                    "goal_state": "review",
+                    "dispatch_evidence": {
+                        "worktree_path": "/tmp/.permagent-goal-worktrees/run-1",
+                        "head_commit": head,
+                        "commits": ["abc123 the work"],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(project.id.clone()),
+                headline: Some("Review the diverged work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+
+        let (effect, _warning) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        assert_ne!(
+            git_in(repo.path(), &["rev-parse", "HEAD"]),
+            head,
+            "a diverged trunk must never be fast-forwarded"
+        );
+        let effect = effect.unwrap_or_default();
+        assert!(
+            effect.contains("NOT landed"),
+            "a diverged trunk must be reported honestly, not as landed: {effect}"
+        );
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = card
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect("land_approved_goal must persist the outcome onto dispatch_evidence.landing");
+        assert_eq!(
+            landing.get("outcome").and_then(|v| v.as_str()),
+            Some("needs_merge"),
+            "pre-fix this field never existed at all"
+        );
+        assert!(
+            landing
+                .get("landed_head")
+                .map(|v| v.is_null())
+                .unwrap_or(true),
+            "a NeedsMerge outcome must never carry a landed_head"
         );
     }
 
