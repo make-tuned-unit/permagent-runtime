@@ -7607,6 +7607,13 @@ async fn drain_dispatched_goals_with(
     let mut accounted: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut last_state: HashMap<String, GoalState> = HashMap::new();
     let mut finished = 0usize;
+    // Y2-2: goals stopped early because THIS session's own dispatch attempt
+    // is already over (see `worker_session_execution_receipt_is_terminal`),
+    // even though the goal's own `GoalState` never reached one of `TERMINAL`.
+    // Folded into `timed_out` in the returned summary — the same
+    // `handle_goal_timeout` park path a cap-expiry uses, just reached within
+    // one poll interval instead of the full cap.
+    let mut stalled = 0usize;
     const TERMINAL: [GoalState; 3] = [GoalState::Complete, GoalState::Cancelled, GoalState::Failed];
 
     let start = std::time::Instant::now();
@@ -7640,8 +7647,34 @@ async fn drain_dispatched_goals_with(
                 on_status(&session_id, state);
                 last_state.insert(session_id.clone(), state);
             }
+            // Y2-2 (HARNESS_LOOP_LOG.md "Lane M5 report" NEW Defect #7): a
+            // `hold_done` reversion can put the card back in `ready` — a
+            // non-`TERMINAL` `GoalState` — after killing the worker it was
+            // waiting on, and headless drain never redispatches on its own.
+            // Nothing further will ever happen for THIS session within this
+            // drain window; recognise that from the session's own execution
+            // receipt (already stamped terminal by the completion tracker)
+            // instead of polling `card_id`'s unchanging `GoalState` out to
+            // the full `cap`, which is the confirmed 200-320s dead-wall-clock
+            // gap the M5 report traced on `testfix-inventory-suite-green`
+            // and `defaults-rs-parse-amount-returns-a-result`.
+            let receipt_terminal =
+                worker_session_execution_receipt_is_terminal(pool, &card_id, &session_id).await;
+            tracing::debug!(
+                target: "permagentd::brain",
+                "{}",
+                drain_poll_debug_line(&session_id, &card_id, state, receipt_terminal),
+            );
             if TERMINAL.contains(&state) {
                 finished += 1;
+            } else if receipt_terminal {
+                // Best-effort, same as the cap-expiry park below: a no-op if
+                // the card already left `in_progress` (it always has here —
+                // a `hold_done` reversion already moved it to `ready`), so
+                // this never double-parks or fights a genuine retry.
+                let _ = handle_goal_timeout(pool, &card_id, &project_id, start.elapsed().as_secs())
+                    .await;
+                stalled += 1;
             } else {
                 still_pending.insert(session_id, (card_id, project_id));
             }
@@ -7654,7 +7687,7 @@ async fn drain_dispatched_goals_with(
         tokio::time::sleep(poll_interval.min(cap.saturating_sub(start.elapsed()))).await;
     }
 
-    let timed_out = pending.len();
+    let timed_out = pending.len() + stalled;
     for (card_id, project_id) in pending.into_values() {
         // Best-effort: `handle_goal_timeout` itself no-ops for a card no
         // longer `in_progress` (raced to a terminal state between the last
@@ -7666,6 +7699,51 @@ async fn drain_dispatched_goals_with(
         finished,
         timed_out,
     })
+}
+
+/// True when the goal card's CURRENTLY-RECORDED execution receipt still
+/// names `session_id` (no newer dispatch attempt has replaced it — a fresh
+/// attempt overwrites the single `execution_receipt` metadata key wholesale,
+/// see `orchestrator`'s dispatch path) and that receipt has already reached
+/// a terminal [`ReceiptState`]. This is the signal a `hold_done` reversion
+/// leaves behind: the completion tracker's `finalize_receipt` call always
+/// stamps the receipt before `handle_goal_completion` decides what to do
+/// with the card, so a card sitting in a non-terminal `GoalState` (e.g.
+/// `ready`, requeued for a retry this bounded drain will never itself
+/// perform) can still have a receipt that says, unambiguously, "this
+/// specific worker session is done." Best-effort: any read/parse failure
+/// reads as "not terminal" (keep waiting, the safe default — never a reason
+/// to park prematurely).
+async fn worker_session_execution_receipt_is_terminal(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    session_id: &str,
+) -> bool {
+    let Ok(Some(value)) = cards::get_goal_execution_receipt(pool, card_id).await else {
+        return false;
+    };
+    let Ok(receipt) = serde_json::from_value::<ExecutionReceipt>(value) else {
+        return false;
+    };
+    receipt.session_id == session_id && receipt.state.is_terminal()
+}
+
+/// One `--debug`-level line per drain poll iteration per awaited goal —
+/// exactly the three signals Y2-2's investigation needed and had to
+/// reconstruct after the fact from `git log`/`cost_ledger` archaeology on a
+/// completed (and by then unrecoverable) run instead of reading them off a
+/// live process. Pure and independently testable; the call site is a
+/// one-line `tracing::debug!` wrapper around it.
+fn drain_poll_debug_line(
+    session_id: &str,
+    card_id: &str,
+    state: GoalState,
+    receipt_terminal: bool,
+) -> String {
+    format!(
+        "drain poll: session={session_id} card={card_id} goal_state={} receipt_terminal={receipt_terminal}",
+        state.binding()
+    )
 }
 
 /// Lane U / U3: an immediate (no polling, no sleep) park pass over every
@@ -7705,31 +7783,50 @@ pub async fn park_dispatched_goals_now(
 /// The worker's landed head commit for a card already in `Complete` state,
 /// read straight from `dispatch_evidence.head_commit` — the same field
 /// `goal_landing::land` fast-forwarded the trunk onto. `None` when the card
-/// carries no recorded evidence (never happens for a goal that reached
-/// Complete through the landing path; a defensive read rather than a panic
-/// for any other way a card could reach Complete).
+/// carries no recorded evidence, OR (Y2-1, HARNESS_LOOP_LOG.md "Lane M5
+/// report" NEW Defect #3) when `dispatch_evidence.commits` is empty — the
+/// SAME emptiness gate `goal_landing::land_request_from_metadata` itself
+/// uses to refuse building a `LandRequest` at all. A card can reach
+/// `Complete` (Review → Complete is an unconditional transition; landing
+/// is a best-effort step AFTER it, in `decisions_effects::land_approved_goal`,
+/// which returns `(None, None)` — nothing persisted, nothing landed —
+/// whenever there is nothing real to land) with zero commits ever having
+/// been made in its own isolated worktree. Trusting `head_commit` in that
+/// case hands back the worker's own BASELINE commit dressed up as a landed
+/// sha — confirmed against a real run's kept git state (`merge-row-2048`,
+/// 2026-09-09: `dispatch_evidence` read `head_commit == baseline_commit`,
+/// `commits: []`, yet the CLI printed `landed <id> → <that same seed sha>`).
+/// Mirroring `land_request_from_metadata`'s own gate here means this
+/// function only ever hands back a sha for a goal that genuinely had
+/// something to land, whether or not `land()` itself was ever reached.
 async fn goal_landed_head_commit(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) -> Option<String> {
     let card = cards::get_card(pool, card_id).await.ok()??;
-    card.metadata_json
-        .pointer("/dispatch_evidence/head_commit")
-        .and_then(|v| v.as_str())
-        .map(String::from)
+    let evidence = card.metadata_json.pointer("/dispatch_evidence")?;
+    let has_real_commits = evidence
+        .get("commits")
+        .and_then(|value| value.as_array())
+        .is_some_and(|commits| !commits.is_empty());
+    if !has_real_commits {
+        return None;
+    }
+    evidence.get("head_commit")?.as_str().map(String::from)
 }
 
 /// Harness loop, Lane V (V2): every goal `coordinator_session_id` dispatched
 /// (any descendant, the SAME wait set [`drain_dispatched_goals`] uses) that
 /// has already landed on the project trunk — `(card_id, head_commit)`.
 ///
-/// `Complete` is already the only "landed" terminal state in this codebase:
-/// a goal reaches Complete exclusively through
+/// `Complete` is NOT, by itself, proof that anything landed (Y2-1: see
+/// [`goal_landed_head_commit`]'s doc comment for the confirmed counter-
+/// example) — a goal reaches Complete unconditionally through
 /// `decisions_effects::apply_decision_effect`'s `approve_review` "approve"
-/// arm, which calls `goal_transition::advance_goal_checked(..., Approve,
-/// ...)` and `land_approved_goal` in the same sequence — so by the time
-/// `drain_dispatched_goals` (or this function) ever OBSERVES Complete, the
-/// landing has already happened, whether a human answered the decision or
-/// (Lane V's V1) it auto-landed under a headless Auto policy. This is
-/// therefore a plain read-back, not a fresh landing decision, and is
-/// harmless (empty) for a daemon/interactive session, where nothing calls
+/// arm's `goal_transition::advance_goal_checked(..., Approve, ...)` call,
+/// and `land_approved_goal` runs only AFTER that, as a separate best-effort
+/// step that can legitimately do nothing (no commits to land, a diverged
+/// trunk needing a manual merge, a project with no resolvable root). This
+/// function's own `goal_landed_head_commit` call is therefore what actually
+/// decides "landed or not" — Complete is only the first, necessary filter.
+/// Harmless (empty) for a daemon/interactive session, where nothing calls
 /// it. Used by the CLI's post-drain summary to print "landed `<id>` →
 /// `<sha>`" lines.
 pub async fn landed_goals_for_session(
@@ -12537,6 +12634,68 @@ mod tests {
         );
     }
 
+    /// Y2-1 (HARNESS_LOOP_LOG.md "Lane M5 report" NEW Defect #3, confirmed
+    /// against the `merge-row-2048` fixture's kept git state 2026-09-09): a
+    /// goal can reach `Complete` — Review → Complete is unconditional — while
+    /// `land_approved_goal` found nothing real to land (`dispatch_evidence`
+    /// shows `commits: []`, `head_commit` still reading the worker's own
+    /// baseline). Before this fix, `landed_goals_for_session` trusted
+    /// `head_commit` regardless, so the CLI printed `landed <id> → <seed
+    /// sha>` — a fabricated landing receipt for work that never happened.
+    /// This must never be reported as landed at all.
+    #[tokio::test]
+    async fn landed_goals_for_session_never_reports_a_complete_goal_that_never_actually_landed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: vacuously complete".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "complete", 1).await;
+        attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+        // The exact shape the kept `merge-row-2048` run's card carried:
+        // `head_commit` equal to its own `baseline_commit`, `commits: []`.
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "baseline_commit": "684262c0c55d3b43218c9289068f0e7c02592343",
+                "head_commit": "684262c",
+                "commits": [],
+                "files_changed": 0,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let landed = landed_goals_for_session(&pool, &coordinator.id)
+            .await
+            .unwrap();
+        assert!(
+            landed.is_empty(),
+            "a Complete goal with no real commits must never be reported as landed, \
+             got {landed:?}"
+        );
+    }
+
     /// T3, "one that never completes → returns at cap and the goal is
     /// marked": this is the "process would exit with the goal InProgress"
     /// case, shown failing first below — pins the cap-expiry path AND that
@@ -12611,6 +12770,105 @@ mod tests {
             "a timed-out drain must not leave the goal silently in_progress"
         );
         assert_eq!(col.state_binding.as_deref(), Some("failed"));
+    }
+
+    /// Y2-2 (HARNESS_LOOP_LOG.md "Lane M5 report" NEW Defect #7, evidenced on
+    /// `testfix-inventory-suite-green` and
+    /// `defaults-rs-parse-amount-returns-a-result`): a `hold_done` reversion
+    /// kills the worker and moves the card back to `ready` — a non-`TERMINAL`
+    /// `GoalState` — with real drain runway still remaining. Before this fix
+    /// the drain kept polling `GoalState` alone, which never changes again on
+    /// its own, and sat on dead wall-clock out to the full `cap`. This must
+    /// now be recognised within one poll interval, from the worker session's
+    /// own execution receipt (already stamped terminal by the completion
+    /// tracker before the card was reverted), not the full cap.
+    #[tokio::test]
+    async fn drain_dispatched_goals_stops_waiting_once_the_worker_session_is_terminal_after_a_hold_done_reversion(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: held and reverted".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        // `maybe_hold_review`'s Hold arm: kills the worker, requeues the card
+        // to `ready` via `requeue_goal` — never touches `execution_receipt`.
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+        attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+        let mut receipt = ExecutionReceipt::new(
+            "permagent",
+            child.id.clone(),
+            serde_json::json!({}),
+            "life-1",
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        receipt.finalize(ReceiptState::Failed, chrono::Utc::now().to_rfc3339());
+        cards::set_goal_execution_receipt(&pool, &card.id, serde_json::to_value(&receipt).unwrap())
+            .await
+            .unwrap();
+
+        // A generous cap the OLD code would have slept out in full — the
+        // fixed code must return within a couple of poll intervals instead.
+        let cap = std::time::Duration::from_secs(5);
+        let poll_interval = std::time::Duration::from_millis(20);
+        let start = std::time::Instant::now();
+        let summary = drain_dispatched_goals(&pool, &coordinator.id, cap, poll_interval, |_, _| {})
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < cap / 2,
+            "a goal whose worker session already reached a terminal receipt state must not be \
+             waited on out to the drain cap: waited {elapsed:?} against a {cap:?} cap"
+        );
+        assert_eq!(
+            summary,
+            DrainSummary {
+                finished: 0,
+                timed_out: 1
+            },
+            "the stalled goal must be counted (and parked) exactly like a cap-expiry timeout"
+        );
+    }
+
+    /// Y2-2: pins the `--debug` drain-poll log line's format directly (a
+    /// `tracing::debug!` call site is not otherwise unit-testable without a
+    /// subscriber harness) — the three signals the M5 report's per-fixture
+    /// timeline reconstruction had to infer after the fact from `git log`/
+    /// `cost_ledger` archaeology instead of reading off a live process.
+    #[test]
+    fn drain_poll_debug_line_names_the_session_card_state_and_receipt_status() {
+        let line = drain_poll_debug_line("20260909_2", "card-abc", GoalState::Ready, true);
+        assert_eq!(
+            line,
+            "drain poll: session=20260909_2 card=card-abc goal_state=ready receipt_terminal=true"
+        );
+        let line = drain_poll_debug_line("20260909_3", "card-def", GoalState::InProgress, false);
+        assert_eq!(
+            line,
+            "drain poll: session=20260909_3 card=card-def goal_state=in_progress \
+             receipt_terminal=false"
+        );
     }
 
     /// Lane U / U2 (HARNESS_LOOP_LOG.md, "Lane G4 review" finding 2, HIGH):
