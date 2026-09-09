@@ -64,6 +64,17 @@ pub struct VerificationObservation {
     pub command: Option<String>,
     pub verdict: Option<String>,
     pub evidence: Option<String>,
+    /// X-verify-2: when `verdict` is `"pass"`, why the pass does not count as
+    /// real coverage — a syntax-only smoke check (`py_compile`/`node
+    /// --check`, see [`Check::smoke_only`]), a "nothing to verify yet"
+    /// no-checks pass, or a real check that nonetheless reported zero
+    /// tests/assertions (see [`zero_test_marker`]). `None` for a pass that
+    /// genuinely exercised something, and always `None` for a non-pass
+    /// verdict. `#[serde(default)]` so an observation built before this field
+    /// existed (a hand-built test fixture included) deserializes as `None` —
+    /// a genuine pass — rather than failing to parse.
+    #[serde(default)]
+    pub vacuous_reason: Option<String>,
 }
 
 /// Return true only for a successful, structured verifier observation.
@@ -84,6 +95,20 @@ pub fn is_authoritative_pass(result: &CallToolResult) -> bool {
     };
     observation.kind == VERIFICATION_OBSERVATION_KIND
         && observation.verdict.as_deref() == Some("pass")
+}
+
+/// X-verify-2: why an authoritative PASS does not count as real coverage, if
+/// any reason applies (see [`VerificationObservation::vacuous_reason`]).
+/// `None` for a result that is not an authoritative pass at all (a failure is
+/// never "vacuous" — it is just a failure, and is handled by ordinary
+/// verify-loop logic) and for a genuine, non-vacuous pass.
+pub fn vacuous_pass_reason(result: &CallToolResult) -> Option<String> {
+    if !is_authoritative_pass(result) {
+        return None;
+    }
+    let value = result.structured_content.as_ref()?;
+    let observation: VerificationObservation = serde_json::from_value(value.clone()).ok()?;
+    observation.vacuous_reason
 }
 
 /// The verification boundary requested by the caller. `Auto` is deliberately
@@ -220,6 +245,13 @@ enum Exec {
 struct Check {
     label: String,
     exec: Exec,
+    /// X-verify-2: true only for a syntax-only smoke check
+    /// (`py_compile`/`node --check`, see [`manifestless_checks`]) that never
+    /// actually executes the code under test. `false` for every ordinary
+    /// constructor below — set via [`Check::smoke_only`] at the two call sites
+    /// that build one, so a check's "did this run real tests" status is
+    /// explicit at construction rather than sniffed from its label text.
+    is_smoke: bool,
 }
 
 impl Check {
@@ -241,6 +273,7 @@ impl Check {
                 program: program.to_string(),
                 args,
             },
+            is_smoke: false,
         }
     }
 
@@ -249,6 +282,7 @@ impl Check {
         Self {
             label: command.to_string(),
             exec: Exec::Shell(command.to_string()),
+            is_smoke: false,
         }
     }
 
@@ -256,7 +290,14 @@ impl Check {
         Self {
             label: "bounded markdown hygiene checks".to_string(),
             exec: Exec::Markdown { files },
+            is_smoke: false,
         }
+    }
+
+    /// Mark this check as a syntax-only smoke (see [`Check::is_smoke`]).
+    fn smoke_only(mut self) -> Self {
+        self.is_smoke = true;
+        self
     }
 
     /// The program whose absence would make this check unrunnable.
@@ -289,7 +330,13 @@ enum DetectOutcome {
 
 /// The outcome of running one check.
 enum CheckOutcome {
-    Passed,
+    /// X-verify-2: carries the check's combined stdout+stderr even on
+    /// success — previously discarded, which made it impossible to tell a
+    /// real test pass from one that reported running zero tests
+    /// (`zero_test_marker` inspects this).
+    Passed {
+        output: String,
+    },
     Failed {
         exit_code: Option<i32>,
         output: String,
@@ -338,9 +385,16 @@ impl VerifyTool {
 
         // Fail-fast: run checks in order, returning the first failure with its
         // full errors (you can't meaningfully test what won't build).
+        // X-verify-2: each check's own (successful) output is kept so
+        // `pass_result` can tell a real test pass from one that reports zero
+        // tests ran.
+        let mut passed_outputs: Vec<String> = Vec::with_capacity(checks.len());
         for check in &checks {
             match run_check(check, &base_dir, timeout_secs).await {
-                CheckOutcome::Passed => continue,
+                CheckOutcome::Passed { output } => {
+                    passed_outputs.push(output);
+                    continue;
+                }
                 CheckOutcome::Failed { exit_code, output } => {
                     // pytest exits 5 when it collected no tests — a fresh scaffold
                     // with no tests yet, not a real failure. Treat as no-checks so
@@ -384,7 +438,7 @@ impl VerifyTool {
             }
         }
 
-        pass_result(&checks)
+        pass_result(&checks, &passed_outputs)
     }
 }
 
@@ -594,10 +648,14 @@ fn manifestless_checks(dir: &Path) -> Option<Vec<Check>> {
     let py_files = files_with_extension(dir, "py");
     if py_files.len() == 1 {
         let rel = relative_to(dir, &py_files[0]);
+        // X-verify-2: `py_compile` only parses the file — it never executes a
+        // line of it, so a PASS here must never be reported (or trusted by a
+        // consumer) as if real tests ran.
         return Some(vec![Check::direct_owned(
             "python3",
             vec!["-m".to_string(), "py_compile".to_string(), rel],
-        )]);
+        )
+        .smoke_only()]);
     }
 
     let js_files: Vec<PathBuf> = files_with_extension(dir, "mjs")
@@ -606,10 +664,13 @@ fn manifestless_checks(dir: &Path) -> Option<Vec<Check>> {
         .collect();
     if js_files.len() == 1 {
         let rel = relative_to(dir, &js_files[0]);
+        // X-verify-2: `node --check` is the JS equivalent of `py_compile` —
+        // syntax-only, never executed.
         return Some(vec![Check::direct_owned(
             "node",
             vec!["--check".to_string(), rel],
-        )]);
+        )
+        .smoke_only()]);
     }
 
     None
@@ -1171,7 +1232,9 @@ async fn run_check(check: &Check, dir: &Path, timeout_secs: u64) -> CheckOutcome
     };
 
     if output.status.success() {
-        CheckOutcome::Passed
+        CheckOutcome::Passed {
+            output: combine_streams(&output.stdout, &output.stderr),
+        }
     } else {
         CheckOutcome::Failed {
             exit_code: output.status.code(),
@@ -1272,7 +1335,9 @@ async fn run_markdown_checks(files: &[PathBuf], timeout_secs: u64) -> CheckOutco
         }
     }
     if findings.is_empty() {
-        CheckOutcome::Passed
+        CheckOutcome::Passed {
+            output: String::new(),
+        }
     } else {
         CheckOutcome::Failed {
             exit_code: Some(1),
@@ -1356,24 +1421,67 @@ fn observation(
     command: Option<&str>,
     verdict: Option<&str>,
     evidence: Option<&str>,
+    vacuous_reason: Option<&str>,
 ) -> CallToolResult {
     result.structured_content = Some(json!({
         "kind": VERIFICATION_OBSERVATION_KIND,
         "command": command,
         "verdict": verdict,
         "evidence": evidence,
+        "vacuous_reason": vacuous_reason,
     }));
     result
 }
 
-fn pass_result(checks: &[Check]) -> CallToolResult {
+/// X-verify-2: a "the test command ran but exercised nothing" marker across a
+/// small, curated set of common runners. Anchored with `\b` so a real "120
+/// passed"/"20 passed" can never falsely match "0 passed". Intentionally
+/// narrow — a false negative here (a genuine zero-test run using different
+/// wording) only misses a vacuous pass, while a false positive would block a
+/// real, useful one; the same conservative bias `after_turn::changed_lines`/
+/// `changed_paths` document for their own leniency.
+static ZERO_TESTS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(\b0 passed\b|\bno tests ran\b|\bno test files\b|\bran 0 tests\b|\bcollected 0 items\b|\b0 examples, 0 failures\b)",
+    )
+    .unwrap()
+});
+
+/// Return the matched "zero tests" marker text, if the combined check output
+/// contains one. See [`ZERO_TESTS_RE`].
+fn zero_test_marker(output: &str) -> Option<String> {
+    ZERO_TESTS_RE.find(output).map(|m| m.as_str().to_string())
+}
+
+/// X-verify-2: why a set of PASSED checks does not count as real coverage, if
+/// any reason applies. Checked in order: (1) every check that ran was a
+/// syntax-only smoke ([`Check::is_smoke`]) — the code was never executed at
+/// all; (2) the combined output of the checks that actually ran contains a
+/// recognized "zero tests" marker — a real test command that nonetheless
+/// collected/ran nothing. `None` when neither applies: a genuine pass.
+fn vacuous_pass_reason_for_checks(checks: &[Check], outputs: &[String]) -> Option<String> {
+    if !checks.is_empty() && checks.iter().all(|check| check.is_smoke) {
+        return Some(
+            "only a syntax-only smoke check ran (e.g. `py_compile`/`node --check`) — the code \
+             was never executed, so this is not a test pass"
+                .to_string(),
+        );
+    }
+    let combined = outputs.join("\n");
+    zero_test_marker(&combined)
+        .map(|marker| format!("the check's own output reports zero tests ran (\"{marker}\")"))
+}
+
+fn pass_result(checks: &[Check], outputs: &[String]) -> CallToolResult {
     let labels: Vec<&str> = checks.iter().map(|check| check.label.as_str()).collect();
     let message = format!("PASS - all checks passed: {}.", labels.join(", "));
+    let vacuous_reason = vacuous_pass_reason_for_checks(checks, outputs);
     observation(
         CallToolResult::success(vec![Content::text(message.clone()).with_priority(0.0)]),
         Some(&labels.join(", ")),
         Some("pass"),
         Some(&message),
+        vacuous_reason.as_deref(),
     )
 }
 
@@ -1400,6 +1508,7 @@ fn fail_result(check: &Check, exit_code: Option<i32>, output: &str) -> CallToolR
         Some(&check.label),
         Some("fail"),
         Some(&body),
+        None,
     )
 }
 
@@ -1409,6 +1518,7 @@ fn error_result(message: &str) -> CallToolResult {
         None,
         Some("error"),
         Some(message),
+        None,
     )
 }
 
@@ -1421,11 +1531,15 @@ fn no_checks_result(reason: &str) -> CallToolResult {
         "NO CHECKS - {reason} Nothing to verify yet. Add tests or a build/test script and run \
          verify again, or pass an explicit `command` to run a specific check."
     );
+    // X-verify-2: this IS a vacuous pass by definition — no command ran at
+    // all — so it must never be treated as real coverage by a consumer that
+    // only checks `verdict == "pass"`.
     observation(
         CallToolResult::success(vec![Content::text(message.clone()).with_priority(0.0)]),
         None,
         Some("pass"),
         Some(&message),
+        Some(reason),
     )
 }
 
@@ -1444,7 +1558,10 @@ mod tests {
 
     #[test]
     fn verifier_results_carry_authoritative_structured_observations() {
-        let result = pass_result(&[Check::direct("cargo", &["test"])]);
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &["test result: ok. 3 passed; 0 failed; 0 ignored".to_string()],
+        );
         let observation: VerificationObservation =
             serde_json::from_value(result.structured_content.unwrap()).unwrap();
         assert_eq!(observation.kind, VERIFICATION_OBSERVATION_KIND);
@@ -1454,6 +1571,10 @@ mod tests {
             .evidence
             .as_deref()
             .is_some_and(|e| e.contains("PASS")));
+        assert_eq!(
+            observation.vacuous_reason, None,
+            "a real pass with 3 tests run must not be flagged vacuous"
+        );
 
         let failed = fail_result(
             &Check::direct("cargo", &["test"]),
@@ -1465,6 +1586,111 @@ mod tests {
         assert_eq!(observation.verdict.as_deref(), Some("fail"));
         assert_eq!(observation.command.as_deref(), Some("cargo test"));
         assert_eq!(observation.evidence.as_deref(), Some("error: test failed"));
+    }
+
+    // ── X-verify-2: vacuous passes ─────────────────────────────────────────
+
+    /// The gap this closes: a pass whose only check was a syntax-only smoke
+    /// (`py_compile`) used to be indistinguishable, on the wire, from a real
+    /// test pass — `is_authoritative_pass` (and every consumer that trusted
+    /// it, e.g. `after_turn::scan_verify_positions`) would advance past it.
+    #[test]
+    fn a_smoke_only_pass_is_authoritative_but_flagged_vacuous() {
+        let result = pass_result(
+            &[Check::direct_owned(
+                "python3",
+                vec![
+                    "-m".to_string(),
+                    "py_compile".to_string(),
+                    "a.py".to_string(),
+                ],
+            )
+            .smoke_only()],
+            &[String::new()],
+        );
+        assert!(
+            is_authoritative_pass(&result),
+            "a smoke check still reports a real, structured pass"
+        );
+        let reason = vacuous_pass_reason(&result);
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("smoke")),
+            "expected a smoke-labelled vacuous reason, got {reason:?}"
+        );
+    }
+
+    #[test]
+    fn a_no_checks_pass_is_vacuous() {
+        let result = no_checks_result("nothing to run yet.");
+        assert!(is_authoritative_pass(&result));
+        assert!(vacuous_pass_reason(&result).is_some());
+    }
+
+    #[test]
+    fn a_real_test_run_reporting_zero_tests_is_vacuous() {
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &["test result: ok. 0 passed; 0 failed; 0 ignored".to_string()],
+        );
+        assert!(is_authoritative_pass(&result));
+        let reason = vacuous_pass_reason(&result);
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("zero tests")),
+            "expected a zero-tests vacuous reason, got {reason:?}"
+        );
+    }
+
+    #[test]
+    fn a_real_multi_test_run_is_not_vacuous() {
+        let result = pass_result(
+            &[Check::direct("cargo", &["test"])],
+            &["test result: ok. 120 passed; 0 failed; 0 ignored".to_string()],
+        );
+        assert_eq!(
+            vacuous_pass_reason(&result),
+            None,
+            "'120 passed' must never be misread as '0 passed'"
+        );
+    }
+
+    #[test]
+    fn a_failing_result_is_never_reported_as_vacuous() {
+        // Vacuousness is a property of a PASS; a failure is handled by the
+        // ordinary verify-loop guard and must not also be flagged vacuous.
+        let failed = fail_result(&Check::direct("cargo", &["test"]), Some(1), "0 passed");
+        assert!(!is_authoritative_pass(&failed));
+        assert_eq!(vacuous_pass_reason(&failed), None);
+    }
+
+    #[test]
+    fn zero_tests_marker_matches_common_runner_phrasings() {
+        for text in [
+            "test result: ok. 0 passed; 0 failed; 0 ignored",
+            "No tests ran in 0.01s",
+            "no test files",
+            "Ran 0 tests in 0.000s",
+            "collected 0 items",
+            "0 examples, 0 failures",
+        ] {
+            assert!(
+                zero_test_marker(text).is_some(),
+                "expected a match in {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_tests_marker_does_not_false_positive_on_a_larger_count() {
+        for text in [
+            "test result: ok. 120 passed; 0 failed",
+            "20 passed, 1 failed",
+            "ran 10 tests",
+        ] {
+            assert!(
+                zero_test_marker(text).is_none(),
+                "must not match a non-zero count in {text:?}"
+            );
+        }
     }
 
     /// Unwrap a detection that must have produced runnable checks.
@@ -1837,13 +2063,12 @@ mod tests {
         let checks = checks_of(dir.path());
         assert_eq!(
             checks,
-            vec![Check::direct(
-                "python3",
-                &["-m", "py_compile", "fizzbuzz.py"]
-            )]
+            vec![Check::direct("python3", &["-m", "py_compile", "fizzbuzz.py"]).smoke_only()]
         );
         // Honest about what it is: a syntax check, never described as a test run.
         assert!(checks[0].label.contains("py_compile"));
+        // X-verify-2: and never SCORED as one either.
+        assert!(checks[0].is_smoke);
     }
 
     #[test]
@@ -1852,7 +2077,7 @@ mod tests {
         std::fs::write(dir.path().join("app.mjs"), "export const x = 1;\n").unwrap();
         assert_eq!(
             checks_of(dir.path()),
-            vec![Check::direct("node", &["--check", "app.mjs"])]
+            vec![Check::direct("node", &["--check", "app.mjs"]).smoke_only()]
         );
     }
 
@@ -1862,7 +2087,7 @@ mod tests {
         std::fs::write(dir.path().join("app.js"), "const x = 1;\n").unwrap();
         assert_eq!(
             checks_of(dir.path()),
-            vec![Check::direct("node", &["--check", "app.js"])]
+            vec![Check::direct("node", &["--check", "app.js"]).smoke_only()]
         );
     }
 
@@ -2161,10 +2386,13 @@ mod tests {
 
     #[test]
     fn pass_result_is_a_clean_success() {
-        let result = pass_result(&[
-            Check::direct("go", &["build", "./..."]),
-            Check::direct("go", &["test", "./..."]),
-        ]);
+        let result = pass_result(
+            &[
+                Check::direct("go", &["build", "./..."]),
+                Check::direct("go", &["test", "./..."]),
+            ],
+            &[String::new(), "ok  \tpkg\t0.003s".to_string()],
+        );
         assert_eq!(result.is_error, Some(false));
         let text = text_of(&result);
         assert!(text.starts_with("PASS"));

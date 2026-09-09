@@ -44,6 +44,7 @@ pub mod publish_sequence;
 pub mod recipe_author;
 pub mod retrospect;
 pub mod review_fanout;
+pub mod reviewer_integrity;
 pub mod role_brief;
 pub mod skills;
 pub mod steward;

@@ -174,19 +174,37 @@ impl Default for PrematureDoneGuard {
 /// verify in its history — and the second edit is entirely unchecked. Only
 /// "did a verify come *after* the last edit?" is a guard; the boolean is a
 /// rubber stamp that any earlier green makes permanent.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VerifyPositions {
     pub last_mutation: Option<usize>,
     pub last_verify: Option<usize>,
+    /// X-verify-2: true when the verify recorded at `last_verify` passed but
+    /// ran zero tests/assertions — a syntax-only smoke check, a "nothing
+    /// configured yet" no-checks pass, or a real check that reported zero
+    /// tests (see `developer::verify::vacuous_pass_reason`, the single
+    /// authoritative source this mirrors). Reflects only the LATEST recorded
+    /// verify: an earlier vacuous pass superseded by a later genuine one does
+    /// not linger here.
+    pub vacuous_pass: bool,
+    /// Human-readable reason mirrored from `vacuous_pass_reason`, so a
+    /// hold/park message can quote WHY the pass did not count instead of
+    /// just asserting that it didn't.
+    pub vacuous_reason: Option<String>,
 }
 
 impl VerifyPositions {
-    /// True when files were written and no successful verify has run since.
+    /// True when files were written and no successful, NON-VACUOUS verify has
+    /// run since. X-verify-2: a vacuous pass (zero tests/assertions) is
+    /// treated exactly like no verify at all — a green "PASS" that proved
+    /// nothing must never rubber-stamp an edit the way a genuine test run
+    /// does. Gated on there being a recorded mutation AND verify at all, so a
+    /// vacuous verify with nothing ever edited (ordinary conversation) still
+    /// correctly reads as "nothing to verify", not "unverified".
     pub fn unverified_edits(&self) -> bool {
         match (self.last_mutation, self.last_verify) {
             (None, _) => false,
             (Some(_), None) => true,
-            (Some(m), Some(v)) => m > v,
+            (Some(m), Some(v)) => m > v || self.vacuous_pass,
         }
     }
 }
@@ -235,24 +253,35 @@ pub fn scan_verify_positions(messages: &[Message]) -> VerifyPositions {
                     }
                 }
                 MessageContent::ToolResponse(resp) => {
+                    use crate::agents::platform_extensions::developer::verify;
+
                     let Some(kind) = pending.remove(&resp.id) else {
                         continue;
                     };
-                    let succeeded = match kind {
-                        Kind::Mutation => resp
-                            .tool_result
-                            .as_ref()
-                            .is_ok_and(|result| result.is_error != Some(true)),
-                        Kind::Verify => resp.tool_result.as_ref().is_ok_and(
-                            crate::agents::platform_extensions::developer::verify::is_authoritative_pass,
-                        ),
-                    };
-                    if !succeeded {
-                        continue;
-                    }
                     match kind {
-                        Kind::Mutation => positions.last_mutation = Some(index),
-                        Kind::Verify => positions.last_verify = Some(index),
+                        Kind::Mutation => {
+                            let succeeded = resp
+                                .tool_result
+                                .as_ref()
+                                .is_ok_and(|result| result.is_error != Some(true));
+                            if succeeded {
+                                positions.last_mutation = Some(index);
+                            }
+                        }
+                        Kind::Verify => {
+                            let Ok(result) = resp.tool_result.as_ref() else {
+                                continue;
+                            };
+                            if !verify::is_authoritative_pass(result) {
+                                continue;
+                            }
+                            positions.last_verify = Some(index);
+                            // X-verify-2: reflects the LATEST recorded verify
+                            // only — overwritten every time, same as
+                            // `last_verify` itself.
+                            positions.vacuous_reason = verify::vacuous_pass_reason(result);
+                            positions.vacuous_pass = positions.vacuous_reason.is_some();
+                        }
                     }
                 }
                 _ => {}
@@ -310,13 +339,51 @@ impl AfterTurn for PrematureDoneGuard {
         ) {
             crate::cost_router::HoldOutcome::Allow => AfterTurnAction::Allow,
             crate::cost_router::HoldOutcome::Hold { inject_plan, .. } => {
-                AfterTurnAction::Continue {
-                    inject: inject_plan,
-                }
+                // X-verify-2: a vacuous pass is not "no verify at all" —
+                // `decide_hold`'s generic "run verify" text would be actively
+                // misleading here (verify DID run and DID report PASS; it
+                // just proved nothing). Say so honestly instead.
+                let inject = if positions.vacuous_pass {
+                    vacuous_pass_hold_text(positions.vacuous_reason.as_deref())
+                } else {
+                    inject_plan
+                };
+                AfterTurnAction::Continue { inject }
             }
-            crate::cost_router::HoldOutcome::Park { reason } => AfterTurnAction::Park { reason },
+            crate::cost_router::HoldOutcome::Park { reason } => {
+                let reason = if positions.vacuous_pass {
+                    vacuous_pass_park_reason(positions.vacuous_reason.as_deref())
+                } else {
+                    reason
+                };
+                AfterTurnAction::Park { reason }
+            }
         }
     }
+}
+
+/// X-verify-2: honest hold text for a vacuous pass — verify DID run and DID
+/// report PASS; it just proved nothing (`reason` names why, e.g. "only a
+/// syntax-only smoke check ran" or "the check's own output reports zero
+/// tests ran"), so `decide_hold`'s generic "run verify" text (written for
+/// the "no verify ran at all" case) would be actively misleading here.
+fn vacuous_pass_hold_text(reason: Option<&str>) -> String {
+    let reason = reason.unwrap_or("it ran zero tests/assertions");
+    format!(
+        "Do not declare this done. The last verify PASSED, but {reason} — that does not count \
+         as verifying this change. Run (or fix) a check that actually exercises the edited \
+         code, then verify again."
+    )
+}
+
+/// X-verify-2: the honest Park reason once the hold budget is exhausted on a
+/// repeatedly-vacuous pass.
+fn vacuous_pass_park_reason(reason: Option<&str>) -> String {
+    let reason = reason.unwrap_or("it ran zero tests/assertions");
+    format!(
+        "held twice without a real verify — the last verify PASSED, but {reason} — handing to \
+         the Decision Inbox"
+    )
 }
 
 // ── Second implementor: the independent-reviewer mandate ───────────────────
@@ -755,7 +822,7 @@ fn is_reviewer_delegation(call: &rmcp::model::CallToolRequestParams) -> bool {
 /// treated identically to a genuine "reviewed and rejected" outcome and parked
 /// immediately. This distinguishes the two so an empty/errored call can be
 /// retried instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ReviewerLastOutcome {
     /// No `delegate(reviewer)` call at all after `after_position`.
     NotCalled,
@@ -765,6 +832,12 @@ enum ReviewerLastOutcome {
     /// A call ran but its result was empty or an error: nothing was actually
     /// reviewed despite the call happening.
     Empty,
+    /// X-verify-1: the reviewer mutated the working tree — `summon` detected
+    /// this via a before/after filesystem snapshot and stamped the result
+    /// with [`REVIEWER_MUTATION_VOID_PREFIX`] instead of trusting whatever
+    /// verdict the reviewer's own text carries. Carries the mutated paths so
+    /// the re-hold text can name them.
+    Void(Vec<String>),
 }
 
 fn last_reviewer_outcome(messages: &[Message], after_position: usize) -> ReviewerLastOutcome {
@@ -790,27 +863,93 @@ fn last_reviewer_outcome(messages: &[Message], after_position: usize) -> Reviewe
                 if !pending.remove(&response.id) {
                     continue;
                 }
-                let is_empty = match response.tool_result.as_ref() {
+                outcome = match response.tool_result.as_ref() {
                     Ok(result) => {
-                        result.is_error == Some(true)
-                            || result
-                                .content
-                                .iter()
-                                .filter_map(|c| c.as_text().map(|t| t.text.trim().to_string()))
-                                .collect::<String>()
-                                .is_empty()
+                        let text = result
+                            .content
+                            .iter()
+                            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if let Some(paths) = reviewer_mutation_void_paths(&text) {
+                            ReviewerLastOutcome::Void(paths)
+                        } else if result.is_error == Some(true) || text.trim().is_empty() {
+                            ReviewerLastOutcome::Empty
+                        } else {
+                            ReviewerLastOutcome::Answered
+                        }
                     }
-                    Err(_) => true,
-                };
-                outcome = if is_empty {
-                    ReviewerLastOutcome::Empty
-                } else {
-                    ReviewerLastOutcome::Answered
+                    Err(_) => ReviewerLastOutcome::Empty,
                 };
             }
         }
     }
     outcome
+}
+
+/// X-verify-1: sentinel line `summon::handle_delegate` stamps as the FIRST
+/// line of a reviewer's tool-result text once a before/after working-tree
+/// snapshot (`reviewer_integrity::snapshot`/`diff`) shows the reviewer
+/// subagent mutated files despite its READ-ONLY mandate (F2/H1) — Lane A2's
+/// live evidence ("a reviewer subagent called `edit` on `src/cache.rs` and
+/// the change shipped") and Lane G finding 2 (the reviewer keeps `shell`,
+/// which can mutate via `sed -i`/redirection/`rm` regardless of the tool
+/// allowlist). `parse_review`'s "first VERDICT wins, a later stray token
+/// cannot override it" rule means stamping this (with its own `VERDICT:
+/// UNCERTAIN` line) BEFORE the reviewer's own text always wins, even if that
+/// text itself says `VERDICT: APPROVE` — the void is not a paint-over the
+/// model could talk itself past.
+pub const REVIEWER_MUTATION_VOID_PREFIX: &str = "REVIEWER_MUTATED_FILES_VERDICT_VOID: ";
+
+/// Build the text `summon::handle_delegate` substitutes for a reviewer's real
+/// answer once [`reviewer_integrity::diff`] finds a non-empty mutation. Comma-
+/// joins `paths` after [`REVIEWER_MUTATION_VOID_PREFIX`] (parsed back out by
+/// [`reviewer_mutation_void_paths`]); the original text is kept below a
+/// divider for audit purposes but is never trusted for its verdict.
+pub fn reviewer_mutation_void_text(paths: &[String], original: &str) -> String {
+    let joined = paths.join(", ");
+    format!(
+        "{REVIEWER_MUTATION_VOID_PREFIX}{joined}\n\
+         VERDICT: UNCERTAIN\n\
+         CHECKED: nothing — the reviewer modified the working tree instead of only \
+         reviewing it, so its verdict is void.\n\
+         A read-only reviewer must never edit, write, or otherwise change a file (including \
+         through `shell`); call `delegate` again with `worker_persona: \"reviewer\"` for a \
+         genuine, non-mutating review.\n\n\
+         --- original reviewer output (voided; do not trust its verdict) ---\n{original}"
+    )
+}
+
+/// Parse the mutated-paths list back out of a reviewer result
+/// [`reviewer_mutation_void_text`] stamped. `None` when the sentinel is not
+/// the FIRST line — a reviewer's own text merely mentioning the sentinel
+/// string elsewhere must never be mistaken for the real marker.
+fn reviewer_mutation_void_paths(text: &str) -> Option<Vec<String>> {
+    let first_line = text.lines().next()?;
+    let rest = first_line.strip_prefix(REVIEWER_MUTATION_VOID_PREFIX)?;
+    Some(
+        rest.split(',')
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect(),
+    )
+}
+
+/// X-verify-1: injected to retry after a voided (mutated-tree) reviewer call —
+/// names the paths and reiterates the read-only mandate.
+fn reviewer_mutation_void_retry_text(paths: &[String]) -> String {
+    let named = if paths.is_empty() {
+        "the working tree".to_string()
+    } else {
+        paths.join(", ")
+    };
+    format!(
+        "The independent reviewer modified {named} instead of only reviewing it — a \
+         READ-ONLY reviewer must never edit, write, or otherwise change a file, so its verdict \
+         is void and nothing was actually reviewed. Call the `delegate` tool again with \
+         `worker_persona: \"reviewer\"` and make sure it only reads and analyzes; report its \
+         genuine, non-mutating verdict before ending the turn."
+    )
 }
 
 /// Injected when [`last_reviewer_outcome`] finds an empty/errored reviewer
@@ -820,6 +959,121 @@ const REVIEWER_EMPTY_RETRY_TEXT: &str =
     "The independent reviewer call returned no answer (an empty or errored response) — nothing \
      was actually reviewed. Call the `delegate` tool again with `worker_persona: \"reviewer\"` \
      and report its verdict before ending the turn.";
+
+/// X-verify-3: one real reviewer verdict in chronological order, paired with
+/// whether a successful mutating tool call happened since the PREVIOUS entry
+/// in the list this is built into — the same "identical across edits" shape
+/// `tool_monitor`'s S6 verify fix-loop counter uses (see that module), scoped
+/// here to `delegate(reviewer)` round-trips instead of `verify` re-runs.
+struct ReviewerVerdictEvent {
+    fingerprint: String,
+    /// The reviewer's raw answer text, kept only to quote in the escalation
+    /// message a human reads — never re-parsed.
+    text: String,
+    mutated_since_previous: bool,
+}
+
+/// Walk the WHOLE conversation — not scoped to a single mutation window, since
+/// a repeated round-trip can span several turns and several `last_mutation`
+/// positions — and record every REAL (non-empty, non-errored, non-voided)
+/// `delegate(reviewer)` verdict in order, each tagged with whether a
+/// successful mutating tool call happened since the previous one. A voided
+/// (X-verify-1) or empty/errored call is skipped entirely: it was never a
+/// real verdict to compare against, the same reasoning
+/// [`last_reviewer_outcome`] already applies to the LATEST call alone.
+fn reviewer_verdict_history(messages: &[Message]) -> Vec<ReviewerVerdictEvent> {
+    use crate::conversation::message::MessageContent;
+    use crate::cost_router::review_gate::parse_review;
+    use std::collections::HashSet;
+
+    let mut pending_reviewer = HashSet::new();
+    let mut pending_mutation = HashSet::new();
+    let mut mutated_since_previous = false;
+    let mut history = Vec::new();
+
+    for msg in messages {
+        for content in &msg.content {
+            match content {
+                MessageContent::ToolRequest(req) => {
+                    let Ok(call) = req.tool_call.as_ref() else {
+                        continue;
+                    };
+                    if is_reviewer_delegation(call) {
+                        pending_reviewer.insert(req.id.clone());
+                    } else {
+                        let base = call.name.rsplit("__").next().unwrap_or(call.name.as_ref());
+                        if is_mutating_tool_name(base) {
+                            pending_mutation.insert(req.id.clone());
+                        }
+                    }
+                }
+                MessageContent::ToolResponse(response) => {
+                    if pending_mutation.remove(&response.id) {
+                        if response
+                            .tool_result
+                            .as_ref()
+                            .is_ok_and(|r| r.is_error != Some(true))
+                        {
+                            mutated_since_previous = true;
+                        }
+                        continue;
+                    }
+                    if !pending_reviewer.remove(&response.id) {
+                        continue;
+                    }
+                    let Ok(result) = response.tool_result.as_ref() else {
+                        continue;
+                    };
+                    if result.is_error == Some(true) {
+                        continue;
+                    }
+                    let text = result
+                        .content
+                        .iter()
+                        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if text.trim().is_empty() || reviewer_mutation_void_paths(&text).is_some() {
+                        continue;
+                    }
+                    history.push(ReviewerVerdictEvent {
+                        fingerprint: parse_review(&text).fingerprint(),
+                        text,
+                        mutated_since_previous,
+                    });
+                    mutated_since_previous = false;
+                }
+                _ => {}
+            }
+        }
+    }
+    history
+}
+
+/// X-verify-3: the escalate condition — the last two real reviewer verdicts
+/// anywhere in the conversation are byte-identical (fingerprint) AND nothing
+/// was successfully mutated between them. Returns the repeated verdict's raw
+/// text (for the Park message) when the condition holds.
+///
+/// A tree change between the two rounds means the model genuinely attempted a
+/// fix in response to the first verdict; the mandate must not punish that —
+/// it is left to loop (bounded elsewhere: `MAX_HOLDS`, the turn budget). Only
+/// the "asked again, changed nothing, got the same answer again" shape — a
+/// wasted round-trip a third delegate call cannot fix either, since nothing
+/// about the input to review has changed — escalates here, before a third
+/// call is ever made.
+fn repeated_identical_reviewer_verdict(messages: &[Message]) -> Option<String> {
+    let history = reviewer_verdict_history(messages);
+    let last = history.last()?;
+    if last.mutated_since_previous {
+        return None;
+    }
+    let previous = history.get(history.len().checked_sub(2)?)?;
+    if last.fingerprint != previous.fingerprint {
+        return None;
+    }
+    Some(last.text.clone())
+}
 
 /// True when this hook's own ask has already been injected after
 /// `after_position` — one ask per changed-files turn, whether or not the model
@@ -1033,18 +1287,64 @@ impl AfterTurn for ReviewerMandate {
         // asked nothing real — retry it, bounded by the same shared hold
         // counter every other hook answers to, rather than treating "no
         // answer" as a completed-but-failed review.
-        if last_reviewer_outcome(ctx.messages, last_mutation) == ReviewerLastOutcome::Empty {
-            return if ctx.prior_holds < crate::cost_router::MAX_HOLDS {
-                AfterTurnAction::Continue {
-                    inject: REVIEWER_EMPTY_RETRY_TEXT.to_string(),
-                }
-            } else {
-                AfterTurnAction::Park {
-                    reason: format!(
-                        "{REVIEW_PARK_PREFIX}the reviewer returned no answer and the hold \
-                         budget was exhausted before it could be asked again"
-                    ),
-                }
+        //
+        // X-verify-1: a call `summon` VOIDED because the reviewer mutated the
+        // working tree gets the identical bounded-retry treatment, but with
+        // an honest message naming the paths instead of the generic "no
+        // answer" text — Lane A2's live evidence was a reviewer that DID
+        // answer (often with a confident APPROVE) while also editing a file;
+        // that is not "no answer", so it needs its own branch, not Empty's.
+        match last_reviewer_outcome(ctx.messages, last_mutation) {
+            ReviewerLastOutcome::Void(paths) => {
+                return if ctx.prior_holds < crate::cost_router::MAX_HOLDS {
+                    AfterTurnAction::Continue {
+                        inject: reviewer_mutation_void_retry_text(&paths),
+                    }
+                } else {
+                    let named = if paths.is_empty() {
+                        "the working tree".to_string()
+                    } else {
+                        paths.join(", ")
+                    };
+                    AfterTurnAction::Park {
+                        reason: format!(
+                            "{REVIEW_PARK_PREFIX}the reviewer modified {named} instead of only \
+                             reviewing it, and the hold budget was exhausted before a genuine \
+                             review could be obtained"
+                        ),
+                    }
+                };
+            }
+            ReviewerLastOutcome::Empty => {
+                return if ctx.prior_holds < crate::cost_router::MAX_HOLDS {
+                    AfterTurnAction::Continue {
+                        inject: REVIEWER_EMPTY_RETRY_TEXT.to_string(),
+                    }
+                } else {
+                    AfterTurnAction::Park {
+                        reason: format!(
+                            "{REVIEW_PARK_PREFIX}the reviewer returned no answer and the hold \
+                             budget was exhausted before it could be asked again"
+                        ),
+                    }
+                };
+            }
+            ReviewerLastOutcome::Answered | ReviewerLastOutcome::NotCalled => {}
+        }
+
+        // X-verify-3: the model (or a prior injected ask) may have called the
+        // reviewer more than once for this mutation. If the last two REAL
+        // (non-empty, non-voided) verdicts anywhere in the conversation are
+        // byte-identical AND nothing was mutated between them, a third
+        // delegate call cannot do anything the first two didn't already show —
+        // escalate now instead of injecting another ask.
+        if let Some(findings) = repeated_identical_reviewer_verdict(ctx.messages) {
+            return AfterTurnAction::Park {
+                reason: format!(
+                    "{REVIEW_PARK_PREFIX}the reviewer returned the identical verdict twice in \
+                     a row with no code change between the two reviews — escalating instead of \
+                     asking a third time. Last verdict:\n{findings}"
+                ),
             };
         }
 
@@ -1201,6 +1501,32 @@ mod tests {
             0,
             vec![
                 MessageContent::tool_request(id, Ok(CallToolRequestParams::new(name.to_string()))),
+                MessageContent::tool_response(id, Ok(result)),
+            ],
+        )
+    }
+
+    /// X-verify-2: a verify tool exchange that reports an authoritative PASS
+    /// but is marked vacuous — mirrors what `developer::verify`'s real
+    /// `pass_result`/`no_checks_result` stamp for a syntax-only smoke, a
+    /// no-checks pass, or a zero-tests run.
+    fn tool_exchange_vacuous_pass(id: &str, vacuous_reason: &str) -> Message {
+        let mut result = CallToolResult::success(vec![Content::text("PASS")]);
+        result.structured_content = Some(serde_json::json!({
+            "kind": crate::agents::platform_extensions::developer::verify::VERIFICATION_OBSERVATION_KIND,
+            "command": "python3 -m py_compile a.py",
+            "verdict": "pass",
+            "evidence": "PASS",
+            "vacuous_reason": vacuous_reason,
+        }));
+        Message::new(
+            Role::Assistant,
+            0,
+            vec![
+                MessageContent::tool_request(
+                    id,
+                    Ok(CallToolRequestParams::new("developer__verify".to_string())),
+                ),
                 MessageContent::tool_response(id, Ok(result)),
             ],
         )
@@ -1401,6 +1727,81 @@ mod tests {
         // A verify with no edit at all is not an unverified edit.
         let p = scan_verify_positions(&[tool_exchange("developer__verify", "v1", true)]);
         assert!(!p.unverified_edits());
+    }
+
+    // ── X-verify-2: vacuous passes ─────────────────────────────────────────
+
+    #[test]
+    fn a_vacuous_pass_is_recorded_and_treated_as_unverified() {
+        let p = scan_verify_positions(&[
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange_vacuous_pass("v1", "only a syntax-only smoke check ran"),
+        ]);
+        assert!(p.last_mutation.is_some());
+        // The position IS recorded (a pass did happen)…
+        assert!(p.last_verify.is_some());
+        // …but it does not count as verifying the edit.
+        assert!(p.vacuous_pass);
+        assert_eq!(
+            p.vacuous_reason.as_deref(),
+            Some("only a syntax-only smoke check ran")
+        );
+        assert!(
+            p.unverified_edits(),
+            "a vacuous pass must not rubber-stamp the edit"
+        );
+    }
+
+    #[test]
+    fn a_genuine_pass_after_a_vacuous_one_clears_the_flag() {
+        let p = scan_verify_positions(&[
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange_vacuous_pass("v1", "0 tests run"),
+            tool_exchange("developer__verify", "v2", true),
+        ]);
+        assert!(
+            !p.vacuous_pass,
+            "the LATEST verify is genuine; an earlier vacuous one must not linger"
+        );
+        assert!(!p.unverified_edits());
+    }
+
+    #[tokio::test]
+    async fn a_vacuous_pass_holds_with_an_honest_message_naming_the_reason() {
+        let guard = PrematureDoneGuard::new();
+        let turn = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange_vacuous_pass("v1", "only a syntax-only smoke check ran"),
+        ];
+        match guard.after_turn(&ctx(&turn, 0)).await {
+            AfterTurnAction::Continue { inject } => {
+                assert!(inject.contains("PASSED"), "inject was {inject:?}");
+                assert!(
+                    inject.contains("only a syntax-only smoke check ran"),
+                    "inject was {inject:?}"
+                );
+            }
+            other => panic!("expected a Continue (bounded hold), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_repeatedly_vacuous_pass_parks_honestly_once_the_hold_budget_is_exhausted() {
+        let guard = PrematureDoneGuard::new();
+        let turn = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange_vacuous_pass("v1", "0 tests run"),
+        ];
+        match guard
+            .after_turn(&ctx(&turn, crate::cost_router::MAX_HOLDS))
+            .await
+        {
+            AfterTurnAction::Park { reason } => {
+                assert!(reason.contains("0 tests run"), "{reason:?}");
+                assert!(reason.contains("PASSED"), "{reason:?}");
+            }
+            other => panic!("expected Park, got {other:?}"),
+        }
     }
 
     /// The loop is bounded: a hook that keeps holding is eventually made to
@@ -1816,6 +2217,228 @@ mod tests {
                 );
             }
             other => panic!("expected Park, got {other:?}"),
+        }
+    }
+
+    // ── X-verify-1: reviewer mutation detector ──────────────────────────────
+
+    /// A `delegate(worker_persona: reviewer)` call whose result `summon` has
+    /// already stamped VOID because a before/after tree snapshot showed the
+    /// reviewer mutated files (see `reviewer_integrity`). Mirrors Lane A2's
+    /// live evidence: the reviewer's OWN text can still say `VERDICT:
+    /// APPROVE` — that must never survive the void.
+    fn delegate_exchange_voided(id: &str, paths: &[String], original_verdict: &str) -> Message {
+        let call = CallToolRequestParams::new("delegate".to_string()).with_arguments(
+            serde_json::Map::from_iter([(
+                "worker_persona".to_string(),
+                serde_json::Value::String("reviewer".to_string()),
+            )]),
+        );
+        let text = reviewer_mutation_void_text(
+            paths,
+            &format!("VERDICT: {original_verdict}\nCHECKED: looks fine to me"),
+        );
+        let result = CallToolResult::success(vec![Content::text(text)]);
+        Message::new(
+            Role::Assistant,
+            0,
+            vec![
+                MessageContent::tool_request(id, Ok(call)),
+                MessageContent::tool_response(id, Ok(result)),
+            ],
+        )
+    }
+
+    #[test]
+    fn the_void_sentinel_always_wins_over_the_reviewers_own_verdict() {
+        use crate::cost_router::review_gate::{parse_review, Verdict};
+
+        let paths = vec!["src/cache.rs".to_string()];
+        let text = reviewer_mutation_void_text(&paths, "VERDICT: APPROVE\nCHECKED: fine");
+        assert_eq!(
+            parse_review(&text).verdict,
+            Verdict::Uncertain,
+            "a mutated-tree result must never parse as an approval, whatever the \
+             reviewer's own text claims"
+        );
+    }
+
+    #[test]
+    fn void_paths_round_trip_and_require_the_sentinel_on_the_first_line() {
+        let paths = vec!["src/cache.rs".to_string(), "src/lib.rs".to_string()];
+        let text = reviewer_mutation_void_text(&paths, "VERDICT: APPROVE");
+        assert_eq!(reviewer_mutation_void_paths(&text), Some(paths));
+
+        // A reviewer's own text merely mentioning the sentinel string
+        // somewhere in its body (not as the first line) must never be
+        // mistaken for the real marker.
+        let innocuous = format!("VERDICT: APPROVE\nCHECKED: I saw the string {REVIEWER_MUTATION_VOID_PREFIX}foo in a comment");
+        assert_eq!(reviewer_mutation_void_paths(&innocuous), None);
+
+        assert_eq!(reviewer_mutation_void_paths("no sentinel here"), None);
+    }
+
+    #[test]
+    fn last_reviewer_outcome_reports_void_for_a_stamped_result() {
+        let paths = vec!["src/cache.rs".to_string()];
+        let messages = vec![delegate_exchange_voided("d1", &paths, "APPROVE")];
+        assert_eq!(
+            last_reviewer_outcome(&messages, 0),
+            ReviewerLastOutcome::Void(paths)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_voided_reviewer_response_reopens_the_hold_naming_the_paths() {
+        let mandate = ReviewerMandate::new();
+        let paths = vec!["src/cache.rs".to_string()];
+        let turn = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange("developer__verify", "v1", true),
+            delegate_exchange_voided("d1", &paths, "APPROVE"),
+        ];
+        match mandate.after_turn(&ctx(&turn, 0)).await {
+            AfterTurnAction::Continue { inject } => {
+                assert!(inject.contains("src/cache.rs"), "inject was {inject:?}");
+                assert!(
+                    inject.to_ascii_lowercase().contains("read-only")
+                        || inject.to_ascii_lowercase().contains("modified"),
+                    "inject was {inject:?}"
+                );
+            }
+            other => panic!("expected Continue (a bounded retry), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_voided_reviewer_response_parks_honestly_once_the_hold_budget_is_exhausted() {
+        let mandate = ReviewerMandate::new();
+        let paths = vec!["src/cache.rs".to_string()];
+        let turn = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange("developer__verify", "v1", true),
+            delegate_exchange_voided("d1", &paths, "APPROVE"),
+        ];
+        match mandate
+            .after_turn(&ctx(&turn, crate::cost_router::MAX_HOLDS))
+            .await
+        {
+            AfterTurnAction::Park { reason } => {
+                assert!(reason.starts_with(REVIEW_PARK_PREFIX), "{reason:?}");
+                assert!(reason.contains("src/cache.rs"), "{reason:?}");
+                assert!(
+                    !reason.contains("did not return a successful APPROVE"),
+                    "reason must not claim a verdict came back: {reason:?}"
+                );
+            }
+            other => panic!("expected Park, got {other:?}"),
+        }
+    }
+
+    /// A clean reviewer (no mutation detected) is completely unaffected — the
+    /// void machinery never fires on an ordinary approval.
+    #[tokio::test]
+    async fn a_clean_reviewer_is_unaffected_by_the_void_machinery() {
+        let mandate = ReviewerMandate::new();
+        let turn = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange("developer__verify", "v1", true),
+            delegate_exchange("d1", "reviewer"),
+        ];
+        assert_eq!(
+            mandate.after_turn(&ctx(&turn, 0)).await,
+            AfterTurnAction::Allow
+        );
+    }
+
+    // ── X-verify-3: never repeat an identical failed reviewer gate unchanged ─
+
+    #[test]
+    fn repeated_identical_reviewer_verdict_detects_two_in_a_row_with_no_change() {
+        let messages = vec![
+            delegate_exchange_result("d1", "reviewer", "REQUEST_CHANGES", true),
+            delegate_exchange_result("d2", "reviewer", "REQUEST_CHANGES", true),
+        ];
+        assert!(repeated_identical_reviewer_verdict(&messages).is_some());
+    }
+
+    #[test]
+    fn repeated_identical_reviewer_verdict_allows_a_tree_change_between_them() {
+        let messages = vec![
+            delegate_exchange_result("d1", "reviewer", "REQUEST_CHANGES", true),
+            tool_exchange("developer__edit", "e1", true),
+            delegate_exchange_result("d2", "reviewer", "REQUEST_CHANGES", true),
+        ];
+        assert!(repeated_identical_reviewer_verdict(&messages).is_none());
+    }
+
+    #[test]
+    fn repeated_identical_reviewer_verdict_ignores_a_differing_verdict() {
+        let messages = vec![
+            delegate_exchange_result("d1", "reviewer", "REQUEST_CHANGES", true),
+            delegate_exchange_result("d2", "reviewer", "UNCERTAIN", true),
+        ];
+        assert!(repeated_identical_reviewer_verdict(&messages).is_none());
+    }
+
+    #[test]
+    fn repeated_identical_reviewer_verdict_needs_at_least_two_rounds() {
+        let messages = vec![delegate_exchange_result(
+            "d1",
+            "reviewer",
+            "REQUEST_CHANGES",
+            true,
+        )];
+        assert!(repeated_identical_reviewer_verdict(&messages).is_none());
+    }
+
+    /// The gate's own acceptance test, end to end through the real hook: two
+    /// identical REQUEST_CHANGES verdicts with nothing edited in between must
+    /// escalate (Park, quoting the repeated verdict) instead of injecting a
+    /// third `delegate` ask.
+    #[tokio::test]
+    async fn two_identical_verdicts_with_no_tree_change_escalate_instead_of_a_third_delegate() {
+        let mandate = ReviewerMandate::new();
+        let turn = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange("developer__verify", "v1", true),
+            delegate_exchange_result("d1", "reviewer", "REQUEST_CHANGES", true),
+            delegate_exchange_result("d2", "reviewer", "REQUEST_CHANGES", true),
+        ];
+        match mandate.after_turn(&ctx(&turn, 0)).await {
+            AfterTurnAction::Park { reason } => {
+                assert!(reason.starts_with(REVIEW_PARK_PREFIX), "{reason:?}");
+                assert!(reason.contains("identical verdict"), "{reason:?}");
+                assert!(reason.contains("REQUEST_CHANGES"), "{reason:?}");
+            }
+            other => panic!("expected Park (escalate), got {other:?}"),
+        }
+    }
+
+    /// The companion half of the same acceptance test: a real edit between the
+    /// two rounds means the escalation must NOT fire — whatever else happens
+    /// (here, a DB-less test session makes the reviewer pick itself
+    /// unavailable), it must not be the "identical verdict" escalation.
+    #[tokio::test]
+    async fn a_tree_change_between_two_identical_verdicts_does_not_escalate() {
+        let mandate = ReviewerMandate::new();
+        let turn = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange("developer__verify", "v1", true),
+            delegate_exchange_result("d1", "reviewer", "REQUEST_CHANGES", true),
+            tool_exchange("developer__edit", "e2", true),
+            tool_exchange("developer__verify", "v2", true),
+            delegate_exchange_result("d2", "reviewer", "REQUEST_CHANGES", true),
+        ];
+        match mandate.after_turn(&ctx(&turn, 0)).await {
+            AfterTurnAction::Park { reason } => {
+                assert!(
+                    !reason.contains("identical verdict"),
+                    "a genuine edit between the two rounds must not trip the \
+                     no-progress escalation: {reason:?}"
+                );
+            }
+            other => panic!("expected Park (from the DB-less test session), got {other:?}"),
         }
     }
 

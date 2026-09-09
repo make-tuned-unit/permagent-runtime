@@ -35,6 +35,40 @@ pub const BUDGET_TASK_EXTENSION_VERSION: &str = "v1";
 pub const GOAL_ID_EXTENSION_NAME: &str = "goal_worker";
 pub const GOAL_ID_EXTENSION_VERSION: &str = "v1";
 
+/// Extension-data key for X-verify-1's reviewer-mutation receipts: durable,
+/// append-only evidence that a `worker_persona: "reviewer"` subagent mutated
+/// the working tree despite its READ-ONLY mandate (F2/H1). Kept on the
+/// PARENT session — the one that issued the `delegate` call — since the
+/// reviewer's own subagent session is throwaway and its record is not
+/// necessarily read again.
+pub const REVIEWER_MUTATION_EXTENSION_NAME: &str = "reviewer_mutation_receipts";
+pub const REVIEWER_MUTATION_EXTENSION_VERSION: &str = "v1";
+
+/// One receipt: the reviewer mutated these paths at this time.
+/// [`SessionManager::record_reviewer_mutation`] APPENDS to the stored list
+/// rather than replacing it, so a session with several delegate rounds keeps
+/// every occurrence rather than only the latest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewerMutationReceipt {
+    pub paths: Vec<String>,
+    pub at: String,
+    #[serde(default)]
+    pub subagent_session_id: Option<String>,
+}
+
+/// Every reviewer-mutation receipt recorded on this session so far, oldest
+/// first. Empty (never an error) for a session with no such receipts,
+/// including one predating this field entirely.
+pub fn reviewer_mutation_receipts(extension_data: &ExtensionData) -> Vec<ReviewerMutationReceipt> {
+    extension_data
+        .get_extension_state(
+            REVIEWER_MUTATION_EXTENSION_NAME,
+            REVIEWER_MUTATION_EXTENSION_VERSION,
+        )
+        .and_then(|v| serde_json::from_value::<Vec<ReviewerMutationReceipt>>(v.clone()).ok())
+        .unwrap_or_default()
+}
+
 pub fn budget_task_id(extension_data: &ExtensionData) -> Option<String> {
     extension_data
         .get_extension_state(BUDGET_TASK_EXTENSION_NAME, BUDGET_TASK_EXTENSION_VERSION)
@@ -613,6 +647,37 @@ impl SessionManager {
             .apply()
             .await?;
         Ok(task_id)
+    }
+
+    /// X-verify-1: append a reviewer-mutation receipt to `id`'s extension
+    /// data and persist it. Read-modify-write, same shape as
+    /// [`begin_budget_task`](Self::begin_budget_task) — every occurrence is
+    /// kept (append, not replace), so a session with several delegate rounds
+    /// retains a full audit trail rather than only the most recent mutation.
+    pub async fn record_reviewer_mutation(
+        &self,
+        id: &str,
+        paths: Vec<String>,
+        subagent_session_id: Option<String>,
+    ) -> Result<()> {
+        let session = self.get_session(id, false).await?;
+        let mut extension_data = session.extension_data;
+        let mut receipts = reviewer_mutation_receipts(&extension_data);
+        receipts.push(ReviewerMutationReceipt {
+            paths,
+            at: Utc::now().to_rfc3339(),
+            subagent_session_id,
+        });
+        extension_data.set_extension_state(
+            REVIEWER_MUTATION_EXTENSION_NAME,
+            REVIEWER_MUTATION_EXTENSION_VERSION,
+            serde_json::to_value(&receipts)?,
+        );
+        self.update(id)
+            .extension_data(extension_data)
+            .apply()
+            .await?;
+        Ok(())
     }
 
     pub fn update(&self, id: &str) -> SessionUpdateBuilder<'_> {
@@ -3599,6 +3664,63 @@ mod tests {
             results.push(handle.await.expect("lock-upgrade task panicked"));
         }
         results
+    }
+
+    // ── X-verify-1: reviewer-mutation receipts ──────────────────────────────
+
+    #[tokio::test]
+    async fn reviewer_mutation_receipts_start_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "author".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        assert!(reviewer_mutation_receipts(&session.extension_data).is_empty());
+    }
+
+    #[tokio::test]
+    async fn record_reviewer_mutation_appends_and_persists() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "author".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        sm.record_reviewer_mutation(
+            &session.id,
+            vec!["src/cache.rs".to_string()],
+            Some("sub-1".to_string()),
+        )
+        .await
+        .unwrap();
+        sm.record_reviewer_mutation(&session.id, vec!["src/lib.rs".to_string()], None)
+            .await
+            .unwrap();
+
+        let reloaded = sm.get_session(&session.id, false).await.unwrap();
+        let receipts = reviewer_mutation_receipts(&reloaded.extension_data);
+        assert_eq!(
+            receipts.len(),
+            2,
+            "both receipts must be kept, not overwritten"
+        );
+        assert_eq!(receipts[0].paths, vec!["src/cache.rs".to_string()]);
+        assert_eq!(receipts[0].subagent_session_id.as_deref(), Some("sub-1"));
+        assert_eq!(receipts[1].paths, vec!["src/lib.rs".to_string()]);
+        assert_eq!(receipts[1].subagent_session_id, None);
+        assert!(!receipts[0].at.is_empty());
     }
 
     #[tokio::test]

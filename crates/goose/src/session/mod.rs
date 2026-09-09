@@ -17,10 +17,12 @@ pub use diagnostics::{
 };
 pub use extension_data::{EnabledExtensionsState, ExtensionData, ExtensionState, TodoState};
 pub use session_manager::{
-    budget_task_id, goal_id, ChildSessionCost, CostLedgerRow, CostReservationOutcome, CostTier,
-    LastCall, ParentSessionCost, ScheduleSessionSummary, Session, SessionInsights, SessionManager,
-    SessionSummary, SessionType, SessionUpdateBuilder, BUDGET_TASK_EXTENSION_NAME,
-    BUDGET_TASK_EXTENSION_VERSION, GOAL_ID_EXTENSION_NAME, GOAL_ID_EXTENSION_VERSION,
+    budget_task_id, goal_id, reviewer_mutation_receipts, ChildSessionCost, CostLedgerRow,
+    CostReservationOutcome, CostTier, LastCall, ParentSessionCost, ReviewerMutationReceipt,
+    ScheduleSessionSummary, Session, SessionInsights, SessionManager, SessionSummary, SessionType,
+    SessionUpdateBuilder, BUDGET_TASK_EXTENSION_NAME, BUDGET_TASK_EXTENSION_VERSION,
+    GOAL_ID_EXTENSION_NAME, GOAL_ID_EXTENSION_VERSION, REVIEWER_MUTATION_EXTENSION_NAME,
+    REVIEWER_MUTATION_EXTENSION_VERSION,
 };
 pub use thread_manager::{Thread, ThreadManager, ThreadMetadata};
 

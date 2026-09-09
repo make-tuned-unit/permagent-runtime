@@ -1328,6 +1328,30 @@ impl SummonClient {
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
 
+        // X-verify-1: a `worker_persona: "reviewer"` subagent is supposed to
+        // be READ-ONLY (F2/H1's tool-allowlist restriction), but Lane A2's
+        // live evidence showed a reviewer subagent calling `edit` anyway, and
+        // Lane G's review found the reviewer still keeps `shell` — a tool
+        // allowlist alone is not proof. Snapshot the working tree now, before
+        // the subagent runs at all, so it can be compared against the
+        // post-run snapshot below regardless of which tool the mutation went
+        // through.
+        let is_reviewer_persona = params
+            .worker_persona
+            .as_deref()
+            .is_some_and(|p| p.eq_ignore_ascii_case("reviewer"));
+        let reviewer_snapshot_dir = working_dir.clone();
+        let reviewer_before_snapshot = if is_reviewer_persona {
+            Some(
+                crate::agents::platform_extensions::reviewer_integrity::snapshot(
+                    &reviewer_snapshot_dir,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+
         let persona_override = Self::resolve_worker_persona(params.worker_persona.as_deref());
         info!(
             target: "permagentd::brain",
@@ -1385,30 +1409,98 @@ impl SummonClient {
         let mut meta = Meta::new();
         meta.0.insert(
             "subagent_session_id".to_string(),
-            serde_json::Value::String(subagent_session_id),
+            serde_json::Value::String(subagent_session_id.clone()),
         );
         // The routing receipt travels with the result so a reader can say which
         // model this subagent's tokens were billed to, and why it was that one.
         meta.0.insert("model_routing".to_string(), routing_receipt);
 
-        match result {
+        // X-verify-1: the subagent has now run to completion — compare the
+        // post-run snapshot against the pre-run one captured above. A
+        // difference here is independent of whatever tool the reviewer used
+        // (the F2 allowlist restriction, or its absence, is irrelevant to
+        // this check) and independent of what the reviewer's own text
+        // claims.
+        let mutated_paths = if let Some(before) = &reviewer_before_snapshot {
+            let after = crate::agents::platform_extensions::reviewer_integrity::snapshot(
+                &reviewer_snapshot_dir,
+            )
+            .await;
+            let paths =
+                crate::agents::platform_extensions::reviewer_integrity::diff(before, &after);
+            if paths.is_empty() {
+                None
+            } else {
+                Some(paths)
+            }
+        } else {
+            None
+        };
+
+        if let Some(paths) = &mutated_paths {
+            tracing::warn!(
+                target: "permagentd::brain",
+                paths = ?paths,
+                subagent_session_id = %subagent_session_id,
+                "reviewer subagent mutated the working tree; voiding its verdict"
+            );
+            // (a) Record a receipt on the PARENT session — best-effort: a
+            // failure to persist it must never block returning the (still
+            // correctly voided) result below.
+            if let Err(e) = self
+                .context
+                .session_manager
+                .record_reviewer_mutation(
+                    session_id,
+                    paths.clone(),
+                    Some(subagent_session_id.clone()),
+                )
+                .await
+            {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    error = %e,
+                    "failed to record the reviewer-mutation receipt on the session (non-fatal)"
+                );
+            }
+        }
+
+        // (b) A mutation voids the verdict regardless of whether the
+        // subagent's own call succeeded or errored — either way its text
+        // must not be trusted — so first collapse `result` to one text
+        // string (keeping whether it was originally an error), then decide.
+        // X-dag-1 kept: a restricted delegate must say so in the text a
+        // model actually reads — the routing receipt above only ever rode in
+        // `_meta`, which is exactly why the earlier `model_routing` note was
+        // invisible to the coordinator in live transcripts (Lane S/T
+        // evidence). The roadmap-gate note is prepended first, on the
+        // success path only, so a subsequent X-verify-1 void (below) still
+        // covers it.
+        let (original_ok, original_text) = match result {
             Ok(text) => {
-                // X-dag-1: a restricted delegate must say so in the text a
-                // model actually reads — the routing receipt above only ever
-                // rode in `_meta`, which is exactly why the earlier
-                // `model_routing` note was invisible to the coordinator in
-                // live transcripts (Lane S/T evidence).
                 let text = match &roadmap_gate_note {
                     Some(note) => format!("{note}\n\n{text}"),
                     None => text,
                 };
+                (true, text)
+            }
+            Err(e) => (false, format!("Delegation failed: {}", e)),
+        };
+
+        match &mutated_paths {
+            // (c) The mutated paths must be visible in the returned result
+            // text, on top of the receipt already recorded above.
+            Some(paths) => {
+                let text = crate::after_turn::reviewer_mutation_void_text(paths, &original_text);
                 Ok(CallToolResult::success(vec![Content::text(text)]).with_meta(Some(meta)))
             }
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "Delegation failed: {}",
-                e
-            ))])
-            .with_meta(Some(meta))),
+            None if original_ok => {
+                Ok(CallToolResult::success(vec![Content::text(original_text)])
+                    .with_meta(Some(meta)))
+            }
+            None => {
+                Ok(CallToolResult::error(vec![Content::text(original_text)]).with_meta(Some(meta)))
+            }
         }
     }
 
