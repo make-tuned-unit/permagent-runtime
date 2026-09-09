@@ -88,9 +88,9 @@ pub use delegate::{
     DelegateSource, EscalationRefusal, KEY_ALLOW_ESCALATION,
 };
 pub use derived::{
-    config_key_affects_derived_map, derive_role_map, derive_role_map_from_directory,
-    derived_role_map, invalidate_derived_role_map, model_routing_receipt, DerivedRoleMap,
-    Provenance, RoleSource, DERIVED_ROLE_MAP_TTL,
+    cached_capability_directory, config_key_affects_derived_map, derive_role_map,
+    derive_role_map_from_directory, derived_role_map, invalidate_derived_role_map,
+    model_routing_receipt, DerivedRoleMap, Provenance, RoleSource, DERIVED_ROLE_MAP_TTL,
 };
 pub use escalation::{
     build_handoff, decide_escalation, load_max_escalations, max_escalations_from,

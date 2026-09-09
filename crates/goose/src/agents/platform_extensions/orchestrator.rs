@@ -1693,8 +1693,14 @@ impl OrchestratorClient {
         let role_pin =
             crate::cost_router::role_model(crate::cost_router::WorkflowRole::Orchestrate);
 
-        let available = crate::cost_router::discover_available_models_async().await;
-        let directory = crate::cost_router::CapabilityDirectory::build(&available);
+        // G7 finding F5 (perf): reuse the same short-TTL, invalidation-linked
+        // cache `derived_role_map()` uses (`cost_router::derived::
+        // cached_capability_directory`) instead of a fresh Ollama probe +
+        // directory rebuild on every call. This is called from two sites per
+        // roadmap (`resolve_decomposition_provider` and the roadmap-creation
+        // receipt block) — both now share one live probe per TTL window
+        // instead of each doing its own.
+        let directory = crate::cost_router::cached_capability_directory().await;
 
         let (route, reason) =
             crate::cost_router::resolve_planner(decomposition_pin, role_pin, &directory);
@@ -9397,15 +9403,23 @@ async fn evaluate_completion_check_locally(
                 .iter()
                 .all(|p| match std::fs::read_to_string(working_dir.join(p)) {
                     Ok(content) => !re.is_match(&content),
-                    // A named file that does not exist has nothing the
-                    // pattern could match — trivially absent.
-                    Err(_) => true,
+                    // A missing file means we cannot prove absence in it —
+                    // unsatisfied, not a pass. Matches the real verifier's
+                    // contract (`run_grep_absent`, checks.rs) so a sibling
+                    // goal is never credited off an AC that names a file
+                    // nobody has created yet.
+                    Err(_) => false,
                 })
         }
         Some("command_exit_zero") => {
             let Some(cmd) = check.get("cmd").and_then(|v| v.as_str()) else {
                 return false;
             };
+            if cmd.trim().is_empty() {
+                // `sh -c ""` exits 0 trivially — an empty command must never
+                // read as a pass.
+                return false;
+            }
             let timeout_secs = check
                 .get("timeout_secs")
                 .and_then(|v| v.as_u64())
@@ -11344,8 +11358,11 @@ mod tests {
         );
         // Positive control: the planner precedence IS present, so the negative
         // assertions above are not vacuous (e.g. from a botched find/replace).
+        // G7 finding F5: `resolve_planner_route` now reads the directory via
+        // the shared cache (`cached_capability_directory`) rather than
+        // rebuilding it inline, so the literal it greps for moved with it.
         assert!(src.contains("resolve_planner_route"));
-        assert!(src.contains("CapabilityDirectory::build"));
+        assert!(src.contains("cached_capability_directory"));
     }
 
     #[test]
@@ -12106,6 +12123,55 @@ mod tests {
         assert_eq!(kind, "approve_review");
     }
 
+    /// G7 finding F1 (HIGH): `grep_absent` against a criterion naming a file
+    /// that was never created must NOT credit the sibling. Pre-fix,
+    /// `evaluate_completion_check_locally`'s `grep_absent` arm read a missing
+    /// file as `Ok(true)` ("nothing the pattern could match — trivially
+    /// absent"), the opposite of the real verifier's contract
+    /// (`checks.rs::run_grep_absent`: "a missing file means we cannot prove
+    /// absence in it — error, not pass"). That let a goal 2 whose AC is
+    /// "no TODO remains in a file goal 2 itself is supposed to create" get
+    /// trivially "satisfied" by goal 1's unrelated diff, which never touches
+    /// that file — credited to Review (or auto-landed to Complete under
+    /// headless auto-land) with zero real work done on it.
+    #[tokio::test]
+    async fn try_credit_sibling_goals_never_credits_grep_absent_against_a_missing_file() {
+        let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        // goal 1's real work: an unrelated file, never touching the path
+        // goal 2's AC names.
+        std::fs::write(tmp.path().join("unrelated.rs"), "// goal 1's own work\n").unwrap();
+
+        let original =
+            create_roadmap_goal(&pool, "in_progress", "Goal 1 (assigned)", "roadmap-Z", &[]).await;
+        let sibling = create_roadmap_goal(
+            &pool,
+            "triage",
+            "Goal 2 (must create its own file)",
+            "roadmap-Z",
+            &["No TODO comments remain in src/new_feature.rs"],
+        )
+        .await;
+
+        let ev = goal_engine::GoalEvidence {
+            worktree_path: tmp.path().display().to_string(),
+            commits: vec!["abc1234 fix: unrelated change".to_string()],
+            ..Default::default()
+        };
+
+        let credited = try_credit_sibling_goals(&pool, &original, &ev, false, None).await;
+        assert!(
+            credited.is_empty(),
+            "grep_absent against a file that was never created must not credit the sibling, \
+             got: {credited:?}"
+        );
+        assert_eq!(
+            state_binding_of(&pool, &sibling.id).await,
+            "triage",
+            "the sibling must be left completely untouched — no vacuous pass from a missing file"
+        );
+    }
+
     /// "complete that goal (dependent promotion follows via the existing
     /// promote_and_dispatch_dependents)" — under headless auto-land, credit
     /// goes all the way to Complete through the SAME approve_review decision
@@ -12174,6 +12240,57 @@ mod tests {
             !original_goal_underlying_check_passes(&unknown_stack, &ev).await,
             "an undetectable stack must never be guessed as passing"
         );
+    }
+
+    /// G7 finding F1 (HIGH), pure-function level: `grep_absent` against a
+    /// missing file must read `false` (unsatisfied), matching the real
+    /// verifier's "error, not pass" contract (`checks.rs::run_grep_absent`)
+    /// even though this local evaluator collapses error and fail to the same
+    /// `bool`. Also covers the LOW finding: `command_exit_zero` with an
+    /// empty/whitespace `cmd` must never read as a pass (`sh -c ""` exits 0
+    /// trivially).
+    #[tokio::test]
+    async fn evaluate_completion_check_locally_never_vacuously_passes() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let grep_absent_missing_file = serde_json::json!({
+            "type": "grep_absent",
+            "pattern": "TODO",
+            "paths": ["never_written.rs"],
+        });
+        assert!(
+            !evaluate_completion_check_locally(&grep_absent_missing_file, tmp.path()).await,
+            "grep_absent against a file that does not exist must not pass"
+        );
+
+        // Positive control: grep_absent against a file that DOES exist and
+        // does not contain the pattern must still pass.
+        std::fs::write(tmp.path().join("present.rs"), "// nothing to see\n").unwrap();
+        let grep_absent_present_clean = serde_json::json!({
+            "type": "grep_absent",
+            "pattern": "TODO",
+            "paths": ["present.rs"],
+        });
+        assert!(
+            evaluate_completion_check_locally(&grep_absent_present_clean, tmp.path()).await,
+            "grep_absent against an existing, clean file must still pass"
+        );
+
+        let empty_cmd = serde_json::json!({
+            "type": "command_exit_zero",
+            "cmd": "   ",
+        });
+        assert!(
+            !evaluate_completion_check_locally(&empty_cmd, tmp.path()).await,
+            "an empty/whitespace command must not pass"
+        );
+
+        // Positive control: a real, trivially-true command still passes.
+        let real_cmd = serde_json::json!({
+            "type": "command_exit_zero",
+            "cmd": "true",
+        });
+        assert!(evaluate_completion_check_locally(&real_cmd, tmp.path()).await);
     }
 
     /// Pinning test: "goal 1 is not left held forever (either complete if

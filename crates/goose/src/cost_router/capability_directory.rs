@@ -88,6 +88,16 @@ pub const PLANNER_STRENGTH_BAND: f64 = 0.03;
 /// would have admitted.
 pub const MICRO_SUITE_PASS_FLOOR: f64 = 0.80;
 
+/// The DAG/tool-selection pass rate a graduation claim must clear WHEN
+/// `dag_selection_pct` is present (`CODING_HARNESS_ROLE_GRADUATION_DAG.md`:
+/// "≥ 95% required (Excellence gate) — correct roadmap/dispatch tool chosen
+/// over an equivalent"). Only Orchestrate's evidence populates this field
+/// today, so the check is naturally role-scoped by which evidence carries a
+/// value at all — [`validate_graduation`] enforces it whenever `Some`,
+/// skipping it (not requiring it) when `None`, so a non-Orchestrate role's
+/// evidence record is never rejected for a field its role doesn't produce.
+pub const DAG_SELECTION_PASS_FLOOR: f64 = 0.95;
+
 /// Where a card's data came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -146,19 +156,53 @@ struct RoleEvidenceRaw {
 }
 
 /// G0: whether a graduation claim is admissible. `graduated=false` needs
-/// nothing (the default, unrated state). `graduated=true` requires at least
-/// one evidence-run id AND a `snapshot_date` no older than
-/// [`KB_SNAPSHOT_STALE_AFTER_DAYS`] as of `today` — a caller-supplied "today"
-/// so the rule is testable without the wall clock (mirrors
-/// [`super::knowledge::kb_is_stale`]'s own pattern).
+/// nothing (the default, unrated state). `graduated=true` requires: a passed
+/// smoke test; a `micro_suite_pass_pct` present AND at/above
+/// [`MICRO_SUITE_PASS_FLOOR`]; a `dag_selection_pct`, when present, at/above
+/// [`DAG_SELECTION_PASS_FLOOR`] (absent is skipped, not required — only
+/// Orchestrate's evidence populates it); at least one evidence-run id; AND a
+/// `snapshot_date` no older than [`KB_SNAPSHOT_STALE_AFTER_DAYS`] as of
+/// `today` — a caller-supplied "today" so the rule is testable without the
+/// wall clock (mirrors [`super::knowledge::kb_is_stale`]'s own pattern).
+///
+/// G7 finding F3: pre-fix, this checked only the evidence-id and
+/// snapshot-freshness pair — a `graduated=true` record with, say,
+/// `micro_suite_pass_pct: Some(0.10)` was accepted outright, letting a stale
+/// or malformed evidence write claim graduation the pass-rate floor never
+/// actually supported.
+#[allow(clippy::too_many_arguments)]
 pub fn validate_graduation(
     graduated: bool,
+    smoke_passed: bool,
+    micro_suite_pass_pct: Option<f64>,
+    dag_selection_pct: Option<f64>,
     evidence_run_ids: &[String],
     snapshot_date: Option<NaiveDate>,
     today: NaiveDate,
 ) -> Result<(), String> {
     if !graduated {
         return Ok(());
+    }
+    if !smoke_passed {
+        return Err("graduated=true requires smoke_passed".to_string());
+    }
+    match micro_suite_pass_pct {
+        None => return Err("graduated=true requires a micro_suite_pass_pct".to_string()),
+        Some(p) if p < MICRO_SUITE_PASS_FLOOR => {
+            return Err(format!(
+                "graduated=true requires micro_suite_pass_pct >= {MICRO_SUITE_PASS_FLOOR:.2} \
+                 (got {p:.2})"
+            ));
+        }
+        Some(_) => {}
+    }
+    if let Some(d) = dag_selection_pct {
+        if d < DAG_SELECTION_PASS_FLOOR {
+            return Err(format!(
+                "graduated=true requires dag_selection_pct >= {DAG_SELECTION_PASS_FLOOR:.2} \
+                 when present (got {d:.2})"
+            ));
+        }
     }
     if evidence_run_ids.is_empty() {
         return Err("graduated=true requires at least one evidence_run_id".to_string());
@@ -228,7 +272,15 @@ impl RoleEvidence {
         snapshot_date: Option<NaiveDate>,
         today: NaiveDate,
     ) -> Result<Self, String> {
-        validate_graduation(graduated, &evidence_run_ids, snapshot_date, today)?;
+        validate_graduation(
+            graduated,
+            smoke_passed,
+            micro_suite_pass_pct,
+            dag_selection_pct,
+            &evidence_run_ids,
+            snapshot_date,
+            today,
+        )?;
         Ok(Self {
             graduated,
             smoke_passed,
@@ -486,6 +538,13 @@ impl CapabilityDirectory {
     /// This does NOT consult config pins — [`resolve_planner`] composes an
     /// explicit pin ahead of this, since a pin always outranks the
     /// automatic pick (`CODING_HARNESS_ROLE_GRADUATION_DAG.md` G4 rule 3).
+    ///
+    /// G7 finding F3: a card is first filtered through
+    /// [`evidence_excludes_role`] — real micro-suite evidence below
+    /// [`MICRO_SUITE_PASS_FLOOR`] disqualifies it as a candidate at all,
+    /// regardless of the KB heuristic OR a `graduated` flag (a stale/pre-fix
+    /// `graduated=true` with a failing pass rate must never win the planner
+    /// pick just because the flag says so).
     pub fn planner(&self) -> Option<(RoleModel, PlannerReason)> {
         let floor = WorkflowRole::Orchestrate
             .capability_floor()
@@ -493,6 +552,7 @@ impl CapabilityDirectory {
         let candidates: Vec<&CapabilityCard> = self
             .cards
             .iter()
+            .filter(|c| !evidence_excludes_role(c, WorkflowRole::Orchestrate))
             .filter(|c| {
                 c.strengths.orchestration >= floor
                     || c.role(WorkflowRole::Orchestrate)
@@ -543,12 +603,87 @@ impl CapabilityDirectory {
         ))
     }
 
+    /// G7 finding F2: the model dispatch actually uses for `role` (or `None`
+    /// for the session model), plus a short label naming WHERE it came from
+    /// (`pinned: ...` / `derived (...)` / a session-fallback reason). Pure —
+    /// both pins are pre-read by the caller, same contract as
+    /// [`resolve_planner`] — so this is testable without touching
+    /// Config/IO. Reuses the EXACT precedence real dispatch uses per role:
+    /// Orchestrate goes through [`resolve_planner`] (an
+    /// `ORCHESTRATOR_DECOMPOSITION_*` pin, then a
+    /// `PERMAGENT_ROLE_ORCHESTRATE_*` pin gated by
+    /// [`pin_clears_orchestrate_floor`], then [`Self::planner`], then the
+    /// session) — the same composition `resolve_planner_route` performs, only
+    /// with the directory/pins handed in rather than freshly discovered.
+    /// Every other role goes through the SAME precedence
+    /// `role_model_or_derived` implements: a `PERMAGENT_ROLE_<ROLE>_*` pin,
+    /// then the derived map, then the session.
+    pub fn current_assignment(
+        &self,
+        role: WorkflowRole,
+        derived: &DerivedRoleMap,
+        decomposition_pin: Option<RoleModel>,
+        role_pin: Option<RoleModel>,
+    ) -> (Option<RoleModel>, String) {
+        if role == WorkflowRole::Orchestrate {
+            let (route, reason) = resolve_planner(decomposition_pin, role_pin, self);
+            let Some(rm) = route else {
+                return (None, reason.describe());
+            };
+            if matches!(reason, PlannerReason::Pinned { .. })
+                && !pin_clears_orchestrate_floor(&rm.provider, &rm.model, self)
+            {
+                return (
+                    None,
+                    format!(
+                        "pinned planner {}/{} is unrated/below the ORCHESTRATE floor — using \
+                         the session coordinator",
+                        rm.provider, rm.model
+                    ),
+                );
+            }
+            let label = if matches!(reason, PlannerReason::Pinned { .. }) {
+                format!("pinned: {}", reason.describe())
+            } else {
+                format!("derived: {}", reason.describe())
+            };
+            return (Some(rm), label);
+        }
+        // Non-Orchestrate precedence matches `resolve_role_model_or_derived`
+        // exactly, including the enforceability filter it applies to BOTH the
+        // pin and the derived fallback (e.g. a `cursor-agent` pin cannot
+        // truthfully back a permission-gated worker) — so this table can
+        // never show a row real dispatch would have refused.
+        if let Some(rm) = role_pin.filter(super::role_map::role_model_is_enforceable) {
+            return (Some(rm), "pinned".to_string());
+        }
+        match derived
+            .get(role)
+            .filter(|(rm, _)| super::role_map::role_model_is_enforceable(rm))
+        {
+            Some((rm, prov)) => (Some(rm.clone()), format!("derived ({})", prov.describe())),
+            None => (
+                None,
+                "nothing clears the floor and nothing is pinned".to_string(),
+            ),
+        }
+    }
+
     /// The `explain()` table: model, billing class, cost/Mtok, plan/edit
-    /// strength, per-role graduated/unrated, and — reading `derived`, the
-    /// SAME map dispatch actually uses — the current assignment per role
-    /// with its reason, so this can never show a table that disagrees with
-    /// routing.
-    pub fn explain(&self, derived: &DerivedRoleMap) -> String {
+    /// strength, per-role graduated/unrated, and — going through the SAME
+    /// pin-aware precedence [`Self::current_assignment`] composes from
+    /// `derived` plus the caller-supplied pins — the current assignment per
+    /// role with its source labeled (`pinned` / `derived` / session
+    /// fallback), so this can never show a table that disagrees with what
+    /// dispatch actually does (G7 finding F2: it previously read `derived`
+    /// alone, so a hand-pinned role printed the algorithmic pick instead of
+    /// what actually dispatches).
+    pub fn explain(
+        &self,
+        derived: &DerivedRoleMap,
+        decomposition_pin: Option<RoleModel>,
+        role_pin: impl Fn(WorkflowRole) -> Option<RoleModel>,
+    ) -> String {
         let mut out = String::new();
         out.push_str("Capability directory (models you have configured)\n");
         out.push_str(&format!(
@@ -584,17 +719,24 @@ impl CapabilityDirectory {
         }
         out.push_str("\nCurrent assignment:\n");
         for role in WorkflowRole::all() {
-            match derived.get(role) {
-                Some((rm, prov)) => out.push_str(&format!(
+            let dpin = if role == WorkflowRole::Orchestrate {
+                decomposition_pin.clone()
+            } else {
+                None
+            };
+            let (assignment, label) = self.current_assignment(role, derived, dpin, role_pin(role));
+            match assignment {
+                Some(rm) => out.push_str(&format!(
                     "  {:<11} -> {}/{}  ({})\n",
                     role.as_str().to_uppercase(),
                     rm.provider,
                     rm.model,
-                    prov.describe()
+                    label
                 )),
                 None => out.push_str(&format!(
-                    "  {:<11} -> session model (nothing clears the floor)\n",
-                    role.as_str().to_uppercase()
+                    "  {:<11} -> session model ({})\n",
+                    role.as_str().to_uppercase(),
+                    label
                 )),
             }
         }
@@ -703,6 +845,11 @@ pub fn resolve_planner(
 /// lookup when the pin names a model with no card in `directory` (e.g. not
 /// currently available) — `Unrated`/`BelowFloor` still refuse, matching the
 /// prior gate's contract.
+///
+/// G7 finding F3: a card is checked through [`evidence_excludes_role`]
+/// FIRST — real evidence below [`MICRO_SUITE_PASS_FLOOR`] refuses the pin
+/// outright, before either the `graduated` flag or the KB heuristic get a
+/// vote, for the same "a stale flag can never win" reason as [`Self::planner`].
 pub fn pin_clears_orchestrate_floor(
     provider: &str,
     model: &str,
@@ -713,6 +860,9 @@ pub fn pin_clears_orchestrate_floor(
         .iter()
         .find(|c| c.provider == provider && c.model == model)
     {
+        if evidence_excludes_role(card, WorkflowRole::Orchestrate) {
+            return false;
+        }
         if card
             .role(WorkflowRole::Orchestrate)
             .map(|e| e.graduated())
@@ -836,6 +986,91 @@ mod tests {
         let unrated: RoleEvidence =
             serde_json::from_str(unrated_json).expect("unrated must deserialize with defaults");
         assert!(!unrated.graduated());
+    }
+
+    /// G7 finding F3: `validate_graduation` must cross-check `graduated=true`
+    /// against the pass-rate floor, not just the evidence-id/snapshot pair.
+    /// Pre-fix, every one of the `expect_err` cases below constructed fine
+    /// (`RoleEvidence::new` only checked `evidence_run_ids` and
+    /// `snapshot_date`), so a `graduated=true, micro_suite_pass_pct: Some(0.10)`
+    /// record — "graduated=true without evidence actually supporting it" —
+    /// was legal.
+    #[test]
+    fn validate_graduation_cross_checks_the_pass_rate_floor() {
+        let run_ids = || vec!["run-1".to_string()];
+
+        let err = RoleEvidence::new(
+            true,
+            false, // smoke NOT passed
+            Some(0.95),
+            Some(0.98),
+            run_ids(),
+            None,
+            None,
+            Some(today()),
+            today(),
+        )
+        .expect_err("graduated=true with smoke_passed=false must be rejected");
+        assert!(err.contains("smoke_passed"), "{err}");
+
+        let err = RoleEvidence::new(
+            true,
+            true,
+            Some(0.10), // well below the 0.80 floor
+            Some(0.98),
+            run_ids(),
+            None,
+            None,
+            Some(today()),
+            today(),
+        )
+        .expect_err("graduated=true with a below-floor micro_suite_pass_pct must be rejected");
+        assert!(err.contains("micro_suite_pass_pct"), "{err}");
+
+        let err = RoleEvidence::new(
+            true,
+            true,
+            None, // no pass-rate recorded at all — nothing to cross-check
+            Some(0.98),
+            run_ids(),
+            None,
+            None,
+            Some(today()),
+            today(),
+        )
+        .expect_err("graduated=true with no micro_suite_pass_pct must be rejected");
+        assert!(err.contains("micro_suite_pass_pct"), "{err}");
+
+        let err = RoleEvidence::new(
+            true,
+            true,
+            Some(0.95),
+            Some(0.50), // present but below the 0.95 DAG-selection floor
+            run_ids(),
+            None,
+            None,
+            Some(today()),
+            today(),
+        )
+        .expect_err("graduated=true with a below-floor dag_selection_pct must be rejected");
+        assert!(err.contains("dag_selection_pct"), "{err}");
+
+        // Absent dag_selection_pct is fine — only Orchestrate's evidence
+        // populates it, and "the role requires it" must not become "every
+        // role's evidence must carry it".
+        let ok = RoleEvidence::new(
+            true,
+            true,
+            Some(0.95),
+            None,
+            run_ids(),
+            None,
+            None,
+            Some(today()),
+            today(),
+        )
+        .expect("graduated=true with no dag_selection_pct must still be accepted");
+        assert!(ok.graduated());
     }
 
     // ── Directory construction ───────────────────────────────────────────
@@ -1136,5 +1371,167 @@ mod tests {
             "qwen3-coder",
             &below
         ));
+    }
+
+    /// G7 finding F3, second half: `planner()` and `pin_clears_orchestrate_floor`
+    /// must route through `evidence_excludes_role` so a card whose real
+    /// micro-suite evidence is below the floor is never a candidate — even
+    /// with `graduated: true`. `validate_graduation` (the test above) now
+    /// makes that combination impossible to construct through the public
+    /// API, so this simulates the one place it could still appear: a
+    /// grandfathered/stale record on disk from before that guard existed,
+    /// via a raw struct literal (this same module can see `RoleEvidence`'s
+    /// private fields) — real dispatch must still refuse it, not trust the
+    /// flag.
+    #[test]
+    fn planner_and_pin_never_trust_a_stale_graduated_flag_over_the_evidence() {
+        let mut roles: BTreeMap<String, RoleEvidence> = WorkflowRole::all()
+            .iter()
+            .map(|r| (r.as_str().to_string(), RoleEvidence::default()))
+            .collect();
+        roles.insert(
+            WorkflowRole::Orchestrate.as_str().to_string(),
+            RoleEvidence {
+                graduated: true,
+                smoke_passed: true,
+                micro_suite_pass_pct: Some(0.10), // well below the 0.80 floor
+                dag_selection_pct: Some(0.98),
+                evidence_run_ids: vec!["run-1".to_string()],
+                observed_cost_usd: None,
+                observed_latency_s: None,
+                snapshot_date: Some(today()),
+            },
+        );
+        let mut stale_card = card("anthropic", "claude-opus-4-8", 0.886, 5.0, 25.0, false);
+        stale_card.roles = roles;
+        let dir = directory_of(vec![stale_card]);
+
+        assert!(
+            dir.planner().is_none(),
+            "a card the evidence excludes must never be the planner pick, stale flag or not"
+        );
+        assert!(
+            !pin_clears_orchestrate_floor("anthropic", "claude-opus-4-8", &dir),
+            "a pin naming that same card must be refused for the same reason"
+        );
+    }
+
+    // ── G7 finding F2: "Current assignment" is pin-aware ─────────────────────
+
+    fn derived_with(role: WorkflowRole, rm: RoleModel) -> DerivedRoleMap {
+        let mut derived = DerivedRoleMap::empty();
+        derived.by_role.insert(role, rm);
+        derived.provenance.insert(
+            role,
+            super::super::derived::Provenance {
+                floor_met: true,
+                confidence: crate::cost_router::knowledge::LookupConfidence::Exact,
+                cost_hint: 5.0,
+            },
+        );
+        derived
+    }
+
+    /// Pure formatting path, unpinned: a worker role with no
+    /// `PERMAGENT_ROLE_*` pin must show the derived pick, labeled `derived
+    /// (...)` — matching `resolve_role_model_or_derived`'s fallback tier.
+    #[test]
+    fn current_assignment_unpinned_role_shows_the_derived_pick() {
+        let dir = directory_of(vec![]);
+        let derived_pick = RoleModel {
+            provider: "anthropic".to_string(),
+            model: "claude-opus-4-8".to_string(),
+        };
+        let derived = derived_with(WorkflowRole::Edit, derived_pick.clone());
+
+        let (rm, label) = dir.current_assignment(WorkflowRole::Edit, &derived, None, None);
+        assert_eq!(rm, Some(derived_pick));
+        assert!(
+            label.starts_with("derived"),
+            "unpinned role must be labeled as derived, got: {label}"
+        );
+    }
+
+    /// Pure formatting path, pinned: G7's exact defect. Pre-fix, `explain()`
+    /// read `derived` alone and had no notion of a pin at all — a hand-pinned
+    /// role's row would show the algorithmic derived pick (or nothing, for
+    /// Orchestrate, since a role pin bypasses `planner()` entirely) instead
+    /// of what dispatch actually uses. The pin must win here and be labeled
+    /// `pinned`, for both a worker role (`role_model_or_derived`'s
+    /// precedence) and Orchestrate (`resolve_planner`'s precedence).
+    #[test]
+    fn current_assignment_pinned_role_shows_the_pin_not_the_derived_pick() {
+        let derived_pick = RoleModel {
+            provider: "anthropic".to_string(),
+            model: "claude-opus-4-8".to_string(),
+        };
+        let pin = RoleModel {
+            provider: "openai".to_string(),
+            model: "gpt-5.6".to_string(),
+        };
+
+        // Worker role: a PERMAGENT_ROLE_EDIT_* pin must win over the derived map.
+        let dir = directory_of(vec![]);
+        let derived = derived_with(WorkflowRole::Edit, derived_pick.clone());
+        let (rm, label) =
+            dir.current_assignment(WorkflowRole::Edit, &derived, None, Some(pin.clone()));
+        assert_eq!(rm, Some(pin.clone()));
+        assert_eq!(label, "pinned");
+
+        // Orchestrate: a graduated card exists for the derived pick, but a
+        // PERMAGENT_ROLE_ORCHESTRATE_* pin must still win and must be
+        // labeled "pinned: ..." — mirrors `resolve_planner`'s own precedence
+        // test (`planner_pin_wins`), through the display path this time.
+        let orch_dir = directory_of(vec![card(
+            "anthropic",
+            "claude-opus-4-8",
+            0.886,
+            5.0,
+            25.0,
+            false,
+        )]);
+        let orch_pin = RoleModel {
+            provider: "acme".to_string(),
+            model: "no-such-model".to_string(),
+        };
+        let (rm, label) = orch_dir.current_assignment(
+            WorkflowRole::Orchestrate,
+            &DerivedRoleMap::empty(),
+            None,
+            Some(orch_pin.clone()),
+        );
+        assert_eq!(
+            rm, None,
+            "acme/no-such-model is neither in this directory nor the static KB — the pin \
+             must be refused (unrated), never silently substituted"
+        );
+        assert!(label.contains("ORCHESTRATE floor"), "label: {label}");
+    }
+
+    /// `explain()`'s printed table must route each role through
+    /// `current_assignment` — same pin, same result — never disagree with
+    /// what the pure helper says.
+    #[test]
+    fn explain_table_reflects_the_pin() {
+        let dir = directory_of(vec![]);
+        let derived = derived_with(
+            WorkflowRole::Edit,
+            RoleModel {
+                provider: "anthropic".to_string(),
+                model: "claude-opus-4-8".to_string(),
+            },
+        );
+        let pin = RoleModel {
+            provider: "openai".to_string(),
+            model: "gpt-5.6".to_string(),
+        };
+        let pin_for_edit = pin.clone();
+        let out = dir.explain(&derived, None, move |role| {
+            (role == WorkflowRole::Edit).then(|| pin_for_edit.clone())
+        });
+        assert!(
+            out.contains("EDIT        -> openai/gpt-5.6  (pinned)"),
+            "table must show the pin, not the derived pick: {out}"
+        );
     }
 }
