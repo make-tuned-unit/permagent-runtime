@@ -152,7 +152,12 @@ pub async fn probe_worker_async(check: &str) -> (bool, Option<String>) {
     let check = check.to_string();
     tokio::task::spawn_blocking(move || probe_worker(&check))
         .await
-        .unwrap_or_else(|e| (false, Some(format!("Worker availability probe failed: {e}"))))
+        .unwrap_or_else(|e| {
+            (
+                false,
+                Some(format!("Worker availability probe failed: {e}")),
+            )
+        })
 }
 
 /// Probe for a binary against Permagent's augmented search path.
@@ -242,10 +247,16 @@ fn probe_model_loaded(model: &str) -> (bool, Option<String>) {
         .spawn(move || probe_model_loaded_on_this_thread(&model));
 
     match spawned {
-        Ok(handle) => handle
-            .join()
-            .unwrap_or_else(|_| (false, Some("Ollama availability probe panicked".to_string()))),
-        Err(e) => (false, Some(format!("Ollama availability probe could not start: {e}"))),
+        Ok(handle) => handle.join().unwrap_or_else(|_| {
+            (
+                false,
+                Some("Ollama availability probe panicked".to_string()),
+            )
+        }),
+        Err(e) => (
+            false,
+            Some(format!("Ollama availability probe could not start: {e}")),
+        ),
     }
 }
 
