@@ -633,6 +633,43 @@ fn roadmap_proposal_hash(goals: &[goal_state::ProposedGoal]) -> String {
     hex::encode(Sha256::digest(canonical))
 }
 
+/// Builds the `payload` for the roadmap-approval `kind='choice'` Decision
+/// Inbox request — the single source of truth for this shape.
+/// `handle_decompose_roadmap` calls this to file the real decision, and
+/// `decisions::tests` calls it directly (not a hand-written JSON literal) to
+/// pin the shape against `decisions::RoadmapApprovalPayload`. Harness loop
+/// Lane Z6 repair (M7 P0): before this, the call site built this object
+/// inline and `RoadmapApprovalPayload` never learned the `planner`/`workers`
+/// fields Lane Z3 added here, so `deny_unknown_fields` rejected every
+/// roadmap approval as `kind='malformed'` and no test ever exercised the
+/// real call site to catch it — every prior test hand-wrote a JSON literal
+/// that happened to omit the new fields.
+fn build_roadmap_approval_payload(
+    proposal_hash: &str,
+    session_id: &str,
+    planner_label: &str,
+    planner_reason: &str,
+    workers_label: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "question": "Create these exact roadmap goals and begin execution?",
+        "options": [
+            {"id": "approve-roadmap", "label": "Approve and begin"},
+            {"id": "reject-roadmap", "label": "Reject"}
+        ],
+        "proposal": crate::decisions::PROPOSAL_ROADMAP_CREATE,
+        "roadmap_approval": {
+            "proposal_hash": proposal_hash,
+            "minting_session_id": session_id,
+            "planner": {
+                "model": planner_label,
+                "reason": planner_reason,
+            },
+            "workers": workers_label,
+        }
+    })
+}
+
 fn validate_roadmap_goals(goals: &[goal_state::ProposedGoal]) -> Result<(), String> {
     // Z1-4 (harness loop, Lane M6 Defect #1 fixture "harness-editapply-
     // duplicate-discount-blocks"): a roadmap used to REQUIRE at least 2
@@ -5121,23 +5158,13 @@ impl OrchestratorClient {
                     goals.len(),
                     proposal_hash
                 )),
-                payload: serde_json::json!({
-                    "question": "Create these exact roadmap goals and begin execution?",
-                    "options": [
-                        {"id": "approve-roadmap", "label": "Approve and begin"},
-                        {"id": "reject-roadmap", "label": "Reject"}
-                    ],
-                    "proposal": crate::decisions::PROPOSAL_ROADMAP_CREATE,
-                    "roadmap_approval": {
-                        "proposal_hash": proposal_hash,
-                        "minting_session_id": session_id,
-                        "planner": {
-                            "model": planner_label,
-                            "reason": planner_reason.describe(),
-                        },
-                        "workers": workers_label,
-                    }
-                }),
+                payload: build_roadmap_approval_payload(
+                    &proposal_hash,
+                    session_id,
+                    &planner_label,
+                    &planner_reason.describe(),
+                    &workers_label,
+                ),
                 ..Default::default()
             },
         )
@@ -11858,6 +11885,76 @@ mod tests {
             .unwrap();
         init_spectral_db(&pool).await.unwrap();
         pool
+    }
+
+    // ── Z6 (harness loop M7 P0): roadmap-approval payload must survive its
+    // own schema, not just decompose cleanly ──
+    //
+    // M7 found this fails 10/10 on 68c2eece: `handle_decompose_roadmap`'s
+    // roadmap-creation receipt embeds `planner`/`workers` in the
+    // `roadmap_approval` object, but `decisions::RoadmapApprovalPayload`'s
+    // `deny_unknown_fields` never declared them, so `create_decision`
+    // downgraded every one of these to `kind='malformed'` before a single
+    // goal card existed — no worker was ever dispatched. This test calls
+    // `build_roadmap_approval_payload`, the SAME function
+    // `handle_decompose_roadmap` calls to file the real decision, rather
+    // than hand-writing JSON — a hand-written literal is exactly how this
+    // bug hid from every prior test (see `decisions::tests::
+    // roadmap_choice_decision`, which has hand-written a payload that omits
+    // `planner`/`workers` since before Z3 added them).
+    #[tokio::test]
+    async fn roadmap_approval_payload_from_the_real_builder_is_not_malformed() {
+        let pool = test_pool().await;
+        let payload = build_roadmap_approval_payload(
+            "deadbeefcafef00d",
+            "session-under-test",
+            "zai/glm-4.7",
+            "only candidate that clears the orchestrate floor",
+            "code_edit=zai/glm-4.7,review=anthropic/claude-haiku-4-5",
+        );
+        let req = crate::decisions::NewDecision {
+            kind: "choice".to_string(),
+            project_id: Some(crate::projects::PERSONAL_PROJECT_ID.to_string()),
+            headline: Some("Approve this roadmap?".to_string()),
+            detail: Some("Review the proposed roadmap".to_string()),
+            payload,
+            ..Default::default()
+        };
+        let decision = crate::decisions::create_decision(&pool, req)
+            .await
+            .expect("create_decision itself must not error even when validation fails");
+        assert_eq!(
+            decision.kind, "choice",
+            "the real roadmap-approval payload (with planner/workers) must validate as \
+             'choice', not fall back to 'malformed': {:?}",
+            decision.payload
+        );
+
+        // And the stored payload really does parse into the typed struct
+        // with the receipt intact, not just "some 'choice' row got made".
+        let parsed: crate::decisions::ChoicePayload =
+            serde_json::from_value(decision.payload.clone())
+                .expect("a 'choice'-kind decision's payload must parse as ChoicePayload");
+        let roadmap_approval = parsed
+            .roadmap_approval
+            .expect("roadmap_approval must be present");
+        assert_eq!(roadmap_approval.proposal_hash, "deadbeefcafef00d");
+        assert_eq!(
+            roadmap_approval.minting_session_id.as_deref(),
+            Some("session-under-test")
+        );
+        let planner = roadmap_approval
+            .planner
+            .expect("planner receipt must survive the round trip");
+        assert_eq!(planner.model, "zai/glm-4.7");
+        assert_eq!(
+            planner.reason,
+            "only candidate that clears the orchestrate floor"
+        );
+        assert_eq!(
+            roadmap_approval.workers.as_deref(),
+            Some("code_edit=zai/glm-4.7,review=anthropic/claude-haiku-4-5")
+        );
     }
 
     // ── Z2-2 (M6 #3): escalate — decision row always minted, headless gets

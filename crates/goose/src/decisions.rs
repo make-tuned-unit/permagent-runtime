@@ -347,6 +347,37 @@ pub struct RoadmapApprovalPayload {
     /// as unbound to any session and can never satisfy the new check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minting_session_id: Option<String>,
+    /// The planner + worker routing receipt (D2, 2026-09-09 ruling): who
+    /// planned this roadmap, why, and which model each other role currently
+    /// routes to. Purely informational — no code path reads it back to
+    /// authorise anything, so it rides on the same `#[serde(default)]` +
+    /// skip-when-absent discipline as `minting_session_id` above. Harness
+    /// loop Lane Z6 repair (M7 P0): `orchestrator.rs`'s roadmap-creation
+    /// receipt (Lane Z3, D2) has embedded `planner`/`workers` in this exact
+    /// object since `e88d23fd`, but this struct never declared them —
+    /// `deny_unknown_fields` rejected every such payload as `kind='malformed'`
+    /// before any goal card could be created, on 10/10 M7 fixtures. Adding
+    /// them here (rather than dropping them from the call site) keeps the
+    /// receipt on the record a human approver actually reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner: Option<PlannerReceipt>,
+    /// Comma-separated `role=provider/model` routing for the non-planner
+    /// workflow roles, same receipt and same reasoning as `planner` above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workers: Option<String>,
+}
+
+/// Who planned a roadmap and why — the `planner` field of
+/// [`RoadmapApprovalPayload`]. Mirrors the shape `orchestrator.rs`'s
+/// roadmap-creation receipt builds; kept a plain `{model, reason}` struct
+/// (not a reuse of `cost_router::PlannerReason`) so this wire type has no
+/// dependency on `cost_router`'s internals and stays stable if that enum's
+/// variants change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlannerReceipt {
+    pub model: String,
+    pub reason: String,
 }
 
 /// The concrete repo object a Steward git-health `risk_gate` targets
@@ -3400,6 +3431,49 @@ mod tests {
         );
         assert!(d.payload.get("error").is_some());
         assert!(d.payload.get("raw").is_some());
+    }
+
+    // ── Z6 (harness loop M7 P0): RoadmapApprovalPayload back-compat ──
+    //
+    // Direct struct-level pins, independent of the orchestrator's own
+    // builder-function test (`orchestrator::tests::
+    // roadmap_approval_payload_from_the_real_builder_is_not_malformed`,
+    // which exercises the exact call site through `create_decision`). These
+    // two confirm the schema itself, at both ends: an old payload minted
+    // before `planner`/`workers` existed must still parse, and it must not
+    // silently gain the new fields as `Some(..)` out of nowhere.
+
+    #[test]
+    fn roadmap_approval_payload_without_receipt_still_parses() {
+        // The exact shape every payload had before Z3's D2 receipt landed —
+        // and the exact shape this file's own `roadmap_choice_decision` test
+        // helper (below) has hand-written since before this bug existed,
+        // which is *why* that helper never caught it.
+        let v = serde_json::json!({"proposal_hash": "deadbeef"});
+        let payload: RoadmapApprovalPayload = serde_json::from_value(v)
+            .expect("a pre-Z3 roadmap_approval payload must still deserialize");
+        assert_eq!(payload.proposal_hash, "deadbeef");
+        assert!(payload.minting_session_id.is_none());
+        assert!(payload.planner.is_none());
+        assert!(payload.workers.is_none());
+    }
+
+    #[test]
+    fn roadmap_approval_payload_with_receipt_round_trips() {
+        let v = serde_json::json!({
+            "proposal_hash": "deadbeef",
+            "minting_session_id": "sess-1",
+            "planner": {"model": "zai/glm-4.7", "reason": "only candidate"},
+            "workers": "code_edit=zai/glm-4.7"
+        });
+        let payload: RoadmapApprovalPayload =
+            serde_json::from_value(v).expect("the current call site's shape must deserialize");
+        assert_eq!(payload.proposal_hash, "deadbeef");
+        assert_eq!(payload.minting_session_id.as_deref(), Some("sess-1"));
+        let planner = payload.planner.expect("planner must be present");
+        assert_eq!(planner.model, "zai/glm-4.7");
+        assert_eq!(planner.reason, "only candidate");
+        assert_eq!(payload.workers.as_deref(), Some("code_edit=zai/glm-4.7"));
     }
 
     fn valid_file_to_project() -> NewDecision {
