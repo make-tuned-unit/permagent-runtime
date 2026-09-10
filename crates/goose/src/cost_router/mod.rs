@@ -36,6 +36,7 @@
 //! core.
 
 pub mod assess;
+pub mod authorized_attempts;
 pub mod best_of_n;
 pub mod budget;
 pub mod cache;
@@ -128,9 +129,14 @@ pub use recommend::{
     AvailableModel, CapabilityFloor, ProviderModels, Recommendation, RoleRecommendation,
     WorkflowRole, EDIT_RELIABILITY_FLOOR,
 };
+pub use authorized_attempts::{
+    attempt_is_authorized, authorized_attempts, with_authorized_attempts,
+    with_authorized_attempts_opt,
+};
 pub use reservation::{
-    describe_pricing_source, plan_reservation_bound, PricingProvenance, ReservationBound,
-    ReservationBoundError,
+    describe_pricing_source, plan_reservation_bound, reserved_physical_attempts,
+    reserved_physical_attempts_with, PricingProvenance, ReservationBound, ReservationBoundError,
+    DEFAULT_RESERVED_ATTEMPTS, RESERVE_ATTEMPTS_ENV,
 };
 pub use review_gate::{
     build_review_prompt, classify_path, decide_review_route, gate_decision, parse_review,

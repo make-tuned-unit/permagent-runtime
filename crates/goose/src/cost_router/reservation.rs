@@ -58,6 +58,62 @@ pub fn describe_pricing_source(provenance: PricingProvenance) -> &'static str {
     }
 }
 
+/// Y7 (harness loop, from Lane A12's Q6 measurement): how many *physical*
+/// attempts one logical provider call reserves money for up front.
+///
+/// A reservation is a hold, not a prediction, so the historical choice was to
+/// pre-reserve the provider's entire retry envelope
+/// ([`RetryConfig::max_physical_attempts`](crate::providers::retry::RetryConfig::max_physical_attempts),
+/// 5 under every default config). A12 measured what that costs in practice on
+/// the M12 slice: every `zai`/`glm-4.7` hold was `$1.662976` while the largest
+/// *settled* single call in the whole slice was `$0.0234` and the typical one
+/// `$0.005` — an over-reservation of ~70–330×. With a `$5.00` session ceiling
+/// two live holds ($3.325952) leave no room for a third, so the run stalls on
+/// hold arithmetic long before it approaches its actual `$2.50` spend cap
+/// (every gate message in that slice: "holds $3.33, requested bound $1.66,
+/// ceiling $5.00"). The ceiling was never the binding constraint; this
+/// multiplier was.
+///
+/// Default 1: reserve what one attempt can actually cost. The retry envelope
+/// is then enforced against the reservation at the seam where a physical
+/// retry would happen (`cost_router::authorized_attempts`), so a retry that
+/// the hold does not cover is refused with an honest error
+/// rather than silently spending past the authorization.
+pub const RESERVE_ATTEMPTS_ENV: &str = "PERMAGENT_RESERVE_ATTEMPTS";
+
+/// Physical attempts reserved when [`RESERVE_ATTEMPTS_ENV`] says nothing.
+pub const DEFAULT_RESERVED_ATTEMPTS: u32 = 1;
+
+/// How many physical attempts to reserve, given the retry policy's own
+/// envelope.
+///
+/// Clamped into `1..=max_physical_attempts`: the knob can never authorize more
+/// attempts than the retry policy would ever make (that would over-reserve
+/// again), and never fewer than one (a zero-attempt reservation cannot
+/// authorize the call at all). `max_physical_attempts == 0` is passed straight
+/// through so [`plan_reservation_bound`] still fails closed with
+/// [`ReservationBoundError::InvalidAttempts`] instead of this function
+/// inventing an attempt the policy does not allow.
+pub fn reserved_physical_attempts(max_physical_attempts: u32) -> u32 {
+    reserved_physical_attempts_with(max_physical_attempts, |key| std::env::var(key).ok())
+}
+
+/// Testable core of [`reserved_physical_attempts`]; `read` stands in for the
+/// process environment.
+pub fn reserved_physical_attempts_with(
+    max_physical_attempts: u32,
+    read: impl Fn(&str) -> Option<String>,
+) -> u32 {
+    if max_physical_attempts == 0 {
+        return 0;
+    }
+    read(RESERVE_ATTEMPTS_ENV)
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_RESERVED_ATTEMPTS)
+        .clamp(1, max_physical_attempts)
+}
+
 /// A finite upper bound for one physical provider invocation (including its
 /// allowed retries).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -443,6 +499,67 @@ mod tests {
         assert_eq!(
             describe_pricing_source(bound.pricing_provenance),
             "canonical_exact"
+        );
+    }
+
+    /// Y7 pin (harness loop, from Lane A12's Q6 measurement): reserving ONE
+    /// physical attempt holds exactly one fifth of what the same call held
+    /// before, for the identical live inputs pinned by the test above — the
+    /// $1.662976 hold that starved a $5.00 session ceiling after two calls
+    /// becomes $0.3325952, against a *settled* cost measured at $0.005–$0.0234
+    /// on the same slice. Nothing about pricing changes: the only difference
+    /// is how many attempts' worth of money is held up front.
+    #[test]
+    fn one_reserved_attempt_holds_exactly_a_fifth_of_the_five_attempt_bound() {
+        let cfg = config(Some(204_800), Some(131_072));
+        let five = plan_reservation_bound("zai", "glm-4.7", CostTier::PaidApi, &cfg, 5)
+            .unwrap()
+            .unwrap();
+        let one = plan_reservation_bound("zai", "glm-4.7", CostTier::PaidApi, &cfg, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(one.max_physical_attempts, 1);
+        assert_eq!(one.amount_usd, 0.33259520000000004);
+        assert_eq!(one.amount_usd * 5.0, five.amount_usd);
+        // Everything else about the bound is untouched.
+        assert_eq!(one.input_tokens, five.input_tokens);
+        assert_eq!(one.output_tokens, five.output_tokens);
+        assert_eq!(one.pricing_provenance, five.pricing_provenance);
+    }
+
+    /// Y7: the knob can lower the hold but never authorize more attempts than
+    /// the retry policy would ever physically make, and never zero.
+    #[test]
+    fn reserved_attempts_default_to_one_and_clamp_to_the_retry_envelope() {
+        let env = |value: Option<&str>| {
+            let value = value.map(str::to_string);
+            move |key: &str| {
+                assert_eq!(key, RESERVE_ATTEMPTS_ENV);
+                value.clone()
+            }
+        };
+        assert_eq!(DEFAULT_RESERVED_ATTEMPTS, 1);
+        assert_eq!(reserved_physical_attempts_with(5, env(None)), 1);
+        assert_eq!(reserved_physical_attempts_with(5, env(Some("3"))), 3);
+        assert_eq!(reserved_physical_attempts_with(5, env(Some(" 5 "))), 5);
+        // Above the envelope: clamped down, never over-reserved again.
+        assert_eq!(reserved_physical_attempts_with(5, env(Some("9"))), 5);
+        // Meaningless values fall back to the default rather than to zero.
+        assert_eq!(reserved_physical_attempts_with(5, env(Some("0"))), 1);
+        assert_eq!(reserved_physical_attempts_with(5, env(Some("many"))), 1);
+        assert_eq!(reserved_physical_attempts_with(5, env(Some(""))), 1);
+        // A zero envelope stays zero so `plan_reservation_bound` still fails
+        // closed instead of this function inventing an attempt.
+        assert_eq!(reserved_physical_attempts_with(0, env(Some("4"))), 0);
+        assert_eq!(
+            plan_reservation_bound(
+                "zai",
+                "glm-4.7",
+                CostTier::PaidApi,
+                &config(Some(204_800), Some(131_072)),
+                reserved_physical_attempts_with(0, env(None)),
+            ),
+            Err(ReservationBoundError::InvalidAttempts)
         );
     }
 
