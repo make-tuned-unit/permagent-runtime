@@ -3368,8 +3368,9 @@ pub(crate) async fn dispatch_goal_fn(
     };
 
     // Register the worker handles: kill for the cancel path (#490), steer for
-    // mid-run correction (claude workers only).
-    register_goal_worker(card_id, kill, steer);
+    // mid-run correction (claude workers only), and the worker's own session
+    // id so liveness can be answered from either key (Y4b).
+    register_goal_worker(card_id, &session_id, kill, steer);
 
     // Spawn completion tracker — awaits the engine's outcome and transitions
     // the card. Success / retriable failure route to handle_goal_completion;
@@ -5018,16 +5019,27 @@ impl OrchestratorClient {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // Check if worker session is alive for last_activity
-        let session_alive = if let Some(sid) = worker_session_id {
-            if let Ok(manager) = self.get_agent_manager().await {
-                manager.is_session_busy(sid).await
-            } else {
-                false
-            }
-        } else {
-            false
-        };
+        // Check if worker session is alive for last_activity.
+        //
+        // Y4b (harness loop, 2026-09-10, from Lane A12's M12 forensics): ask
+        // the registry goal workers are ACTUALLY in first. This used to be
+        // `AgentManager::is_session_busy` alone, which is
+        // `cancel_tokens.contains_key(session_id)` — a registry a dispatched
+        // goal worker never enters, so this reported `session_alive:false` for
+        // every live worker in the M12 slice and four of its five real
+        // failures are coordinators that believed the worker had died and
+        // spent the rest of the run on refused edits or an unanswerable
+        // escalation. `is_session_busy` is kept as the fallback: it is still
+        // the right answer for a plain `start_agent` session that has a
+        // provider call in flight but is no goal's dispatched worker.
+        let session_alive = goal_worker_is_live(&card_id)
+            || match worker_session_id {
+                Some(sid) => match self.get_agent_manager().await {
+                    Ok(manager) => manager.is_session_busy(sid).await,
+                    Err(_) => false,
+                },
+                None => false,
+            };
 
         // R3 (harness loop, Lane D1, from Lane F8 forensics 2026-09-10): fx04
         // stalled on `escalate{"Worker died mid-task - how should I proceed
@@ -5073,8 +5085,13 @@ impl OrchestratorClient {
         // (2) the goal's own `execution_receipt` must not independently
         // report a live attempt (`goal_transition::execution_receipt_is_live`,
         // the same rebind-vs-stale semantics restart recovery already
-        // trusts); (3) `!session_alive` above already covers "no provider
-        // call in flight" — `AgentManager::is_session_busy` IS that signal;
+        // trusts); (3) `!session_alive` above already covers "no worker
+        // running" — since Y4b that reads the GOAL_WORKERS registry first
+        // (`AgentManager::is_session_busy` is only its fallback), so this
+        // auto-requeue is no longer armed on a permanently-true condition:
+        // A12 measured `session_alive` as structurally `false` for EVERY
+        // dispatched goal worker, which is exactly the state this clause
+        // was meant to exclude;
         // (4) the abandoned session's own worktree is inspected for commits
         // beyond its recorded baseline before ever redispatching over it
         // (F1c) — work found there routes to review instead, never lost.
@@ -5994,10 +6011,28 @@ impl OrchestratorClient {
 
         let manager = self.get_agent_manager().await?;
 
-        manager
-            .cancel_session(&session_id)
-            .await
-            .map_err(|e| format!("Failed to interrupt session '{}': {}", session_id, e))?;
+        manager.cancel_session(&session_id).await.map_err(|e| {
+            // Y4b (harness loop, 2026-09-10, from Lane A12's M12 forensics):
+            // `cancel_session` only knows `AgentManager`'s `cancel_tokens`, so
+            // for a DISPATCHED GOAL WORKER it always failed with "No active
+            // operation for session '<id>'" — which the coordinator then read
+            // as proof the worker had died (fx04 msg 15, fx05 msg 33, each
+            // followed by refused direct edits). Consult the same registry
+            // `goal_status.session_alive` now uses and say what is true. The
+            // worker is deliberately NOT killed here: interrupting a goal's
+            // worker is the goal-cancel path's job, which also transitions the
+            // card, and A12's coordinators were reaching for this tool on a
+            // false premise in the first place.
+            match live_goal_worker_card_for_session(&session_id) {
+                Some(card_id) => format!(
+                    "Session '{session_id}' is a live worker dispatched for goal '{card_id}' — \
+                     it is running, not stuck, and interrupt_agent does not control it. Use \
+                     goal_status to see its progress, steer_goal to redirect it, or cancel the \
+                     goal itself to stop it."
+                ),
+                None => format!("Failed to interrupt session '{session_id}': {e}"),
+            }
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Interrupted agent session '{}'.",
@@ -7950,6 +7985,11 @@ static GOAL_WORKERS: once_cell::sync::Lazy<Mutex<HashMap<String, LiveWorker>>> =
 /// A dispatched goal's live control surface: the kill handle (#490) plus, for
 /// steerable engines, the mid-run steering handle (hardening pass 2026-08-10).
 pub struct LiveWorker {
+    /// The worker's own session id (the engine's `run_id`). Y4b: the registry
+    /// is keyed by CARD id, so without this a caller holding only a session id
+    /// — `interrupt_agent`, say — cannot tell a live goal worker from a dead
+    /// one at all.
+    pub session_id: String,
     pub kill: goal_engine::GoalKill,
     pub steer: Option<std::sync::Arc<goal_engine::SteerHandle>>,
 }
@@ -7957,12 +7997,56 @@ pub struct LiveWorker {
 /// Record the control handles for a freshly-dispatched goal's worker.
 pub fn register_goal_worker(
     card_id: &str,
+    session_id: &str,
     kill: goal_engine::GoalKill,
     steer: Option<std::sync::Arc<goal_engine::SteerHandle>>,
 ) {
     if let Ok(mut map) = GOAL_WORKERS.lock() {
-        map.insert(card_id.to_string(), LiveWorker { kill, steer });
+        map.insert(
+            card_id.to_string(),
+            LiveWorker {
+                session_id: session_id.to_string(),
+                kill,
+                steer,
+            },
+        );
     }
+}
+
+/// Is a worker currently dispatched and running for this goal?
+///
+/// Y4b (harness loop, 2026-09-10, from Lane A12's M12 forensics): this is the
+/// registry that actually tracks goal workers. `AgentManager::is_session_busy`
+/// tracks a DIFFERENT registry (its `cancel_tokens`), which a dispatched goal
+/// worker never enters — so `goal_status.session_alive` was structurally
+/// `false` for every live worker in the slice, and four of the five real
+/// failures (fx04/05/09/10) are coordinators concluding "the worker died"
+/// while it was demonstrably working (fx09 read `session_alive:false` at
+/// 21:22:2x; that same worker committed `5f38917` at 21:23:35).
+///
+/// The entry's lifetime is exactly the worker's: inserted by
+/// `register_goal_worker` immediately after `engine.spawn`, removed by the
+/// completion tracker the moment the engine's outcome arrives (and by any
+/// cancel/park that takes the kill handle first). It is process-global, so —
+/// like every other reader of this registry — it answers only for workers
+/// dispatched by THIS process; a caller that needs cross-process liveness must
+/// still consult the goal's `execution_receipt`, which R3 already does
+/// alongside this signal.
+pub fn goal_worker_is_live(card_id: &str) -> bool {
+    GOAL_WORKERS
+        .lock()
+        .is_ok_and(|map| map.contains_key(card_id))
+}
+
+/// The goal card a live worker session belongs to, if that session is one of
+/// this process's dispatched goal workers. Y4b: the session-id-keyed view of
+/// [`goal_worker_is_live`], for callers that only have a session id.
+pub fn live_goal_worker_card_for_session(session_id: &str) -> Option<String> {
+    GOAL_WORKERS.lock().ok().and_then(|map| {
+        map.iter()
+            .find(|(_, worker)| worker.session_id == session_id)
+            .map(|(card_id, _)| card_id.clone())
+    })
 }
 
 /// Remove and return a goal's worker kill handle, if one is registered.
@@ -21273,6 +21357,86 @@ mod tests {
                 .and_then(|v| v.as_u64()),
             Some(1),
             "retry_count must stay at 1 — no second auto-retry"
+        );
+    }
+
+    /// Y4b pin (harness loop, 2026-09-10, from Lane A12's M12 forensics): a
+    /// goal whose worker is registered in `GOAL_WORKERS` — i.e. every goal
+    /// with a live dispatched worker — must report `session_alive: true`, and
+    /// R3 must therefore leave it alone.
+    ///
+    /// The card here is byte-for-byte the shape
+    /// `goal_status_requeues_and_stamps_retry_count_on_a_first_silent_worker_death`
+    /// uses (in_progress, no error, no retry yet, internal engine, well past
+    /// the grace period); the ONLY difference is that a worker is registered
+    /// for it. Pre-Y4b `session_alive` was `manager.is_session_busy(sid)` over
+    /// `AgentManager`'s `cancel_tokens`, a registry a dispatched goal worker
+    /// never enters, so this test fails twice against the old code: it reports
+    /// `false` and R3 requeues a live worker (A12 measured exactly this in
+    /// fx04/05/09/10 — fx09's coordinator read `session_alive:false` at
+    /// 21:22:2x and that same worker committed `5f38917` at 21:23:35).
+    #[tokio::test]
+    async fn goal_status_reports_a_registered_goal_worker_as_alive_and_leaves_it_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = dead_silent_worker_goal(&pool, &sm, None, 200).await;
+        let worker_session_id = card
+            .metadata_json
+            .get("worker_session_id")
+            .and_then(|v| v.as_str())
+            .expect("fixture stamps a worker session id")
+            .to_string();
+
+        // The one difference from the R3 fixture: this worker is alive, in the
+        // registry dispatch actually puts it in.
+        register_goal_worker(
+            &card.id,
+            &worker_session_id,
+            goal_engine::GoalKill::None,
+            None,
+        );
+        assert!(goal_worker_is_live(&card.id));
+        assert_eq!(
+            live_goal_worker_card_for_session(&worker_session_id),
+            Some(card.id.clone()),
+            "interrupt_agent must be able to reach the same answer from a session id"
+        );
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        let result = client
+            .handle_goal_status(Some(args))
+            .await
+            .expect("goal_status must report a live worker normally");
+        let text = result.content[0].as_text().unwrap().text.clone();
+        // GOAL_WORKERS is process-global; drop this test's entry before any
+        // assertion can unwind past it.
+        take_goal_worker(&card.id);
+        assert!(
+            live_goal_worker_card_for_session(&worker_session_id).is_none(),
+            "a worker whose handle has been taken is no longer live"
+        );
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).expect("the normal path returns the status JSON");
+        assert_eq!(
+            parsed.get("session_alive").and_then(|v| v.as_bool()),
+            Some(true),
+            "a registered goal worker is alive: {text}"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert!(
+            updated.metadata_json.get("retry_count").is_none(),
+            "R3's auto-requeue must never fire on a live worker: {:?}",
+            updated.metadata_json
         );
     }
 
