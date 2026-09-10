@@ -1692,7 +1692,8 @@ const NO_ROADMAP_INJECT_OPENING: &str = "You ended the turn without a roadmap.";
 /// (fx02: *"Say the word and I'll create and dispatch this immediately"*) and
 /// a question to the user (fx06, after `CodingDagInspector` denied its
 /// `shell` call).
-const NO_ROADMAP_INJECT_TEXT: &str = "You ended the turn without a roadmap. Call `decompose_roadmap` \
+const NO_ROADMAP_INJECT_TEXT: &str =
+    "You ended the turn without a roadmap. Call `decompose_roadmap` \
      now with the concrete nodes for this task. Do not ask the user, and do not describe a plan in \
      prose: a proposed roadmap in a message, a question, or an offer to act \"once confirmed\" is \
      not an exit from this turn. In unattended mode the operator's launch is already the approval. \
@@ -1750,9 +1751,11 @@ impl NoRoadmapGuard {
         pool: &sqlx::Pool<sqlx::Sqlite>,
         session_id: &str,
     ) -> Result<bool, String> {
-        Ok(!crate::cards::goal_cards_created_by_session(pool, session_id)
-            .await?
-            .is_empty())
+        Ok(
+            !crate::cards::goal_cards_created_by_session(pool, session_id)
+                .await?
+                .is_empty(),
+        )
     }
 
     /// True when this hook's own nudge is already in the conversation. One
@@ -4009,7 +4012,10 @@ mod tests {
             Some(crate::tool_inspection::CODING_HARNESS_RECIPE_TITLE),
             Some("parent-session-1"),
         );
-        assert!(!is_coordinator, "a session with a parent is not the coordinator");
+        assert!(
+            !is_coordinator,
+            "a session with a parent is not the coordinator"
+        );
         assert_eq!(
             NoRoadmapGuard::decide(is_coordinator, false, false, false, false, 0),
             AfterTurnAction::Allow
@@ -4076,7 +4082,9 @@ mod tests {
         let pool = roadmap_guard_test_pool().await;
         let session_id = format!("y5-cards-{}", uuid::Uuid::now_v7());
         assert!(
-            !NoRoadmapGuard::has_roadmap_cards(&pool, &session_id).await.unwrap(),
+            !NoRoadmapGuard::has_roadmap_cards(&pool, &session_id)
+                .await
+                .unwrap(),
             "a session that never called create_roadmap owns no cards"
         );
 
@@ -4089,7 +4097,9 @@ mod tests {
             None,
         )
         .await;
-        assert!(NoRoadmapGuard::has_roadmap_cards(&pool, &session_id).await.unwrap());
+        assert!(NoRoadmapGuard::has_roadmap_cards(&pool, &session_id)
+            .await
+            .unwrap());
         assert_eq!(
             NoRoadmapGuard::decide(true, true, false, false, false, 0),
             AfterTurnAction::Allow,
