@@ -1989,6 +1989,7 @@ impl Agent {
                 // independent of mutable session settings so a provider switch
                 // on a later turn cannot rewrite this call's attribution.
                 let turn_provider = self.provider().await?;
+                let turn_model_name = turn_provider.get_model_config().model_name;
                 // I1 (harness loop, 2026-09-10): reuse a still-pending,
                 // TTL-valid reservation grant from a prior headless gate
                 // auto-answer for THIS session, if one exists, instead of
@@ -1996,9 +1997,19 @@ impl Agent {
                 // `reusable_gate_grant_invocation_id`'s own doc comment for
                 // why a fresh id every call meant such a grant could never
                 // be consumed (F10's forensics).
+                //
+                // F3 (harness loop, Round F, from Lane G9's HIGH finding):
+                // `turn_provider`/`turn_model_name` are threaded in here so
+                // a grant is only ever reused when it was minted for THIS
+                // exact provider/model — a provider/role switch on a later
+                // turn (this codebase's own routing/role-pin machinery does
+                // this) now falls through to a fresh gate evaluation instead
+                // of silently reusing a different provider's dollar bound.
                 let invocation_id = match crate::agents::reply_parts::reusable_gate_grant_invocation_id(
                     &self.config.session_manager,
                     &session.id,
+                    turn_provider.get_name(),
+                    &turn_model_name,
                 )
                 .await
                 {
@@ -2020,6 +2031,8 @@ impl Agent {
                                 &session,
                                 &invocation_id,
                                 &failure,
+                                turn_provider.get_name(),
+                                &turn_model_name,
                             )
                             .await;
                         let message = Message::assistant().with_text(format!(

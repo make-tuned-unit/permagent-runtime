@@ -814,6 +814,13 @@ impl SessionManager {
     /// left untouched and its outcome reported back unchanged (mirrors
     /// `reserve_provider_invocation`'s own `AlreadyReserved`/`AlreadySettled`
     /// handling), never double-inserted.
+    ///
+    /// F3 (harness loop, Round F, from Lane G9's HIGH finding): `provider`
+    /// and `model` name the exact call this grant authorizes and are stored
+    /// on the row so a later reuse attempt (`find_pending_gate_grant`/
+    /// `consume_granted_reservation`) can require an exact match before
+    /// treating it as reusable.
+    #[allow(clippy::too_many_arguments)]
     pub async fn grant_reservation_after_gate_approval(
         &self,
         invocation_id: &str,
@@ -821,6 +828,8 @@ impl SessionManager {
         task_id: &str,
         amount_usd: f64,
         lease_until: &str,
+        provider: &str,
+        model: &str,
     ) -> Result<CostReservationOutcome> {
         self.storage
             .grant_reservation_after_gate_approval(
@@ -829,6 +838,8 @@ impl SessionManager {
                 task_id,
                 amount_usd,
                 lease_until,
+                provider,
+                model,
             )
             .await
     }
@@ -871,21 +882,50 @@ impl SessionManager {
     /// released in the same call so it stops counting toward budget for a
     /// retry that never came, rather than holding it open until its full
     /// (2-hour) `lease_until`.
+    ///
+    /// F3 (harness loop, Round F, from Lane G9's HIGH and MEDIUM findings):
+    /// `provider`/`model` must exactly match the row's own stored identity
+    /// (`Ok(None)` on any mismatch, same as a wrong-session or expired
+    /// grant — never touched, never reported) — a grant only authorizes the
+    /// call it was minted for, not whatever provider/model the CURRENT call
+    /// happens to be using (H1). A grant already consumed once
+    /// (`reuse_count > 0`) is likewise refused a second time (M1): it
+    /// authorizes exactly one retry of the specific call that got gated,
+    /// not every later call in the session while the row is still
+    /// `pending`.
+    ///
+    /// F3b (from Lane G10's MEDIUM finding): the TTL-staleness check runs
+    /// BEFORE the `reuse_count` refusal, so an already-consumed grant that
+    /// is also past `consume_ttl_secs` is released (and reported as
+    /// `Ok(None)`) rather than refused-but-left-`pending` — a consumed
+    /// grant keeps the same fast 120s self-release as an unconsumed one,
+    /// instead of waiting on the ~8h lease-expiry sweep while it counts
+    /// toward held budget.
+    #[allow(clippy::too_many_arguments)]
     pub async fn consume_granted_reservation(
         &self,
         invocation_id: &str,
         session_id: &str,
+        provider: &str,
+        model: &str,
         consume_ttl_secs: i64,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<CostReservationOutcome>> {
         self.storage
-            .consume_granted_reservation(invocation_id, session_id, consume_ttl_secs, now)
+            .consume_granted_reservation(
+                invocation_id,
+                session_id,
+                provider,
+                model,
+                consume_ttl_secs,
+                now,
+            )
             .await
     }
 
     /// The `invocation_id` of this session's most recent still-`pending`
     /// reservation minted by [`SessionManager::grant_reservation_after_gate_approval`]
-    /// (`granted_via_gate = 1`), if any.
+    /// (`granted_via_gate = 1`) FOR THIS EXACT `provider`/`model`, if any.
     ///
     /// I1 (harness loop, 2026-09-10, wiring F1b's grant-consumption
     /// primitive into the live turn loop, from F10's forensics): a caller
@@ -896,8 +936,22 @@ impl SessionManager {
     /// auto-answered for. Deliberately does not itself validate/consume the
     /// grant (no TTL check, no state mutation) — pair with
     /// [`SessionManager::consume_granted_reservation`] before trusting it.
-    pub async fn find_pending_gate_grant(&self, session_id: &str) -> Result<Option<String>> {
-        self.storage.find_pending_gate_grant(session_id).await
+    ///
+    /// F3 (harness loop, Round F, from Lane G9's HIGH finding): `provider`/
+    /// `model` are now a hard SQL filter, not merely a caller convention —
+    /// a grant minted for a different provider/model is invisible to this
+    /// lookup, so a provider switch between the gated call and the retry
+    /// mints a fresh invocation_id and re-asks the gate instead of silently
+    /// reusing the OLD call's dollar bound.
+    pub async fn find_pending_gate_grant(
+        &self,
+        session_id: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<Option<String>> {
+        self.storage
+            .find_pending_gate_grant(session_id, provider, model)
+            .await
     }
 
     /// Settle a reservation and append its provider usage in one transaction.
@@ -1807,6 +1861,14 @@ impl SessionStorage {
                     // PRAGMA-guarded ADD COLUMN, additive and base-independent.
                     if version < 54 {
                         spectral_schema::migrate_v53_to_v54(&self.pool).await?;
+                    }
+                    // v55: cost_reservations.provider/.model/.reuse_count/
+                    // .reused_by_invocation_id (harness loop, Round F, Lane
+                    // F3, from Lane G9's HIGH/MEDIUM gate-grant-reuse
+                    // findings). PRAGMA-guarded ADD COLUMNs, additive and
+                    // base-independent.
+                    if version < 55 {
+                        spectral_schema::migrate_v54_to_v55(&self.pool).await?;
                     }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
@@ -2883,6 +2945,7 @@ impl SessionStorage {
     }
 
     /// See [`SessionManager::grant_reservation_after_gate_approval`].
+    #[allow(clippy::too_many_arguments)]
     async fn grant_reservation_after_gate_approval(
         &self,
         invocation_id: &str,
@@ -2890,6 +2953,8 @@ impl SessionStorage {
         task_id: &str,
         amount_usd: f64,
         lease_until: &str,
+        provider: &str,
+        model: &str,
     ) -> Result<CostReservationOutcome> {
         if invocation_id.trim().is_empty() {
             return Err(anyhow::anyhow!("provider invocation id must not be empty"));
@@ -2969,8 +3034,9 @@ impl SessionStorage {
         sqlx::query(
             "INSERT INTO cost_reservations
                 (reservation_id, invocation_id, session_id, task_id, amount_usd,
-                 state, lease_until, created_at, updated_at, granted_via_gate)
-             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 1)",
+                 state, lease_until, created_at, updated_at, granted_via_gate,
+                 provider, model)
+             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 1, ?, ?)",
         )
         .bind(&reservation_id)
         .bind(invocation_id)
@@ -2980,6 +3046,8 @@ impl SessionStorage {
         .bind(&lease_until)
         .bind(&now)
         .bind(&now)
+        .bind(provider)
+        .bind(model)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -2987,24 +3055,45 @@ impl SessionStorage {
     }
 
     /// See [`SessionManager::consume_granted_reservation`].
+    #[allow(clippy::too_many_arguments)]
     async fn consume_granted_reservation(
         &self,
         invocation_id: &str,
         session_id: &str,
+        provider: &str,
+        model: &str,
         consume_ttl_secs: i64,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<CostReservationOutcome>> {
         let pool = self.pool().await?;
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
-        let Some((reservation_id, existing_session, state, created_at)) =
-            sqlx::query_as::<_, (String, String, String, String)>(
-                "SELECT reservation_id, session_id, state, created_at
-                 FROM cost_reservations WHERE invocation_id = ?",
-            )
-            .bind(invocation_id)
-            .fetch_optional(&mut *tx)
-            .await?
+        let Some((
+            reservation_id,
+            existing_session,
+            existing_provider,
+            existing_model,
+            state,
+            created_at,
+            reuse_count,
+        )) = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                String,
+                String,
+                i64,
+            ),
+        >(
+            "SELECT reservation_id, session_id, provider, model, state, created_at, reuse_count
+             FROM cost_reservations WHERE invocation_id = ?",
+        )
+        .bind(invocation_id)
+        .fetch_optional(&mut *tx)
+        .await?
         else {
             // Nothing was ever granted under this invocation_id — the
             // caller falls through to raising a fresh gate decision.
@@ -3016,6 +3105,20 @@ impl SessionStorage {
             // F1b pin: a grant belongs to the session whose failed call it
             // authorized. A different session retrying (or any other
             // session) can never consume it — never touched, never reported.
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        // F3 (H1, harness loop, Round F, from Lane G9's HIGH finding): a
+        // grant only authorizes the exact provider/model of the call it was
+        // minted for. A mismatch here is simply "not reusable" — fall
+        // through exactly like a wrong-session grant, never touching the
+        // row, so the caller mints a fresh invocation_id and re-asks the
+        // gate instead of silently reusing the OLD call's dollar bound
+        // under a NEW provider/model.
+        if existing_provider.as_deref() != Some(provider)
+            || existing_model.as_deref() != Some(model)
+        {
             tx.commit().await?;
             return Ok(None);
         }
@@ -3041,6 +3144,49 @@ impl SessionStorage {
             return Ok(None);
         }
 
+        // F3 (M1, harness loop, Round F, from Lane G9's MEDIUM finding): a
+        // grant is consumable exactly once — the retry of the specific call
+        // that got gated, not every later call in the session while the row
+        // happens to still be `pending`. Refused the same way a wrong-
+        // session or mismatched-provider grant already is: never touched,
+        // never reported, caller falls through to a fresh gate decision.
+        //
+        // F3b (from Lane G10's MEDIUM finding): this refusal runs AFTER the
+        // TTL-staleness branch above, never before it. Ordered the other
+        // way, a grant consumed once could never take the fast 120s
+        // self-release path again — it would short-circuit here on every
+        // later call and only die via the ~8h lease-expiry + reconcile
+        // sweep, inflating `task_held`/`session_held` the whole time. A
+        // stale grant is released first; only a grant still WITHIN its TTL
+        // is refused-but-left-`pending` for the real in-flight call to
+        // settle.
+        if state == "pending" && reuse_count > 0 {
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        if state == "pending" {
+            // F3 (M1): mark this grant consumed so a later call sharing the
+            // same session/provider/model (e.g. a concurrent background
+            // call, or a later turn that finds the row still `pending`
+            // because it has not settled yet) cannot reuse it a second
+            // time — see the `reuse_count > 0` guard above.
+            // `reused_by_invocation_id` is recorded explicitly rather than
+            // assumed equal to this row's own `invocation_id`, even though
+            // today it always is (the design reuses the SAME id for the
+            // retry).
+            sqlx::query(
+                "UPDATE cost_reservations SET reuse_count = reuse_count + 1,
+                 reused_by_invocation_id = ?, updated_at = ?
+                 WHERE reservation_id = ?",
+            )
+            .bind(invocation_id)
+            .bind(now.to_rfc3339())
+            .bind(&reservation_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
         tx.commit().await?;
         Ok(match state.as_str() {
             "pending" => Some(CostReservationOutcome::AlreadyReserved { reservation_id }),
@@ -3064,14 +3210,22 @@ impl SessionStorage {
     }
 
     /// See [`SessionManager::find_pending_gate_grant`].
-    async fn find_pending_gate_grant(&self, session_id: &str) -> Result<Option<String>> {
+    async fn find_pending_gate_grant(
+        &self,
+        session_id: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<Option<String>> {
         let pool = self.pool().await?;
         let invocation_id: Option<String> = sqlx::query_scalar(
             "SELECT invocation_id FROM cost_reservations
              WHERE session_id = ? AND state = 'pending' AND granted_via_gate = 1
+               AND provider = ? AND model = ?
              ORDER BY created_at DESC LIMIT 1",
         )
         .bind(session_id)
+        .bind(provider)
+        .bind(model)
         .fetch_optional(pool)
         .await?;
         Ok(invocation_id)
@@ -5889,13 +6043,22 @@ mod tests {
                 &task_id,
                 0.30,
                 "2099-01-01T00:00:00Z",
+                "zai",
+                "glm-4.7",
             )
             .await
             .unwrap();
         assert!(matches!(granted, CostReservationOutcome::Granted { .. }));
 
         let consumed = sm
-            .consume_granted_reservation("invocation-1", &session.id, 120, chrono::Utc::now())
+            .consume_granted_reservation(
+                "invocation-1",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
             .await
             .unwrap();
         assert!(
@@ -5939,12 +6102,21 @@ mod tests {
             &task_id,
             0.30,
             "2099-01-01T00:00:00Z",
+            "zai",
+            "glm-4.7",
         )
         .await
         .unwrap();
 
         let consumed = sm
-            .consume_granted_reservation("invocation-2", &other_session.id, 120, chrono::Utc::now())
+            .consume_granted_reservation(
+                "invocation-2",
+                &other_session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -5958,6 +6130,8 @@ mod tests {
             .consume_granted_reservation(
                 "invocation-2",
                 &granting_session.id,
+                "zai",
+                "glm-4.7",
                 120,
                 chrono::Utc::now(),
             )
@@ -5996,6 +6170,8 @@ mod tests {
                 &task_id,
                 0.30,
                 "2099-01-01T00:00:00Z",
+                "zai",
+                "glm-4.7",
             )
             .await
             .unwrap();
@@ -6007,7 +6183,14 @@ mod tests {
         // 200s after the grant, well past the 120s TTL.
         let past_ttl = chrono::Utc::now() + chrono::Duration::seconds(200);
         let consumed = sm
-            .consume_granted_reservation("invocation-3", &session.id, 120, past_ttl)
+            .consume_granted_reservation(
+                "invocation-3",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                past_ttl,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -6032,10 +6215,293 @@ mod tests {
         // gate hit is a genuinely fresh decision, not a replay of the stale
         // grant.
         let consumed_again = sm
-            .consume_granted_reservation("invocation-3", &session.id, 120, past_ttl)
+            .consume_granted_reservation(
+                "invocation-3",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                past_ttl,
+            )
             .await
             .unwrap();
         assert_eq!(consumed_again, None);
+    }
+
+    /// H1 pin (harness loop, Round F, Lane F3, from Lane G9's HIGH finding):
+    /// a grant minted for one provider/model is invisible to
+    /// `find_pending_gate_grant` for a different provider/model — the
+    /// coordinator/routing machinery's own provider switch between the
+    /// gated call and the retry must never silently reuse the OLD call's
+    /// dollar bound under the NEW provider. The SAME provider/model still
+    /// finds and consumes it normally.
+    #[tokio::test]
+    async fn find_pending_gate_grant_requires_an_exact_provider_model_match() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "grant-provider-mismatch".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+
+        sm.grant_reservation_after_gate_approval(
+            "invocation-4",
+            &session.id,
+            &task_id,
+            0.30,
+            "2099-01-01T00:00:00Z",
+            "zai",
+            "glm-4.7",
+        )
+        .await
+        .unwrap();
+
+        // A different provider (or model) on the next call finds nothing —
+        // this is the "provider switched mid-session" scenario.
+        let mismatched_provider = sm
+            .find_pending_gate_grant(&session.id, "anthropic", "glm-4.7")
+            .await
+            .unwrap();
+        assert_eq!(
+            mismatched_provider, None,
+            "a grant minted for zai/glm-4.7 must not be reusable by a different provider"
+        );
+        let mismatched_model = sm
+            .find_pending_gate_grant(&session.id, "zai", "glm-5.3")
+            .await
+            .unwrap();
+        assert_eq!(
+            mismatched_model, None,
+            "a grant minted for zai/glm-4.7 must not be reusable by a different model"
+        );
+        let mismatched_consume = sm
+            .consume_granted_reservation(
+                "invocation-4",
+                &session.id,
+                "anthropic",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            mismatched_consume, None,
+            "consume must also refuse a provider/model mismatch, defense-in-depth with lookup"
+        );
+
+        // The SAME provider/model still finds and consumes it.
+        let matched = sm
+            .find_pending_gate_grant(&session.id, "zai", "glm-4.7")
+            .await
+            .unwrap();
+        assert_eq!(matched, Some("invocation-4".to_string()));
+        let consumed = sm
+            .consume_granted_reservation(
+                "invocation-4",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                consumed,
+                Some(CostReservationOutcome::AlreadyReserved { .. })
+            ),
+            "the exact same provider/model must still be able to reuse the grant: {consumed:?}"
+        );
+    }
+
+    /// M1 pin (harness loop, Round F, Lane F3, from Lane G9's MEDIUM
+    /// finding): a grant authorizes exactly ONE retry of the specific call
+    /// that got gated. A second attempt to consume the SAME grant — even
+    /// from the same session, same provider/model, well within the TTL —
+    /// must be refused, not silently handed out again.
+    #[tokio::test]
+    async fn consume_granted_reservation_refuses_a_second_reuse_of_the_same_grant() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "grant-reuse-once".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+
+        sm.grant_reservation_after_gate_approval(
+            "invocation-5",
+            &session.id,
+            &task_id,
+            0.30,
+            "2099-01-01T00:00:00Z",
+            "zai",
+            "glm-4.7",
+        )
+        .await
+        .unwrap();
+
+        let first = sm
+            .consume_granted_reservation(
+                "invocation-5",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(first, Some(CostReservationOutcome::AlreadyReserved { .. })),
+            "the first consume must succeed: {first:?}"
+        );
+
+        let second = sm
+            .consume_granted_reservation(
+                "invocation-5",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            second, None,
+            "a second attempt to reuse the same grant must be refused"
+        );
+
+        let pool = sm.pool_clone().await.unwrap();
+        let (reuse_count, reused_by): (i64, Option<String>) = sqlx::query_as(
+            "SELECT reuse_count, reused_by_invocation_id FROM cost_reservations
+             WHERE invocation_id = 'invocation-5'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            reuse_count, 1,
+            "reuse_count must record exactly one consumption"
+        );
+        assert_eq!(reused_by.as_deref(), Some("invocation-5"));
+
+        // The underlying reservation itself is untouched by the refused
+        // second attempt — still pending, not released or corrupted.
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'invocation-5'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "pending");
+    }
+
+    /// F3b pin (harness loop, from Lane G10's MEDIUM finding): the TTL
+    /// self-release must still apply to a grant that was already consumed
+    /// once. A grant with `reuse_count > 0` that is ALSO past its TTL is
+    /// released (and reported as `None`), not refused-but-left-`pending` —
+    /// otherwise the fast 120s recovery path could only ever fire on a
+    /// grant's first consume attempt, and an abandoned consumed grant would
+    /// keep counting toward held budget until the ~8h lease-expiry sweep.
+    #[tokio::test]
+    async fn consume_granted_reservation_releases_a_consumed_grant_past_ttl() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "grant-reuse-then-expire".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+
+        sm.grant_reservation_after_gate_approval(
+            "invocation-6",
+            &session.id,
+            &task_id,
+            0.30,
+            "2099-01-01T00:00:00Z",
+            "zai",
+            "glm-4.7",
+        )
+        .await
+        .unwrap();
+
+        let first = sm
+            .consume_granted_reservation(
+                "invocation-6",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(first, Some(CostReservationOutcome::AlreadyReserved { .. })),
+            "the first consume must succeed: {first:?}"
+        );
+
+        // 200s after the grant, well past the 120s TTL: the retry that
+        // consumed it never settled and never released the row.
+        let past_ttl = chrono::Utc::now() + chrono::Duration::seconds(200);
+        let stale = sm
+            .consume_granted_reservation(
+                "invocation-6",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                past_ttl,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stale, None,
+            "an already-consumed grant past its TTL must report nothing to consume"
+        );
+
+        let pool = sm.pool_clone().await.unwrap();
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'invocation-6'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            state, "released",
+            "the TTL check must run before the reuse refusal, so a stale consumed grant \
+             releases its hold instead of sitting pending until the lease-expiry sweep"
+        );
+
+        // The refusal never double-counts: the row records the single
+        // consumption it actually had.
+        let reuse_count: i64 = sqlx::query_scalar(
+            "SELECT reuse_count FROM cost_reservations WHERE invocation_id = 'invocation-6'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(reuse_count, 1);
     }
 
     #[tokio::test]
