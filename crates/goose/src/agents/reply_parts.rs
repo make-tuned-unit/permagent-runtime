@@ -18,7 +18,8 @@ use crate::cost_router::cache::SystemPromptParts;
 use crate::providers::base::stream_from_single_message;
 use crate::providers::base::{MessageStream, Provider, ProviderUsage};
 use crate::providers::canonical::{
-    cache_hit_rate_of, cache_savings_of, cost_breakdown, maybe_get_pricing, worst_case_pricing,
+    cache_hit_rate_of, cache_savings_of, canonical_name, cost_breakdown, maybe_get_pricing,
+    worst_case_pricing,
 };
 use crate::providers::errors::ProviderError;
 use crate::providers::toolshim::{
@@ -1504,6 +1505,28 @@ pub(crate) async fn reserve_provider_invocation_for_model(
     let Some(bound) = bound else {
         return Ok(context);
     };
+    // F2 (harness loop, Round F, from the I1/M11 forensics chain): F8, D1
+    // and I1 each spent real time and money trying to explain a flat
+    // $1.662976 bound on every zai/glm-4.7 reservation, because nothing
+    // recorded which pricing source produced it — `cost_reservations` has no
+    // provider/model/source columns, so a lane could only re-derive the
+    // arithmetic by hand from raw DB rows (see this lane's own report,
+    // `HARNESS_LOOP_LOG.md` `## Lane F2`: it was `CanonicalExact` pricing ×
+    // 5 physical attempts the whole time, never `WorstCase`). This line is
+    // the fix for THAT gap: every reservation now names its own live
+    // provider/model, canonical mapping, dollar bound and pricing source at
+    // the moment it is computed, so the next lane can `grep` the log instead
+    // of reconstructing it from a database.
+    tracing::info!(
+        target: "permagent::cost_router::reservation",
+        provider = %context.provider,
+        model = %context.model,
+        canonical = %canonical_name(&context.provider, &context.model),
+        bound_usd = bound.amount_usd,
+        pricing_source = crate::cost_router::describe_pricing_source(bound.pricing_provenance),
+        max_physical_attempts = bound.max_physical_attempts,
+        "reservation bound computed"
+    );
     let task_id = budget_task_id(&session.extension_data);
     let lease_until = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
     let outcome = manager

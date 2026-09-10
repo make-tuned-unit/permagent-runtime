@@ -37,6 +37,27 @@ pub enum PricingProvenance {
     WorstCase,
 }
 
+/// F2 (harness loop, Round F, from the I1/M11 forensics chain): a short,
+/// stable, log-friendly name for a [`PricingProvenance`] variant. Three
+/// straight lanes (F8, D1's own isolated tests, I1) chased a "flat $1.66
+/// worst-case bound" on every `zai`/`glm-4.7` reservation without ever being
+/// able to see, from the receipt alone, which of these three sources actually
+/// produced it — `cost_reservations` has no `provider`/`model`/pricing-source
+/// columns at all, so the only way to check was re-deriving the math by hand
+/// against the live `sessions`/`cost_ledger` rows (see this lane's own report
+/// in `HARNESS_LOOP_LOG.md`, `## Lane F2`, for the bit-exact reproduction:
+/// the constant is `CanonicalExact` pricing × 5 physical attempts, NOT
+/// `WorstCase`). This function exists purely so the tracing line added at the
+/// reservation call site (`agents::reply_parts::reserve_provider_invocation_for_model`)
+/// can name the source without a caller having to match on the enum itself.
+pub fn describe_pricing_source(provenance: PricingProvenance) -> &'static str {
+    match provenance {
+        PricingProvenance::CanonicalExact => "canonical_exact",
+        PricingProvenance::KnowledgeTable => "knowledge_table",
+        PricingProvenance::WorstCase => "worst_case",
+    }
+}
+
 /// A finite upper bound for one physical provider invocation (including its
 /// allowed retries).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -371,6 +392,78 @@ mod tests {
             (bound.amount_usd - expected).abs() < 0.0001,
             "expected ${expected:.6}, got ${:.6}",
             bound.amount_usd
+        );
+    }
+
+    /// F2 pin (harness loop, Round F, from the M11/I1 forensics chain).
+    /// D1's own `zai_glm_4_7_has_a_known_price_far_below_the_old_worst_case_constant`
+    /// test above used a *synthetic* `ModelConfig` (`context: 131_072,
+    /// max_tokens: 131_072`) and `max_physical_attempts: 1` — neither of
+    /// which match what a real headless coordinator/worker session actually
+    /// configures. This test feeds the EXACT live values instead, read
+    /// directly off the M11 slice's own kept per-fixture `permagent.db`s
+    /// (`sessions.model_config_json` for `20260910_1`/`_2`/`_3` in every one
+    /// of fx01/fx05/fx08/fx09/fx10: `{"model_name":"glm-4.7",
+    /// "context_limit":204800,"max_tokens":131072,...}`, `sessions
+    /// .provider_name = "zai"`) plus the DEFAULT `RetryConfig`'s
+    /// `max_physical_attempts()` (`providers::retry::RetryConfig::default()
+    /// .max_physical_attempts() == 5`, the value every zai/glm-4.7
+    /// `OpenAiCompatibleProvider` actually uses — no override exists for
+    /// this provider).
+    ///
+    /// This reproduces F8/D1/I1/M11's observed `amount_usd =
+    /// 1.6629760000000002` bit-for-bit (verified directly against the M11
+    /// `cost_reservations` rows, not merely "close"). The provenance is
+    /// `CanonicalExact`, never `WorstCase` — three straight lanes'
+    /// "flat worst-case constant" diagnosis was wrong. The number IS flat
+    /// across every call only because `context_limit`/`max_tokens`
+    /// (fixed per model) and `max_physical_attempts` (fixed per provider's
+    /// retry policy) never vary call to call for this pair — the bound is a
+    /// correctly-priced authorization ceiling covering up to 5 physical
+    /// attempts of ONE logical turn, not a mispriced fallback. This test
+    /// passes both before and after this lane's changes — it adds no fix,
+    /// only a permanent, exact regression pin so a future lane can check
+    /// this arithmetic in five seconds instead of re-deriving it from raw
+    /// DB rows again.
+    #[test]
+    fn zai_glm_4_7_live_reservation_is_canonical_exact_not_worst_case() {
+        let cfg = config(Some(204_800), Some(131_072));
+        let bound = plan_reservation_bound("zai", "glm-4.7", CostTier::PaidApi, &cfg, 5)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bound.pricing_provenance,
+            PricingProvenance::CanonicalExact,
+            "the live zai/glm-4.7 reservation must be priced from the canonical registry, \
+             not any fallback: {bound:?}"
+        );
+        // Bit-exact match to the value observed in every M11 fixture's
+        // cost_reservations.amount_usd for a zai/glm-4.7 invocation.
+        assert_eq!(bound.amount_usd, 1.6629760000000002);
+        assert_eq!(
+            describe_pricing_source(bound.pricing_provenance),
+            "canonical_exact"
+        );
+    }
+
+    /// F2 pin: this is the ONLY assertion in this lane that fails to compile
+    /// on `bd557978` (`describe_pricing_source` does not exist pre-fix) —
+    /// see that function's own doc comment for why it exists: three lanes in
+    /// a row had no way to see, from a reservation's own record, which
+    /// pricing source actually produced its bound.
+    #[test]
+    fn describe_pricing_source_names_every_provenance_variant() {
+        assert_eq!(
+            describe_pricing_source(PricingProvenance::CanonicalExact),
+            "canonical_exact"
+        );
+        assert_eq!(
+            describe_pricing_source(PricingProvenance::KnowledgeTable),
+            "knowledge_table"
+        );
+        assert_eq!(
+            describe_pricing_source(PricingProvenance::WorstCase),
+            "worst_case"
         );
     }
 

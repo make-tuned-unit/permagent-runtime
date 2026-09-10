@@ -129,7 +129,8 @@ pub use recommend::{
     WorkflowRole, EDIT_RELIABILITY_FLOOR,
 };
 pub use reservation::{
-    plan_reservation_bound, PricingProvenance, ReservationBound, ReservationBoundError,
+    describe_pricing_source, plan_reservation_bound, PricingProvenance, ReservationBound,
+    ReservationBoundError,
 };
 pub use review_gate::{
     build_review_prompt, classify_path, decide_review_route, gate_decision, parse_review,
