@@ -738,6 +738,14 @@ impl Agent {
     ///
     /// The ProgressMonitor keeps first claim when several inspectors deny the
     /// same call, so its behavior is exactly what it was.
+    ///
+    /// G11 (harness loop, 2026-09-10): unlike the fixed/templated reasons
+    /// above, `AdversaryInspector`'s is a live LLM completion over the tool
+    /// call's own (possibly attacker-controlled) arguments — it can echo
+    /// injected text back into context or act as a bypass-iteration oracle.
+    /// Inspectors listed here keep the generic `DECLINED_RESPONSE` instead.
+    const NON_COACHING_INSPECTORS: &[&str] = &["adversary"];
+
     fn inspector_deny_reason(
         request_id: &str,
         inspection_results: &[crate::tool_inspection::InspectionResult],
@@ -747,6 +755,7 @@ impl Agent {
             r.tool_request_id == request_id
                 && r.action == crate::tool_inspection::InspectionAction::Deny
                 && !r.reason.trim().is_empty()
+                && !Self::NON_COACHING_INSPECTORS.contains(&r.inspector_name.as_str())
         }) {
             if result.inspector_name == crate::tool_monitor::PROGRESS_MONITOR_NAME {
                 return Some(result.reason.clone());
@@ -4077,6 +4086,40 @@ mod tests {
             denied_response_text(&responses, "req_user"),
             DECLINED_RESPONSE
         );
+    }
+
+    /// G11: `AdversaryInspector`'s reason is a live LLM completion over
+    /// attacker-reachable input, so it never reaches the model even though
+    /// it is a genuine inspector denial — it falls back to the generic
+    /// `DECLINED_RESPONSE`, same as a real user decline. The denylist is
+    /// narrow: `CodingDagInspector` (fixed string, no attacker-influenced
+    /// content) still surfaces its own reason, exactly as Y4c left it.
+    #[test]
+    fn adversary_deny_reason_is_suppressed_but_coding_dag_still_surfaces() {
+        let adversary_responses = denial_fixture(
+            "req_adv",
+            vec![deny(
+                "req_adv",
+                "adversary",
+                "🛡️ Adversary blocked: command echoes injected text",
+            )],
+        );
+        assert_eq!(
+            denied_response_text(&adversary_responses, "req_adv"),
+            DECLINED_RESPONSE
+        );
+
+        let dag_reason = "Top-level coding harness sessions must create an approved \
+                          orchestrator DAG and dispatch its node";
+        let dag_responses = denial_fixture(
+            "req_dag2",
+            vec![deny(
+                "req_dag2",
+                crate::tool_inspection::CODING_DAG_INSPECTOR_NAME,
+                dag_reason,
+            )],
+        );
+        assert_eq!(denied_response_text(&dag_responses, "req_dag2"), dag_reason);
     }
 
     #[test]
