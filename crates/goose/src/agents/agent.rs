@@ -475,11 +475,22 @@ impl Agent {
     /// durable state, not the transcript: a session that never called
     /// `create_roadmap` has no cards attributed to it, so ordinary
     /// conversation and non-harness sessions never trigger it either.
+    ///
+    /// `NoRoadmapGuard` runs fourth (Lane Y5, harness loop, from Lane A13's
+    /// M13 forensics): it refuses to let a coding-harness COORDINATOR turn end
+    /// having never called `decompose_roadmap`/`create_roadmap` at all — the
+    /// fx02 "prose roadmap, say the word and I'll dispatch" and fx06 "denied
+    /// shell, then a question" exits, which `PrematureDoneGuard` (needs a
+    /// successful mutation) and `RoadmapDispatchGuard` (needs cards or an
+    /// approved proposal) both structurally cannot see. Its gate is the same
+    /// predicate `CodingDagInspector` uses, so no other recipe and no
+    /// dispatched worker can reach it, and it fires at most once per session.
     fn create_after_turn_manager() -> crate::after_turn::AfterTurnManager {
         let mut manager = crate::after_turn::AfterTurnManager::new();
         manager.add_hook(Box::new(crate::after_turn::PrematureDoneGuard::new()));
         manager.add_hook(Box::new(crate::after_turn::ReviewerMandate::new()));
         manager.add_hook(Box::new(crate::after_turn::RoadmapDispatchGuard::new()));
+        manager.add_hook(Box::new(crate::after_turn::NoRoadmapGuard::new()));
         manager
     }
 
