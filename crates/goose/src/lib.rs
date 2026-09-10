@@ -19,6 +19,7 @@ pub mod brain_handle;
 pub mod briefings;
 pub mod builtin_extension;
 pub mod cards;
+pub mod check_cache;
 pub mod concierge;
 pub mod config;
 pub mod context_layers;

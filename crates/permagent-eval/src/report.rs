@@ -288,10 +288,12 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                         "harness_exit": r.harness_exit,
                         "harness_timed_out": r.harness_timed_out,
                         "note": r.note,
+                        "seed_commit": r.seed_commit,
                         "signals": {
                             "tool_calls": r.signals.tool_calls,
                             "tool_names": r.signals.tool_names,
                             "rate_limit_events": r.signals.rate_limit_events,
+                            "rate_limit_examples": r.signals.rate_limit_examples,
                             "max_turns_hit": r.signals.max_turns_hit,
                         },
                     })
@@ -538,6 +540,8 @@ mod tests {
         solved.signals.tool_calls = 4;
         solved.signals.tool_names = vec!["shell".to_string()];
         solved.signals.rate_limit_events = 1;
+        solved.signals.rate_limit_examples =
+            vec!["Z.AI rate limit — waited and retried, and it is still limited.".to_string()];
 
         let mut failed = TaskResult::new(
             "bravo",
@@ -619,6 +623,10 @@ mod tests {
         assert_eq!(alpha["signals"]["tool_calls"], 4);
         assert_eq!(alpha["signals"]["tool_names"][0], "shell");
         assert_eq!(alpha["signals"]["rate_limit_events"], 1);
+        assert_eq!(
+            alpha["signals"]["rate_limit_examples"][0],
+            "Z.AI rate limit — waited and retried, and it is still limited."
+        );
 
         let charlie = &tier["tasks"][2];
         assert_eq!(charlie["oracle"], "not_run");

@@ -2923,6 +2923,31 @@ pub async fn apply_cost_reservations_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .await?;
     }
 
+    // I1 (harness loop, 2026-09-10, wiring F1b's grant-consumption primitive
+    // into the live turn loop): marks a row created by
+    // `grant_reservation_after_gate_approval` (a headless reservation-gate
+    // auto-answer) rather than by the ordinary budget-checked
+    // `reserve_provider_invocation` path. Needed so a later call can find
+    // "this session's still-pending grant" without ever mistaking an
+    // ordinary in-flight reservation for one that already cleared the gate
+    // — reusing an ordinary reservation's invocation_id for a different call
+    // would corrupt the one-reservation-per-call settlement invariant
+    // `append_cost_ledger_with_usage` enforces. PRAGMA-guarded `ADD COLUMN`:
+    // additive, base-independent, applied on every boot exactly like
+    // `unknown_marked_at` above.
+    let has_gate_grant_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = 'granted_via_gate'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_gate_grant_column == 0 {
+        sqlx::query(
+            "ALTER TABLE cost_reservations ADD COLUMN granted_via_gate INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+
     tx.commit().await?;
     Ok(())
 }

@@ -122,6 +122,80 @@ const DEFAULT_LIST_LIMIT: usize = 10;
 // session-coordinator gate (`config::model_roles::assess_harness_coordinator`)
 // is unchanged and serves a different, narrower purpose (see its doc comment).
 
+/// Resolve the planner ROUTE (not yet a live provider): the same precedence
+/// and eligibility gate `OrchestratorClient::resolve_planner_route` turns into
+/// a live `Provider`, plus `dispatch_goal_fn`'s Orchestrate-role worker
+/// dispatch (a free function, no `self`) — both read this SAME decision, so
+/// there is no second source of truth for "why was the Orchestrate role
+/// refused" between the roadmap-creation receipt/Decision Inbox payload and a
+/// goal card's own `model_routing` receipt. `None` route means the session
+/// coordinator; `reason` is always a visible string, never only a
+/// `tracing::warn`.
+async fn resolve_planner_route_free() -> (
+    Option<crate::cost_router::RoleModel>,
+    crate::cost_router::PlannerReason,
+) {
+    let config = Config::global();
+    let read_pin = |provider_key: &str, model_key: &str| {
+        let provider = config
+            .get_param::<String>(provider_key)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let model = config
+            .get_param::<String>(model_key)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        match (provider, model) {
+            (Some(provider), Some(model)) => {
+                Some(crate::cost_router::RoleModel { provider, model })
+            }
+            _ => None,
+        }
+    };
+    let decomposition_pin = read_pin(
+        "ORCHESTRATOR_DECOMPOSITION_PROVIDER",
+        "ORCHESTRATOR_DECOMPOSITION_MODEL",
+    );
+    let role_pin = crate::cost_router::role_model(crate::cost_router::WorkflowRole::Orchestrate);
+
+    // G7 finding F5 (perf): reuse the same short-TTL, invalidation-linked
+    // cache `derived_role_map()` uses (`cost_router::derived::
+    // cached_capability_directory`) instead of a fresh Ollama probe +
+    // directory rebuild on every call. Shared by every caller of this
+    // function within one TTL window, not just the roadmap-creation sites.
+    let directory = crate::cost_router::cached_capability_directory().await;
+
+    let (route, reason) =
+        crate::cost_router::resolve_planner(decomposition_pin, role_pin, &directory);
+
+    let Some(rm) = route else {
+        return (None, reason);
+    };
+
+    // A PIN (either level) still must clear the ORCHESTRATE floor or carry
+    // graduated evidence — this replaces the old "must be the compiled
+    // TrustedDefault" gate for this path only (see the module comment;
+    // `config::model_roles::assess_harness_coordinator` is unchanged and
+    // serves the session-coordinator gate, a different, narrower purpose).
+    if matches!(reason, crate::cost_router::PlannerReason::Pinned { .. })
+        && !crate::cost_router::pin_clears_orchestrate_floor(&rm.provider, &rm.model, &directory)
+    {
+        return (
+            None,
+            crate::cost_router::PlannerReason::SessionFallback {
+                reason: format!(
+                    "pinned planner {}/{} is unrated/below the ORCHESTRATE floor",
+                    rm.provider, rm.model
+                ),
+            },
+        );
+    }
+
+    (Some(rm), reason)
+}
+
 /// Failure mode of a single decomposition pass, used to decide escalation.
 enum DecompositionError {
     /// The provider/model call itself failed (e.g. local model not running).
@@ -1743,90 +1817,18 @@ impl OrchestratorClient {
         ))
     }
 
-    /// Resolve the provider that PLANS the roadmap decomposition — the
-    /// 2026-09-09 ruling ("plan on the strongest model, work on the cheapest
-    /// graduated one"), see the module-level comment above for the full
-    /// precedence and rationale. `None` means the caller falls through to the
-    /// session coordinator — always with a visible `tracing::info` reason,
-    /// never a silent `warn`.
-    /// Resolve the planner ROUTE (not yet a live provider): the same
-    /// precedence and eligibility gate `resolve_decomposition_provider` turns
-    /// into a `Provider`, shared with the roadmap-creation receipt/tracing
-    /// line so both read the exact same decision — no second source of
-    /// truth. `None` route means the session coordinator; `reason` is always
-    /// a visible string, never only a `tracing::warn`.
+    /// Resolve the planner ROUTE (not yet a live provider): thin delegator
+    /// over the free [`resolve_planner_route_free`] (see its doc comment for
+    /// the full precedence/rationale) — kept as a method too since
+    /// `resolve_decomposition_provider` and the roadmap-creation receipt
+    /// block both call it as `self.resolve_planner_route()`.
     async fn resolve_planner_route(
         &self,
     ) -> (
         Option<crate::cost_router::RoleModel>,
         crate::cost_router::PlannerReason,
     ) {
-        let config = Config::global();
-        let read_pin = |provider_key: &str, model_key: &str| {
-            let provider = config
-                .get_param::<String>(provider_key)
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-            let model = config
-                .get_param::<String>(model_key)
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-            match (provider, model) {
-                (Some(provider), Some(model)) => {
-                    Some(crate::cost_router::RoleModel { provider, model })
-                }
-                _ => None,
-            }
-        };
-        let decomposition_pin = read_pin(
-            "ORCHESTRATOR_DECOMPOSITION_PROVIDER",
-            "ORCHESTRATOR_DECOMPOSITION_MODEL",
-        );
-        let role_pin =
-            crate::cost_router::role_model(crate::cost_router::WorkflowRole::Orchestrate);
-
-        // G7 finding F5 (perf): reuse the same short-TTL, invalidation-linked
-        // cache `derived_role_map()` uses (`cost_router::derived::
-        // cached_capability_directory`) instead of a fresh Ollama probe +
-        // directory rebuild on every call. This is called from two sites per
-        // roadmap (`resolve_decomposition_provider` and the roadmap-creation
-        // receipt block) — both now share one live probe per TTL window
-        // instead of each doing its own.
-        let directory = crate::cost_router::cached_capability_directory().await;
-
-        let (route, reason) =
-            crate::cost_router::resolve_planner(decomposition_pin, role_pin, &directory);
-
-        let Some(rm) = route else {
-            return (None, reason);
-        };
-
-        // A PIN (either level) still must clear the ORCHESTRATE floor or carry
-        // graduated evidence — this replaces the old "must be the compiled
-        // TrustedDefault" gate for this path only (see the module comment;
-        // `config::model_roles::assess_harness_coordinator` is unchanged and
-        // serves the session-coordinator gate, a different, narrower purpose).
-        if matches!(reason, crate::cost_router::PlannerReason::Pinned { .. })
-            && !crate::cost_router::pin_clears_orchestrate_floor(
-                &rm.provider,
-                &rm.model,
-                &directory,
-            )
-        {
-            return (
-                None,
-                crate::cost_router::PlannerReason::SessionFallback {
-                    reason: format!(
-                        "pinned planner {}/{} is unrated/below the ORCHESTRATE floor",
-                        rm.provider, rm.model
-                    ),
-                },
-            );
-        }
-
-        (Some(rm), reason)
+        resolve_planner_route_free().await
     }
 
     /// Resolve the provider that PLANS the roadmap decomposition — the
@@ -2954,11 +2956,43 @@ pub(crate) async fn dispatch_goal_fn(
     // dispatched_at so a commit-producing worker's changes can be diffed
     // against a known-good ref). Best-effort — baseline is absent when the
     // working dir is not a git repo.
-    let working_dir = project
+    //
+    // H1 (G8 review, harness loop Lane E3 2026-09-10): this used to fall
+    // back to `std::env::current_dir()` whenever `project.root_path` was
+    // unset — under a headless launch where `ensure_headless_project_root_
+    // path` raced or never ran (it is explicitly best-effort,
+    // `builder.rs`'s own doc comment: "a pool/session lookup failure here
+    // must never block a headless launch"), that resolved to the DAEMON's
+    // own working directory — in the reported scenario, the
+    // `permagent-runtime` checkout itself. Everything downstream (the
+    // goal's worktree, its baseline commit, and eventually
+    // `decisions_effects::land_approved_goal`'s worktree-derived landing
+    // fallback, closed alongside this fix) inherited that mistake.
+    // `current_dir()` is never a legitimate stand-in for "the user's
+    // project" — it is whatever directory this process happened to be
+    // started from. The session dispatching this goal carries its OWN
+    // recorded `working_dir` (set at session creation, not read live off
+    // the process); prefer that, and refuse outright rather than guess when
+    // NEITHER is known. Every other refusal in this function leaves the
+    // card in Ready with no metadata changes, so this one — placed before
+    // any card mutation below — is retryable exactly the same way; a silent
+    // wrong-directory dispatch is not.
+    let working_dir = match project
         .root_path
         .as_ref()
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        .or_else(|| context.session.as_ref().map(|s| s.working_dir.clone()))
+    {
+        Some(dir) => dir,
+        None => {
+            return Err(format!(
+                "Cannot dispatch goal '{}': no working directory is known for project '{}' \
+                 (no root_path configured, and no session is attached to derive one from) — \
+                 refusing to fall back to the daemon's own current directory.",
+                card.title, project.id
+            ));
+        }
+    };
 
     let baseline_commit = tokio::process::Command::new("git")
         .arg("-C")
@@ -3204,11 +3238,30 @@ pub(crate) async fn dispatch_goal_fn(
             // The routing receipt (#211 snapshot): configured / derived (with
             // provenance) / session model — so the goal card says HOW the model
             // was chosen, not just which worker ran.
-            if let Some(obj) = capability_snapshot.as_object_mut() {
-                obj.insert(
-                    "model_routing".to_string(),
-                    crate::cost_router::model_routing_receipt(role, resolved.as_ref(), &derived),
+            //
+            // G4 (`CODING_HARNESS_ROLE_GRADUATION_DAG.md`): when the role is
+            // ORCHESTRATE and nothing resolved, the generic derived-map
+            // message ("not derivable from the models available") reads like
+            // plain absence, not an active evidence-based refusal. Re-ask
+            // the SAME planner-route logic the roadmap-creation Decision
+            // Inbox payload already surfaces (`resolve_planner_route_free`,
+            // shared with `OrchestratorClient::resolve_planner_route`) so
+            // this goal card's own routing receipt carries the identical
+            // honest reason — never only a `tracing` line. No-op for every
+            // other role and whenever something DID resolve.
+            let mut model_routing =
+                crate::cost_router::model_routing_receipt(role, resolved.as_ref(), &derived);
+            if role == Some(crate::cost_router::WorkflowRole::Orchestrate) && resolved.is_none() {
+                let (_, planner_reason) = resolve_planner_route_free().await;
+                model_routing = crate::cost_router::annotate_orchestrate_refusal(
+                    model_routing,
+                    role,
+                    false,
+                    &planner_reason.describe(),
                 );
+            }
+            if let Some(obj) = capability_snapshot.as_object_mut() {
+                obj.insert("model_routing".to_string(), model_routing);
             }
             let model_override = resolved.map(|(rm, _)| rm);
             Box::new(goal_engine::InternalSubagentEngine {
@@ -4216,6 +4269,12 @@ impl OrchestratorClient {
         let config = agent_identity::load_agent_config();
         let mut workers = Vec::new();
 
+        // G4/G6 (`CODING_HARNESS_ROLE_GRADUATION_DAG.md`): a role's
+        // graduation must be visible here, before dispatch, not only
+        // discovered by failure. One directory build per call (TTL-cached,
+        // `cached_capability_directory`), shared across every worker row.
+        let directory = crate::cost_router::cached_capability_directory().await;
+
         for (key, persona) in &config.workers {
             let (probed_available, probe_reason) = match self.probe_cache.get(key) {
                 Some(cached) if !refresh => (cached.available, cached.reason),
@@ -4228,6 +4287,11 @@ impl OrchestratorClient {
             let dispatch_error = persona.engine.dispatchability_error();
             let available = probed_available && dispatch_error.is_none();
             let reason = dispatch_error.map(str::to_string).or(probe_reason);
+            let graduation = crate::cost_router::worker_graduation_json(
+                &directory,
+                persona.provider.as_deref(),
+                persona.model.as_deref(),
+            );
 
             workers.push(serde_json::json!({
                 "key": key,
@@ -4240,6 +4304,10 @@ impl OrchestratorClient {
                 "cost_tier": persona.cost_tier,
                 "available": available,
                 "reason": reason,
+                // Per-role graduated/unrated/excluded_by_evidence, from the
+                // capability directory — `null` when the persona names no
+                // explicit provider/model (it clones the session model).
+                "graduation": graduation,
             }));
         }
 
@@ -4280,12 +4348,24 @@ impl OrchestratorClient {
         let available = probed_available && dispatch_error.is_none();
         let reason = dispatch_error.map(str::to_string).or(probe_reason);
 
+        // G4/G6: same per-role graduation view `handle_list_workers` shows,
+        // for this one worker. TTL-cached — a `check_worker` call after a
+        // `list_workers` in the same window is a cache hit, not a rebuild.
+        let directory = crate::cost_router::cached_capability_directory().await;
+        let graduation = crate::cost_router::worker_graduation_json(
+            &directory,
+            persona.provider.as_deref(),
+            persona.model.as_deref(),
+        );
+
         let result = serde_json::json!({
             "worker_key": worker_key,
             "engine": persona.engine.label(),
             "capabilities": persona.capabilities(),
+            "cost_tier": persona.cost_tier,
             "available": available,
             "reason": reason,
+            "graduation": graduation,
         });
 
         Ok(CallToolResult::success(vec![Content::text(
@@ -4978,6 +5058,93 @@ impl OrchestratorClient {
         // reachable on `goal/<old-session-id>` (goal worktrees are never
         // deleted — `create_goal_worktree`'s own doc comment) but are not
         // automatically carried into the retry.
+        //
+        // F1a (harness loop, Lane F1 2026-09-10, from F10 forensics): the
+        // shape above has NO minimum-elapsed-time guard against
+        // `dispatched_at` (read above, but — before this lane — only ever
+        // used for the `"started_at"` report field far below) and no check
+        // of whether the "dead" session actually left real work behind.
+        // F10 traced this misfiring 5.5-38s after dispatch, before the
+        // freshly-dispatched sub_agent session was ever marked busy by
+        // `AgentManager` — R3 misread "hasn't started yet" as "exited",
+        // orphaning a still-working, often-successful attempt (fx01/fx03/
+        // fx04/fx05, both M9 and M10). Three additional checks below close
+        // that: (1) a named minimum grace period since `dispatched_at`;
+        // (2) the goal's own `execution_receipt` must not independently
+        // report a live attempt (`goal_transition::execution_receipt_is_live`,
+        // the same rebind-vs-stale semantics restart recovery already
+        // trusts); (3) `!session_alive` above already covers "no provider
+        // call in flight" — `AgentManager::is_session_busy` IS that signal;
+        // (4) the abandoned session's own worktree is inspected for commits
+        // beyond its recorded baseline before ever redispatching over it
+        // (F1c) — work found there routes to review instead, never lost.
+        fn r3_min_grace_secs() -> i64 {
+            const DEFAULT_SECS: i64 = 180;
+            std::env::var("PERMAGENT_R3_MIN_GRACE_SECS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .filter(|v| *v >= 0)
+                .unwrap_or(DEFAULT_SECS)
+        }
+
+        // F1c (harness loop, Lane F1 2026-09-10): does the goal's own
+        // worktree — reconstructed the same way `create_goal_worktree`
+        // names it, `<project_root>/../.permagent-goal-worktrees/<run_id>`
+        // (`goal_engine::GOAL_WORKTREES_DIR`) — have any commit beyond its
+        // recorded `baseline_commit`? `None` means "could not determine"
+        // (no project root, no baseline, no worktree on disk yet, or the
+        // git command itself failed): the caller treats an indeterminate
+        // answer as "cannot prove work is absent", the safe default that
+        // never redispatches over real work it merely failed to see.
+        async fn abandoned_worktree_head_beyond_baseline(
+            project_root: &std::path::Path,
+            worker_session_id: &str,
+            baseline_commit: &str,
+        ) -> Option<(PathBuf, String)> {
+            let worktree = project_root
+                .parent()
+                .unwrap_or(project_root)
+                .join(goal_engine::GOAL_WORKTREES_DIR)
+                .join(worker_session_id);
+            if !worktree.exists() {
+                return None;
+            }
+            let output = tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&worktree)
+                .arg("log")
+                .arg("--format=%H")
+                .arg(format!("{baseline_commit}..HEAD"))
+                .arg("-1")
+                .output()
+                .await
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if head.is_empty() {
+                None
+            } else {
+                Some((worktree, head))
+            }
+        }
+
+        let min_grace_elapsed = dispatched_at
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dispatched| {
+                (chrono::Utc::now() - dispatched.with_timezone(&chrono::Utc)).num_seconds()
+                    >= r3_min_grace_secs()
+            })
+            // No recorded `dispatched_at` at all is itself indeterminate —
+            // never treat a goal with no dispatch timestamp as eligible.
+            .unwrap_or(false);
+        let receipt_not_live = !goal_transition::execution_receipt_is_live(
+            &card.metadata_json,
+            daemon_lifecycle_id(),
+            chrono::Utc::now(),
+        );
+
         let retry_count = meta
             .and_then(|m| m.get("retry_count"))
             .and_then(|v| v.as_u64())
@@ -5001,9 +5168,71 @@ impl OrchestratorClient {
             && worker_session_id.is_some()
             && retry_count == 0
             && engine_is_internal
+            && min_grace_elapsed
+            && receipt_not_live
         {
             let requested_worker = worker_key.map(|s| s.to_string());
             let dead_session = worker_session_id.unwrap_or("?").to_string();
+
+            // F1c (harness loop, Lane F1 2026-09-10): before ever
+            // redispatching over this session, look for real, committed
+            // work it left behind. F10's fx05 shape — a correct, committed
+            // fix from the abandoned session that the goal's own
+            // bookkeeping never rediscovers — is exactly what this closes:
+            // work found here is recorded on the card and routed to review
+            // instead of silently overwritten by a fresh attempt.
+            let baseline_commit = meta
+                .and_then(|m| m.get("baseline_commit"))
+                .and_then(|v| v.as_str());
+            let project_root = crate::projects::get_project(&pool, &card.project_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|p| p.root_path);
+            let abandoned_work = match (project_root.as_deref(), baseline_commit) {
+                (Some(root), Some(baseline)) => {
+                    abandoned_worktree_head_beyond_baseline(
+                        std::path::Path::new(root),
+                        &dead_session,
+                        baseline,
+                    )
+                    .await
+                }
+                _ => None,
+            };
+
+            if let Some((worktree, head_sha)) = abandoned_work {
+                let annotation = format!("{}@{}", worktree.display(), head_sha);
+                let reason = format!(
+                    "worker session '{dead_session}' exited with no error and no landing, but \
+                     its worktree has a commit beyond baseline ({head_sha}) — routed to review \
+                     instead of redispatch (F1a/F1c, harness loop Lane F1)"
+                );
+                // I1 (harness loop, 2026-09-10, gate fix): `needs_human_attention`
+                // is a protected goal metadata key — `cards::merge_card_metadata`
+                // refuses it outright (silently swallowed by the `if let Err`
+                // below, so the card was never actually annotated pre-fix).
+                // `goal_transition::flag_abandoned_work` is the sanctioned
+                // mutator for exactly this write.
+                if let Err(error) =
+                    goal_transition::flag_abandoned_work(&pool, &card_id, &annotation, &reason)
+                        .await
+                {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        goal_id = %card_id,
+                        "F1c: could not record abandoned_work on the card ({error}); the \
+                         redispatch is still skipped this call"
+                    );
+                }
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Goal '{}' worker session '{}' exited with no error and no landing, but \
+                     its worktree has committed work beyond baseline at {}. Not \
+                     redispatching — routed to review (abandoned_work recorded).",
+                    card.title, dead_session, annotation
+                ))]));
+            }
+
             match goal_transition::requeue_goal_with_meta(
                 &pool,
                 &card_id,
@@ -6425,6 +6654,11 @@ pub fn install_dispatch_hook(session_manager: std::sync::Arc<crate::session::Ses
     let _ = GOAL_DISPATCH_HOOK.set(Box::new(move |card_id: String| {
         let session_manager = std::sync::Arc::clone(&session_manager);
         Box::pin(async move {
+            // I1 (harness loop, 2026-09-10, gate fix): compiled out of every
+            // non-test build — see `test_dispatch_recorder`'s own doc
+            // comment for why a PRODUCTION closure needs this at all.
+            #[cfg(test)]
+            test_dispatch_recorder::record(card_id.clone());
             // A fresh ProbeCache is an empty in-memory map; building a
             // throwaway OrchestratorClient here would instead spawn a resume +
             // worktree-sweep task on construction (see project_manager.rs).
@@ -6532,6 +6766,11 @@ pub fn install_dispatch_hook_for_headless_session(
     let _ = GOAL_DISPATCH_HOOK.set(Box::new(move |card_id: String| {
         let session_manager = std::sync::Arc::clone(&session_manager);
         Box::pin(async move {
+            // I1 (harness loop, 2026-09-10, gate fix): see
+            // `test_dispatch_recorder`'s own doc comment — compiled out of
+            // every non-test build.
+            #[cfg(test)]
+            test_dispatch_recorder::record(card_id.clone());
             let policy = current_headless_dispatch_policy(&session_manager).await;
             let context = PlatformExtensionContext {
                 extension_manager: None,
@@ -6756,6 +6995,21 @@ pub(crate) async fn promote_and_dispatch_dependents_report(
 ///
 /// The seam is a `OnceLock`, so the whole lib-test binary shares one recorder;
 /// assertions are keyed by card id, which is unique per test.
+///
+/// I1 (harness loop, 2026-09-10, gate fix): `GOAL_DISPATCH_HOOK.set(...)` is
+/// itself a ONE-SHOT race — the FIRST of several tests to call it (this
+/// module's own `install()`, a test's own hand-rolled closure, or a test that
+/// calls a production installer directly) wins for the rest of the process,
+/// no matter how many later callers are individually well-behaved or
+/// `#[serial_test::serial]`-tagged against each other (serialization only
+/// prevents concurrent execution — it does nothing about an EARLIER test's
+/// `.set()` having already won permanently). [`record`] is the fix: every
+/// closure capable of winning that race — this module's own, PLUS
+/// `install_dispatch_hook`'s and `install_dispatch_hook_for_headless_
+/// session`'s production closures (via a `#[cfg(test)]`-gated call, compiled
+/// out of every non-test build) — pushes into this SAME shared list
+/// regardless of which one actually ends up installed, so [`saw`] stays a
+/// reliable signal no matter which of them won.
 #[cfg(test)]
 pub(crate) mod test_dispatch_recorder {
     use super::{GoalDispatchFuture, GOAL_DISPATCH_HOOK};
@@ -6772,10 +7026,17 @@ pub(crate) mod test_dispatch_recorder {
     pub(crate) fn install() {
         let _ = GOAL_DISPATCH_HOOK.set(Box::new(|card_id: String| {
             Box::pin(async move {
-                recorded().lock().unwrap().push(card_id.clone());
+                record(card_id.clone());
                 Ok(format!("recorded-session-for-{card_id}"))
             }) as GoalDispatchFuture
         }));
+    }
+
+    /// Record that SOME installed dispatcher was asked to start `card_id` —
+    /// called from every closure capable of winning the `GOAL_DISPATCH_HOOK`
+    /// race (see this module's own doc comment), not only this module's own.
+    pub(crate) fn record(card_id: String) {
+        recorded().lock().unwrap().push(card_id);
     }
 
     /// Whether the dispatcher was asked to start this card.
@@ -7874,6 +8135,80 @@ async fn record_decision_create_failure(
 /// (durable-verifier-pass-before-landing) or the Tier-1 gate itself
 /// (`goal_transition::check_proof`). `false` (the default) leaves the
 /// decision open for a human exactly as before this lane.
+/// [`goal_engine::WallBudgetExhausted`] plus the wallclock numbers
+/// [`goal_transition::exhaust_and_park`]'s own `BudgetExhaustion::Wallclock`
+/// needs for its receipt — computed once here so the caller never
+/// recomputes `elapsed`/`cap_secs` a second time.
+struct WallBudgetRefusal {
+    reason: String,
+    partial_state: Option<String>,
+    spent_secs: u64,
+    cap_secs: u64,
+}
+
+/// I1 (harness loop, 2026-09-10): wires E2b's pure
+/// `wall_budget_permits_another_attempt` primitive into the live retry
+/// decision `handle_goal_completion`'s `Err(error)` arm makes. Returns
+/// `Some(refusal)` only when ALL of these are known: a configured
+/// `wallclock_cap_secs` (goals with no wall-clock budget configured are
+/// never refused by this check — unchanged from before this lane), a
+/// `first_dispatched_at` (the goal's very first dispatch) with real
+/// remaining budget left under the hard cap (a fully-exhausted goal is
+/// `check_budget`'s own park path, above this call in the same match arm,
+/// not this one), and a `dispatched_at` (the attempt that just failed) old
+/// enough to measure a real duration from. Any of those missing/unparseable
+/// returns `None` — the ordinary requeue proceeds exactly as it did before
+/// this lane, never blocked by an indeterminate wall-budget read.
+fn wall_budget_exhausted_refusal(metadata: &serde_json::Value) -> Option<WallBudgetRefusal> {
+    let cap_secs = goal_transition::goal_budget(metadata).wallclock_cap_secs?;
+    let first_dispatched_at = metadata
+        .get("first_dispatched_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())?
+        .with_timezone(&chrono::Utc);
+    let dispatched_at = metadata
+        .get("dispatched_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())?
+        .with_timezone(&chrono::Utc);
+    let now = chrono::Utc::now();
+
+    let elapsed_secs = (now - first_dispatched_at).num_seconds();
+    if elapsed_secs < 0 || elapsed_secs as u64 >= cap_secs {
+        // Fully exhausted (or a clock anomaly) — `check_budget`'s own
+        // Wallclock arm, evaluated just above this call, already owns that
+        // case; never double-refuse it here.
+        return None;
+    }
+    let remaining_secs = cap_secs - elapsed_secs as u64;
+
+    let last_attempt_secs = (now - dispatched_at).num_seconds();
+    if last_attempt_secs <= 0 {
+        // Nothing yet to measure a last-attempt duration from.
+        return None;
+    }
+    let remaining = std::time::Duration::from_secs(remaining_secs);
+    let last_attempt = std::time::Duration::from_secs(last_attempt_secs as u64);
+
+    if goal_engine::wall_budget_permits_another_attempt(remaining, last_attempt) {
+        return None;
+    }
+
+    let partial_state = metadata
+        .get("landing")
+        .and_then(|l| l.get("trunk_state"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let outcome =
+        goal_engine::wall_budget_exhausted_outcome(remaining, last_attempt, partial_state);
+    Some(WallBudgetRefusal {
+        reason: outcome.reason,
+        partial_state: outcome.partial_state,
+        spent_secs: elapsed_secs as u64,
+        cap_secs,
+    })
+}
+
 pub async fn handle_goal_completion(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
@@ -8116,6 +8451,55 @@ pub async fn handle_goal_completion(
                     "Goal '{}' failed with budget exhausted ({}) — parked with unblock decision {}",
                     card.title,
                     exhaustion.describe(),
+                    decision_id
+                );
+            } else if let Some(outcome) = wall_budget_exhausted_refusal(&card.metadata_json) {
+                // I1 (harness loop, 2026-09-10, wiring E2b's pure primitive
+                // into the live retry decision, from F9's fx01/fx04/fx07/fx09
+                // forensics): the run's remaining wall-clock budget is too
+                // small to safely absorb another attempt (< 1.2x the last
+                // attempt's own duration) — refuse the requeue and park with
+                // an honest receipt rather than requeue into a near-certain
+                // silent timeout with no structured signal of why.
+                if let Err(e) = cards::merge_card_metadata(
+                    pool,
+                    card_id,
+                    serde_json::json!({
+                        "wall_budget_exhausted": {
+                            "reason": outcome.reason,
+                            "partial_state": outcome.partial_state,
+                            "recorded_at": chrono::Utc::now().to_rfc3339(),
+                        }
+                    }),
+                    false,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        goal_id = %card_id,
+                        "could not record the wall_budget_exhausted receipt: {e}"
+                    );
+                }
+                let decision_id = goal_transition::exhaust_and_park(
+                    pool,
+                    card_id,
+                    &card.title,
+                    project_id,
+                    goal_transition::BudgetExhaustion::Wallclock {
+                        spent_secs: outcome.spent_secs,
+                        cap_secs: outcome.cap_secs,
+                    },
+                    Some(&outcome.reason),
+                )
+                .await?;
+
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "Goal '{}' refused another attempt — wall budget too small ({}) — parked \
+                     with unblock decision {}",
+                    card.title,
+                    outcome.reason,
                     decision_id
                 );
             } else {
@@ -9622,9 +10006,22 @@ const CREDIT_CHECK_TIMEOUT_SECS: u64 = 45;
 /// depend on. `http_assert` is not locally verifiable here (no server is
 /// running) and any unrecognized type reads as unsatisfied — never a
 /// fabricated pass.
+///
+/// E2a: `command_exit_zero` — the one branch that can be genuinely slow (a
+/// real build/test command, bounded by `CREDIT_CHECK_TIMEOUT_SECS`) — is
+/// routed through `check_cache::get_or_run`, keyed on `goal_id` (whose OWN
+/// acceptance criteria are being evaluated — see the call-site comments
+/// below for why that is not always the same as the goal that just
+/// dispatched work), the exact command text, and a content fingerprint of
+/// `working_dir`. G7's review found this exact command re-executed on every
+/// hold/park recheck against unchanged content; F9 independently found the
+/// same shape inside a worker's own repeated `verify` calls. `file_exists`/
+/// `grep_absent` are plain filesystem reads — cheap enough that caching them
+/// would only add bookkeeping cost, so they are left uncached.
 async fn evaluate_completion_check_locally(
     check: &serde_json::Value,
     working_dir: &std::path::Path,
+    goal_id: &str,
 ) -> bool {
     match check.get("type").and_then(|v| v.as_str()) {
         Some("file_exists") => check
@@ -9672,22 +10069,28 @@ async fn evaluate_completion_check_locally(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(CREDIT_CHECK_TIMEOUT_SECS)
                 .min(CREDIT_CHECK_TIMEOUT_SECS);
-            let mut command = tokio::process::Command::new("sh");
-            command
-                .arg("-c")
-                .arg(cmd)
-                .current_dir(working_dir)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
-            matches!(
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(timeout_secs),
-                    command.status(),
-                )
-                .await,
-                Ok(Ok(status)) if status.success()
-            )
+            let (result, _cache_hit) =
+                crate::check_cache::get_or_run(goal_id, cmd, working_dir, move || async move {
+                    let mut command = tokio::process::Command::new("sh");
+                    command
+                        .arg("-c")
+                        .arg(cmd)
+                        .current_dir(working_dir)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null());
+                    let passed = matches!(
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(timeout_secs),
+                            command.status(),
+                        )
+                        .await,
+                        Ok(Ok(status)) if status.success()
+                    );
+                    crate::check_cache::CachedCheckResult { passed }
+                })
+                .await;
+            result.passed
         }
         _ => false,
     }
@@ -9704,6 +10107,7 @@ async fn goal_acceptance_satisfied_locally(
     goal_description: &str,
     project_meta: &serde_json::Value,
     working_dir: &std::path::Path,
+    goal_id: &str,
 ) -> Option<Vec<String>> {
     let criteria = collect_acceptance_criteria(goal_meta, goal_description);
     if criteria.is_empty() {
@@ -9714,7 +10118,7 @@ async fn goal_acceptance_satisfied_locally(
         let Some(check) = criterion_to_check(c, project_meta, working_dir) else {
             continue;
         };
-        if !evaluate_completion_check_locally(&check, working_dir).await {
+        if !evaluate_completion_check_locally(&check, working_dir, goal_id).await {
             return None;
         }
         satisfied.push(c.clone());
@@ -9982,6 +10386,11 @@ async fn try_credit_sibling_goals(
             &sibling.description,
             &project_meta,
             working_dir,
+            // E2a: the sibling's OWN acceptance criteria are being evaluated
+            // here — cache by the sibling's id, not `original`'s, so a
+            // sibling's cached check can never leak into a different goal's
+            // evaluation of the same content.
+            &sibling.id,
         )
         .await
         else {
@@ -10034,6 +10443,7 @@ async fn try_credit_sibling_goals(
 async fn original_goal_underlying_check_passes(
     project_meta: &serde_json::Value,
     ev: &goal_engine::GoalEvidence,
+    goal_id: &str,
 ) -> bool {
     if ev.commits.is_empty() || ev.worktree_path.is_empty() {
         return false;
@@ -10045,7 +10455,7 @@ async fn original_goal_underlying_check_passes(
     let Some(cmd) = resolve_build_command(project_meta, working_dir) else {
         return false;
     };
-    evaluate_completion_check_locally(&command_check(&cmd), working_dir).await
+    evaluate_completion_check_locally(&command_check(&cmd), working_dir, goal_id).await
 }
 
 /// The Z2-1 credit path, run right before `card` would otherwise be Held or
@@ -10084,7 +10494,7 @@ async fn maybe_credit_and_bypass_hold(
         .map(|p| p.metadata_json)
         .unwrap_or_else(|| serde_json::json!({}));
 
-    if !original_goal_underlying_check_passes(&project_meta, &ev).await {
+    if !original_goal_underlying_check_passes(&project_meta, &ev, &card.id).await {
         return Ok(None);
     }
 
@@ -11616,6 +12026,100 @@ mod tests {
         assert!(src.contains("cached_capability_directory"));
     }
 
+    /// G4: `OrchestratorClient::resolve_planner_route` (the roadmap-creation
+    /// receipt/Decision Inbox path) and `dispatch_goal_fn`'s Orchestrate-role
+    /// worker-dispatch receipt must both read the SAME planner-route decision
+    /// — no second, hand-duplicated copy of the pin-reading precedence (the
+    /// exact drift risk Lane Z4 flagged for its own hand-mirrored schema,
+    /// `HARNESS_LOOP_LOG.md` "Lane Z4", "Open risks" #1).
+    ///
+    /// I1 (harness loop, 2026-09-10, gate fix): the original count scanned
+    /// the WHOLE file, which double-counts the `fn` definition itself
+    /// (`async fn resolve_planner_route_free() -> (` also contains the
+    /// literal substring being searched for) and — once this lane's own
+    /// tests, plus `resolve_planner_route_free_refuses_a_pin_with_no_kb_row_
+    /// and_no_evidence`'s own call site, landed in the same file — every
+    /// OTHER test that happens to call the function too, never actually
+    /// pinning "no third hand-duplicated PRODUCTION copy". Scoped to the
+    /// source BEFORE `mod tests` so only production call sites count.
+    #[test]
+    fn orchestrate_role_refusal_reason_is_shared_not_duplicated() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/agents/platform_extensions/orchestrator.rs");
+        let src = std::fs::read_to_string(&path).unwrap();
+        assert!(src.contains("async fn resolve_planner_route_free"));
+        let production_src = src
+            .split_once("\nmod tests {")
+            .map(|(before, _)| before)
+            .unwrap_or(&src);
+        let call_pattern = ["resolve_planner_route_free", "()"].concat();
+        // One of these is the `fn` definition itself, never a call.
+        let call_sites = production_src
+            .matches(&call_pattern)
+            .count()
+            .saturating_sub(1);
+        assert_eq!(
+            call_sites, 2,
+            "expected exactly two PRODUCTION call sites (the method wrapper and \
+             dispatch_goal_fn's Orchestrate-refusal annotation) — source may have drifted"
+        );
+        assert!(src.contains("crate::cost_router::annotate_orchestrate_refusal"));
+    }
+
+    /// G4: a PIN naming a model with no knowledge-base row (so it can never
+    /// clear the ORCHESTRATE floor by the heuristic, and — with the
+    /// directory pointed at an empty scratch dir — carries no persisted
+    /// evidence either) must be REFUSED with a visible reason, not silently
+    /// honored. Deterministic regardless of what this machine has configured
+    /// or pulled: an `ollama` id fabricated for this test alone has no
+    /// `KNOWN_MODELS` row (`knowledge.rs`) at all, so `pin_clears_
+    /// orchestrate_floor` falls through to `None` either way
+    /// (`capability_directory.rs`'s own `pin_eligibility_refuses_unrated_
+    /// and_below_floor` test covers the same fact at the pure-function
+    /// level; this proves the free function this lane extracted still
+    /// reaches that same refusal end-to-end). I1 (harness loop, 2026-09-10,
+    /// gate fix): deliberately NOT the historical "cheap decomposition
+    /// default" model id this lane's own report originally cited —
+    /// `decomposition_default_is_no_longer_qwen`'s negative source-grep
+    /// assertion (D4, Lane Z3) requires that literal string be gone from
+    /// this file entirely (including comments — see that test's own doc
+    /// comment), so this test uses an unambiguously fabricated id instead,
+    /// with the SAME no-KB-row property.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn resolve_planner_route_free_refuses_a_pin_with_no_kb_row_and_no_evidence() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());
+        std::env::set_var("ORCHESTRATOR_DECOMPOSITION_PROVIDER", "ollama");
+        std::env::set_var(
+            "ORCHESTRATOR_DECOMPOSITION_MODEL",
+            "i1-fixture-no-kb-row-model:7b",
+        );
+        crate::cost_router::invalidate_derived_role_map();
+
+        let (route, reason) = resolve_planner_route_free().await;
+
+        std::env::remove_var("PERMAGENT_PATH_ROOT");
+        std::env::remove_var("ORCHESTRATOR_DECOMPOSITION_PROVIDER");
+        std::env::remove_var("ORCHESTRATOR_DECOMPOSITION_MODEL");
+        crate::cost_router::invalidate_derived_role_map();
+
+        assert!(
+            route.is_none(),
+            "a pin naming a model absent from both the KB and any persisted evidence must be \
+             refused, not silently honored: {reason:?}"
+        );
+        match reason {
+            crate::cost_router::PlannerReason::SessionFallback { reason } => {
+                assert!(
+                    !reason.is_empty(),
+                    "the refusal reason must be a visible string, not empty"
+                );
+            }
+            other => panic!("expected SessionFallback with a visible reason, got {other:?}"),
+        }
+    }
+
     #[test]
     fn exact_session_refs_distinguish_persisted_ids_from_legacy_locators() {
         let mut persisted = Message::new(Role::User, 1_700_000_000, vec![]);
@@ -12551,14 +13055,14 @@ mod tests {
         };
 
         let passing = serde_json::json!({ "build_command": "true" });
-        assert!(original_goal_underlying_check_passes(&passing, &ev).await);
+        assert!(original_goal_underlying_check_passes(&passing, &ev, "goal-pure-helper").await);
 
         let failing = serde_json::json!({ "build_command": "false" });
-        assert!(!original_goal_underlying_check_passes(&failing, &ev).await);
+        assert!(!original_goal_underlying_check_passes(&failing, &ev, "goal-pure-helper").await);
 
         let unknown_stack = serde_json::json!({});
         assert!(
-            !original_goal_underlying_check_passes(&unknown_stack, &ev).await,
+            !original_goal_underlying_check_passes(&unknown_stack, &ev, "goal-pure-helper").await,
             "an undetectable stack must never be guessed as passing"
         );
     }
@@ -12580,7 +13084,12 @@ mod tests {
             "paths": ["never_written.rs"],
         });
         assert!(
-            !evaluate_completion_check_locally(&grep_absent_missing_file, tmp.path()).await,
+            !evaluate_completion_check_locally(
+                &grep_absent_missing_file,
+                tmp.path(),
+                "goal-vacuous-pass",
+            )
+            .await,
             "grep_absent against a file that does not exist must not pass"
         );
 
@@ -12593,7 +13102,12 @@ mod tests {
             "paths": ["present.rs"],
         });
         assert!(
-            evaluate_completion_check_locally(&grep_absent_present_clean, tmp.path()).await,
+            evaluate_completion_check_locally(
+                &grep_absent_present_clean,
+                tmp.path(),
+                "goal-vacuous-pass",
+            )
+            .await,
             "grep_absent against an existing, clean file must still pass"
         );
 
@@ -12602,7 +13116,7 @@ mod tests {
             "cmd": "   ",
         });
         assert!(
-            !evaluate_completion_check_locally(&empty_cmd, tmp.path()).await,
+            !evaluate_completion_check_locally(&empty_cmd, tmp.path(), "goal-vacuous-pass").await,
             "an empty/whitespace command must not pass"
         );
 
@@ -12611,7 +13125,171 @@ mod tests {
             "type": "command_exit_zero",
             "cmd": "true",
         });
-        assert!(evaluate_completion_check_locally(&real_cmd, tmp.path()).await);
+        assert!(
+            evaluate_completion_check_locally(&real_cmd, tmp.path(), "goal-vacuous-pass").await
+        );
+    }
+
+    /// E2a pinning test: the SAME `command_exit_zero` check against the SAME
+    /// (unedited) worktree content, for the SAME goal, must execute the
+    /// command only once — the second call is served from
+    /// `check_cache::get_or_run`. Proven by a command that appends a marker
+    /// line to a file every time it actually runs: if it ran twice, the file
+    /// would have two lines.
+    #[tokio::test]
+    async fn evaluate_completion_check_locally_caches_command_exit_zero_within_a_goal() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["-c", "init.defaultBranch=main", "init", "-q"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(tmp.path().join("seed.txt"), "seed\n").unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["add", "seed.txt"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["commit", "--no-gpg-sign", "-qm", "seed"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+
+        // The marker lives in a SEPARATE scratch dir, never inside `tmp.path()`
+        // (the fingerprinted working_dir) — a marker written INSIDE it would
+        // itself move the content fingerprint on every real run, defeating
+        // the very cache-hit this test is pinning (I1, harness loop,
+        // 2026-09-10, gate fix).
+        let marker_dir = tempfile::tempdir().unwrap();
+        let marker = marker_dir.path().join("ran.marker");
+        let cmd = format!("echo x >> {}", marker.display());
+        let check = serde_json::json!({ "type": "command_exit_zero", "cmd": cmd });
+
+        assert!(evaluate_completion_check_locally(&check, tmp.path(), "goal-cache-e2e").await);
+        assert!(evaluate_completion_check_locally(&check, tmp.path(), "goal-cache-e2e").await);
+
+        let lines = std::fs::read_to_string(&marker).unwrap_or_default();
+        assert_eq!(
+            lines.lines().count(),
+            1,
+            "the command must have actually executed only once across both calls: {lines:?}"
+        );
+    }
+
+    /// E2a pinning test, same fixture: an edit to the worktree between the
+    /// two calls forces a second real execution (the content fingerprint
+    /// that the cache key includes has moved).
+    #[tokio::test]
+    async fn evaluate_completion_check_locally_reruns_after_an_edit_between_calls() {
+        let tmp = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["-c", "init.defaultBranch=main", "init", "-q"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(&args)
+                .current_dir(tmp.path())
+                .status()
+                .unwrap()
+                .success());
+        }
+        std::fs::write(tmp.path().join("seed.txt"), "seed\n").unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["add", "seed.txt"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["commit", "--no-gpg-sign", "-qm", "seed"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+
+        // Same reasoning as the sibling test above: keep the marker OUTSIDE
+        // the fingerprinted working_dir, so the second call's execution is
+        // proof of the real edit below moving the fingerprint — not an
+        // artifact of the marker file's own existence doing it instead.
+        let marker_dir = tempfile::tempdir().unwrap();
+        let marker = marker_dir.path().join("ran.marker");
+        let cmd = format!("echo x >> {}", marker.display());
+        let check = serde_json::json!({ "type": "command_exit_zero", "cmd": cmd });
+
+        assert!(evaluate_completion_check_locally(&check, tmp.path(), "goal-cache-edit").await);
+        std::fs::write(tmp.path().join("seed.txt"), "seed, edited\n").unwrap();
+        assert!(evaluate_completion_check_locally(&check, tmp.path(), "goal-cache-edit").await);
+
+        let lines = std::fs::read_to_string(&marker).unwrap_or_default();
+        assert_eq!(
+            lines.lines().count(),
+            2,
+            "an edit between calls must force the command to actually run again: {lines:?}"
+        );
+    }
+
+    /// E2a pinning test, same fixture: the identical command against
+    /// identical, unedited content but a DIFFERENT goal id never reuses the
+    /// other goal's cache entry.
+    #[tokio::test]
+    async fn evaluate_completion_check_locally_never_shares_cache_across_goals() {
+        let tmp = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["-c", "init.defaultBranch=main", "init", "-q"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(&args)
+                .current_dir(tmp.path())
+                .status()
+                .unwrap()
+                .success());
+        }
+        std::fs::write(tmp.path().join("seed.txt"), "seed\n").unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["add", "seed.txt"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["commit", "--no-gpg-sign", "-qm", "seed"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+
+        let marker = tmp.path().join("ran.marker");
+        let cmd = format!("echo x >> {}", marker.display());
+        let check = serde_json::json!({ "type": "command_exit_zero", "cmd": cmd });
+
+        assert!(evaluate_completion_check_locally(&check, tmp.path(), "goal-cache-alpha").await);
+        assert!(evaluate_completion_check_locally(&check, tmp.path(), "goal-cache-beta").await);
+
+        let lines = std::fs::read_to_string(&marker).unwrap_or_default();
+        assert_eq!(
+            lines.lines().count(),
+            2,
+            "two different goals must never share a cache entry: {lines:?}"
+        );
     }
 
     /// Pinning test: "goal 1 is not left held forever (either complete if
@@ -13725,6 +14403,162 @@ mod tests {
         );
     }
 
+    /// I1 pin (harness loop, 2026-09-10, wiring E2b's wall-budget primitive
+    /// into the live retry decision, from F9's fx01/fx04/fx07/fx09
+    /// forensics): a goal with a configured `wallclock_cap_secs` whose
+    /// remaining budget (60s) is under 1.2x its last attempt's own duration
+    /// (100s, needs >= 120s) must be refused a requeue and parked with the
+    /// honest `wall_budget_exhausted` receipt — never silently requeued into
+    /// an attempt almost certain to be killed mid-work by the outer
+    /// timeout. Pre-fix: this check does not exist and the goal would be
+    /// requeued to `ready` exactly like `completion_failure_respects_
+    /// custom_attempt_cap` below.
+    #[tokio::test]
+    async fn completion_failure_refuses_requeue_when_wall_budget_is_too_small() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        let now = chrono::Utc::now();
+        // cap=400s, elapsed=340s → 60s remaining; last attempt took 100s,
+        // needs >= 120s (100 * 1.2) remaining to permit another attempt.
+        let first_dispatched_at = now - chrono::Duration::seconds(340);
+        let dispatched_at = now - chrono::Duration::seconds(100);
+        // `budget` is a protected goal metadata key (`cards::merge_card_metadata`
+        // refuses it — the same guard `completion_failure_respects_custom_
+        // attempt_cap` below works around with a raw `json_set`); every other
+        // field here is unprotected and goes through the ordinary merge path.
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.budget', \
+             json('{\"wallclock_cap_secs\": 400}')) WHERE id = ?",
+        )
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        cards::merge_card_metadata(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "first_dispatched_at": first_dispatched_at.to_rfc3339(),
+                "dispatched_at": dispatched_at.to_rfc3339(),
+                "landing": {"trunk_state": "left_in_working_tree"},
+            }),
+            false,
+        )
+        .await
+        .unwrap();
+
+        handle_goal_completion(
+            &pool,
+            &card.id,
+            &card.project_id,
+            Err("Worker crashed".to_string()),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "a wall-budget refusal must park the goal, never requeue it to ready"
+        );
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("attempt_count")
+                .and_then(|value| value.as_u64()),
+            Some(1),
+            "a refused requeue must never have consumed a fresh attempt dispatch"
+        );
+        let receipt = updated
+            .metadata_json
+            .get("wall_budget_exhausted")
+            .expect("the honest wall_budget_exhausted receipt must be recorded on the card");
+        assert!(receipt
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .contains("wall budget exhausted"));
+        assert_eq!(
+            receipt.get("partial_state").and_then(|v| v.as_str()),
+            Some("left_in_working_tree"),
+            "the receipt must name what prior work was left in"
+        );
+
+        let unblock = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .expect("a wall-budget refusal must raise an unblock decision, never a silent stop");
+        assert_eq!(
+            unblock.payload.get("reason").and_then(|v| v.as_str()),
+            Some("wallclock_cap")
+        );
+    }
+
+    /// The mirror of the pin above: the SAME remaining/last-attempt shape
+    /// but with `remaining >= last_attempt * 1.2` (here: 200s remaining,
+    /// 100s last attempt, needs >= 120s) must requeue exactly as before this
+    /// lane — the check must never refuse an attempt that genuinely has
+    /// enough budget left.
+    #[tokio::test]
+    async fn completion_failure_still_requeues_when_wall_budget_is_ample() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        let now = chrono::Utc::now();
+        // cap=400s, elapsed=200s → 200s remaining; last attempt took 100s,
+        // needs >= 120s — ample.
+        let first_dispatched_at = now - chrono::Duration::seconds(200);
+        let dispatched_at = now - chrono::Duration::seconds(100);
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.budget', \
+             json('{\"wallclock_cap_secs\": 400}')) WHERE id = ?",
+        )
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        cards::merge_card_metadata(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "first_dispatched_at": first_dispatched_at.to_rfc3339(),
+                "dispatched_at": dispatched_at.to_rfc3339(),
+            }),
+            false,
+        )
+        .await
+        .unwrap();
+
+        handle_goal_completion(
+            &pool,
+            &card.id,
+            &card.project_id,
+            Err("Worker crashed".to_string()),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "ample remaining wall budget must still requeue for retry, unchanged"
+        );
+        assert!(updated.metadata_json.get("wall_budget_exhausted").is_none());
+    }
+
     #[tokio::test]
     async fn completion_failure_respects_custom_attempt_cap() {
         let pool = test_pool().await;
@@ -14634,8 +15468,67 @@ mod tests {
     /// identity check. Pre-fix: this call succeeds (the restriction is
     /// silently ignored for a pinned request) — this assertion fails on
     /// `.is_ok()` instead of the expected `Err`.
+    ///
+    /// M2 (G8 review, harness loop Lane E3 2026-09-10): the prior version of
+    /// this test found its external worker via
+    /// `agent_identity::load_agent_config()`'s REAL result — which reads
+    /// this machine's actual `~/.permagent/agent.yaml`
+    /// (`agent_identity::agent_yaml_path`, gated on `PERMAGENT_PATH_ROOT`
+    /// only when a test opts in) merged with `default_roster()` only for
+    /// keys the file does NOT already define
+    /// (`merge_missing_default_workers` — `.entry(key).or_insert(...)`,
+    /// never overwrites an existing entry). A machine whose saved
+    /// `agent.yaml` redefines every default external-CLI worker
+    /// (`claude_code`/`codex`/`cursor`) as something other than
+    /// `ExternalCli`, or removes them, made the `else { return; }` that used
+    /// to sit here silently skip this ENTIRE test on THAT machine — never
+    /// caught by CI's own clean environment — permanently losing coverage
+    /// for the exact fx08 regression this lane exists to pin. Fixed by
+    /// constructing the roster this test runs against, in an isolated
+    /// `PERMAGENT_PATH_ROOT`, so an external-CLI worker is unconditionally
+    /// present and this test can never pass vacuously.
     #[tokio::test]
     async fn select_requested_worker_refuses_an_external_pin_when_restricted_to_internal() {
+        let _guard = env_lock::lock_env([("PERMAGENT_PATH_ROOT", None::<&str>)]);
+        let path_root = tempfile::tempdir().unwrap();
+        std::env::set_var("PERMAGENT_PATH_ROOT", path_root.path());
+
+        let external_key = "e3_test_external_worker";
+        let mut workers = std::collections::HashMap::new();
+        workers.insert(
+            external_key.to_string(),
+            agent_identity::WorkerPersona {
+                first_name: "E3 Test External".to_string(),
+                engine: agent_identity::WorkerEngineKind::ExternalCli {
+                    bin: "definitely-not-a-real-binary-e3-test".to_string(),
+                    args: vec!["{prompt}".to_string()],
+                },
+                ..Default::default()
+            },
+        );
+        let fixture_config = agent_identity::AgentConfig {
+            primary: Default::default(),
+            workers,
+        };
+        let yaml_path = agent_identity::agent_yaml_path();
+        std::fs::create_dir_all(yaml_path.parent().unwrap()).unwrap();
+        std::fs::write(&yaml_path, serde_yaml::to_string(&fixture_config).unwrap()).unwrap();
+
+        // Confirm the fixture is genuinely external-CLI before trusting
+        // anything below — this pin must never itself pass vacuously.
+        let loaded = agent_identity::load_agent_config();
+        let persona = loaded
+            .workers
+            .get(external_key)
+            .expect("the fixture worker must be present in the loaded roster");
+        assert!(
+            !matches!(
+                persona.engine,
+                agent_identity::WorkerEngineKind::InternalSubagent
+            ),
+            "the fixture worker must be an external-CLI engine, not internal"
+        );
+
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(crate::session::SessionManager::new(
             tmp.path().to_path_buf(),
@@ -14643,19 +15536,6 @@ mod tests {
         let pool = sm.pool_clone().await.unwrap();
         let card = setup_goal_in_state(&pool, "ready", 0).await;
         let probe_cache = ProbeCache::new();
-
-        let config = agent_identity::load_agent_config();
-        let Some((external_key, _)) = config.workers.iter().find(|(_, persona)| {
-            !matches!(
-                persona.engine,
-                agent_identity::WorkerEngineKind::InternalSubagent
-            )
-        }) else {
-            // No external-CLI worker configured in this test environment's
-            // roster — nothing to pin, nothing to refuse. Not a failure of
-            // this lane's fix; there is simply no fixture for it here.
-            return;
-        };
 
         let err = select_requested_worker(&pool, &probe_cache, &card, external_key, true)
             .await
@@ -14666,9 +15546,10 @@ mod tests {
         );
 
         // Unrestricted, this fix must add NO new refusal — the external
-        // worker may still fail for its own, pre-existing reasons (e.g. its
-        // CLI binary is not installed on this test machine), but never for
-        // "restricted to internal workers only".
+        // worker may still fail for its own, pre-existing reasons (its CLI
+        // binary does not exist on this test machine, by deliberate
+        // construction above), but never for "restricted to internal
+        // workers only".
         if let Err(unrestricted_err) =
             select_requested_worker(&pool, &probe_cache, &card, external_key, false).await
         {
@@ -14677,6 +15558,8 @@ mod tests {
                 "an unrestricted run must never see this lane's new refusal: {unrestricted_err}"
             );
         }
+
+        std::env::remove_var("PERMAGENT_PATH_ROOT");
     }
 
     /// T2: no policy (the daemon's own `install_dispatch_hook` shape) leaves
@@ -15542,6 +16425,72 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(col.state_binding.as_deref(), Some("review"));
+    }
+
+    /// H1 (G8 review, harness loop Lane E3 2026-09-10), G8's own pinning
+    /// test 3: "dispatch with no known working dir → refused, not
+    /// current_dir". Before this lane, a project with no `root_path` and no
+    /// attached session fell back to `std::env::current_dir()` — under
+    /// `cargo test` that is THIS repo's own checkout (see
+    /// `init_git_repo_for_dispatch_test`'s own doc comment, found live
+    /// while writing an earlier test in this same file) — and dispatch
+    /// would have proceeded to isolate a REAL worktree under it. Pre-fix,
+    /// this call would succeed (or fail for some unrelated reason far
+    /// downstream, having already used the wrong directory); this asserts
+    /// it refuses immediately, honestly, and leaves the card untouched.
+    #[tokio::test]
+    async fn dispatch_goal_fn_refuses_when_no_working_directory_is_known_never_falls_back_to_current_dir(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+
+        // The default `personal` project this fixture dispatches onto has
+        // `root_path` NULL (the same seed Lane F8/D1's forensics traced this
+        // whole hazard class to) and no `context.session` is attached — so
+        // neither of the two legitimate sources this fix consults can
+        // resolve a working directory.
+        let card = setup_goal_in_state(&pool, "ready", 0).await;
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let probe_cache = ProbeCache::new();
+
+        let err = dispatch_goal_fn(&context, &probe_cache, &card.id, None, None)
+            .await
+            .expect_err("dispatch must refuse rather than silently use the daemon's cwd");
+        assert!(
+            err.contains("no working directory is known"),
+            "the refusal must say why, not just fail: {err}"
+        );
+        assert!(
+            err.contains("refusing to fall back to the daemon's own current directory"),
+            "the refusal must name the specific fallback it is declining, not merely fail for \
+             some unrelated downstream reason: {err}"
+        );
+
+        // Every other refusal in `dispatch_goal_fn` leaves the card in Ready
+        // with no metadata changes — this one must be no different.
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "a refused dispatch must never move the card out of Ready"
+        );
+        assert!(
+            updated.metadata_json.get("worker_key").is_none(),
+            "no worker was ever selected against a real working directory, so no worker_key \
+             may be recorded"
+        );
     }
 
     #[tokio::test]
@@ -19930,6 +20879,15 @@ mod tests {
     /// function, in order, so this can never race another test over which
     /// value wins the `.set()` (mirrors `test_dispatch_recorder`'s own
     /// documented single-binary caveat).
+    ///
+    /// I1 (harness loop, 2026-09-10, gate fix): that caveat covers a race
+    /// WITHIN this test's own two phases, not against every OTHER test that
+    /// also calls `GOAL_DISPATCH_HOOK.set(...)`
+    /// (`test_dispatch_recorder::install()`, elsewhere in this crate) —
+    /// under parallel execution, whichever test's `.set()` wins the
+    /// `OnceLock` race first silently starves every other one. Serialized
+    /// against every other such test for exactly that reason.
+    #[serial_test::serial]
     #[tokio::test]
     async fn create_roadmap_dispatches_a_real_child_session_once_a_dispatch_hook_is_installed() {
         let (_tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
@@ -19969,6 +20927,13 @@ mod tests {
             let hook_sm = hook_sm.clone();
             let parent_session_id = parent_session_id.clone();
             Box::pin(async move {
+                // I1 (harness loop, 2026-09-10, gate fix): see
+                // `test_dispatch_recorder`'s own doc comment — this test's
+                // own custom closure may win the `GOAL_DISPATCH_HOOK` race
+                // for the rest of the process; recording here keeps
+                // `test_dispatch_recorder::saw(...)` reliable for whichever
+                // OTHER test asks about a card THIS closure ends up handling.
+                test_dispatch_recorder::record(_card_id.clone());
                 let child = hook_sm
                     .create_session_with_parent(
                         Some(&parent_session_id),
@@ -20128,10 +21093,19 @@ mod tests {
     /// in every roster, default or user-configured — see
     /// `agent_identity::default_roster`), so the `engine_is_internal` gate
     /// passes deterministically in any test environment.
+    ///
+    /// `dispatched_secs_ago` (F1a, harness loop Lane F1 2026-09-10): R3 now
+    /// refuses to treat a goal as dead until `r3_min_grace_secs()` has
+    /// elapsed since `dispatched_at` — callers that mean to pin the
+    /// GENUINELY-dead shape must backdate this past the grace window (the
+    /// two existing pre-F1 callers below now pass 200, comfortably past the
+    /// 180s default); callers pinning the grace period itself pass a small
+    /// value instead.
     async fn dead_silent_worker_goal(
         pool: &sqlx::Pool<sqlx::Sqlite>,
         sm: &SessionManager,
         retry_count: Option<u64>,
+        dispatched_secs_ago: i64,
     ) -> cards::Card {
         use crate::projects::PERSONAL_PROJECT_ID;
         cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
@@ -20151,12 +21125,13 @@ mod tests {
             .await
             .unwrap();
 
+        let dispatched_at = chrono::Utc::now() - chrono::Duration::seconds(dispatched_secs_ago);
         let mut meta = serde_json::json!({
             "attempt_count": 1,
             "goal_state": "in_progress",
             "worker_session_id": dead_session.id,
             "worker_key": "permagent",
-            "dispatched_at": chrono::Utc::now().to_rfc3339(),
+            "dispatched_at": dispatched_at.to_rfc3339(),
         });
         if let Some(rc) = retry_count {
             meta["retry_count"] = serde_json::json!(rc);
@@ -20201,7 +21176,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
         let pool = sm.pool_clone().await.unwrap();
-        let card = dead_silent_worker_goal(&pool, &sm, None).await;
+        let card = dead_silent_worker_goal(&pool, &sm, None, 200).await;
 
         let context = PlatformExtensionContext {
             extension_manager: None,
@@ -20262,7 +21237,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
         let pool = sm.pool_clone().await.unwrap();
-        let card = dead_silent_worker_goal(&pool, &sm, Some(1)).await;
+        let card = dead_silent_worker_goal(&pool, &sm, Some(1), 200).await;
 
         let context = PlatformExtensionContext {
             extension_manager: None,
@@ -20298,6 +21273,298 @@ mod tests {
                 .and_then(|v| v.as_u64()),
             Some(1),
             "retry_count must stay at 1 — no second auto-retry"
+        );
+    }
+
+    // ── F1a: R3 misfire guard — a minimum-elapsed grace period and an
+    // execution-receipt cross-check (harness loop, Lane F1 2026-09-10, from
+    // F10 forensics) ──
+
+    /// Pins the exact misfire F10 traced: R3 must never treat a goal
+    /// dispatched only seconds ago as "exited" — before this fix,
+    /// `dispatched_at` was read but never used as a grace period, and this
+    /// shape (10s elapsed, session not yet marked busy) auto-retried
+    /// immediately, orphaning the real dispatch (fx01-M10's observed 5.5s
+    /// misfire window and smaller). Pre-fix: this test's "no retry_count"
+    /// assertion fails — the pre-F1 guard has no `min_grace_elapsed` term at
+    /// all and would auto-retry here.
+    #[tokio::test]
+    async fn goal_status_does_not_treat_a_freshly_dispatched_goal_as_dead() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = dead_silent_worker_goal(&pool, &sm, None, 10).await;
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        let result = client
+            .handle_goal_status(Some(args))
+            .await
+            .expect("goal_status must still succeed");
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            !text.contains("Automatically retried"),
+            "a goal dispatched only 10s ago must never be treated as silently dead: {text}"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("retry_count")
+                .and_then(|v| v.as_u64()),
+            None,
+            "no retry_count must be stamped before the grace period elapses"
+        );
+    }
+
+    /// Past the grace period, a goal whose own `execution_receipt` still
+    /// reports a LIVE, current-lifecycle, recently-heartbeated attempt must
+    /// also never be treated as dead — this is the second of F1a's two new
+    /// guard terms, independent of the grace period. Pre-fix: `receipt_not_
+    /// live` does not exist at all and this call auto-retries.
+    #[tokio::test]
+    async fn goal_status_does_not_treat_a_goal_as_dead_when_its_execution_receipt_is_live() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = dead_silent_worker_goal(&pool, &sm, None, 200).await;
+        let dead_session_id = card
+            .metadata_json
+            .get("worker_session_id")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
+
+        let receipt = ExecutionReceipt::new(
+            "permagent",
+            dead_session_id,
+            serde_json::json!({}),
+            daemon_lifecycle_id().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        cards::merge_card_metadata(
+            &pool,
+            &card.id,
+            serde_json::json!({ "execution_receipt": receipt }),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        let result = client
+            .handle_goal_status(Some(args))
+            .await
+            .expect("goal_status must still succeed");
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            !text.contains("Automatically retried"),
+            "a live execution_receipt must block R3's redispatch even past the grace period: \
+             {text}"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("retry_count")
+                .and_then(|v| v.as_u64()),
+            None,
+            "no auto-retry must happen while the execution_receipt still reads live"
+        );
+    }
+
+    /// F1c: past the grace period, with the execution_receipt genuinely dead
+    /// (none recorded here at all — the "nothing to contradict" case), a
+    /// worktree holding a real commit beyond baseline must route to review
+    /// instead of being silently redispatched over — the exact fx05 shape
+    /// F10 traced (a correct, committed fix from the abandoned session the
+    /// goal's own bookkeeping never rediscovered). Pre-fix: R3 has no
+    /// worktree inspection at all and would redispatch straight over this
+    /// commit.
+    #[tokio::test]
+    async fn goal_status_routes_to_review_instead_of_redispatch_when_abandoned_work_exists() {
+        use crate::projects::PERSONAL_PROJECT_ID;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+
+        let repo = tmp.path().join("proj");
+        init_git_repo_for_dispatch_test(&repo);
+        let baseline = String::from_utf8(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(repo.to_str().unwrap())
+            .bind(PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = dead_silent_worker_goal(&pool, &sm, None, 200).await;
+        let dead_session_id = card
+            .metadata_json
+            .get("worker_session_id")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
+        cards::merge_card_metadata(
+            &pool,
+            &card.id,
+            serde_json::json!({ "baseline_commit": baseline }),
+            false,
+        )
+        .await
+        .unwrap();
+
+        // The abandoned session's own worktree at the exact conventional
+        // path, with a real commit beyond baseline.
+        let worktree = repo
+            .parent()
+            .unwrap()
+            .join(goal_engine::GOAL_WORKTREES_DIR)
+            .join(&dead_session_id);
+        let git_repo = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {:?} (in repo) failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git_repo(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "abandoned-fix",
+            worktree.to_str().unwrap(),
+            &baseline,
+        ]);
+        let git_worktree = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&worktree)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {:?} (in worktree) failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git_worktree(&["config", "user.email", "t@t.t"]);
+        git_worktree(&["config", "user.name", "t"]);
+        git_worktree(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(worktree.join("fix.txt"), "the real fix\n").unwrap();
+        git_worktree(&["add", "."]);
+        git_worktree(&["commit", "-q", "-m", "the real fix"]);
+        let head = String::from_utf8(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&worktree)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        let result = client
+            .handle_goal_status(Some(args))
+            .await
+            .expect("goal_status must still succeed");
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            !text.contains("Automatically retried"),
+            "work present in the abandoned worktree must never be redispatched over: {text}"
+        );
+        assert!(
+            text.contains(&head),
+            "the status message must name the abandoned commit: {text}"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("retry_count")
+                .and_then(|v| v.as_u64()),
+            None,
+            "no auto-retry must have happened"
+        );
+        let annotation = updated
+            .metadata_json
+            .get("abandoned_work")
+            .and_then(|v| v.as_str())
+            .expect("abandoned_work must be recorded on the card (F1c)");
+        assert!(
+            annotation.contains(&head) && annotation.contains(worktree.to_str().unwrap()),
+            "abandoned_work must name both the worktree and the sha: {annotation}"
+        );
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("needs_human_attention")
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "found abandoned work must route to review via needs_human_attention"
+        );
+
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "the card must stay in_progress — never bounced back to Ready over real work"
         );
     }
 }

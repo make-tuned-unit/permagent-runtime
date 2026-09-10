@@ -344,6 +344,36 @@ mod tests {
         );
     }
 
+    /// I1 pin (harness loop, 2026-09-10, from M10's forensics: 10/10 M10
+    /// coordinators hit the reservation gate at the flat $1.662976
+    /// worst-case constant, and `cost_reservations` shows it STILL applied
+    /// to `zai`/`glm-4.7`). This pins the org-qualified `"zai-org"`
+    /// provider spelling specifically — `providers::canonical::name_builder`'s
+    /// new alias (`"zai-org" => "zai"`) resolves it to the SAME real
+    /// $0.60/$2.20-per-Mtok rate `"zai"` itself carries, never the global
+    /// worst case. Pre-fix, `resolve_pricing("zai-org", "glm-4.7")` matched
+    /// nothing in the canonical registry (no bare top-level `"zai-org"` id
+    /// exists) and fell all the way to `WorstCase`.
+    #[test]
+    fn zai_org_alias_never_falls_back_to_the_worst_case_constant() {
+        let cfg = config(Some(131_072), Some(131_072));
+        let bound = plan_reservation_bound("zai-org", "glm-4.7", CostTier::PaidApi, &cfg, 1)
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            bound.pricing_provenance,
+            PricingProvenance::WorstCase,
+            "the zai-org alias must resolve real zai pricing, not the global worst case: \
+             {bound:?}"
+        );
+        let expected = 131_072.0 / 1_000_000.0 * 2.20;
+        assert!(
+            (bound.amount_usd - expected).abs() < 0.0001,
+            "expected ${expected:.6}, got ${:.6}",
+            bound.amount_usd
+        );
+    }
+
     // NOTE on the `KnowledgeTable` branch's own coverage: every real,
     // non-local, non-zero-priced row currently in `cost_router::knowledge`
     // already has a matching entry in the canonical registry (by design —

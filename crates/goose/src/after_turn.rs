@@ -460,14 +460,17 @@ impl ReviewerMandate {
     /// formatting diffs") says to skip the mandate outright? Reads the
     /// session's working dir to compute the actual `git diff`; the pure
     /// decision is [`trivial_skip_reason_for_dir`], which a test drives
-    /// directly against a scratch repo.
+    /// directly against a scratch repo. E2a: routed through
+    /// [`trivial_skip_reason_for_dir_cached`] so a hold-recheck loop that
+    /// re-consults this hook several times over the SAME, unedited content
+    /// does not re-shell-out for `git diff`/`git ls-files` every time.
     async fn trivial_skip_reason(session_id: &str) -> Option<String> {
         if !trivial_skip_enabled_by_env() {
             return None;
         }
         let manager = crate::session::SessionManager::instance();
         let session = manager.get_session(session_id, false).await.ok()?;
-        trivial_skip_reason_for_dir(&session.working_dir).await
+        trivial_skip_reason_for_dir_cached(session_id, &session.working_dir).await
     }
 
     /// The live half: read this session's record for its author (provider,
@@ -770,6 +773,78 @@ async fn trivial_skip_reason_for_dir(working_dir: &std::path::Path) -> Option<St
     match crate::cost_router::review_required(&paths, lines) {
         crate::cost_router::ReviewTrigger::Skip { reason } => Some(reason),
         crate::cost_router::ReviewTrigger::Review => None,
+    }
+}
+
+/// E2a: the "hold-recheck" caching wrapper around [`trivial_skip_reason_for_dir`].
+///
+/// `ReviewerMandate::after_turn` re-runs `trivial_skip_reason` (three `git`
+/// subprocess calls: one `--shortstat` diff, one `--name-only` diff, one
+/// `ls-files --others`) on EVERY turn it is consulted while a hold is
+/// pending — the mandate's own "hold-recheck loop", the same repeated-
+/// recheck shape G7's review flagged for the goal-dispatch credit path. A
+/// worker can be held/re-prompted several times in a row with no new commit
+/// in between (waiting on a reviewer, retrying an unrelated tool call), and
+/// each of those turns pays for the same three `git` calls against content
+/// that has not moved.
+///
+/// `AfterTurnContext` carries no `goal_id` (this guard is session-scoped, not
+/// goal-scoped) — `session_id` is used as the cache-key dimension instead.
+/// This is a sound substitute for this call site specifically: E1's own
+/// forensics established that a dispatched worker session maps to at most
+/// one goal attempt at a time, so "never cache across goals" is preserved by
+/// "never cache across sessions" here.
+///
+/// The underlying [`trivial_skip_reason_for_dir`] returns `Option<String>`
+/// (a reason on skip, `None` on "still needs review") — richer than
+/// [`crate::check_cache::CachedCheckResult`]'s bare `passed: bool`. Rather
+/// than widen the shared cache-result shape for one caller, the eligibility
+/// bit alone is cached (`passed` = "skip is eligible") and the real reason
+/// text is captured out-of-band on a genuine (non-cached) run; a cache HIT
+/// still returns a real, honest `Some`/`None` — just with a generic reason
+/// string on the `Some` side, since the specific wording was already logged
+/// on the run that produced it and does not affect `after_turn`'s control
+/// flow (Allow-vs-not), which only depends on `Some` vs `None`.
+async fn trivial_skip_reason_for_dir_cached(
+    session_id: &str,
+    working_dir: &std::path::Path,
+) -> Option<String> {
+    // I1 (harness loop, 2026-09-10, gate fix): `RefCell` is not `Sync`, so a
+    // `&RefCell<_>` captured across the `async move` block below is not
+    // `Send` — and `AfterTurnHook::after_turn` requires its returned future
+    // be `Send`. `std::sync::Mutex` is the `Send`+`Sync` equivalent for this
+    // single-threaded-in-practice, briefly-locked use (write once inside the
+    // closure, read once after `get_or_run` returns); never contended.
+    let captured_reason: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    // A `&Mutex<_>` is `Copy`, so moving it into the closure/future below
+    // (needed so the future does not borrow the outer closure's stack frame)
+    // leaves `captured_reason` itself fully usable afterward.
+    let captured_reason_ref = &captured_reason;
+    let (result, was_cache_hit) = crate::check_cache::get_or_run(
+        session_id,
+        "after_turn::reviewer_mandate::trivial_skip",
+        working_dir,
+        move || async move {
+            let reason = trivial_skip_reason_for_dir(working_dir).await;
+            *captured_reason_ref
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = reason.clone();
+            crate::check_cache::CachedCheckResult {
+                passed: reason.is_some(),
+            }
+        },
+    )
+    .await;
+
+    if was_cache_hit {
+        result.passed.then(|| {
+            "trivial-skip eligible (cached; see the earlier receipt for the exact reason)"
+                .to_string()
+        })
+    } else {
+        captured_reason
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -2754,6 +2829,112 @@ mod tests {
             reason.is_none(),
             "the knob off must restore always-review behaviour, got {reason:?}"
         );
+    }
+
+    // ── E2a: the check-cache wrapper around the trivial-skip computation ──
+
+    /// The cached wrapper's first (real) call must populate the shared
+    /// `check_cache` under this session's own key — proof the wiring is
+    /// real, not a pass-through that happens to return the right answer.
+    #[tokio::test]
+    async fn trivial_skip_reason_for_dir_cached_populates_the_shared_cache() {
+        let _g = env_lock::lock_env([(REVIEWER_MANDATE_SKIP_TRIVIAL_ENV, None::<&str>)]);
+        let repo = scratch_git_repo();
+        std::fs::write(
+            repo.path().join("NOTES.md"),
+            "one\ntwo\nthree\nfour\nfive\n",
+        )
+        .unwrap();
+        let session_id = "session-trivial-skip-cache";
+        crate::check_cache::clear_goal(session_id);
+
+        let first = trivial_skip_reason_for_dir_cached(session_id, repo.path()).await;
+        assert!(first.is_some(), "a docs-only diff must be skippable");
+
+        let hash = crate::check_cache::content_fingerprint(repo.path())
+            .await
+            .unwrap();
+        let cached = crate::check_cache::lookup(
+            session_id,
+            "after_turn::reviewer_mandate::trivial_skip",
+            &hash,
+        );
+        assert_eq!(
+            cached,
+            Some(crate::check_cache::CachedCheckResult { passed: true }),
+            "the first (real) call must have populated the shared cache under this session's key"
+        );
+
+        // A second call over the SAME, unedited content must still resolve
+        // "eligible" — this time served from the cache.
+        let second = trivial_skip_reason_for_dir_cached(session_id, repo.path()).await;
+        assert!(second.is_some());
+    }
+
+    /// An edit between two calls must never be masked by a stale cache
+    /// entry: the SAME session, now with a substantive product-source diff,
+    /// must get a fresh (non-`Skip`) verdict, not the earlier "eligible"
+    /// answer.
+    #[tokio::test]
+    async fn trivial_skip_reason_for_dir_cached_recomputes_after_an_edit() {
+        let _g = env_lock::lock_env([(REVIEWER_MANDATE_SKIP_TRIVIAL_ENV, None::<&str>)]);
+        let repo = scratch_git_repo();
+        std::fs::write(
+            repo.path().join("NOTES.md"),
+            "one\ntwo\nthree\nfour\nfive\n",
+        )
+        .unwrap();
+        let session_id = "session-trivial-skip-cache-edit";
+        crate::check_cache::clear_goal(session_id);
+
+        let first = trivial_skip_reason_for_dir_cached(session_id, repo.path()).await;
+        assert!(first.is_some());
+
+        let big: String = (0..20).map(|i| format!("// line {i}\n")).collect();
+        std::fs::write(repo.path().join("lib.rs"), format!("fn main() {{}}\n{big}")).unwrap();
+        let second = trivial_skip_reason_for_dir_cached(session_id, repo.path()).await;
+        assert!(
+            second.is_none(),
+            "an edit that makes the diff substantive must never be masked by a stale \
+             cache entry, got {second:?}"
+        );
+    }
+
+    /// The identical, unedited content but a DIFFERENT session never reuses
+    /// the other session's cache entry (mirrors E2a's "different goal" pin,
+    /// substituting session id for goal id per this guard's own scope).
+    #[tokio::test]
+    async fn trivial_skip_reason_for_dir_cached_never_shares_across_sessions() {
+        let _g = env_lock::lock_env([(REVIEWER_MANDATE_SKIP_TRIVIAL_ENV, None::<&str>)]);
+        let repo = scratch_git_repo();
+        std::fs::write(
+            repo.path().join("NOTES.md"),
+            "one\ntwo\nthree\nfour\nfive\n",
+        )
+        .unwrap();
+        crate::check_cache::clear_goal("session-trivial-skip-a");
+        crate::check_cache::clear_goal("session-trivial-skip-b");
+
+        let a = trivial_skip_reason_for_dir_cached("session-trivial-skip-a", repo.path()).await;
+        let b = trivial_skip_reason_for_dir_cached("session-trivial-skip-b", repo.path()).await;
+        assert!(a.is_some());
+        assert!(b.is_some());
+
+        let hash = crate::check_cache::content_fingerprint(repo.path())
+            .await
+            .unwrap();
+        assert!(crate::check_cache::lookup(
+            "session-trivial-skip-a",
+            "after_turn::reviewer_mandate::trivial_skip",
+            &hash
+        )
+        .is_some());
+        assert!(crate::check_cache::lookup(
+            "session-trivial-skip-b",
+            "after_turn::reviewer_mandate::trivial_skip",
+            &hash
+        )
+        .is_some());
     }
 
     // ── G-3: the trivial-diff skip must never erase a pending/negative

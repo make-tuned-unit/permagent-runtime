@@ -1989,7 +1989,22 @@ impl Agent {
                 // independent of mutable session settings so a provider switch
                 // on a later turn cannot rewrite this call's attribution.
                 let turn_provider = self.provider().await?;
-                let invocation_id = Uuid::new_v4().to_string();
+                // I1 (harness loop, 2026-09-10): reuse a still-pending,
+                // TTL-valid reservation grant from a prior headless gate
+                // auto-answer for THIS session, if one exists, instead of
+                // always minting a fresh invocation_id — see
+                // `reusable_gate_grant_invocation_id`'s own doc comment for
+                // why a fresh id every call meant such a grant could never
+                // be consumed (F10's forensics).
+                let invocation_id = match crate::agents::reply_parts::reusable_gate_grant_invocation_id(
+                    &self.config.session_manager,
+                    &session.id,
+                )
+                .await
+                {
+                    Some(reused) => reused,
+                    None => Uuid::new_v4().to_string(),
+                };
                 let invocation = match self
                     .reserve_provider_invocation(
                         &session,

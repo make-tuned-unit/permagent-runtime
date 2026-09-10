@@ -1515,6 +1515,17 @@ impl CliSession {
     ///
     /// `harness_overhead p50=<ms> p95=<ms> model=<ms> tools=<ms> wall=<ms>`
     ///
+    /// I1 (harness loop, 2026-09-10, wiring E2c): when this session has a
+    /// goal (`harness_overhead_attempt_context`), three trailing tokens are
+    /// appended — `attempts=`/`cache_hits=`/`wall_budget=` — exactly M11's
+    /// own analysis needs to attribute a session-total `wall=` figure across
+    /// however many dispatch attempts produced it (M9's/F9's dominant
+    /// failure class was wall-clock exhaustion across multiple attempts,
+    /// invisible in the base line's session-total numbers alone). A session
+    /// with no goal (an ordinary interactive/chat run) prints the exact
+    /// same line as before this lane — see
+    /// `format_line_with_attempts_matches_the_base_line_when_extras_are_all_absent`.
+    ///
     /// Best-effort: a rollup query failure is logged and swallowed rather
     /// than failing an otherwise-successful headless run over an
     /// observability read.
@@ -1527,9 +1538,12 @@ impl CliSession {
             .await
         {
             Ok(rollup) => {
+                let extras = self.harness_overhead_attempt_context().await;
                 println!(
                     "{}",
-                    permagent::session::format_harness_overhead_line(&rollup)
+                    permagent::session::format_harness_overhead_line_with_attempts(
+                        &rollup, &extras
+                    )
                 );
             }
             Err(error) => {
@@ -1540,6 +1554,62 @@ impl CliSession {
                 );
             }
         }
+    }
+
+    /// I1 (harness loop, 2026-09-10, wiring E2c into the CLI print call
+    /// site): the `attempts`/`cache_hits`/`wall_budget_remaining_ms` this
+    /// session's own goal (if any) can report right now — every field stays
+    /// `None`, printing nothing extra, when this session carries no
+    /// `goal_id` at all (an ordinary interactive/chat run, or a
+    /// coordinator's own multi-goal session), when the goal card cannot be
+    /// read, or when the goal has no `wallclock_cap_secs` configured (no
+    /// budget to report a remaining figure for). Best-effort throughout,
+    /// same posture as `print_harness_overhead_line` itself: any read
+    /// failure here degrades to `None`, never to a failed run.
+    async fn harness_overhead_attempt_context(&self) -> permagent::session::AttemptContext {
+        let mut extras = permagent::session::AttemptContext::default();
+        let Ok(session) = self
+            .agent
+            .config
+            .session_manager
+            .get_session(&self.session_id, false)
+            .await
+        else {
+            return extras;
+        };
+        let Some(goal_id) = permagent::session::goal_id(&session.extension_data) else {
+            return extras;
+        };
+        let Ok(pool) = self.agent.config.session_manager.pool_clone().await else {
+            return extras;
+        };
+        let Ok(Some(card)) = permagent::cards::get_card(&pool, &goal_id).await else {
+            return extras;
+        };
+
+        extras.attempts = card
+            .metadata_json
+            .get("attempt_count")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32);
+        extras.cache_hits = Some(permagent::check_cache::hit_count(&goal_id) as u32);
+
+        let budget = permagent::goal_transition::goal_budget(&card.metadata_json);
+        if let Some(cap_secs) = budget.wallclock_cap_secs {
+            if let Some(first_dispatched_at) = card
+                .metadata_json
+                .get("first_dispatched_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            {
+                let elapsed_secs = (chrono::Utc::now()
+                    - first_dispatched_at.with_timezone(&chrono::Utc))
+                .num_seconds();
+                let remaining_secs = cap_secs as i64 - elapsed_secs;
+                extras.wall_budget_remaining_ms = Some(remaining_secs.max(0) * 1000);
+            }
+        }
+        extras
     }
 
     /// Harness loop, Lane T / T3: after a headless coding-harness Auto run's

@@ -427,11 +427,34 @@ pub fn reservation_gate_decision_request(
                 held_usd,
                 requested_usd,
                 ceiling_usd,
+                requesting_session_id: None,
             }),
         })
         .unwrap_or_default(),
         ..Default::default()
     }
+}
+
+/// I1 (harness loop, 2026-09-10, from M10's forensics): stamp
+/// [`decisions::ReservationGatePayload::requesting_session_id`] onto a
+/// request built by [`reservation_gate_decision_request`] — used only for a
+/// session-scoped gate (a coordinator's own provider call, which carries no
+/// `goal_id`), so [`decisions::find_open_reservation_gate_decision_for_session`]
+/// has something to dedupe on. Silently returns `request` unchanged if its
+/// payload isn't shaped like a reservation-gate `choice` decision —
+/// defensive, never a panic on a caller's own construction.
+pub fn with_requesting_session_id(mut request: NewDecision, session_id: &str) -> NewDecision {
+    let Ok(mut payload) = serde_json::from_value::<ChoicePayload>(request.payload.clone()) else {
+        return request;
+    };
+    let Some(gate) = payload.reservation_gate.as_mut() else {
+        return request;
+    };
+    gate.requesting_session_id = Some(session_id.to_string());
+    if let Ok(v) = serde_json::to_value(payload) {
+        request.payload = v;
+    }
+    request
 }
 
 /// Raise the spend-gate decision in the Decision Inbox and return the created

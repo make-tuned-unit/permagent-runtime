@@ -7728,6 +7728,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "regex",
  "reqwest 0.13.4",
  "rusqlite",
  "serde",

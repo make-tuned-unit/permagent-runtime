@@ -772,6 +772,59 @@ pub async fn park_goal_with_meta(
     Ok(())
 }
 
+/// F1c (harness loop, Lane F1 2026-09-10, wired by I1 as a gate fix):
+/// annotate a goal card with abandoned work `handle_goal_status`'s R3
+/// misfire guard discovered — a session it was about to treat as "exited
+/// with no error, safe to redispatch" turns out to have a real commit
+/// beyond baseline in its own worktree. Sets `abandoned_work` and flags
+/// `needs_human_attention` with a reason, WITHOUT moving the card's column
+/// — the goal stays `in_progress`; a human (or a future automated pass) is
+/// the one who decides what to do with the discovered commit, not this
+/// guard. `needs_human_attention` is a protected metadata key
+/// (`PROTECTED_GOAL_METADATA_KEYS`), so — same reasoning as every other
+/// function in this module — `cards::merge_card_metadata` refuses this
+/// write outright; this is the sanctioned mutator for exactly this case.
+pub async fn flag_abandoned_work(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    abandoned_work: &str,
+    reason: &str,
+) -> Result<(), GuardError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
+    let goal = read_goal_tx(&mut tx, card_id).await?;
+    if goal.card_type != "goal" {
+        return Err(GuardError::Invalid(format!(
+            "Card '{}' is not a goal",
+            card_id
+        )));
+    }
+    let mut meta = goal.metadata;
+    meta.insert(
+        "abandoned_work".to_string(),
+        serde_json::Value::String(abandoned_work.to_string()),
+    );
+    meta.insert(
+        "needs_human_attention".to_string(),
+        serde_json::Value::Bool(true),
+    );
+    meta.insert(
+        "needs_human_attention_reason".to_string(),
+        serde_json::Value::String(reason.to_string()),
+    );
+    let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
+        .map_err(|e| GuardError::Db(e.to_string()))?;
+
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+
+    tx.commit().await.map_err(db_err)?;
+    Ok(())
+}
+
 /// Persist an explicit, human-readable refusal reason onto the card when
 /// [`requeue_goal_with_meta`]'s guard refuses (E2, harness loop Round E) —
 /// the spec requires a refusal to be recorded on the card, not merely
@@ -850,6 +903,18 @@ pub async fn requeue_goal(
 /// the goal's own bookkeeping moved on to a second session dispatched over
 /// it. If a requeue is genuinely needed for a live session, the caller must
 /// cancel/mark that session first, then call this with `false`.
+///
+/// M1 (G8 review, harness loop Lane E3 2026-09-10): a caller passing
+/// `false` is no longer trusted blindly either — this module still cannot
+/// reach the in-memory `AgentManager`/dispatch registry (that cross-check
+/// belongs to a caller that CAN, e.g. R3's own `is_session_busy` before it
+/// gets here), but it DOES independently cross-check the goal's own
+/// `execution_receipt` (a durable record written by a wholly separate code
+/// path — the dispatch/heartbeat loop, not whatever is calling this
+/// function). A `false` claim that contradicts a live, recently-heartbeated
+/// receipt in the CURRENT daemon lifecycle is refused. This is a hint that
+/// must agree with the receipt when one exists, not an unconditionally
+/// trusted assertion; see the check itself, just below.
 pub async fn requeue_goal_with_meta(
     pool: &Pool<Sqlite>,
     card_id: &str,
@@ -912,6 +977,58 @@ pub async fn requeue_goal_with_meta(
         return Err(GuardError::Denied(refusal));
     }
 
+    // M1 (G8 review, harness loop Lane E3 2026-09-10): `dispatched_session_
+    // alive` is caller-attested and, per this function's own doc comment,
+    // this DB-only module cannot independently query the in-memory
+    // `AgentManager` the way R3's own `is_session_busy` check does. It CAN
+    // be cross-checked against a DIFFERENT independent signal already
+    // persisted here: the goal's own `execution_receipt` — the completion
+    // tracker's heartbeat record of the SAME attempt, written by a wholly
+    // separate code path (the dispatch/heartbeat loop) from whatever caller
+    // is requesting this requeue. `ExecutionReceipt::is_live` is exactly
+    // the rebind-vs-stale test restart recovery already trusts for this
+    // same question. When the receipt itself reports a live,
+    // current-lifecycle, recently-heartbeated attempt, a caller claiming
+    // `dispatched_session_alive: false` is asserting something the goal's
+    // own durable record contradicts — treat that disagreement as
+    // untrustworthy and refuse, rather than silently trusting whichever
+    // side happens to have called this function. A goal with no
+    // `execution_receipt` at all (never dispatched through that path) has
+    // nothing to cross-check against and falls through unchanged.
+    if !dispatched_session_alive {
+        if let Some(receipt) = goal
+            .metadata
+            .get("execution_receipt")
+            .cloned()
+            .and_then(|v| {
+                serde_json::from_value::<
+                    crate::agents::platform_extensions::execution_receipt::ExecutionReceipt,
+                >(v)
+                .ok()
+            })
+        {
+            let current_lifecycle =
+                crate::agents::platform_extensions::orchestrator::daemon_lifecycle_id();
+            if receipt.is_live(
+                current_lifecycle,
+                chrono::Utc::now(),
+                crate::agents::platform_extensions::execution_receipt::DEFAULT_STALENESS_SECS,
+            ) {
+                let refusal = format!(
+                    "requeue refused: caller attested goal '{card_id}' has no live dispatched \
+                     session, but its own execution_receipt still reports a live, \
+                     recently-heartbeated attempt in the current daemon lifecycle — the \
+                     caller-attested flag disagrees with the goal's own durable record and is \
+                     not trusted"
+                );
+                record_requeue_refusal_tx(&mut tx, card_id, &goal.metadata, actor, &refusal)
+                    .await?;
+                tx.commit().await.map_err(db_err)?;
+                return Err(GuardError::Denied(refusal));
+            }
+        }
+    }
+
     // E1/E2 (harness loop, Round E, from Lane F9 forensics 2026-09-10): see
     // this function's doc comment — the caller-attested liveness check.
     if dispatched_session_alive {
@@ -972,6 +1089,46 @@ pub async fn requeue_goal_with_meta(
     ));
 
     Ok(())
+}
+
+/// F1a (harness loop, Lane F1 2026-09-10, from F10 forensics): whether a
+/// goal's own `execution_receipt` reports a live, current-lifecycle,
+/// recently-heartbeated attempt — the exact rebind-vs-stale test restart
+/// recovery already trusts for this question
+/// (`execution_receipt::ExecutionReceipt::is_live`). Exposed here as a
+/// small, standalone helper (a NEW function, not a change to
+/// `requeue_goal_with_meta`'s own body above — that cross-check belongs to
+/// Lane E3, a sibling harness-loop branch not merged into this lane's base)
+/// so R3's misfire guard
+/// (`platform_extensions::orchestrator::OrchestratorClient::handle_goal_status`)
+/// can reuse the identical semantics without duplicating `is_live`'s logic
+/// inline. A goal with no `execution_receipt` at all has nothing to report
+/// live, so this returns `false` — that is not evidence the session is
+/// exited, only "this check found nothing to contradict a death claim";
+/// callers combine it with their own independent liveness signal (e.g. R3's
+/// own `is_session_busy`).
+pub fn execution_receipt_is_live(
+    metadata: &serde_json::Value,
+    current_lifecycle: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    metadata
+        .get("execution_receipt")
+        .cloned()
+        .and_then(|v| {
+            serde_json::from_value::<
+                crate::agents::platform_extensions::execution_receipt::ExecutionReceipt,
+            >(v)
+            .ok()
+        })
+        .map(|receipt| {
+            receipt.is_live(
+                current_lifecycle,
+                now,
+                crate::agents::platform_extensions::execution_receipt::DEFAULT_STALENESS_SECS,
+            )
+        })
+        .unwrap_or(false)
 }
 
 /// Return a goal to Ready from InProgress **or** Review without consuming the
@@ -2204,6 +2361,62 @@ mod tests {
         col.state_binding.unwrap_or_default()
     }
 
+    /// F1a: metadata with no `execution_receipt` at all has nothing to
+    /// report live — this is "found no contradiction", not "confirmed dead".
+    #[test]
+    fn execution_receipt_is_live_is_false_with_no_receipt_at_all() {
+        assert!(!execution_receipt_is_live(
+            &serde_json::json!({}),
+            "life-1",
+            chrono::Utc::now(),
+        ));
+    }
+
+    /// F1a: a fresh, same-lifecycle receipt reads live; the identical receipt
+    /// read from a DIFFERENT daemon lifecycle never does (restart recovery's
+    /// own rebind-vs-stale contract).
+    #[test]
+    fn execution_receipt_is_live_true_for_a_fresh_same_lifecycle_receipt() {
+        use crate::agents::platform_extensions::execution_receipt::ExecutionReceipt;
+        let now = chrono::Utc::now();
+        let receipt = ExecutionReceipt::new(
+            "permagent",
+            "sess-1",
+            serde_json::json!({}),
+            "life-1",
+            now.to_rfc3339(),
+            1,
+        );
+        let metadata = serde_json::json!({ "execution_receipt": receipt });
+        assert!(execution_receipt_is_live(&metadata, "life-1", now));
+        assert!(
+            !execution_receipt_is_live(&metadata, "life-2", now),
+            "a receipt dispatched under a different daemon lifecycle must never read as live"
+        );
+    }
+
+    /// F1a: a terminal receipt (e.g. `StaleWorker`) is never live regardless
+    /// of how recently it was touched — mirrors `ExecutionReceipt::is_live`'s
+    /// own `rebind_vs_stale` unit test.
+    #[test]
+    fn execution_receipt_is_live_false_once_terminal() {
+        use crate::agents::platform_extensions::execution_receipt::{
+            ExecutionReceipt, ReceiptState,
+        };
+        let now = chrono::Utc::now();
+        let mut receipt = ExecutionReceipt::new(
+            "permagent",
+            "sess-1",
+            serde_json::json!({}),
+            "life-1",
+            now.to_rfc3339(),
+            1,
+        );
+        receipt.finalize(ReceiptState::StaleWorker, now.to_rfc3339());
+        let metadata = serde_json::json!({ "execution_receipt": receipt });
+        assert!(!execution_receipt_is_live(&metadata, "life-1", now));
+    }
+
     #[tokio::test]
     async fn system_transition_journals_worker_without_changing_audit_actor() {
         let pool = test_pool().await;
@@ -3236,6 +3449,134 @@ mod tests {
             "the refusal reason must be durably recorded on the card: {:?}",
             card.metadata_json
         );
+    }
+
+    /// M1 (G8 review, harness loop Lane E3 2026-09-10): the caller-attested
+    /// `dispatched_session_alive: false` must not be trusted blindly when
+    /// the goal's OWN `execution_receipt` — written by a wholly separate
+    /// code path, the dispatch/heartbeat loop — still reports a live,
+    /// recently-heartbeated attempt in the CURRENT daemon lifecycle. Pre-fix:
+    /// this cross-check does not exist at all, so this call would silently
+    /// succeed and bounce the card to `ready` out from under a receipt that
+    /// says the attempt is still running.
+    #[tokio::test]
+    async fn requeue_refuses_when_caller_says_dead_but_the_execution_receipt_is_still_live() {
+        use crate::agents::platform_extensions::execution_receipt::ExecutionReceipt;
+        use crate::agents::platform_extensions::orchestrator::daemon_lifecycle_id;
+
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 1).await;
+
+        let receipt = ExecutionReceipt::new(
+            "permagent",
+            "live-session-1",
+            serde_json::json!({}),
+            daemon_lifecycle_id().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        let mut meta = goal.metadata_json.as_object().cloned().unwrap();
+        meta.insert(
+            "execution_receipt".to_string(),
+            serde_json::to_value(&receipt).unwrap(),
+        );
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::Value::Object(meta).to_string())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let err = requeue_goal_with_meta(
+            &pool,
+            &goal.id,
+            "system",
+            2,
+            "caller (wrongly) believes this session is dead",
+            &[],
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, GuardError::Denied(_)),
+            "a caller-attested death that disagrees with a live execution_receipt must be \
+             refused, not silently trusted: {err:?}"
+        );
+
+        assert_eq!(
+            state_of(&pool, &goal.id).await,
+            "in_progress",
+            "the card must stay exactly where it was"
+        );
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(1),
+            "a refused requeue must never touch attempt_count"
+        );
+        assert!(
+            card.metadata_json
+                .get("requeue_refused_reason")
+                .and_then(|v| v.as_str())
+                .is_some_and(|r| r.contains("execution_receipt")),
+            "the refusal reason must name the disagreement: {:?}",
+            card.metadata_json
+        );
+    }
+
+    /// M1: the cross-check above must not block a GENUINELY dead session —
+    /// a terminal (`Completed`) receipt is never "live" regardless of how
+    /// recently it was last touched, so a caller-attested death that AGREES
+    /// with the receipt still succeeds exactly as before this lane.
+    #[tokio::test]
+    async fn requeue_still_succeeds_when_caller_says_dead_and_the_execution_receipt_agrees() {
+        use crate::agents::platform_extensions::execution_receipt::{
+            ExecutionReceipt, ReceiptState,
+        };
+        use crate::agents::platform_extensions::orchestrator::daemon_lifecycle_id;
+
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 1).await;
+
+        let mut receipt = ExecutionReceipt::new(
+            "permagent",
+            "dead-session-1",
+            serde_json::json!({}),
+            daemon_lifecycle_id().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        receipt.finalize(ReceiptState::StaleWorker, chrono::Utc::now().to_rfc3339());
+        let mut meta = goal.metadata_json.as_object().cloned().unwrap();
+        meta.insert(
+            "execution_receipt".to_string(),
+            serde_json::to_value(&receipt).unwrap(),
+        );
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::Value::Object(meta).to_string())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        requeue_goal_with_meta(
+            &pool,
+            &goal.id,
+            "system",
+            2,
+            "worker session ended before the goal completed",
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(state_of(&pool, &goal.id).await, "ready");
     }
 
     /// E2: the guard's OTHER refusal — a goal whose landing receipt already

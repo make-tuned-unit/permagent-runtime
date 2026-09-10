@@ -912,6 +912,134 @@ pub fn evidence_excludes_role(card: &CapabilityCard, role: WorkflowRole) -> bool
         .unwrap_or(false)
 }
 
+// ── G4/G6: dispatch-visible graduation reporting ────────────────────────────
+//
+// `list_workers`/`check_worker` (`orchestrator.rs::handle_list_workers`/
+// `handle_check_worker`) must show a role's graduation BEFORE dispatch, not
+// only discover it by failure (`CODING_HARNESS_ROLE_GRADUATION_DAG.md` G4
+// rule 1). The three functions below are the pure core those two call sites
+// share, so the JSON they render can be unit-tested without a live agent
+// context (a `WorkerPersona` needs a full `OrchestratorClient`/DB/probe
+// harness to construct end-to-end).
+
+/// One role's graduation status, as reported to a caller deciding whether to
+/// trust a model for that role. Three states, never collapsed to a bool:
+/// `Unrated` (the default — no evidence either way) is a genuinely different
+/// claim from `ExcludedByEvidence` (evidence exists and actively disqualifies
+/// the role), and both differ from `Graduated`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleGraduationStatus {
+    Graduated,
+    ExcludedByEvidence,
+    Unrated,
+}
+
+impl RoleGraduationStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RoleGraduationStatus::Graduated => "graduated",
+            RoleGraduationStatus::ExcludedByEvidence => "excluded_by_evidence",
+            RoleGraduationStatus::Unrated => "unrated",
+        }
+    }
+}
+
+/// Classify `card`'s evidence for `role`. `graduated()` wins outright (it can
+/// only be `true` through [`validate_graduation`], so it already implies the
+/// evidence cleared every floor); otherwise [`evidence_excludes_role`] decides
+/// between an active exclusion and plain unrated.
+pub fn role_graduation_status(card: &CapabilityCard, role: WorkflowRole) -> RoleGraduationStatus {
+    match card.role(role) {
+        Some(e) if e.graduated() => RoleGraduationStatus::Graduated,
+        _ if evidence_excludes_role(card, role) => RoleGraduationStatus::ExcludedByEvidence,
+        _ => RoleGraduationStatus::Unrated,
+    }
+}
+
+/// The full per-role graduation object for one card: every [`WorkflowRole`],
+/// its [`RoleGraduationStatus`], the evidence-run COUNT (never the raw ids —
+/// this is a summary surface, not an audit log) and the evidence's
+/// `snapshot_date` (`None` when unrated). This is what a `list_workers`/
+/// `check_worker` row's `"graduation"` field is built from.
+pub fn card_role_graduation_json(card: &CapabilityCard) -> serde_json::Value {
+    let mut roles = serde_json::Map::new();
+    for role in WorkflowRole::all() {
+        let evidence = card.role(role);
+        let status = role_graduation_status(card, role);
+        roles.insert(
+            role.as_str().to_string(),
+            serde_json::json!({
+                "status": status.as_str(),
+                "evidence_run_count": evidence.map(|e| e.evidence_run_ids().len()).unwrap_or(0),
+                "snapshot_date": evidence.and_then(|e| e.snapshot_date()).map(|d| d.to_string()),
+            }),
+        );
+    }
+    serde_json::Value::Object(roles)
+}
+
+/// The `"graduation"` field for one roster worker: `card_role_graduation_json`
+/// for its `(provider, model)` card, `null` when the persona names no
+/// explicit provider/model (an in-process subagent that clones the session
+/// model — nothing in the directory to report against), or a short note when
+/// the persona names a pair the directory does not currently carry (not
+/// available/probed at the last `--refresh`) so the caller can tell "no
+/// evidence" apart from "not in the directory at all".
+pub fn worker_graduation_json(
+    directory: &CapabilityDirectory,
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> serde_json::Value {
+    let (Some(provider), Some(model)) = (provider, model) else {
+        return serde_json::Value::Null;
+    };
+    match directory
+        .cards
+        .iter()
+        .find(|c| c.provider == provider && c.model == model)
+    {
+        Some(card) => card_role_graduation_json(card),
+        None => serde_json::json!({
+            "note": "not in the capability directory (unavailable or not yet probed) — \
+                     run `permagent packs directory --refresh`",
+        }),
+    }
+}
+
+/// G4 rule 1, worker-dispatch side: when a goal is dispatched with an
+/// ORCHESTRATE workflow role and `derived_role_map` had nothing for it
+/// (`resolved == false`), [`super::derived::model_routing_receipt`]'s generic
+/// "not derivable from the models available" message is technically true but
+/// reads like plain absence — it does not say an ACTIVE, evidence-based
+/// refusal happened. This enriches that one receipt with the same specific
+/// reason `resolve_planner_route` already gives the roadmap-creation Decision
+/// Inbox payload (`orchestrator.rs::create_roadmap`), so a worker dispatched
+/// under the Orchestrate role carries the identical honest refusal instead of
+/// a vaguer one. No-op for every other role, and a no-op when `resolved` is
+/// `true` (nothing to explain).
+pub fn annotate_orchestrate_refusal(
+    mut receipt: serde_json::Value,
+    role: Option<WorkflowRole>,
+    resolved: bool,
+    reason: &str,
+) -> serde_json::Value {
+    if role != Some(WorkflowRole::Orchestrate) || resolved {
+        return receipt;
+    }
+    if let Some(obj) = receipt.as_object_mut() {
+        obj.insert("refused".to_string(), serde_json::json!(true));
+        obj.insert("refusal_reason".to_string(), serde_json::json!(reason));
+        obj.insert(
+            "summary".to_string(),
+            serde_json::json!(format!(
+                "ORCHESTRATE role refused for dispatch: {reason} — using the session model"
+            )),
+        );
+    }
+    receipt
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1545,5 +1673,164 @@ mod tests {
             out.contains("EDIT        -> openai/gpt-5.6  (pinned)"),
             "table must show the pin, not the derived pick: {out}"
         );
+    }
+
+    // ── G4/G6: list_workers/check_worker graduation reporting ────────────
+
+    /// A card whose EDIT role is graduated, whose MECHANICAL role's evidence
+    /// actively excludes it (below-floor pass rate), and whose other two
+    /// roles carry no evidence at all — the three statuses must be reported
+    /// distinctly, never collapsed to a bool.
+    fn card_with_mixed_role_statuses() -> CapabilityCard {
+        let mut c = card_with_role_evidence(None);
+        c.roles.insert(
+            WorkflowRole::Edit.as_str().to_string(),
+            RoleEvidence::new(
+                true,
+                true,
+                Some(0.95),
+                None,
+                vec![
+                    "run-1".to_string(),
+                    "run-2".to_string(),
+                    "run-3".to_string(),
+                ],
+                None,
+                None,
+                Some(today()),
+                today(),
+            )
+            .unwrap(),
+        );
+        c.roles.insert(
+            WorkflowRole::Mechanical.as_str().to_string(),
+            RoleEvidence::new(
+                false,
+                true,
+                Some(0.40), // below MICRO_SUITE_PASS_FLOOR
+                None,
+                vec!["run-4".to_string()],
+                None,
+                None,
+                Some(today()),
+                today(),
+            )
+            .unwrap(),
+        );
+        c
+    }
+
+    #[test]
+    fn role_graduation_status_distinguishes_all_three_states() {
+        let card = card_with_mixed_role_statuses();
+        assert_eq!(
+            role_graduation_status(&card, WorkflowRole::Edit),
+            RoleGraduationStatus::Graduated
+        );
+        assert_eq!(
+            role_graduation_status(&card, WorkflowRole::Mechanical),
+            RoleGraduationStatus::ExcludedByEvidence
+        );
+        assert_eq!(
+            role_graduation_status(&card, WorkflowRole::Review),
+            RoleGraduationStatus::Unrated
+        );
+    }
+
+    #[test]
+    fn card_role_graduation_json_reports_every_role_with_counts_and_dates() {
+        let card = card_with_mixed_role_statuses();
+        let json = card_role_graduation_json(&card);
+        let edit = &json[WorkflowRole::Edit.as_str()];
+        assert_eq!(edit["status"], "graduated");
+        assert_eq!(edit["evidence_run_count"], 3);
+        assert_eq!(edit["snapshot_date"], today().to_string());
+
+        let mech = &json[WorkflowRole::Mechanical.as_str()];
+        assert_eq!(mech["status"], "excluded_by_evidence");
+        assert_eq!(mech["evidence_run_count"], 1);
+
+        let review = &json[WorkflowRole::Review.as_str()];
+        assert_eq!(review["status"], "unrated");
+        assert_eq!(review["evidence_run_count"], 0);
+        assert!(review["snapshot_date"].is_null());
+
+        // Every role is present explicitly — never a role silently absent
+        // from the JSON standing in for "unrated".
+        for role in WorkflowRole::all() {
+            assert!(json.get(role.as_str()).is_some(), "{role:?} missing");
+        }
+    }
+
+    #[test]
+    fn worker_graduation_json_is_null_with_no_explicit_provider_or_model() {
+        let dir = directory_of(vec![card_with_mixed_role_statuses()]);
+        assert!(worker_graduation_json(&dir, None, None).is_null());
+        assert!(worker_graduation_json(&dir, Some("openai"), None).is_null());
+    }
+
+    #[test]
+    fn worker_graduation_json_notes_a_pair_absent_from_the_directory() {
+        let dir = directory_of(vec![]);
+        let v = worker_graduation_json(&dir, Some("openai"), Some("gpt-5.6-mini"));
+        assert!(
+            v["note"].as_str().unwrap().contains("--refresh"),
+            "must point the caller at how to populate it: {v}"
+        );
+    }
+
+    #[test]
+    fn worker_graduation_json_matches_the_cards_own_graduation_json() {
+        let card = card_with_mixed_role_statuses();
+        let dir = directory_of(vec![card.clone()]);
+        let via_worker = worker_graduation_json(&dir, Some(&card.provider), Some(&card.model));
+        assert_eq!(via_worker, card_role_graduation_json(&card));
+    }
+
+    // ── G4: Orchestrate-role dispatch refusal is explicit, not generic ────
+
+    #[test]
+    fn annotate_orchestrate_refusal_is_a_noop_for_every_non_orchestrate_role() {
+        let receipt = serde_json::json!({"role": "edit", "source": "session"});
+        let out = annotate_orchestrate_refusal(
+            receipt.clone(),
+            Some(WorkflowRole::Edit),
+            false,
+            "irrelevant",
+        );
+        assert_eq!(out, receipt, "a non-Orchestrate role must be untouched");
+
+        let out_none = annotate_orchestrate_refusal(receipt.clone(), None, false, "irrelevant");
+        assert_eq!(out_none, receipt, "role: None must be untouched");
+    }
+
+    #[test]
+    fn annotate_orchestrate_refusal_is_a_noop_when_resolved() {
+        let receipt = serde_json::json!({"role": "orchestrate", "source": "derived"});
+        let out = annotate_orchestrate_refusal(
+            receipt.clone(),
+            Some(WorkflowRole::Orchestrate),
+            true,
+            "irrelevant — nothing to explain when it resolved",
+        );
+        assert_eq!(out, receipt);
+    }
+
+    #[test]
+    fn annotate_orchestrate_refusal_stamps_the_specific_reason_when_unresolved() {
+        let receipt = serde_json::json!({
+            "role": "orchestrate",
+            "source": "session",
+            "summary": "session model (role not configured and not derivable from the models available)",
+        });
+        let reason = "no model in the directory clears the ORCHESTRATE floor (0.80) and none is \
+                       pinned or graduated — using the session coordinator";
+        let out =
+            annotate_orchestrate_refusal(receipt, Some(WorkflowRole::Orchestrate), false, reason);
+        assert_eq!(out["refused"], true);
+        assert_eq!(out["refusal_reason"], reason);
+        let summary = out["summary"].as_str().unwrap();
+        assert!(summary.contains("refused"), "{summary}");
+        assert!(summary.contains(reason), "{summary}");
     }
 }

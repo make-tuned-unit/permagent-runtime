@@ -33,20 +33,31 @@
 //!
 //! ## What counts as "the record"
 //!
-//! There is no separate `.qual.json` format in this crate today —
-//! [`crate::qualification::QualificationRun`] carries no provider/model/
-//! cost/latency at all, so it cannot be the evidence source. The retained
-//! artifact that DOES carry every field this pipeline needs (provider,
-//! model, solved/attempted, cost, wall-time, per-task signals) is the JSON
-//! [`crate::report::render_json`] already produces for `permagent-eval run
-//! --format json --out FILE`. [`RunFile`] below reads exactly that shape,
-//! plus a small set of additive, optional top-level fields
-//! ([`RunFile::run_id`], [`RunFile::generated_at`],
-//! [`RunFile::dag_selection_pct`], [`RunFile::smoke_task_id`]) that a
-//! forward-compatible run file may also carry (`main.rs`'s `cmd_run` stamps
-//! `run_id`/`generated_at` on every future JSON run — D2). A plain,
-//! unmodified report from today's `render_json` still parses: those fields
-//! are simply absent, and this module never fabricates them.
+//! Two artifacts can feed one `--run FILE`: the JSON
+//! [`crate::report::render_json`] report itself (`permagent-eval run
+//! --format json --out FILE`), read via [`RunFile`]; and, since K3 (X-obs-1),
+//! the `<FILE>.qual.json` sidecar every `run`/`ab` invocation ALSO writes
+//! next to `FILE` — a JSON array of [`crate::qualification::
+//! RunQualificationRecord`] (one per tier/arm), which unlike
+//! [`crate::qualification::QualificationRun`] DOES carry provider/model/
+//! cost/latency/per-task evidence. [`select_evidence_source`] prefers the
+//! sidecar when `<FILE>.qual.json` exists on disk, falling back to `FILE`
+//! itself otherwise — see [`EvidenceSource`] for how a caller can tell which
+//! one actually fed a given [`RunEvidence`]. The one field the sidecar
+//! cannot supply is `dag_selection_pct` (not part of
+//! [`crate::qualification::RunQualificationRecord`]'s schema): a
+//! qual.json-sourced run reads that as `None`, same honest-absence
+//! treatment [`RunFile::dag_selection_pct`] already gets from a report that
+//! predates G3.
+//!
+//! [`RunFile`] reads the report shape exactly, plus a small set of
+//! additive, optional top-level fields ([`RunFile::run_id`],
+//! [`RunFile::generated_at`], [`RunFile::dag_selection_pct`],
+//! [`RunFile::smoke_task_id`]) that a forward-compatible run file may also
+//! carry (`main.rs`'s `cmd_run` stamps `run_id`/`generated_at` on every
+//! future JSON run — D2). A plain, unmodified report from today's
+//! `render_json` still parses: those fields are simply absent, and this
+//! module never fabricates them.
 //!
 //! ## No incremental state
 //!
@@ -90,7 +101,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-use crate::qualification::REQUIRED_CONSECUTIVE_RUNS;
+use crate::cost::CostReading;
+use crate::harness_log::LogSignals;
+use crate::metrics::{aggregate, TaskResult};
+use crate::oracle::OracleOutcome;
+use crate::qualification::{
+    RunQualificationRecord, TaskQualificationEvidence, REQUIRED_CONSECUTIVE_RUNS,
+};
 
 /// Mirrors `crates/goose/src/cost_router/capability_directory.rs:89`'s
 /// `MICRO_SUITE_PASS_FLOOR`. See the module doc's "duplication" note.
@@ -370,6 +387,30 @@ pub struct TaskRecord {
 
 // ── One resolved run, ready to fold into a role's evidence ──────────────
 
+/// Which artifact actually fed one [`RunEvidence`]: the `<FILE>.qual.json`
+/// sidecar (K3, preferred when it exists — see [`select_evidence_source`])
+/// or the `--format json` report itself (Z4's original evidence source).
+/// Kept on [`RunEvidence`] (and surfaced per-run on
+/// [`GraduateOutcome::run_sources`]) so a caller can always tell which file
+/// actually supplied a given run's fields — never silently substituted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceSource {
+    /// The `<FILE>.qual.json` sidecar (a JSON array of
+    /// [`crate::qualification::RunQualificationRecord`]).
+    QualJson,
+    /// The `--format json --out FILE` report itself ([`RunFile`]).
+    Report,
+}
+
+impl EvidenceSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EvidenceSource::QualJson => "qual.json",
+            EvidenceSource::Report => "report",
+        }
+    }
+}
+
 /// One run's contribution to a (provider, model, role)'s evidence — already
 /// resolved to a single tier and dated, before the qualifying-streak
 /// computation runs over a full ordered batch of these.
@@ -389,6 +430,8 @@ pub struct RunEvidence {
     /// see [`run_qualifies`]).
     pub smoke_passed_this_run: Option<bool>,
     pub dag_selection_pct: Option<f64>,
+    /// Which file actually fed this run's fields. See [`EvidenceSource`].
+    pub source: EvidenceSource,
 }
 
 /// Select the one tier this invocation is grading out of a run file's
@@ -541,7 +584,246 @@ pub fn build_run_evidence(
         latency_s: tier.summary.median_duration_secs,
         smoke_passed_this_run,
         dag_selection_pct: file.dag_selection_pct,
+        source: EvidenceSource::Report,
     })
+}
+
+/// The `<FILE>.qual.json` sidecar path a `run`/`ab` invocation's `--out
+/// FILE` writes alongside its report (`.qual.json` APPENDED, never a
+/// replaced extension — mirrors `main.rs`'s private
+/// `qualification_sibling_path` exactly, so a report written to `report.json`
+/// pairs with `report.json.qual.json`).
+pub fn qual_json_sidecar_path(run_path: &Path) -> PathBuf {
+    let mut name = run_path.as_os_str().to_os_string();
+    name.push(".qual.json");
+    PathBuf::from(name)
+}
+
+/// Reconstruct the [`TaskResult`] shape [`crate::metrics::aggregate`] needs
+/// from one qual.json task record, so a qual.json-sourced run's
+/// `pass_pct`/`cost_usd`/`latency_s` are computed by the EXACT SAME
+/// aggregation code path a report's `summary` was originally derived from
+/// (`report::render_json` calls `TierReport::aggregate`, which is
+/// `crate::metrics::aggregate` over the same per-task shape) — this is what
+/// makes the two sources produce identical numbers for equivalent evidence,
+/// not a re-derivation that could drift from it. Fields `aggregate` never
+/// reads (`category`, `harness_exit`, `note`) are filled with harmless
+/// placeholders; `oracle` is parsed from `t.result`'s stable label, refusing
+/// (never guessing) on a value outside the four this crate ever writes.
+fn task_result_from_qual_evidence(t: &TaskQualificationEvidence) -> Result<TaskResult> {
+    let oracle = match t.result.as_str() {
+        "pass" => OracleOutcome::Pass,
+        "fail" => OracleOutcome::Fail,
+        "errored" => OracleOutcome::Errored,
+        "not_run" => OracleOutcome::NotRun,
+        other => bail!(
+            "task '{}': unrecognized qualification-record result label '{other}' — expected \
+             one of pass, fail, errored, not_run",
+            t.task_id
+        ),
+    };
+    Ok(TaskResult {
+        task_id: t.task_id.clone(),
+        category: String::new(),
+        solved: oracle.solved(),
+        cost: CostReading {
+            usd: t.cost_usd,
+            estimated: false,
+            ledger_rows: 0,
+            input_tokens: t.input_tokens,
+            output_tokens: t.output_tokens,
+            cache_read_tokens: t.cache_read_tokens,
+            cache_write_tokens: t.cache_write_tokens,
+        },
+        duration_secs: t.seconds,
+        harness_exit: None,
+        harness_timed_out: false,
+        oracle,
+        note: None,
+        signals: LogSignals {
+            tool_calls: t.tool_calls,
+            harness_overhead: t.harness_overhead,
+            landed_goals: t.landed_goals.clone(),
+            drain_summary: t.drain_summary.clone(),
+            create_roadmap_dispatched: t.create_roadmap_dispatched,
+            reviewer_not_independent: t.reviewer_not_independent,
+            reviewer_mutated: t.reviewer_mutated,
+            vacuous_pass: t.vacuous_pass,
+            ..LogSignals::default()
+        },
+        // G3's `selection_correct` has no qual.json-schema counterpart (see
+        // the module doc above and `build_run_evidence_from_qual_json`'s own
+        // `dag_selection_pct: None`) — never fabricated from absent data.
+        selection_correct: None,
+        seed_commit: t.seed_commit.clone(),
+        headless_autoland: t.headless_autoland.clone(),
+        headless_drain_secs: t.headless_drain_secs.clone(),
+    })
+}
+
+/// Select the one qualification record this invocation is grading out of a
+/// `<FILE>.qual.json` sidecar's array (one entry per tier/arm the writing
+/// `run`/`ab` invocation covered) — same never-guess precedence as
+/// [`select_tier`].
+pub fn select_qual_record<'a>(
+    records: &'a [RunQualificationRecord],
+    path: &Path,
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> Result<&'a RunQualificationRecord> {
+    if records.is_empty() {
+        bail!(
+            "{}: no qualification records found — expected a `<run>.qual.json` sidecar array",
+            path.display()
+        );
+    }
+    if let (Some(p), Some(m)) = (provider, model) {
+        return records
+            .iter()
+            .find(|r| r.provider == p && r.model == m)
+            .ok_or_else(|| {
+                anyhow!(
+                    "{}: no qualification record matches --provider {p} --model {m}",
+                    path.display()
+                )
+            });
+    }
+    if records.len() == 1 {
+        return Ok(&records[0]);
+    }
+    bail!(
+        "{}: contains {} qualification records — pass --provider/--model to select one",
+        path.display(),
+        records.len()
+    );
+}
+
+/// Resolve (provider, model) from a selected [`RunQualificationRecord`] —
+/// same never-guess precedence as [`resolve_identity`], except the record
+/// always carries both (unlike [`TierRecord`]'s optional fields), so a flag
+/// can only ever CONFIRM or CONFLICT with it, never fill a gap.
+pub fn resolve_identity_from_qual_record(
+    record: &RunQualificationRecord,
+    path: &Path,
+    provider_flag: Option<&str>,
+    model_flag: Option<&str>,
+) -> Result<(String, String)> {
+    if let Some(flag) = provider_flag {
+        if flag != record.provider {
+            bail!(
+                "{}: qualification record provider '{}' conflicts with --provider '{flag}'",
+                path.display(),
+                record.provider
+            );
+        }
+    }
+    if let Some(flag) = model_flag {
+        if flag != record.model {
+            bail!(
+                "{}: qualification record model '{}' conflicts with --model '{flag}'",
+                path.display(),
+                record.model
+            );
+        }
+    }
+    Ok((record.provider.clone(), record.model.clone()))
+}
+
+/// Build one [`RunEvidence`] from a selected, identity-resolved qualification
+/// record. Unlike [`build_run_evidence`], a qual.json record carries no
+/// `generated_at` of its own, so `--snapshot-date` is REQUIRED here (never
+/// guessed) — and `dag_selection_pct` is always `None`, since
+/// [`RunQualificationRecord`]'s schema has no such field yet (see the module
+/// doc's "What counts as the record" section).
+pub fn build_run_evidence_from_qual_json(
+    record: &RunQualificationRecord,
+    path: &Path,
+    snapshot_date_flag: Option<&str>,
+    role_smoke_default: Option<&str>,
+) -> Result<RunEvidence> {
+    let results: Vec<TaskResult> = record
+        .tasks
+        .iter()
+        .map(task_result_from_qual_evidence)
+        .collect::<Result<_>>()?;
+    let agg = aggregate(&results);
+    if agg.attempted == 0 {
+        bail!(
+            "{}: no attempted tasks in this qualification record — no evidence to grade",
+            path.display()
+        );
+    }
+    let pass_pct = agg.solved as f64 / agg.attempted as f64;
+    let snapshot_date = match snapshot_date_flag {
+        Some(raw) => NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+            .with_context(|| format!("--snapshot-date {raw:?} is not YYYY-MM-DD"))?,
+        None => bail!(
+            "{}: qualification records carry no generated_at — pass --snapshot-date explicitly",
+            path.display()
+        ),
+    };
+    let smoke_passed_this_run = role_smoke_default.and_then(|id| {
+        record
+            .tasks
+            .iter()
+            .find(|t| t.task_id == id)
+            .map(|t| t.result == "pass")
+    });
+    Ok(RunEvidence {
+        run_id: record.run_id.clone(),
+        snapshot_date,
+        pass_pct,
+        cost_usd: agg.total_cost_usd,
+        latency_s: agg.median_duration_secs,
+        smoke_passed_this_run,
+        dag_selection_pct: None,
+        source: EvidenceSource::QualJson,
+    })
+}
+
+/// Load and resolve one `--run FILE` into an identity plus [`RunEvidence`],
+/// preferring `<FILE>.qual.json` when it exists on disk (see the module
+/// doc's "What counts as the record" section) and falling back to `FILE`
+/// itself (parsed as a [`RunFile`] report) otherwise. This is the ONE place
+/// that decides which artifact feeds a run — [`graduate_runs_into_directory`]
+/// never re-derives that choice.
+pub fn select_evidence_source(
+    path: &Path,
+    provider: Option<&str>,
+    model: Option<&str>,
+    snapshot_date_flag: Option<&str>,
+    role_smoke_default: Option<&str>,
+) -> Result<(String, String, RunEvidence)> {
+    let sidecar = qual_json_sidecar_path(path);
+    if sidecar.exists() {
+        let raw = std::fs::read_to_string(&sidecar)
+            .with_context(|| format!("reading qualification record from {}", sidecar.display()))?;
+        let records: Vec<RunQualificationRecord> =
+            serde_json::from_str(&raw).with_context(|| {
+                format!(
+                    "parsing qualification record JSON from {}",
+                    sidecar.display()
+                )
+            })?;
+        let record = select_qual_record(&records, &sidecar, provider, model)?;
+        let (resolved_provider, resolved_model) =
+            resolve_identity_from_qual_record(record, &sidecar, provider, model)?;
+        let evidence = build_run_evidence_from_qual_json(
+            record,
+            &sidecar,
+            snapshot_date_flag,
+            role_smoke_default,
+        )?;
+        return Ok((resolved_provider, resolved_model, evidence));
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading run report from {}", path.display()))?;
+    let file: RunFile = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing run report JSON from {}", path.display()))?;
+    let tier = select_tier(&file, path, provider, model)?;
+    let (resolved_provider, resolved_model) = resolve_identity(tier, path, provider, model)?;
+    let evidence = build_run_evidence(&file, tier, path, snapshot_date_flag, role_smoke_default)?;
+    Ok((resolved_provider, resolved_model, evidence))
 }
 
 /// Whether one run, on its own, qualifies toward the consecutive-streak
@@ -877,6 +1159,11 @@ pub struct GraduateOutcome {
     pub before: Option<RoleEvidence>,
     pub after: RoleEvidence,
     pub written: bool,
+    /// Which artifact fed each `--run` path, in the same order as
+    /// `req.runs` — `(run_id, source)`. See [`EvidenceSource`]: this is how
+    /// a caller sees, per run, whether the `<FILE>.qual.json` sidecar or the
+    /// report itself actually supplied that run's fields.
+    pub run_sources: Vec<(String, EvidenceSource)>,
 }
 
 /// Read `req.runs`, resolve identity/role, fold them into the capability
@@ -889,13 +1176,15 @@ pub fn graduate_runs_into_directory(req: &GraduateRequest) -> Result<GraduateOut
     let role_smoke_default = default_smoke_task_id(req.role);
     let mut identity: Option<(String, String)> = None;
     let mut run_evidences = Vec::new();
+    let mut run_sources = Vec::new();
     for path in req.runs {
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("reading run report from {}", path.display()))?;
-        let file: RunFile = serde_json::from_str(&raw)
-            .with_context(|| format!("parsing run report JSON from {}", path.display()))?;
-        let tier = select_tier(&file, path, req.provider, req.model)?;
-        let (provider, model) = resolve_identity(tier, path, req.provider, req.model)?;
+        let (provider, model, evidence) = select_evidence_source(
+            path,
+            req.provider,
+            req.model,
+            req.snapshot_date,
+            role_smoke_default,
+        )?;
         match &identity {
             None => identity = Some((provider.clone(), model.clone())),
             Some((p, m)) if p == &provider && m == &model => {}
@@ -906,8 +1195,7 @@ pub fn graduate_runs_into_directory(req: &GraduateRequest) -> Result<GraduateOut
                 path.display()
             ),
         }
-        let evidence =
-            build_run_evidence(&file, tier, path, req.snapshot_date, role_smoke_default)?;
+        run_sources.push((evidence.run_id.clone(), evidence.source));
         run_evidences.push(evidence);
     }
     let Some((provider, model)) = identity else {
@@ -930,6 +1218,7 @@ pub fn graduate_runs_into_directory(req: &GraduateRequest) -> Result<GraduateOut
             before,
             after,
             written: false,
+            run_sources,
         });
     }
 
@@ -942,12 +1231,14 @@ pub fn graduate_runs_into_directory(req: &GraduateRequest) -> Result<GraduateOut
         before,
         after,
         written: true,
+        run_sources,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::qualification::BinaryProvenance;
 
     fn today() -> NaiveDate {
         chrono::Utc::now().date_naive()
@@ -968,6 +1259,7 @@ mod tests {
             latency_s: Some(3.0),
             smoke_passed_this_run: smoke,
             dag_selection_pct: dag,
+            source: EvidenceSource::Report,
         }
     }
 
@@ -1591,5 +1883,241 @@ mod tests {
         .unwrap();
         assert!(!outcome.written);
         assert!(!directory_path.exists());
+    }
+
+    // ── EvidenceSource: qual.json vs report equivalence ────────────────────
+
+    fn qual_task(
+        task_id: &str,
+        result: &str,
+        cost_usd: f64,
+        seconds: f64,
+    ) -> TaskQualificationEvidence {
+        TaskQualificationEvidence {
+            task_id: task_id.to_string(),
+            result: result.to_string(),
+            not_run: result == "not_run",
+            errored: result == "errored",
+            cost_usd: Some(cost_usd),
+            input_tokens: None,
+            output_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            tool_calls: 0,
+            seconds,
+            seed_commit: None,
+            headless_autoland: None,
+            headless_drain_secs: None,
+            harness_overhead: None,
+            landed_goals: Vec::new(),
+            drain_summary: None,
+            create_roadmap_dispatched: None,
+            reviewer_not_independent: None,
+            reviewer_mutated: None,
+            vacuous_pass: None,
+        }
+    }
+
+    fn qual_record(
+        run_id: &str,
+        provider: &str,
+        model: &str,
+        cost_usd: f64,
+    ) -> RunQualificationRecord {
+        RunQualificationRecord {
+            run_id: run_id.to_string(),
+            fixture_revision: None,
+            binary: BinaryProvenance {
+                path: "permagent".to_string(),
+                version: None,
+                git_sha: None,
+            },
+            provider: provider.to_string(),
+            model: model.to_string(),
+            pinned_packs: true,
+            tasks: vec![qual_task("fizzbuzz", "pass", cost_usd, 10.0)],
+            missing: Vec::new(),
+        }
+    }
+
+    /// [`build_run_evidence`] (report) and [`build_run_evidence_from_qual_json`]
+    /// (qual.json) must derive IDENTICAL `pass_pct`/`cost_usd`/`latency_s`/
+    /// `smoke_passed_this_run`/`snapshot_date` from equivalent underlying
+    /// evidence — only `run_id` and `source` are allowed to differ, since a
+    /// qual.json sidecar is independently stamped from its report (see
+    /// `main.rs`'s `qualification_run_stamp` vs `cmd_run`'s `run_id`).
+    #[test]
+    fn qual_json_evidence_matches_the_equivalent_report_evidence() {
+        let file = RunFile {
+            run_id: Some("run-report-1".to_string()),
+            generated_at: Some("2026-09-03T00:00:00Z".to_string()),
+            dag_selection_pct: None,
+            smoke_task_id: None,
+            tiers: vec![TierRecord {
+                tier: Some("sonnet5".to_string()),
+                provider: Some("anthropic".to_string()),
+                model: Some("claude-sonnet-5".to_string()),
+                summary: SummaryRecord {
+                    attempted: 1,
+                    solved: 1,
+                    total_cost_usd: Some(0.05),
+                    median_duration_secs: Some(10.0),
+                },
+                tasks: vec![TaskRecord {
+                    task_id: "fizzbuzz".to_string(),
+                    solved: true,
+                }],
+            }],
+        };
+        let tier = &file.tiers[0];
+        let report_evidence = build_run_evidence(
+            &file,
+            tier,
+            Path::new("report.json"),
+            None,
+            Some("fizzbuzz"),
+        )
+        .expect("report evidence must build");
+
+        let record = qual_record("run-qual-1", "anthropic", "claude-sonnet-5", 0.05);
+        let qual_evidence = build_run_evidence_from_qual_json(
+            &record,
+            Path::new("report.json.qual.json"),
+            Some("2026-09-03"),
+            Some("fizzbuzz"),
+        )
+        .expect("qual.json evidence must build");
+
+        assert_eq!(report_evidence.source, EvidenceSource::Report);
+        assert_eq!(qual_evidence.source, EvidenceSource::QualJson);
+        assert_eq!(qual_evidence.pass_pct, report_evidence.pass_pct);
+        assert_eq!(qual_evidence.cost_usd, report_evidence.cost_usd);
+        assert_eq!(qual_evidence.latency_s, report_evidence.latency_s);
+        assert_eq!(
+            qual_evidence.smoke_passed_this_run,
+            report_evidence.smoke_passed_this_run
+        );
+        assert_eq!(qual_evidence.snapshot_date, report_evidence.snapshot_date);
+    }
+
+    /// When `<FILE>.qual.json` exists next to `FILE`, [`select_evidence_source`]
+    /// reads it INSTEAD of `FILE` — proven here by giving the report a
+    /// different provider than the sidecar and asserting the sidecar's
+    /// provider wins.
+    #[test]
+    fn select_evidence_source_prefers_the_qual_json_sidecar_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run_path = tmp.path().join("run.json");
+        std::fs::write(
+            &run_path,
+            serde_json::to_vec(&json!({
+                "generated_at": "2026-09-01T00:00:00Z",
+                "tiers": [{
+                    "provider": "wrong-provider",
+                    "model": "wrong-model",
+                    "summary": {"attempted": 1, "solved": 1},
+                    "tasks": [{"task_id": "fizzbuzz", "solved": true}],
+                }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let sidecar_path = qual_json_sidecar_path(&run_path);
+        let records = vec![qual_record(
+            "run-qual-1",
+            "anthropic",
+            "claude-sonnet-5",
+            0.05,
+        )];
+        std::fs::write(&sidecar_path, serde_json::to_vec(&records).unwrap()).unwrap();
+
+        let (provider, model, evidence) =
+            select_evidence_source(&run_path, None, None, Some("2026-09-01"), Some("fizzbuzz"))
+                .expect("must select the sidecar");
+        assert_eq!(provider, "anthropic");
+        assert_eq!(model, "claude-sonnet-5");
+        assert_eq!(evidence.source, EvidenceSource::QualJson);
+        assert_eq!(evidence.run_id, "run-qual-1");
+    }
+
+    /// End-to-end: `graduate_runs_into_directory` over three qual.json-only
+    /// runs (no report file ever read — see [`select_evidence_source`])
+    /// produces the SAME `RoleEvidence` as the equivalent three report-only
+    /// runs, field for field.
+    #[test]
+    fn graduate_runs_into_directory_produces_identical_evidence_from_either_source() {
+        let report_dir = tempfile::tempdir().unwrap();
+        let report_directory_path = report_dir.path().join("capability_directory.json");
+        let mut report_runs = Vec::new();
+        for (i, run_id) in ["run-1", "run-2", "run-3"].into_iter().enumerate() {
+            let path = report_dir.path().join(format!("r{i}.json"));
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&json!({
+                    "run_id": run_id,
+                    "generated_at": "2026-09-03T00:00:00Z",
+                    "tiers": [{
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-5",
+                        "summary": {
+                            "attempted": 1,
+                            "solved": 1,
+                            "total_cost_usd": 0.05,
+                            "median_duration_secs": 10.0,
+                        },
+                        "tasks": [{"task_id": "fizzbuzz", "solved": true}],
+                    }],
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            report_runs.push(path);
+        }
+        let report_outcome = graduate_runs_into_directory(&GraduateRequest {
+            runs: &report_runs,
+            provider: None,
+            model: None,
+            role: WorkflowRole::Orchestrate,
+            snapshot_date: None,
+            directory_path: &report_directory_path,
+            dry_run: false,
+        })
+        .expect("report-sourced graduation must succeed");
+        assert!(report_outcome
+            .run_sources
+            .iter()
+            .all(|(_, s)| *s == EvidenceSource::Report));
+
+        let qual_dir = tempfile::tempdir().unwrap();
+        let qual_directory_path = qual_dir.path().join("capability_directory.json");
+        let mut qual_runs = Vec::new();
+        for (i, run_id) in ["run-1", "run-2", "run-3"].into_iter().enumerate() {
+            // The `--run` path itself is never read once its sidecar exists
+            // (see `select_evidence_source`) — it need not even be a valid
+            // report.
+            let path = qual_dir.path().join(format!("q{i}.json"));
+            let sidecar_path = qual_json_sidecar_path(&path);
+            let records = vec![qual_record(run_id, "anthropic", "claude-sonnet-5", 0.05)];
+            std::fs::write(&sidecar_path, serde_json::to_vec(&records).unwrap()).unwrap();
+            qual_runs.push(path);
+        }
+        let qual_outcome = graduate_runs_into_directory(&GraduateRequest {
+            runs: &qual_runs,
+            provider: None,
+            model: None,
+            role: WorkflowRole::Orchestrate,
+            snapshot_date: Some("2026-09-03"),
+            directory_path: &qual_directory_path,
+            dry_run: false,
+        })
+        .expect("qual.json-sourced graduation must succeed");
+        assert!(qual_outcome
+            .run_sources
+            .iter()
+            .all(|(_, s)| *s == EvidenceSource::QualJson));
+
+        assert_eq!(qual_outcome.after, report_outcome.after);
+        assert_eq!(qual_outcome.provider, report_outcome.provider);
+        assert_eq!(qual_outcome.model, report_outcome.model);
     }
 }

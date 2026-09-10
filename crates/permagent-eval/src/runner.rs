@@ -9,7 +9,7 @@
 //! [`SubprocessRecipeSource`] are the thin glue exercised for real on the
 //! machine that runs the eval.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -72,7 +72,7 @@ pub struct Deps<'a> {
 }
 
 /// Static configuration for a run session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RunConfig {
     /// The `permagent` binary (name on PATH or an absolute path).
     pub permagent_bin: String,
@@ -84,6 +84,16 @@ pub struct RunConfig {
     /// (`--use-keyring`), instead of forcing `PERMAGENT_DISABLE_KEYRING=1`. See
     /// [`crate::invocation::build_invocation`].
     pub use_keyring: bool,
+    /// The A/B **arm**: extra environment SET on the harness child on top of
+    /// the invocation's own (see [`crate::ab::ArmConfig`]). Empty for a plain
+    /// `run`. Applied last, so an arm knob wins over both the inherited
+    /// environment and the invocation's defaults — that is the point: the arm
+    /// is the only thing allowed to differ between the two sides of a
+    /// comparison.
+    pub arm_env: Vec<(String, String)>,
+    /// Variable NAMES the arm removes from the child's inherited environment,
+    /// merged into [`Invocation::unset_envs`].
+    pub arm_unset: Vec<String>,
 }
 
 /// Removes a run's scratch directory when dropped — on success AND on every
@@ -119,11 +129,21 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     fs::create_dir_all(&workdir).with_context(|| format!("creating {}", workdir.display()))?;
     fs::create_dir_all(&data_root)?;
     fs::create_dir_all(&logs)?;
+    seed_custom_providers(&data_root)?;
 
     // Seed the workspace the agent will see and edit.
     if task.has_workspace() {
         copy_dir_contents(&task.workspace_dir(), &workdir).context("seeding task workspace")?;
     }
+
+    // Real user projects are git repositories. Internal goal dispatch inside
+    // the harness (a worker sub-agent branching off the project) hard-requires
+    // a git baseline commit to isolate the worker's worktree from — see
+    // `resolve_internal_isolation` in
+    // crates/goose/src/agents/platform_extensions/goal_engine.rs — and errors
+    // out otherwise. A bare scratch directory would never look like a real
+    // project to that check, so give it one.
+    let seed_commit = seed_git_repo(&workdir, &task.spec.id).context("seeding git baseline")?;
 
     // Write the per-run recipe file: `--recipe` and `-t`/`--text` are declared
     // mutually exclusive on `permagent-cli`'s `InputOptions`
@@ -139,7 +159,7 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     fs::write(&recipe_path, &recipe_yaml)
         .with_context(|| format!("writing recipe file {}", recipe_path.display()))?;
 
-    let inv = build_invocation(
+    let mut inv = build_invocation(
         &task.spec,
         tier,
         &workdir,
@@ -148,6 +168,28 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         &cfg.permagent_bin,
         cfg.use_keyring,
     );
+    // Jesse's ruling (option 3, HARNESS_LOOP_LOG.md "### JESSE RULING"
+    // 2026-09-08): headless auto-land stays a policy switch, DEFAULT OFF —
+    // ordinary headless runs keep landing human-gated. The eval is exactly
+    // the "deliberate unattended run" that turns it on explicitly, alongside
+    // GOOSE_MODE=auto and the tier's PACK pins set above by `build_invocation`.
+    // The drain window must finish inside this run's own harness timeout, so
+    // it is derived from it (minus a minute of margin) rather than fixed —
+    // never less than 60s, so a short per-task override can't collapse it to
+    // (or below) zero.
+    let drain_secs = headless_drain_secs(task.spec.harness_timeout_secs());
+    inv.envs
+        .push(("PERMAGENT_HEADLESS_AUTOLAND".to_string(), "1".to_string()));
+    inv.envs.push((
+        "PERMAGENT_HEADLESS_DRAIN_SECS".to_string(),
+        drain_secs.to_string(),
+    ));
+    // The arm's knobs go on LAST so they outrank the invocation's own defaults
+    // — including the two headless-autoland defaults just set above — as well
+    // as the inherited environment: an A/B arm that could be silently
+    // overridden by either would measure nothing.
+    inv.unset_envs.extend(cfg.arm_unset.iter().cloned());
+    inv.envs.extend(cfg.arm_env.iter().cloned());
     let harness_log_path = logs.join("harness.log");
     let harness_run = deps.harness.run(
         &inv,
@@ -198,6 +240,11 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         .as_ref()
         .map(|check| check.evaluate(&signals));
     result.signals = signals;
+    result.seed_commit = Some(seed_commit);
+    // Read back the FINAL, post-arm-override values so the report row shows
+    // what the child actually received, not just the runner's own default.
+    result.headless_autoland = inv.env("PERMAGENT_HEADLESS_AUTOLAND").map(str::to_string);
+    result.headless_drain_secs = inv.env("PERMAGENT_HEADLESS_DRAIN_SECS").map(str::to_string);
     if harness_run.timed_out {
         result.note = Some("harness run hit its wall-clock ceiling".to_string());
     }
@@ -385,6 +432,41 @@ pub fn run_tier(
         .collect()
 }
 
+/// Copy the operator's declarative custom providers into this run's isolated
+/// data root.
+///
+/// Every run gets a fresh `PERMAGENT_PATH_ROOT` so sessions and the cost ledger
+/// stay isolated and the measured spend is only this run's. The cost of that is
+/// that the child cannot see `~/.permagent/custom_providers/`, so a locally
+/// hosted model registered there — a llama-server split, an OpenAI-compatible
+/// endpoint — simply does not exist as far as the harness is concerned, and
+/// could never be benchmarked. Copying the definitions in keeps the isolation
+/// (they are provider declarations, not sessions or secrets) while making those
+/// providers reachable.
+///
+/// Missing or unreadable is not an error: most tiers are built-in providers that
+/// need none of this.
+fn seed_custom_providers(data_root: &Path) -> Result<()> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Ok(());
+    };
+    let src = home.join(".permagent").join("custom_providers");
+    if !src.is_dir() {
+        return Ok(());
+    }
+    let dest = data_root.join("custom_providers");
+    fs::create_dir_all(&dest).with_context(|| format!("creating {}", dest.display()))?;
+    for entry in fs::read_dir(&src).with_context(|| format!("reading {}", src.display()))? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            let name = entry.file_name();
+            fs::copy(entry.path(), dest.join(&name))
+                .with_context(|| format!("copying custom provider {}", name.to_string_lossy()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Recursively copy the *contents* of `src` into `dst`, overwriting files.
 pub fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst)?;
@@ -400,6 +482,109 @@ pub fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Turns a freshly-seeded task workspace into a git repository with one
+/// commit holding exactly the seed files, so it looks like a real user
+/// project rather than a bare scratch directory.
+///
+/// Real user projects are git repositories. The coding harness's internal
+/// goal dispatch (a worker sub-agent branching off the project to do a unit
+/// of work in an isolated worktree) hard-requires a git baseline commit to
+/// branch from — see `resolve_internal_isolation` in
+/// crates/goose/src/agents/platform_extensions/goal_engine.rs, which fails
+/// the whole dispatch with "requires a git baseline commit, but the project
+/// root is not a git repository" when `git rev-parse HEAD` in the working
+/// directory comes back empty. Without this seeding, every eval task would
+/// dispatch into that error and never exercise the thing being measured.
+///
+/// Idempotent: if `workspace_dir` already contains a `.git` (a `--keep`
+/// rerun, or a task whose own seed ships a repo), it is left untouched and
+/// its current `HEAD` is returned rather than creating a second commit.
+/// `GIT_CONFIG_NOSYSTEM=1` and a purely local `user.name`/`user.email` keep
+/// this from reading or depending on the operator's own git config; `HOME` is
+/// left untouched, so `~/.gitconfig` still applies for anything it doesn't
+/// override (nothing here needs it to).
+pub fn seed_git_repo(workspace_dir: &Path, task_id: &str) -> Result<String> {
+    if workspace_dir.join(".git").exists() {
+        return git_rev_parse_head(workspace_dir);
+    }
+    run_git(workspace_dir, &["init", "-q"])?;
+    run_git(workspace_dir, &["config", "user.name", "permagent-eval"])?;
+    run_git(
+        workspace_dir,
+        &["config", "user.email", "permagent-eval@localhost"],
+    )?;
+    run_git(workspace_dir, &["add", "-A"])?;
+    run_git(
+        workspace_dir,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!("permagent-eval seed: {task_id}"),
+        ],
+    )?;
+    git_rev_parse_head(workspace_dir)
+}
+
+/// Run a git subcommand in `workspace_dir`, isolated from the operator's
+/// system-wide git config, failing with the captured stderr on a non-zero
+/// exit.
+fn run_git(workspace_dir: &Path, args: &[&str]) -> Result<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_dir)
+        .args(args)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("running `git {}`", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Resolve `HEAD` in `workspace_dir` to its commit SHA.
+fn git_rev_parse_head(workspace_dir: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workspace_dir)
+        .args(["rev-parse", "HEAD"])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .context("running `git rev-parse HEAD`")?;
+    if !output.status.success() {
+        bail!(
+            "git rev-parse HEAD failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// The `PERMAGENT_HEADLESS_DRAIN_SECS` this run's headless auto-land gets:
+/// `harness_timeout_secs` minus a minute of margin, floored at 60s. The
+/// margin exists so the drain phase the harness runs inside its own
+/// wall-clock ceiling has a chance to finish and report BEFORE this eval's own
+/// `wait_with_timeout` kills the child for exceeding `harness_timeout_secs` —
+/// a drain window as long as the timeout itself would race the eval's kill
+/// signal and could be truncated mid-drain on every run. The 60s floor keeps a
+/// short per-task override (e.g. a fast fixture with a 30s timeout) from
+/// collapsing the window to zero or a negative number that `saturating_sub`
+/// would otherwise silently clamp to zero.
+fn headless_drain_secs(harness_timeout_secs: u64) -> u64 {
+    harness_timeout_secs.saturating_sub(60).max(60)
 }
 
 /// A monotonically-unique suffix combining wall-clock nanos and a counter, so
@@ -741,6 +926,103 @@ mod tests {
         assert_eq!(fs::read_to_string(dst.join("sub/b.txt")).unwrap(), "B");
     }
 
+    /// `git log --format=%H` for `dir`, oldest last — used to assert the exact
+    /// commit count [`seed_git_repo`] produces.
+    fn git_log_shas(dir: &Path) -> Vec<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["log", "--format=%H"])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git log failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Files touched by commit `sha` in `dir`.
+    fn git_committed_files(dir: &Path, sha: &str) -> Vec<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["show", "--name-only", "--format=", sha])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git show failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn seed_git_repo_creates_one_commit_with_the_seed_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("a.txt"), "A").unwrap();
+        fs::write(ws.join("b.txt"), "B").unwrap();
+
+        let sha = seed_git_repo(&ws, "demo-task").unwrap();
+        assert_eq!(sha.len(), 40, "expected a full git SHA: {sha}");
+        assert!(ws.join(".git").is_dir());
+
+        assert_eq!(
+            git_log_shas(&ws),
+            vec![sha.clone()],
+            "seeding must create exactly one commit"
+        );
+        let mut files = git_committed_files(&ws, &sha);
+        files.sort();
+        assert_eq!(files, vec!["a.txt".to_string(), "b.txt".to_string()]);
+    }
+
+    #[test]
+    fn seed_git_repo_second_call_is_a_no_op() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("a.txt"), "A").unwrap();
+
+        let first = seed_git_repo(&ws, "demo-task").unwrap();
+        // A rerun over an already-seeded directory (e.g. `--keep` pointed
+        // back at the same scratch dir) must not add a second commit.
+        let second = seed_git_repo(&ws, "demo-task").unwrap();
+        assert_eq!(first, second, "the second call must return the same HEAD");
+        assert_eq!(
+            git_log_shas(&ws).len(),
+            1,
+            "the second call must not create another commit"
+        );
+    }
+
+    #[test]
+    fn seed_git_repo_commits_even_an_empty_workspace() {
+        // A task with no `workspace/` seed still gets an (empty) scratch dir,
+        // which still needs a git baseline commit for goal dispatch to branch
+        // off of.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+
+        let sha = seed_git_repo(&ws, "demo-task").unwrap();
+        assert_eq!(git_log_shas(&ws), vec![sha]);
+    }
+
     #[test]
     fn run_task_assembles_result_and_reads_cost() {
         let tmp = tempfile::tempdir().unwrap();
@@ -754,6 +1036,7 @@ mod tests {
             runs_root: tmp.path().join("runs"),
             keep: false,
             use_keyring: false,
+            ..Default::default()
         };
         let deps = Deps {
             harness: &FakeHarness {
@@ -773,6 +1056,14 @@ mod tests {
         assert_eq!(r.cost.usd, Some(0.42));
         assert!((r.duration_secs - 1.5).abs() < 1e-9);
         assert_eq!(r.harness_exit, Some(0));
+        // The runner seeds a git baseline commit for the harness's internal
+        // goal dispatch to branch off of, and records its SHA on the result.
+        let seed_commit = r.seed_commit.expect("seed_commit must be recorded");
+        assert_eq!(
+            seed_commit.len(),
+            40,
+            "expected a full git SHA: {seed_commit}"
+        );
         // Without --keep, the successful run leaves no scratch dir behind.
         assert_no_leftover_run_dirs(&cfg.runs_root);
     }
@@ -790,6 +1081,7 @@ mod tests {
             runs_root: tmp.path().join("runs"),
             keep: true, // so the recipe file survives for inspection below
             use_keyring: false,
+            ..Default::default()
         };
         let deps = Deps {
             harness: &FakeHarness {
@@ -833,6 +1125,7 @@ mod tests {
             runs_root: tmp.path().join("runs"),
             keep: false,
             use_keyring: false,
+            ..Default::default()
         };
         let deps = Deps {
             harness: &BoomHarness,
@@ -861,6 +1154,7 @@ mod tests {
             runs_root: tmp.path().join("runs"),
             keep: false,
             use_keyring: false,
+            ..Default::default()
         };
         // Harness leaves the weak grader untouched.
         let deps = Deps {
@@ -892,6 +1186,7 @@ mod tests {
             runs_root: tmp.path().join("runs"),
             keep: false,
             use_keyring: false,
+            ..Default::default()
         };
         let deps = Deps {
             harness: &BoomHarness,
@@ -1037,6 +1332,7 @@ mod tests {
             runs_root: tmp.path().join("runs"),
             keep: false,
             use_keyring: false,
+            ..Default::default()
         };
         let deps = Deps {
             harness: &FakeHarness {
@@ -1081,6 +1377,7 @@ mod tests {
             runs_root: tmp.path().join("runs"),
             keep: false,
             use_keyring: false,
+            ..Default::default()
         };
         let deps = Deps {
             harness: &BoomHarness,
@@ -1102,6 +1399,7 @@ mod tests {
             runs_root: tmp.path().join("runs"),
             keep: true,
             use_keyring: false,
+            ..Default::default()
         };
         let deps = Deps {
             harness: &BoomHarness,
@@ -1134,6 +1432,7 @@ mod tests {
             runs_root: tmp.path().join("runs"),
             keep: false,
             use_keyring: false,
+            ..Default::default()
         };
         let deps = Deps {
             harness: &BoomHarness,
@@ -1271,6 +1570,177 @@ mod tests {
         );
     }
 
+    /// An A/B arm's knobs must actually reach the child, must survive the
+    /// ambient scrub, and must OUTRANK the invocation's own settings — a knob
+    /// that could be quietly overridden would make both arms identical while
+    /// still printing a delta.
+    #[test]
+    fn arm_env_reaches_the_child_and_outranks_the_invocations_own_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_task(&tmp.path().join("demo"), &[], &[]);
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            // GOOSE_MODE is set by `build_invocation`; PERMAGENT_PACK_EDIT_MODEL
+            // by the pinned tier; PERMAGENT_BUDGET_X is a scrubbed prefix.
+            arm_env: vec![
+                ("PERMAGENT_BEST_OF_N".to_string(), "3".to_string()),
+                ("GOOSE_MODE".to_string(), "chat".to_string()),
+                ("PERMAGENT_BUDGET_X".to_string(), "1".to_string()),
+            ],
+            arm_unset: vec!["SOME_AMBIENT_VAR".to_string()],
+        };
+        // Capture the invocation the runner hands to the harness.
+        struct Capture(std::sync::Mutex<Option<Invocation>>);
+        impl HarnessRunner for Capture {
+            fn run(&self, inv: &Invocation, _t: Duration, _l: &Path) -> Result<HarnessRun> {
+                *self.0.lock().unwrap() = Some(inv.clone());
+                Ok(HarnessRun {
+                    exit: Some(0),
+                    timed_out: false,
+                    duration: Duration::from_secs(1),
+                })
+            }
+        }
+        let capture = Capture(std::sync::Mutex::new(None));
+        let deps = Deps {
+            harness: &capture,
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
+        let inv = capture.0.lock().unwrap().clone().unwrap();
+
+        assert_eq!(inv.env("PERMAGENT_BEST_OF_N"), Some("3"));
+        assert_eq!(
+            inv.env("GOOSE_MODE"),
+            Some("chat"),
+            "the arm must win over the invocation's own GOOSE_MODE"
+        );
+        assert!(inv.unset_envs.iter().any(|n| n == "SOME_AMBIENT_VAR"));
+
+        // …and once the env policy runs, the arm's value is what the process
+        // gets, even for a name inside a scrubbed prefix.
+        let mut cmd = Command::new(&inv.program);
+        apply_env_policy(
+            &mut cmd,
+            &inv,
+            ["PERMAGENT_BUDGET_X", "SOME_AMBIENT_VAR"].map(OsString::from),
+        );
+        let envs = env_map(&cmd);
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("PERMAGENT_BUDGET_X")),
+            Some(&Some(OsString::from("1"))),
+            "an arm knob must survive the ambient scrub"
+        );
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("SOME_AMBIENT_VAR")),
+            Some(&None)
+        );
+    }
+
+    // --- Lane K3: headless auto-land turned on explicitly by the eval -----
+
+    #[test]
+    fn headless_drain_secs_subtracts_a_minute_of_margin_and_floors_at_60() {
+        assert_eq!(headless_drain_secs(900), 840);
+        assert_eq!(headless_drain_secs(120), 60);
+        // Below the floor: 90 - 60 = 30, which is under the 60s floor.
+        assert_eq!(headless_drain_secs(90), 60);
+        assert_eq!(headless_drain_secs(60), 60);
+        // Shorter than the margin itself: saturating_sub must not go negative.
+        assert_eq!(headless_drain_secs(10), 60);
+        assert_eq!(headless_drain_secs(0), 60);
+    }
+
+    /// Jesse's ruling (option 3): the eval is the "deliberate unattended run"
+    /// that turns headless auto-land on explicitly. Every task run must set
+    /// both env vars on the child, with the drain window computed from that
+    /// task's own `harness_timeout_secs`, and both values must also land on
+    /// the per-task report row.
+    #[test]
+    fn run_task_sets_headless_autoland_and_the_computed_drain_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No `harness_timeout_secs` override in `make_task`'s task.yaml, so
+        // the default (900s) applies: drain = 900 - 60 = 840.
+        let task = make_task(&tmp.path().join("demo"), &[], &[]);
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            ..Default::default()
+        };
+        struct Capture(std::sync::Mutex<Option<Invocation>>);
+        impl HarnessRunner for Capture {
+            fn run(&self, inv: &Invocation, _t: Duration, _l: &Path) -> Result<HarnessRun> {
+                *self.0.lock().unwrap() = Some(inv.clone());
+                Ok(HarnessRun {
+                    exit: Some(0),
+                    timed_out: false,
+                    duration: Duration::from_secs(1),
+                })
+            }
+        }
+        let capture = Capture(std::sync::Mutex::new(None));
+        let deps = Deps {
+            harness: &capture,
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        let result = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
+        let inv = capture.0.lock().unwrap().clone().unwrap();
+
+        assert_eq!(inv.env("PERMAGENT_HEADLESS_AUTOLAND"), Some("1"));
+        assert_eq!(inv.env("PERMAGENT_HEADLESS_DRAIN_SECS"), Some("840"));
+        // …and the report row records exactly what the child received.
+        assert_eq!(result.headless_autoland.as_deref(), Some("1"));
+        assert_eq!(result.headless_drain_secs.as_deref(), Some("840"));
+    }
+
+    /// An A/B arm must be able to override either headless-autoland default —
+    /// e.g. to measure a run with landing left OFF as a control arm — and the
+    /// override must be what both the child and the report row see.
+    #[test]
+    fn arm_env_overrides_the_headless_autoland_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_task(&tmp.path().join("demo"), &[], &[]);
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            arm_env: vec![
+                ("PERMAGENT_HEADLESS_AUTOLAND".to_string(), "0".to_string()),
+                (
+                    "PERMAGENT_HEADLESS_DRAIN_SECS".to_string(),
+                    "77".to_string(),
+                ),
+            ],
+            arm_unset: Vec::new(),
+        };
+        let deps = Deps {
+            harness: &FakeHarness {
+                drop_file: ("noop.txt".to_string(), "x".to_string()),
+                exit: Some(0),
+            },
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        let result = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
+        assert_eq!(
+            result.headless_autoland.as_deref(),
+            Some("0"),
+            "an arm override must win over the eval's own default"
+        );
+        assert_eq!(result.headless_drain_secs.as_deref(), Some("77"));
+    }
+
     /// `--use-keyring` must not just omit setting `PERMAGENT_DISABLE_KEYRING`
     /// — it must also strip an operator's own shell export of it, or the
     /// export would silently defeat the flag.
@@ -1332,6 +1802,8 @@ mod tests {
             runs_root: tmp.path().join("runs"),
             keep: false,
             use_keyring: false,
+            arm_env: Vec::new(),
+            arm_unset: Vec::new(),
         };
         let deps = Deps {
             harness: &HarnessWithLog {
@@ -1362,6 +1834,8 @@ mod tests {
             runs_root: tmp.path().join("runs"),
             keep: false,
             use_keyring: false,
+            arm_env: Vec::new(),
+            arm_unset: Vec::new(),
         };
         let deps = Deps {
             // Wrong order: create_roadmap before decompose_roadmap.
@@ -1388,6 +1862,8 @@ mod tests {
             runs_root: tmp.path().join("runs"),
             keep: false,
             use_keyring: false,
+            arm_env: Vec::new(),
+            arm_unset: Vec::new(),
         };
         let deps = Deps {
             harness: &HarnessWithLog {

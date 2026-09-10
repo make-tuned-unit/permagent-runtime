@@ -41,6 +41,25 @@ pub struct TaskResult {
     /// harness never observed. See [`crate::selection`] and
     /// [`dag_selection_pct`].
     pub selection_correct: Option<bool>,
+    /// The SHA of the git commit the runner seeded the workspace with before
+    /// invoking the harness (see [`crate::runner::seed_git_repo`]) — the
+    /// baseline a dispatched worker's landing should fast-forward onto.
+    /// `None` for a task that was never launched, or whose seeding failed
+    /// before a commit could be made (reported as [`OracleOutcome::Errored`]
+    /// instead).
+    pub seed_commit: Option<String>,
+    /// The effective `PERMAGENT_HEADLESS_AUTOLAND` value the child actually
+    /// received (Lane K3: the eval turns headless auto-land on explicitly,
+    /// default off everywhere else — see `HARNESS_LOOP_LOG.md` "JESSE RULING").
+    /// Read back from the assembled [`crate::invocation::Invocation`] AFTER an
+    /// A/B arm's own override, so this reflects what was actually sent, not
+    /// just the runner's default. `None` only if a task never reached the
+    /// point where the runner sets it (i.e. it was never launched).
+    pub headless_autoland: Option<String>,
+    /// The effective `PERMAGENT_HEADLESS_DRAIN_SECS` value the child actually
+    /// received, likewise read back post-arm-override. See
+    /// [`Self::headless_autoland`].
+    pub headless_drain_secs: Option<String>,
 }
 
 impl TaskResult {
@@ -63,6 +82,9 @@ impl TaskResult {
             note: None,
             signals: LogSignals::default(),
             selection_correct: None,
+            seed_commit: None,
+            headless_autoland: None,
+            headless_drain_secs: None,
         }
     }
 }

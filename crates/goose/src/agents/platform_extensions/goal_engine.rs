@@ -110,6 +110,90 @@ pub enum GoalOutcome {
     Blocked { reason: String },
 }
 
+/// E2b (Round E, coding-harness excellence loop): the run's remaining
+/// wall-clock budget was too small to safely start another attempt, so the
+/// attempt loop refused rather than starting work almost certain to be
+/// killed mid-way by the outer headless-drain timeout. An honest outcome —
+/// see [`wall_budget_exhausted_outcome`].
+///
+/// Deliberately NOT a new [`GoalOutcome`] variant: `GoalOutcome` is matched
+/// exhaustively at call sites outside this lane's file boundary
+/// (`orchestrator.rs`'s `handle_goal_completion`/`handle_goal_timeout`,
+/// `supervised_cli.rs`'s dispatch/test code) — adding a variant there would
+/// force non-exhaustive-match compile breaks in files this lane does not
+/// own and was told not to touch. This type is the honest record; wiring it
+/// into the live attempt/retry loop (which lives in those same
+/// out-of-boundary files) is next-lane work — see this lane's report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WallBudgetExhausted {
+    /// Human-readable reason naming the remaining/needed wall time.
+    pub reason: String,
+    /// What state the goal's prior work was left in, using the SAME
+    /// `"landed_on_trunk"` / `"left_in_working_tree"` vocabulary E1's
+    /// landing-outcome receipt uses (see
+    /// `goal_landing::LandOutcome::trunk_state`) — `None` when no prior
+    /// attempt this run ever produced anything to describe.
+    pub partial_state: Option<String>,
+}
+
+/// E2b: whether a headless goal run may start ANOTHER attempt — a retry, a
+/// redispatch, or another pass of a hold-recheck loop — given how much
+/// wall-clock budget remains (derived from `PERMAGENT_HEADLESS_DRAIN_SECS` /
+/// the harness timeout the driver injects) and how long the LAST attempt
+/// actually took.
+///
+/// Refuses when `remaining < last_attempt * 1.2`. The 20% margin is
+/// deliberately conservative, not a tight "just barely fits" bound: an
+/// attempt whose remaining budget is close to (but nominally above) the
+/// last attempt's own duration is more likely to be killed mid-work by the
+/// outer timeout than to land cleanly, and a silently-killed attempt is
+/// strictly worse than refusing up front — it burns the same wall time AND
+/// leaves no honest receipt of what happened (F9's fx01/fx04/fx07/fx09
+/// forensics: every one of those runs "idled out its wall-clock cap" with
+/// no structured signal of why). `>=` at the boundary (not `>`) so an
+/// attempt whose remaining budget is EXACTLY 1.2x the last one's duration is
+/// permitted, not refused.
+pub fn wall_budget_permits_another_attempt(remaining: Duration, last_attempt: Duration) -> bool {
+    remaining >= last_attempt.mul_f64(1.2)
+}
+
+/// Format a [`Duration`] as whole seconds for a human-readable receipt —
+/// deliberately coarse (this reason text is read by a person or an
+/// after-the-fact log scan, never re-parsed for a decision).
+fn format_wall_secs(d: Duration) -> String {
+    format!("{}s", d.as_secs())
+}
+
+/// Build the honest [`WallBudgetExhausted`] outcome once
+/// [`wall_budget_permits_another_attempt`] has refused. `partial_state`
+/// should be the goal's current `landed_on_trunk` / `left_in_working_tree`
+/// receipt (`goal_landing::LandOutcome::trunk_state`) when a prior attempt
+/// this run produced one, so a reader can see at a glance whether the
+/// refused retry cost any real work or not.
+pub fn wall_budget_exhausted_outcome(
+    remaining: Duration,
+    last_attempt: Duration,
+    partial_state: Option<String>,
+) -> WallBudgetExhausted {
+    let needed = last_attempt.mul_f64(1.2);
+    let reason = format!(
+        "wall budget exhausted: {} remaining, the last attempt took {} (need >= {} at the \
+         20% margin) — refusing to start another attempt rather than risk a silent timeout \
+         mid-work; {}",
+        format_wall_secs(remaining),
+        format_wall_secs(last_attempt),
+        format_wall_secs(needed),
+        match &partial_state {
+            Some(state) => format!("prior work is {state}"),
+            None => "no prior attempt this run produced committed work".to_string(),
+        }
+    );
+    WallBudgetExhausted {
+        reason,
+        partial_state,
+    }
+}
+
 /// Deterministic proof-of-work captured at goal completion, persisted to the
 /// goal card and surfaced in the Decision Inbox Evidence panel + the
 /// Discuss-with-Henry context. Every field is derived from git in the worker's
@@ -2294,9 +2378,412 @@ fn redact_secrets(s: &str) -> String {
     out
 }
 
+// ── R1: stalled-after-gate-grant watchdog (G8 review, harness loop Lane E3
+// 2026-09-10) ─────────────────────────────────────────────────────────────
+//
+// E1's "retry in place" (Round E) answers a headless spend gate by minting a
+// `pending` `cost_reservations` row directly under the SAME `invocation_id`
+// the failed call used (`SessionManager::grant_reservation_after_gate_
+// approval`), instead of requeuing the goal to a fresh session — G8's own
+// risk note flagged that this depends on SOMETHING resuming the gated
+// session's turn loop, which "still `break`s the turn after a `NeedsGate`
+// failure regardless of what the auto-answer returns" and was "never
+// exercised end-to-end". Without a backstop, a goal can sit `in_progress`,
+// holding a reservation nobody ever spends, until the outer wall-clock cap —
+// worse than the pre-E1 wasteful-but-forward-moving requeue storm for this
+// one shape.
+//
+// A reservation a real retry actually consumed would have moved out of
+// `pending` (to `settled`/`released`) by the time anyone looks — one still
+// `pending` well past its own grant is exactly the "nothing ever spent it"
+// signal, entirely DB-derivable with no dependency on the in-memory
+// `AgentManager` this module has no handle on.
+
+/// Config for [`run_stalled_gate_grant_watchdog`]. `stall_after_secs` is the
+/// minimum age a still-`pending` gate-granted reservation must reach before
+/// its goal is considered stalled.
+#[derive(Debug, Clone, Copy)]
+pub struct StalledGateGrantConfig {
+    pub stall_after_secs: i64,
+}
+
+impl Default for StalledGateGrantConfig {
+    fn default() -> Self {
+        // Default 3 minutes, per the spec this watchdog closes.
+        Self {
+            stall_after_secs: 180,
+        }
+    }
+}
+
+/// Metadata key stamped once a stall has been escalated — the fire-once
+/// bound: a later sweep skips a goal already carrying this key.
+pub const STALLED_AFTER_GATE_GRANT_KEY: &str = "stalled_after_gate_grant";
+/// Metadata key stamped the first time a resume poke was attempted for a
+/// goal's current stall.
+const STALLED_GATE_GRANT_POKED_AT_KEY: &str = "stalled_gate_grant_poked_at";
+
+/// What the watchdog did for one stalled goal, for callers/tests to observe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StalledGateGrantAction {
+    /// First time this goal was seen stalled: the session was re-poked once.
+    Poked { card_id: String, session_id: String },
+    /// Either the resume poke itself failed, no resume mechanism is
+    /// installed at all, or the goal was already poked once before and is
+    /// STILL stalled — escalated honestly rather than poking a second time.
+    Escalated {
+        card_id: String,
+        session_id: String,
+        reason: String,
+    },
+}
+
+/// One in_progress goal found holding a `pending` gate-granted reservation
+/// old enough to count as stalled.
+struct StalledCandidate {
+    card_id: String,
+    session_id: String,
+    reservation_id: String,
+    pending_for_secs: i64,
+    already_poked: bool,
+}
+
+/// Find in_progress goals whose dispatched session holds a `cost_reservations`
+/// row still `pending` after `stall_after_secs`. Excludes goals already
+/// carrying [`STALLED_AFTER_GATE_GRANT_KEY`] — the bound is "escalate once
+/// per stall", not "escalate every sweep".
+async fn find_stalled_candidates(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    now: chrono::DateTime<chrono::Utc>,
+    stall_after_secs: i64,
+) -> Result<Vec<StalledCandidate>, String> {
+    use sqlx::Row;
+
+    let rows = sqlx::query(
+        "SELECT c.id, c.metadata_json FROM cards c
+         JOIN board_columns bc ON c.column_id = bc.id
+         WHERE c.card_type = 'goal'
+           AND bc.state_binding = 'in_progress'
+           AND c.archived_at IS NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let card_id: String = row.try_get("id").map_err(|e| e.to_string())?;
+        let metadata_raw: String = row.try_get("metadata_json").map_err(|e| e.to_string())?;
+        let metadata: serde_json::Value =
+            serde_json::from_str(&metadata_raw).unwrap_or(serde_json::Value::Null);
+        if metadata
+            .get(STALLED_AFTER_GATE_GRANT_KEY)
+            .and_then(|v| v.as_bool())
+            == Some(true)
+        {
+            continue;
+        }
+        let Some(session_id) = metadata
+            .get("worker_session_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let already_poked = metadata.get(STALLED_GATE_GRANT_POKED_AT_KEY).is_some();
+
+        let reservation = sqlx::query(
+            "SELECT reservation_id, created_at FROM cost_reservations
+             WHERE session_id = ? AND state = 'pending'
+             ORDER BY created_at ASC LIMIT 1",
+        )
+        .bind(&session_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        let Some(reservation) = reservation else {
+            continue;
+        };
+        let reservation_id: String = reservation
+            .try_get("reservation_id")
+            .map_err(|e| e.to_string())?;
+        let created_at_raw: String = reservation
+            .try_get("created_at")
+            .map_err(|e| e.to_string())?;
+        let Ok(created_at) = chrono::DateTime::parse_from_rfc3339(&created_at_raw) else {
+            continue;
+        };
+        let pending_for_secs = (now - created_at.with_timezone(&chrono::Utc)).num_seconds();
+        if pending_for_secs < stall_after_secs {
+            continue;
+        }
+        out.push(StalledCandidate {
+            card_id,
+            session_id,
+            reservation_id,
+            pending_for_secs,
+            already_poked,
+        });
+    }
+    Ok(out)
+}
+
+/// Stamp the durable, fire-once marker and raise an honest, human-visible
+/// `unblock` decision — mirrors `decisions_effects::ensure_needs_merge_
+/// decision`'s idempotent shape (an existing open `unblock` decision for
+/// this goal is left alone rather than duplicated).
+async fn escalate_stalled_gate_grant(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let mut patch = serde_json::Map::new();
+    patch.insert(
+        STALLED_AFTER_GATE_GRANT_KEY.to_string(),
+        serde_json::json!(true),
+    );
+    patch.insert(
+        "stalled_gate_grant_reason".to_string(),
+        serde_json::json!(reason),
+    );
+    crate::cards::merge_card_metadata(pool, card_id, serde_json::Value::Object(patch), false)
+        .await?;
+
+    if crate::decisions::find_open_decision_for_goal(pool, card_id, "unblock")
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let project_id = crate::cards::get_card(pool, card_id)
+        .await?
+        .map(|c| c.project_id)
+        .unwrap_or_default();
+
+    crate::decisions::create_decision(
+        pool,
+        crate::decisions::NewDecision {
+            kind: "unblock".to_string(),
+            goal_id: Some(card_id.to_string()),
+            project_id: Some(project_id),
+            headline: Some(
+                "Goal stalled after a headless gate auto-answer — no provider call followed"
+                    .to_string(),
+            ),
+            detail: Some(format!(
+                "This goal's headless run hit a spend gate, the gate was auto-answered, and a \
+                 reservation was granted directly for the SAME retry — but {reason}. The turn \
+                 loop never resumed, so the goal has been sitting in progress doing nothing."
+            )),
+            payload: serde_json::to_value(crate::decisions::UnblockPayload {
+                reason: crate::decisions::UnblockReason::Stuck,
+                spent: None,
+                cap: None,
+            })
+            .map_err(|error| error.to_string())?,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+/// Injected resume hook — same shape as `decisions_effects::PostLandingHook`/
+/// `orchestrator::GoalDispatchFuture` elsewhere in this codebase: this
+/// module is DB/process-boundary code with no handle on the live in-process
+/// agent turn loop that would actually need poking (that lives in
+/// `agents::agent`/`reply_parts`). The watchdog is fully usable and testable
+/// without one; a caller wires the real resume mechanism in by installing
+/// this hook. `Err` means the poke could not be delivered — treated exactly
+/// like "failing that" in the module doc comment above: escalate instead of
+/// leaving the goal to be poked again.
+pub type ResumeStalledSessionFn = dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+    + Send
+    + Sync;
+
+/// Run one sweep of the stalled-after-gate-grant watchdog. `now` is a
+/// parameter — never read internally via `Utc::now()` — so a fake-clock test
+/// can drive the exact stall boundary without a real sleep. Bounded: a goal
+/// is poked at most once ([`STALLED_GATE_GRANT_POKED_AT_KEY`]) and escalated
+/// at most once ([`STALLED_AFTER_GATE_GRANT_KEY`]); a repeated sweep over an
+/// already-escalated goal is a no-op.
+pub async fn run_stalled_gate_grant_watchdog(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    now: chrono::DateTime<chrono::Utc>,
+    config: &StalledGateGrantConfig,
+    resume_hook: Option<&ResumeStalledSessionFn>,
+) -> Result<Vec<StalledGateGrantAction>, String> {
+    let candidates = find_stalled_candidates(pool, now, config.stall_after_secs).await?;
+    let mut actions = Vec::new();
+    for candidate in candidates {
+        if !candidate.already_poked {
+            if let Some(hook) = resume_hook {
+                match hook(candidate.session_id.clone()).await {
+                    Ok(()) => {
+                        let mut patch = serde_json::Map::new();
+                        patch.insert(
+                            STALLED_GATE_GRANT_POKED_AT_KEY.to_string(),
+                            serde_json::json!(now.to_rfc3339()),
+                        );
+                        crate::cards::merge_card_metadata(
+                            pool,
+                            &candidate.card_id,
+                            serde_json::Value::Object(patch),
+                            false,
+                        )
+                        .await?;
+                        actions.push(StalledGateGrantAction::Poked {
+                            card_id: candidate.card_id,
+                            session_id: candidate.session_id,
+                        });
+                        continue;
+                    }
+                    Err(poke_error) => {
+                        let reason = format!(
+                            "reservation '{}' has been pending {}s (>= {}s) and the resume \
+                             poke failed: {poke_error}",
+                            candidate.reservation_id,
+                            candidate.pending_for_secs,
+                            config.stall_after_secs
+                        );
+                        escalate_stalled_gate_grant(pool, &candidate.card_id, &reason).await?;
+                        actions.push(StalledGateGrantAction::Escalated {
+                            card_id: candidate.card_id,
+                            session_id: candidate.session_id,
+                            reason,
+                        });
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Either already poked once on a prior sweep and STILL stalled
+        // (never poke twice), or no resume mechanism is installed in this
+        // process at all — escalate honestly rather than doing nothing.
+        let reason = if candidate.already_poked {
+            format!(
+                "reservation '{}' has been pending {}s (>= {}s) after an earlier resume poke \
+                 — still stalled",
+                candidate.reservation_id, candidate.pending_for_secs, config.stall_after_secs
+            )
+        } else {
+            format!(
+                "reservation '{}' has been pending {}s (>= {}s) and no resume mechanism is \
+                 installed in this process",
+                candidate.reservation_id, candidate.pending_for_secs, config.stall_after_secs
+            )
+        };
+        escalate_stalled_gate_grant(pool, &candidate.card_id, &reason).await?;
+        actions.push(StalledGateGrantAction::Escalated {
+            card_id: candidate.card_id,
+            session_id: candidate.session_id,
+            reason,
+        });
+    }
+    Ok(actions)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── E2b: per-attempt wall budget ────────────────────────────────────
+
+    /// Ample remaining budget (well over 1.2x the last attempt) → proceed.
+    #[test]
+    fn wall_budget_permits_another_attempt_when_remaining_is_ample() {
+        assert!(wall_budget_permits_another_attempt(
+            Duration::from_secs(600),
+            Duration::from_secs(60),
+        ));
+    }
+
+    /// Remaining budget short of the 20%-margined last-attempt duration →
+    /// refuse. 500s last attempt needs >= 600s remaining; 550s is short.
+    #[test]
+    fn wall_budget_refuses_another_attempt_when_remaining_is_short() {
+        assert!(!wall_budget_permits_another_attempt(
+            Duration::from_secs(550),
+            Duration::from_secs(500),
+        ));
+    }
+
+    /// Boundary: remaining EXACTLY 1.2x the last attempt still permits
+    /// (`>=`, not `>`).
+    #[test]
+    fn wall_budget_boundary_at_exactly_the_1_2x_margin_permits() {
+        assert!(wall_budget_permits_another_attempt(
+            Duration::from_secs(120),
+            Duration::from_secs(100),
+        ));
+    }
+
+    /// One second short of the boundary refuses.
+    #[test]
+    fn wall_budget_boundary_one_second_short_refuses() {
+        assert!(!wall_budget_permits_another_attempt(
+            Duration::from_secs(119),
+            Duration::from_secs(100),
+        ));
+    }
+
+    /// A zero-length "last attempt" (no prior attempt ever ran) never
+    /// refuses — there is nothing to extrapolate a budget shortfall from.
+    #[test]
+    fn wall_budget_with_no_prior_attempt_duration_always_permits() {
+        assert!(wall_budget_permits_another_attempt(
+            Duration::from_secs(1),
+            Duration::from_secs(0),
+        ));
+    }
+
+    /// The refused outcome names both the remaining/needed wall time AND
+    /// what was left in the tree (E1's `landed_on_trunk` /
+    /// `left_in_working_tree` vocabulary), per the brief's "the outcome
+    /// names what was left in the tree" pin.
+    #[test]
+    fn wall_budget_exhausted_outcome_names_what_was_left_in_the_tree() {
+        let outcome = wall_budget_exhausted_outcome(
+            Duration::from_secs(10),
+            Duration::from_secs(500),
+            Some("left_in_working_tree".to_string()),
+        );
+        assert!(outcome.reason.contains("wall budget exhausted"));
+        assert!(outcome.reason.contains("10s"));
+        assert!(outcome.reason.contains("500s"));
+        assert!(outcome.reason.contains("left_in_working_tree"));
+        assert_eq!(
+            outcome.partial_state.as_deref(),
+            Some("left_in_working_tree")
+        );
+    }
+
+    /// Same shape, `landed_on_trunk` — the outcome must never claim work
+    /// was lost when it actually reached trunk.
+    #[test]
+    fn wall_budget_exhausted_outcome_names_a_landed_partial_state() {
+        let outcome = wall_budget_exhausted_outcome(
+            Duration::from_secs(5),
+            Duration::from_secs(400),
+            Some("landed_on_trunk".to_string()),
+        );
+        assert!(outcome.reason.contains("landed_on_trunk"));
+        assert_eq!(outcome.partial_state.as_deref(), Some("landed_on_trunk"));
+    }
+
+    /// No prior attempt this run ever produced anything — the outcome says
+    /// so honestly instead of fabricating a partial state.
+    #[test]
+    fn wall_budget_exhausted_outcome_with_no_prior_attempt_names_no_partial_state() {
+        let outcome =
+            wall_budget_exhausted_outcome(Duration::from_secs(1), Duration::from_secs(100), None);
+        assert!(outcome.partial_state.is_none());
+        assert!(outcome
+            .reason
+            .contains("no prior attempt this run produced committed work"));
+    }
 
     /// The dispatched project is PINNED in the server's argv. Everything about
     /// the bridge's isolation rests on this: the worker holds the config file
@@ -4070,6 +4557,245 @@ mod tests {
         assert!(
             tip.trim().is_empty(),
             "blocked work must never reach the remote"
+        );
+    }
+
+    // ── R1: stalled-after-gate-grant watchdog (G8 review, harness loop
+    // Lane E3 2026-09-10) ────────────────────────────────────────────────
+
+    /// An in_progress goal card with `worker_session_id` set, plus a real
+    /// `sessions` row for that id — the minimal fixture
+    /// `find_stalled_candidates` needs. Returns (tempdir kept alive for the
+    /// pool's sqlite file, pool, card id, session id).
+    async fn stalled_watchdog_fixture(
+    ) -> (tempfile::TempDir, sqlx::Pool<sqlx::Sqlite>, String, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = crate::session::SessionManager::new(tmp.path().to_path_buf());
+        let pool = sm.pool_clone().await.unwrap();
+
+        let session_id = "watchdog-session-1".to_string();
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(&session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        use crate::projects::PERSONAL_PROJECT_ID;
+        crate::cards::seed_goal_columns(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let col = crate::cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "in_progress")
+            .await
+            .unwrap()
+            .unwrap();
+        let card = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Watchdog stall fixture".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 0,
+                    "goal_state": "in_progress",
+                    "worker_session_id": session_id,
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        (tmp, pool, card.id, session_id)
+    }
+
+    async fn insert_pending_reservation(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        session_id: &str,
+        invocation_id: &str,
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) -> String {
+        let reservation_id = format!("invocation:{invocation_id}");
+        let created_at = created_at.to_rfc3339();
+        sqlx::query(
+            "INSERT INTO cost_reservations
+                (reservation_id, invocation_id, session_id, task_id, amount_usd,
+                 state, lease_until, created_at, updated_at)
+             VALUES (?, ?, ?, NULL, 1.0, 'pending', ?, ?, ?)",
+        )
+        .bind(&reservation_id)
+        .bind(invocation_id)
+        .bind(session_id)
+        .bind(&created_at)
+        .bind(&created_at)
+        .bind(&created_at)
+        .execute(pool)
+        .await
+        .unwrap();
+        reservation_id
+    }
+
+    /// No resume mechanism installed at all: the watchdog must not do
+    /// nothing — it escalates honestly, immediately, on the first sweep
+    /// that finds the goal stalled. Pre-fix, none of this machinery exists.
+    #[tokio::test]
+    async fn stalled_gate_grant_watchdog_escalates_honestly_when_no_resume_hook_is_installed() {
+        let (_tmp, pool, card_id, session_id) = stalled_watchdog_fixture().await;
+        let now = chrono::Utc::now();
+        insert_pending_reservation(
+            &pool,
+            &session_id,
+            "inv-a",
+            now - chrono::Duration::seconds(400),
+        )
+        .await;
+
+        let config = StalledGateGrantConfig {
+            stall_after_secs: 180,
+        };
+        let actions = run_stalled_gate_grant_watchdog(&pool, now, &config, None)
+            .await
+            .unwrap();
+
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(
+            actions[0],
+            StalledGateGrantAction::Escalated { .. }
+        ));
+
+        let card = crate::cards::get_card(&pool, &card_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get(STALLED_AFTER_GATE_GRANT_KEY)
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        let decision = crate::decisions::find_open_decision_for_goal(&pool, &card_id, "unblock")
+            .await
+            .unwrap();
+        assert!(
+            decision.is_some(),
+            "an honest, human-visible unblock decision must be raised"
+        );
+    }
+
+    /// The bounded "resume once, then escalate" contract: sweep 1 pokes
+    /// (never escalates — the goal was given a chance); sweep 2, with the
+    /// reservation STILL pending, escalates instead of poking a second
+    /// time. Pinned with a fake clock — `now` is driven directly, no sleep.
+    #[tokio::test]
+    async fn stalled_gate_grant_watchdog_pokes_once_then_escalates_if_still_stalled() {
+        let (_tmp, pool, card_id, session_id) = stalled_watchdog_fixture().await;
+        let now1 = chrono::Utc::now();
+        insert_pending_reservation(
+            &pool,
+            &session_id,
+            "inv-b",
+            now1 - chrono::Duration::seconds(400),
+        )
+        .await;
+
+        let poked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let poked_clone = std::sync::Arc::clone(&poked);
+        let hook: Box<ResumeStalledSessionFn> = Box::new(move |sid: String| {
+            let poked_clone = std::sync::Arc::clone(&poked_clone);
+            Box::pin(async move {
+                poked_clone.lock().unwrap().push(sid);
+                Ok(())
+            })
+        });
+
+        let config = StalledGateGrantConfig {
+            stall_after_secs: 180,
+        };
+        let actions1 = run_stalled_gate_grant_watchdog(&pool, now1, &config, Some(&*hook))
+            .await
+            .unwrap();
+        assert_eq!(actions1.len(), 1);
+        assert!(matches!(actions1[0], StalledGateGrantAction::Poked { .. }));
+        assert_eq!(poked.lock().unwrap().len(), 1, "must poke exactly once");
+
+        let card = crate::cards::get_card(&pool, &card_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            card.metadata_json
+                .get(STALLED_AFTER_GATE_GRANT_KEY)
+                .is_none(),
+            "a first poke must not escalate — the goal was given a chance to resume"
+        );
+
+        // Later sweep: the reservation is STILL pending (nothing ever spent
+        // it) — never poke a second time; escalate instead.
+        let now2 = now1 + chrono::Duration::seconds(400);
+        let actions2 = run_stalled_gate_grant_watchdog(&pool, now2, &config, Some(&*hook))
+            .await
+            .unwrap();
+        assert_eq!(actions2.len(), 1);
+        assert!(matches!(
+            actions2[0],
+            StalledGateGrantAction::Escalated { .. }
+        ));
+        assert_eq!(
+            poked.lock().unwrap().len(),
+            1,
+            "a second sweep must never poke twice"
+        );
+
+        let card = crate::cards::get_card(&pool, &card_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get(STALLED_AFTER_GATE_GRANT_KEY)
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    /// Fake-clock boundary precision: one second short of the configured
+    /// threshold must never fire; exactly at the threshold must.
+    #[tokio::test]
+    async fn stalled_gate_grant_watchdog_respects_the_exact_stall_boundary() {
+        let (_tmp, pool, _card_id, session_id) = stalled_watchdog_fixture().await;
+        let now = chrono::Utc::now();
+        let config = StalledGateGrantConfig {
+            stall_after_secs: 180,
+        };
+
+        insert_pending_reservation(
+            &pool,
+            &session_id,
+            "inv-c",
+            now - chrono::Duration::seconds(179),
+        )
+        .await;
+        let actions = run_stalled_gate_grant_watchdog(&pool, now, &config, None)
+            .await
+            .unwrap();
+        assert!(
+            actions.is_empty(),
+            "must not fire before the configured threshold"
+        );
+
+        sqlx::query("UPDATE cost_reservations SET created_at = ? WHERE invocation_id = 'inv-c'")
+            .bind((now - chrono::Duration::seconds(180)).to_rfc3339())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let actions = run_stalled_gate_grant_watchdog(&pool, now, &config, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            actions.len(),
+            1,
+            "must fire exactly at the configured threshold"
         );
     }
 }

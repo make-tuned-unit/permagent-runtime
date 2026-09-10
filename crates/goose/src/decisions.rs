@@ -314,6 +314,17 @@ pub struct ReservationGatePayload {
     pub held_usd: f64,
     pub requested_usd: f64,
     pub ceiling_usd: f64,
+    /// I1 (harness loop, 2026-09-10, from M10's forensics): the session that
+    /// hit this gate directly, WITHOUT going through a goal card — set only
+    /// for the coordinator's own provider calls (`goal_id(&session.
+    /// extension_data)` is `None` for those; a dispatched worker's gate
+    /// always carries a `goal_id` instead and leaves this `None`). Lets
+    /// [`find_open_reservation_gate_decision_for_session`] dedupe a
+    /// goal-less gate decision the same way [`find_open_decision_for_goal`]
+    /// dedupes a goal-scoped one. `#[serde(default)]` + skip-when-absent
+    /// keeps every pre-existing reservation-gate payload wire-compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requesting_session_id: Option<String>,
 }
 
 /// The Tier-2 card's subject: one command the approval ladder refused to run.
@@ -1830,6 +1841,33 @@ pub async fn find_open_decision_for_skill(
     .bind(PROPOSAL_CHECK_APPROVAL)
     .bind(skill_id)
     .bind(inputs_hash)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.as_ref().map(row_to_decision))
+}
+
+/// I1 (harness loop, 2026-09-10, from M10's forensics): find an open
+/// reservation-gate `choice` decision for a session that has no `goal_id` —
+/// the coordinator's own provider calls, never a dispatched worker's (those
+/// always carry a real `goal_id` and dedupe through
+/// [`find_open_decision_for_goal`] instead). Same "avoid filing a duplicate
+/// card every time a caller retries" purpose as
+/// [`find_open_decision_for_skill`], keyed on
+/// [`ReservationGatePayload::requesting_session_id`] since a goal-less
+/// decision has no `goal_id` column value to match on.
+pub async fn find_open_reservation_gate_decision_for_session(
+    pool: &Pool<Sqlite>,
+    session_id: &str,
+) -> Result<Option<Decision>, String> {
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM decisions \
+         WHERE kind = 'choice' AND status = 'open' AND goal_id IS NULL \
+           AND json_extract(payload_json, '$.reservation_gate.requesting_session_id') = ? \
+         ORDER BY created_at DESC LIMIT 1",
+        DECISION_COLUMNS
+    )))
+    .bind(session_id)
     .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?;

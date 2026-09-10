@@ -103,10 +103,14 @@ pub struct Invocation {
 }
 
 impl Invocation {
-    /// Look up a set environment value (test/debug helper).
+    /// Look up a set environment value (test/debug helper). Searches from the
+    /// END, matching what the child process actually sees: [`Self::envs`] is
+    /// applied in order, so a later entry — e.g. an A/B arm's knob appended by
+    /// the [`runner`](crate::runner) — overrides an earlier one.
     pub fn env(&self, key: &str) -> Option<&str> {
         self.envs
             .iter()
+            .rev()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
     }

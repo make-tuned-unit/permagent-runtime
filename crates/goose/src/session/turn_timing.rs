@@ -292,6 +292,63 @@ pub fn format_harness_overhead_line(rollup: &SessionTimingRollup) -> String {
     )
 }
 
+/// E2c (Round E, coding-harness excellence loop): attempt/cache/wall-budget
+/// context a goal-run driver can supply alongside a session's timing rollup,
+/// so the printed CLI line lets M11's analysis attribute wall time per
+/// attempt (M9's/F9's dominant remaining failure class was wall-clock
+/// exhaustion across multiple attempts, and the harness_overhead line's
+/// SESSION-total `model`/`tools`/`wall` numbers alone cannot say how many
+/// attempts that total was spread across, nor how much of it the E2a check
+/// cache already saved).
+///
+/// Every field is optional: a caller that does not track attempts (an
+/// ordinary interactive session, or a run from before this lane) simply
+/// omits it, and [`format_harness_overhead_line_with_attempts`] omits that
+/// token entirely rather than printing a fabricated `0`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct AttemptContext {
+    /// How many dispatch attempts this goal run has made so far (including
+    /// the current one).
+    pub attempts: Option<u32>,
+    /// How many `check_cache` hits this run recorded (`crate::check_cache`).
+    pub cache_hits: Option<u32>,
+    /// Remaining wall-clock budget, in milliseconds, at the point this line
+    /// is printed — see `goal_engine::wall_budget_permits_another_attempt`.
+    pub wall_budget_remaining_ms: Option<i64>,
+}
+
+/// [`format_harness_overhead_line`], extended with [`AttemptContext`].
+/// Additive only: the original five `p50`/`p95`/`model`/`tools`/`wall`
+/// tokens are printed in the exact same order and format as before, and each
+/// new token is appended ONLY when its value is present. A reader that only
+/// parses the first five space-separated tokens (the pre-E2c contract)
+/// continues to work unchanged; `permagent-eval`'s harness_log parser can
+/// start reading the new trailing tokens without any format-version bump.
+///
+/// This deliberately needs no schema/migration change: `cost_ledger.
+/// timing_json` (added at schema v54 by X-lat, the same v54 the loop log
+/// flags as colliding with the voice branch's `voice_turns` table — see
+/// HARNESS_LOOP_LOG.md's X-lat/G5 entries) is already a JSON column, so new
+/// `TurnTiming`/rollup-adjacent fields serialize into it for free. Only a
+/// genuinely new FIXED SQL column would need a schema bump; this lane adds
+/// none.
+pub fn format_harness_overhead_line_with_attempts(
+    rollup: &SessionTimingRollup,
+    extras: &AttemptContext,
+) -> String {
+    let mut line = format_harness_overhead_line(rollup);
+    if let Some(attempts) = extras.attempts {
+        line.push_str(&format!(" attempts={attempts}"));
+    }
+    if let Some(cache_hits) = extras.cache_hits {
+        line.push_str(&format!(" cache_hits={cache_hits}"));
+    }
+    if let Some(remaining_ms) = extras.wall_budget_remaining_ms {
+        line.push_str(&format!(" wall_budget={remaining_ms}"));
+    }
+    line
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,6 +432,63 @@ mod tests {
         assert_eq!(
             format_harness_overhead_line(&rollup),
             "harness_overhead p50=120 p95=480 model=9000 tools=1500 wall=11000"
+        );
+    }
+
+    // ── E2c: attempts=/cache_hits=/wall_budget= extension ───────────────
+
+    fn sample_rollup() -> SessionTimingRollup {
+        SessionTimingRollup {
+            turns: 3,
+            time_to_first_tool_ms: Some(42),
+            harness_overhead_p50_ms: 120,
+            harness_overhead_p95_ms: 480,
+            model_ms_total: 9000,
+            tool_exec_ms_total: 1500,
+            wall_ms_total: 11000,
+        }
+    }
+
+    /// All three extras present → all three trailing tokens appended, in
+    /// order, after the unchanged base line.
+    #[test]
+    fn format_line_with_attempts_appends_all_three_tokens_when_present() {
+        let extras = AttemptContext {
+            attempts: Some(3),
+            cache_hits: Some(2),
+            wall_budget_remaining_ms: Some(45_000),
+        };
+        assert_eq!(
+            format_harness_overhead_line_with_attempts(&sample_rollup(), &extras),
+            "harness_overhead p50=120 p95=480 model=9000 tools=1500 wall=11000 \
+             attempts=3 cache_hits=2 wall_budget=45000"
+        );
+    }
+
+    /// No extras at all → byte-identical to the original, unextended line —
+    /// the additive/backward-compatible contract the doc comment promises.
+    #[test]
+    fn format_line_with_attempts_matches_the_base_line_when_extras_are_all_absent() {
+        let extras = AttemptContext::default();
+        assert_eq!(
+            format_harness_overhead_line_with_attempts(&sample_rollup(), &extras),
+            format_harness_overhead_line(&sample_rollup()),
+        );
+    }
+
+    /// A partially-populated extras struct appends ONLY the present tokens —
+    /// a caller that tracks attempts but not cache hits never prints a
+    /// fabricated `cache_hits=0`.
+    #[test]
+    fn format_line_with_attempts_appends_only_the_present_fields() {
+        let extras = AttemptContext {
+            attempts: Some(1),
+            cache_hits: None,
+            wall_budget_remaining_ms: None,
+        };
+        assert_eq!(
+            format_harness_overhead_line_with_attempts(&sample_rollup(), &extras),
+            "harness_overhead p50=120 p95=480 model=9000 tools=1500 wall=11000 attempts=1"
         );
     }
 

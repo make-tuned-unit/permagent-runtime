@@ -1,0 +1,203 @@
+{
+  "schema": "permagent-eval/ab-result@1",
+  "tier": {
+    "name": "dschat",
+    "provider": "custom_deepseek",
+    "model": "deepseek-chat",
+    "pinned_packs": true
+  },
+  "knob": "repo-map",
+  "knob_summary": "inject a repo map into the coding-harness system prompt (PERMAGENT_CODING_REPO_MAP_TOKENS; 0 disables mapping entirely)",
+  "repeats": 2,
+  "fixtures": 17,
+  "control": {
+    "label": "baseline (repo-map off)",
+    "env": {
+      "PERMAGENT_CODING_REPO_MAP_TOKENS": "0"
+    },
+    "unset": [],
+    "runs": 34,
+    "solved": 34,
+    "pass_rate": 1.0,
+    "not_run": 0,
+    "errored": 0,
+    "total_cost_usd": 1.3503288560000004,
+    "any_cost_unknown": false,
+    "any_estimated": false,
+    "input_tokens": 18505594,
+    "output_tokens": 284649,
+    "cache_read_tokens": 16825984,
+    "cache_write_tokens": 0,
+    "total_tool_calls": 772,
+    "median_duration_secs": 75.58860475
+  },
+  "treatment": {
+    "label": "candidate (repo-map on)",
+    "env": {
+      "PERMAGENT_CODING_REPO_MAP_TOKENS": "4096"
+    },
+    "unset": [],
+    "runs": 34,
+    "solved": 34,
+    "pass_rate": 1.0,
+    "not_run": 0,
+    "errored": 0,
+    "total_cost_usd": 1.25032392,
+    "any_cost_unknown": false,
+    "any_estimated": false,
+    "input_tokens": 18876300,
+    "output_tokens": 273358,
+    "cache_read_tokens": 17408640,
+    "cache_write_tokens": 0,
+    "total_tool_calls": 731,
+    "median_duration_secs": 75.2731875625
+  },
+  "delta_pass_rate": 0.0,
+  "verdict": "no_change",
+  "sample_warning": null,
+  "requirement": {
+    "runs_per_arm_needed": 30,
+    "runs_per_arm_have": 34,
+    "fixtures": 17,
+    "repeats_used": 2,
+    "repeats_needed": 2
+  },
+  "per_fixture": [
+    {
+      "task_id": "defaults-py-competition-ranking-keeps-order",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-py-money-rounds-half-up",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-py-percentage-returns-a-fraction",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-rs-available-quantity-underflows",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-rs-parse-amount-returns-a-result",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-rs-two-diverged-queue-inserts",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-ts-gold-discount-cap-not-enforced",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-ts-password-needs-a-digit",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-ts-pinned-results-sort-first",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-ts-truncate-overflows-its-own-limit",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "fix-median",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "fizzbuzz",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "merge-row-2048",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "palindrome",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "roman-numerals",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "scoring",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "tic-tac-toe",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    }
+  ]
+}

@@ -27,8 +27,8 @@ pub use session_manager::{
 };
 pub use thread_manager::{Thread, ThreadManager, ThreadMetadata};
 pub use turn_timing::{
-    compute_rollup, format_harness_overhead_line, SessionTimingRollup, ToolCallTiming, TurnTiming,
-    TurnTimingRecorder,
+    compute_rollup, format_harness_overhead_line, format_harness_overhead_line_with_attempts,
+    AttemptContext, SessionTimingRollup, ToolCallTiming, TurnTiming, TurnTimingRecorder,
 };
 
 /// Inherited only by a child CLI process launched for an existing session.

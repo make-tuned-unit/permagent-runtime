@@ -83,9 +83,11 @@ pub use cache::{
     PrefixSegment, CANONICAL_PREFIX, HARNESS_PREFIX,
 };
 pub use capability_directory::{
-    billing_class_for, evidence_excludes_role, pin_clears_orchestrate_floor, resolve_planner,
-    validate_graduation, CapabilityCard, CapabilityDirectory, CardSource, PlannerReason,
-    RoleEvidence, StrengthProfile, MICRO_SUITE_PASS_FLOOR, PLANNER_STRENGTH_BAND, SCHEMA_VERSION,
+    annotate_orchestrate_refusal, billing_class_for, card_role_graduation_json,
+    evidence_excludes_role, pin_clears_orchestrate_floor, resolve_planner, role_graduation_status,
+    validate_graduation, worker_graduation_json, CapabilityCard, CapabilityDirectory, CardSource,
+    PlannerReason, RoleEvidence, RoleGraduationStatus, StrengthProfile, MICRO_SUITE_PASS_FLOOR,
+    PLANNER_STRENGTH_BAND, SCHEMA_VERSION,
 };
 pub use cheap::{
     build_ladder, default_anchor, discover_priced_candidates, is_key_configured, load_ladder,

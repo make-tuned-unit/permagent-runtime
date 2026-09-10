@@ -1,0 +1,203 @@
+{
+  "schema": "permagent-eval/ab-result@1",
+  "tier": {
+    "name": "glm47",
+    "provider": "zai",
+    "model": "glm-4.7",
+    "pinned_packs": true
+  },
+  "knob": "premature-done-guard",
+  "knob_summary": "hold a turn that claims done without having run a verification tool (PERMAGENT_AFTER_TURN_HOLD; raw env parser, so 0/1 are fine)",
+  "repeats": 2,
+  "fixtures": 17,
+  "control": {
+    "label": "baseline (premature-done-guard off)",
+    "env": {
+      "PERMAGENT_AFTER_TURN_HOLD": "0"
+    },
+    "unset": [],
+    "runs": 34,
+    "solved": 32,
+    "pass_rate": 0.9411764705882353,
+    "not_run": 0,
+    "errored": 0,
+    "total_cost_usd": 1.3318216799999996,
+    "any_cost_unknown": false,
+    "any_estimated": false,
+    "input_tokens": 7030871,
+    "output_tokens": 96811,
+    "cache_read_tokens": 6325888,
+    "cache_write_tokens": 0,
+    "total_tool_calls": 357,
+    "median_duration_secs": 62.7368318545
+  },
+  "treatment": {
+    "label": "candidate (premature-done-guard on)",
+    "env": {
+      "PERMAGENT_AFTER_TURN_HOLD": "1"
+    },
+    "unset": [],
+    "runs": 34,
+    "solved": 33,
+    "pass_rate": 0.9705882352941176,
+    "not_run": 0,
+    "errored": 0,
+    "total_cost_usd": 2.38380664,
+    "any_cost_unknown": false,
+    "any_estimated": false,
+    "input_tokens": 12328004,
+    "output_tokens": 200174,
+    "cache_read_tokens": 11129344,
+    "cache_write_tokens": 0,
+    "total_tool_calls": 634,
+    "median_duration_secs": 149.467498542
+  },
+  "delta_pass_rate": 0.02941176470588236,
+  "verdict": "improved",
+  "sample_warning": null,
+  "requirement": {
+    "runs_per_arm_needed": 30,
+    "runs_per_arm_have": 34,
+    "fixtures": 17,
+    "repeats_used": 2,
+    "repeats_needed": 2
+  },
+  "per_fixture": [
+    {
+      "task_id": "defaults-py-competition-ranking-keeps-order",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-py-money-rounds-half-up",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-py-percentage-returns-a-fraction",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-rs-available-quantity-underflows",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-rs-parse-amount-returns-a-result",
+      "control_runs": 2,
+      "control_solved": 1,
+      "treatment_runs": 2,
+      "treatment_solved": 1,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-rs-two-diverged-queue-inserts",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-ts-gold-discount-cap-not-enforced",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-ts-password-needs-a-digit",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-ts-pinned-results-sort-first",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "defaults-ts-truncate-overflows-its-own-limit",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "fix-median",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "fizzbuzz",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "merge-row-2048",
+      "control_runs": 2,
+      "control_solved": 1,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.5
+    },
+    {
+      "task_id": "palindrome",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "roman-numerals",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "scoring",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    },
+    {
+      "task_id": "tic-tac-toe",
+      "control_runs": 2,
+      "control_solved": 2,
+      "treatment_runs": 2,
+      "treatment_solved": 2,
+      "delta": 0.0
+    }
+  ]
+}

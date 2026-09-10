@@ -4,6 +4,12 @@
 //!
 //! Subcommands:
 //! - `run`      — execute tasks under the given tier(s) and print/write a report.
+//! - `ab`       — run the suite twice under two configurations at ONE tier and
+//!   report the paired delta, with the 30-run honesty guard enforced.
+//! - `report`   — re-render a saved `ab` result file (no models are called).
+//! - `knobs`    — list the harness knobs that are A/B-able from the environment.
+//! - `tier0`    — the $0 offline harness-loop metrics against a scripted mock
+//!   model on loopback (no provider is contacted, nothing is spent).
 //! - `plan`     — print the exact `permagent run` invocations without executing
 //!   (safe anywhere; no models are called).
 //! - `list`     — list the bundled tasks.
@@ -21,14 +27,24 @@ use permagent_eval::{
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+// NOTE: deliberately NOT `use std::process::Command;` — this file already
+// declares its own CLI `enum Command` (the clap subcommand enum below), and
+// importing the std type shadows/conflicts with every `Command::Variant`
+// reference. New code that needs to spawn a process must fully-qualify
+// `std::process::Command`.
 
+use permagent_eval::ab::{self, AbReport, ArmConfig, Knob};
 use permagent_eval::cost::LedgerCostReader;
 use permagent_eval::graduate::{
     default_directory_path, describe_change, graduate_runs_into_directory, GraduateRequest,
     WorkflowRole,
 };
 use permagent_eval::invocation::build_invocation;
-use permagent_eval::qualification::QualificationInput;
+use permagent_eval::metrics::TaskResult;
+use permagent_eval::qualification::{
+    build_run_qualification_record, qualification_input_from_records, BinaryProvenance,
+    QualificationInput, RunQualificationRecord,
+};
 use permagent_eval::report::{
     overall_dag_selection_pct, render_json, render_markdown, render_text, TierReport,
 };
@@ -38,6 +54,7 @@ use permagent_eval::runner::{
 };
 use permagent_eval::task::{load_task_set, select_tasks, Task};
 use permagent_eval::tier::Tier;
+use permagent_eval::tier0;
 
 /// The task set bundled with this crate (used when `--tasks-dir` is omitted).
 const DEFAULT_TASKS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tasks");
@@ -57,6 +74,16 @@ struct Cli {
 enum Command {
     /// Run the task set under one or more tiers and report results.
     Run(RunArgs),
+    /// Paired A/B: run the task set under two configurations at ONE tier,
+    /// N repeats each, and report the delta with the honesty guard enforced.
+    Ab(AbArgs),
+    /// Re-render a saved `ab` result file. Calls no models.
+    Report(ReportArgs),
+    /// List the harness knobs that can be A/B'd from the environment.
+    Knobs,
+    /// Tier 0: the $0 offline harness-loop metrics against a scripted mock
+    /// model on loopback. No provider is contacted and nothing is spent.
+    Tier0(Tier0Args),
     /// Print the constructed harness invocations without running them.
     Plan(PlanArgs),
     /// List the bundled tasks.
@@ -184,9 +211,35 @@ struct ProgramReopenArgs {
 
 #[derive(Args, Debug)]
 struct QualifyArgs {
-    /// JSON evidence file produced by the outer evaluation DAG. Use `-` for stdin.
-    #[arg(long, value_name = "FILE")]
-    input: PathBuf,
+    /// JSON evidence file produced by the outer evaluation DAG: the abstract
+    /// `QualificationInput` shape (already classified per area). Use `-` for
+    /// stdin. Mutually exclusive with `--record`.
+    #[arg(long, value_name = "FILE", conflicts_with = "records")]
+    input: Option<PathBuf>,
+
+    /// One or more per-invocation qualification records — the `<out>.qual.json`
+    /// sidecar `run`/`ab` write alongside their own `--out` — to fold into the
+    /// nine tracked areas before validating. Repeatable; each file may hold
+    /// one record or a JSON array of them (`run` writes one per tier, `ab`
+    /// one per arm). Requires `--heldout-task` (at least one): which tasks are
+    /// held-out is a policy decision the raw records do not carry.
+    #[arg(long = "record", value_name = "FILE")]
+    records: Vec<PathBuf>,
+
+    /// Task id(s) used while optimizing a candidate (pairs with `--record`).
+    #[arg(long = "optimizer-task", value_name = "ID")]
+    optimizer_tasks: Vec<String>,
+
+    /// Held-out task id(s) (pairs with `--record`); at least one is required
+    /// when `--record` is used.
+    #[arg(long = "heldout-task", value_name = "ID", requires = "records")]
+    heldout_tasks: Vec<String>,
+
+    /// Benchmark version label recorded on the derived `QualificationInput`
+    /// when building it from `--record` files (ignored with `--input`, which
+    /// already carries its own).
+    #[arg(long, value_name = "LABEL", default_value = "eval-records-v1")]
+    benchmark_version: String,
 
     /// Also write the derived scorecard to this file.
     #[arg(long, value_name = "FILE")]
@@ -198,7 +251,12 @@ struct GraduateArgs {
     /// One or more retained run report JSON files, as written by
     /// `permagent-eval run --format json --out FILE` (repeatable; passed in
     /// the order the streak should be evaluated, oldest first, when the
-    /// files don't carry their own `generated_at`).
+    /// files don't carry their own `generated_at`). When `FILE.qual.json`
+    /// (the sidecar every `run`/`ab` invocation also writes) exists next to
+    /// `FILE`, it is read INSTEAD of `FILE` for that run — see
+    /// `permagent_eval::graduate`'s module doc's "What counts as the
+    /// record" section; a qual.json-sourced run requires `--snapshot-date`
+    /// since the sidecar carries no `generated_at`.
     #[arg(long = "run", value_name = "FILE", required = true)]
     runs: Vec<PathBuf>,
 
@@ -353,7 +411,10 @@ struct RunArgs {
     )]
     format: String,
 
-    /// Also write the report to this file.
+    /// Also write the report to this file. Also writes a sibling
+    /// `<FILE>.qual.json` qualification record (task ids, fixture revision,
+    /// binary provenance, provider/model/pins, and per-task evidence) that
+    /// `permagent-eval qualify --record` folds into the nine tracked areas.
     #[arg(long, value_name = "FILE")]
     out: Option<PathBuf>,
 
@@ -392,6 +453,146 @@ struct RunArgs {
     budget_usd: Option<f64>,
 }
 
+/// `ab` — the paired comparison.
+///
+/// Exactly ONE tier is allowed: a delta measured across two models measures the
+/// models, not the harness (see `docs/design/HARNESS_BENCH_RESEARCH.md` §1.5 on
+/// holding a weak model constant).
+#[derive(Args, Debug)]
+struct AbArgs {
+    #[command(flatten)]
+    tiers: TierSelection,
+
+    #[command(flatten)]
+    tasks_dir: TasksDirArg,
+
+    /// Only run these task ids (repeatable). Omit to run all.
+    #[arg(long = "task", value_name = "ID")]
+    tasks: Vec<String>,
+
+    /// The `permagent` binary to invoke (name on PATH or an absolute path).
+    #[arg(long, default_value = "permagent")]
+    permagent_bin: String,
+
+    /// Where per-run scratch directories are created.
+    #[arg(long, value_name = "DIR")]
+    runs_dir: Option<PathBuf>,
+
+    /// Keep scratch directories after each run (for debugging).
+    #[arg(long)]
+    keep: bool,
+
+    /// Proceed even if a tier's API-key environment variable is absent.
+    #[arg(long)]
+    allow_missing_keys: bool,
+
+    /// Let the child `permagent` process read the OS keychain for provider
+    /// secrets, instead of forcing it to read them from file/env only. See
+    /// `run --help` for the full explanation.
+    #[arg(long)]
+    use_keyring: bool,
+
+    /// Stop launching further tasks once measured spend (summed from the
+    /// ledger, across both arms of this comparison) exceeds this many
+    /// dollars. Already-collected results are still reported in full;
+    /// remaining tasks are recorded as a distinct not-run state (not a fail)
+    /// and excluded from pass-rate. Omit for no cap (default: unlimited).
+    #[arg(long, value_name = "USD")]
+    budget_usd: Option<f64>,
+
+    /// A registry knob to compare off-vs-on (`permagent-eval knobs` lists them).
+    /// Mutually exclusive with --a-env/--b-env.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["a_env", "b_env"])]
+    knob: Option<String>,
+
+    /// Ad-hoc control-arm environment, `KEY=VALUE` (repeatable).
+    #[arg(long = "a-env", value_name = "KEY=VALUE")]
+    a_env: Vec<String>,
+
+    /// Ad-hoc treatment-arm environment, `KEY=VALUE` (repeatable).
+    #[arg(long = "b-env", value_name = "KEY=VALUE")]
+    b_env: Vec<String>,
+
+    /// Label for the control arm (A).
+    #[arg(long, value_name = "LABEL", default_value = "baseline")]
+    baseline: String,
+
+    /// Label for the treatment arm (B).
+    #[arg(long = "candidate", value_name = "LABEL", default_value = "candidate")]
+    candidate: String,
+
+    /// How many times to run the whole suite per arm. The honesty guard needs
+    /// 30 runs in the smaller arm, so on the bundled fixture suite that is
+    /// `--repeats 2`; anything less reports INCONCLUSIVE by construction.
+    #[arg(long, default_value_t = 1, value_name = "N")]
+    repeats: usize,
+
+    /// Where to write the machine-readable result (JSON). Defaults to a
+    /// timestamped file under the runs directory; the path is always
+    /// printed. Also writes a sibling `<FILE>.qual.json` qualification
+    /// record per arm (task ids, fixture revision, binary provenance,
+    /// provider/model/pins, and per-task evidence) that `permagent-eval
+    /// qualify --record` folds into the nine tracked areas.
+    #[arg(long, value_name = "FILE")]
+    out: Option<PathBuf>,
+
+    /// Print the two arms and the planned invocation count, then exit WITHOUT
+    /// running anything or spending anything.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Exit non-zero when the run does not earn a directional verdict (i.e. the
+    /// sample is under the honesty threshold). For CI, where an inconclusive
+    /// A/B is a failed measurement rather than a result.
+    #[arg(long)]
+    require_conclusive: bool,
+}
+
+/// `tier0` — the $0 loop metrics.
+#[derive(Args, Debug)]
+struct Tier0Args {
+    /// The `permagent` binary to drive (name on PATH or an absolute path).
+    #[arg(long, default_value = "permagent")]
+    permagent_bin: String,
+
+    /// Only run these scenario ids (repeatable). Omit to run all.
+    #[arg(long = "scenario", value_name = "ID")]
+    scenarios: Vec<String>,
+
+    /// Where per-scenario scratch directories are created (kept, so a failed
+    /// scenario's harness log survives for inspection).
+    #[arg(long, value_name = "DIR")]
+    work_dir: Option<PathBuf>,
+
+    /// Also write the machine-readable result here.
+    #[arg(long, value_name = "FILE")]
+    out: Option<PathBuf>,
+
+    /// List the scenarios and what each measures, then exit without running.
+    #[arg(long)]
+    list: bool,
+
+    /// Exit non-zero if any scenario fails (the CI posture).
+    #[arg(long)]
+    fail_on_regression: bool,
+}
+
+#[derive(Args, Debug)]
+struct ReportArgs {
+    /// A result file written by `ab`.
+    #[arg(value_name = "FILE")]
+    file: PathBuf,
+
+    /// Output format: `md` re-renders the table, `json` re-emits the parsed
+    /// file (a round-trip check that the file is well-formed).
+    #[arg(
+        long,
+        value_parser = clap::builder::PossibleValuesParser::new(["md", "json"]),
+        default_value = "md"
+    )]
+    format: String,
+}
+
 #[derive(Args, Debug)]
 struct PlanArgs {
     #[command(flatten)]
@@ -426,6 +627,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => cmd_run(args),
+        Command::Ab(args) => cmd_ab(args),
+        Command::Report(args) => cmd_report(args),
+        Command::Knobs => cmd_knobs(),
+        Command::Tier0(args) => cmd_tier0(args),
         Command::Plan(args) => cmd_plan(args),
         Command::List(arg) => cmd_list(&resolve_tasks_dir(&arg)),
         Command::Validate(arg) => cmd_validate(&resolve_tasks_dir(&arg)),
@@ -852,26 +1057,66 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     result
 }
 
+/// Read one `--record` file's qualification record(s). Each file may hold a
+/// single [`RunQualificationRecord`] object (what `run`/`ab` write for one
+/// tier/arm) or a JSON array of them (what `run` writes when it ran more
+/// than one tier in a single invocation) — tried in that order so either
+/// shape round-trips.
+fn read_qualification_records(path: &Path) -> Result<Vec<RunQualificationRecord>> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading qualification record {}", path.display()))?;
+    if let Ok(many) = serde_json::from_str::<Vec<RunQualificationRecord>>(&raw) {
+        return Ok(many);
+    }
+    let one: RunQualificationRecord = serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "{} is neither a qualification record nor an array of them",
+            path.display()
+        )
+    })?;
+    Ok(vec![one])
+}
+
 fn cmd_qualify(args: QualifyArgs) -> Result<()> {
-    let raw = if args.input == Path::new("-") {
-        let mut raw = String::new();
-        std::io::Read::read_to_string(&mut std::io::stdin(), &mut raw)
-            .context("reading qualification evidence from stdin")?;
-        raw
+    let input: QualificationInput = if !args.records.is_empty() {
+        if args.heldout_tasks.is_empty() {
+            bail!(
+                "--record requires at least one --heldout-task: the held-out/optimizer split \
+                 is a policy decision, not something a raw run record carries"
+            );
+        }
+        let mut records = Vec::new();
+        for path in &args.records {
+            records.extend(read_qualification_records(path)?);
+        }
+        qualification_input_from_records(
+            &records,
+            args.benchmark_version.clone(),
+            args.optimizer_tasks.clone(),
+            args.heldout_tasks.clone(),
+        )
     } else {
-        std::fs::read_to_string(&args.input).with_context(|| {
+        let path = args
+            .input
+            .as_deref()
+            .context("either --input or --record is required")?;
+        let raw = if path == Path::new("-") {
+            let mut raw = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut raw)
+                .context("reading qualification evidence from stdin")?;
+            raw
+        } else {
+            std::fs::read_to_string(path).with_context(|| {
+                format!("reading qualification evidence from {}", path.display())
+            })?
+        };
+        serde_json::from_str(&raw).with_context(|| {
             format!(
-                "reading qualification evidence from {}",
-                args.input.display()
+                "parsing qualification evidence JSON from {}",
+                path.display()
             )
         })?
     };
-    let input: QualificationInput = serde_json::from_str(&raw).with_context(|| {
-        format!(
-            "parsing qualification evidence JSON from {}",
-            args.input.display()
-        )
-    })?;
     let report = permagent_eval::qualify(&input).context("validating qualification evidence")?;
     let rendered = serde_json::to_string_pretty(&report)?;
     println!("{rendered}");
@@ -933,6 +1178,9 @@ fn cmd_graduate(args: GraduateArgs) -> Result<()> {
         &outcome.after,
     );
     println!("{summary}");
+    for (run_id, source) in &outcome.run_sources {
+        println!("  evidence: {run_id} <- {}", source.as_str());
+    }
     if outcome.written {
         println!("\nWrote {}", directory_path.display());
     } else {
@@ -1049,7 +1297,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         bail!("no tasks to run in {}", tasks_dir.display());
     }
 
-    preflight_keys(&tiers, args.allow_missing_keys)?;
+    preflight_keys(&tiers, args.allow_missing_keys, args.use_keyring)?;
     if !binary_resolves(&args.permagent_bin) {
         eprintln!(
             "warning: harness binary {:?} not found on PATH — runs will error. \
@@ -1073,6 +1321,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         runs_root,
         keep: args.keep,
         use_keyring: args.use_keyring,
+        ..Default::default()
     };
     let harness = SubprocessHarnessRunner;
     let oracle = SubprocessOracleRunner;
@@ -1151,6 +1400,13 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         std::fs::write(path, &rendered)
             .with_context(|| format!("writing report to {}", path.display()))?;
         eprintln!("report written to {}", path.display());
+
+        // X-obs-1: every run that writes a report also writes the sibling
+        // qualification record `permagent-eval qualify --record` reads.
+        let qual_path = qualification_sibling_path(path);
+        let records = build_qualification_records(&tasks_dir, &cfg.permagent_bin, &reports);
+        write_qualification_records(&qual_path, &records)?;
+        eprintln!("qualification record written to {}", qual_path.display());
     }
 
     // Gate the exit code on the pass-rate threshold, if one was given. The report
@@ -1160,6 +1416,561 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         if let Some((best_pct, want_pct)) = fail_under_violation(&reports, threshold)? {
             bail!("best tier pass-rate {best_pct:.1}% is below --fail-under {want_pct:.1}%");
         }
+    }
+    Ok(())
+}
+
+fn cmd_knobs() -> Result<()> {
+    println!("Harness knobs that can be A/B'd from the environment:\n");
+    for k in ab::KNOBS {
+        println!("  {}", k.name);
+        println!("    {}", k.summary);
+        println!("    shipped default: {}", k.shipped_default);
+        println!(
+            "    A: {}   B: {}",
+            render_env_pairs(k.off),
+            render_env_pairs(k.on)
+        );
+        println!();
+    }
+    println!(
+        "Anything not listed can still be compared with `ab --a-env KEY=VALUE --b-env KEY=VALUE`.\n\
+         Note: keys read through the config layer parse their value as JSON, so a boolean must be\n\
+         spelled `true`/`false` — `1` silently falls back to the default and both arms become the\n\
+         same configuration."
+    );
+    Ok(())
+}
+
+fn render_env_pairs(kv: &[(&str, &str)]) -> String {
+    kv.iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Resolve the two arms from either a registry knob or the ad-hoc
+/// `--a-env`/`--b-env` pairs. Pure over the parsed args so it is unit-tested.
+fn resolve_arms(args: &AbArgs) -> Result<(ArmConfig, ArmConfig, Option<&'static Knob>)> {
+    if let Some(name) = &args.knob {
+        let k = ab::knob(name).with_context(|| {
+            format!(
+                "unknown knob {name:?}; known knobs are: {}",
+                ab::knob_names().join(", ")
+            )
+        })?;
+        let mut a = k.control_arm();
+        let mut b = k.treatment_arm();
+        a.label = format!("{} ({})", args.baseline, a.label);
+        b.label = format!("{} ({})", args.candidate, b.label);
+        return Ok((a, b, Some(k)));
+    }
+    if args.a_env.is_empty() && args.b_env.is_empty() {
+        bail!(
+            "nothing to compare: pass --knob <name> (see `permagent-eval knobs`) or \
+             --a-env/--b-env KEY=VALUE"
+        );
+    }
+    let mut a = ArmConfig::new(args.baseline.clone());
+    for kv in &args.a_env {
+        a = a.with_env_kv(kv)?;
+    }
+    let mut b = ArmConfig::new(args.candidate.clone());
+    for kv in &args.b_env {
+        b = b.with_env_kv(kv)?;
+    }
+    if a.env == b.env {
+        bail!(
+            "arm A and arm B have identical environments — this would compare a configuration \
+             against itself and report a delta that is pure noise"
+        );
+    }
+    // A variable set on only ONE side is a trap: the other arm silently
+    // inherits whatever the operator's shell (or the harness default) happens
+    // to be, so the comparison is not controlled.
+    let a_keys: Vec<&str> = a.env.iter().map(|(k, _)| k.as_str()).collect();
+    let b_keys: Vec<&str> = b.env.iter().map(|(k, _)| k.as_str()).collect();
+    for k in a_keys.iter().chain(b_keys.iter()) {
+        if !a_keys.contains(k) || !b_keys.contains(k) {
+            eprintln!(
+                "warning: {k} is set on only one arm; the other arm inherits the ambient \
+                 default, so the comparison is not fully controlled. Pin it on both sides."
+            );
+        }
+    }
+    Ok((a, b, None))
+}
+
+// --- X-obs-1: the qualification record every `run`/`ab` invocation writes
+// alongside its own `--out` -------------------------------------------------
+
+/// The sibling qualification-record path for a report/result file: `<out>` +
+/// `.qual.json` appended (never a replaced extension), so `report.json`
+/// becomes `report.json.qual.json` and `report.md` becomes
+/// `report.md.qual.json`.
+fn qualification_sibling_path(out: &Path) -> PathBuf {
+    let mut name = out.as_os_str().to_os_string();
+    name.push(".qual.json");
+    PathBuf::from(name)
+}
+
+/// The git hash of the most recent commit that touched `tasks_dir` — the
+/// "fixture revision" a qualification record pins task evidence to. `None`
+/// when `tasks_dir` is not inside a git repository, `git` is not on `PATH`,
+/// or the command otherwise fails (a fresh checkout with no commits yet,
+/// for instance). Never a fabricated placeholder: an absent revision must
+/// read as missing evidence, not as "revision zero".
+fn fixture_revision(tasks_dir: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(tasks_dir)
+        .args(["log", "-1", "--format=%H", "--", "."])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if sha.is_empty() {
+        None
+    } else {
+        Some(sha)
+    }
+}
+
+/// The harness binary's own `--version` output, trimmed. `None` when the
+/// binary cannot be run or prints nothing — never an empty-string default
+/// that could be misread as "no version" rather than "unknown".
+fn detect_binary_version(bin_path: &str) -> Option<String> {
+    let output = std::process::Command::new(bin_path)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// The first git-sha-shaped (40 hex characters) token found via `strings` on
+/// the binary — a best-effort provenance signal for a binary built without
+/// `--version` embedding one. `None` when `strings` is unavailable, the
+/// binary cannot be read, or no such token appears.
+fn detect_binary_git_sha(bin_path: &str) -> Option<String> {
+    static SHA_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\b[0-9a-f]{40}\b").expect("valid regex"));
+    let output = std::process::Command::new("strings")
+        .arg(bin_path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    SHA_RE.find(&text).map(|m| m.as_str().to_string())
+}
+
+/// A short, unique id for one `run`/`ab` invocation's retained qualification
+/// record(s), so re-running the same tier/arm never collides in a directory
+/// that accumulates records over time.
+fn qualification_run_stamp() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
+/// Build one [`RunQualificationRecord`] per tier report from a `run`
+/// invocation, sharing the one `fixture_revision`/binary provenance lookup
+/// across every tier (they all ran the same fixtures against the same
+/// binary).
+fn build_qualification_records(
+    tasks_dir: &Path,
+    bin_path: &str,
+    reports: &[TierReport],
+) -> Vec<RunQualificationRecord> {
+    let fixture_revision = fixture_revision(tasks_dir);
+    let binary = BinaryProvenance {
+        path: bin_path.to_string(),
+        version: detect_binary_version(bin_path),
+        git_sha: detect_binary_git_sha(bin_path),
+    };
+    let stamp = qualification_run_stamp();
+    reports
+        .iter()
+        .map(|tr| {
+            build_run_qualification_record(
+                format!("run-{stamp}-{}", tr.tier),
+                fixture_revision.clone(),
+                binary.clone(),
+                tr.provider.clone(),
+                tr.model.clone(),
+                tr.pinned_packs,
+                &tr.results,
+            )
+        })
+        .collect()
+}
+
+/// Write one or more qualification records as a JSON array to `path`,
+/// creating its parent directory if needed (mirrors [`write_ab_result`]).
+fn write_qualification_records(path: &Path, records: &[RunQualificationRecord]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+    }
+    let json = serde_json::to_string_pretty(records)?;
+    std::fs::write(path, json)
+        .with_context(|| format!("writing qualification record to {}", path.display()))
+}
+
+/// Default result-file path: stable prefix, unique suffix, under the runs dir.
+fn default_ab_out(runs_root: &Path, tier: &str, knob: Option<&Knob>) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let knob = knob.map(|k| k.name).unwrap_or("adhoc");
+    runs_root.join(format!("ab-{tier}-{knob}-{stamp}.json"))
+}
+
+/// `ab` holds the model constant by construction. Two tiers would make the
+/// delta a model comparison wearing a harness comparison's clothes.
+fn single_tier(tiers: &[Tier]) -> Result<&Tier> {
+    match tiers {
+        [one] => Ok(one),
+        many => bail!(
+            "`ab` compares two CONFIGURATIONS at one model tier, but {} tiers were selected \
+             ({}). A delta measured across two models measures the models, not the harness — \
+             pass exactly one --tier (or one --provider/--model pair).",
+            many.len(),
+            many.iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// `ab`'s runs directory, defaulting the same way `run`'s does.
+fn ab_runs_root(args: &AbArgs) -> PathBuf {
+    args.runs_dir
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join("permagent-eval-runs"))
+}
+
+/// The base [`RunConfig`] for an `ab` arm — no arm applied yet. Mirrors
+/// `cmd_run`'s own construction, including the relative-`--permagent-bin`
+/// resolution fix (a caller-supplied relative path must be resolved against
+/// the operator's cwd, since every task changes the child's cwd to its
+/// isolated workspace).
+fn ab_run_config(args: &AbArgs) -> RunConfig {
+    RunConfig {
+        permagent_bin: resolved_binary(&args.permagent_bin),
+        runs_root: ab_runs_root(args),
+        keep: args.keep,
+        use_keyring: args.use_keyring,
+        ..Default::default()
+    }
+}
+
+fn cmd_ab(args: AbArgs) -> Result<()> {
+    let tiers = args.tiers.resolve()?;
+    let tier = single_tier(&tiers)?;
+    if args.repeats == 0 {
+        bail!("--repeats must be at least 1");
+    }
+
+    let tasks_dir = resolve_tasks_dir(&args.tasks_dir);
+    let tasks: Vec<Task> = select_tasks(load_task_set(&tasks_dir)?, &args.tasks)?;
+    if tasks.is_empty() {
+        bail!("no tasks to run in {}", tasks_dir.display());
+    }
+    let (arm_a, arm_b, knob) = resolve_arms(&args)?;
+
+    let runs_root = ab_runs_root(&args);
+    let out_path = args
+        .out
+        .clone()
+        .unwrap_or_else(|| default_ab_out(&runs_root, &tier.name, knob));
+
+    // Say what this will cost in invocations BEFORE anything is launched — an
+    // A/B is 2×N×fixtures runs, which is easy to under-estimate by a factor of
+    // ten when reaching for `--repeats`.
+    let invocations = 2 * args.repeats * tasks.len();
+    eprintln!(
+        "==> ab @ tier {} ({} {}) — {} fixture(s) × {} repeat(s) × 2 arms = {} harness invocation(s)",
+        tier.name,
+        tier.provider,
+        tier.model,
+        tasks.len(),
+        args.repeats,
+        invocations
+    );
+    eprintln!("    A: {}  [{}]", arm_a.label, render_arm_env(&arm_a));
+    eprintln!("    B: {}  [{}]", arm_b.label, render_arm_env(&arm_b));
+    let requirement = permagent_eval::ab::SampleRequirement::compute(
+        tasks.len(),
+        args.repeats,
+        args.repeats * tasks.len(),
+    );
+    if !requirement.is_met() {
+        eprintln!(
+            "    NOTE: this sample cannot produce a verdict — {}",
+            requirement.what_it_would_take()
+        );
+    }
+    if args.dry_run {
+        eprintln!("--dry-run: nothing was executed and nothing was spent.");
+        eprintln!("result file would be: {}", out_path.display());
+        return Ok(());
+    }
+
+    preflight_keys(&tiers, args.allow_missing_keys, args.use_keyring)?;
+    if !binary_resolves(&args.permagent_bin) {
+        eprintln!(
+            "warning: harness binary {:?} not found on PATH — runs will error. \
+             Pass --permagent-bin <path> or build/install it first.",
+            args.permagent_bin
+        );
+    }
+
+    let harness = SubprocessHarnessRunner;
+    let oracle = SubprocessOracleRunner;
+    let cost = LedgerCostReader;
+    let recipe = SubprocessRecipeSource;
+    let deps = Deps {
+        harness: &harness,
+        oracle: &oracle,
+        cost: &cost,
+        recipe: &recipe,
+    };
+    // One tracker across BOTH arms: `--budget-usd` caps the comparison, not
+    // each side of it. A cap that stopped arm B alone would silently produce a
+    // lopsided sample, which the honesty guard would then have to catch.
+    let mut budget = match args.budget_usd {
+        Some(cap) => BudgetTracker::with_cap(cap),
+        None => BudgetTracker::unlimited(),
+    };
+
+    let mut a_results: Vec<TaskResult> = Vec::new();
+    let mut b_results: Vec<TaskResult> = Vec::new();
+    // Interleave the arms by repeat rather than running A to completion first:
+    // provider latency, rate limits and model-side drift are time-varying, and
+    // an A-then-B ordering would charge all of that to arm B.
+    for rep in 1..=args.repeats {
+        for (label, arm, sink) in [
+            (&arm_a.label, &arm_a, &mut a_results),
+            (&arm_b.label, &arm_b, &mut b_results),
+        ] {
+            eprintln!("--> repeat {}/{} · arm {}", rep, args.repeats, label);
+            let mut cfg = ab_run_config(&args);
+            cfg.arm_env = arm.env.clone();
+            cfg.arm_unset = arm.unset.clone();
+            let results = run_tier(&tasks, tier, &cfg, &deps, &mut budget);
+            for r in &results {
+                eprintln!(
+                    "    {:<6} {:<22} {}",
+                    match r.oracle {
+                        permagent_eval::oracle::OracleOutcome::NotRun => "SKIP",
+                        _ if r.solved => "PASS",
+                        _ => "FAIL",
+                    },
+                    r.task_id,
+                    permagent_eval::report::fmt_usd(r.cost.usd)
+                );
+            }
+            sink.extend(results);
+        }
+        if let Some(msg) = budget.take_stop_message() {
+            eprintln!("{msg}");
+        }
+    }
+
+    let report = AbReport::build(
+        tier,
+        knob,
+        args.repeats,
+        tasks.len(),
+        &arm_a,
+        &a_results,
+        &arm_b,
+        &b_results,
+    );
+    write_ab_result(&out_path, &report)?;
+    println!("{}", ab::render_markdown(&report));
+    println!("result file: {}", out_path.display());
+
+    // X-obs-1: one qualification record per arm, sibling to the result file.
+    let qual_path = qualification_sibling_path(&out_path);
+    let bin_path = resolved_binary(&args.permagent_bin);
+    let fixture_revision = fixture_revision(&tasks_dir);
+    let binary = BinaryProvenance {
+        path: bin_path.clone(),
+        version: detect_binary_version(&bin_path),
+        git_sha: detect_binary_git_sha(&bin_path),
+    };
+    let stamp = qualification_run_stamp();
+    let records = vec![
+        build_run_qualification_record(
+            format!("ab-{stamp}-{}", arm_a.label),
+            fixture_revision.clone(),
+            binary.clone(),
+            tier.provider.clone(),
+            tier.model.clone(),
+            tier.pin_packs,
+            &a_results,
+        ),
+        build_run_qualification_record(
+            format!("ab-{stamp}-{}", arm_b.label),
+            fixture_revision,
+            binary,
+            tier.provider.clone(),
+            tier.model.clone(),
+            tier.pin_packs,
+            &b_results,
+        ),
+    ];
+    write_qualification_records(&qual_path, &records)?;
+    println!("qualification record: {}", qual_path.display());
+
+    if args.require_conclusive && !report.verdict.is_conclusive() {
+        bail!(
+            "--require-conclusive: the run earned no verdict. {}",
+            report.requirement.what_it_would_take()
+        );
+    }
+    Ok(())
+}
+
+fn render_arm_env(arm: &ArmConfig) -> String {
+    if arm.is_empty() {
+        return "no overrides".to_string();
+    }
+    let mut parts: Vec<String> = arm.unset.iter().map(|n| format!("-{n}")).collect();
+    parts.extend(arm.env.iter().map(|(k, v)| format!("{k}={v}")));
+    parts.join(" ")
+}
+
+fn write_ab_result(path: &Path, report: &AbReport) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+    }
+    let json = serde_json::to_string_pretty(report)?;
+    std::fs::write(path, json).with_context(|| format!("writing result to {}", path.display()))
+}
+
+/// Pick the requested scenarios, erroring on an id that does not exist rather
+/// than silently running a smaller suite than the operator asked for.
+fn select_scenarios(wanted: &[String]) -> Result<Vec<tier0::Tier0Scenario>> {
+    let all = tier0::scenarios();
+    if wanted.is_empty() {
+        return Ok(all);
+    }
+    let known: Vec<&str> = all.iter().map(|s| s.id).collect();
+    let mut out = Vec::new();
+    for id in wanted {
+        let s = all.iter().find(|s| s.id == id).with_context(|| {
+            format!(
+                "unknown tier-0 scenario {id:?}; known scenarios are: {}",
+                known.join(", ")
+            )
+        })?;
+        out.push(s.clone());
+    }
+    Ok(out)
+}
+
+fn cmd_tier0(args: Tier0Args) -> Result<()> {
+    let selected = select_scenarios(&args.scenarios)?;
+    if args.list {
+        println!("Tier 0 scenarios ($0 — a scripted model on loopback, no provider contacted):\n");
+        for s in &selected {
+            println!("  {}", s.id);
+            println!("    {}", s.measures);
+            if !s.env.is_empty() {
+                println!("    env: {}", render_env_pairs(s.env));
+            }
+            println!();
+        }
+        return Ok(());
+    }
+
+    let work_root = args
+        .work_dir
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join("permagent-eval-tier0"));
+    if !binary_resolves(&args.permagent_bin) {
+        eprintln!(
+            "warning: harness binary {:?} not found on PATH — every scenario will error. \
+             Pass --permagent-bin <path> or build it first.",
+            args.permagent_bin
+        );
+    }
+    eprintln!(
+        "==> tier0 — {} scenario(s) against a scripted stub model; nothing is spent",
+        selected.len()
+    );
+
+    let report = tier0::run_all(&selected, &args.permagent_bin, &work_root)?;
+    println!("{}", tier0::render_markdown(&report));
+    if let Some(path) = &args.out {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        std::fs::write(path, serde_json::to_string_pretty(&report)?)
+            .with_context(|| format!("writing {}", path.display()))?;
+        println!("result file: {}", path.display());
+    }
+    eprintln!("scratch kept under {}", work_root.display());
+
+    if args.fail_on_regression && !report.all_passed() {
+        let failed: Vec<&str> = report
+            .scenarios
+            .iter()
+            .filter(|s| !s.passed)
+            .map(|s| s.id.as_str())
+            .collect();
+        bail!("tier-0 scenario(s) failed: {}", failed.join(", "));
+    }
+    Ok(())
+}
+
+fn cmd_report(args: ReportArgs) -> Result<()> {
+    let text = std::fs::read_to_string(&args.file)
+        .with_context(|| format!("reading {}", args.file.display()))?;
+    let report: AbReport = serde_json::from_str(&text).with_context(|| {
+        format!(
+            "{} is not a `{}` result file",
+            args.file.display(),
+            permagent_eval::ab::AB_SCHEMA
+        )
+    })?;
+    if report.schema != permagent_eval::ab::AB_SCHEMA {
+        bail!(
+            "{} declares schema {:?}, but this build reads {:?}",
+            args.file.display(),
+            report.schema,
+            permagent_eval::ab::AB_SCHEMA
+        );
+    }
+    match args.format.as_str() {
+        "json" => println!("{}", serde_json::to_string_pretty(&report)?),
+        _ => println!("{}", ab::render_markdown(&report)),
     }
     Ok(())
 }
@@ -1187,8 +1998,16 @@ fn fail_under_violation(reports: &[TierReport], threshold_pct: f64) -> Result<Op
 /// Error (unless allowed) when a selected tier needs an API key that is not set.
 /// A set-but-empty (or whitespace-only) value counts as missing — it would only
 /// send an empty credential and fail deeper in the harness.
-fn preflight_keys(tiers: &[Tier], allow_missing: bool) -> Result<()> {
-    preflight_keys_with(tiers, allow_missing, |k| std::env::var(k).ok())
+fn preflight_keys(tiers: &[Tier], allow_missing: bool, use_keyring: bool) -> Result<()> {
+    // With `--use-keyring` the CHILD reads secrets from the OS keychain, so this
+    // process's environment is not where the credential lives and its absence
+    // proves nothing. Erroring on it forced `--allow-missing-keys` on every
+    // keychain-only provider, which then also silenced the case this check
+    // exists for: a genuinely absent key, which otherwise fails 68 times in a
+    // row instead of once up front.
+    preflight_keys_with(tiers, allow_missing || use_keyring, |k| {
+        std::env::var(k).ok()
+    })
 }
 
 /// Testable core of [`preflight_keys`]: `lookup` supplies each env var's value so
@@ -1209,7 +2028,9 @@ fn preflight_keys_with(
         }
         if allow_missing {
             eprintln!(
-                "warning: tier {} needs {} but it is not set (continuing)",
+                "note: tier {} declares {}, which is not in this process's environment. \
+                 The child reads the OS keychain, so this is expected for a keychain-only \
+                 provider — but if the credential is missing there too, every run will fail.",
                 tier.name, key
             );
         } else {
@@ -1251,7 +2072,6 @@ fn resolved_binary(bin: &str) -> String {
 mod tests {
     use super::*;
     use permagent_eval::cost::CostReading;
-    use permagent_eval::metrics::TaskResult;
     use permagent_eval::oracle::OracleOutcome;
 
     #[test]
@@ -1285,6 +2105,24 @@ mod tests {
             pinned_packs: true,
             results,
         }
+    }
+
+    /// Regression: `--use-keyring` means the CHILD reads the OS keychain, so this
+    /// process's environment is not where the credential lives. Erroring on its
+    /// absence forced `--allow-missing-keys` onto every keychain-only provider,
+    /// which then also silenced the genuinely-missing case this check exists for
+    /// — turning one clear failure up front into 68 identical failures.
+    #[test]
+    fn preflight_accepts_a_keychain_only_provider_but_still_catches_a_truly_absent_key() {
+        let tiers = vec![Tier::builtin("dschat").expect("dschat is a built-in tier")];
+        let absent = |_: &str| None;
+
+        // Without the keyring the absence is decisive: fail once, up front.
+        assert!(preflight_keys_with(&tiers, false, absent).is_err());
+
+        // The keyring makes the environment non-authoritative, so this proceeds
+        // and the child resolves the credential itself.
+        assert!(preflight_keys_with(&tiers, true, absent).is_ok());
     }
 
     // --- Nit 1: preflight rejects a set-but-empty key -----------------------
@@ -1392,6 +2230,270 @@ mod tests {
         assert_eq!(args.budget_usd, Some(12.50));
     }
 
+    // --- `ab`: arg parsing, arm resolution, honesty guard, reporting -------
+
+    fn ab_args(argv: &[&str]) -> AbArgs {
+        let mut full = vec!["permagent-eval", "ab"];
+        full.extend_from_slice(argv);
+        let cli = Cli::try_parse_from(full).expect("args should parse");
+        let Command::Ab(args) = cli.command else {
+            panic!("expected Ab");
+        };
+        args
+    }
+
+    #[test]
+    fn ab_parses_a_knob_run_with_repeats_and_defaults_to_one_repeat() {
+        let a = ab_args(&["--tier", "haiku", "--knob", "repo-map", "--repeats", "4"]);
+        assert_eq!(a.knob.as_deref(), Some("repo-map"));
+        assert_eq!(a.repeats, 4);
+        assert!(!a.dry_run);
+        assert!(!a.require_conclusive);
+        assert_eq!(a.baseline, "baseline");
+        assert_eq!(a.candidate, "candidate");
+        assert_eq!(
+            ab_args(&["--tier", "haiku", "--knob", "repo-map"]).repeats,
+            1
+        );
+    }
+
+    #[test]
+    fn ab_refuses_a_knob_mixed_with_ad_hoc_env() {
+        // clap-level conflict: the two ways of defining an arm are exclusive,
+        // so a run can never half-apply both.
+        assert!(Cli::try_parse_from([
+            "permagent-eval",
+            "ab",
+            "--tier",
+            "haiku",
+            "--knob",
+            "repo-map",
+            "--a-env",
+            "X=1",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn ab_holds_the_model_constant_by_refusing_more_than_one_tier() {
+        let tiers = vec![
+            Tier::builtin("haiku").unwrap(),
+            Tier::builtin("sonnet").unwrap(),
+        ];
+        let err = single_tier(&tiers).unwrap_err().to_string();
+        assert!(err.contains("measures the models"), "{err}");
+        assert!(single_tier(&tiers[..1]).is_ok());
+    }
+
+    #[test]
+    fn resolve_arms_expands_a_registry_knob_into_two_labelled_arms() {
+        let args = ab_args(&["--tier", "haiku", "--knob", "premature-done-guard"]);
+        let (a, b, knob) = resolve_arms(&args).unwrap();
+        assert_eq!(knob.unwrap().name, "premature-done-guard");
+        assert_eq!(
+            a.env,
+            vec![("PERMAGENT_AFTER_TURN_HOLD".into(), "0".into())]
+        );
+        assert_eq!(
+            b.env,
+            vec![("PERMAGENT_AFTER_TURN_HOLD".into(), "1".into())]
+        );
+        assert!(a.label.contains("baseline") && a.label.contains("off"));
+        assert!(b.label.contains("candidate") && b.label.contains("on"));
+    }
+
+    #[test]
+    fn resolve_arms_rejects_an_unknown_knob_and_names_the_real_ones() {
+        let args = ab_args(&["--tier", "haiku", "--knob", "turbo-mode"]);
+        let err = format!("{:#}", resolve_arms(&args).unwrap_err());
+        assert!(err.contains("unknown knob"), "{err}");
+        assert!(
+            err.contains("repo-map"),
+            "the error must list what IS valid: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_arms_refuses_to_compare_a_configuration_against_itself() {
+        let args = ab_args(&["--tier", "haiku", "--a-env", "X=1", "--b-env", "X=1"]);
+        let err = format!("{:#}", resolve_arms(&args).unwrap_err());
+        assert!(err.contains("against itself"), "{err}");
+    }
+
+    #[test]
+    fn resolve_arms_requires_something_to_compare() {
+        let args = ab_args(&["--tier", "haiku"]);
+        let err = format!("{:#}", resolve_arms(&args).unwrap_err());
+        assert!(err.contains("nothing to compare"), "{err}");
+    }
+
+    #[test]
+    fn resolve_arms_accepts_ad_hoc_env_pairs_and_rejects_malformed_ones() {
+        let args = ab_args(&[
+            "--tier",
+            "haiku",
+            "--a-env",
+            "GOOSE_TEMPERATURE=0",
+            "--b-env",
+            "GOOSE_TEMPERATURE=1",
+        ]);
+        let (a, b, knob) = resolve_arms(&args).unwrap();
+        assert!(knob.is_none());
+        assert_eq!(a.env[0].1, "0");
+        assert_eq!(b.env[0].1, "1");
+
+        let bad = ab_args(&["--tier", "haiku", "--a-env", "NOEQUALS"]);
+        assert!(resolve_arms(&bad).is_err());
+    }
+
+    /// The whole point of the lane: a saved result renders without the run
+    /// that produced it, and a file that is not one is refused rather than
+    /// half-rendered.
+    #[test]
+    fn report_renders_a_saved_result_and_rejects_a_foreign_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tier = Tier::builtin("haiku").unwrap();
+        let results: Vec<TaskResult> = (0..3)
+            .map(|i| {
+                TaskResult::new(
+                    format!("t{i}"),
+                    "classic",
+                    OracleOutcome::Pass,
+                    CostReading::known(0.01, false, 1),
+                )
+            })
+            .collect();
+        let arm_a = ArmConfig::new("a");
+        let arm_b = ArmConfig::new("b");
+        let report = AbReport::build(&tier, None, 1, 3, &arm_a, &results, &arm_b, &results);
+
+        let path = tmp.path().join("nested").join("ab.json");
+        write_ab_result(&path, &report).unwrap();
+        assert!(path.exists(), "the parent directory must be created");
+        cmd_report(ReportArgs {
+            file: path.clone(),
+            format: "md".to_string(),
+        })
+        .unwrap();
+
+        // A file that parses as JSON but is not an AB result is refused.
+        let foreign = tmp.path().join("other.json");
+        std::fs::write(&foreign, "{\"tiers\":[]}").unwrap();
+        let err = format!(
+            "{:#}",
+            cmd_report(ReportArgs {
+                file: foreign,
+                format: "md".to_string(),
+            })
+            .unwrap_err()
+        );
+        assert!(err.contains("result file"), "{err}");
+    }
+
+    /// A result file whose schema string is from another version must be
+    /// refused outright rather than rendered with fields silently missing.
+    #[test]
+    fn report_refuses_a_result_file_from_another_schema_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tier = Tier::builtin("haiku").unwrap();
+        let mut report = AbReport::build(
+            &tier,
+            None,
+            1,
+            0,
+            &ArmConfig::new("a"),
+            &[],
+            &ArmConfig::new("b"),
+            &[],
+        );
+        report.schema = "permagent-eval/ab-result@99".to_string();
+        let path = tmp.path().join("future.json");
+        write_ab_result(&path, &report).unwrap();
+        let err = format!(
+            "{:#}",
+            cmd_report(ReportArgs {
+                file: path,
+                format: "md".to_string(),
+            })
+            .unwrap_err()
+        );
+        assert!(err.contains("@99"), "{err}");
+    }
+
+    #[test]
+    fn knobs_listing_renders_every_registry_entry() {
+        cmd_knobs().unwrap();
+        for k in permagent_eval::ab::KNOBS {
+            assert!(!render_env_pairs(k.off).is_empty(), "{}", k.name);
+            assert!(!render_env_pairs(k.on).is_empty(), "{}", k.name);
+        }
+    }
+
+    #[test]
+    fn the_default_result_path_is_unique_per_tier_and_knob() {
+        let root = Path::new("/tmp/runs");
+        let p = default_ab_out(root, "haiku", permagent_eval::ab::knob("repo-map"));
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("ab-haiku-repo-map-"), "{name}");
+        assert!(name.ends_with(".json"), "{name}");
+        let adhoc = default_ab_out(root, "haiku", None);
+        assert!(
+            adhoc.to_string_lossy().contains("-adhoc-"),
+            "{}",
+            adhoc.display()
+        );
+    }
+
+    // --- `tier0` -----------------------------------------------------------
+
+    #[test]
+    fn tier0_selects_every_scenario_by_default_and_names_unknown_ids() {
+        assert_eq!(
+            select_scenarios(&[]).unwrap().len(),
+            tier0::scenarios().len()
+        );
+        let one = select_scenarios(&["tool-result-pruning".to_string()]).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].id, "tool-result-pruning");
+
+        let err = format!(
+            "{:#}",
+            select_scenarios(&["not-a-scenario".to_string()]).unwrap_err()
+        );
+        assert!(err.contains("unknown tier-0 scenario"), "{err}");
+        assert!(
+            err.contains("tool-result-pruning"),
+            "the error must list what IS valid: {err}"
+        );
+    }
+
+    #[test]
+    fn tier0_args_default_to_the_permagent_binary_and_no_ci_gate() {
+        let cli = Cli::try_parse_from(["permagent-eval", "tier0"]).unwrap();
+        let Command::Tier0(args) = cli.command else {
+            panic!("expected Tier0");
+        };
+        assert_eq!(args.permagent_bin, "permagent");
+        assert!(args.scenarios.is_empty());
+        assert!(!args.fail_on_regression);
+        assert!(!args.list);
+    }
+
+    /// `--list` must be side-effect free: it is the one Tier-0 path that runs
+    /// with no binary present, so it must not try to spawn anything.
+    #[test]
+    fn tier0_list_runs_without_a_harness_binary() {
+        cmd_tier0(Tier0Args {
+            permagent_bin: "/nonexistent/permagent".to_string(),
+            scenarios: vec![],
+            work_dir: None,
+            out: None,
+            list: true,
+            fail_on_regression: true,
+        })
+        .unwrap();
+    }
+
     #[test]
     fn qualify_subcommand_requires_input_and_accepts_output() {
         let cli = Cli::try_parse_from([
@@ -1406,8 +2508,24 @@ mod tests {
         let Command::Qualify(args) = cli.command else {
             panic!("expected Qualify");
         };
-        assert_eq!(args.input, PathBuf::from("evidence.json"));
+        assert_eq!(args.input, Some(PathBuf::from("evidence.json")));
         assert_eq!(args.out, Some(PathBuf::from("scorecard.json")));
+        assert!(args.records.is_empty());
+    }
+
+    /// The default `QualifyArgs` this test module reuses for both the
+    /// `--input` and `--record` paths — filling in the new X-obs-1 fields
+    /// with their empty/default values so each test only sets what it cares
+    /// about.
+    fn qualify_args(out: Option<PathBuf>) -> QualifyArgs {
+        QualifyArgs {
+            input: None,
+            records: Vec::new(),
+            optimizer_tasks: Vec::new(),
+            heldout_tasks: Vec::new(),
+            benchmark_version: "eval-records-v1".to_string(),
+            out,
+        }
     }
 
     #[test]
@@ -1423,14 +2541,74 @@ mod tests {
         });
         std::fs::write(&input, serde_json::to_vec(&evidence).unwrap()).unwrap();
         cmd_qualify(QualifyArgs {
-            input,
-            out: Some(out.clone()),
+            input: Some(input),
+            ..qualify_args(Some(out.clone()))
         })
         .unwrap();
         let report: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(out).unwrap()).unwrap();
         assert_eq!(report["overall"], "Unrated");
         assert_eq!(report["heldout_passed"], false);
+    }
+
+    #[test]
+    fn qualify_command_requires_either_input_or_record() {
+        let err = format!("{:#}", cmd_qualify(qualify_args(None)).unwrap_err());
+        assert!(err.contains("--input or --record"), "{err}");
+    }
+
+    #[test]
+    fn qualify_command_folds_run_records_into_the_nine_areas() {
+        let dir = tempfile::tempdir().unwrap();
+        let record_path = dir.path().join("run.qual.json");
+        let out = dir.path().join("scorecard.json");
+        let record = build_run_qualification_record(
+            "r0",
+            Some("deadbeef".to_string()),
+            BinaryProvenance {
+                path: "/opt/permagent".to_string(),
+                version: Some("1.0.0".to_string()),
+                git_sha: Some("cafebabecafebabecafebabecafebabecafebabe".to_string()),
+            },
+            "anthropic",
+            "claude-sonnet-5",
+            true,
+            &[permagent_eval::metrics::TaskResult::new(
+                "held-1",
+                "classic",
+                permagent_eval::oracle::OracleOutcome::Pass,
+                permagent_eval::cost::CostReading::known(0.1, false, 1),
+            )],
+        );
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+        cmd_qualify(QualifyArgs {
+            records: vec![record_path],
+            heldout_tasks: vec!["held-1".to_string()],
+            ..qualify_args(Some(out.clone()))
+        })
+        .unwrap();
+        let report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out).unwrap()).unwrap();
+        // A single retained record cannot reach a three-run streak, but the
+        // area map must still be rendered for all nine names.
+        assert_eq!(report["areas"].as_object().unwrap().len(), 9);
+        assert_eq!(report["areas"]["observability"]["rating"], "Unrated");
+    }
+
+    #[test]
+    fn qualify_command_requires_heldout_task_with_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let record_path = dir.path().join("run.qual.json");
+        std::fs::write(&record_path, "{}").unwrap();
+        let err = format!(
+            "{:#}",
+            cmd_qualify(QualifyArgs {
+                records: vec![record_path],
+                ..qualify_args(None)
+            })
+            .unwrap_err()
+        );
+        assert!(err.contains("--heldout-task"), "{err}");
     }
 
     #[test]

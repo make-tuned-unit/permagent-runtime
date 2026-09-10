@@ -436,6 +436,29 @@ pub fn install_post_landing_hook(hook: PostLandingHook) {
     let _ = POST_LANDING_HOOK.set(hook);
 }
 
+/// H1 (G8 review, harness loop Lane E3 2026-09-10): the working directory
+/// independently recorded for whatever session dispatched this goal —
+/// `sessions.working_dir`, set at session creation and never re-derived
+/// from the process's own live `current_dir()`. Read via the card's
+/// `worker_session_id` (the same key R3/the requeue guard already use to
+/// identify "the session that ran this goal"). `None` when the goal has no
+/// recorded dispatching session, or that session's row cannot be found —
+/// [`crate::goal_landing::verify_worktree_landing_target`] treats an
+/// unknown working directory as a refusal, never as license to trust the
+/// worktree's own claim about where it came from.
+async fn goal_dispatching_session_working_dir(
+    pool: &Pool<Sqlite>,
+    metadata: &serde_json::Value,
+) -> Option<String> {
+    let session_id = metadata.get("worker_session_id").and_then(|v| v.as_str())?;
+    sqlx::query_scalar::<_, String>("SELECT working_dir FROM sessions WHERE id = ?")
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+}
+
 /// Fast-forward an approved goal's work onto the project trunk.
 ///
 /// The first member is `None` when there is nothing to land at all (no
@@ -491,9 +514,60 @@ async fn land_approved_goal(
     // hidden oracle — lost this way, 100%-reproducing). When the project
     // itself doesn't know its root, fall back to what the goal's own
     // worktree knows about its git baseline before giving up.
+    //
+    // H1 (G8 review, harness loop Lane E3 2026-09-10): that fallback alone
+    // is not enough — "git says this is where the worktree came from" is
+    // not the same as "this is the project the user intended", and the
+    // daemon's own cwd could be exactly what a NULL `root_path` fell back
+    // to at dispatch time (`orchestrator.rs`, closed alongside this fix).
+    // `verify_worktree_landing_target` requires the recovered candidate to
+    // match an independently recorded working directory (the dispatching
+    // session's own `sessions.working_dir`) AND for the goal's own dispatch
+    // baseline to be a real ancestor of the candidate's HEAD before this
+    // fallback is trusted — see that function's own doc comment for why
+    // both checks are required. A mismatch is recorded and reported exactly
+    // like every other landing refusal in this function; it is never a
+    // silent no-op and never an attempted fast-forward.
     let root = match configured_root {
         Some(root) => Some(root),
-        None => crate::goal_landing::resolve_primary_checkout_from_worktree(&worktree_path).await,
+        None => match crate::goal_landing::resolve_primary_checkout_from_worktree(&worktree_path)
+            .await
+        {
+            Some(candidate) => {
+                let baseline_commit = card
+                    .metadata_json
+                    .pointer("/dispatch_evidence/baseline_commit")
+                    .and_then(|v| v.as_str());
+                let known_working_dir =
+                    goal_dispatching_session_working_dir(pool, &card.metadata_json).await;
+                match crate::goal_landing::verify_worktree_landing_target(
+                    &candidate,
+                    baseline_commit,
+                    known_working_dir.as_deref(),
+                )
+                .await
+                {
+                    Ok(()) => Some(candidate),
+                    Err(reason) => {
+                        let outcome = crate::goal_landing::LandOutcome::Skipped(format!(
+                            "landing target is not the goal's repo ({reason})"
+                        ));
+                        tracing::warn!(
+                            goal_id,
+                            project_id = %project_id,
+                            candidate_root = %candidate,
+                            %reason,
+                            "land_approved_goal: worktree-derived landing target failed \
+                             verification; refusing to land rather than trust an unverified \
+                             fallback"
+                        );
+                        persist_landing_outcome(pool, goal_id, &card, &outcome).await;
+                        return (Some((project_id, outcome)), None);
+                    }
+                }
+            }
+            None => None,
+        },
     };
 
     let Some(root) = root else {
@@ -2469,6 +2543,12 @@ mod tests {
         assert_eq!(goal_state_of(&pool, &goal.id).await, "review");
     }
 
+    // I1 (harness loop, 2026-09-10, gate fix): GOAL_DISPATCH_HOOK is a
+    // process-global OnceLock every test_dispatch_recorder::install() call
+    // races to set — serialized against every other test that touches it
+    // (see test_dispatch_recorder's own doc comment) so a losing race never
+    // silently starves this test's own dispatch recorder.
+    #[serial_test::serial]
     #[tokio::test]
     async fn council_plan_retry_reuses_existing_node_cards() {
         crate::agents::platform_extensions::orchestrator::test_dispatch_recorder::install();
@@ -2567,6 +2647,7 @@ mod tests {
     /// dependents Triage→Ready — and, since the nudge, actually starts them.
     /// Before the nudge the dependent sat in Ready with no worker until a
     /// human called `resume_roadmap` by hand.
+    #[serial_test::serial]
     #[tokio::test]
     async fn approving_a_review_dispatches_the_promoted_dependent() {
         use crate::agents::platform_extensions::orchestrator::test_dispatch_recorder;
@@ -2819,9 +2900,19 @@ mod tests {
     /// of five measured fixtures were genuinely-correct, oracle-passing
     /// fixes lost exactly this way. Pre-fix, this test fails: `HEAD` stays
     /// on the base commit and `dispatch_evidence/landing` never exists.
+    ///
+    /// H1 (G8 review, Lane E3 2026-09-10): this is also G8's own pinning
+    /// test 2 — "same setup [as the refusal below] with the session's
+    /// project root = repo A → lands on A". The card now records a
+    /// `worker_session_id` whose session's `working_dir` genuinely IS the
+    /// worktree's origin repo, and `dispatch_evidence.baseline_commit` is
+    /// the real pre-branch commit — exactly what a real dispatch leaves
+    /// behind — so `verify_worktree_landing_target`'s two checks both pass
+    /// and this fallback still lands correctly, not just before this lane.
     #[tokio::test]
     async fn a_project_with_no_root_path_lands_via_the_goal_worktree_git_baseline() {
         let (repo, head) = repo_with_finished_goal_branch();
+        let baseline = git_in(repo.path(), &["rev-parse", "main"]);
 
         // A REAL linked worktree at `goal/run-1`, mirroring exactly what
         // `goal_engine::create_goal_worktree` does at dispatch time, so
@@ -2860,6 +2951,18 @@ mod tests {
             "precondition: this project must have no root_path, matching the eval seed"
         );
 
+        // The independently recorded working directory `verify_worktree_
+        // landing_target` requires — a REAL session whose own `working_dir`
+        // is this goal's actual repo, exactly what a real dispatch leaves
+        // behind (never re-derived from the daemon's own `current_dir()`).
+        let session_id = "d1-worktree-baseline-session".to_string();
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(repo.path().to_string_lossy().into_owned())
+            .execute(&pool)
+            .await
+            .unwrap();
+
         crate::cards::seed_goal_columns(&pool, &project.id)
             .await
             .unwrap();
@@ -2879,9 +2982,11 @@ mod tests {
                 metadata_json: Some(serde_json::json!({
                     "attempt_count": 0,
                     "goal_state": "review",
+                    "worker_session_id": session_id,
                     "dispatch_evidence": {
                         "worktree_path": worktree_path.to_string_lossy(),
                         "head_commit": head,
+                        "baseline_commit": baseline,
                         "commits": ["abc123 the work"],
                         "verdict": {"status": "pass"},
                     },
@@ -2957,6 +3062,159 @@ mod tests {
         assert_eq!(
             landing.get("landed_head").and_then(|v| v.as_str()),
             Some(head.as_str())
+        );
+    }
+
+    /// H1 (G8 review, harness loop Lane E3 2026-09-10), G8's own pinning
+    /// test 1: "NULL root_path + goal worktree in repo A + process cwd in
+    /// repo B → landing refused with the reason, repo B HEAD unchanged".
+    /// This is the exact hazard G8 flagged: before this lane,
+    /// `land_approved_goal` trusted `resolve_primary_checkout_from_worktree`
+    /// on its own say-so — "git says this worktree came from here" — with
+    /// no independent confirmation that the recovered repo was ever the
+    /// goal's intended project. Here the worktree really is repo A's own
+    /// linked worktree (so the OLD code would have fast-forwarded A
+    /// correctly), but the goal has no `worker_session_id` at all — no
+    /// independently recorded working directory exists to confirm A is
+    /// legitimate — so the fallback must refuse outright. Repo B stands in
+    /// for the daemon's own cwd / `permagent-runtime` checkout: present in
+    /// this test only to prove landing never touches it either, by
+    /// construction (this function never reads `current_dir()` at all) —
+    /// its HEAD is asserted unchanged as direct evidence of that. Pre-fix,
+    /// this test's assertion on `HEAD` staying on the base commit fails —
+    /// the old code lands A unconditionally.
+    #[tokio::test]
+    async fn a_project_with_no_root_path_and_no_known_session_refuses_the_worktree_fallback() {
+        let (repo_a, head_a) = repo_with_finished_goal_branch();
+        let baseline_a = git_in(repo_a.path(), &["rev-parse", "main"]);
+        let (repo_b, _head_b) = repo_with_finished_goal_branch();
+        let repo_b_head_before = git_in(repo_b.path(), &["rev-parse", "HEAD"]);
+
+        let worktrees_root = tempfile::tempdir().unwrap();
+        let worktree_path = worktrees_root.path().join("run-1");
+        git_in(
+            repo_a.path(),
+            &[
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "goal/run-1",
+            ],
+        );
+
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "No root_path, no known session".to_string(),
+                root_path: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let goal = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Finished goal, unverifiable landing target".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 0,
+                    "goal_state": "review",
+                    // No `worker_session_id` — no independently recorded
+                    // working directory exists for this goal.
+                    "dispatch_evidence": {
+                        "worktree_path": worktree_path.to_string_lossy(),
+                        "head_commit": head_a,
+                        "baseline_commit": baseline_a,
+                        "commits": ["abc123 the work"],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(project.id.clone()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+
+        let (effect, _warning) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git_in(repo_a.path(), &["rev-parse", "HEAD"]),
+            baseline_a,
+            "repo A must NOT be fast-forwarded without an independently recorded working \
+             directory confirming it as this goal's own repo"
+        );
+        assert_eq!(
+            git_in(repo_b.path(), &["rev-parse", "HEAD"]),
+            repo_b_head_before,
+            "repo B (standing in for the daemon's own cwd) must never be touched by landing"
+        );
+        let effect = effect.unwrap_or_default();
+        assert!(
+            effect.contains("landing target is not the goal's repo"),
+            "the refusal must say why, not just fail: {effect}"
+        );
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = card
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect("a refused fallback landing must still be recorded, never silent");
+        assert_eq!(
+            landing.get("outcome").and_then(|v| v.as_str()),
+            Some("skipped")
+        );
+        assert_eq!(
+            landing.get("trunk_state").and_then(|v| v.as_str()),
+            Some("left_in_working_tree")
         );
     }
 

@@ -229,6 +229,170 @@ async fn try_auto_answer_reservation_gate(
     }
 }
 
+/// If `session_id` has an unconsumed reservation grant from a prior headless
+/// gate auto-answer (see
+/// [`SessionManager::grant_reservation_after_gate_approval`]), return its
+/// `invocation_id` so the caller reuses it for the upcoming call instead of
+/// minting a fresh one — `reserve_provider_invocation`'s own early
+/// idempotent lookup then reports `AlreadyReserved` immediately, never
+/// re-running the gate/budget threshold math for a request that already got
+/// a yes.
+///
+/// I1 (harness loop, 2026-09-10, wiring F1b + F10's forensics into the live
+/// turn loop): F10 traced every provider call minting a brand-new
+/// `invocation_id` (`Uuid::new_v4()`, in `agents::agent`'s turn loop) as the
+/// exact reason E1's grant could never be matched by a retry — this closes
+/// that gap at its one call site. Consumption is TTL-bounded
+/// ([`SessionManager::GRANT_CONSUME_TTL_SECS_DEFAULT`]): an unconsumed grant
+/// older than the TTL is released by
+/// [`SessionManager::consume_granted_reservation`] itself and this returns
+/// `None`, so a stale grant re-gates rather than authorizing a call that
+/// never came in time. Belongs to exactly the session that requests it —
+/// `consume_granted_reservation` refuses a different session's grant
+/// outright, and `find_pending_gate_grant` only ever looks up `session_id`'s
+/// own rows in the first place.
+pub(crate) async fn reusable_gate_grant_invocation_id(
+    manager: &Arc<SessionManager>,
+    session_id: &str,
+) -> Option<String> {
+    let pending_invocation_id = manager
+        .find_pending_gate_grant(session_id)
+        .await
+        .ok()
+        .flatten()?;
+    let outcome = manager
+        .consume_granted_reservation(
+            &pending_invocation_id,
+            session_id,
+            SessionManager::GRANT_CONSUME_TTL_SECS_DEFAULT,
+            chrono::Utc::now(),
+        )
+        .await
+        .ok()
+        .flatten()?;
+    matches!(
+        outcome,
+        crate::session::CostReservationOutcome::AlreadyReserved { .. }
+    )
+    .then_some(pending_invocation_id)
+}
+
+/// I1 (harness loop, 2026-09-10, from M10's forensics): the SESSION-scoped
+/// counterpart of [`Agent::handle_provider_authorization_failure`]'s
+/// goal-scoped gate, for a session with no `goal_id` — the coordinator's own
+/// provider calls. M10 found the coordinator's calls hit the exact same
+/// reservation gate as a worker's (bounded by the same task/session budget
+/// rules) but `handle_provider_authorization_failure`'s entire gate-
+/// decision/auto-answer/retry machinery was a structural no-op for it —
+/// `goal_id(&session.extension_data)` is `None`, so it returned `detail`
+/// immediately with no decision ever raised, no auto-answer ever attempted
+/// (10/10 M10 coordinators hit this; 8/10 never got past it). This gives it
+/// the SAME shape/budget-rule auto-answer under a headless Auto run
+/// (`headless: true`, the same flag the goal-scoped path already checks),
+/// never a goal card to park (there is none) and never a non-gate failure
+/// (nothing useful to auto-answer for a session with no goal to route to).
+///
+/// `headless` is a plain argument, not read from the process-global
+/// `HEADLESS_DISPATCH_POLICY_CONFIG` here, for the same reason
+/// `try_auto_answer_reservation_gate` takes it as one: a `--lib` test that
+/// both installs a headless policy AND asserts its absence elsewhere in this
+/// binary would otherwise be a real, order-dependent flakiness risk (an
+/// existing `OnceLock`, one-shot, process-wide, never reset between tests).
+async fn session_scoped_provider_authorization_failure(
+    session_manager: &Arc<SessionManager>,
+    session: &Session,
+    invocation_id: &str,
+    failure: &ProviderAuthorizationFailure,
+    detail: String,
+    headless: bool,
+) -> String {
+    let ProviderAuthorizationFailure::NeedsGate {
+        scope,
+        spent_usd,
+        held_usd,
+        requested_usd,
+        ceiling_usd,
+    } = failure
+    else {
+        // Only a spend gate has an auto-answerable shape; every other
+        // failure kind has no goal card to park either, so it simply ends
+        // the call exactly as it did before this lane.
+        return detail;
+    };
+    if !headless {
+        return detail;
+    }
+    let pool = match session_manager.pool_clone().await {
+        Ok(pool) => pool,
+        Err(error) => return format!("{detail}; could not open Decision Inbox: {error}"),
+    };
+
+    // Dedupe: a coordinator that keeps hitting the same gate on successive
+    // calls must not file a fresh Decision Inbox card every time — same
+    // purpose as the goal-scoped path's `find_open_decision_for_goal`, keyed
+    // on the session instead since this decision carries no `goal_id`.
+    let decision_id =
+        match crate::decisions::find_open_reservation_gate_decision_for_session(&pool, &session.id)
+            .await
+        {
+            Ok(Some(existing)) => existing.id,
+            Ok(None) => {
+                let cfg = crate::cost_router::budget::load_budget_config();
+                let request = crate::cost_router::budget::with_requesting_session_id(
+                    crate::cost_router::budget::reservation_gate_decision_request(
+                        *scope,
+                        *spent_usd,
+                        *held_usd,
+                        *requested_usd,
+                        *ceiling_usd,
+                        match scope {
+                            crate::cost_router::budget::BudgetScope::Task => cfg.task.gate,
+                            crate::cost_router::budget::BudgetScope::Session => cfg.session.gate,
+                        },
+                        None, // no goal_id — this is the coordinator's own call
+                        None,
+                    ),
+                    &session.id,
+                );
+                match crate::decisions::create_decision(&pool, request).await {
+                    Ok(created) => created.id,
+                    Err(error) => {
+                        tracing::error!(
+                            session_id = %session.id,
+                            "could not create session-scoped provider budget decision: {error}"
+                        );
+                        return detail;
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %session.id,
+                    "could not look up an existing session-scoped gate decision ({error}); \
+                     proceeding without one this call"
+                );
+                return detail;
+            }
+        };
+
+    if let Some(retry_detail) = try_auto_answer_reservation_gate(
+        &pool,
+        &session.id,
+        session,
+        invocation_id,
+        failure,
+        &decision_id,
+        headless,
+        session_manager,
+        &detail,
+    )
+    .await
+    {
+        return retry_detail;
+    }
+    detail
+}
+
 impl Agent {
     /// Immutable identity captured immediately before a provider dispatch.
     /// Keeping these fields outside the mutable session/provider state prevents
@@ -270,7 +434,22 @@ impl Agent {
     ) -> String {
         let detail = failure.to_string();
         let Some(card_id) = goal_id(&session.extension_data) else {
-            return detail;
+            // I1 (harness loop, 2026-09-10, from M10's forensics): a session
+            // with no goal_id — the coordinator's own provider calls, never
+            // a dispatched worker's — has no goal card to park through the
+            // rest of this function, but under a headless Auto run it still
+            // deserves the SAME shape/budget-rule auto-answer a worker's
+            // gate gets, so its own blocked call can retry in place instead
+            // of silently ending its turn (M10: 10/10 coordinators hit
+            // exactly this, 8/10 never got past it).
+            return self
+                .handle_session_scoped_provider_authorization_failure(
+                    session,
+                    invocation_id,
+                    failure,
+                    detail,
+                )
+                .await;
         };
         let pool = match self.config.session_manager.pool_clone().await {
             Ok(pool) => pool,
@@ -436,6 +615,54 @@ impl Agent {
             kill.kill();
         }
         detail
+    }
+
+    /// I1 (harness loop, 2026-09-10, from M10's forensics): the SESSION-
+    /// scoped counterpart of [`Agent::handle_provider_authorization_failure`]'s
+    /// goal-scoped gate for a session with no `goal_id` — the coordinator's
+    /// own provider calls. M10 found the coordinator's calls hit the exact
+    /// same reservation gate as a worker's (bounded by the same task/session
+    /// budget rules) but `handle_provider_authorization_failure`'s entire
+    /// gate-decision/auto-answer/retry machinery was a structural no-op for
+    /// it — `goal_id(&session.extension_data)` is `None`, so it returned
+    /// `detail` immediately with no decision ever raised, no auto-answer
+    /// ever attempted (10/10 M10 coordinators hit this; 8/10 never got past
+    /// it). This gives it the SAME shape/budget-rule auto-answer under a
+    /// headless Auto run (`HeadlessDispatchPolicy` installed — the same
+    /// `headless` flag the goal-scoped path already checks), never a goal
+    /// card to park (there is none) and never a non-gate failure (nothing
+    /// useful to auto-answer for a session with no goal to route to).
+    async fn handle_session_scoped_provider_authorization_failure(
+        &self,
+        session: &Session,
+        invocation_id: &str,
+        failure: &ProviderAuthorizationFailure,
+        detail: String,
+    ) -> String {
+        // Read via the SAME public seam the goal-scoped path already uses
+        // (`headless_auto_land_status(...).is_some()` — `true` iff a
+        // headless dispatch policy is installed for this process, whatever
+        // its own `auto_land` value). Kept in this thin wrapper, not the
+        // testable function below, for the exact reason
+        // `try_auto_answer_reservation_gate`'s own doc comment gives: the
+        // backing `OnceLock` is a real shared-state hazard across this
+        // binary's `--lib` unit tests, so the actual decision logic takes
+        // `headless` as a plain argument and this is the only call site that
+        // ever reads the global.
+        let headless = crate::agents::platform_extensions::orchestrator::headless_auto_land_status(
+            &self.config.session_manager,
+        )
+        .await
+        .is_some();
+        session_scoped_provider_authorization_failure(
+            &self.config.session_manager,
+            session,
+            invocation_id,
+            failure,
+            detail,
+            headless,
+        )
+        .await
     }
 
     pub async fn prepare_tools_and_prompt(
@@ -2331,6 +2558,397 @@ mod tests {
         assert_eq!(
             reloaded.status, "open",
             "a non-headless run must leave the gate open for a human"
+        );
+    }
+
+    /// I1 pin (harness loop, 2026-09-10, from M10's forensics): a coordinator
+    /// session — one with no `goal_id` at all, since `fast_accounting_
+    /// fixture` never stamps one — that hits the reservation gate under a
+    /// headless Auto run must get the SAME shape/budget-rule auto-answer a
+    /// worker's gate gets, and continue in the SAME session (a reservation
+    /// granted under `invocation_id`, no goal card touched — there is none).
+    /// Pre-fix, `handle_provider_authorization_failure` returned bare
+    /// `detail` immediately for any goal-less session — this pins the
+    /// replacement path directly.
+    #[tokio::test]
+    async fn session_scoped_gate_auto_answer_lets_the_coordinator_continue_without_a_goal() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        assert_eq!(
+            goal_id(&session.extension_data),
+            None,
+            "setup: a coordinator session carries no goal_id"
+        );
+
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let outcome = session_scoped_provider_authorization_failure(
+            &manager,
+            &session,
+            &invocation_id,
+            &failure,
+            "budget gate detail".to_string(),
+            true, // headless
+        )
+        .await;
+        assert_eq!(
+            outcome, "budget gate detail",
+            "a headless auto-answer must report retry-in-place, not fall through unanswered"
+        );
+
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let decision =
+            crate::decisions::find_open_reservation_gate_decision_for_session(&pool, &session.id)
+                .await
+                .unwrap();
+        // The decision was auto-answered (ACTOR_HEADLESS_POLICY), so it is no
+        // longer OPEN — confirm it exists and was answered, not left open.
+        assert!(
+            decision.is_none(),
+            "an auto-answered decision must no longer be open"
+        );
+        let answered: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions WHERE goal_id IS NULL AND kind = 'choice' \
+             AND status = 'answered' AND acted_by = ?",
+        )
+        .bind(crate::decisions::ACTOR_HEADLESS_POLICY)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(answered, 1);
+
+        // The SAME session got its reservation granted under its own call's
+        // invocation_id — a real reservation, not merely a decision.
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM cost_reservations WHERE invocation_id = ?")
+                .bind(&invocation_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state, "pending");
+    }
+
+    /// I1 pin: a coordinator that keeps hitting the same gate on successive
+    /// calls must not file a second Decision Inbox card — the session-scoped
+    /// dedupe (`find_open_reservation_gate_decision_for_session`) must find
+    /// and reuse the first still-open one.
+    #[tokio::test]
+    async fn session_scoped_gate_auto_answer_does_not_duplicate_the_decision_on_a_retry() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+
+        // First call: not headless yet, so the decision is created and left
+        // open (mirrors the non-headless pin above) rather than immediately
+        // auto-answered — isolates the dedupe assertion from the auto-answer
+        // path itself.
+        let first = session_scoped_provider_authorization_failure(
+            &manager,
+            &session,
+            &uuid::Uuid::new_v4().to_string(),
+            &failure,
+            "budget gate detail".to_string(),
+            false, // NOT headless — leaves the decision open
+        )
+        .await;
+        assert_eq!(first, "budget gate detail");
+        let open_after_first: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions WHERE goal_id IS NULL AND kind = 'choice' \
+             AND status = 'open'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            open_after_first, 0,
+            "a non-headless call creates no decision at all — nothing to dedupe against yet"
+        );
+
+        // Manually raise the decision the way a headless run would, then
+        // confirm a second call finds and reuses it rather than filing a
+        // duplicate.
+        let cfg = crate::cost_router::budget::load_budget_config();
+        let request = crate::cost_router::budget::with_requesting_session_id(
+            crate::cost_router::budget::reservation_gate_decision_request(
+                crate::cost_router::budget::BudgetScope::Task,
+                5.0,
+                0.0,
+                0.20,
+                5.0,
+                cfg.task.gate,
+                None,
+                None,
+            ),
+            &session.id,
+        );
+        crate::decisions::create_decision(&pool, request)
+            .await
+            .unwrap();
+        let open_after_manual: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions WHERE goal_id IS NULL AND kind = 'choice' \
+             AND status = 'open'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(open_after_manual, 1);
+
+        let second = session_scoped_provider_authorization_failure(
+            &manager,
+            &session,
+            &uuid::Uuid::new_v4().to_string(),
+            &failure,
+            "budget gate detail".to_string(),
+            true, // headless this time — auto-answers the existing decision
+        )
+        .await;
+        assert_eq!(second, "budget gate detail");
+
+        let total_reservation_gate_decisions: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions WHERE goal_id IS NULL AND kind = 'choice' \
+             AND json_extract(payload_json, '$.reservation_gate.requesting_session_id') = ?",
+        )
+        .bind(&session.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            total_reservation_gate_decisions, 1,
+            "the second call must reuse the existing decision, never file a duplicate"
+        );
+    }
+
+    /// I1 pin: the mirror of `gate_auto_answer_is_a_no_op_when_not_headless`
+    /// for the session-scoped path — a NON-headless coordinator call must
+    /// leave any decision it raised open for a human, never auto-answer.
+    #[tokio::test]
+    async fn session_scoped_gate_auto_answer_is_a_no_op_when_not_headless() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+        let outcome = session_scoped_provider_authorization_failure(
+            &manager,
+            &session,
+            &uuid::Uuid::new_v4().to_string(),
+            &failure,
+            "budget gate detail".to_string(),
+            false, // NOT headless
+        )
+        .await;
+        assert_eq!(outcome, "budget gate detail");
+
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let any_decision: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            any_decision, 0,
+            "a non-headless coordinator call must not even raise a decision"
+        );
+    }
+
+    /// Grants a reservation for `session` via a headless gate auto-answer
+    /// (the exact path `try_auto_answer_reservation_gate` takes on success),
+    /// returning the `invocation_id` it was granted under.
+    async fn grant_a_gate_reservation(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        manager: &Arc<SessionManager>,
+        session: &Session,
+        card_id: &str,
+    ) -> String {
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+        let request = crate::cost_router::budget::reservation_gate_decision_request(
+            crate::cost_router::budget::BudgetScope::Task,
+            5.0,
+            0.0,
+            0.20,
+            5.0,
+            5.0,
+            Some(card_id.to_string()),
+            None,
+        );
+        let decision = crate::decisions::create_decision(pool, request)
+            .await
+            .unwrap();
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let outcome = try_auto_answer_reservation_gate(
+            pool,
+            card_id,
+            session,
+            &invocation_id,
+            &failure,
+            &decision.id,
+            true, // headless
+            manager,
+            "budget gate detail",
+        )
+        .await;
+        assert_eq!(
+            outcome,
+            Some("budget gate detail".to_string()),
+            "setup: the gate must have been headlessly auto-answered"
+        );
+        invocation_id
+    }
+
+    /// I1 pin (a): a session with a pending grant makes its next call
+    /// without a new gate decision. `reusable_gate_grant_invocation_id`
+    /// hands back the ORIGINAL `invocation_id`, and reusing it for the next
+    /// `reserve_provider_invocation_for_model` call takes the idempotent
+    /// `AlreadyReserved` fast path — no second gate decision is ever
+    /// created. Pre-fix (no `granted_via_gate` marker / lookup), this
+    /// function does not exist and the retry would have minted a fresh
+    /// `invocation_id`, re-hitting the gate exactly as F10 traced.
+    #[tokio::test]
+    async fn reusable_gate_grant_invocation_id_lets_the_same_session_retry_without_a_new_gate_decision(
+    ) {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let card = dispatched_goal_card(&pool, &session.id).await;
+
+        let granted_invocation_id =
+            grant_a_gate_reservation(&pool, &manager, &session, &card.id).await;
+
+        let reused = reusable_gate_grant_invocation_id(&manager, &session.id).await;
+        assert_eq!(
+            reused,
+            Some(granted_invocation_id.clone()),
+            "the session's own pending grant must be reused verbatim"
+        );
+
+        let decisions_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let retry = reserve_provider_invocation_for_model(
+            Arc::clone(&manager),
+            &session,
+            fixture.get_name(),
+            fixture.cost_tier(),
+            fixture.get_model_config(),
+            fixture.retry_config().max_physical_attempts(),
+            reused.unwrap(),
+        )
+        .await;
+        assert!(
+            retry.is_ok(),
+            "reusing the granted invocation_id must skip the gate: {retry:?}"
+        );
+        let decisions_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            decisions_before, decisions_after,
+            "no new gate decision may be created for a call that reuses a granted invocation_id"
+        );
+    }
+
+    /// I1 pin (b): a different session cannot consume another session's
+    /// grant. Looking it up under session B's id (never session A's, the one
+    /// the grant actually belongs to) returns `None`, and the grant is left
+    /// completely untouched — session A can still consume it afterward.
+    #[tokio::test]
+    async fn reusable_gate_grant_invocation_id_is_none_for_a_different_session() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory_a, manager, session_a, _completion_a) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let session_b = manager
+            .create_session(
+                std::env::temp_dir(),
+                "fast-accounting-b".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        manager.begin_budget_task(&session_b.id).await.unwrap();
+        let session_b = manager.get_session(&session_b.id, false).await.unwrap();
+
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let card = dispatched_goal_card(&pool, &session_a.id).await;
+        let granted_invocation_id =
+            grant_a_gate_reservation(&pool, &manager, &session_a, &card.id).await;
+
+        let reused_by_b = reusable_gate_grant_invocation_id(&manager, &session_b.id).await;
+        assert_eq!(
+            reused_by_b, None,
+            "a grant belongs to the session whose failed call it authorized, never to a different session"
+        );
+
+        // Untouched: session A can still find and reuse it.
+        let reused_by_a = reusable_gate_grant_invocation_id(&manager, &session_a.id).await;
+        assert_eq!(reused_by_a, Some(granted_invocation_id));
+    }
+
+    /// I1 pin (c): an expired grant re-gates. A grant older than
+    /// `SessionManager::GRANT_CONSUME_TTL_SECS_DEFAULT` is released, not
+    /// reused — the caller falls back to minting a fresh `invocation_id` and
+    /// the ordinary gate/budget path runs again for it.
+    #[tokio::test]
+    async fn reusable_gate_grant_invocation_id_is_none_once_the_grant_has_expired() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let card = dispatched_goal_card(&pool, &session.id).await;
+        let granted_invocation_id =
+            grant_a_gate_reservation(&pool, &manager, &session, &card.id).await;
+
+        // Backdate the grant's created_at past the TTL default (120s).
+        let stale = (chrono::Utc::now() - chrono::Duration::seconds(200)).to_rfc3339();
+        sqlx::query("UPDATE cost_reservations SET created_at = ? WHERE invocation_id = ?")
+            .bind(&stale)
+            .bind(&granted_invocation_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let reused = reusable_gate_grant_invocation_id(&manager, &session.id).await;
+        assert_eq!(reused, None, "a stale grant must re-gate, not be reused");
+
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM cost_reservations WHERE invocation_id = ?")
+                .bind(&granted_invocation_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            state, "released",
+            "the expired grant must be released, not left pending forever"
         );
     }
 

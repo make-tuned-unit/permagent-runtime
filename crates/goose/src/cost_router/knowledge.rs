@@ -529,6 +529,36 @@ fn strip_ollama_tag(s: &str) -> &str {
     s.split_once(':').map(|(base, _)| base).unwrap_or(s)
 }
 
+/// I1 (harness loop, 2026-09-10, from M10's forensics): alternate provider
+/// spellings that carry no row of their OWN in [`KNOWN_MODELS`] but should
+/// still resolve through an existing row's real pricing/scores rather than
+/// miss the KB entirely — a real distinct provider id (billed differently,
+/// with its own row) is deliberately NOT here, only a pure re-spelling.
+///
+/// `"zai-org"` is the org-qualified id some surfaces report for Z.AI's
+/// hosted models (`canonical_models.json`'s registry only ever carries it
+/// nested under a THIRD-party host's own id, e.g. `siliconflow/zai-org/...`
+/// — never as a bare top-level provider) — aliased to `"zai"`, which
+/// `KNOWN_MODELS` already prices directly. `"zai-coding-plan"` (the
+/// subscription-plan auth mode) is deliberately EXCLUDED: it already has its
+/// own real entry with its own ($0, subscription-included) pricing in the
+/// canonical registry, so aliasing it to `"zai"`'s metered rate would
+/// silently overbill a subscription-plan session — see
+/// `zai_coding_plan_is_not_aliased_to_zais_metered_rate` for the pin.
+const PROVIDER_ALIASES: &[(&str, &str)] = &[("zai-org", "zai")];
+
+/// The canonical KB provider key for `provider`, following
+/// [`PROVIDER_ALIASES`] (case-insensitive) when `provider` carries no row of
+/// its own — `provider` unchanged when it isn't a known alias, so an already-
+/// correct caller never has its provider string rewritten.
+fn canonical_provider_alias(provider: &str) -> &str {
+    PROVIDER_ALIASES
+        .iter()
+        .find(|(alias, _)| alias.eq_ignore_ascii_case(provider))
+        .map(|(_, canonical)| *canonical)
+        .unwrap_or(provider)
+}
+
 /// Look up a `provider`/`model` in the knowledge base. Provider match is exact;
 /// model match is exact first, then a case-insensitive fallback so a configured
 /// id that differs only in case still resolves, then a dated/undated-alias
@@ -551,6 +581,14 @@ pub fn lookup_with_confidence(
     provider: &str,
     model: &str,
 ) -> Option<(&'static ModelKnowledge, LookupConfidence)> {
+    // I1 (harness loop, 2026-09-10, from M10's forensics): a provider spelling
+    // with no row of its own (`PROVIDER_ALIASES`) is resolved to its
+    // canonical KB provider key BEFORE every lookup below, so a caller
+    // configured under the alias gets the exact same result (row AND
+    // confidence tier) as one configured under the canonical spelling —
+    // never a separate, weaker "alias" confidence layered on top of an
+    // otherwise-exact match.
+    let provider = canonical_provider_alias(provider);
     let exact = KNOWN_MODELS
         .iter()
         .find(|m| m.provider == provider && m.model == model)
@@ -629,6 +667,41 @@ mod tests {
         // And the cheapest Z.AI rung undercuts the frontier it would stand in for.
         let opus = lookup("anthropic", "claude-opus-4-8").unwrap();
         assert!(air.blended_cost_per_mtok() < opus.blended_cost_per_mtok());
+    }
+
+    /// I1 pin (harness loop, 2026-09-10, from M10's forensics): a caller
+    /// configured with the org-qualified `"zai-org"` provider spelling — no
+    /// row of its own in `KNOWN_MODELS`, and no bare top-level provider in
+    /// `canonical_models.json` either — still resolves `glm-4.7` to the
+    /// SAME real published price `"zai"` itself carries, at `Exact`
+    /// confidence (not a weaker alias tier layered on top). Pre-fix:
+    /// `lookup("zai-org", "glm-4.7")` returned `None`.
+    #[test]
+    fn zai_org_alias_resolves_to_zais_real_pricing() {
+        let (row, confidence) =
+            lookup_with_confidence("zai-org", "glm-4.7").expect("zai-org must alias to zai");
+        assert_eq!(confidence, LookupConfidence::Exact);
+        assert_eq!(row.provider, "zai");
+        assert_eq!(row.input_usd_per_mtok, 0.60);
+        assert_eq!(row.output_usd_per_mtok, 2.20);
+        // Case-insensitivity composes with the alias, same as any other
+        // provider spelling.
+        assert!(lookup_with_confidence("ZAI-ORG", "glm-4.7").is_some());
+    }
+
+    /// I1 pin: `"zai-coding-plan"` (the subscription-plan auth mode) is
+    /// deliberately NOT an alias of `"zai"` — it carries its own row with
+    /// its own ($0, subscription-included) pricing in the canonical
+    /// registry (`crates/goose/src/providers/canonical/data/
+    /// canonical_models.json`, `"zai-coding-plan/glm-4.7"`), so silently
+    /// rewriting it to `"zai"`'s metered rate would overbill a subscription
+    /// session that owes nothing per call. This module carries no row for
+    /// `"zai-coding-plan"` at all (only `providers::canonical` does), so
+    /// this stays `None` here exactly as it did before this lane — proof
+    /// the alias table was not applied where it must not be.
+    #[test]
+    fn zai_coding_plan_is_not_aliased_to_zais_metered_rate() {
+        assert_eq!(lookup("zai-coding-plan", "glm-4.7"), None);
     }
 
     #[test]
