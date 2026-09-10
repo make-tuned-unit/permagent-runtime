@@ -6782,6 +6782,62 @@ fn headless_max_redispatch_from_env() -> u32 {
     }
 }
 
+/// Env override (Lane Y6b, G12 HIGH-1) for how much of the drain's wall-clock
+/// cap must still be left before the drain's sweep may start a NEW worker.
+/// Same naming family and same raw-`std::env::var` idiom as
+/// [`PERMAGENT_HEADLESS_MAX_REDISPATCH_ENV`]; unset or unparseable keeps
+/// [`DEFAULT_HEADLESS_SWEEP_HEADROOM_SECS`], and `0` restores Y6's
+/// "sweep on every poll, including the last one" behaviour.
+pub const PERMAGENT_HEADLESS_SWEEP_HEADROOM_SECS_ENV: &str =
+    "PERMAGENT_HEADLESS_SWEEP_HEADROOM_SECS";
+
+/// Default for [`PERMAGENT_HEADLESS_SWEEP_HEADROOM_SECS_ENV`]: 90 seconds.
+/// A worker started with less than this left before the cap cannot plausibly
+/// finish — the drain returns, the run exits, and the worker is killed
+/// mid-flight, leaving the card `in_progress` behind a dead session (strictly
+/// worse than parking it) after spending real model budget. The headless
+/// drain's own default cap is 240s (`goose-cli`'s `DEFAULT_HEADLESS_DRAIN_SECS`),
+/// so this stands the sweep down for roughly the last third of a full drain.
+pub const DEFAULT_HEADLESS_SWEEP_HEADROOM_SECS: u64 = 90;
+
+fn headless_sweep_headroom_from_env() -> std::time::Duration {
+    let secs = match std::env::var(PERMAGENT_HEADLESS_SWEEP_HEADROOM_SECS_ENV) {
+        Ok(v) => v
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(DEFAULT_HEADLESS_SWEEP_HEADROOM_SECS),
+        Err(_) => DEFAULT_HEADLESS_SWEEP_HEADROOM_SECS,
+    };
+    std::time::Duration::from_secs(secs)
+}
+
+/// Env override (Lane Y6b, G12 MED-2) for how long a [`CompletionInFlight`]
+/// mark is believed before the drain stops waiting on it. Same naming family
+/// and idiom as its siblings above.
+pub const PERMAGENT_HEADLESS_COMPLETION_INFLIGHT_SECS_ENV: &str =
+    "PERMAGENT_HEADLESS_COMPLETION_INFLIGHT_SECS";
+
+/// Default for [`PERMAGENT_HEADLESS_COMPLETION_INFLIGHT_SECS_ENV`]: 180s,
+/// i.e. the smaller of the headless drain's default 240s cap and 180s. The
+/// drain clamps it to its OWN cap at the call site, so the bound is always
+/// `min(this, cap)`. `Drop` already clears the mark for a handler that dies,
+/// panics or is aborted; this bounds the one case `Drop` cannot see — a
+/// handler still ALIVE but wedged (a git credential prompt or index lock
+/// inside `land_approved_goal`). Past the bound the drain degrades to exactly
+/// its pre-Y6 behaviour for that card: park it.
+pub const DEFAULT_HEADLESS_COMPLETION_INFLIGHT_SECS: u64 = 180;
+
+fn headless_completion_inflight_from_env() -> std::time::Duration {
+    let secs = match std::env::var(PERMAGENT_HEADLESS_COMPLETION_INFLIGHT_SECS_ENV) {
+        Ok(v) => v
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(DEFAULT_HEADLESS_COMPLETION_INFLIGHT_SECS),
+        Err(_) => DEFAULT_HEADLESS_COMPLETION_INFLIGHT_SECS,
+    };
+    std::time::Duration::from_secs(secs)
+}
+
 /// Install the CLI's OWN headless dispatch hook (harness loop, Lane T / T1 +
 /// T2) — distinct from [`install_dispatch_hook`], the daemon's, and NEVER
 /// called from the daemon. `permagent run` calls this instead when a
@@ -8137,7 +8193,14 @@ pub fn steer_handle_for(card_id: &str) -> Option<std::sync::Arc<goal_engine::Ste
 /// Counted, not a set: two handlers for the same card can in principle
 /// overlap (a re-dispatch racing a slow predecessor), and a plain set would
 /// let the second one's drop clear the first one's mark.
-static GOAL_COMPLETIONS_IN_FLIGHT: once_cell::sync::Lazy<Mutex<HashMap<String, u32>>> =
+/// The [`std::time::Instant`] is when the OLDEST live handler for that card
+/// began (Y6b, G12 MED-2). An overlapping second handler deliberately
+/// inherits it rather than refreshing it: the bound then expires sooner, which
+/// is the conservative direction — the drain falls back to parking, it never
+/// waits longer because a newer handler joined.
+type CompletionMark = (u32, std::time::Instant);
+
+static GOAL_COMPLETIONS_IN_FLIGHT: once_cell::sync::Lazy<Mutex<HashMap<String, CompletionMark>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// RAII marker: `card_id`'s completion handler is running for as long as this
@@ -8153,7 +8216,10 @@ impl CompletionInFlight {
     /// guard drops.
     pub fn begin(card_id: &str) -> Self {
         if let Ok(mut counts) = GOAL_COMPLETIONS_IN_FLIGHT.lock() {
-            *counts.entry(card_id.to_string()).or_insert(0) += 1;
+            counts
+                .entry(card_id.to_string())
+                .and_modify(|(n, _)| *n += 1)
+                .or_insert((1, std::time::Instant::now()));
         }
         Self {
             card_id: card_id.to_string(),
@@ -8164,7 +8230,7 @@ impl CompletionInFlight {
 impl Drop for CompletionInFlight {
     fn drop(&mut self) {
         if let Ok(mut counts) = GOAL_COMPLETIONS_IN_FLIGHT.lock() {
-            if let Some(n) = counts.get_mut(&self.card_id) {
+            if let Some((n, _)) = counts.get_mut(&self.card_id) {
                 *n = n.saturating_sub(1);
                 if *n == 0 {
                     counts.remove(&self.card_id);
@@ -8177,10 +8243,43 @@ impl Drop for CompletionInFlight {
 /// Is a completion handler currently mid-flight for this goal? Answers only
 /// for handlers running in THIS process — the same scope, and the same
 /// caveat, as [`goal_worker_is_live`].
+///
+/// Uses the [`PERMAGENT_HEADLESS_COMPLETION_INFLIGHT_SECS_ENV`] bound; the
+/// drain calls [`goal_completion_in_flight_within`] directly so it can clamp
+/// that bound to its own cap.
 pub fn goal_completion_in_flight(card_id: &str) -> bool {
-    GOAL_COMPLETIONS_IN_FLIGHT
-        .lock()
-        .is_ok_and(|counts| counts.contains_key(card_id))
+    goal_completion_in_flight_within(card_id, headless_completion_inflight_from_env())
+}
+
+/// [`goal_completion_in_flight`] with an explicit staleness bound (Y6b, G12
+/// MED-2). A mark older than `bound` is reported as NOT in flight and logged
+/// at warn: `Drop` covers a handler that died, but not one that is alive and
+/// wedged, and Y6 as written let such a handler hold the drain — and stand the
+/// re-dispatch sweep down — for the entire cap. Past the bound the caller
+/// reverts to the pre-Y6 answer for that card (park it), which is also why
+/// this same expiry unwedges the loop's `completion_active` idle term
+/// (G12 MED-4).
+pub(crate) fn goal_completion_in_flight_within(card_id: &str, bound: std::time::Duration) -> bool {
+    let Ok(counts) = GOAL_COMPLETIONS_IN_FLIGHT.lock() else {
+        // Poisoned: fail open, exactly as the pre-Y6 drain behaved.
+        return false;
+    };
+    let Some((_, started)) = counts.get(card_id) else {
+        return false;
+    };
+    let age = started.elapsed();
+    if age >= bound {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card_id,
+            age_secs = age.as_secs(),
+            bound_secs = bound.as_secs(),
+            "completion handler mark is older than the in-flight bound; treating the goal as \
+             not in flight"
+        );
+        return false;
+    }
+    true
 }
 
 /// Cancel a goal (#490): kill its worker if one is running, supersede any open
@@ -9145,6 +9244,7 @@ pub async fn drain_dispatched_goals(
         DrainRedispatch {
             dispatch: GOAL_DISPATCH_HOOK.get(),
             max_redispatch: headless_max_redispatch_from_env(),
+            sweep_headroom: headless_sweep_headroom_from_env(),
         },
     )
     .await
@@ -9161,6 +9261,12 @@ pub(crate) struct DrainRedispatch<'a> {
     /// Per-card re-dispatch budget for this run
     /// ([`PERMAGENT_HEADLESS_MAX_REDISPATCH_ENV`]); `0` disables the sweep.
     pub max_redispatch: u32,
+    /// How much of the cap must remain for the sweep to start a new worker
+    /// ([`PERMAGENT_HEADLESS_SWEEP_HEADROOM_SECS_ENV`], Y6b/G12 HIGH-1).
+    /// Carried here rather than read from the env inside the loop so a test
+    /// can pin it exactly, with no process-global env race against the other
+    /// drain tests. `Duration::ZERO` = never stand down (Y6's behaviour).
+    pub sweep_headroom: std::time::Duration,
 }
 
 /// Future returned by a [`DrainIterationHook`] — same shape as
@@ -9265,6 +9371,47 @@ pub(crate) fn next_dispatch_actions(
     chosen
 }
 
+/// The Ready cards THIS run's DAG may continue (Y6b, G12 MED-3).
+///
+/// `eligible_ready_goals` answers a project-wide question — every Ready goal
+/// card on the board, including one a human left there weeks ago and one
+/// another session owns. `nudge_dispatch_ready_goals` accepts that breadth
+/// because a human action triggers it; the drain must not, because it fires
+/// every poll and would spend worker budget on cards this run knows nothing
+/// about. So the sweep keeps only the cards this drain is already awaiting
+/// (a requeued worker of its own) plus the ones that `depends_on` one of them
+/// (the DAG continuation Y6 exists for). Deeper generations arrive naturally:
+/// a dispatched dependent gets a worker session, joins `awaited_cards` on the
+/// next poll, and its own dependents become eligible then.
+///
+/// There is deliberately NO project-wide fallback for an empty awaited set.
+/// An empty set means no descendant session of this run maps to a goal card
+/// at all — there is no DAG of this run's to continue, so every Ready card in
+/// the project is by definition a stranger, and a roadmap existing says
+/// nothing about whether this run owns it. (The drain also returns before the
+/// loop when there are no descendant sessions at all.)
+pub(crate) fn run_scoped_ready_goals(
+    ready: &[cards::Card],
+    awaited_cards: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    ready
+        .iter()
+        .filter(|card| {
+            awaited_cards.contains(&card.id)
+                || card
+                    .metadata_json
+                    .get("depends_on")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|deps| {
+                        deps.iter()
+                            .filter_map(|d| d.as_str())
+                            .any(|d| awaited_cards.contains(d))
+                    })
+        })
+        .map(|card| card.id.clone())
+        .collect()
+}
+
 /// Run one re-dispatch sweep over `project_ids` through the installed
 /// dispatcher, returning how many dispatch attempts were made.
 ///
@@ -9283,11 +9430,12 @@ async fn redispatch_ready_goals(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     project_ids: &std::collections::BTreeSet<String>,
     live_card_ids: &std::collections::HashSet<String>,
+    awaited_cards: &std::collections::HashSet<String>,
     redispatch_counts: &mut HashMap<String, u32>,
     max_redispatch: u32,
     dispatch: Option<&GoalDispatchHook>,
 ) -> u32 {
-    if max_redispatch == 0 {
+    if max_redispatch == 0 || awaited_cards.is_empty() {
         return 0;
     }
     let Some(dispatch) = dispatch else {
@@ -9296,7 +9444,7 @@ async fn redispatch_ready_goals(
     let mut attempted = 0u32;
     for project_id in project_ids {
         let ready = match eligible_ready_goals(pool, project_id).await {
-            Ok(goals) => goals.into_iter().map(|g| g.id).collect::<Vec<_>>(),
+            Ok(goals) => run_scoped_ready_goals(&goals, awaited_cards),
             Err(e) => {
                 tracing::warn!(
                     target: "permagentd::brain",
@@ -9350,8 +9498,9 @@ async fn drain_dispatched_goals_with(
     // Fast path: nothing dispatched at all — never sleep out any part of the
     // cap. (A later mid-drain dispatch cannot happen if nothing was ever
     // dispatched: there is no running worker/completion-tracker to trigger
-    // one — and Y6's re-dispatch sweep only ever restarts a goal THIS run's
-    // own dispatches produced, so it cannot manufacture one either.)
+    // one — and Y6's re-dispatch sweep only ever starts a goal THIS run is
+    // already awaiting or a dependent of one (`run_scoped_ready_goals`), an
+    // empty set here, so it cannot manufacture one either.)
     if descendant_session_ids(pool, coordinator_session_id)
         .await?
         .is_empty()
@@ -9385,7 +9534,15 @@ async fn drain_dispatched_goals_with(
     let mut redispatch_counts: HashMap<String, u32> = HashMap::new();
     // Y6: every goal card this drain has ever awaited, so the sweep can ask
     // "is any completion handler still running?" — see `completion_active`.
+    // Y6b (G12 MED-3): it is ALSO this run's DAG — the sweep starts only these
+    // cards and their dependents, never a stranger a human left Ready on the
+    // same board (`run_scoped_ready_goals`).
     let mut awaited_cards: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Y6b (G12 MED-2): never believe an in-flight mark for longer than this
+    // drain could possibly wait on it anyway — `min(the configured bound, cap)`.
+    let completion_bound = headless_completion_inflight_from_env().min(cap);
+    // Y6b (G12 HIGH-1): logged at most once per drain, not once per poll.
+    let mut headroom_logged = false;
 
     let start = std::time::Instant::now();
     loop {
@@ -9451,7 +9608,7 @@ async fn drain_dispatched_goals_with(
             );
             let budget_left =
                 redispatch_counts.get(&card_id).copied().unwrap_or(0) < redispatch.max_redispatch;
-            let completion_in_flight = goal_completion_in_flight(&card_id);
+            let completion_in_flight = goal_completion_in_flight_within(&card_id, completion_bound);
             let action =
                 next_drain_action(state, receipt_terminal, completion_in_flight, budget_left);
             match action {
@@ -9491,15 +9648,39 @@ async fn drain_dispatched_goals_with(
         // window could promote and start a dependent against a trunk the
         // parent has not landed on yet. While any awaited goal's completion
         // handler is still running, the sweep stands down (and the loop never
-        // treats the pass as idle).
-        let completion_active = awaited_cards.iter().any(|c| goal_completion_in_flight(c));
-        let dispatched_now = if completion_active {
+        // treats the pass as idle) — but only while that mark is inside
+        // `completion_bound`, so a wedged handler cannot hold either the sweep
+        // or the idle test for the whole cap (Y6b, G12 MED-2/MED-4).
+        let completion_active = awaited_cards
+            .iter()
+            .any(|c| goal_completion_in_flight_within(c, completion_bound));
+        // Y6b (G12 HIGH-1): a worker started with less than the headroom left
+        // before the cap cannot finish — the drain returns, `permagent run`
+        // exits, and the worker is killed mid-flight, having spent real budget
+        // and left its card `in_progress` behind a dead session. Below the
+        // headroom the drain reverts to being a pure waiter for what is
+        // already running; the cap-expiry park pass below still accounts for
+        // everything, so nothing is dropped by standing down.
+        let remaining = cap.saturating_sub(start.elapsed());
+        let inside_headroom = remaining < redispatch.sweep_headroom;
+        if inside_headroom && !headroom_logged {
+            headroom_logged = true;
+            tracing::info!(
+                target: "permagentd::brain",
+                remaining_secs = remaining.as_secs(),
+                headroom_secs = redispatch.sweep_headroom.as_secs(),
+                "drain re-dispatch sweep stood down: too little of the drain cap is left for a \
+                 new worker to finish"
+            );
+        }
+        let dispatched_now = if completion_active || inside_headroom {
             0
         } else {
             redispatch_ready_goals(
                 pool,
                 &projects,
                 &live_card_ids,
+                &awaited_cards,
                 &mut redispatch_counts,
                 redispatch.max_redispatch,
                 redispatch.dispatch,
@@ -16653,6 +16834,31 @@ mod tests {
     /// Injected through [`DrainRedispatch`] rather than the process-global
     /// `GOAL_DISPATCH_HOOK`, precisely so these tests cannot be affected by
     /// (or affect) that `OnceLock`'s documented one-shot race.
+    /// [`drain_recording_dispatcher`]'s twin for the ACCEPTED shape (Y6b, G12
+    /// LOW-5): it records the card and then takes the claim the real
+    /// `dispatch_goal_fn` takes, moving the card out of `ready`. A card it
+    /// started therefore leaves `eligible_ready_goals`, so "dispatched exactly
+    /// once" is an assertion that can actually fail — with the no-claim
+    /// dispatcher the card stays Ready and is dispatched again on every pass
+    /// until the budget runs out, which no `any()` assertion can tell apart
+    /// from the correct behaviour.
+    fn drain_claiming_dispatcher(
+        pool: sqlx::Pool<sqlx::Sqlite>,
+    ) -> (GoalDispatchHook, Arc<std::sync::Mutex<Vec<String>>>) {
+        let log: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&log);
+        let hook: GoalDispatchHook = Box::new(move |card_id: String| {
+            let sink = Arc::clone(&sink);
+            let pool = pool.clone();
+            Box::pin(async move {
+                sink.lock().unwrap().push(card_id.clone());
+                move_card_to_goal_state(&pool, &card_id, "in_progress").await;
+                Ok(format!("redispatched-session-for-{card_id}"))
+            }) as GoalDispatchFuture
+        });
+        (hook, log)
+    }
+
     fn drain_recording_dispatcher() -> (GoalDispatchHook, Arc<std::sync::Mutex<Vec<String>>>) {
         let log: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&log);
@@ -16821,6 +17027,7 @@ mod tests {
             DrainRedispatch {
                 dispatch: None,
                 max_redispatch: 0,
+                sweep_headroom: std::time::Duration::ZERO,
             },
         )
         .await
@@ -16899,7 +17106,7 @@ mod tests {
             })
         });
 
-        let (dispatcher, recorded) = drain_recording_dispatcher();
+        let (dispatcher, recorded) = drain_claiming_dispatcher(pool.clone());
         let summary = drain_dispatched_goals_with(
             &pool,
             &coordinator.id,
@@ -16910,19 +17117,24 @@ mod tests {
             DrainRedispatch {
                 dispatch: Some(&dispatcher),
                 max_redispatch: 2,
+                // Y6b: never stand the sweep down in this test — the headroom
+                // rule is pinned separately, with its own fixture.
+                sweep_headroom: std::time::Duration::ZERO,
             },
         )
         .await
         .unwrap();
 
         let recorded = recorded.lock().unwrap().clone();
-        assert!(
-            recorded.iter().any(|id| id == &dependent.id),
-            "the dependent must be dispatched once its parent reached Complete, got {recorded:?}"
-        );
-        assert!(
-            !recorded.iter().any(|id| id == &parent.id),
-            "a Complete goal must never be re-dispatched, got {recorded:?}"
+        // Y6b (G12 LOW-5): exactly once, not "at least once". The claiming
+        // dispatcher moves the card out of `ready`, so a sweep that kept
+        // re-offering the same dependent every poll until the budget ran out
+        // would show up here as a second entry.
+        assert_eq!(
+            recorded,
+            vec![dependent.id.clone()],
+            "the dependent must be dispatched exactly once, once its parent reached Complete, \
+             and nothing else may be dispatched: {recorded:?}"
         );
         assert_eq!(
             summary.finished, 1,
@@ -16989,6 +17201,9 @@ mod tests {
             DrainRedispatch {
                 dispatch: Some(&dispatcher),
                 max_redispatch: 2,
+                // Y6b: never stand the sweep down in this test — the headroom
+                // rule is pinned separately, with its own fixture.
+                sweep_headroom: std::time::Duration::ZERO,
             },
         )
         .await
@@ -17013,6 +17228,259 @@ mod tests {
             },
             "a goal that never restarted is still counted, exactly as Y2-2 counted it"
         );
+    }
+
+    /// Y6b (G12 HIGH-1), durable. The same A13 fx04 fixture as the test above,
+    /// but with only the tail of the drain cap left: the sweep must NOT start a
+    /// worker that will be killed at the cap seconds later, having spent real
+    /// model budget and left its card `in_progress` behind a dead session.
+    /// Pre-fix repro: `sweep_headroom: Duration::ZERO` (Y6's behaviour) and
+    /// the same fixture records two dispatch attempts.
+    #[tokio::test]
+    async fn drain_stands_down_the_redispatch_sweep_inside_the_worker_headroom() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: held and reverted".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+        attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+        let mut receipt = ExecutionReceipt::new(
+            "permagent",
+            child.id.clone(),
+            serde_json::json!({}),
+            "life-1",
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        receipt.finalize(ReceiptState::Failed, chrono::Utc::now().to_rfc3339());
+        cards::set_goal_execution_receipt(&pool, &card.id, serde_json::to_value(&receipt).unwrap())
+            .await
+            .unwrap();
+
+        let (dispatcher, recorded) = drain_recording_dispatcher();
+        let summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator.id,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(10),
+            |_, _| {},
+            None,
+            DrainRedispatch {
+                dispatch: Some(&dispatcher),
+                max_redispatch: 2,
+                // Larger than the cap: every poll of this drain is inside the
+                // headroom window, i.e. the shape of the last seconds of a
+                // real 240s drain.
+                sweep_headroom: std::time::Duration::from_secs(3_600),
+            },
+        )
+        .await
+        .unwrap();
+
+        let recorded = recorded.lock().unwrap().clone();
+        assert!(
+            recorded.is_empty(),
+            "no worker may be started with less than the headroom left before the cap: {recorded:?}"
+        );
+        assert_eq!(
+            summary,
+            DrainSummary {
+                finished: 0,
+                timed_out: 1
+            },
+            "standing the sweep down must not drop the goal — it is parked and counted, exactly \
+             as the pre-Y6 drain counted it"
+        );
+    }
+
+    /// Y6b (G12 MED-2/MED-4). `Drop` clears the mark for a handler that died,
+    /// panicked or was aborted — but not for one that is ALIVE and wedged (a
+    /// git credential prompt or index lock inside `land_approved_goal`). Y6 as
+    /// written waited on such a mark for the whole drain cap and stood the
+    /// sweep down for all of it. Past the bound the mark is ignored, so the
+    /// drain degrades to exactly its pre-Y6 answer (park) and the loop's own
+    /// `completion_active` idle term stops being held open (MED-4).
+    #[test]
+    fn completion_in_flight_marks_expire_once_they_are_older_than_the_bound() {
+        let card_id = format!("y6b-inflight-{}", uuid::Uuid::new_v4());
+        let guard = CompletionInFlight::begin(&card_id);
+        assert!(
+            goal_completion_in_flight_within(&card_id, std::time::Duration::from_secs(600)),
+            "a fresh mark inside the bound is in flight"
+        );
+        assert!(
+            !goal_completion_in_flight_within(&card_id, std::time::Duration::ZERO),
+            "a mark older than the bound must read as NOT in flight, so a wedged handler cannot \
+             hold the drain for the whole cap"
+        );
+        drop(guard);
+        assert!(
+            !goal_completion_in_flight_within(&card_id, std::time::Duration::from_secs(600)),
+            "dropping the guard still clears the mark outright"
+        );
+    }
+
+    /// Y6b (G12 MED-3), pure. `eligible_ready_goals` answers a PROJECT-WIDE
+    /// question; the drain's sweep must only continue this run's own DAG.
+    #[test]
+    fn run_scoped_ready_goals_keeps_awaited_cards_and_their_dependents() {
+        fn ready_card(id: &str, depends_on: &[&str]) -> cards::Card {
+            cards::Card {
+                id: id.to_string(),
+                project_id: "proj".to_string(),
+                card_type: "goal".to_string(),
+                title: id.to_string(),
+                description: String::new(),
+                column_id: "ready-col".to_string(),
+                position: 0,
+                created_by: "test".to_string(),
+                assigned_to: None,
+                metadata_json: serde_json::json!({ "depends_on": depends_on }),
+                created_at: String::new(),
+                updated_at: String::new(),
+                archived_at: None,
+            }
+        }
+        let ready = vec![
+            ready_card("awaited", &[]),
+            ready_card("dependent", &["awaited"]),
+            ready_card("stranger", &[]),
+            ready_card("someone-elses-dependent", &["not-ours"]),
+        ];
+        let awaited: std::collections::HashSet<String> =
+            ["awaited".to_string()].into_iter().collect();
+        assert_eq!(
+            run_scoped_ready_goals(&ready, &awaited),
+            vec!["awaited".to_string(), "dependent".to_string()],
+            "only this run's own cards and their dependents"
+        );
+        assert!(
+            run_scoped_ready_goals(&ready, &std::collections::HashSet::new()).is_empty(),
+            "no awaited cards means no DAG of this run's to continue — never a project-wide sweep"
+        );
+    }
+
+    /// Y6b (G12 MED-3), durable. A Ready goal card that this run never
+    /// dispatched and that depends on nothing this run dispatched — a card a
+    /// human left on the board — must never be started by the drain's sweep.
+    /// Pre-fix repro: `eligible_ready_goals`' project-wide list went straight
+    /// into `next_dispatch_actions`, so the stranger was dispatched on the
+    /// first pass.
+    #[tokio::test]
+    async fn drain_sweep_does_not_dispatch_a_ready_card_outside_this_runs_dag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: held and reverted".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        // This run's own card: requeued to Ready with its worker attempt over.
+        let mine = setup_goal_in_state(&pool, "ready", 1).await;
+        attach_worker_session_to_card(&pool, &mine.id, &child.id).await;
+        let mut receipt = ExecutionReceipt::new(
+            "permagent",
+            child.id.clone(),
+            serde_json::json!({}),
+            "life-1",
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        receipt.finalize(ReceiptState::Failed, chrono::Utc::now().to_rfc3339());
+        cards::set_goal_execution_receipt(&pool, &mine.id, serde_json::to_value(&receipt).unwrap())
+            .await
+            .unwrap();
+        // A stranger: same project, Ready, nothing to do with this run.
+        let stranger = setup_goal_in_state(&pool, "ready", 0).await;
+
+        let (dispatcher, recorded) = drain_claiming_dispatcher(pool.clone());
+        let _summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator.id,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(10),
+            |_, _| {},
+            None,
+            DrainRedispatch {
+                dispatch: Some(&dispatcher),
+                max_redispatch: 2,
+                sweep_headroom: std::time::Duration::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+
+        let recorded = recorded.lock().unwrap().clone();
+        assert_eq!(
+            recorded,
+            vec![mine.id.clone()],
+            "the sweep must restart this run's own requeued goal and nothing else: {recorded:?}"
+        );
+        let untouched = cards::get_card(&pool, &stranger.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &untouched.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "a card outside this run's DAG must be left exactly where it was"
+        );
+    }
+
+    /// Y6b: the two new headless env knobs parse and are named the way their
+    /// siblings are. Pure, so it never touches the process environment.
+    #[test]
+    fn headless_sweep_headroom_and_inflight_env_names_match_the_headless_family() {
+        assert_eq!(
+            PERMAGENT_HEADLESS_SWEEP_HEADROOM_SECS_ENV,
+            "PERMAGENT_HEADLESS_SWEEP_HEADROOM_SECS"
+        );
+        assert_eq!(DEFAULT_HEADLESS_SWEEP_HEADROOM_SECS, 90);
+        assert_eq!(
+            PERMAGENT_HEADLESS_COMPLETION_INFLIGHT_SECS_ENV,
+            "PERMAGENT_HEADLESS_COMPLETION_INFLIGHT_SECS"
+        );
+        // min(the 240s default drain cap, 180s) — and the drain clamps it to
+        // its own cap besides.
+        assert_eq!(DEFAULT_HEADLESS_COMPLETION_INFLIGHT_SECS, 180);
     }
 
     /// Y6: `PERMAGENT_HEADLESS_MAX_REDISPATCH` parses the way its siblings do —
@@ -17163,6 +17631,7 @@ mod tests {
             DrainRedispatch {
                 dispatch: None,
                 max_redispatch: 0,
+                sweep_headroom: std::time::Duration::ZERO,
             },
         )
         .await
