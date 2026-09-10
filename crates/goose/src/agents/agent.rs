@@ -705,22 +705,46 @@ impl Agent {
         Ok(tool_futures)
     }
 
+    /// The reason an INSPECTOR denied `request_id`, if one did.
+    ///
     /// A ProgressMonitor block (L1/L3) carries an actionable "try a different
     /// approach" reason. Surface it to the model in place of the generic
     /// declined text so it can self-correct — the whole point of the L1 nudge.
-    /// Every other denial keeps `DECLINED_RESPONSE`.
-    fn progress_monitor_block_reason(
+    ///
+    /// Y4c (harness loop, 2026-09-10, from Lane A12's M12 forensics): this
+    /// used to be the ProgressMonitor's reason and NOTHING else, so every
+    /// other inspector's carefully written reason was replaced by
+    /// `DECLINED_RESPONSE` — text that tells the model *the user* refused.
+    /// `CodingDagInspector`'s reason is the case A12 measured: it explains
+    /// that a top-level coding session must dispatch a worker rather than
+    /// edit, and the coordinator never saw it. fx09 msg 18 reasons "The user
+    /// declined both shell and write tool calls"; fx04 msg 32 opens "I
+    /// understand - you've stopped this implementation". Between fx04, fx05
+    /// and fx09 that cost 11 tool calls and about a third of each run, on
+    /// denials whose reason was sitting in `inspection_results` the whole
+    /// time. A denial with no inspector reason behind it — an actual user
+    /// decline — still gets `DECLINED_RESPONSE`, unchanged.
+    ///
+    /// The ProgressMonitor keeps first claim when several inspectors deny the
+    /// same call, so its behavior is exactly what it was.
+    fn inspector_deny_reason(
         request_id: &str,
         inspection_results: &[crate::tool_inspection::InspectionResult],
     ) -> Option<String> {
-        inspection_results
-            .iter()
-            .find(|r| {
-                r.tool_request_id == request_id
-                    && r.inspector_name == crate::tool_monitor::PROGRESS_MONITOR_NAME
-                    && r.action == crate::tool_inspection::InspectionAction::Deny
-            })
-            .map(|r| r.reason.clone())
+        let mut first_other: Option<&crate::tool_inspection::InspectionResult> = None;
+        for result in inspection_results.iter().filter(|r| {
+            r.tool_request_id == request_id
+                && r.action == crate::tool_inspection::InspectionAction::Deny
+                && !r.reason.trim().is_empty()
+        }) {
+            if result.inspector_name == crate::tool_monitor::PROGRESS_MONITOR_NAME {
+                return Some(result.reason.clone());
+            }
+            if first_other.is_none() {
+                first_other = Some(result);
+            }
+        }
+        first_other.map(|r| r.reason.clone())
     }
 
     fn handle_denied_tools(
@@ -730,7 +754,7 @@ impl Agent {
     ) {
         for request in &permission_check_result.denied {
             if let Some(response) = request_to_response_map.get_mut(&request.id) {
-                let text = Self::progress_monitor_block_reason(&request.id, inspection_results)
+                let text = Self::inspector_deny_reason(&request.id, inspection_results)
                     .unwrap_or_else(|| DECLINED_RESPONSE.to_string());
                 response.add_tool_response_with_metadata(
                     request.id.clone(),
@@ -3890,6 +3914,145 @@ mod tests {
         let direct_call = [".", "complete("].concat();
         assert!(source.contains("complete_accounted"));
         assert!(!source.contains(&direct_call));
+    }
+
+    /// The text `handle_denied_tools` actually put on the wire for `id`.
+    fn denied_response_text(responses: &HashMap<String, Message>, id: &str) -> String {
+        responses
+            .get(id)
+            .expect("a response message for the denied request")
+            .content
+            .iter()
+            .find_map(|content| match content {
+                crate::conversation::message::MessageContent::ToolResponse(response) => {
+                    response.tool_result.as_ref().ok().map(|result| {
+                        result
+                            .content
+                            .iter()
+                            .filter_map(|c| match &c.raw {
+                                rmcp::model::RawContent::Text(text) => Some(text.text.clone()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                }
+                _ => None,
+            })
+            .expect("the denial is recorded as a tool response")
+    }
+
+    fn denial_fixture(
+        request_id: &str,
+        inspection_results: Vec<crate::tool_inspection::InspectionResult>,
+    ) -> HashMap<String, Message> {
+        let request = ToolRequest {
+            id: request_id.to_string(),
+            tool_call: Ok(rmcp::model::CallToolRequestParams::new("developer__shell")),
+            metadata: None,
+            tool_meta: None,
+        };
+        let permission_check_result = PermissionCheckResult {
+            approved: vec![],
+            needs_approval: vec![],
+            denied: vec![request],
+        };
+        let mut responses = HashMap::new();
+        responses.insert(request_id.to_string(), Message::user());
+        Agent::handle_denied_tools(
+            &permission_check_result,
+            &mut responses,
+            &inspection_results,
+        );
+        responses
+    }
+
+    fn deny(
+        request_id: &str,
+        inspector: &str,
+        reason: &str,
+    ) -> crate::tool_inspection::InspectionResult {
+        crate::tool_inspection::InspectionResult {
+            tool_request_id: request_id.to_string(),
+            action: crate::tool_inspection::InspectionAction::Deny,
+            reason: reason.to_string(),
+            confidence: 1.0,
+            inspector_name: inspector.to_string(),
+            finding_id: None,
+        }
+    }
+
+    /// Y4c pin (harness loop, 2026-09-10, from Lane A12's M12 forensics): when
+    /// an INSPECTOR denies a tool call, the model must be told the inspector's
+    /// own reason — not `DECLINED_RESPONSE`, which says the USER refused.
+    ///
+    /// A12 traced every coordinator `shell`/`edit`/`write` in the M12 slice to
+    /// `CodingDagInspector`, whose reason explains that a top-level coding
+    /// session must dispatch a worker; the model saw only the generic decline
+    /// and reasoned "The user declined both shell and write tool calls"
+    /// (fx09 msg 18) and "I understand - you've stopped this implementation"
+    /// (fx04 msg 32). Pre-Y4c this test fails: the filter matched the progress
+    /// monitor's name alone, so this denial came back as `DECLINED_RESPONSE`.
+    #[test]
+    fn a_denied_tool_carries_the_denying_inspectors_own_reason() {
+        let reason = "Top-level coding harness sessions must create an approved orchestrator \
+                      DAG and dispatch its node";
+        let responses = denial_fixture(
+            "req_dag",
+            vec![deny(
+                "req_dag",
+                crate::tool_inspection::CODING_DAG_INSPECTOR_NAME,
+                reason,
+            )],
+        );
+        assert_eq!(denied_response_text(&responses, "req_dag"), reason);
+    }
+
+    /// Y4c: the ProgressMonitor's L1/L3 nudge is unchanged — it still wins,
+    /// including when a second inspector denies the same call.
+    #[test]
+    fn a_progress_monitor_block_still_wins_over_another_inspectors_reason() {
+        let responses = denial_fixture(
+            "req_loop",
+            vec![
+                deny("req_loop", "some_other_inspector", "a different reason"),
+                deny(
+                    "req_loop",
+                    crate::tool_monitor::PROGRESS_MONITOR_NAME,
+                    "identical call already failed twice — try a different approach",
+                ),
+            ],
+        );
+        assert_eq!(
+            denied_response_text(&responses, "req_loop"),
+            "identical call already failed twice — try a different approach"
+        );
+    }
+
+    /// Y4c: a denial with NO inspector behind it is a real user decline and
+    /// keeps `DECLINED_RESPONSE`, exactly as before. An inspector result for a
+    /// DIFFERENT request id must never leak onto this one, and an inspector
+    /// that allowed the call is not a denial reason either.
+    #[test]
+    fn a_user_decline_still_reads_as_a_user_decline() {
+        let responses = denial_fixture(
+            "req_user",
+            vec![
+                deny("req_other", "some_inspector", "not this request"),
+                crate::tool_inspection::InspectionResult {
+                    tool_request_id: "req_user".to_string(),
+                    action: crate::tool_inspection::InspectionAction::Allow,
+                    reason: "Auto mode - all tools approved".to_string(),
+                    confidence: 1.0,
+                    inspector_name: "some_inspector".to_string(),
+                    finding_id: None,
+                },
+            ],
+        );
+        assert_eq!(
+            denied_response_text(&responses, "req_user"),
+            DECLINED_RESPONSE
+        );
     }
 
     #[test]
