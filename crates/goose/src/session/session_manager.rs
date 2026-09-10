@@ -893,6 +893,14 @@ impl SessionManager {
     /// authorizes exactly one retry of the specific call that got gated,
     /// not every later call in the session while the row is still
     /// `pending`.
+    ///
+    /// F3b (from Lane G10's MEDIUM finding): the TTL-staleness check runs
+    /// BEFORE the `reuse_count` refusal, so an already-consumed grant that
+    /// is also past `consume_ttl_secs` is released (and reported as
+    /// `Ok(None)`) rather than refused-but-left-`pending` — a consumed
+    /// grant keeps the same fast 120s self-release as an unconsumed one,
+    /// instead of waiting on the ~8h lease-expiry sweep while it counts
+    /// toward held budget.
     #[allow(clippy::too_many_arguments)]
     pub async fn consume_granted_reservation(
         &self,
@@ -3115,17 +3123,6 @@ impl SessionStorage {
             return Ok(None);
         }
 
-        // F3 (M1, harness loop, Round F, from Lane G9's MEDIUM finding): a
-        // grant is consumable exactly once — the retry of the specific call
-        // that got gated, not every later call in the session while the row
-        // happens to still be `pending`. Refused the same way a wrong-
-        // session or mismatched-provider grant already is: never touched,
-        // never reported, caller falls through to a fresh gate decision.
-        if state == "pending" && reuse_count > 0 {
-            tx.commit().await?;
-            return Ok(None);
-        }
-
         let age_secs = chrono::DateTime::parse_from_rfc3339(&created_at)
             .map(|dt| (now - dt.with_timezone(&chrono::Utc)).num_seconds())
             .unwrap_or(i64::MAX);
@@ -3143,6 +3140,27 @@ impl SessionStorage {
             .bind(&reservation_id)
             .execute(&mut *tx)
             .await?;
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        // F3 (M1, harness loop, Round F, from Lane G9's MEDIUM finding): a
+        // grant is consumable exactly once — the retry of the specific call
+        // that got gated, not every later call in the session while the row
+        // happens to still be `pending`. Refused the same way a wrong-
+        // session or mismatched-provider grant already is: never touched,
+        // never reported, caller falls through to a fresh gate decision.
+        //
+        // F3b (from Lane G10's MEDIUM finding): this refusal runs AFTER the
+        // TTL-staleness branch above, never before it. Ordered the other
+        // way, a grant consumed once could never take the fast 120s
+        // self-release path again — it would short-circuit here on every
+        // later call and only die via the ~8h lease-expiry + reconcile
+        // sweep, inflating `task_held`/`session_held` the whole time. A
+        // stale grant is released first; only a grant still WITHIN its TTL
+        // is refused-but-left-`pending` for the real in-flight call to
+        // settle.
+        if state == "pending" && reuse_count > 0 {
             tx.commit().await?;
             return Ok(None);
         }
@@ -6391,6 +6409,99 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(state, "pending");
+    }
+
+    /// F3b pin (harness loop, from Lane G10's MEDIUM finding): the TTL
+    /// self-release must still apply to a grant that was already consumed
+    /// once. A grant with `reuse_count > 0` that is ALSO past its TTL is
+    /// released (and reported as `None`), not refused-but-left-`pending` —
+    /// otherwise the fast 120s recovery path could only ever fire on a
+    /// grant's first consume attempt, and an abandoned consumed grant would
+    /// keep counting toward held budget until the ~8h lease-expiry sweep.
+    #[tokio::test]
+    async fn consume_granted_reservation_releases_a_consumed_grant_past_ttl() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "grant-reuse-then-expire".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+
+        sm.grant_reservation_after_gate_approval(
+            "invocation-6",
+            &session.id,
+            &task_id,
+            0.30,
+            "2099-01-01T00:00:00Z",
+            "zai",
+            "glm-4.7",
+        )
+        .await
+        .unwrap();
+
+        let first = sm
+            .consume_granted_reservation(
+                "invocation-6",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(first, Some(CostReservationOutcome::AlreadyReserved { .. })),
+            "the first consume must succeed: {first:?}"
+        );
+
+        // 200s after the grant, well past the 120s TTL: the retry that
+        // consumed it never settled and never released the row.
+        let past_ttl = chrono::Utc::now() + chrono::Duration::seconds(200);
+        let stale = sm
+            .consume_granted_reservation(
+                "invocation-6",
+                &session.id,
+                "zai",
+                "glm-4.7",
+                120,
+                past_ttl,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stale, None,
+            "an already-consumed grant past its TTL must report nothing to consume"
+        );
+
+        let pool = sm.pool_clone().await.unwrap();
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'invocation-6'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            state, "released",
+            "the TTL check must run before the reuse refusal, so a stale consumed grant \
+             releases its hold instead of sitting pending until the lease-expiry sweep"
+        );
+
+        // The refusal never double-counts: the row records the single
+        // consumption it actually had.
+        let reuse_count: i64 = sqlx::query_scalar(
+            "SELECT reuse_count FROM cost_reservations WHERE invocation_id = 'invocation-6'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(reuse_count, 1);
     }
 
     #[tokio::test]
