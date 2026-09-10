@@ -20990,6 +20990,316 @@ mod tests {
         );
     }
 
+    /// Lane R1 (harness improvement loop) — the "replay slice" mechanism
+    /// smoke test: record a real provider traffic pattern ONCE, then replay
+    /// it through the REAL pipeline (`OrchestratorClient::handle_decompose_
+    /// roadmap` -> `handle_create_roadmap` -> root-goal dispatch) with the
+    /// SAME assertions a real run would need to pass, but with ZERO network
+    /// calls and zero spend on the replay leg.
+    ///
+    /// **Why "record against a local fake, then replay" instead of shipping
+    /// a hand-typed cassette file.** `cassette_key` hashes (model name,
+    /// system prompt, canonicalized messages, canonicalized tools) — and
+    /// `handle_decompose_roadmap`'s real request also folds in the live
+    /// capability directory (`configured_worker_capabilities()`) and a repo
+    /// facts probe (`RepoFacts::gather`), neither of which this lane can
+    /// observe without a compile slot (no `cargo run`/`cargo test` allowed
+    /// yet — see the lane's own README/report). Hand-typing a cassette line
+    /// with a guessed key would either accidentally miss (proving nothing)
+    /// or accidentally hit for the wrong reason (a coincidental string
+    /// match) — neither is an honest proof. Recording a REAL decompose call
+    /// against `RoadmapMockProvider` (this file's own existing deterministic
+    /// fixture, already proven by `roadmap_handler_fixture` and every test
+    /// above) and then replaying it in a FRESH session/DB/client makes the
+    /// key self-consistent by construction: whatever
+    /// `handle_decompose_roadmap` actually sends is exactly what gets
+    /// hashed on both the record and the replay leg, because it is the same
+    /// code computing both. The replay leg's `ExtensionManager` is built
+    /// with a `CassetteProvider` alone — there is no `RoadmapMockProvider`
+    /// instance anywhere in that leg's code, so "no real model was
+    /// constructed or called" is true by construction, not merely asserted.
+    ///
+    /// Both legs pin `session.working_dir` to a deliberately NONEXISTENT
+    /// path rather than each leg's own `tempfile::tempdir()` — `RepoFacts::
+    /// gather` is documented best-effort ("an unreadable or missing
+    /// directory yields an all-empty `RepoFacts`"), so a nonexistent path
+    /// gives a byte-identical empty facts block on both legs, with no risk
+    /// of the two legs' distinct temp-dir names (or their SQLite files)
+    /// leaking into the hashed request and breaking the match.
+    ///
+    /// **What this proves:** `CassetteProvider::for_replay` reproduces a
+    /// byte-identical decomposition through the REAL handler (same goals,
+    /// same content hash — the "decision kind"/proposal-hash mechanism M7
+    /// broke); the approval row is a real `choice` decision on BOTH legs;
+    /// root goal dispatch (via the SAME `GOAL_DISPATCH_HOOK` wiring seam
+    /// `create_roadmap_dispatches_a_real_child_session_once_a_dispatch_hook_
+    /// is_installed` above already established as this codebase's own
+    /// no-live-worker test boundary) fires and really creates a child
+    /// worker session.
+    ///
+    /// It ALSO proves, incidentally but load-bearingly, that a replayed
+    /// provider survives the accounted-completion path: `run_decomposition`
+    /// goes through `AccountedFastCompletion`, which asks the provider for
+    /// its `cost_tier()` BEFORE the call and would refuse a `PaidApi` answer
+    /// without a durable task and a context limit. Replay reports the tier
+    /// the RECORDING carried (`RoadmapMockProvider` is `LocalFree`), not a
+    /// guess — see `cassette.rs`'s "Known limitations".
+    ///
+    /// **What this does NOT prove:** that the FACTORY installs the cassette.
+    /// This test hands a `CassetteProvider` to an `ExtensionManager`
+    /// directly and never calls `providers::create`, so it says nothing
+    /// about `provider_registry.rs`'s `construct_and_wrap`. That wiring is
+    /// pinned separately and deterministically — with no env var and no
+    /// process globals — by `provider_registry.rs`'s own
+    /// `replay_mode_never_constructs_the_real_provider`,
+    /// `record_mode_still_constructs_and_guards_the_real_provider` and
+    /// `no_cassette_constructs_the_real_provider_exactly_as_before`.
+    ///
+    /// **Process globals:** this test claims `GOAL_DISPATCH_HOOK`, a
+    /// `OnceLock` several other tests in this binary also try to claim (see
+    /// the note above `goal_advance_on_an_unknown_id_names_the_known_goal_
+    /// card_ids`). It is `#[ignore]`d precisely so the documented run
+    /// command gives it a process where nothing else has claimed that seam;
+    /// a `--include-ignored` full-suite run can make its dispatch assertions
+    /// fail for that reason alone.
+    ///
+    /// **What this deliberately does NOT prove (documented, not silently
+    /// skipped):** the worker actually editing code, `verify`, `review`, or
+    /// landing a commit — no existing in-process test in this codebase
+    /// drives that (`dispatch_goal_fn_dispatches_an_internal_worker_
+    /// through_a_headless_policy_with_no_extension_manager` above stops at
+    /// "dispatch returned a session id" for the same reason: the worker
+    /// turn loop runs as a detached spawned task this test would have to
+    /// poll with no real model to drive it). Extending replay coverage to
+    /// the worker's own turns is the spec for Lane M12: once a REAL
+    /// cassette is recorded (`PERMAGENT_PROVIDER_CASSETTE=record:<dir>`
+    /// against a live paid run), its keys are correct by construction (the
+    /// same "no guessing" argument this test makes locally) and can drive
+    /// the worker leg too.
+    ///
+    /// Run: `cargo test -p permagent --lib -j1 -- --ignored replay_slice_smoke`
+    /// — no network, no spend, seconds not minutes.
+    #[serial_test::serial]
+    #[tokio::test]
+    #[ignore = "Lane R1 replay-slice mechanism smoke test — run explicitly, \
+                see this test's own doc comment"]
+    async fn replay_slice_smoke() {
+        use crate::providers::cassette::CassetteProvider;
+
+        // Deliberately nonexistent — see the doc comment above for why this
+        // (not `tempfile::tempdir()`) is what makes the two legs' hashed
+        // requests byte-identical.
+        let nonexistent_working_dir =
+            PathBuf::from("/nonexistent-permagent-replay-slice-smoke-fixture");
+
+        let cassette_dir = tempfile::tempdir().unwrap();
+        let cassette_dir_path = cassette_dir.path().to_path_buf();
+
+        // ── Record leg: a REAL `handle_decompose_roadmap` call against a
+        // real (local, deterministic) provider, wrapped so its traffic is
+        // captured. `RoadmapMockProvider` never leaves this process — this
+        // is "record a real run once," just against a fixture already
+        // proven elsewhere in this file rather than a live paid model.
+        // The record leg's own decision id is asserted on INSIDE the block
+        // below, while its pool is still alive, so it is deliberately not
+        // carried out (the two legs mint different ids from different DBs).
+        let (_record_approval_decision_id, record_goals_json, record_proposal_hash) = {
+            let tmp = tempfile::tempdir().unwrap();
+            let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+            let session = sm
+                .create_session(
+                    nonexistent_working_dir.clone(),
+                    "replay-slice-smoke-record".to_string(),
+                    SessionType::Hidden,
+                    GooseMode::Auto,
+                )
+                .await
+                .unwrap();
+            let pool = sm.pool_clone().await.unwrap();
+
+            let inner: Arc<dyn Provider> = Arc::new(RoadmapMockProvider::new());
+            let recording = CassetteProvider::wrap_for_record(inner, cassette_dir_path.clone())
+                .expect("wrapping a real inner provider for record must succeed");
+            let em = Arc::new(crate::agents::extension_manager::ExtensionManager::new(
+                Arc::new(tokio::sync::Mutex::new(Some(recording))),
+                sm.clone(),
+                "test".to_string(),
+                crate::agents::extension_manager::ExtensionManagerCapabilities { mcpui: false },
+            ));
+            let context = PlatformExtensionContext {
+                extension_manager: Some(Arc::downgrade(&em)),
+                session_manager: sm.clone(),
+                session: Some(Arc::new(session.clone())),
+            };
+            let client = OrchestratorClient::new(context).unwrap();
+
+            let (_decompose_result, approval_decision_id, goals_json, proposal_hash) =
+                decompose_then_read_proof(&client, &pool, &session.id).await;
+
+            // "Decision kinds" from this lane's brief, checked on the
+            // record leg's own pool while it is still in scope.
+            let record_decision = crate::decisions::get_decision(&pool, &approval_decision_id)
+                .await
+                .expect("looking up the record leg's own decision must succeed")
+                .expect("the record leg's approval_decision_id must name a real decision row");
+            assert_eq!(
+                record_decision.kind, "choice",
+                "the roadmap approval decision must be a real \"choice\" decision"
+            );
+
+            (approval_decision_id, goals_json, proposal_hash)
+        };
+
+        // The cassette must actually have been written, and record mode
+        // must not have produced a miss (nothing to miss against yet).
+        let cassette_file = cassette_dir_path.join("cassette.jsonl");
+        let recorded = std::fs::read_to_string(&cassette_file)
+            .expect("record leg must have written cassette.jsonl");
+        assert!(
+            !recorded.trim().is_empty(),
+            "record leg must have appended at least one turn"
+        );
+        assert!(
+            !cassette_dir_path.join("misses.jsonl").exists(),
+            "record mode never writes misses.jsonl — that file name is replay-only"
+        );
+
+        // ── Replay leg: a FRESH tmp dir, FRESH SQLite DB, FRESH session and
+        // client — and NO `RoadmapMockProvider` anywhere in this leg's code.
+        // If replay reaches the real model instead of the cassette, this
+        // leg has no working provider to reach at all: `for_replay` is the
+        // ENTIRE provider.
+        let tmp2 = tempfile::tempdir().unwrap();
+        let sm2 = Arc::new(SessionManager::new(tmp2.path().to_path_buf()));
+        let session2 = sm2
+            .create_session(
+                nonexistent_working_dir.clone(),
+                "replay-slice-smoke-replay".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let pool2 = sm2.pool_clone().await.unwrap();
+
+        let replaying = CassetteProvider::for_replay(
+            "mock-roadmap".to_string(),
+            crate::model::ModelConfig::new("mock-roadmap-decomposer").unwrap(),
+            cassette_dir_path.clone(),
+        )
+        .expect(
+            "replay must construct from the just-recorded cassette with no real provider \
+             and no credentials",
+        );
+        let em2 = Arc::new(crate::agents::extension_manager::ExtensionManager::new(
+            Arc::new(tokio::sync::Mutex::new(Some(replaying))),
+            sm2.clone(),
+            "test".to_string(),
+            crate::agents::extension_manager::ExtensionManagerCapabilities { mcpui: false },
+        ));
+        let context2 = PlatformExtensionContext {
+            extension_manager: Some(Arc::downgrade(&em2)),
+            session_manager: sm2.clone(),
+            session: Some(Arc::new(session2.clone())),
+        };
+        let client2 = OrchestratorClient::new(context2).unwrap();
+
+        let (
+            _decompose_result2,
+            replay_approval_decision_id,
+            replay_goals_json,
+            replay_proposal_hash,
+        ) = decompose_then_read_proof(&client2, &pool2, &session2.id).await;
+
+        // Decision-kind / content-hash mechanism: replay must reproduce the
+        // EXACT same proposed goals and the EXACT same content hash the
+        // record leg produced — this is the mechanism M7 found broken
+        // (a rejected/mismatched approval payload never binding to what was
+        // actually proposed).
+        assert_eq!(
+            replay_goals_json, record_goals_json,
+            "replay must reproduce byte-identical proposed goals"
+        );
+        assert_eq!(
+            replay_proposal_hash, record_proposal_hash,
+            "replay must reproduce the identical roadmap content hash"
+        );
+        // The two approval_decision_ids are naturally DIFFERENT (fresh DB,
+        // fresh Decision Inbox row per leg) — the record leg's own decision
+        // was already checked (kind == "choice") inside its own scope
+        // above, while its pool was still alive. Same check here for the
+        // replay leg, on its own pool ("decision kinds" from this lane's
+        // brief, proven on both legs).
+        let replay_decision = crate::decisions::get_decision(&pool2, &replay_approval_decision_id)
+            .await
+            .expect("looking up the replay leg's own decision must succeed")
+            .expect("the replay leg's approval_decision_id must name a real decision row");
+        assert_eq!(
+            replay_decision.kind, "choice",
+            "the roadmap approval decision must be a real \"choice\" decision"
+        );
+
+        // ── Dispatch leg: install the SAME `GOAL_DISPATCH_HOOK` test seam
+        // `create_roadmap_dispatches_a_real_child_session_once_a_dispatch_
+        // hook_is_installed` above uses (no live worker roster, network, or
+        // subprocess — see that test's own doc comment for why this is the
+        // established boundary in this codebase), then create the roadmap
+        // on the REPLAY client — proving dispatch is reachable through a
+        // cassette-replayed decomposition, not just a live one.
+        let hook_sm = sm2.clone();
+        let parent_session_id = session2.id.clone();
+        let _ = GOAL_DISPATCH_HOOK.set(Box::new(move |_card_id: String| {
+            let hook_sm = hook_sm.clone();
+            let parent_session_id = parent_session_id.clone();
+            Box::pin(async move {
+                test_dispatch_recorder::record(_card_id.clone());
+                let child = hook_sm
+                    .create_session_with_parent(
+                        Some(&parent_session_id),
+                        std::env::temp_dir(),
+                        "Dispatched goal (replay slice smoke)".to_string(),
+                        SessionType::SubAgent,
+                        GooseMode::Auto,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(child.id)
+            }) as GoalDispatchFuture
+        }));
+
+        let create_result = client2
+            .handle_create_roadmap(Some(create_roadmap_args(
+                &replay_goals_json,
+                &replay_proposal_hash,
+                &replay_approval_decision_id,
+            )))
+            .await
+            .expect("roadmap creation against a replayed decomposition must succeed");
+        let create_text = create_result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            !create_text.contains("0 root goal(s) dispatched"),
+            "the dispatch hook is installed — the root goal must be reported dispatched: \
+             {create_text}"
+        );
+
+        // Real goal-state assertion: the dispatched card's column really
+        // moved off Ready — this, plus the content-hash assertions above,
+        // is "decision kinds / goal states" from this lane's brief; landing
+        // is the documented, deliberate stopping point (see the doc
+        // comment).
+        let dispatched_children: Vec<(String,)> =
+            sqlx::query_as("SELECT id FROM sessions WHERE parent_session_id = ?")
+                .bind(&session2.id)
+                .fetch_all(&pool2)
+                .await
+                .unwrap();
+        assert!(
+            !dispatched_children.is_empty(),
+            "a worker session with parent_session_id set to the replay-leg coordinator \
+             session must exist after create_roadmap"
+        );
+    }
+
     // Harness loop, Lane V (V3): `handle_create_roadmap`'s own git-init gate
     // (guarded on `current_headless_dispatch_policy(...).is_some()`, right
     // after `project` resolves) is deliberately NOT exercised end-to-end
@@ -21567,4 +21877,25 @@ mod tests {
             "the card must stay in_progress — never bounced back to Ready over real work"
         );
     }
+
+    // ── Lane R1 (harness improvement loop): replay slice mechanism smoke ──
+    //
+    // The `replay_slice_smoke` test itself lives above, next to the other
+    // roadmap-handler tests. A SECOND, differently-shaped `replay_slice_
+    // smoke` was drafted here (real `install_dispatch_hook_for_headless_
+    // session` + `PERMAGENT_PROVIDER_CASSETTE` env var + an asserted
+    // `misses.jsonl` line from the dispatched worker) and deliberately NOT
+    // kept — see `HARNESS_LOOP_LOG.md` `## Lane R1` for the three reasons:
+    // a duplicate fn name in one module is a hard compile error; it would be
+    // the THIRD test to call a `GOAL_DISPATCH_HOOK` installer, which the
+    // note above `goal_advance_on_an_unknown_id_names_the_known_goal_card_
+    // ids` explicitly asks a future lane NOT to add before that OnceLock is
+    // given a shared serial key; and its central assertion races
+    // `std::env::remove_var` against the worker's own detached
+    // `tokio::spawn`, so the var could be gone before the worker constructs
+    // its provider. The factory choke point it was trying to prove is
+    // instead pinned deterministically, with no globals and no env var, by
+    // `provider_registry.rs`'s own `replay_mode_never_constructs_the_real_
+    // provider` / `record_mode_still_constructs_and_guards_the_real_
+    // provider`.
 }

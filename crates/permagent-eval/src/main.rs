@@ -451,6 +451,26 @@ struct RunArgs {
     /// fail) and excluded from pass-rate. Omit for no cap (default: unlimited).
     #[arg(long, value_name = "USD")]
     budget_usd: Option<f64>,
+
+    /// Lane R1 (harness improvement loop): run against a provider-traffic
+    /// cassette instead of a live model. Sets `PERMAGENT_PROVIDER_CASSETTE`
+    /// on the child `permagent` process (same mechanism as an A/B arm env
+    /// var, `RunConfig::arm_env`, applied last so it always wins) to
+    /// `<cassette-mode>:<DIR>`. In `replay` mode (the default) the harness
+    /// binary never constructs a real provider or spends anything for calls
+    /// this cassette covers -- see `crates/goose/src/providers/cassette.rs`.
+    /// Record one first with `--cassette-mode record`.
+    #[arg(long, value_name = "DIR")]
+    cassette: Option<PathBuf>,
+
+    /// Whether `--cassette` records real provider traffic or replays a
+    /// previously recorded one. Ignored without `--cassette`.
+    #[arg(
+        long,
+        value_parser = clap::builder::PossibleValuesParser::new(["record", "replay"]),
+        default_value = "replay"
+    )]
+    cassette_mode: String,
 }
 
 /// `ab` — the paired comparison.
@@ -1289,6 +1309,36 @@ fn stamp_dag_selection_pct(mut value: serde_json::Value, pct: Option<f64>) -> se
     value
 }
 
+/// The env var name the harness under test reads to install a provider
+/// cassette. Mirrors `crate::providers::cassette::
+/// PERMAGENT_PROVIDER_CASSETTE_ENV` in the `permagent` crate — this binary
+/// deliberately does not depend on that crate, so the name is duplicated
+/// here and pinned by `cassette_arg_becomes_the_provider_cassette_env_var`.
+const PERMAGENT_PROVIDER_CASSETTE_ENV: &str = "PERMAGENT_PROVIDER_CASSETTE";
+
+/// Lane R1: `--cassette <dir>` rides the SAME "arm env wins last" seam
+/// `runner::run_task` already gives an A/B arm ([`RunConfig::arm_env`],
+/// applied after the invocation's own defaults — runner.rs's
+/// `inv.envs.extend(cfg.arm_env...)`), so a plain `run` needs no new
+/// plumbing in `runner.rs`/`invocation.rs` to reach the child `permagent`
+/// process. Empty without `--cassette`, so a normal run is byte-for-byte
+/// unchanged.
+fn cassette_arm_env(cassette: Option<&Path>, mode: &str) -> Vec<(String, String)> {
+    match cassette {
+        Some(dir) => vec![(
+            PERMAGENT_PROVIDER_CASSETTE_ENV.to_string(),
+            format!("{}:{}", mode, dir.display()),
+        )],
+        None => Vec::new(),
+    }
+}
+
+/// Whether this run will be served entirely from a cassette — i.e. no real
+/// provider is constructed, nothing is spent, and no credential is needed.
+fn cassette_is_replaying(cassette: Option<&Path>, mode: &str) -> bool {
+    cassette.is_some() && mode == "replay"
+}
+
 fn cmd_run(args: RunArgs) -> Result<()> {
     let tiers = args.tiers.resolve()?;
     let tasks_dir = resolve_tasks_dir(&args.tasks_dir);
@@ -1297,7 +1347,19 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         bail!("no tasks to run in {}", tasks_dir.display());
     }
 
-    preflight_keys(&tiers, args.allow_missing_keys, args.use_keyring)?;
+    // Lane R1: a `replay` run never constructs a real provider at all (see
+    // `crates/goose/src/providers/cassette.rs`), so a tier's API key is not
+    // required for it. Demanding one would make the free replay slice
+    // impossible on a machine with no credentials — which is exactly the
+    // machine M0.5 ("replay slice green before any paid slice") exists to
+    // serve. A `record` run DOES call the real provider and still needs its
+    // key, so the bypass is deliberately narrow.
+    let replaying = cassette_is_replaying(args.cassette.as_deref(), &args.cassette_mode);
+    preflight_keys(
+        &tiers,
+        args.allow_missing_keys || replaying,
+        args.use_keyring,
+    )?;
     if !binary_resolves(&args.permagent_bin) {
         eprintln!(
             "warning: harness binary {:?} not found on PATH — runs will error. \
@@ -1316,11 +1378,13 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         .runs_dir
         .clone()
         .unwrap_or_else(|| std::env::temp_dir().join("permagent-eval-runs"));
+    let arm_env = cassette_arm_env(args.cassette.as_deref(), &args.cassette_mode);
     let cfg = RunConfig {
         permagent_bin,
         runs_root,
         keep: args.keep,
         use_keyring: args.use_keyring,
+        arm_env,
         ..Default::default()
     };
     let harness = SubprocessHarnessRunner;
@@ -2228,6 +2292,101 @@ mod tests {
         };
         assert!(args.use_keyring);
         assert_eq!(args.budget_usd, Some(12.50));
+    }
+
+    // --- Lane R1: `--cassette`/`--cassette-mode` parse, default, and wire
+    // into `RunConfig.arm_env` exactly like an A/B arm knob -------------
+
+    #[test]
+    fn cassette_defaults_off_and_replay_mode() {
+        let cli = Cli::try_parse_from(["permagent-eval", "run", "--tier", "local"]).unwrap();
+        let Command::Run(args) = cli.command else {
+            panic!("expected Run");
+        };
+        assert_eq!(args.cassette, None);
+        assert_eq!(args.cassette_mode, "replay");
+    }
+
+    #[test]
+    fn cassette_flag_parses_dir_and_mode() {
+        let cli = Cli::try_parse_from([
+            "permagent-eval",
+            "run",
+            "--tier",
+            "local",
+            "--cassette",
+            "/tmp/my-cassette",
+            "--cassette-mode",
+            "record",
+        ])
+        .unwrap();
+        let Command::Run(args) = cli.command else {
+            panic!("expected Run");
+        };
+        assert_eq!(args.cassette, Some(PathBuf::from("/tmp/my-cassette")));
+        assert_eq!(args.cassette_mode, "record");
+    }
+
+    #[test]
+    fn cassette_mode_rejects_unknown_value() {
+        let result = Cli::try_parse_from([
+            "permagent-eval",
+            "run",
+            "--tier",
+            "local",
+            "--cassette",
+            "/tmp/x",
+            "--cassette-mode",
+            "playback",
+        ]);
+        assert!(
+            result.is_err(),
+            "an unknown cassette mode must be rejected at parse time"
+        );
+    }
+
+    #[test]
+    fn cassette_arg_becomes_the_provider_cassette_env_var() {
+        // Pins the exact seam `cmd_run` uses -- `RunConfig.arm_env`, applied
+        // LAST over both the invocation's own defaults and the inherited
+        // environment (runner.rs: "The arm's knobs go on LAST so they
+        // outrank the invocation's own defaults... as well as the inherited
+        // environment"). This is the same seam an A/B arm's `--a-env`/
+        // `--b-env` already rides, so `--cassette` needs no new plumbing in
+        // `runner.rs`/`invocation.rs`.
+        assert_eq!(
+            cassette_arm_env(Some(Path::new("/tmp/fx03-cassette")), "replay"),
+            vec![(
+                "PERMAGENT_PROVIDER_CASSETTE".to_string(),
+                "replay:/tmp/fx03-cassette".to_string()
+            )]
+        );
+        assert_eq!(
+            cassette_arm_env(Some(Path::new("/tmp/fx03-cassette")), "record"),
+            vec![(
+                "PERMAGENT_PROVIDER_CASSETTE".to_string(),
+                "record:/tmp/fx03-cassette".to_string()
+            )]
+        );
+    }
+
+    /// No `--cassette` must leave the arm environment EMPTY, so an ordinary
+    /// run is byte-for-byte what it was before this lane — the same "unset
+    /// means never reached" discipline the provider side keeps.
+    #[test]
+    fn no_cassette_arg_leaves_the_arm_environment_untouched() {
+        assert!(cassette_arm_env(None, "replay").is_empty());
+        assert!(cassette_arm_env(None, "record").is_empty());
+    }
+
+    /// Only `replay` may skip the API-key preflight: a `record` run really
+    /// does call the paid provider and must still be refused without a key.
+    #[test]
+    fn only_replay_waives_the_api_key_preflight() {
+        let dir = PathBuf::from("/tmp/fx03-cassette");
+        assert!(cassette_is_replaying(Some(dir.as_path()), "replay"));
+        assert!(!cassette_is_replaying(Some(dir.as_path()), "record"));
+        assert!(!cassette_is_replaying(None, "replay"));
     }
 
     // --- `ab`: arg parsing, arm resolution, honesty guard, reporting -------

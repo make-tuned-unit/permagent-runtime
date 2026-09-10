@@ -75,10 +75,7 @@ impl ProviderEntry {
     ) -> Result<Arc<dyn Provider>> {
         let default_model = &self.metadata.default_model;
         let model_config = self.normalize_model_config(ModelConfig::new(default_model.as_str())?);
-        let provider = (self.constructor)(model_config, extensions).await?;
-        // Single sovereignty choke point: every provider the factory mints is
-        // wrapped so all inference egress passes through the data boundary.
-        Ok(crate::providers::sovereign_guard::SovereignGuardProvider::wrap(provider))
+        self.construct_and_wrap(model_config, extensions).await
     }
 
     pub async fn create(
@@ -87,9 +84,72 @@ impl ProviderEntry {
         extensions: Vec<ExtensionConfig>,
     ) -> Result<Arc<dyn Provider>> {
         let model = self.normalize_model_config(model);
-        let provider = (self.constructor)(model, extensions).await?;
-        // Single sovereignty choke point: see `create_with_default_model`.
-        Ok(crate::providers::sovereign_guard::SovereignGuardProvider::wrap(provider))
+        self.construct_and_wrap(model, extensions).await
+    }
+
+    /// Single choke point: every `Arc<dyn Provider>` the factory mints,
+    /// whichever of the two public constructors above was called, passes
+    /// through here. Two decorators are installed, in order:
+    ///
+    /// 1. [`crate::providers::sovereign_guard::SovereignGuardProvider`] —
+    ///    always, the data-boundary choke point.
+    /// 2. [`crate::providers::cassette::CassetteProvider`] (Lane R1, harness
+    ///    improvement loop) — only when `PERMAGENT_PROVIDER_CASSETTE` is set.
+    ///    Unset (the default), this branch is never even reached and the
+    ///    factory's behavior is byte-for-byte what it was before this lane.
+    ///    In `replay:<dir>` mode the real provider is never constructed at
+    ///    all (no credentials required, no network, no spend) — the
+    ///    cassette IS the provider, built straight from
+    ///    `<dir>/cassette.jsonl`. In `record:<dir>` mode the real provider is
+    ///    constructed and sovereignty-guarded exactly as it always was, and
+    ///    the cassette wraps that, purely observing (recording never changes
+    ///    what the caller sees).
+    async fn construct_and_wrap(
+        &self,
+        model: ModelConfig,
+        extensions: Vec<ExtensionConfig>,
+    ) -> Result<Arc<dyn Provider>> {
+        // The ONE place the env var is read. Everything below is a pure
+        // function of the parsed mode, so the wiring can be tested without
+        // mutating the process environment — which in a parallel test binary
+        // would leak a cassette into every OTHER test constructing a
+        // provider at the same moment.
+        let cassette = match crate::providers::cassette::CassetteMode::from_env() {
+            Some(parsed) => Some(parsed.map_err(|reason| anyhow::anyhow!(reason))?),
+            None => None,
+        };
+        self.construct_and_wrap_with_cassette(model, extensions, cassette)
+            .await
+    }
+
+    async fn construct_and_wrap_with_cassette(
+        &self,
+        model: ModelConfig,
+        extensions: Vec<ExtensionConfig>,
+        cassette: Option<crate::providers::cassette::CassetteMode>,
+    ) -> Result<Arc<dyn Provider>> {
+        match cassette {
+            Some(crate::providers::cassette::CassetteMode::Replay(dir)) => {
+                crate::providers::cassette::CassetteProvider::for_replay(
+                    self.metadata.name.clone(),
+                    model,
+                    dir,
+                )
+            }
+            Some(crate::providers::cassette::CassetteMode::Record(dir)) => {
+                let provider = (self.constructor)(model, extensions).await?;
+                let guarded =
+                    crate::providers::sovereign_guard::SovereignGuardProvider::wrap(provider);
+                crate::providers::cassette::CassetteProvider::wrap_for_record(guarded, dir)
+            }
+            None => {
+                let provider = (self.constructor)(model, extensions).await?;
+                // Single sovereignty choke point: every provider the factory
+                // mints is wrapped so all inference egress passes through the
+                // data boundary.
+                Ok(crate::providers::sovereign_guard::SovereignGuardProvider::wrap(provider))
+            }
+        }
     }
 }
 
@@ -338,6 +398,259 @@ mod tests {
                 "{provider_type:?} provider with requires_auth must mark its api key required"
             );
             assert!(key.secret && key.primary);
+        }
+    }
+
+    // ── Lane R1: the cassette choke point ───────────────────────────────
+    //
+    // `providers::create` / `create_with_named_model` / `create_with_default
+    // _model` (init.rs) are the ONLY ways the CLI and the daemon mint a
+    // provider (`goose-cli/src/session/builder.rs`, `session/mod.rs`,
+    // `goal_engine.rs`), and every one of them funnels into
+    // `ProviderEntry::create*` -> `construct_and_wrap`. These tests pin that
+    // funnel by calling the mode-taking half directly, so they never set
+    // `PERMAGENT_PROVIDER_CASSETTE` in a parallel test binary where another
+    // test could be constructing a provider at the same moment.
+
+    use crate::providers::base::MessageStream;
+    use crate::providers::cassette::CassetteMode;
+    use crate::providers::errors::ProviderError;
+    use rmcp::model::Tool;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NeverCalledInner;
+
+    #[async_trait::async_trait]
+    impl Provider for NeverCalledInner {
+        fn get_name(&self) -> &str {
+            "never-called-inner"
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("inner-model")
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[crate::conversation::message::Message],
+            _tools: &[Tool],
+        ) -> std::result::Result<MessageStream, ProviderError> {
+            panic!("a replayed provider must never reach a real provider's stream()");
+        }
+    }
+
+    /// Builds an entry whose constructor counts how many times the factory
+    /// asked for a REAL provider.
+    fn counting_entry(calls: Arc<AtomicUsize>) -> ProviderEntry {
+        ProviderEntry {
+            metadata: ProviderMetadata {
+                name: "cassette_fixture".to_string(),
+                display_name: "Cassette Fixture".to_string(),
+                description: String::new(),
+                default_model: "inner-model".to_string(),
+                known_models: vec![],
+                model_doc_link: String::new(),
+                config_keys: vec![],
+                setup_steps: vec![],
+                model_selection_hint: None,
+            },
+            constructor: Arc::new(move |_model, _extensions| {
+                let calls = Arc::clone(&calls);
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(Arc::new(NeverCalledInner) as Arc<dyn Provider>)
+                })
+            }),
+            inventory_identity: Arc::new(|| -> Result<InventoryIdentityInput> {
+                anyhow::bail!("inventory identity is not used by the cassette tests")
+            }),
+            inventory_configured: Arc::new(|| true),
+            cleanup: None,
+            provider_type: ProviderType::Builtin,
+            supports_inventory_refresh: false,
+        }
+    }
+
+    /// No cassette: byte-for-byte the pre-Lane-R1 behavior — the real
+    /// constructor runs and the sovereignty guard is the only decorator.
+    #[tokio::test]
+    async fn no_cassette_constructs_the_real_provider_exactly_as_before() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let entry = counting_entry(Arc::clone(&calls));
+        let provider = entry
+            .construct_and_wrap_with_cassette(ModelConfig::new_or_fail("inner-model"), vec![], None)
+            .await
+            .expect("the unwrapped path must still construct");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            provider.get_name(),
+            "never-called-inner",
+            "the sovereignty guard delegates get_name to the real provider"
+        );
+    }
+
+    /// `replay:<dir>` never constructs a real provider at all — no
+    /// credentials, no network, no spend. This is the property the whole
+    /// lane rests on, and it is a property of the FACTORY, not of the
+    /// cassette module: a cassette that only worked when a caller
+    /// hand-installed it would never be reached by a real `permagent` run.
+    #[tokio::test]
+    async fn replay_mode_never_constructs_the_real_provider() {
+        let dir = std::env::temp_dir().join(format!(
+            "registry-cassette-replay-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        // One recorded turn, written through the real record decorator, so
+        // replay has something honest to load.
+        let seeded = crate::providers::cassette::CassetteProvider::wrap_for_record(
+            Arc::new(NeverCalledSeed) as Arc<dyn Provider>,
+            dir.clone(),
+        )
+        .expect("seeding the cassette must succeed");
+        seeded
+            .complete(
+                &ModelConfig::new_or_fail("inner-model"),
+                "seed",
+                "sys",
+                &[crate::conversation::message::Message::user().with_text("hi")],
+                &[],
+            )
+            .await
+            .expect("the seed turn must record");
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let entry = counting_entry(Arc::clone(&calls));
+        let provider = entry
+            .construct_and_wrap_with_cassette(
+                ModelConfig::new_or_fail("inner-model"),
+                vec![],
+                Some(CassetteMode::Replay(dir.clone())),
+            )
+            .await
+            .expect("replay must construct from the seeded cassette");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "replay must never ask the factory for a real provider"
+        );
+        assert_eq!(
+            provider.get_name(),
+            "cassette_fixture",
+            "a replayed provider keeps the registry entry's identity"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A replay pointed at a directory with no cassette must fail loudly at
+    /// construction rather than mint a provider that fabricates answers.
+    #[tokio::test]
+    async fn replay_mode_with_no_cassette_file_refuses_to_construct() {
+        let dir = std::env::temp_dir().join(format!(
+            "registry-cassette-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let entry = counting_entry(Arc::clone(&calls));
+        // `expect_err` would need `Debug` on the Ok type, and `Arc<dyn Provider>`
+        // has none — match instead.
+        let constructed = entry
+            .construct_and_wrap_with_cassette(
+                ModelConfig::new_or_fail("inner-model"),
+                vec![],
+                Some(CassetteMode::Replay(dir)),
+            )
+            .await;
+        let err = match constructed {
+            Ok(_) => panic!("an absent cassette must refuse, never fall back to a live provider"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("no recorded turns"), "got: {err}");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "a failed replay must not silently fall back to constructing the real provider"
+        );
+    }
+
+    /// `record:<dir>` is the opposite contract: the real provider IS
+    /// constructed and IS sovereignty-guarded exactly as without the
+    /// cassette — recording observes a live run, it does not replace one.
+    #[tokio::test]
+    async fn record_mode_still_constructs_and_guards_the_real_provider() {
+        let dir = std::env::temp_dir().join(format!(
+            "registry-cassette-record-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let entry = counting_entry(Arc::clone(&calls));
+        let provider = entry
+            .construct_and_wrap_with_cassette(
+                ModelConfig::new_or_fail("inner-model"),
+                vec![],
+                Some(CassetteMode::Record(dir.clone())),
+            )
+            .await
+            .expect("record mode must construct");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "record mode constructs the real provider exactly once"
+        );
+        assert_eq!(
+            provider.get_name(),
+            "never-called-inner",
+            "the record decorator is transparent about whose traffic it is recording"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A provider that answers one canned turn, used only to put a line in a
+    /// cassette file. Separate from [`NeverCalledInner`] because that one
+    /// panics on `stream()` by design.
+    struct NeverCalledSeed;
+
+    #[async_trait::async_trait]
+    impl Provider for NeverCalledSeed {
+        fn get_name(&self) -> &str {
+            "cassette-seed"
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("inner-model")
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[crate::conversation::message::Message],
+            _tools: &[Tool],
+        ) -> std::result::Result<MessageStream, ProviderError> {
+            Ok(crate::providers::base::stream_from_single_message(
+                crate::conversation::message::Message::assistant().with_text("seed"),
+                crate::providers::base::ProviderUsage::new(
+                    "inner-model".to_string(),
+                    crate::providers::base::Usage::default(),
+                ),
+            ))
         }
     }
 

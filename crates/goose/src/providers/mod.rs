@@ -10,6 +10,7 @@ pub mod base;
 #[cfg(feature = "aws-providers")]
 pub mod bedrock;
 pub mod canonical;
+pub mod cassette;
 pub mod catalog;
 pub mod chatgpt_codex;
 pub mod claude_acp;
