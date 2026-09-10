@@ -141,6 +141,43 @@ async fn toolshim_postprocess(
         .map_err(|e| ProviderError::ExecutionError(format!("Failed to augment message: {}", e)))
 }
 
+/// What [`Agent::handle_provider_authorization_failure`] did about a blocked
+/// provider call.
+///
+/// Y4a (harness loop, 2026-09-10, from Lane A12's M12 forensics): the handler
+/// used to return a bare `detail` string, so its caller could not tell a gate
+/// that had just been auto-granted from one that was parked for a human — it
+/// emitted "provider spend could not be authorized" and ended the turn in
+/// BOTH cases. For a coordinator that is fatal: the run ends with the turn, so
+/// the `granted_via_gate=1, state='pending'` reservation the handler had just
+/// paid for was never consumed by anyone (A12: fx01's correct worker commit
+/// never surfaced, fx09 the same, fx07 truncated — the goal-scoped grant in
+/// the *worker* session settled the same second, because a worker does get a
+/// later turn). `gate_grant_minted` is that missing bit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderAuthorizationOutcome {
+    /// The human-readable failure detail, unchanged from
+    /// `ProviderAuthorizationFailure::to_string()` (plus any context the
+    /// handler could add). Always safe to show the model.
+    pub(crate) detail: String,
+    /// `true` iff a headless gate auto-answer minted a spendable reservation
+    /// under the SAME `invocation_id` this call already failed under, so the
+    /// caller may retry `reserve_provider_invocation` ONCE with that id and
+    /// take its idempotent `AlreadyReserved` fast path. `false` for every
+    /// parked, refused, non-gate or non-headless outcome.
+    pub(crate) gate_grant_minted: bool,
+}
+
+impl ProviderAuthorizationOutcome {
+    /// The unchanged pre-Y4a outcome: report `detail`, authorize no retry.
+    fn parked(detail: String) -> Self {
+        Self {
+            detail,
+            gate_grant_minted: false,
+        }
+    }
+}
+
 /// The gate-decision-resolved half of
 /// [`Agent::handle_provider_authorization_failure`]'s success path, factored
 /// out as a free function taking `headless` as an explicit parameter
@@ -157,7 +194,7 @@ async fn toolshim_postprocess(
 /// plain argument here lets this function's behavior be pinned directly and
 /// deterministically, with zero risk to any other test in the binary.
 ///
-/// Returns `Some(detail)` when the gate was headlessly auto-answered — the
+/// Returns `Some(outcome)` when the gate was headlessly auto-answered — the
 /// caller should retry in place (this session keeps its goal assignment
 /// unchanged; never a `requeue_goal` call). Returns `None` when the caller
 /// must fall through to the unchanged park path (not headless, the
@@ -180,18 +217,19 @@ async fn try_auto_answer_reservation_gate(
     // using.
     provider: &str,
     model: &str,
-) -> Option<String> {
+) -> Option<ProviderAuthorizationOutcome> {
     if !headless {
         return None;
     }
     match crate::decisions::auto_approve_reservation_gate(pool, decision_id).await {
         Ok(_) => {
+            let mut gate_grant_minted = false;
             if let ProviderAuthorizationFailure::NeedsGate { requested_usd, .. } = failure {
                 let task_id = budget_task_id(&session.extension_data);
                 let lease_until = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
                 match task_id {
                     Some(task_id) => {
-                        if let Err(error) = session_manager
+                        match session_manager
                             .grant_reservation_after_gate_approval(
                                 invocation_id,
                                 &session.id,
@@ -203,13 +241,41 @@ async fn try_auto_answer_reservation_gate(
                             )
                             .await
                         {
-                            tracing::warn!(
-                                goal_id = %card_id,
-                                decision_id,
-                                "headless reservation-gate auto-answer succeeded but the \
-                                 reservation could not be granted ({error:?}); the session's \
-                                 next attempt will just re-ask the gate"
-                            );
+                            // Y4a: ONLY this arm authorizes an in-turn retry.
+                            // The grant is a real `granted_via_gate=1`,
+                            // `state='pending'` row keyed on THIS call's
+                            // `invocation_id`, so re-calling
+                            // `reserve_provider_invocation` with that same id
+                            // takes `reserve_provider_invocation`'s early
+                            // idempotent lookup and returns `AlreadyReserved`
+                            // without re-running any threshold math. Every
+                            // other `Ok` shape (`AlreadySettled`, `Unknown`)
+                            // has no spendable hold behind it, so it must
+                            // keep the unchanged park path.
+                            Ok(outcome) => {
+                                gate_grant_minted = matches!(
+                                    outcome,
+                                    crate::session::CostReservationOutcome::Granted { .. }
+                                        | crate::session::CostReservationOutcome::AlreadyReserved { .. }
+                                );
+                                if !gate_grant_minted {
+                                    tracing::warn!(
+                                        goal_id = %card_id,
+                                        decision_id,
+                                        "headless reservation-gate auto-answer succeeded but the \
+                                         grant is not spendable ({outcome:?}); not retrying in turn"
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    goal_id = %card_id,
+                                    decision_id,
+                                    "headless reservation-gate auto-answer succeeded but the \
+                                     reservation could not be granted ({error:?}); the session's \
+                                     next attempt will just re-ask the gate"
+                                );
+                            }
                         }
                     }
                     None => {
@@ -225,7 +291,10 @@ async fn try_auto_answer_reservation_gate(
             // Retry in place (E1): the goal keeps its current dispatched
             // session unchanged. No `requeue_goal` call here — see
             // `Agent::handle_provider_authorization_failure`'s doc comment.
-            Some(detail.to_string())
+            Some(ProviderAuthorizationOutcome {
+                detail: detail.to_string(),
+                gate_grant_minted,
+            })
         }
         Err(error) => {
             tracing::info!(
@@ -338,7 +407,7 @@ async fn session_scoped_provider_authorization_failure(
     headless: bool,
     provider: &str,
     model: &str,
-) -> String {
+) -> ProviderAuthorizationOutcome {
     let ProviderAuthorizationFailure::NeedsGate {
         scope,
         spent_usd,
@@ -350,14 +419,18 @@ async fn session_scoped_provider_authorization_failure(
         // Only a spend gate has an auto-answerable shape; every other
         // failure kind has no goal card to park either, so it simply ends
         // the call exactly as it did before this lane.
-        return detail;
+        return ProviderAuthorizationOutcome::parked(detail);
     };
     if !headless {
-        return detail;
+        return ProviderAuthorizationOutcome::parked(detail);
     }
     let pool = match session_manager.pool_clone().await {
         Ok(pool) => pool,
-        Err(error) => return format!("{detail}; could not open Decision Inbox: {error}"),
+        Err(error) => {
+            return ProviderAuthorizationOutcome::parked(format!(
+                "{detail}; could not open Decision Inbox: {error}"
+            ))
+        }
     };
 
     // Dedupe: a coordinator that keeps hitting the same gate on successive
@@ -394,7 +467,7 @@ async fn session_scoped_provider_authorization_failure(
                             session_id = %session.id,
                             "could not create session-scoped provider budget decision: {error}"
                         );
-                        return detail;
+                        return ProviderAuthorizationOutcome::parked(detail);
                     }
                 }
             }
@@ -404,7 +477,7 @@ async fn session_scoped_provider_authorization_failure(
                     "could not look up an existing session-scoped gate decision ({error}); \
                      proceeding without one this call"
                 );
-                return detail;
+                return ProviderAuthorizationOutcome::parked(detail);
             }
         };
 
@@ -433,10 +506,13 @@ async fn session_scoped_provider_authorization_failure(
             "session-scoped reservation gate auto-answer cap reached; escalating to a human \
              instead of auto-answering again"
         );
-        return detail;
+        // Y4a: the cap is reached, so nothing was auto-answered and no
+        // reservation was minted — `gate_grant_minted: false` is what tells
+        // the coordinator NOT to retry this call in place.
+        return ProviderAuthorizationOutcome::parked(detail);
     }
 
-    if let Some(retry_detail) = try_auto_answer_reservation_gate(
+    if let Some(retry_outcome) = try_auto_answer_reservation_gate(
         &pool,
         &session.id,
         session,
@@ -451,9 +527,9 @@ async fn session_scoped_provider_authorization_failure(
     )
     .await
     {
-        return retry_detail;
+        return retry_outcome;
     }
-    detail
+    ProviderAuthorizationOutcome::parked(detail)
 }
 
 /// M2 (harness loop, Round F, Lane F3, from Lane G9's MEDIUM finding):
@@ -527,6 +603,12 @@ impl Agent {
     /// Make a budget denial durable for a goal worker, then park and stop it.
     /// The requested bound is authorization-only and is intentionally never
     /// presented as already-spent money.
+    ///
+    /// Y4a: the returned [`ProviderAuthorizationOutcome::gate_grant_minted`]
+    /// tells the caller whether a headless auto-answer left a spendable
+    /// reservation behind under `invocation_id` — see that type's doc comment
+    /// for why the caller must retry once on `true` rather than ending the
+    /// turn.
     pub(crate) async fn handle_provider_authorization_failure(
         &self,
         session: &Session,
@@ -546,7 +628,7 @@ impl Agent {
         // checked against it.
         provider: &str,
         model: &str,
-    ) -> String {
+    ) -> ProviderAuthorizationOutcome {
         let detail = failure.to_string();
         let Some(card_id) = goal_id(&session.extension_data) else {
             // I1 (harness loop, 2026-09-10, from M10's forensics): a session
@@ -570,7 +652,11 @@ impl Agent {
         };
         let pool = match self.config.session_manager.pool_clone().await {
             Ok(pool) => pool,
-            Err(error) => return format!("{detail}; could not open Decision Inbox: {error}"),
+            Err(error) => {
+                return ProviderAuthorizationOutcome::parked(format!(
+                    "{detail}; could not open Decision Inbox: {error}"
+                ))
+            }
         };
 
         // Refused/unknown outcomes have no truthful BudgetVerdict (in
@@ -700,7 +786,7 @@ impl Agent {
                 )
                 .await
                 .is_some();
-            if let Some(retry_detail) = try_auto_answer_reservation_gate(
+            if let Some(retry_outcome) = try_auto_answer_reservation_gate(
                 &pool,
                 &card_id,
                 session,
@@ -715,7 +801,7 @@ impl Agent {
             )
             .await
             {
-                return retry_detail;
+                return retry_outcome;
             }
         }
         if let Err(error) = crate::goal_transition::park_goal(
@@ -733,7 +819,7 @@ impl Agent {
         {
             kill.kill();
         }
-        detail
+        ProviderAuthorizationOutcome::parked(detail)
     }
 
     /// I1 (harness loop, 2026-09-10, from M10's forensics): the SESSION-
@@ -759,7 +845,7 @@ impl Agent {
         detail: String,
         provider: &str,
         model: &str,
-    ) -> String {
+    ) -> ProviderAuthorizationOutcome {
         // Read via the SAME public seam the goal-scoped path already uses
         // (`headless_auto_land_status(...).is_some()` — `true` iff a
         // headless dispatch policy is installed for this process, whatever
@@ -2581,7 +2667,13 @@ mod tests {
         .await;
         assert_eq!(
             outcome,
-            Some("budget gate detail".to_string()),
+            Some(ProviderAuthorizationOutcome {
+                detail: "budget gate detail".to_string(),
+                // Y4a: the same call must also report that it left a spendable
+                // grant behind, so the turn loop retries in place instead of
+                // ending the turn on top of a paid-for authorization.
+                gate_grant_minted: true,
+            }),
             "a headless auto-answer must report retry-in-place, not fall through to park"
         );
 
@@ -2750,8 +2842,14 @@ mod tests {
         )
         .await;
         assert_eq!(
-            outcome, "budget gate detail",
+            outcome.detail, "budget gate detail",
             "a headless auto-answer must report retry-in-place, not fall through unanswered"
+        );
+        // Y4a: the coordinator's own turn loop only retries when this is set.
+        assert!(
+            outcome.gate_grant_minted,
+            "a coordinator whose gate was auto-granted must be told a spendable \
+             reservation now exists, so its CURRENT turn can retry"
         );
 
         let pool = manager.storage().pool().await.unwrap().clone();
@@ -2784,6 +2882,97 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(state, "pending");
+    }
+
+    /// Y4a pin (harness loop, 2026-09-10, from Lane A12's M12 forensics): a
+    /// coordinator's auto-granted gate must be reported as `gate_grant_minted`
+    /// AND that grant must actually authorize a retry under the SAME
+    /// `invocation_id`, within the SAME turn.
+    ///
+    /// This is the session-scoped mirror of part (c) of
+    /// `gate_auto_answer_retries_in_place_without_requeuing_the_goal`, and it
+    /// is the coordinator's case that A12 traced: a worker gets a later turn
+    /// in which `reusable_gate_grant_invocation_id` can pick the grant up, but
+    /// a coordinator's turn ending IS the run ending, so a grant it never
+    /// consumes in-turn is money paid for nothing (fx01's correct worker
+    /// commit never surfaced; fx09 the same; fx07 truncated). Pre-Y4a
+    /// `session_scoped_provider_authorization_failure` returned a bare
+    /// `String`, so the turn loop could not distinguish this case from a park
+    /// and always emitted "provider spend could not be authorized" —
+    /// the `gate_grant_minted` assertion below would not compile against it.
+    #[tokio::test]
+    async fn session_scoped_gate_grant_authorizes_a_retry_under_the_same_invocation_id() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture.clone(), true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+        assert_eq!(
+            goal_id(&session.extension_data),
+            None,
+            "setup: a coordinator session carries no goal_id"
+        );
+
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let outcome = session_scoped_provider_authorization_failure(
+            &manager,
+            &session,
+            &invocation_id,
+            &failure,
+            "budget gate detail".to_string(),
+            true, // headless
+            // F3: the grant is minted for THIS provider/model — the same
+            // identity the retry below reserves under.
+            fixture.get_name(),
+            &fixture.get_model_config().model_name,
+        )
+        .await;
+        assert!(
+            outcome.gate_grant_minted,
+            "the handler must report the grant it just minted, or the turn loop \
+             has no way to know an in-turn retry is authorized"
+        );
+
+        // The retry the turn loop now performs: the SAME invocation_id, exactly
+        // once. It must succeed off the idempotent `AlreadyReserved` path and
+        // raise no second gate decision.
+        let decisions_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let retry = reserve_provider_invocation_for_model(
+            Arc::clone(&manager),
+            &session,
+            fixture.get_name(),
+            fixture.cost_tier(),
+            fixture.get_model_config(),
+            fixture.retry_config().max_physical_attempts(),
+            invocation_id.clone(),
+        )
+        .await;
+        assert!(
+            retry.is_ok(),
+            "the single retry must reuse the granted reservation, not re-hit the gate: {retry:?}"
+        );
+        assert_eq!(
+            retry.unwrap().reservation_id.as_deref(),
+            Some(format!("invocation:{invocation_id}").as_str()),
+            "the retry must land on the very reservation the gate paid for"
+        );
+        let decisions_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            decisions_before, decisions_after,
+            "the retry must not create a second gate decision for the same reservation"
+        );
     }
 
     /// I1 pin: a coordinator that keeps hitting the same gate on successive
@@ -2820,7 +3009,9 @@ mod tests {
             "glm-4.7",
         )
         .await;
-        assert_eq!(first, "budget gate detail");
+        assert_eq!(first.detail, "budget gate detail");
+        // Y4a: nothing was granted, so nothing may be retried.
+        assert!(!first.gate_grant_minted);
         let open_after_first: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM decisions WHERE goal_id IS NULL AND kind = 'choice' \
              AND status = 'open'",
@@ -2873,7 +3064,7 @@ mod tests {
             "glm-4.7",
         )
         .await;
-        assert_eq!(second, "budget gate detail");
+        assert_eq!(second.detail, "budget gate detail");
 
         let total_reservation_gate_decisions: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM decisions WHERE goal_id IS NULL AND kind = 'choice' \
@@ -2916,7 +3107,9 @@ mod tests {
             "glm-4.7",
         )
         .await;
-        assert_eq!(outcome, "budget gate detail");
+        assert_eq!(outcome.detail, "budget gate detail");
+        // Y4a: a non-headless gate is for a human — never an in-turn retry.
+        assert!(!outcome.gate_grant_minted);
 
         let pool = manager.storage().pool().await.unwrap().clone();
         let any_decision: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
@@ -2989,8 +3182,14 @@ mod tests {
         )
         .await;
         assert_eq!(
-            outcome, "budget gate detail",
+            outcome.detail, "budget gate detail",
             "the call still ends the turn honestly, it just must not auto-answer"
+        );
+        // Y4a: the cap escalates instead of auto-answering, so no reservation
+        // was minted and the coordinator must NOT retry in place.
+        assert!(
+            !outcome.gate_grant_minted,
+            "a capped session got no grant, so nothing authorizes an in-turn retry"
         );
 
         // No reservation was granted under this call's own invocation_id —
@@ -3067,7 +3266,10 @@ mod tests {
         .await;
         assert_eq!(
             outcome,
-            Some("budget gate detail".to_string()),
+            Some(ProviderAuthorizationOutcome {
+                detail: "budget gate detail".to_string(),
+                gate_grant_minted: true,
+            }),
             "setup: the gate must have been headlessly auto-answered"
         );
         invocation_id
