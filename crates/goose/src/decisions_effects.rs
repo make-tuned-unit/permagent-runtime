@@ -465,13 +465,57 @@ async fn land_approved_goal(
         return (None, None);
     };
     let project_id = project_id.unwrap_or(card.project_id.as_str()).to_string();
-    let Some(root) = crate::projects::get_project_by_id_or_slug(pool, &project_id)
+    let configured_root = crate::projects::get_project_by_id_or_slug(pool, &project_id)
         .await
         .ok()
         .flatten()
-        .and_then(|project| project.root_path)
+        .and_then(|project| project.root_path);
+
+    // The worker committed nothing landable at all (no dispatch evidence, or
+    // an empty commit range) — unchanged from before this lane: silence here
+    // is correct, there is genuinely nothing to report on.
+    let Some((worktree_path, _head_commit)) =
+        crate::goal_landing::evidence_head_and_worktree(&card.metadata_json)
     else {
         return (None, None);
+    };
+
+    // R1 (harness loop, Lane D1, from Lane F8 forensics 2026-09-10): a
+    // project seeded with no `root_path` (the eval harness's default
+    // `personal` project, `session/spectral_schema.rs:610`, and any project
+    // created with no local folder) used to make this function return
+    // `(None, None)` right here — landing silently no-op'd, `Review ->
+    // Complete` proceeded unconditionally, and the card read as landed while
+    // the trunk never moved (F8's fx02/fx03: two genuinely-correct,
+    // oracle-passing fixes — 7/7 and 13/13 tests re-run against the pristine
+    // hidden oracle — lost this way, 100%-reproducing). When the project
+    // itself doesn't know its root, fall back to what the goal's own
+    // worktree knows about its git baseline before giving up.
+    let root = match configured_root {
+        Some(root) => Some(root),
+        None => crate::goal_landing::resolve_primary_checkout_from_worktree(&worktree_path).await,
+    };
+
+    let Some(root) = root else {
+        // There IS real work to land (we already confirmed a head commit and
+        // a non-empty commit range above) but no root path could be
+        // resolved by any means — never silently return `(None, None)` here.
+        // Record the honest failure on the card and the approval response,
+        // exactly as `goal_landing::land`'s own refusals do.
+        let outcome = crate::goal_landing::LandOutcome::Skipped(format!(
+            "project '{project_id}' has no root_path and the goal's own worktree \
+             ('{worktree_path}') could not resolve a primary checkout via git — \
+             landing needs a repo root to fast-forward onto, not silence"
+        ));
+        tracing::warn!(
+            goal_id,
+            project_id = %project_id,
+            worktree_path = %worktree_path,
+            "land_approved_goal: no landing target could be resolved; recording an \
+             honest failure instead of the old silent no-op"
+        );
+        persist_landing_outcome(pool, goal_id, &card, &outcome).await;
+        return (Some((project_id, outcome)), None);
     };
 
     let Some(req) =
@@ -492,6 +536,33 @@ async fn land_approved_goal(
     // under the worker (e.g. a second goal in the same roadmap landing
     // first). Persist it onto the card so those readers can gate on whether
     // landing actually happened, not merely whether it was attempted.
+    persist_landing_outcome(pool, goal_id, &card, &outcome).await;
+
+    let warning = if let crate::goal_landing::LandOutcome::NeedsMerge { branch, trunk } = &outcome {
+        ensure_needs_merge_decision(pool, goal_id, &card.title, &card.project_id, branch, trunk)
+            .await
+            .err()
+            .map(|error| format!("could not create manual-merge inbox item: {}", error))
+    } else {
+        None
+    };
+
+    (Some((project_id, outcome)), warning)
+}
+
+/// Shared `dispatch_evidence.landing` persistence (YF2, G6 review, Lane
+/// Y-fix 2026-09-09) — factored out (R1, Lane D1) so both the ordinary git
+/// fast-forward path and the "no landing target resolvable" honest-failure
+/// path leave the same durable trail for `goal_landed_head_commit`/the CLI
+/// drain summary to read back later. Best-effort: a metadata-write failure
+/// is logged, never propagated — the landing itself (or its refusal) has
+/// already happened by the time this runs.
+async fn persist_landing_outcome(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+    card: &crate::cards::Card,
+    outcome: &crate::goal_landing::LandOutcome,
+) {
     let landing_json = serde_json::json!({
         "outcome": outcome.outcome_key(),
         "landed_head": outcome.landed_head(),
@@ -520,17 +591,6 @@ async fn land_approved_goal(
             );
         }
     }
-
-    let warning = if let crate::goal_landing::LandOutcome::NeedsMerge { branch, trunk } = &outcome {
-        ensure_needs_merge_decision(pool, goal_id, &card.title, &card.project_id, branch, trunk)
-            .await
-            .err()
-            .map(|error| format!("could not create manual-merge inbox item: {}", error))
-    } else {
-        None
-    };
-
-    (Some((project_id, outcome)), warning)
 }
 
 /// Registered program successors may start only after the approved source is
@@ -2732,6 +2792,278 @@ mod tests {
         assert_eq!(
             landing.get("landed_head").and_then(|v| v.as_str()),
             Some(head.as_str())
+        );
+    }
+
+    /// R1 (harness loop, Lane D1, from Lane F8 forensics): the eval harness's
+    /// default `personal` project (and any project created with no local
+    /// folder) is seeded with `root_path` NULL
+    /// (`session/spectral_schema.rs:610`). Before this lane,
+    /// `land_approved_goal` bailed to `(None, None)` right there and the
+    /// approval proceeded to Complete having landed nothing — F8 proved two
+    /// of five measured fixtures were genuinely-correct, oracle-passing
+    /// fixes lost exactly this way. Pre-fix, this test fails: `HEAD` stays
+    /// on the base commit and `dispatch_evidence/landing` never exists.
+    #[tokio::test]
+    async fn a_project_with_no_root_path_lands_via_the_goal_worktree_git_baseline() {
+        let (repo, head) = repo_with_finished_goal_branch();
+
+        // A REAL linked worktree at `goal/run-1`, mirroring exactly what
+        // `goal_engine::create_goal_worktree` does at dispatch time, so
+        // `resolve_primary_checkout_from_worktree`'s `git rev-parse
+        // --git-common-dir` has a genuine worktree to resolve.
+        let worktrees_root = tempfile::tempdir().unwrap();
+        let worktree_path = worktrees_root.path().join("run-1");
+        git_in(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "goal/run-1",
+            ],
+        );
+
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "No root_path project".to_string(),
+                root_path: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            crate::projects::get_project(&pool, &project.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .root_path
+                .is_none(),
+            "precondition: this project must have no root_path, matching the eval seed"
+        );
+
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let goal = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Finished goal, no project root".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 0,
+                    "goal_state": "review",
+                    "dispatch_evidence": {
+                        "worktree_path": worktree_path.to_string_lossy(),
+                        "head_commit": head,
+                        "commits": ["abc123 the work"],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(project.id.clone()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+
+        let (effect, _warning) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git_in(repo.path(), &["rev-parse", "HEAD"]),
+            head,
+            "a NULL root_path must not silently no-op landing when the goal's own \
+             worktree can resolve its primary checkout via git"
+        );
+        let effect = effect.unwrap_or_default();
+        assert!(
+            effect.contains("main"),
+            "the landing outcome must be reported, not left silent: {effect}"
+        );
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = card
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect(
+                "a NULL root_path must not skip persisting the landing outcome onto \
+                 dispatch_evidence",
+            );
+        assert_eq!(
+            landing.get("outcome").and_then(|v| v.as_str()),
+            Some("landed"),
+            "outcome: {landing:?}"
+        );
+        assert_eq!(
+            landing.get("landed_head").and_then(|v| v.as_str()),
+            Some(head.as_str())
+        );
+    }
+
+    /// R1's second half: when landing genuinely cannot proceed (no
+    /// `root_path` AND the worktree itself is gone/unresolvable — the reaper
+    /// already swept it, or the path was never real), `land_approved_goal`
+    /// must record an honest failure outcome, never the old silent
+    /// `(None, None)`. Pre-fix, this test's `dispatch_evidence/landing`
+    /// assertion fails outright (the key never exists) and the approval
+    /// response carries no landing information at all.
+    #[tokio::test]
+    async fn a_project_with_no_root_path_records_an_honest_failure_when_it_genuinely_cannot_land() {
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "No root_path, no resolvable worktree".to_string(),
+                root_path: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let goal = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Finished goal, unresolvable landing target".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 0,
+                    "goal_state": "review",
+                    "dispatch_evidence": {
+                        // Never a real git worktree — the reaper already
+                        // swept it, or (as in every eval-seeded fixture)
+                        // there never was a project root to branch it from.
+                        "worktree_path": "/no/such/permagent-d1-worktree-run-1",
+                        "head_commit": "deadbeefcafe",
+                        "commits": ["abc123 the work"],
+                        "verdict": {"status": "pass"},
+                    },
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(project.id.clone()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+
+        let (effect, _warning) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+
+        let effect = effect.unwrap_or_default();
+        assert!(
+            effect.contains("NOT landed"),
+            "an unresolvable landing target must be reported as a real failure, \
+             not silently dropped: {effect}"
+        );
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = card
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect(
+                "a genuinely-unlandable goal must still get an honest \
+                 dispatch_evidence.landing entry, never silence",
+            );
+        assert_ne!(
+            landing.get("outcome").and_then(|v| v.as_str()),
+            Some("landed"),
+            "must never read as landed when nothing was landed: {landing:?}"
+        );
+        assert!(
+            landing
+                .get("describe")
+                .and_then(|v| v.as_str())
+                .is_some_and(|d| d.contains("root_path")),
+            "the recorded reason must name what actually went wrong: {landing:?}"
         );
     }
 

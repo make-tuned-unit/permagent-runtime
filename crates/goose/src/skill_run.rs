@@ -630,6 +630,7 @@ async fn file_check_approval_decision(
             minting_session_id: req.session_id.clone(),
         }),
         roadmap_approval: None,
+        reservation_gate: None,
     };
 
     let headline =

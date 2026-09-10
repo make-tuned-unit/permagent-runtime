@@ -3586,7 +3586,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             answer_note   TEXT,
             answer_choice_id TEXT,
             answer_input  TEXT,
-            acted_by      TEXT CHECK (acted_by IN ('jesse','henry-policy','system','auto-mode-launch')),
+            acted_by      TEXT CHECK (acted_by IN ('jesse','henry-policy','system','auto-mode-launch','headless_policy')),
             created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             resolved_at   TEXT,
             CHECK (status != 'answered'
@@ -3626,16 +3626,22 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     // `acted_by` CHECK to admit 'auto-mode-launch' (harness loop R1: an
     // unattended GooseMode::Auto session pre-approving its own roadmap
     // proposal via `decisions::auto_approve_roadmap_launch`, since no human
-    // exists to answer the Decision Inbox item in that mode).
+    // exists to answer the Decision Inbox item in that mode) AND
+    // 'headless_policy' (harness loop R2, Lane D1: a headless
+    // `HeadlessDispatchPolicy` run auto-answering a reservation/spend-
+    // authorization gate within budget via
+    // `decisions::auto_approve_reservation_gate` — a distinct actor from
+    // 'auto-mode-launch' on purpose, see that constant's own doc comment).
     // SQLite cannot ALTER a CHECK, so an older table is rebuilt in place.
     // FK-safe: nothing references `decisions` via a foreign key (decision_audit
     // stores a plain TEXT id; the complete-guard trigger resolves by name after
     // the rename). Gated on the widened constraints' marker tokens, so it runs
     // at most once per widening: a table missing 'enrichment_proposal', the
     // 'edit' answer value, 'tool_approval', 'file_to_project', 'session_gate',
-    // OR the 'auto-mode-launch' acted_by value is rebuilt to the current DDL,
-    // which widens all of them together (an older DB only ever holds legacy
-    // values, all valid under the new CHECK, so the row copy is lossless).
+    // OR the 'auto-mode-launch'/'headless_policy' acted_by values is rebuilt
+    // to the current DDL, which widens all of them together (an older DB
+    // only ever holds legacy values, all valid under the new CHECK, so the
+    // row copy is lossless).
     let decisions_ddl: Option<String> =
         sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='table' AND name='decisions'")
             .fetch_optional(&mut *tx)
@@ -3653,6 +3659,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 || !sql.contains("regression_proposal")
                 || !sql.contains("council_action")
                 || !sql.contains("auto-mode-launch")
+                || !sql.contains("headless_policy")
         })
         .unwrap_or(false)
     {
@@ -3694,7 +3701,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 answer_note   TEXT,
                 answer_choice_id TEXT,
                 answer_input  TEXT,
-                acted_by      TEXT CHECK (acted_by IN ('jesse','henry-policy','system','auto-mode-launch')),
+                acted_by      TEXT CHECK (acted_by IN ('jesse','henry-policy','system','auto-mode-launch','headless_policy')),
                 created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
                 resolved_at   TEXT,
                 CHECK (status != 'answered'

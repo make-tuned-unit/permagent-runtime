@@ -1265,6 +1265,7 @@ async fn park_for_command_approval(
             minting_session_id: None,
         }),
         roadmap_approval: None,
+        reservation_gate: None,
     };
 
     let headline = permagent::decisions::truncate_for_headline(&format!(

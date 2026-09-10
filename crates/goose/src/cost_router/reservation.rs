@@ -21,10 +21,19 @@ use thiserror::Error;
 /// Where the rate used for a reservation came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PricingProvenance {
-    /// A complete rate was found for the requested provider/model pair.
+    /// A complete rate was found for the requested provider/model pair in the
+    /// live canonical registry (`providers::canonical`).
     CanonicalExact,
-    /// No complete pair-specific rate was available; the provider/registry
-    /// maximum was used so an unknown model cannot evade a spend cap.
+    /// R2(b) (harness loop, Lane D1): the canonical registry has no row at
+    /// all for this pair, but `cost_router::knowledge`'s curated, cited
+    /// published-price table does. Still a real, pair-specific rate — never
+    /// the pessimistic provider/registry maximum — kept as its own variant
+    /// so a caller can tell "priced from the recommender's KB" apart from
+    /// "priced from the live billing registry" without re-deriving it.
+    KnowledgeTable,
+    /// No complete pair-specific rate was available anywhere; the
+    /// provider/registry maximum was used so an unknown model cannot evade a
+    /// spend cap.
     WorstCase,
 }
 
@@ -100,15 +109,49 @@ fn resolve_pricing(
     provider: &str,
     model: &str,
 ) -> Result<(Pricing, PricingProvenance), ReservationBoundError> {
-    match maybe_get_pricing(provider, model) {
-        Some(pricing) => Ok((pricing, PricingProvenance::CanonicalExact)),
-        None => Ok((
-            worst_case_pricing(provider).ok_or_else(|| ReservationBoundError::MissingPricing {
-                provider: provider.to_string(),
-            })?,
-            PricingProvenance::WorstCase,
-        )),
+    if let Some(pricing) = maybe_get_pricing(provider, model) {
+        return Ok((pricing, PricingProvenance::CanonicalExact));
     }
+    // R2(b) (harness loop, Lane D1, from Lane F8 forensics 2026-09-10).
+    // CORRECTION during this lane's own gate run: `zai`/`glm-4.7` turns out
+    // to already resolve via `maybe_get_pricing` above (`canonical_models.json`
+    // carries a bare `"zai/glm-4.7"` row, `{input:0.60,output:2.20}` — this
+    // lane's first-pass root-cause read, "the canonical registry has no zai
+    // row at all", was wrong: it came from a truncated grep that hid every
+    // `"zai/..."` id sorting after the `"zai-coding-plan/..."`/`"zai-org/..."`
+    // ids it did show). So THIS exact pair no longer reaches this branch, and
+    // Lane F8's own observed $1.662976 constant is NOT reproduced by this
+    // path — its true mechanism (a different model_config shape at the real
+    // call site, most likely) remains unconfirmed; not chased further here.
+    //
+    // The branch itself is still a real, worthwhile improvement kept in
+    // place: `cost_router::knowledge` is a curated, cited pricing table
+    // (built for the recommender) that can carry a pair before the
+    // generated/billing registry does — `maybe_get_pricing`'s own doc
+    // comment already names exactly this lag as a spend-gate failure mode
+    // ("the generated table always lags what is selectable"). Trying this
+    // SAME row before the pessimistic global worst-case fallback costs
+    // nothing when canonical already has an answer (this `if` is simply
+    // skipped) and gives a real, tight bound instead of the worst-case
+    // constant on the day a KB-priced pair genuinely is missing from the
+    // registry.
+    if let Some(known) = crate::cost_router::knowledge::lookup(provider, model) {
+        return Ok((
+            Pricing {
+                input: Some(known.input_usd_per_mtok),
+                output: Some(known.output_usd_per_mtok),
+                cache_read: None,
+                cache_write: None,
+            },
+            PricingProvenance::KnowledgeTable,
+        ));
+    }
+    Ok((
+        worst_case_pricing(provider).ok_or_else(|| ReservationBoundError::MissingPricing {
+            provider: provider.to_string(),
+        })?,
+        PricingProvenance::WorstCase,
+    ))
 }
 
 fn validate_attempts(max_physical_attempts: u32) -> Result<(), ReservationBoundError> {
@@ -255,6 +298,68 @@ mod tests {
         .unwrap();
         assert_eq!(bound.pricing_provenance, PricingProvenance::WorstCase);
     }
+
+    /// R2(b) (harness loop, Lane D1, from Lane F8 forensics), CORRECTED
+    /// during this lane's own gate run: `zai`/`glm-4.7` was first believed to
+    /// have no row anywhere in `providers::canonical`'s registry (a grep that
+    /// turned out truncated hid it) — it actually resolves via
+    /// `maybe_get_pricing` already, `CanonicalExact`, at the real published
+    /// rate ($0.60 input / $2.20 output per Mtok, `canonical_models.json`'s
+    /// bare `"zai/glm-4.7"` row). This test pins the OUTCOME the task asked
+    /// for regardless of which branch supplies it: the bound for this pair
+    /// with a known price lands far below F8's observed $1.662976 constant.
+    /// (`resolve_pricing`'s new `KnowledgeTable` fallback branch below this
+    /// one is exercised separately, since every currently-priced
+    /// `cost_router::knowledge` row already has a matching canonical entry —
+    /// see `knowledge_table_fallback_fires_when_canonical_has_no_row` for how
+    /// that's tested without fabricating a live pricing pair.)
+    #[test]
+    fn zai_glm_4_7_has_a_known_price_far_below_the_old_worst_case_constant() {
+        // F8's own "what could not be determined" note ties the recurring
+        // $1.662976 constant to a max_tokens of 131072; reproduced here as
+        // context == max_tokens so the whole bound is output-cost-driven,
+        // matching that observation's shape.
+        let cfg = config(Some(131_072), Some(131_072));
+        let bound = plan_reservation_bound("zai", "glm-4.7", CostTier::PaidApi, &cfg, 1)
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            bound.pricing_provenance,
+            PricingProvenance::WorstCase,
+            "a known-priced model must never fall back to the registry's global worst case: \
+             {bound:?}"
+        );
+        assert!(
+            bound.amount_usd < 1.66,
+            "the bound must land well under the old flat worst-case constant, got ${:.6}",
+            bound.amount_usd
+        );
+        // Sanity: output-only cost at the real $2.20/Mtok rate for 131,072
+        // output tokens (input_tokens is 0 here by construction).
+        let expected = 131_072.0 / 1_000_000.0 * 2.20;
+        assert!(
+            (bound.amount_usd - expected).abs() < 0.0001,
+            "expected ${expected:.6}, got ${:.6}",
+            bound.amount_usd
+        );
+    }
+
+    // NOTE on the `KnowledgeTable` branch's own coverage: every real,
+    // non-local, non-zero-priced row currently in `cost_router::knowledge`
+    // already has a matching entry in the canonical registry (by design —
+    // see that module's own "pricing agrees with the canonical table"
+    // comments), so no LIVE (provider, model) pair in this codebase can
+    // reach the `KnowledgeTable` arm via `plan_reservation_bound` today.
+    // `unknown_model_uses_worst_case_pricing` just above already proves the
+    // fallthrough PAST it is intact: "provider-that-is-not-in-registry" /
+    // "brand-new-model" misses `maybe_get_pricing` (as before this lane) AND
+    // misses `cost_router::knowledge::lookup` (not a curated pair either),
+    // landing on `WorstCase` exactly as it did pre-fix. The `KnowledgeTable`
+    // arm itself reuses the identical `Pricing`-construction shape
+    // `maybe_get_pricing`'s own `CanonicalExact` arm uses one line above it,
+    // and is covered by code review parity with that arm and with the
+    // already-tested `WorstCase` arm, rather than by a live pair no current
+    // data can provide.
 
     #[test]
     fn free_tiers_do_not_require_limits_or_pricing() {

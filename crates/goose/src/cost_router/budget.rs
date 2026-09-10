@@ -320,6 +320,12 @@ pub fn gate_choice_payload(scope: BudgetScope, spent: f64, increment: f64) -> Ch
         proposal: None,
         check_approval: None,
         roadmap_approval: None,
+        // This is the historical SETTLED-spend gate, not the reservation
+        // gate `reservation_gate_decision_request` builds below — leaving
+        // this `None` is what keeps `auto_approve_reservation_gate` from
+        // ever matching it, even though the option ids happen to be
+        // identical.
+        reservation_gate: None,
     }
 }
 
@@ -410,6 +416,18 @@ pub fn reservation_gate_decision_request(
             proposal: None,
             check_approval: None,
             roadmap_approval: None,
+            // R2 (harness loop, Lane D1): the typed settlement evidence the
+            // headless auto-answer path (`decisions::auto_approve_reservation_gate`)
+            // reads instead of re-parsing `detail`'s prose, and the marker
+            // that shape-scopes that auto-answer to EXACTLY this kind of
+            // gate — never an arbitrary `choice` decision.
+            reservation_gate: Some(decisions::ReservationGatePayload {
+                scope: scope.word().to_string(),
+                settled_usd,
+                held_usd,
+                requested_usd,
+                ceiling_usd,
+            }),
         })
         .unwrap_or_default(),
         ..Default::default()

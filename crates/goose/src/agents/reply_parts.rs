@@ -194,6 +194,12 @@ impl Agent {
             .is_some_and(|decision| {
                 !is_gate || decision.headline.contains("authorization needs approval")
             });
+        // R2 (harness loop, Lane D1, from Lane F8 forensics): the decision id
+        // this call actually resolved onto — freshly created, or the one
+        // already open from a raced prior attempt — so a headless run can
+        // try to auto-answer it below. `None` whenever nothing gate-shaped
+        // exists yet (a non-gate `unblock` decision, or the create failed).
+        let mut gate_decision_id: Option<String> = None;
         if !already_open {
             let request = if let ProviderAuthorizationFailure::NeedsGate {
                 scope,
@@ -242,8 +248,94 @@ impl Agent {
                     ..Default::default()
                 }
             };
-            if let Err(error) = crate::decisions::create_decision(&pool, request).await {
-                tracing::error!(goal_id = %card_id, "could not create provider budget decision: {error}");
+            match crate::decisions::create_decision(&pool, request).await {
+                Ok(created) => {
+                    if is_gate {
+                        gate_decision_id = Some(created.id);
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(goal_id = %card_id, "could not create provider budget decision: {error}");
+                }
+            }
+        } else if is_gate {
+            gate_decision_id =
+                crate::decisions::find_open_decision_for_goal(&pool, &card_id, "choice")
+                    .await
+                    .ok()
+                    .flatten()
+                    .filter(|decision| decision.headline.contains("authorization needs approval"))
+                    .map(|decision| decision.id);
+        }
+
+        // R2 (harness loop, Lane D1, from Lane F8 forensics 2026-09-10): fx01
+        // stalled behind exactly this gate forever with no auto-answer path
+        // — only `roadmap_create`/`approve_review` had one. Give a headless
+        // Auto run (a `HeadlessDispatchPolicy` installed — checked via the
+        // same public seam the CLI's own drain summary uses,
+        // `headless_auto_land_status`, which is `Some` iff a headless policy
+        // exists for this process, whatever its `auto_land` value) one
+        // bounded, shape-scoped chance to sail through before parking.
+        // `auto_approve_reservation_gate` re-validates the request against
+        // the run's real hard ceiling itself — this call site trusts nothing
+        // beyond "try it, see if it was accepted". On success the goal is
+        // REQUEUED for a fresh attempt (same convention as every other
+        // "retriable failure within budget" path in this codebase —
+        // `handle_goal_completion`'s own, `attempt_count` preserved because
+        // the attempt was already consumed at dispatch) instead of parked;
+        // any refusal (not headless, past budget, already resolved by a
+        // human) falls straight through to the unchanged park path below.
+        if let Some(decision_id) = gate_decision_id.as_deref() {
+            let headless =
+                crate::agents::platform_extensions::orchestrator::headless_auto_land_status(
+                    &self.config.session_manager,
+                )
+                .await
+                .is_some();
+            if headless {
+                match crate::decisions::auto_approve_reservation_gate(&pool, decision_id).await {
+                    Ok(_) => {
+                        let attempt_count = crate::cards::get_card(&pool, &card_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|card| {
+                                card.metadata_json
+                                    .get("attempt_count")
+                                    .and_then(|value| value.as_u64())
+                            })
+                            .unwrap_or(0);
+                        match crate::goal_transition::requeue_goal(
+                            &pool,
+                            &card_id,
+                            crate::decisions::ACTOR_HEADLESS_POLICY,
+                            attempt_count,
+                            "provider authorization auto-approved within budget by headless \
+                             policy; retrying",
+                        )
+                        .await
+                        {
+                            Ok(()) => return detail,
+                            Err(error) => {
+                                tracing::warn!(
+                                    goal_id = %card_id,
+                                    decision_id,
+                                    "headless reservation-gate auto-answer succeeded but the \
+                                     goal could not be requeued ({error:?}); falling through to \
+                                     park"
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::info!(
+                            goal_id = %card_id,
+                            decision_id,
+                            "headless reservation-gate auto-answer did not apply ({error:?}); \
+                             leaving the gate for a human"
+                        );
+                    }
+                }
             }
         }
         if let Err(error) = crate::goal_transition::park_goal(

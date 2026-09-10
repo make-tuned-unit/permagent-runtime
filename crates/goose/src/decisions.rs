@@ -44,6 +44,23 @@ pub const ACTOR_SYSTEM: &str = "system";
 /// or presented for consumption by an interactive Approve/Chat session.
 pub const ACTOR_AUTO_LAUNCH: &str = "auto-mode-launch";
 
+/// Attribution for a reservation/spend-authorization `choice` gate answered
+/// automatically by an unattended headless `HeadlessDispatchPolicy` run
+/// (harness R2 repair, Lane D1, from Lane F8 forensics 2026-09-10: fx01
+/// stalled behind exactly this gate with no auto-answer path). Distinct from
+/// [`ACTOR_AUTO_LAUNCH`] on purpose — a spend authorization is a materially
+/// different kind of unattended decision than "launch the roadmap I already
+/// approved by starting this session" (it moves real dollars, is answered
+/// only after a fresh, self-contained budget check inside
+/// [`auto_approve_reservation_gate`], and needs its own line in an audit
+/// trail rather than being folded into the launch actor's).
+///
+/// Deliberately NOT in [`VALID_ACTORS`], same reasoning as
+/// [`ACTOR_AUTO_LAUNCH`]: usable only through
+/// [`auto_approve_reservation_gate`], never through the general
+/// [`answer_decision`]/[`answer_decision_as_session`] family.
+pub const ACTOR_HEADLESS_POLICY: &str = "headless_policy";
+
 const VALID_ACTORS: &[&str] = &[ACTOR_JESSE, ACTOR_HENRY, ACTOR_SYSTEM];
 // `edit` = approve-with-edits: an acceptance that ALSO carries a revised draft
 // in `answer_input` (the original lives in `payload.draft`). The delta is
@@ -270,6 +287,33 @@ pub struct ChoicePayload {
     /// wire-compatible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roadmap_approval: Option<RoadmapApprovalPayload>,
+    /// R2 (harness loop, Lane D1): set only by
+    /// `cost_router::budget::reservation_gate_decision_request`. Typed
+    /// rather than smuggled through `detail`'s prose (same reasoning as
+    /// [`CheckApprovalPayload`]'s own doc comment) — the headless
+    /// auto-answer path (`auto_approve_reservation_gate`) needs the real
+    /// settlement numbers to decide whether the request is still within
+    /// budget, not a sentence written for a human to read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservation_gate: Option<ReservationGatePayload>,
+}
+
+/// The settlement evidence behind one reservation/spend-authorization gate:
+/// what was already settled, what is currently held by in-flight calls, what
+/// this specific call is asking to reserve, and the GATE-band ceiling that
+/// firing this decision crossed. `scope` is kept as a plain string
+/// (`"task"`/`"session"`, [`crate::cost_router::budget::BudgetScope::word`]'s
+/// output) rather than that enum type directly, so this module never has to
+/// import a type from `cost_router` just to describe one field — `decisions`
+/// stays the lower layer `cost_router::budget` already depends on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReservationGatePayload {
+    pub scope: String,
+    pub settled_usd: f64,
+    pub held_usd: f64,
+    pub requested_usd: f64,
+    pub ceiling_usd: f64,
 }
 
 /// The Tier-2 card's subject: one command the approval ladder refused to run.
@@ -2494,6 +2538,186 @@ pub async fn auto_approve_roadmap_launch(
     Ok((updated, proof))
 }
 
+/// Auto-answer a JUST-CREATED reservation/spend-authorization `choice` gate
+/// on behalf of an unattended headless `HeadlessDispatchPolicy` run (harness
+/// R2 repair, Lane D1, from Lane F8 forensics 2026-09-10 — fx01 stalled
+/// behind exactly this decision, `cost_router::budget::reservation_gate_decision_request`,
+/// with no auto-answer path at all: only `roadmap_create` and
+/// `approve_review` had one). Same single-use, session-attributed shape as
+/// [`auto_approve_roadmap_launch`]/[`auto_approve_headless_goal_review`], but
+/// narrower still — this is the one `choice` shape allowed to auto-answer
+/// with anything other than a hardcoded literal, because the correct answer
+/// depends on real dollar arithmetic, not merely on the decision's kind.
+///
+/// Scope, in order (never a generic "answer everything"):
+///   - only a `choice` decision that is still `open`;
+///   - only when its payload carries [`ReservationGatePayload`] — set
+///     EXCLUSIVELY by `reservation_gate_decision_request`, so an unrelated
+///     `choice` decision that happens to reuse the same three option ids can
+///     never match this path;
+///   - only when the payload offers a `to_completion` option;
+///   - only when the SAME settled + held + requested total the gate itself
+///     was built from is still under the run's own HARD ceiling for that
+///     scope, read fresh from [`crate::cost_router::budget::load_budget_config`]
+///     — never a caller-supplied number, so nothing upstream of this
+///     function can talk it into answering past budget. `NeedsGate` (the
+///     origin of every decision this function will ever see) only ever
+///     fires strictly BETWEEN the softer GATE threshold and the HARD one —
+///     a total at or past HARD is `Refused`, a different, non-`choice`
+///     failure this function never sees — so this really is "still within
+///     the run's remaining authorized budget", not a rubber stamp.
+///
+/// Always answers `choice` / [`crate::cost_router::budget::GATE_OPTION_TO_COMPLETION`]
+/// ("lift the gate for this run") — never `increment` (raises a ceiling) or
+/// `stop` (halts work): both are decisions only a human should make.
+/// Attributes to [`ACTOR_HEADLESS_POLICY`] — a distinct actor from
+/// [`ACTOR_AUTO_LAUNCH`], also excluded from [`VALID_ACTORS`] — so a spend
+/// authorization auto-answer is never confused with, or reachable through
+/// the same forgery-proof path as, a launch/review auto-answer in the audit
+/// trail.
+pub async fn auto_approve_reservation_gate(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+) -> Result<(Decision, DecisionProof), AnswerError> {
+    let decision = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+    if decision.status != "open" {
+        return Err(AnswerError::AlreadyResolved(decision.status));
+    }
+    if decision.kind != "choice" {
+        return Err(AnswerError::Invalid(
+            "reservation-gate auto-answer only applies to 'choice' decisions".to_string(),
+        ));
+    }
+    let payload: ChoicePayload = serde_json::from_value(decision.payload.clone())
+        .map_err(|e| AnswerError::Db(format!("stored choice payload unreadable: {}", e)))?;
+    let Some(gate) = payload.reservation_gate.as_ref() else {
+        return Err(AnswerError::Invalid(
+            "reservation-gate auto-answer only applies to decisions carrying a \
+             reservation_gate payload"
+                .to_string(),
+        ));
+    };
+    if !payload
+        .options
+        .iter()
+        .any(|o| o.id == crate::cost_router::budget::GATE_OPTION_TO_COMPLETION)
+    {
+        return Err(AnswerError::Invalid(
+            "decision does not offer a 'to_completion' option".to_string(),
+        ));
+    }
+
+    let cfg = crate::cost_router::budget::load_budget_config();
+    let hard = match gate.scope.as_str() {
+        "task" => cfg.task.hard,
+        "session" => cfg.session.hard,
+        other => {
+            return Err(AnswerError::Invalid(format!(
+                "reservation-gate payload has an unrecognised scope '{other}'"
+            )));
+        }
+    };
+    let projected_total = gate.settled_usd + gate.held_usd + gate.requested_usd;
+    if !(projected_total.is_finite() && projected_total < hard) {
+        return Err(AnswerError::Invalid(format!(
+            "reservation-gate auto-answer refused: settled ${:.2} + held ${:.2} + requested \
+             ${:.2} = ${:.2} would reach or exceed the ${:.2} {} hard ceiling",
+            gate.settled_usd, gate.held_usd, gate.requested_usd, projected_total, hard, gate.scope
+        )));
+    }
+
+    let resolved_at = now_timestamp();
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    // Atomic open -> answered, same shape as `auto_approve_roadmap_launch`'s
+    // update: zero rows affected means we lost a race (e.g. a human answered
+    // first).
+    let result = sqlx::query(
+        "UPDATE decisions SET status = 'answered', answer = 'choice', answer_note = ?, \
+         answer_choice_id = ?, answer_input = NULL, acted_by = ?, resolved_at = ?, \
+         staged_answer_json = NULL \
+         WHERE id = ? AND status = 'open'",
+    )
+    .bind(format!(
+        "Auto-answered by headless policy: settled ${:.2} + held ${:.2} + requested ${:.2} \
+         is within the ${:.2} {} hard ceiling",
+        gate.settled_usd, gate.held_usd, gate.requested_usd, hard, gate.scope
+    ))
+    .bind(crate::cost_router::budget::GATE_OPTION_TO_COMPLETION)
+    .bind(ACTOR_HEADLESS_POLICY)
+    .bind(&resolved_at)
+    .bind(decision_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AnswerError::Db(e.to_string()))?;
+    if result.rows_affected() == 0 {
+        return Err(AnswerError::AlreadyResolved("answered".to_string()));
+    }
+
+    append_audit_tx_with_principal(
+        &mut tx,
+        decision_id,
+        decision.goal_id.as_deref(),
+        ACTOR_HEADLESS_POLICY,
+        decision.tier,
+        "choice",
+        None,
+        None,
+    )
+    .await
+    .map_err(AnswerError::Db)?;
+
+    if let Some(claim_key) = effect_outbox_claim_key(decision_id, &decision.kind) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO effect_outbox
+             (id, claim_key, kind, decision_id, payload_json, status)
+             VALUES (?, ?, ?, ?, '{}', 'pending')",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(claim_key)
+        .bind(&decision.kind)
+        .bind(decision_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    crate::events::emit(crate::events::decision_resolved(
+        decision_id,
+        &decision.kind,
+        "choice",
+        ACTOR_HEADLESS_POLICY,
+        decision.tier,
+    ));
+
+    let updated = get_decision(pool, decision_id)
+        .await
+        .map_err(AnswerError::Db)?
+        .ok_or(AnswerError::NotFound)?;
+
+    let proof = DecisionProof {
+        decision_id: decision_id.to_string(),
+        kind: decision.kind.clone(),
+        goal_id: decision.goal_id.clone(),
+        tier: decision.tier,
+        answer: "choice".to_string(),
+        acted_by: ACTOR_HEADLESS_POLICY.to_string(),
+        minting_session_id: None,
+    };
+
+    Ok((updated, proof))
+}
+
 /// Auto-answer a JUST-CREATED `approve_review` decision on behalf of an
 /// unattended headless Auto goal completion (harness loop, Lane V / V1) —
 /// the landing counterpart to [`auto_approve_roadmap_launch`] above, same
@@ -4289,6 +4513,177 @@ mod tests {
         assert!(
             matches!(err, AnswerError::Invalid(_)),
             "ACTOR_AUTO_LAUNCH must not be a valid actor for the general answer path: {:?}",
+            err
+        );
+    }
+
+    // ── R2: headless auto-answer for the reservation/spend-authorization
+    // gate (harness loop, Lane D1, from Lane F8 forensics) ──
+
+    fn reservation_gate_choice_decision(
+        scope: &str,
+        settled_usd: f64,
+        held_usd: f64,
+        requested_usd: f64,
+        ceiling_usd: f64,
+    ) -> NewDecision {
+        NewDecision {
+            kind: "choice".to_string(),
+            project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+            headline: Some(format!("{scope} budget authorization needs approval")),
+            detail: Some("Provider authorization is paused".to_string()),
+            payload: serde_json::json!({
+                "question": "Approve this provider authorization?",
+                "options": [
+                    {"id": "increment", "label": "Add to the budget and continue"},
+                    {"id": "to_completion", "label": "Continue to completion"},
+                    {"id": "stop", "label": "Stop now and keep all changes"}
+                ],
+                "default": "stop",
+                "reservation_gate": {
+                    "scope": scope,
+                    "settled_usd": settled_usd,
+                    "held_usd": held_usd,
+                    "requested_usd": requested_usd,
+                    "ceiling_usd": ceiling_usd,
+                }
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// R2 (harness loop, Lane D1, from Lane F8 forensics 2026-09-10): fx01
+    /// stalled behind exactly this decision shape forever — no auto-answer
+    /// path existed at all before this fix. Settled $0.09 + held $0.29 +
+    /// requested $0.29 = $0.67, well under the default $10 task hard
+    /// ceiling ([`crate::cost_router::budget::BudgetConfig::default`]) — a
+    /// genuinely affordable request must be answered `to_completion`
+    /// headlessly, never left open. Pre-fix, `auto_approve_reservation_gate`
+    /// does not exist and this test fails to compile.
+    #[tokio::test]
+    async fn auto_approve_reservation_gate_answers_to_completion_within_budget() {
+        let pool = test_pool().await;
+        let d = create_decision(
+            &pool,
+            reservation_gate_choice_decision("task", 0.09, 0.29, 0.29, 5.0),
+        )
+        .await
+        .unwrap();
+        assert_eq!(d.status, "open");
+        assert!(
+            d.acted_by.is_none(),
+            "no one has answered this decision yet"
+        );
+
+        let (answered, proof) = auto_approve_reservation_gate(&pool, &d.id).await.unwrap();
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.answer.as_deref(), Some("choice"));
+        assert_eq!(
+            answered.answer_choice_id.as_deref(),
+            Some(crate::cost_router::budget::GATE_OPTION_TO_COMPLETION),
+            "an affordable request must lift the gate, never 'stop' or 'increment'"
+        );
+        assert_eq!(
+            answered.acted_by.as_deref(),
+            Some(ACTOR_HEADLESS_POLICY),
+            "must attribute to the headless-policy actor, never a human or the launch actor"
+        );
+        assert_eq!(proof.acted_by(), ACTOR_HEADLESS_POLICY);
+        assert_eq!(proof.answer(), "choice");
+    }
+
+    /// The other half of R2's pinning test: a request that would reach or
+    /// exceed the run's own hard ceiling must NOT be auto-answered — the
+    /// decision stays open for a human, exactly as before this fix. Settled
+    /// $9.50 + held $0.30 + requested $0.30 = $10.10, at/over the default
+    /// $10 task hard ceiling.
+    #[tokio::test]
+    async fn auto_approve_reservation_gate_refuses_when_it_would_exceed_budget() {
+        let pool = test_pool().await;
+        let d = create_decision(
+            &pool,
+            reservation_gate_choice_decision("task", 9.50, 0.30, 0.30, 5.0),
+        )
+        .await
+        .unwrap();
+
+        let err = auto_approve_reservation_gate(&pool, &d.id)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AnswerError::Invalid(_)),
+            "must refuse rather than auto-answer past the hard ceiling: {:?}",
+            err
+        );
+
+        let still_open = get_decision(&pool, &d.id).await.unwrap().unwrap();
+        assert_eq!(
+            still_open.status, "open",
+            "a refused auto-answer must never mutate the decision"
+        );
+    }
+
+    /// Shape-scoping (never a generic "answer everything"): a `choice`
+    /// decision that reuses the exact same three option ids but carries no
+    /// `reservation_gate` payload — e.g. the historical settled-spend gate
+    /// ([`crate::cost_router::budget::gate_choice_payload`]), or an
+    /// unrelated hand-authored choice — must be rejected, not answered.
+    #[tokio::test]
+    async fn auto_approve_reservation_gate_is_scoped_to_the_reservation_gate_payload_only() {
+        let pool = test_pool().await;
+        let other_choice = NewDecision {
+            kind: "choice".to_string(),
+            project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+            headline: Some("session budget authorization needs approval".to_string()),
+            detail: Some("looks the part, but carries no reservation_gate payload".to_string()),
+            payload: serde_json::json!({
+                "question": "Approve?",
+                "options": [
+                    {"id": "increment", "label": "Add to the budget and continue"},
+                    {"id": "to_completion", "label": "Continue to completion"},
+                    {"id": "stop", "label": "Stop now and keep all changes"}
+                ],
+                "default": "stop"
+            }),
+            ..Default::default()
+        };
+        let d = create_decision(&pool, other_choice).await.unwrap();
+        let err = auto_approve_reservation_gate(&pool, &d.id)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AnswerError::Invalid(_)));
+
+        // Not a 'choice' decision at all.
+        let d2 = create_decision(&pool, valid_unblock()).await.unwrap();
+        let err2 = auto_approve_reservation_gate(&pool, &d2.id)
+            .await
+            .unwrap_err();
+        assert!(matches!(err2, AnswerError::Invalid(_)));
+    }
+
+    /// Defense in depth, same as `actor_auto_launch_is_rejected_by_the_general_answer_path`:
+    /// [`ACTOR_HEADLESS_POLICY`] must remain permanently unusable through the
+    /// general answer path.
+    #[tokio::test]
+    async fn actor_headless_policy_is_rejected_by_the_general_answer_path() {
+        let pool = test_pool().await;
+        let d = create_decision(
+            &pool,
+            reservation_gate_choice_decision("task", 0.09, 0.29, 0.29, 5.0),
+        )
+        .await
+        .unwrap();
+        let ans = DecisionAnswer {
+            answer: "choice".to_string(),
+            choice_id: Some(crate::cost_router::budget::GATE_OPTION_TO_COMPLETION.to_string()),
+            ..Default::default()
+        };
+        let err = answer_decision(&pool, &d.id, &ans, ACTOR_HEADLESS_POLICY)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AnswerError::Invalid(_)),
+            "ACTOR_HEADLESS_POLICY must not be a valid actor for the general answer path: {:?}",
             err
         );
     }

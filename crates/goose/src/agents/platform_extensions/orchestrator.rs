@@ -529,6 +529,63 @@ async fn resolve_decompose_project(
     }
 }
 
+/// R1(b) (harness loop, Lane D1, from Lane F8 forensics): seed the
+/// `root_path` of whatever project a headless session's own `create_roadmap`
+/// would resolve onto (the SAME cwd-then-`personal` resolution
+/// [`resolve_decompose_project`] uses), so the normal landing path —
+/// `decisions_effects::land_approved_goal` reading `project.root_path`
+/// straight off the row — works without ever reaching R1(a)'s worktree-git
+/// fallback. Before this, a headless coding-harness launch's roadmap always
+/// targeted the built-in `personal` project, seeded with `root_path` NULL by
+/// `session/spectral_schema.rs`'s schema default, and nothing in the launch
+/// path ever set it — confirmed identically NULL across all 5 of Lane F8's
+/// measured fixtures' databases.
+///
+/// Best-effort and idempotent by construction: only writes when the
+/// resolved project's `root_path` is still unset, so a project a human (or
+/// an earlier headless run reusing the same on-disk project) already pointed
+/// somewhere is never overwritten, and calling this twice for the same
+/// working dir is a harmless no-op the second time. Never fails the launch —
+/// a resolution or write error is logged and swallowed, exactly like every
+/// other best-effort startup step in this module.
+pub async fn ensure_headless_project_root_path(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    working_dir: &std::path::Path,
+) {
+    let project = match resolve_decompose_project(pool, Some(working_dir), None).await {
+        Ok((project, _)) => project,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                working_dir = %working_dir.display(),
+                "headless startup: could not resolve a project to seed root_path onto"
+            );
+            return;
+        }
+    };
+    if project.root_path.is_some() {
+        return;
+    }
+    let root = working_dir.to_string_lossy().into_owned();
+    if let Err(error) = crate::projects::update_project(
+        pool,
+        &project.id,
+        crate::projects::UpdateProject {
+            root_path: Some(Some(root.clone())),
+            ..Default::default()
+        },
+    )
+    .await
+    {
+        tracing::warn!(
+            project_id = %project.id,
+            root = %root,
+            %error,
+            "headless startup: could not seed the project's root_path"
+        );
+    }
+}
+
 /// M3-1(b) (harness loop): `create_roadmap`'s own success text used to say
 /// only how many cards were created and how many root goals dispatched —
 /// never the ids. A model that later needed to check on, or manually
@@ -4835,6 +4892,109 @@ impl OrchestratorClient {
         } else {
             false
         };
+
+        // R3 (harness loop, Lane D1, from Lane F8 forensics 2026-09-10): fx04
+        // stalled on `escalate{"Worker died mid-task - how should I proceed
+        // with fragile package implementation?"}` — a deliberately
+        // unanswerable, human-only decision by design
+        // (`record_escalation`'s own doc comment, M6's Defect #3) — for a
+        // narrow shape that never needed a human at all: an internal worker
+        // that silently exited with NO error and NO landing. This status
+        // read is exactly what fx04's coordinator consulted right before
+        // reaching for `escalate`, so intercept HERE, upstream of that call:
+        // the FIRST time a goal shows this exact shape, requeue and
+        // redispatch it once automatically (same worker roster key, pinned
+        // via `requested_worker` so ranked selection cannot reshuffle it —
+        // a FRESH session) instead of merely reporting the dead state.
+        // `retry_count` on the card gates this to exactly once — a SECOND
+        // occurrence of the identical shape falls through and reports
+        // normally, exactly as before, so the coordinator reaches for
+        // `escalate` unchanged and `record_escalation`'s no-auto-answer rule
+        // is never touched.
+        //
+        // Known limitation, surfaced rather than hidden: this redispatches
+        // through the ordinary `dispatch_goal_to` pipeline, which — like
+        // EVERY OTHER existing requeue-and-redispatch path in this codebase
+        // (e.g. `handle_goal_completion`'s "retriable failure within
+        // budget" arm) — branches a FRESH worktree off the project's
+        // current trunk HEAD rather than resuming the dead attempt's own
+        // worktree/branch. Any of the dead session's own commits remain
+        // reachable on `goal/<old-session-id>` (goal worktrees are never
+        // deleted — `create_goal_worktree`'s own doc comment) but are not
+        // automatically carried into the retry.
+        let retry_count = meta
+            .and_then(|m| m.get("retry_count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let engine_is_internal = {
+            let config = agent_identity::load_agent_config();
+            worker_key
+                .and_then(|key| config.workers.get(key))
+                .map(|worker| {
+                    matches!(
+                        worker.engine,
+                        agent_identity::WorkerEngineKind::InternalSubagent
+                    )
+                })
+                .unwrap_or(false)
+        };
+        if state == "in_progress"
+            && !session_alive
+            && !needs_human_attention
+            && last_error.is_none()
+            && worker_session_id.is_some()
+            && retry_count == 0
+            && engine_is_internal
+        {
+            let requested_worker = worker_key.map(|s| s.to_string());
+            let dead_session = worker_session_id.unwrap_or("?").to_string();
+            match goal_transition::requeue_goal_with_meta(
+                &pool,
+                &card_id,
+                decisions::ACTOR_SYSTEM,
+                attempt_count,
+                "worker exited with no error and no landing; auto-retrying once before \
+                 escalation (R3, harness loop Lane D1)",
+                &[("retry_count", serde_json::json!(1))],
+            )
+            .await
+            {
+                Ok(()) => {
+                    match self
+                        .dispatch_goal_to(&card_id, requested_worker.as_deref())
+                        .await
+                    {
+                        Ok(message) => {
+                            // `dispatch_goal_to` already invalidates the
+                            // Kanban cache on every outcome — no need to
+                            // repeat that here.
+                            return Ok(CallToolResult::success(vec![Content::text(format!(
+                                "Goal '{}' worker session '{}' exited with no error and no \
+                                 landing. Automatically retried once (retry_count=1) rather \
+                                 than escalate: {}",
+                                card.title, dead_session, message
+                            ))]));
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "permagentd::brain",
+                                goal_id = %card_id,
+                                "R3 auto-retry: requeue succeeded but redispatch failed \
+                                 ({error}); falling through to the normal status report"
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        goal_id = %card_id,
+                        "R3 auto-retry: could not requeue goal ({error:?}); falling through \
+                         to the normal status report"
+                    );
+                }
+            }
+        }
 
         let result = serde_json::json!({
             "card_id": card_id,
@@ -19822,6 +19982,193 @@ mod tests {
         assert!(
             status_err.contains(&real_root_id),
             "goal_status's error must also name a real known goal card id: {status_err}"
+        );
+    }
+
+    // ── R3: worker died with no error → one bounded retry before escalate
+    // (harness loop, Lane D1, from Lane F8 forensics) ──
+
+    /// A goal card in `in_progress` whose worker session died with NO error
+    /// and NO landing — the exact shape fx04's coordinator read (via
+    /// `goal_status`) right before reaching for `escalate`.
+    /// `worker_session_id` names a REAL session row (so `handle_goal_status`
+    /// can look it up) that is simply never registered as busy in
+    /// `AgentManager` — indistinguishable, from this function's point of
+    /// view, from a session whose process exited without a clean completion
+    /// path. `worker_key` is `"permagent"` (`WorkerEngineKind::InternalSubagent`
+    /// in every roster, default or user-configured — see
+    /// `agent_identity::default_roster`), so the `engine_is_internal` gate
+    /// passes deterministically in any test environment.
+    async fn dead_silent_worker_goal(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        sm: &SessionManager,
+        retry_count: Option<u64>,
+    ) -> cards::Card {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let col = cards::get_goal_column(pool, PERSONAL_PROJECT_ID, "in_progress")
+            .await
+            .unwrap()
+            .unwrap();
+        let dead_session = sm
+            .create_session(
+                std::env::temp_dir(),
+                "R3 dead worker".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        let mut meta = serde_json::json!({
+            "attempt_count": 1,
+            "goal_state": "in_progress",
+            "worker_session_id": dead_session.id,
+            "worker_key": "permagent",
+            "dispatched_at": chrono::Utc::now().to_rfc3339(),
+        });
+        if let Some(rc) = retry_count {
+            meta["retry_count"] = serde_json::json!(rc);
+        }
+
+        cards::create_card(
+            pool,
+            cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "R3 dead-worker test goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id),
+                created_by: None,
+                metadata_json: Some(meta),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Pins the bookkeeping half of R3: the FIRST time `goal_status` sees a
+    /// worker that died with no error and no landing, it must requeue the
+    /// goal and stamp `retry_count: 1` — REGARDLESS of whether the follow-up
+    /// redispatch attempt itself can succeed in this context (a bare
+    /// `extension_manager: None` context, deliberately, so this test is
+    /// deterministic without touching the shared `HEADLESS_DISPATCH_POLICY_CONFIG`
+    /// `OnceLock` other tests in this file already flag as collision-prone —
+    /// see `create_roadmap_dispatches_a_real_child_session_once_a_dispatch_hook_is_installed`'s
+    /// own doc comment. A full live-redispatch success path is exercised by
+    /// precedent, not duplicated here:
+    /// `dispatch_goal_fn_dispatches_an_internal_worker_through_a_headless_policy_with_no_extension_manager`
+    /// already proves the SAME `dispatch_goal_fn`/`InternalSubagentEngine`
+    /// pipeline this retry calls into (via `dispatch_goal_to`) succeeds given
+    /// a real git baseline and a resolvable provider.
+    ///
+    /// Pre-fix, `handle_goal_status` has no such interception at all: this
+    /// test's `retry_count` assertion fails outright (the field is never
+    /// written).
+    #[tokio::test]
+    async fn goal_status_requeues_and_stamps_retry_count_on_a_first_silent_worker_death() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = dead_silent_worker_goal(&pool, &sm, None).await;
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        // No `escalate`-shaped decision must ever be created by this
+        // function itself — the whole point is to avoid ever reaching it on
+        // the first occurrence.
+        let before_decisions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let result = client
+            .handle_goal_status(Some(args))
+            .await
+            .expect("goal_status must succeed even when the follow-up redispatch cannot");
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("retry_count")
+                .and_then(|v| v.as_u64()),
+            Some(1),
+            "the first silent death must stamp retry_count=1: {:?}",
+            updated.metadata_json
+        );
+
+        let after_decisions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            before_decisions, after_decisions,
+            "a first silent death must never create an escalation decision itself"
+        );
+
+        // Still a well-formed tool result either way (dispatch failing here
+        // — no extension manager, by construction — falls through to the
+        // ordinary status report rather than propagating an error).
+        assert!(!result.content.is_empty());
+    }
+
+    /// The other half of R3's pin: a SECOND occurrence of the identical
+    /// shape (`retry_count` already 1) must NOT retry again — `goal_status`
+    /// reports the dead state normally, exactly as it did before this fix,
+    /// so the coordinator can still reach for `escalate` on this (now
+    /// genuinely exhausted) goal. `record_escalation`'s own no-auto-answer
+    /// rule (M6 Defect #3) is never touched by this lane.
+    #[tokio::test]
+    async fn goal_status_does_not_auto_retry_a_second_silent_worker_death() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = dead_silent_worker_goal(&pool, &sm, Some(1)).await;
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        let result = client
+            .handle_goal_status(Some(args))
+            .await
+            .expect("goal_status must still report normally on a second occurrence");
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            !text.contains("Automatically retried"),
+            "a second silent death must not auto-retry again: {text}"
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).expect("the normal path returns the status JSON");
+        assert_eq!(
+            parsed.get("session_alive").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert!(parsed.get("error").is_none_or(|v| v.is_null()));
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("retry_count")
+                .and_then(|v| v.as_u64()),
+            Some(1),
+            "retry_count must stay at 1 — no second auto-retry"
         );
     }
 }

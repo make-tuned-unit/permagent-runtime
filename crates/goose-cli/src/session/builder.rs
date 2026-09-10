@@ -1261,6 +1261,26 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // own `create_roadmap` call can actually dispatch. See
     // `wants_headless_goal_dispatch`'s doc comment for the scoping rationale.
     if wants_headless_goal_dispatch(coding_harness, agent.config.goose_mode) {
+        // R1(b) (harness loop, Lane D1, from Lane F8 forensics): seed the
+        // project this coordinator's own `create_roadmap` will resolve onto
+        // with a real `root_path` before any goal can dispatch, so
+        // `decisions_effects::land_approved_goal`'s ordinary path
+        // (`project.root_path`) works without ever needing R1(a)'s
+        // worktree-git fallback. The eval harness's default `personal`
+        // project (and any project created with no local folder) is seeded
+        // `root_path` NULL (`session/spectral_schema.rs:610`) and nothing
+        // upstream of this ever set it — confirmed identically NULL across
+        // all 5 of Lane F8's measured fixtures. Best-effort: a pool/session
+        // lookup failure here must never block a headless launch.
+        if let Ok(pool) = session_manager.pool_clone().await {
+            if let Ok(session) = session_manager.get_session(&session_id, false).await {
+                permagent::agents::platform_extensions::orchestrator::ensure_headless_project_root_path(
+                    &pool,
+                    &session.working_dir,
+                )
+                .await;
+            }
+        }
         // Harness loop, Lane T / T1+T2: NOT the daemon's `install_dispatch_hook`
         // (that closure's context always carries `session: None`, so its
         // InternalSubagentEngine worker-selection arm hard-fails with

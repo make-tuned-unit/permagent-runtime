@@ -117,15 +117,15 @@ pub struct LandRequest {
     pub head_commit: String,
 }
 
-/// Pull the landing inputs out of a goal card's metadata.
-///
-/// The branch is derived from the worktree directory name rather than stored:
-/// `ExternalCliEngine` names both from the same run id, and a value re-derived
-/// from the path cannot drift from a separately-persisted copy.
-pub fn land_request_from_metadata(
-    metadata: &serde_json::Value,
-    repo_root: Option<&str>,
-) -> Option<LandRequest> {
+/// The two dispatch-evidence fields landing needs that do NOT depend on
+/// where the project's trunk lives: the worktree the worker committed in,
+/// and its true head commit. Split out of [`land_request_from_metadata`]
+/// (R1, harness loop Lane D1) so a caller can tell "the worker committed
+/// nothing landable" apart from "there is real work but no repo root was
+/// resolved" without duplicating these emptiness checks — `land_approved_goal`
+/// needs exactly that distinction to know whether a missing `root_path`
+/// deserves an honest failure outcome or is simply nothing to report.
+pub(crate) fn evidence_head_and_worktree(metadata: &serde_json::Value) -> Option<(String, String)> {
     let evidence = metadata.get("dispatch_evidence")?;
     let head_commit = evidence.get("head_commit")?.as_str()?.to_string();
     if head_commit.is_empty() {
@@ -138,13 +138,69 @@ pub fn land_request_from_metadata(
     {
         return None;
     }
-    let worktree = evidence.get("worktree_path")?.as_str()?;
-    let run_id = Path::new(worktree).file_name()?.to_str()?;
+    let worktree = evidence.get("worktree_path")?.as_str()?.to_string();
+    Some((worktree, head_commit))
+}
+
+/// Pull the landing inputs out of a goal card's metadata.
+///
+/// The branch is derived from the worktree directory name rather than stored:
+/// `ExternalCliEngine` names both from the same run id, and a value re-derived
+/// from the path cannot drift from a separately-persisted copy.
+pub fn land_request_from_metadata(
+    metadata: &serde_json::Value,
+    repo_root: Option<&str>,
+) -> Option<LandRequest> {
+    let (worktree, head_commit) = evidence_head_and_worktree(metadata)?;
+    let run_id = Path::new(&worktree).file_name()?.to_str()?.to_string();
     Some(LandRequest {
         repo_root: repo_root?.to_string(),
         branch: format!("goal/{}", run_id),
         head_commit,
     })
+}
+
+/// R1 (harness loop, Lane D1, from Lane F8 forensics): recover the primary
+/// checkout a goal's worktree branched off, for when the project's own
+/// `root_path` was never set (the eval harness's seeded `personal` project,
+/// `session/spectral_schema.rs:610`, and any other project created with no
+/// local folder). `git worktree add` (`goal_engine::create_goal_worktree`)
+/// always leaves the linked worktree's `.git` FILE naming the shared git dir
+/// that lives inside the checkout that created it — so asking git, from
+/// inside the worktree, for that common dir and taking its parent recovers
+/// the exact directory `resolve_internal_isolation`/`create_goal_worktree`
+/// branched from, without needing it stored separately on the card or
+/// guessed from the worktree path's own shape (which cannot work: the
+/// worktree lives beside the repo, `<repo>/../.permagent-goal-worktrees/<run_id>`,
+/// not under it — the repo's own directory name is not recoverable from the
+/// worktree path alone).
+///
+/// `None` when the worktree no longer exists, is not a git worktree at all,
+/// or its common dir has no parent (a git dir at `/`, never a real repo).
+pub(crate) async fn resolve_primary_checkout_from_worktree(worktree_path: &str) -> Option<String> {
+    if !Path::new(worktree_path).is_dir() {
+        return None;
+    }
+    let output = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(worktree_path)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let common_git_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if common_git_dir.is_empty() {
+        return None;
+    }
+    let checkout = Path::new(&common_git_dir).parent()?;
+    if !checkout.is_dir() {
+        return None;
+    }
+    Some(checkout.to_string_lossy().into_owned())
 }
 
 async fn git(root: &str, args: &[&str]) -> Option<(bool, String)> {
@@ -284,5 +340,79 @@ mod tests {
             trunk: "main".into()
         }
         .is_landed());
+    }
+
+    fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// R1 (harness loop, Lane D1): a linked worktree's `.git` FILE always
+    /// names the shared git dir inside the checkout that created it — the
+    /// same mechanism `land_approved_goal` leans on when a project's
+    /// `root_path` is NULL (Lane F8 forensics: the eval harness's default
+    /// `personal` project is seeded that way).
+    #[tokio::test]
+    async fn resolve_primary_checkout_from_worktree_finds_the_repo_that_created_it() {
+        let repo = tempfile::tempdir().unwrap();
+        git_in(repo.path(), &["init", "-b", "main"]);
+        git_in(repo.path(), &["config", "user.email", "t@example.com"]);
+        git_in(repo.path(), &["config", "user.name", "T"]);
+        std::fs::write(repo.path().join("f.txt"), "x").unwrap();
+        git_in(repo.path(), &["add", "-A"]);
+        git_in(repo.path(), &["commit", "-m", "base"]);
+
+        // Mirrors `goal_engine::create_goal_worktree`: a linked worktree
+        // living BESIDE the repo, not under it.
+        let worktrees_root = tempfile::tempdir().unwrap();
+        let worktree_path = worktrees_root.path().join("run-1");
+        git_in(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "goal/run-1",
+                worktree_path.to_str().unwrap(),
+            ],
+        );
+
+        let resolved = resolve_primary_checkout_from_worktree(worktree_path.to_str().unwrap())
+            .await
+            .expect("a real git worktree must resolve its primary checkout");
+        let expected = repo.path().canonicalize().unwrap();
+        let got = Path::new(&resolved).canonicalize().unwrap();
+        assert_eq!(
+            got, expected,
+            "must recover the exact repo the worktree was created from"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_primary_checkout_from_worktree_is_none_without_a_real_git_worktree() {
+        assert!(
+            resolve_primary_checkout_from_worktree("/no/such/permagent-d1-worktree-path")
+                .await
+                .is_none(),
+            "a missing directory must not fabricate a checkout"
+        );
+        let plain = tempfile::tempdir().unwrap();
+        assert!(
+            resolve_primary_checkout_from_worktree(plain.path().to_str().unwrap())
+                .await
+                .is_none(),
+            "a directory that is not a git worktree at all must not fabricate a checkout"
+        );
     }
 }
