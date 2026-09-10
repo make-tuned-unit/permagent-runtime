@@ -1994,6 +1994,32 @@ pub async fn migrate_v53_to_v54(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// v55: `cost_reservations.provider`/`.model`/`.reuse_count`/
+/// `.reused_by_invocation_id` (harness loop, Round F, Lane F3, from Lane
+/// G9's HIGH/MEDIUM findings on gate-grant reuse — see
+/// `apply_cost_reservations_schema`'s own doc comments on these columns for
+/// why they exist). Reconciles them onto existing DBs by re-running
+/// `apply_cost_reservations_schema`, which is idempotent (PRAGMA-guarded
+/// `ADD COLUMN`s) — fresh installs already get them from `init_spectral_db`,
+/// which calls the same function. Purely additive and base-independent.
+///
+/// NOTE on numbering: this branch's `v54` step (`migrate_v53_to_v54`,
+/// `cost_ledger.timing_json`, lane X-lat) is already documented in this
+/// loop's log as colliding with an unmerged `voice_turns` migration on a
+/// different branch — whichever side merges second there must renumber.
+/// `v55` is the next free step on THIS branch (`fix/harness-loop-r1` @
+/// `bd557978`) as of 2026-09-10; a merge that also brings in the colliding
+/// v54 must renumber this step too.
+pub async fn migrate_v54_to_v55(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v54 -> v55 (cost_reservations provider/model/reuse columns)");
+    apply_cost_reservations_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (55)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v55 (cost_reservations provider/model/reuse columns)");
+    Ok(())
+}
+
 /// The Council of LLMs: one debate session, the per-member positions across
 /// two rounds, and the chair's synthesised weekly report. New tables + indexes
 /// only — additive, idempotent, and base-independent so it can run on every
@@ -2946,6 +2972,73 @@ pub async fn apply_cost_reservations_schema(pool: &Pool<Sqlite>) -> Result<()> {
         )
         .execute(&mut *tx)
         .await?;
+    }
+
+    // F3 (harness loop, Round F, Lane F3, from Lane G9's HIGH finding): a
+    // reused gate grant (`granted_via_gate = 1`) was never checked against
+    // the CURRENT call's provider/model, because this table carried no
+    // provider/model identity at all — a stale grant minted under one
+    // provider/model could silently authorize a call to a DIFFERENT
+    // provider/model with no detection (an under- or over-reservation).
+    // Populated only by `grant_reservation_after_gate_approval` (the only
+    // reservation creator `find_pending_gate_grant` ever looks up by
+    // provider/model); NULL on an ordinary `reserve_provider_invocation`
+    // row is harmless — those rows are never looked up this way.
+    // PRAGMA-guarded `ADD COLUMN`s: additive, base-independent, applied on
+    // every boot exactly like `granted_via_gate` just above.
+    let has_provider_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = 'provider'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_provider_column == 0 {
+        sqlx::query("ALTER TABLE cost_reservations ADD COLUMN provider TEXT")
+            .execute(&mut *tx)
+            .await?;
+    }
+    let has_model_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = 'model'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_model_column == 0 {
+        sqlx::query("ALTER TABLE cost_reservations ADD COLUMN model TEXT")
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    // F3 (M1, from Lane G9's MEDIUM finding): a grant is meant to authorize
+    // exactly ONE retry of the specific call that got gated, not be
+    // silently reusable forever while the row happens to still be
+    // `pending`. `reuse_count` tracks how many times `consume_granted_
+    // reservation` has handed this grant back as reusable — a second
+    // attempt is refused once it is nonzero. `reused_by_invocation_id`
+    // records the invocation_id that consumed it (today always equal to
+    // this row's own `invocation_id`, since a reuse is threaded back in
+    // under the SAME id — recorded explicitly, not assumed, so a future
+    // design that mints a fresh id for the retry does not silently lose
+    // this audit trail).
+    let has_reuse_count_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = 'reuse_count'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_reuse_count_column == 0 {
+        sqlx::query(
+            "ALTER TABLE cost_reservations ADD COLUMN reuse_count INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    let has_reused_by_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = 'reused_by_invocation_id'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_reused_by_column == 0 {
+        sqlx::query("ALTER TABLE cost_reservations ADD COLUMN reused_by_invocation_id TEXT")
+            .execute(&mut *tx)
+            .await?;
     }
 
     tx.commit().await?;
