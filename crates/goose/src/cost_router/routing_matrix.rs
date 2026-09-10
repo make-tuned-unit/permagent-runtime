@@ -49,6 +49,18 @@ pub enum FixtureCapability {
     /// (apply reliability, multi-file refactor, regression traps, spec edge
     /// cases, terminal environment, TDD discipline, "do not overreach").
     HarnessLever,
+    /// The `selection` category (`docs/orchestrator/
+    /// CODING_HARNESS_ROLE_GRADUATION_DAG.md` G3, `crates/permagent-eval/
+    /// tasks/select-*`): tool/DAG-selection fixtures graded on which tool the
+    /// harness calls and in what order — not the code it writes. This is
+    /// the ONE new variant G3 adds; every use of `FixtureCapability` in this
+    /// module matches on it via `==`/`match` with an explicit arm or a
+    /// wildcard (checked: no exhaustive match elsewhere in the workspace
+    /// depends on this enum staying 3-way — `grep -rn "FixtureCapability::"`
+    /// finds no external match sites, only this file's own), so adding it is
+    /// additive and does not require touching `capability_directory.rs` or
+    /// any other file.
+    Selection,
 }
 
 /// How hard a fixture is. `permagent-eval`'s task schema has no `difficulty`
@@ -158,6 +170,9 @@ pub fn capability_for_category(category: &str) -> FixtureCapability {
             FixtureCapability::LanguageIdiom
         }
         c if c.starts_with("harness-lever-") => FixtureCapability::HarnessLever,
+        // G3: `crates/permagent-eval/tasks/select-*/task.yaml`'s
+        // `category: selection` — see [`FixtureCapability::Selection`].
+        "selection" => FixtureCapability::Selection,
         _ => FixtureCapability::CodeEdit,
     }
 }
@@ -334,6 +349,7 @@ mod tests {
                 FixtureCapability::HarnessLever,
             ),
             ("harness-lever-test-driven", FixtureCapability::HarnessLever),
+            ("selection", FixtureCapability::Selection),
         ];
         for (cat, expected) in categories {
             assert_eq!(capability_for_category(cat), expected, "{cat}");
@@ -345,6 +361,19 @@ mod tests {
         assert_eq!(
             capability_for_category("something-new-nobody-has-added-yet"),
             FixtureCapability::CodeEdit
+        );
+    }
+
+    /// G3: `crates/permagent-eval/tasks/select-*/task.yaml`'s
+    /// `category: "selection"` classifies to its own bucket, not the
+    /// `CodeEdit` fallback — a selection fixture is graded on tool/DAG
+    /// choice, not code correctness, so it must never be silently lumped in
+    /// with ordinary edits.
+    #[test]
+    fn selection_category_maps_to_its_own_capability() {
+        assert_eq!(
+            capability_for_category("selection"),
+            FixtureCapability::Selection
         );
     }
 

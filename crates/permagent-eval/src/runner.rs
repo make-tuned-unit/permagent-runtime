@@ -188,6 +188,15 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     result.duration_secs = harness_run.duration.as_secs_f64();
     result.harness_exit = harness_run.exit;
     result.harness_timed_out = harness_run.timed_out;
+    // G3: a `category: "selection"` fixture is graded on the tool/DAG
+    // decision, not (only) the oracle's verdict — evaluate its declared
+    // `selection_check` against THIS run's own signals, independent of
+    // whether the oracle passed. `None` for every non-selection fixture.
+    result.selection_correct = task
+        .spec
+        .selection_check
+        .as_ref()
+        .map(|check| check.evaluate(&signals));
     result.signals = signals;
     if harness_run.timed_out {
         result.note = Some("harness run hit its wall-clock ceiling".to_string());
@@ -579,6 +588,25 @@ mod tests {
         }
     }
 
+    /// A harness stand-in that writes fixed lines to the captured log path —
+    /// stands in for a real `permagent run` transcript so `run_task`'s
+    /// `harness_log::scan` (and, transitively, `selection_check` evaluation)
+    /// has something real to read.
+    struct HarnessWithLog {
+        log_lines: Vec<&'static str>,
+        exit: Option<i32>,
+    }
+    impl HarnessRunner for HarnessWithLog {
+        fn run(&self, _inv: &Invocation, _t: Duration, log_path: &Path) -> Result<HarnessRun> {
+            fs::write(log_path, self.log_lines.join("\n"))?;
+            Ok(HarnessRun {
+                exit: self.exit,
+                timed_out: false,
+                duration: Duration::from_secs_f64(0.5),
+            })
+        }
+    }
+
     /// An oracle that passes iff `<workdir>/marker` equals the expected content.
     struct MarkerOracle {
         file: String,
@@ -672,6 +700,25 @@ mod tests {
                 fs::write(or.join(name), content).unwrap();
             }
         }
+        Task {
+            spec: TaskSpec::from_yaml(&fs::read_to_string(dir.join("task.yaml")).unwrap()).unwrap(),
+            dir: dir.to_path_buf(),
+        }
+    }
+
+    /// A `category: selection` task whose `selection_check` requires
+    /// `decompose_roadmap` before `create_roadmap` — the G3 D3 "runner
+    /// support" case: `run_task` must evaluate this from the harness's own
+    /// captured log, not the oracle's verdict.
+    fn make_selection_task(dir: &Path) -> Task {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(
+            dir.join("task.yaml"),
+            "id: demo\ntitle: Demo\ncategory: selection\nprompt: do it\ntest: [true]\n\
+             selection_check:\n  must_call: [decompose_roadmap, create_roadmap]\n  \
+             before: [[decompose_roadmap, create_roadmap]]\n",
+        )
+        .unwrap();
         Task {
             spec: TaskSpec::from_yaml(&fs::read_to_string(dir.join("task.yaml")).unwrap()).unwrap(),
             dir: dir.to_path_buf(),
@@ -1272,5 +1319,86 @@ mod tests {
             envs.get(std::ffi::OsStr::new("PERMAGENT_DISABLE_KEYRING")),
             Some(&Some(OsString::from("1")))
         );
+    }
+
+    // ── G3: selection_correct is evaluated from the harness's own log ──────
+
+    #[test]
+    fn run_task_evaluates_selection_correct_from_the_captured_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_selection_task(&tmp.path().join("demo"));
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+        };
+        let deps = Deps {
+            harness: &HarnessWithLog {
+                log_lines: vec!["  ▸ decompose_roadmap", "  ▸ create_roadmap"],
+                exit: Some(0),
+            },
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
+        assert_eq!(r.selection_correct, Some(true));
+        assert_eq!(
+            r.signals.tool_names,
+            vec![
+                "decompose_roadmap".to_string(),
+                "create_roadmap".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn run_task_marks_selection_correct_false_on_the_wrong_decision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_selection_task(&tmp.path().join("demo"));
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+        };
+        let deps = Deps {
+            // Wrong order: create_roadmap before decompose_roadmap.
+            harness: &HarnessWithLog {
+                log_lines: vec!["  ▸ create_roadmap", "  ▸ decompose_roadmap"],
+                exit: Some(0),
+            },
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
+        assert_eq!(r.selection_correct, Some(false));
+    }
+
+    /// An ordinary (non-selection) fixture must never carry a
+    /// `selection_correct` verdict, regardless of what the log contains.
+    #[test]
+    fn run_task_leaves_selection_correct_none_for_a_non_selection_fixture() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_task(&tmp.path().join("demo"), &[], &[]);
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+        };
+        let deps = Deps {
+            harness: &HarnessWithLog {
+                log_lines: vec!["  ▸ decompose_roadmap", "  ▸ create_roadmap"],
+                exit: Some(0),
+            },
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
+        assert_eq!(r.selection_correct, None);
     }
 }

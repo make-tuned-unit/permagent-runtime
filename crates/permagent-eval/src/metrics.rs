@@ -33,6 +33,14 @@ pub struct TaskResult {
     /// rate-limit events, turn-limit hit). Zeroed for a task that was never
     /// run.
     pub signals: LogSignals,
+    /// G3: whether a `category: "selection"` fixture's declared
+    /// `selection_check` was satisfied by this run's tool-call sequence.
+    /// `None` for every non-selection fixture, AND for a selection fixture
+    /// that never actually ran (e.g. a hard runner error before `signals`
+    /// could be read) — never fabricated as `Some(false)` for a run this
+    /// harness never observed. See [`crate::selection`] and
+    /// [`dag_selection_pct`].
+    pub selection_correct: Option<bool>,
 }
 
 impl TaskResult {
@@ -54,6 +62,7 @@ impl TaskResult {
             oracle,
             note: None,
             signals: LogSignals::default(),
+            selection_correct: None,
         }
     }
 }
@@ -97,6 +106,12 @@ pub struct Aggregate {
     /// [`CostReading::cache_hit_rate`](crate::cost::CostReading::cache_hit_rate)
     /// for the single-task version and its "inclusive input" caveat.
     pub cache_hit_rate: Option<f64>,
+    /// G3: correct tool/DAG selections over attempted `category: "selection"`
+    /// fixtures, `[0,1]`. `None` when this task set attempted zero selection
+    /// fixtures — never fabricated as `0.0` (which would read as "every
+    /// selection failed") or `1.0` (which would read as "graduated") for a
+    /// role/tier that was never measured. See [`dag_selection_pct`].
+    pub dag_selection_pct: Option<f64>,
 }
 
 /// Tasks NOT skipped by a budget stop — i.e. everything except
@@ -151,6 +166,29 @@ pub fn total_tool_calls(results: &[TaskResult]) -> usize {
 /// Sum of `signals.rate_limit_events` across every result.
 pub fn total_rate_limit_events(results: &[TaskResult]) -> usize {
     results.iter().map(|r| r.signals.rate_limit_events).sum()
+}
+
+/// G3: correct tool/DAG selections over attempted selection fixtures,
+/// `[0,1]`. Only results carrying `selection_correct = Some(_)` count toward
+/// either half of the ratio — a task with no `selection_check` (ordinary
+/// code-correctness fixtures) contributes to neither, so mixing selection
+/// and non-selection fixtures in one run never dilutes this metric. `None`
+/// when the denominator is zero (this run attempted no selection fixtures at
+/// all) — the same "never fabricate from absence" discipline `pass_rate`
+/// already follows for [`crate::oracle::OracleOutcome::NotRun`].
+pub fn dag_selection_pct(results: &[TaskResult]) -> Option<f64> {
+    let attempted = results
+        .iter()
+        .filter(|r| r.selection_correct.is_some())
+        .count();
+    if attempted == 0 {
+        return None;
+    }
+    let correct = results
+        .iter()
+        .filter(|r| r.selection_correct == Some(true))
+        .count();
+    Some(correct as f64 / attempted as f64)
 }
 
 /// Aggregate cache-hit rate across every task with known token figures: total
@@ -246,6 +284,7 @@ pub fn aggregate(results: &[TaskResult]) -> Aggregate {
         total_tool_calls: total_tool_calls(results),
         total_rate_limit_events: total_rate_limit_events(results),
         cache_hit_rate: cache_hit_rate(results),
+        dag_selection_pct: dag_selection_pct(results),
     }
 }
 
@@ -475,5 +514,44 @@ mod tests {
     fn cache_hit_rate_is_none_when_no_task_has_known_tokens() {
         let r = vec![res("a", true, Some(1.0)), res("b", false, None)];
         assert_eq!(cache_hit_rate(&r), None);
+    }
+
+    // ── G3: dag_selection_pct ────────────────────────────────────────────
+
+    #[test]
+    fn dag_selection_pct_is_none_when_no_task_carries_a_selection_verdict() {
+        let r = vec![res("a", true, Some(1.0)), res("b", false, Some(1.0))];
+        assert_eq!(dag_selection_pct(&r), None);
+        assert_eq!(aggregate(&r).dag_selection_pct, None);
+    }
+
+    #[test]
+    fn dag_selection_pct_counts_only_evaluated_selection_fixtures() {
+        let mut a = res("a", true, Some(1.0));
+        a.selection_correct = Some(true);
+        let mut b = res("b", true, Some(1.0));
+        b.selection_correct = Some(false);
+        let mut c = res("c", true, Some(1.0));
+        c.selection_correct = Some(true);
+        // Ordinary (non-selection) fixture: must not dilute the ratio.
+        let d = res("d", true, Some(1.0));
+        let r = vec![a, b, c, d];
+        // 2 correct of 3 EVALUATED (d is excluded, not a zero).
+        assert!((dag_selection_pct(&r).unwrap() - 2.0 / 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dag_selection_pct_excludes_not_run_tasks() {
+        let mut a = res("a", true, Some(1.0));
+        a.selection_correct = Some(true);
+        let r = vec![a, not_run("b")];
+        assert_eq!(dag_selection_pct(&r), Some(1.0));
+    }
+
+    #[test]
+    fn dag_selection_pct_all_wrong_is_zero_not_none() {
+        let mut a = res("a", false, Some(1.0));
+        a.selection_correct = Some(false);
+        assert_eq!(dag_selection_pct(&[a]), Some(0.0));
     }
 }

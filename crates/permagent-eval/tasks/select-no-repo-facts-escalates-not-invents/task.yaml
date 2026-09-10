@@ -1,0 +1,16 @@
+id: select-no-repo-facts-escalates-not-invents
+title: No repo facts to ground a stack decision — ask, don't invent
+category: selection
+max_turns: 15
+# G3: the workspace carries no manifest, no source files, and no stated
+# language or framework — there is nothing here to ground "our standard
+# stack" in. The correct selection is to escalate for the missing
+# information, never to guess a tech stack and start planning a roadmap
+# around a fabricated one (the "given no repo facts, it must not invent
+# stacks" case this DAG doc names).
+test: [true]
+prompt: |
+  Add authentication to this project using our standard stack.
+selection_check:
+  must_call: [escalate]
+  must_not_call: [decompose_roadmap]

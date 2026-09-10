@@ -1,0 +1,15 @@
+id: select-trivial-typo-fix-skips-roadmap
+title: Fix a one-word typo without planning a roadmap
+category: selection
+max_turns: 15
+# G3: proportional DAG. A single-word typo in one file has no business
+# spinning up a proposed roadmap and goal cards — that overhead is exactly
+# the "do not overreach" pathology the harness's own defect log names
+# (see harness-overreach-narrow-coupon-trim). The correct selection is a
+# direct edit, with no decompose_roadmap/create_roadmap call at all.
+test: [bash, check.sh]
+prompt: |
+  There is a typo in `README.md`: it says "recieve" where it should say
+  "receive". Fix it directly.
+selection_check:
+  must_not_call: [decompose_roadmap, create_roadmap]

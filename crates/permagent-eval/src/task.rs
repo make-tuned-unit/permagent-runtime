@@ -41,6 +41,8 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+use crate::selection::SelectionCheck;
+
 /// The default recipe: the built-in Permagent coding harness (#719), resolved by
 /// `permagent run --recipe permagent-coding`.
 pub const DEFAULT_RECIPE: &str = "permagent-coding";
@@ -101,7 +103,22 @@ pub struct TaskSpec {
     /// the workspace (e.g. Node graders that load deliverables by `file://` URL).
     #[serde(default)]
     pub deliverables: Vec<String>,
+
+    /// G3 (`docs/orchestrator/CODING_HARNESS_ROLE_GRADUATION_DAG.md`): the
+    /// expected tool/DAG decision for a `category: "selection"` fixture —
+    /// see [`crate::selection::SelectionCheck`]. Required when `category` is
+    /// `"selection"` and rejected everywhere else ([`TaskSpec::validate`]),
+    /// so a fixture cannot silently ship in the "selection" bucket without a
+    /// real, falsifiable check, nor carry a dead check under an unrelated
+    /// category.
+    #[serde(default)]
+    pub selection_check: Option<SelectionCheck>,
 }
+
+/// The `category` value that opts a fixture into G3's tool/DAG-selection
+/// grading (`dag_selection_pct`) instead of ordinary code-correctness
+/// grading. See [`crate::selection`].
+pub const SELECTION_CATEGORY: &str = "selection";
 
 impl TaskSpec {
     /// Parse a spec from YAML text (does not validate directory coupling).
@@ -143,6 +160,24 @@ impl TaskSpec {
                 "task {:?}: test argv must not contain empty arguments",
                 self.id
             );
+        }
+        match (&self.selection_check, self.category == SELECTION_CATEGORY) {
+            (None, true) => bail!(
+                "task {:?}: category \"{SELECTION_CATEGORY}\" requires a selection_check",
+                self.id
+            ),
+            (Some(_), false) => bail!(
+                "task {:?}: selection_check is only valid for category \"{SELECTION_CATEGORY}\" \
+                 (got {:?})",
+                self.id,
+                self.category
+            ),
+            (Some(check), true) if check.is_vacuous() => bail!(
+                "task {:?}: selection_check declares no rules (must_call/must_not_call/before \
+                 are all empty) — every run would vacuously pass it",
+                self.id
+            ),
+            _ => {}
         }
         Ok(())
     }
@@ -506,6 +541,47 @@ mod tests {
     fn rejects_unsafe_id() {
         let yaml = "id: 'Bad Id!'\ntitle: T\nprompt: p\ntest: [x]\n";
         assert!(TaskSpec::from_yaml(yaml).is_err());
+    }
+
+    // ── G3: selection_check / category coupling ─────────────────────────
+
+    #[test]
+    fn selection_category_without_a_selection_check_is_rejected() {
+        let yaml = "id: t1\ntitle: T\ncategory: selection\nprompt: p\ntest: [x]\n";
+        let err = TaskSpec::from_yaml(yaml).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("requires a selection_check"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_selection_check_outside_the_selection_category_is_rejected() {
+        let yaml = "id: t1\ntitle: T\ncategory: classic\nprompt: p\ntest: [x]\n\
+                    selection_check:\n  must_call: [verify]\n";
+        let err = TaskSpec::from_yaml(yaml).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("only valid for category"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_vacuous_selection_check_is_rejected() {
+        let yaml = "id: t1\ntitle: T\ncategory: selection\nprompt: p\ntest: [x]\n\
+                    selection_check: {}\n";
+        let err = TaskSpec::from_yaml(yaml).unwrap_err();
+        assert!(format!("{err:#}").contains("no rules"), "{err:#}");
+    }
+
+    #[test]
+    fn a_well_formed_selection_fixture_parses() {
+        let yaml = "id: t1\ntitle: T\ncategory: selection\nprompt: p\ntest: [true]\n\
+                    selection_check:\n  must_call: [verify]\n  must_not_call: [shell]\n";
+        let spec = TaskSpec::from_yaml(yaml).unwrap();
+        let check = spec.selection_check.expect("selection_check must parse");
+        assert_eq!(check.must_call, vec!["verify".to_string()]);
+        assert_eq!(check.must_not_call, vec!["shell".to_string()]);
     }
 
     #[test]

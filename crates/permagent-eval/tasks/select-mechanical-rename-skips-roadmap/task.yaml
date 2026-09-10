@@ -1,0 +1,18 @@
+id: select-mechanical-rename-skips-roadmap
+title: A two-file mechanical rename does not need a roadmap
+category: selection
+max_turns: 20
+# G3: proportional DAG, second shape (multi-file this time, not
+# single-line — see the docstring on select-trivial-typo-fix-skips-roadmap
+# for the single-file case). A purely mechanical, unambiguous rename across
+# two files is still small and well-specified enough that decomposing it
+# into a proposed roadmap is pure overhead — mirrors the harness's own
+# recorded regression (harness-overreach-narrow-coupon-trim: a fictional
+# multi-goal split imposed on a task that needed exactly one edit).
+test: [bash, check.sh]
+prompt: |
+  Rename the function `old_name` to `new_name` everywhere it is defined or
+  called across `a.py` and `b.py`. It is a purely mechanical rename with no
+  behavior change.
+selection_check:
+  must_not_call: [decompose_roadmap, create_roadmap]

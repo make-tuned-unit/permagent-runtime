@@ -108,6 +108,31 @@ control-plane tables in `permagent.db`, not a second store.
 3. Both suites run per (provider, model, role) and populate `tool_reliability_pct` /
    `dag_selection_pct` directly — no proxy from `ModelKnowledge`.
 
+### G3 — implemented (Lane G3)
+
+The tool/DAG-selection micro-fixture family this node called for now exists as `category:
+"selection"` fixtures under `crates/permagent-eval/tasks/select-*/` (10 fixtures:
+`select-failing-test-decompose-before-create`, `select-trivial-typo-fix-skips-roadmap`,
+`select-named-check-uses-verify-tool`, `select-review-request-does-not-mutate`,
+`select-no-repo-facts-escalates-not-invents`, `select-missing-credential-escalates-not-guesses`,
+`select-checks-worker-before-dispatch`, `select-existing-roadmap-resumes-not-redecomposes`,
+`select-ambiguous-choice-escalates-decision`, `select-mechanical-rename-skips-roadmap`), each
+declaring a `selection_check` (`must_call`/`must_not_call`/`before` ordering rules over tool
+names, new `crates/permagent-eval/src/selection.rs`) evaluated purely against
+`harness_log::LogSignals::tool_names` — the harness's own already-extracted, first-seen-order
+tool-call sequence — rather than against the code a run produced. `runner.rs` evaluates each
+fixture's check into `TaskResult::selection_correct`; `metrics::dag_selection_pct` rolls attempted
+selection fixtures up into a real `[0,1]` rate (`Aggregate::dag_selection_pct`, `report.rs`'s
+per-tier JSON summary and a new run-wide `report::overall_dag_selection_pct` that `main.rs`'s
+`cmd_run` stamps onto the JSON report's top level); `routing_matrix::capability_for_category` maps
+`category: "selection"` to a new `FixtureCapability::Selection` variant (additive — no exhaustive
+match on that enum exists outside `routing_matrix.rs`). This is exactly the top-level
+`dag_selection_pct` field `permagent-eval graduate` (Lane Z4, `graduate.rs::RunFile`) already
+parses and gates `graduated` on but that no real run ever populated before this lane — a retained
+`permagent-eval run --format json --out FILE` against the `select-*` fixtures now produces a real
+measurement instead of an always-absent field, closing G3's stated gap ("the 95% metric — does not
+exist today").
+
 ## G4 — How dispatch consults the card
 
 1. **Refuse ungraduated coordinators, honestly.** Extend the existing pattern at

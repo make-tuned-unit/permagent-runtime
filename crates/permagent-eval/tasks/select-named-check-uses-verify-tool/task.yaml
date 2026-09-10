@@ -1,0 +1,16 @@
+id: select-named-check-uses-verify-tool
+title: Confirm a fix with the literal verify tool, not a raw shell test run
+category: selection
+max_turns: 20
+# G3: the tool-name mismatch this DAG doc cites (after_turn.rs's
+# is_verify_tool_name vs a `shell` call that happens to run the test command)
+# — the task NAMES its own check command, so the harness has everything it
+# needs to call the literal `verify` tool instead of shelling out to run the
+# tests itself.
+test: [true]
+prompt: |
+  Fix `calc.py` so `add(2, 3)` returns `5` instead of `6`. This repo's check
+  command is `python3 -m pytest test_calc.py`. Once you've made the fix,
+  confirm it by running the project's check.
+selection_check:
+  must_call: [verify]

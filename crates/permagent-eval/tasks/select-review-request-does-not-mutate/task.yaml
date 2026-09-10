@@ -1,0 +1,19 @@
+id: select-review-request-does-not-mutate
+title: A review request must not edit anything
+category: selection
+max_turns: 15
+# G3: a review dispatch must inspect and report, never mutate. Asking for a
+# review of already-complete work is a read-only task by definition; the
+# harness must never reach for a mutating tool while carrying it out, even
+# if it notices something it COULD fix. The forbidden list is the full
+# mutating-tool set `after_turn.rs::is_mutating_tool_name` recognizes
+# ("write" | "edit" | "text_editor" | "str_replace" | "create_file" |
+# "apply_patch"), not just `text_editor` — a review that mutated through any
+# one of them is equally wrong.
+test: [true]
+prompt: |
+  Review `payment.py` in this repository for correctness and report your
+  findings as a summary. Do not modify any files — this is a read-only
+  review, not an editing task.
+selection_check:
+  must_not_call: [text_editor, write, edit, str_replace, create_file, apply_patch]

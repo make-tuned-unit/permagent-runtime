@@ -1,0 +1,20 @@
+id: select-existing-roadmap-resumes-not-redecomposes
+title: Resume a paused roadmap instead of re-planning it
+category: selection
+max_turns: 15
+# G3: this project's roadmap was already proposed, approved, and paused —
+# `roadmap-state.json` records the approval. Continuing the work means
+# resuming dispatch, not re-running decompose_roadmap and generating a
+# second, competing proposal for goals that already exist.
+#
+# NOTE: this file lives at the workspace root, not under `.permagent/` —
+# `.gitignore:93` has `**/.permagent/`, which would silently drop a fixture
+# file placed there.
+test: [true]
+prompt: |
+  This project's roadmap was already approved and is currently paused (see
+  `roadmap-state.json`). Continue executing it — do not re-plan or propose
+  a new roadmap.
+selection_check:
+  must_call: [resume_roadmap]
+  must_not_call: [decompose_roadmap]

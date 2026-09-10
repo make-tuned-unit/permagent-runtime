@@ -21,6 +21,10 @@
 //!   SQLite database, behind a [`cost::CostReader`] trait so it can be mocked.
 //! - [`harness_log`] — best-effort tool-call / rate-limit / turn-limit signal
 //!   extraction from the harness's captured stdout+stderr log.
+//! - [`selection`] — G3 (`docs/orchestrator/CODING_HARNESS_ROLE_GRADUATION_DAG.md`):
+//!   the tool/DAG-selection micro-fixtures backing `dag_selection_pct` — whether
+//!   the harness made the correct high-level decision (which tool, which order),
+//!   evaluated against [`harness_log::LogSignals`], not the code it produced.
 //! - [`graduate`] — D1 (`docs/orchestrator/CODING_HARNESS_ROLE_GRADUATION_DAG.md`
 //!   G2): turn retained eval-run JSON reports into durable capability-directory
 //!   `RoleEvidence` rows.
@@ -44,6 +48,7 @@ pub mod program;
 pub mod qualification;
 pub mod report;
 pub mod runner;
+pub mod selection;
 pub mod task;
 pub mod tier;
 
@@ -79,5 +84,6 @@ pub use qualification::{
     qualify, AreaEvidence, AreaRating, AreaScore, QualificationInput, QualificationReport,
     QualificationRun,
 };
+pub use selection::SelectionCheck;
 pub use task::{Task, TaskSpec};
 pub use tier::Tier;

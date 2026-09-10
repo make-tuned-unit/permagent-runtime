@@ -29,7 +29,9 @@ use permagent_eval::graduate::{
 };
 use permagent_eval::invocation::build_invocation;
 use permagent_eval::qualification::QualificationInput;
-use permagent_eval::report::{render_json, render_markdown, render_text, TierReport};
+use permagent_eval::report::{
+    overall_dag_selection_pct, render_json, render_markdown, render_text, TierReport,
+};
 use permagent_eval::runner::{
     run_tier, BudgetTracker, Deps, RunConfig, SubprocessHarnessRunner, SubprocessOracleRunner,
     SubprocessRecipeSource,
@@ -1024,6 +1026,21 @@ fn stamp_json_envelope(
     value
 }
 
+/// G3 (`docs/orchestrator/CODING_HARNESS_ROLE_GRADUATION_DAG.md`): add the
+/// run-wide `dag_selection_pct` to a `render_json` report's top-level object
+/// — the exact field `permagent-eval graduate`'s `RunFile::dag_selection_pct`
+/// already reads (`graduate.rs`), populated for real once this run attempted
+/// at least one `category: "selection"` fixture. Kept as its own small
+/// function (rather than folded into `stamp_json_envelope`) so that
+/// function's own D2 contract/tests are untouched — see its call site in
+/// `cmd_run`.
+fn stamp_dag_selection_pct(mut value: serde_json::Value, pct: Option<f64>) -> serde_json::Value {
+    if let (Some(obj), Some(p)) = (value.as_object_mut(), pct) {
+        obj.insert("dag_selection_pct".to_string(), serde_json::json!(p));
+    }
+    value
+}
+
 fn cmd_run(args: RunArgs) -> Result<()> {
     let tiers = args.tiers.resolve()?;
     let tasks_dir = resolve_tasks_dir(&args.tasks_dir);
@@ -1123,6 +1140,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     let rendered = match args.format.as_str() {
         "json" => {
             let value = stamp_json_envelope(render_json(&reports), &run_id, generated_at);
+            let value = stamp_dag_selection_pct(value, overall_dag_selection_pct(&reports));
             serde_json::to_string_pretty(&value)?
         }
         "md" => render_markdown(&reports),
@@ -1708,6 +1726,29 @@ nodes:
         assert_eq!(stamped["run_id"], "run-20260909T100000Z");
         assert_eq!(stamped["generated_at"], "2026-09-09T10:00:00+00:00");
         assert_eq!(stamped["tiers"], serde_json::json!([]));
+    }
+
+    // ── G3: dag_selection_pct envelope stamping ─────────────────────────────
+
+    #[test]
+    fn stamp_dag_selection_pct_inserts_the_field_when_some() {
+        let base = serde_json::json!({"tiers": []});
+        let stamped = stamp_dag_selection_pct(base, Some(0.97));
+        assert!((stamped["dag_selection_pct"].as_f64().unwrap() - 0.97).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stamp_dag_selection_pct_omits_the_field_when_none() {
+        let base = serde_json::json!({"tiers": []});
+        let stamped = stamp_dag_selection_pct(base, None);
+        assert!(
+            stamped
+                .as_object()
+                .unwrap()
+                .get("dag_selection_pct")
+                .is_none(),
+            "must not fabricate a value when no selection fixture ran: {stamped}"
+        );
     }
 
     // ── D1/D4: `graduate` subcommand ────────────────────────────────────────

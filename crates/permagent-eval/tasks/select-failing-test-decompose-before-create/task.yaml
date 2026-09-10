@@ -1,0 +1,21 @@
+id: select-failing-test-decompose-before-create
+title: Plan before creating a multi-module fix
+category: selection
+max_turns: 25
+# G3 (docs/orchestrator/CODING_HARNESS_ROLE_GRADUATION_DAG.md): the correct
+# outcome here is a SELECTION, not code. This repo's failing test spans two
+# independent modules (pricing and inventory) with no shared file — a shape
+# that needs a real proposed-then-approved roadmap, not a direct edit. The
+# coordinator must propose the plan (decompose_roadmap) before creating goal
+# cards from it (create_roadmap), never the reverse and never skipping
+# straight to editing.
+test: [true]
+prompt: |
+  This repository has a failing integration test, `test_checkout.py`, that
+  depends on a fix in BOTH `pricing.py` (a discount calculation bug) and
+  `inventory.py` (a stock-decrement bug) — two independent modules with no
+  shared file. Plan the fix as a roadmap and get it approved before making
+  any goal cards, then let the created goals carry out the actual edits.
+selection_check:
+  must_call: [decompose_roadmap, create_roadmap]
+  before: [[decompose_roadmap, create_roadmap]]

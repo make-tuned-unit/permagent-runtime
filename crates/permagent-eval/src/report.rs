@@ -317,12 +317,31 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                     "total_tool_calls": agg.total_tool_calls,
                     "total_rate_limit_events": agg.total_rate_limit_events,
                     "cache_hit_rate": agg.cache_hit_rate,
+                    "dag_selection_pct": agg.dag_selection_pct,
                 },
                 "tasks": tasks,
             })
         })
         .collect();
     json!({ "tiers": tiers })
+}
+
+/// G3: the run-wide `dag_selection_pct` — correct tool/DAG selections over
+/// every `category: "selection"` fixture attempted across ALL tiers in this
+/// invocation (not just one). This is what `main.rs`'s `cmd_run` stamps onto
+/// the JSON report's TOP level (alongside `run_id`/`generated_at`), which is
+/// the exact field `permagent-eval graduate` (`graduate.rs::RunFile::
+/// dag_selection_pct`) already reads — see that module's doc for why the
+/// field lives at the top rather than per-tier: a retained grading run
+/// conventionally exercises ONE model/tier, so a single run-wide scalar is
+/// what `graduate` was built to consume. `None` when no tier in this
+/// invocation attempted any selection fixture — never fabricated.
+pub fn overall_dag_selection_pct(reports: &[TierReport]) -> Option<f64> {
+    let all: Vec<TaskResult> = reports
+        .iter()
+        .flat_map(|tr| tr.results.iter().cloned())
+        .collect();
+    crate::metrics::dag_selection_pct(&all)
 }
 
 #[cfg(test)]
@@ -605,5 +624,60 @@ mod tests {
         assert_eq!(charlie["oracle"], "not_run");
         assert_eq!(charlie["solved"], false);
         assert_eq!(charlie["cost_usd"], serde_json::Value::Null);
+    }
+
+    // ── G3: dag_selection_pct in the JSON report ────────────────────────
+
+    fn selection_report(tier: &str, verdicts: &[Option<bool>]) -> TierReport {
+        let results = verdicts
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let mut r = TaskResult::new(
+                    format!("select-{i}"),
+                    "selection",
+                    OracleOutcome::Pass,
+                    CostReading::known(0.0, false, 1),
+                );
+                r.selection_correct = *v;
+                r
+            })
+            .collect();
+        TierReport {
+            tier: tier.to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-5".to_string(),
+            pinned_packs: true,
+            results,
+        }
+    }
+
+    #[test]
+    fn json_summary_carries_dag_selection_pct_per_tier() {
+        let tr = selection_report("sonnet5", &[Some(true), Some(false), Some(true)]);
+        let v = render_json(&[tr]);
+        let pct = v["tiers"][0]["summary"]["dag_selection_pct"]
+            .as_f64()
+            .unwrap();
+        assert!((pct - 2.0 / 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn json_summary_dag_selection_pct_is_null_with_no_selection_fixtures() {
+        let v = render_json(&[sample()]);
+        assert!(v["tiers"][0]["summary"]["dag_selection_pct"].is_null());
+    }
+
+    #[test]
+    fn overall_dag_selection_pct_combines_every_tier() {
+        let a = selection_report("a", &[Some(true), Some(false)]);
+        let b = selection_report("b", &[Some(true), Some(true)]);
+        // 3 correct of 4 evaluated across both tiers.
+        assert!((overall_dag_selection_pct(&[a, b]).unwrap() - 0.75).abs() < 1e-12);
+    }
+
+    #[test]
+    fn overall_dag_selection_pct_is_none_when_nothing_attempted_a_selection_fixture() {
+        assert_eq!(overall_dag_selection_pct(&[sample()]), None);
     }
 }

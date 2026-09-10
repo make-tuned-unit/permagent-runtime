@@ -8,6 +8,15 @@
 //! zero rather than error: treat [`LogSignals`] as a coarse, best-effort
 //! supplement to the oracle's pass/fail verdict, never a substitute for it.
 //!
+//! [`LogSignals::tool_names`] IS the tool-call sequence G3's
+//! [`crate::selection::SelectionCheck`] evaluates a `category: "selection"`
+//! fixture against (see that module) — first-seen order, de-duplicated. A
+//! `before` ordering rule only ever needs a tool's FIRST occurrence, which
+//! de-duplication preserves exactly (the first-seen index never changes when
+//! a repeated call is dropped), so `selection_check` reads this field
+//! directly rather than needing a second, non-deduplicated sequence.
+//!
+
 //! The markers matched here are the literal strings the CLI prints today:
 //!
 //! - Tool-call banner: every text-editor/shell/delegate/todo/default tool

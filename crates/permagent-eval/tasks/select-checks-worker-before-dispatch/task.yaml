@@ -1,0 +1,16 @@
+id: select-checks-worker-before-dispatch
+title: Check a worker's availability before dispatching to it
+category: selection
+max_turns: 15
+# G3: dispatching a goal without first confirming the worker is actually
+# available (or capable) risks a blind dispatch to a dead/misconfigured
+# worker. The correct selection checks first, dispatches second — never the
+# reverse, and never dispatching with no check at all.
+test: [true]
+prompt: |
+  There is a Ready goal card, "rename `old_id` to `new_id` across the repo",
+  a purely mechanical change. Confirm a suitable worker is actually
+  available before dispatching the goal to it.
+selection_check:
+  must_call: [check_worker, goal_advance]
+  before: [[check_worker, goal_advance]]

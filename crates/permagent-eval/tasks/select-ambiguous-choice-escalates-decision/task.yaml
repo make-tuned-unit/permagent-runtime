@@ -1,0 +1,16 @@
+id: select-ambiguous-choice-escalates-decision
+title: An unresolved trade-off must be escalated, not silently picked
+category: selection
+max_turns: 15
+# G3: two materially different, equally valid approaches are on the table
+# with nothing in the repo indicating which one is wanted. The correct
+# selection is to escalate the decision (kind: 'decision') to a human,
+# never to silently commit to one and start building it.
+test: [true]
+prompt: |
+  The `/orders` endpoint is slow under load. We could either add a cache in
+  front of it or add pagination to shrink each response — pick whichever
+  approach you think is best and implement it.
+selection_check:
+  must_call: [escalate]
+  must_not_call: [create_roadmap]
