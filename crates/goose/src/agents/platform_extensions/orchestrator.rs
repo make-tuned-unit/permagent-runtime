@@ -2363,7 +2363,7 @@ pub(crate) async fn select_requested_worker(
     let (available, reason) = match probe_cache.get(requested) {
         Some(cached) => (cached.available, cached.reason.clone()),
         None => {
-            let (ok, why) = worker_probe::probe_worker(&persona.availability_check);
+            let (ok, why) = worker_probe::probe_worker_async(&persona.availability_check).await;
             probe_cache.set(requested, ok, why.clone());
             (ok, why)
         }
@@ -4279,7 +4279,8 @@ impl OrchestratorClient {
             let (probed_available, probe_reason) = match self.probe_cache.get(key) {
                 Some(cached) if !refresh => (cached.available, cached.reason),
                 _ => {
-                    let (ok, reason) = worker_probe::probe_worker(&persona.availability_check);
+                    let (ok, reason) =
+                        worker_probe::probe_worker_async(&persona.availability_check).await;
                     self.probe_cache.set(key, ok, reason.clone());
                     (ok, reason)
                 }
@@ -4341,7 +4342,7 @@ impl OrchestratorClient {
 
         // Always re-probe, ignoring cache
         let (probed_available, probe_reason) =
-            worker_probe::probe_worker(&persona.availability_check);
+            worker_probe::probe_worker_async(&persona.availability_check).await;
         self.probe_cache
             .set(&worker_key, probed_available, probe_reason.clone());
         let dispatch_error = persona.engine.dispatchability_error();
