@@ -2015,21 +2015,67 @@ impl Agent {
                 {
                     Ok(invocation) => invocation,
                     Err(failure) => {
-                        let reason = self
+                        let outcome = self
                             .handle_provider_authorization_failure(
                                 &session,
                                 &invocation_id,
                                 &failure,
                             )
                             .await;
-                        let message = Message::assistant().with_text(format!(
-                            "I did not send this request because provider spend could not be authorized: {reason}."
-                        ));
-                        persist_turn_ending_message(&session_manager, &session_config.id, &message)
-                            .await;
-                        yield AgentEvent::Message(message);
-                        state_guard.mark_error();
-                        break;
+                        // Y4a (harness loop, 2026-09-10, from Lane A12's M12
+                        // forensics): when the handler got the gate headlessly
+                        // auto-answered it ALSO minted a `granted_via_gate=1`,
+                        // `state='pending'` reservation under this very
+                        // `invocation_id` — a paid-for authorization. Reusing
+                        // that id here takes `reserve_provider_invocation`'s
+                        // early idempotent lookup (`AlreadyReserved`), so the
+                        // call goes out on THIS turn. Pre-Y4a the code always
+                        // fell through to the message + `break` below, and the
+                        // `reusable_gate_grant_invocation_id` seam above could
+                        // only consume the grant on a LATER turn — which a
+                        // coordinator never gets, because its turn ending is
+                        // the run ending (A12: fx01 and fx09 each threw away a
+                        // correct worker result this way; fx07 was truncated).
+                        // Exactly one retry, never a loop: a second failure
+                        // takes the unchanged park path.
+                        let retried = if outcome.gate_grant_minted {
+                            match self
+                                .reserve_provider_invocation(
+                                    &session,
+                                    &turn_provider,
+                                    invocation_id.clone(),
+                                )
+                                .await
+                            {
+                                Ok(invocation) => Some(invocation),
+                                Err(retry_failure) => {
+                                    tracing::warn!(
+                                        session_id = %session_config.id,
+                                        invocation_id = %invocation_id,
+                                        "reservation gate was auto-granted but the single retry \
+                                         still could not authorize the call ({retry_failure}); \
+                                         ending the turn"
+                                    );
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        match retried {
+                            Some(invocation) => invocation,
+                            None => {
+                                let reason = outcome.detail;
+                                let message = Message::assistant().with_text(format!(
+                                    "I did not send this request because provider spend could not be authorized: {reason}."
+                                ));
+                                persist_turn_ending_message(&session_manager, &session_config.id, &message)
+                                    .await;
+                                yield AgentEvent::Message(message);
+                                state_guard.mark_error();
+                                break;
+                            }
+                        }
                     }
                 };
 
