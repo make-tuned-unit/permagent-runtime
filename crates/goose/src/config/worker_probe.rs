@@ -108,6 +108,12 @@ impl ProbeCache {
 ///
 /// Returns `(available, reason)` where reason is `None` if available,
 /// or a human-readable explanation if not.
+///
+/// Blocking: `model_loaded:` performs a local HTTP request with a two-second
+/// timeout. It is safe to call from an async context — `probe_model_loaded`
+/// isolates the blocking HTTP client on a thread of its own — but async callers
+/// should prefer [`probe_worker_async`] so that wait never lands on a reactor
+/// thread.
 pub fn probe_worker(check: &str) -> (bool, Option<String>) {
     if check == "always" || check.is_empty() {
         return (true, None);
@@ -129,6 +135,24 @@ pub fn probe_worker(check: &str) -> (bool, Option<String>) {
         false,
         Some(format!("Unknown availability_check format: {}", check)),
     )
+}
+
+/// [`probe_worker`], run on a blocking thread.
+///
+/// `probe_worker` can block for up to two seconds (`model_loaded:` does a local
+/// HTTP call), so an async caller that invokes it directly stalls a reactor
+/// thread for that long. Every other async caller in the tree already wraps it
+/// in `spawn_blocking` — `goose-server`'s worker routes, `app_perception`,
+/// `reply_parts` — and this is that step, named once so the orchestrator's tool
+/// handlers do not have to open-code it.
+///
+/// Correctness does not depend on using this: `probe_model_loaded` keeps the
+/// blocking HTTP client off the caller's thread whatever the caller's context.
+pub async fn probe_worker_async(check: &str) -> (bool, Option<String>) {
+    let check = check.to_string();
+    tokio::task::spawn_blocking(move || probe_worker(&check))
+        .await
+        .unwrap_or_else(|e| (false, Some(format!("Worker availability probe failed: {e}"))))
 }
 
 /// Probe for a binary against Permagent's augmented search path.
@@ -188,7 +212,47 @@ fn probe_api_credential(env_var: &str) -> (bool, Option<String>) {
     }
 }
 
+/// Ollama's `/api/tags` check, run on a thread of its own.
+///
+/// The thread is not an optimisation, it is the correctness step. The body
+/// below builds a `reqwest::blocking::Client`, and in a debug build
+/// `reqwest::blocking::wait::enter` asserts it is not already inside a runtime
+/// by *constructing a current-thread tokio runtime and immediately dropping it*
+/// (`reqwest-0.13.4/src/blocking/wait.rs:80`). Dropping a runtime on a thread
+/// that is inside an async context kills the process:
+///
+/// ```text
+/// thread 'main' panicked at tokio/src/runtime/blocking/shutdown.rs:51:21:
+/// Cannot drop a runtime in a context where blocking is not allowed.
+/// ```
+///
+/// That is how a live harness run died on 2026-09-10 (fixture
+/// `harness-cli-argparse-log-filter`): the coordinator called
+/// `list_workers { refresh: true }`, the cleared cache forced a real probe, and
+/// the orchestrator's async tool handler was calling [`probe_worker`] inline.
+///
+/// [`probe_worker`] is synchronous and has many callers — some async, some on
+/// threads with no runtime at all, and one inside a `.map()` closure that
+/// cannot `.await` — so the guarantee belongs here, at the single place that
+/// owns the blocking client, rather than being re-derived at each call site.
 fn probe_model_loaded(model: &str) -> (bool, Option<String>) {
+    let model = model.to_string();
+    let spawned = std::thread::Builder::new()
+        .name("worker-probe-ollama".to_string())
+        .spawn(move || probe_model_loaded_on_this_thread(&model));
+
+    match spawned {
+        Ok(handle) => handle
+            .join()
+            .unwrap_or_else(|_| (false, Some("Ollama availability probe panicked".to_string()))),
+        Err(e) => (false, Some(format!("Ollama availability probe could not start: {e}"))),
+    }
+}
+
+/// The probe body. Only ever called on the dedicated thread that
+/// [`probe_model_loaded`] spawns, which is what makes `reqwest::blocking` safe
+/// here; call it from anywhere else and the panic above comes back.
+fn probe_model_loaded_on_this_thread(model: &str) -> (bool, Option<String>) {
     // Synchronous HTTP check against Ollama's local API.
     // Uses a short timeout since Ollama should be local.
     let url = "http://localhost:11434/api/tags";
@@ -408,6 +472,35 @@ mod tests {
         let (ok, reason) = probe_worker("model_loaded:nonexistent-model");
         assert!(!ok);
         assert!(reason.is_some());
+    }
+
+    /// Regression (2026-09-10, harness fixture
+    /// `harness-cli-argparse-log-filter`): the coordinator called
+    /// `list_workers { refresh: true }`, the cleared cache forced a real probe,
+    /// and the CLI died with
+    ///
+    /// ```text
+    /// thread 'main' panicked at tokio/src/runtime/blocking/shutdown.rs:51:21:
+    /// Cannot drop a runtime in a context where blocking is not allowed.
+    /// ```
+    ///
+    /// because `probe_model_loaded` built a `reqwest::blocking` client — and so
+    /// built and dropped that client's private runtime — on a tokio worker
+    /// thread.
+    ///
+    /// This is that call, from inside a runtime. It panicked before the fix.
+    /// Unlike `model_loaded_ollama_not_running` it is not `#[ignore]`d, because
+    /// it does not care which verdict comes back: it asserts only that a
+    /// verdict comes back at all, which holds whether or not Ollama is running
+    /// on the machine running the test.
+    #[tokio::test]
+    async fn model_loaded_probe_does_not_panic_inside_a_runtime() {
+        let (ok, reason) = probe_worker("model_loaded:permagent-probe-fixture-no-such-model");
+        assert_eq!(
+            ok,
+            reason.is_none(),
+            "a probe reports a reason exactly when it reports unavailable: {reason:?}"
+        );
     }
 
     #[test]
