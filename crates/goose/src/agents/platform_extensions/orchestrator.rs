@@ -2205,6 +2205,13 @@ fn parent_extensions_fn(context: &PlatformExtensionContext) -> Vec<ExtensionConf
 /// (#211) capturing WHY it was chosen — the required capabilities, and every
 /// candidate's availability / cost tier / load at the selection moment. Stored
 /// on the goal card so a dispatch decision is auditable after the fact.
+///
+/// E4 (harness loop, Round E): `Debug` added so `select_requested_worker_
+/// refuses_an_external_pin_when_restricted_to_internal`'s `.expect_err(...)`
+/// can format the `Ok` case in its panic message — `expect_err`/`unwrap_err`
+/// require `T: Debug` unconditionally, even on the success path this test
+/// never takes.
+#[derive(Debug)]
 pub(crate) struct WorkerSelection {
     pub worker_key: String,
     pub snapshot: serde_json::Value,
@@ -2272,11 +2279,30 @@ async fn code_map_instructions_block(
 /// the caller believes it took effect. Each refusal names the roster keys that
 /// WOULD work, since the common cause is a typo or a worker that is real but
 /// not installed.
+///
+/// `restrict_to_internal_engine` (E4, harness loop Round E, from Lane F9
+/// forensics 2026-09-10): fx08's coordinator, running under a headless
+/// policy with `restrict_ranked_selection_to_internal_engine: true`
+/// (`PERMAGENT_HEADLESS_WORKER=internal`), explicitly requested
+/// `claude_code`, then `cursor`, then `codex` in turn after its first
+/// dispatch attempt failed — every one of them an `ExternalCli` engine, and
+/// every one honoured by THIS function despite the policy, because an
+/// explicit `worker_key` pin bypassed [`worker_engine_allowed_for_ranked_dispatch`]'s
+/// restriction entirely (that check previously lived only in
+/// [`select_worker_detailed`]'s ranked path — see that function's own `T2`
+/// comment). Each of the three then failed downstream on
+/// `ExternalCliEngine::validate_billing_contract`'s durable-identity check
+/// (`goal_engine.rs`) with an honest but confusing error, having already
+/// spent an attempt each. An internal-only headless session must never be
+/// ABLE to select an external engine, explicit pin or not — refusing here,
+/// before any attempt is spent, is the same shape of loud, named refusal
+/// this function already gives for an unavailable or incapable worker.
 pub(crate) async fn select_requested_worker(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     probe_cache: &ProbeCache,
     goal: &cards::Card,
     requested: &str,
+    restrict_to_internal_engine: bool,
 ) -> Result<WorkerSelection, String> {
     let config = agent_identity::load_agent_config();
     let runnable = || {
@@ -2284,6 +2310,12 @@ pub(crate) async fn select_requested_worker(
             .workers
             .iter()
             .filter(|(_, persona)| persona.engine.is_dispatchable())
+            .filter(|(_, persona)| {
+                worker_engine_allowed_for_ranked_dispatch(
+                    &persona.engine,
+                    restrict_to_internal_engine,
+                )
+            })
             .map(|(k, _)| k.as_str())
             .collect();
         keys.sort_unstable();
@@ -2297,6 +2329,16 @@ pub(crate) async fn select_requested_worker(
             runnable()
         )
     })?;
+
+    if !worker_engine_allowed_for_ranked_dispatch(&persona.engine, restrict_to_internal_engine) {
+        return Err(format!(
+            "Worker '{}' is an external-CLI engine, but this headless run is restricted to \
+             internal workers only (PERMAGENT_HEADLESS_WORKER=internal) — not dispatched. \
+             Dispatchable workers: {}.",
+            requested,
+            runnable()
+        ));
+    }
 
     if let Some(reason) = persona.engine.dispatchability_error() {
         return Err(format!(
@@ -2750,11 +2792,25 @@ pub(crate) async fn dispatch_goal_fn(
     // 2026-08-09, when exactly that instruction routed to claude_code. Every
     // refusal below leaves the card in Ready and changes no metadata, so a
     // rejected pin is retryable rather than a half-dispatched goal.
+    //
+    // E4 (harness loop, Round E): `restrict_to_internal_engine` is computed
+    // ONCE, ahead of the match, and applies to BOTH arms — see
+    // `select_requested_worker`'s own doc comment for why the explicit-pin
+    // arm needs it too now (fx08).
+    let restrict_to_internal_engine =
+        policy.is_some_and(|p| p.restrict_ranked_selection_to_internal_engine);
     let selection = match requested_worker {
-        Some(requested) => select_requested_worker(&pool, probe_cache, &card, requested).await?,
+        Some(requested) => {
+            select_requested_worker(
+                &pool,
+                probe_cache,
+                &card,
+                requested,
+                restrict_to_internal_engine,
+            )
+            .await?
+        }
         None => {
-            let restrict_to_internal_engine =
-                policy.is_some_and(|p| p.restrict_ranked_selection_to_internal_engine);
             select_worker_detailed(&pool, probe_cache, &card, restrict_to_internal_engine).await?
         }
     };
@@ -4956,6 +5012,10 @@ impl OrchestratorClient {
                 "worker exited with no error and no landing; auto-retrying once before \
                  escalation (R3, harness loop Lane D1)",
                 &[("retry_count", serde_json::json!(1))],
+                // E2 (harness loop, Round E): this arm is gated on
+                // `!session_alive` a few lines above — the dispatched
+                // session is confirmed dead before we ever get here.
+                false,
             )
             .await
             {
@@ -11383,6 +11443,10 @@ async fn resume_single_goal(
                 new_attempt,
                 abandon_reason,
                 &extra_meta,
+                // E2 (harness loop, Round E): this is the daemon-restart
+                // reconciler — `abandon_reason` above already says "worker
+                // session ended"; the process this session ran in is gone.
+                false,
             )
             .await
             .map_err(String::from)?;
@@ -14524,17 +14588,21 @@ mod tests {
         );
     }
 
-    /// T2: an explicitly requested worker is honoured regardless of the
-    /// restriction — `select_requested_worker` (the `Some(requested)` arm of
-    /// `dispatch_goal_fn`'s worker selection) never consults the restriction
-    /// flag at all; only the ranked (`None`) arm does. Pinned here at the
-    /// `select_requested_worker` level (not the local-binary-dependent
-    /// availability check) — requesting `permagent` (always available,
-    /// InternalSubagent) resolves identically whether or not a headless
-    /// policy would have restricted ranked selection, because pinning a
-    /// worker never goes through the restricted path in the first place.
+    /// E4 (harness loop, Round E, from Lane F9 forensics 2026-09-10) —
+    /// corrects this test's prior claim. Pre-E4, `select_requested_worker`
+    /// (the `Some(requested)` arm of `dispatch_goal_fn`'s worker selection)
+    /// never consulted the restriction flag at all — only the ranked
+    /// (`None`) arm did — which is exactly how fx08's coordinator, under
+    /// `PERMAGENT_HEADLESS_WORKER=internal`, pinned `claude_code`, then
+    /// `cursor`, then `codex` in turn and had every one of them honoured
+    /// before failing downstream on a durable-identity check. Requesting an
+    /// InternalSubagent worker (`permagent`, always available) is
+    /// unaffected by the restriction either way — this pins that the
+    /// UNRESTRICTED case still resolves it normally, both with and without
+    /// a policy asking for restriction (since it is internal either way,
+    /// there is nothing to restrict).
     #[tokio::test]
-    async fn select_requested_worker_ignores_the_ranked_selection_restriction() {
+    async fn select_requested_worker_honours_an_internal_pin_regardless_of_restriction() {
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(crate::session::SessionManager::new(
             tmp.path().to_path_buf(),
@@ -14543,11 +14611,72 @@ mod tests {
         let card = setup_goal_in_state(&pool, "ready", 0).await;
         let probe_cache = ProbeCache::new();
 
-        let selection = select_requested_worker(&pool, &probe_cache, &card, "permagent")
+        for restrict in [false, true] {
+            let selection = select_requested_worker(
+                &pool,
+                &probe_cache,
+                &card,
+                "permagent",
+                restrict,
+            )
             .await
-            .expect("an explicitly requested, always-available worker must be honoured");
-        assert_eq!(selection.worker_key, "permagent");
-        assert_eq!(selection.snapshot["selection_mode"], "explicitly_requested");
+            .expect("an explicitly requested, always-available internal worker must be honoured");
+            assert_eq!(selection.worker_key, "permagent");
+            assert_eq!(selection.snapshot["selection_mode"], "explicitly_requested");
+        }
+    }
+
+    /// E4 pin, fx08's exact shape: an internal-only headless session
+    /// (`restrict_to_internal_engine: true`) must refuse an EXPLICIT pin to
+    /// an external-CLI worker, honestly, before spending an attempt —
+    /// rather than honouring the pin and letting it fail three attempts
+    /// later on `ExternalCliEngine::validate_billing_contract`'s durable-
+    /// identity check. Pre-fix: this call succeeds (the restriction is
+    /// silently ignored for a pinned request) — this assertion fails on
+    /// `.is_ok()` instead of the expected `Err`.
+    #[tokio::test]
+    async fn select_requested_worker_refuses_an_external_pin_when_restricted_to_internal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 0).await;
+        let probe_cache = ProbeCache::new();
+
+        let config = agent_identity::load_agent_config();
+        let Some((external_key, _)) = config.workers.iter().find(|(_, persona)| {
+            !matches!(
+                persona.engine,
+                agent_identity::WorkerEngineKind::InternalSubagent
+            )
+        }) else {
+            // No external-CLI worker configured in this test environment's
+            // roster — nothing to pin, nothing to refuse. Not a failure of
+            // this lane's fix; there is simply no fixture for it here.
+            return;
+        };
+
+        let err = select_requested_worker(&pool, &probe_cache, &card, external_key, true)
+            .await
+            .expect_err("a headless internal-only run must refuse an explicit external pin");
+        assert!(
+            err.contains("restricted to internal workers only"),
+            "the refusal must say WHY, not just fail: {err}"
+        );
+
+        // Unrestricted, this fix must add NO new refusal — the external
+        // worker may still fail for its own, pre-existing reasons (e.g. its
+        // CLI binary is not installed on this test machine), but never for
+        // "restricted to internal workers only".
+        if let Err(unrestricted_err) =
+            select_requested_worker(&pool, &probe_cache, &card, external_key, false).await
+        {
+            assert!(
+                !unrestricted_err.contains("restricted to internal workers only"),
+                "an unrestricted run must never see this lane's new refusal: {unrestricted_err}"
+            );
+        }
     }
 
     /// T2: no policy (the daemon's own `install_dispatch_hook` shape) leaves

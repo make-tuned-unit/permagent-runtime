@@ -2001,7 +2001,11 @@ impl Agent {
                     Ok(invocation) => invocation,
                     Err(failure) => {
                         let reason = self
-                            .handle_provider_authorization_failure(&session, &failure)
+                            .handle_provider_authorization_failure(
+                                &session,
+                                &invocation_id,
+                                &failure,
+                            )
                             .await;
                         let message = Message::assistant().with_text(format!(
                             "I did not send this request because provider spend could not be authorized: {reason}."

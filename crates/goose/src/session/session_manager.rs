@@ -799,6 +799,40 @@ impl SessionManager {
             .await
     }
 
+    /// Directly grant a reservation for an invocation whose gate a headless
+    /// policy has just auto-answered, bypassing `reserve_provider_invocation`'s
+    /// gate/hard threshold math entirely.
+    ///
+    /// E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10):
+    /// `reserve_provider_invocation`'s `NeedsGate` check is pure arithmetic
+    /// over `cost_ledger`/`cost_reservations` totals — answering the
+    /// DECISION changes nothing about those totals, so a plain retry of the
+    /// same call re-trips the identical gate immediately. This lets the
+    /// EXACT invocation that was just authorized skip straight to a
+    /// reservation instead of re-asking the gate for a request that already
+    /// got a yes. Idempotent: an existing reservation for `invocation_id` is
+    /// left untouched and its outcome reported back unchanged (mirrors
+    /// `reserve_provider_invocation`'s own `AlreadyReserved`/`AlreadySettled`
+    /// handling), never double-inserted.
+    pub async fn grant_reservation_after_gate_approval(
+        &self,
+        invocation_id: &str,
+        session_id: &str,
+        task_id: &str,
+        amount_usd: f64,
+        lease_until: &str,
+    ) -> Result<CostReservationOutcome> {
+        self.storage
+            .grant_reservation_after_gate_approval(
+                invocation_id,
+                session_id,
+                task_id,
+                amount_usd,
+                lease_until,
+            )
+            .await
+    }
+
     /// Settle a reservation and append its provider usage in one transaction.
     /// Duplicate invocation/call IDs are successful no-ops.
     // Every argument is a distinct piece of settlement evidence; collapsing them
@@ -2773,6 +2807,110 @@ impl SessionStorage {
         .bind(task_id)
         .bind(amount_usd)
         .bind(lease_until)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(CostReservationOutcome::Granted { reservation_id })
+    }
+
+    /// See [`SessionManager::grant_reservation_after_gate_approval`].
+    async fn grant_reservation_after_gate_approval(
+        &self,
+        invocation_id: &str,
+        session_id: &str,
+        task_id: &str,
+        amount_usd: f64,
+        lease_until: &str,
+    ) -> Result<CostReservationOutcome> {
+        if invocation_id.trim().is_empty() {
+            return Err(anyhow::anyhow!("provider invocation id must not be empty"));
+        }
+        if !amount_usd.is_finite() || amount_usd <= 0.0 {
+            return Err(anyhow::anyhow!(
+                "paid provider reservation must have a finite positive bound"
+            ));
+        }
+        if task_id.trim().is_empty() {
+            return Err(anyhow::anyhow!(
+                "paid provider reservation requires a durable task identity"
+            ));
+        }
+        let lease_parsed = chrono::DateTime::parse_from_rfc3339(lease_until)
+            .map_err(|_| anyhow::anyhow!("provider reservation lease must be RFC3339"))?
+            .with_timezone(&chrono::Utc);
+        if lease_parsed <= chrono::Utc::now() {
+            return Ok(CostReservationOutcome::Unknown {
+                reason: "provider reservation lease is already expired".to_string(),
+            });
+        }
+        let lease_until = lease_parsed.to_rfc3339();
+
+        let pool = self.pool().await?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+        // Idempotent, same shape as `reserve_provider_invocation`'s own
+        // early lookup: never insert twice for one invocation_id.
+        if let Some((existing_id, existing_session, existing_task, state)) =
+            sqlx::query_as::<_, (String, String, Option<String>, String)>(
+                "SELECT reservation_id, session_id, task_id, state
+                 FROM cost_reservations WHERE invocation_id = ?",
+            )
+            .bind(invocation_id)
+            .fetch_optional(&mut *tx)
+            .await?
+        {
+            if existing_session != session_id || existing_task.as_deref() != Some(task_id) {
+                return Err(anyhow::anyhow!(
+                    "provider invocation id is already bound to another budget scope"
+                ));
+            }
+            tx.commit().await?;
+            return Ok(match state.as_str() {
+                "pending" => CostReservationOutcome::AlreadyReserved {
+                    reservation_id: existing_id,
+                },
+                "settled" => CostReservationOutcome::AlreadySettled {
+                    reservation_id: existing_id,
+                },
+                "unknown" => CostReservationOutcome::Unknown {
+                    reason: "provider reservation lease expired before settlement".to_string(),
+                },
+                "released" => CostReservationOutcome::Unknown {
+                    reason: "provider invocation reservation was already released".to_string(),
+                },
+                _ => CostReservationOutcome::Unknown {
+                    reason: format!("unrecognized reservation state: {state}"),
+                },
+            });
+        }
+
+        let session_exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if session_exists != 1 {
+            tx.commit().await?;
+            return Ok(CostReservationOutcome::Unknown {
+                reason: format!("session '{session_id}' does not exist"),
+            });
+        }
+
+        let reservation_id = format!("invocation:{invocation_id}");
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO cost_reservations
+                (reservation_id, invocation_id, session_id, task_id, amount_usd,
+                 state, lease_until, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+        )
+        .bind(&reservation_id)
+        .bind(invocation_id)
+        .bind(session_id)
+        .bind(task_id)
+        .bind(amount_usd)
+        .bind(&lease_until)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)

@@ -1453,6 +1453,79 @@ impl RoadmapDispatchGuard {
             goal.card_id
         )
     }
+
+    /// E3 (harness loop, Round E, from Lane F9 forensics 2026-09-10): fx10
+    /// — a headless coordinator called `decompose_roadmap`, its proposal's
+    /// approval decision was answered `approve-roadmap`, and the turn simply
+    /// ended without ever calling `create_roadmap`: 0 goal cards, no
+    /// dispatch, nothing for [`Self::undispatched_goal_for`] to see (there
+    /// is nothing to check when there are no cards at all — this is its
+    /// complement, "was a roadmap ever materialized").
+    ///
+    /// Durable-state-only, same discipline as `undispatched_goal_for`: a
+    /// session with no cards AND no approved roadmap-creation decision
+    /// minted by it is ordinary conversation, a no-op here. Returns the
+    /// nudge/park text when this session's approved proposal never produced
+    /// a single card.
+    async fn undecomposed_roadmap_for(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        session_id: &str,
+    ) -> Result<Option<String>, String> {
+        let cards = crate::cards::goal_cards_created_by_session(pool, session_id).await?;
+        if !cards.is_empty() {
+            // create_roadmap succeeded at least once for this session.
+            return Ok(None);
+        }
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT payload_json FROM decisions
+             WHERE kind = 'choice' AND status = 'answered' AND answer_choice_id = 'approve-roadmap'",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        let minted_this_session = rows.iter().any(|(payload_json,)| {
+            serde_json::from_str::<crate::decisions::ChoicePayload>(payload_json)
+                .ok()
+                .is_some_and(|payload| {
+                    payload.proposal.as_deref() == Some(crate::decisions::PROPOSAL_ROADMAP_CREATE)
+                        && payload
+                            .roadmap_approval
+                            .as_ref()
+                            .and_then(|r| r.minting_session_id.as_deref())
+                            == Some(session_id)
+                })
+        });
+        if !minted_this_session {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "roadmap {session_id}: decompose_roadmap's proposal was approved but \
+             create_roadmap was never called and no goal cards exist; call create_roadmap \
+             with the exact goals_json, proposal_hash, and approval_decision_id from \
+             decompose_roadmap's own result, or escalate if the roadmap should not be created"
+        )))
+    }
+}
+
+/// Whether any tool call anywhere in `messages` was `escalate` — the honest
+/// exit valve for [`RoadmapDispatchGuard::undecomposed_roadmap_for`] (E3,
+/// harness loop Round E): a coordinator that decides mid-roadmap the
+/// proposal should not be created after all correctly stopped to let a
+/// human decide; that is not the fx10 "stuck" shape and must never be held.
+fn turn_called_escalate(messages: &[Message]) -> bool {
+    use crate::conversation::message::MessageContent;
+    messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .any(|content| {
+            let MessageContent::ToolRequest(req) = content else {
+                return false;
+            };
+            let Ok(call) = req.tool_call.as_ref() else {
+                return false;
+            };
+            call.name.rsplit("__").next().unwrap_or(call.name.as_ref()) == "escalate"
+        })
 }
 
 impl Default for RoadmapDispatchGuard {
@@ -1478,17 +1551,33 @@ impl AfterTurn for RoadmapDispatchGuard {
             // hold.
             Err(_) => return AfterTurnAction::Allow,
         };
-        match Self::undispatched_goal_for(&pool, ctx.session_id).await {
-            Ok(None) | Err(_) => AfterTurnAction::Allow,
-            Ok(Some(goal)) => {
-                let message = Self::message(ctx.session_id, &goal);
-                if ctx.prior_holds < crate::cost_router::MAX_HOLDS {
-                    AfterTurnAction::Continue { inject: message }
+        if let Ok(Some(goal)) = Self::undispatched_goal_for(&pool, ctx.session_id).await {
+            let message = Self::message(ctx.session_id, &goal);
+            return if ctx.prior_holds < crate::cost_router::MAX_HOLDS {
+                AfterTurnAction::Continue { inject: message }
+            } else {
+                AfterTurnAction::Park { reason: message }
+            };
+        }
+
+        // E3 (harness loop, Round E, from Lane F9 forensics 2026-09-10):
+        // complementary to the dispatch check above — that one is a no-op
+        // when a session has zero cards; this catches the shape where it
+        // has zero cards because `create_roadmap` was never called at all.
+        // An explicit `escalate` anywhere in this session's transcript is
+        // an honest way to end the turn without creating the roadmap; never
+        // held in that case.
+        if !turn_called_escalate(ctx.messages) {
+            if let Ok(Some(reason)) = Self::undecomposed_roadmap_for(&pool, ctx.session_id).await {
+                return if ctx.prior_holds < crate::cost_router::MAX_HOLDS {
+                    AfterTurnAction::Continue { inject: reason }
                 } else {
-                    AfterTurnAction::Park { reason: message }
-                }
+                    AfterTurnAction::Park { reason }
+                };
             }
         }
+
+        AfterTurnAction::Allow
     }
 }
 
@@ -3204,6 +3293,168 @@ mod tests {
                 .after_turn(&AfterTurnContext {
                     session_id: &session_id,
                     messages: &empty,
+                    prior_holds: 0,
+                })
+                .await,
+            AfterTurnAction::Allow
+        );
+    }
+
+    // ── RoadmapDispatchGuard's E3 half: decompose approved, never created ──
+
+    /// Insert an ANSWERED, approved roadmap-creation decision minted by
+    /// `session_id` — the durable trace `decompose_roadmap` leaves once its
+    /// proposal is approved (headlessly or by a human), independent of
+    /// whether `create_roadmap` was ever subsequently called.
+    async fn insert_answered_roadmap_decision(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        project_id: &str,
+        session_id: &str,
+    ) {
+        let decision = crate::decisions::create_decision(
+            pool,
+            crate::decisions::NewDecision {
+                kind: "choice".to_string(),
+                project_id: Some(project_id.to_string()),
+                headline: Some("Approve this roadmap?".to_string()),
+                detail: Some("Approve exact roadmap".to_string()),
+                payload: serde_json::json!({
+                    "question": "Create this exact roadmap?",
+                    "options": [
+                        {"id": "approve-roadmap", "label": "Approve and begin"},
+                        {"id": "reject-roadmap", "label": "Reject"}
+                    ],
+                    "proposal": crate::decisions::PROPOSAL_ROADMAP_CREATE,
+                    "roadmap_approval": {
+                        "proposal_hash": "deadbeef",
+                        "minting_session_id": session_id,
+                    }
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::decisions::answer_decision(
+            pool,
+            &decision.id,
+            &crate::decisions::DecisionAnswer {
+                answer: "choice".to_string(),
+                choice_id: Some("approve-roadmap".to_string()),
+                note: None,
+                input_text: None,
+            },
+            crate::decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// E3 (harness loop, Round E, from Lane F9 forensics 2026-09-10) pin,
+    /// fx10's exact shape: `decompose_roadmap`'s proposal was approved but
+    /// `create_roadmap` was never called — 0 goal cards. Must hold the turn
+    /// with a nudge naming the exact missing step, not Allow. Pre-fix: the
+    /// guard has no `undecomposed_roadmap_for` check at all, and
+    /// `undispatched_goal_for` is a no-op here (no cards exist to check),
+    /// so this call falls through to `AfterTurnAction::Allow` — this test's
+    /// `match` panics on the `other => panic!` arm.
+    #[tokio::test]
+    async fn fx10_shape_decompose_without_create_holds_the_turn() {
+        let (pool, project_id) = singleton_pool_with_fresh_project().await;
+        let session_id = format!("fx10-{}", uuid::Uuid::now_v7());
+        insert_answered_roadmap_decision(&pool, &project_id, &session_id).await;
+
+        let guard = RoadmapDispatchGuard::new();
+        let empty: Vec<Message> = vec![];
+        match guard
+            .after_turn(&AfterTurnContext {
+                session_id: &session_id,
+                messages: &empty,
+                prior_holds: 0,
+            })
+            .await
+        {
+            AfterTurnAction::Continue { inject } => {
+                assert!(inject.contains("create_roadmap"), "{inject}");
+                assert!(inject.contains(&session_id), "{inject}");
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    /// E3: bounded like every other hook here — once the shared hold budget
+    /// is exhausted, Parks with the same reason instead of holding forever
+    /// (never an infinite loop).
+    #[tokio::test]
+    async fn fx10_shape_parks_once_the_hold_budget_is_exhausted() {
+        let (pool, project_id) = singleton_pool_with_fresh_project().await;
+        let session_id = format!("fx10-exhausted-{}", uuid::Uuid::now_v7());
+        insert_answered_roadmap_decision(&pool, &project_id, &session_id).await;
+
+        let guard = RoadmapDispatchGuard::new();
+        let empty: Vec<Message> = vec![];
+        match guard
+            .after_turn(&AfterTurnContext {
+                session_id: &session_id,
+                messages: &empty,
+                prior_holds: crate::cost_router::MAX_HOLDS,
+            })
+            .await
+        {
+            AfterTurnAction::Park { reason } => {
+                assert!(reason.contains("create_roadmap"), "{reason}");
+            }
+            other => panic!("expected Park, got {other:?}"),
+        }
+    }
+
+    /// E3: after `create_roadmap` succeeds (a goal card now exists,
+    /// dispatched so the guard's FIRST check does not also flag it), the
+    /// guard releases — the exact "after create → released" pin.
+    #[tokio::test]
+    async fn after_create_roadmap_the_guard_releases() {
+        let (pool, project_id) = singleton_pool_with_fresh_project().await;
+        let session_id = format!("fx10-created-{}", uuid::Uuid::now_v7());
+        insert_answered_roadmap_decision(&pool, &project_id, &session_id).await;
+        insert_session_goal_card(
+            &pool,
+            &project_id,
+            &session_id,
+            "in_progress",
+            true,
+            Some("worker-sess-1"),
+        )
+        .await;
+
+        let guard = RoadmapDispatchGuard::new();
+        let empty: Vec<Message> = vec![];
+        assert_eq!(
+            guard
+                .after_turn(&AfterTurnContext {
+                    session_id: &session_id,
+                    messages: &empty,
+                    prior_holds: 0,
+                })
+                .await,
+            AfterTurnAction::Allow
+        );
+    }
+
+    /// E3: an explicit `escalate` anywhere in the transcript is an honest
+    /// way to end the turn without creating the roadmap — never held.
+    #[tokio::test]
+    async fn an_explicit_escalate_releases_the_fx10_shape_guard() {
+        let (pool, project_id) = singleton_pool_with_fresh_project().await;
+        let session_id = format!("fx10-escalated-{}", uuid::Uuid::now_v7());
+        insert_answered_roadmap_decision(&pool, &project_id, &session_id).await;
+
+        let guard = RoadmapDispatchGuard::new();
+        let escalated = vec![tool_exchange("escalate", "call-1", true)];
+        assert_eq!(
+            guard
+                .after_turn(&AfterTurnContext {
+                    session_id: &session_id,
+                    messages: &escalated,
                     prior_holds: 0,
                 })
                 .await,

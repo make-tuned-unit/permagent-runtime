@@ -565,6 +565,13 @@ async fn persist_landing_outcome(
 ) {
     let landing_json = serde_json::json!({
         "outcome": outcome.outcome_key(),
+        // E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10):
+        // explicit trunk-reached signal, independent of `outcome`'s coarser
+        // grouping and of any external grading/overlay step's own verdict —
+        // F9 found fx02/fx03 graded "solved" while `main`'s HEAD never
+        // moved. So M10's analysis (and any other reader) can tell a
+        // genuine land apart from a fix that stayed in the working tree.
+        "trunk_state": outcome.trunk_state(),
         "landed_head": outcome.landed_head(),
         "describe": outcome.describe(),
         "at": chrono::Utc::now().to_rfc3339(),
@@ -2793,6 +2800,14 @@ mod tests {
             landing.get("landed_head").and_then(|v| v.as_str()),
             Some(head.as_str())
         );
+        // E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10):
+        // pin the new explicit trunk-reached field. Pre-fix: the
+        // `trunk_state` key does not exist (this assertion fails on `None`
+        // != `Some("landed_on_trunk")`).
+        assert_eq!(
+            landing.get("trunk_state").and_then(|v| v.as_str()),
+            Some("landed_on_trunk")
+        );
     }
 
     /// R1 (harness loop, Lane D1, from Lane F8 forensics): the eval harness's
@@ -3065,6 +3080,13 @@ mod tests {
                 .is_some_and(|d| d.contains("root_path")),
             "the recorded reason must name what actually went wrong: {landing:?}"
         );
+        // E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10): a
+        // Skipped outcome (nothing ever resolved a landing target) must
+        // read as left_in_working_tree — never landed_on_trunk.
+        assert_eq!(
+            landing.get("trunk_state").and_then(|v| v.as_str()),
+            Some("left_in_working_tree")
+        );
     }
 
     /// A trunk on `main` that has moved (a second commit) since
@@ -3199,6 +3221,15 @@ mod tests {
                 .map(|v| v.is_null())
                 .unwrap_or(true),
             "a NeedsMerge outcome must never carry a landed_head"
+        );
+        // E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10): a
+        // NeedsMerge outcome is real, committed work that is NOT on trunk —
+        // must read as left_in_working_tree, never landed_on_trunk. Pre-fix:
+        // the `trunk_state` key does not exist at all.
+        assert_eq!(
+            landing.get("trunk_state").and_then(|v| v.as_str()),
+            Some("left_in_working_tree"),
+            "pre-fix this field never existed at all"
         );
     }
 

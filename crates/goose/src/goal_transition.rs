@@ -772,6 +772,43 @@ pub async fn park_goal_with_meta(
     Ok(())
 }
 
+/// Persist an explicit, human-readable refusal reason onto the card when
+/// [`requeue_goal_with_meta`]'s guard refuses (E2, harness loop Round E) —
+/// the spec requires a refusal to be recorded on the card, not merely
+/// returned as an `Err` a caller might drop. Merges into the existing
+/// metadata rather than replacing it, and touches neither `goal_state` nor
+/// the card's column — a refused requeue changes nothing about where the
+/// card lives or what state it is in.
+async fn record_requeue_refusal_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    card_id: &str,
+    existing_metadata: &serde_json::Map<String, serde_json::Value>,
+    actor: &str,
+    reason: &str,
+) -> Result<(), GuardError> {
+    let mut meta = existing_metadata.clone();
+    meta.insert(
+        "requeue_refused_reason".to_string(),
+        serde_json::Value::String(reason.to_string()),
+    );
+    meta.insert(
+        "requeue_refused_at".to_string(),
+        serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+    );
+    let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
+        .map_err(|e| GuardError::Db(e.to_string()))?;
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    decisions::append_audit_tx(tx, "none", Some(card_id), actor, 0, "requeue_refused", None)
+        .await
+        .map_err(GuardError::Db)?;
+    Ok(())
+}
+
 /// Requeue a goal whose worker died (e.g. daemon restart): InProgress → Ready
 /// with `new_attempt_count` recorded as the attempt count and the abandonment
 /// reason recorded as `last_error`.
@@ -786,7 +823,11 @@ pub async fn requeue_goal(
     new_attempt_count: u64,
     reason: &str,
 ) -> Result<(), GuardError> {
-    requeue_goal_with_meta(pool, card_id, actor, new_attempt_count, reason, &[]).await
+    // The dead-worker contract this wrapper has always documented (see the
+    // doc comment above): every existing caller of the 5-arg form already
+    // believes the dispatched session is gone, so `dispatched_session_alive:
+    // false` merely makes that belief explicit to the guard below.
+    requeue_goal_with_meta(pool, card_id, actor, new_attempt_count, reason, &[], false).await
 }
 
 /// [`requeue_goal`], additionally merging `extra_meta` into the card's metadata
@@ -796,6 +837,19 @@ pub async fn requeue_goal(
 /// (`restart_forgiven_lifecycle`) must land with the requeue it describes, or a
 /// crash between the two would hand the same goal a second free pass for the
 /// same interruption.
+///
+/// `dispatched_session_alive` (E2, harness loop Round E, from Lane F9/M9
+/// forensics 2026-09-10): a REQUIRED, caller-attested liveness assertion —
+/// this guard cannot see process-local session state on its own (that lives
+/// in the in-memory `AgentManager`, not the database this module reads), so
+/// the caller must establish death before calling, exactly as R3's own
+/// `!session_alive` check and the restart reconciler's "worker session gone"
+/// already do. Passing `true` here is refused unconditionally: it describes
+/// the one shape that produced F9's dominant failure class (4/6 of Round D's
+/// M9 fixtures) — a still-working, often-successful session stranded when
+/// the goal's own bookkeeping moved on to a second session dispatched over
+/// it. If a requeue is genuinely needed for a live session, the caller must
+/// cancel/mark that session first, then call this with `false`.
 pub async fn requeue_goal_with_meta(
     pool: &Pool<Sqlite>,
     card_id: &str,
@@ -803,6 +857,7 @@ pub async fn requeue_goal_with_meta(
     new_attempt_count: u64,
     reason: &str,
     extra_meta: &[(&str, serde_json::Value)],
+    dispatched_session_alive: bool,
 ) -> Result<(), GuardError> {
     // BEGIN IMMEDIATE: this guard reads the goal row / audit-chain head before
     // upgrading to a write; taking the write lock up front avoids the un-retryable
@@ -830,6 +885,44 @@ pub async fn requeue_goal_with_meta(
             card_id,
             binding.as_deref().unwrap_or("?")
         )));
+    }
+
+    // E2 (harness loop, Round E, from Lane F9/M9 forensics 2026-09-10): M9
+    // found genuinely-solved, landed goals (fx02/fx06 — trunk HEAD verified
+    // moved via git log) put right back to Ready by a plain requeue after
+    // landing, stranding the completed card in a state that reads as
+    // unfinished forever after. A card whose landing receipt already shows
+    // the fix reached trunk must never be requeued — there is nothing left
+    // to redo, and redoing it risks a second, conflicting attempt.
+    let already_landed = goal
+        .metadata
+        .get("dispatch_evidence")
+        .and_then(|v| v.get("landing"))
+        .and_then(|v| v.get("trunk_state"))
+        .and_then(|v| v.as_str())
+        == Some("landed_on_trunk");
+    if already_landed {
+        let refusal = format!(
+            "requeue refused: goal '{card_id}' already landed on trunk \
+             (dispatch_evidence.landing.trunk_state = landed_on_trunk) — requeuing would \
+             strand completed work, not redo it"
+        );
+        record_requeue_refusal_tx(&mut tx, card_id, &goal.metadata, actor, &refusal).await?;
+        tx.commit().await.map_err(db_err)?;
+        return Err(GuardError::Denied(refusal));
+    }
+
+    // E1/E2 (harness loop, Round E, from Lane F9 forensics 2026-09-10): see
+    // this function's doc comment — the caller-attested liveness check.
+    if dispatched_session_alive {
+        let refusal = format!(
+            "requeue refused: goal '{card_id}' has a live dispatched session — a goal may \
+             never be requeued out from under a session that is still running; cancel or \
+             confirm it dead first"
+        );
+        record_requeue_refusal_tx(&mut tx, card_id, &goal.metadata, actor, &refusal).await?;
+        tx.commit().await.map_err(db_err)?;
+        return Err(GuardError::Denied(refusal));
     }
 
     let journal_actor = journal_actor(actor, &goal.metadata);
@@ -3091,6 +3184,141 @@ mod tests {
                 .get("attempt_count")
                 .and_then(|v| v.as_u64()),
             Some(2)
+        );
+    }
+
+    /// E2 (harness loop, Round E, from Lane F9 forensics 2026-09-10): F9's
+    /// dominant failure class was exactly this call succeeding when it
+    /// should have refused — a goal requeued to a fresh session while its
+    /// dispatched session was still alive and working. Pre-fix:
+    /// `requeue_goal_with_meta` takes no `dispatched_session_alive`
+    /// parameter at all (fails to compile against this call).
+    #[tokio::test]
+    async fn requeue_refuses_when_the_dispatched_session_is_still_alive() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 1).await;
+
+        let err = requeue_goal_with_meta(
+            &pool,
+            &goal.id,
+            "system",
+            2,
+            "should never apply — the session is alive",
+            &[],
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, GuardError::Denied(_)),
+            "a live dispatched session must be a refusal, not a silent success: {err:?}"
+        );
+
+        // Refused: the card must stay exactly where it was, not move to Ready.
+        assert_eq!(state_of(&pool, &goal.id).await, "in_progress");
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(1),
+            "a refused requeue must never touch attempt_count"
+        );
+        // And the spec's "explicit reason recorded on the card" requirement.
+        assert!(
+            card.metadata_json
+                .get("requeue_refused_reason")
+                .and_then(|v| v.as_str())
+                .is_some_and(|r| r.contains("live dispatched session")),
+            "the refusal reason must be durably recorded on the card: {:?}",
+            card.metadata_json
+        );
+    }
+
+    /// E2: the guard's OTHER refusal — a goal whose landing receipt already
+    /// shows the fix reached trunk must never be requeued back to Ready,
+    /// even though its column binding is still `in_progress` (M9's own
+    /// observed shape: the requeue is what MOVES it to `ready` in the first
+    /// place — this guard has to catch it before that move, while the card
+    /// is still `in_progress`). Pre-fix: no `trunk_state` check exists at
+    /// all, so this call would have silently succeeded and reset the card.
+    #[tokio::test]
+    async fn requeue_refuses_a_goal_already_landed_on_trunk() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 0).await;
+        let mut meta = goal.metadata_json.as_object().cloned().unwrap();
+        meta.insert(
+            "dispatch_evidence".to_string(),
+            serde_json::json!({
+                "landing": { "outcome": "landed", "trunk_state": "landed_on_trunk" },
+            }),
+        );
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::Value::Object(meta).to_string())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let err = requeue_goal(
+            &pool,
+            &goal.id,
+            "system",
+            1,
+            "should never apply — already landed",
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, GuardError::Denied(_)), "{err:?}");
+        assert_eq!(
+            state_of(&pool, &goal.id).await,
+            "in_progress",
+            "a landed goal must never be bounced back to ready"
+        );
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(card
+            .metadata_json
+            .get("requeue_refused_reason")
+            .and_then(|v| v.as_str())
+            .is_some_and(|r| r.contains("landed on trunk")));
+    }
+
+    /// E2: D1's R3 silent-death redispatch must keep working through this
+    /// guard unchanged — it always attests `dispatched_session_alive: false`
+    /// (it checks `!session_alive` itself before ever calling requeue; see
+    /// `orchestrator.rs`'s `handle_goal_status`), so a real dead-session
+    /// requeue succeeds exactly once, same as before this lane.
+    #[tokio::test]
+    async fn requeue_with_meta_still_succeeds_for_a_genuinely_dead_session() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 0).await;
+        requeue_goal_with_meta(
+            &pool,
+            &goal.id,
+            decisions::ACTOR_SYSTEM,
+            1,
+            "worker exited with no error and no landing; auto-retrying once before escalation",
+            &[("retry_count", serde_json::json!(1))],
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(state_of(&pool, &goal.id).await, "ready");
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("retry_count")
+                .and_then(|v| v.as_u64()),
+            Some(1)
         );
     }
 

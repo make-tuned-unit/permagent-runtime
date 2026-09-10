@@ -96,6 +96,30 @@ impl LandOutcome {
         }
     }
 
+    /// Whether the fix actually reached the project's trunk
+    /// (`FastForwarded`/`AlreadyLanded`, `"landed_on_trunk"`) versus merely
+    /// existing off-trunk — an unmerged goal branch, an uncommitted
+    /// working-tree diff, or nothing at all (`NeedsMerge`/`NoCommits`/
+    /// `Skipped`, `"left_in_working_tree"`).
+    ///
+    /// E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10): F9
+    /// found fx02/fx03 graded "solved" by the eval driver's own
+    /// grading-time file overlay while `main`'s HEAD never moved — this
+    /// in-band field lets the landing receipt distinguish a genuine landed
+    /// outcome from one that stayed in the working tree, independent of
+    /// (and never trusting) an external driver's own verdict. This does not
+    /// change fx02/fx03's own history: their "solved" grade never called
+    /// `land_approved_goal` at all (no `approve_review` decision ever
+    /// fired), so this field was never written for them either — it guards
+    /// every run that DOES go through this path from here on.
+    pub fn trunk_state(&self) -> &'static str {
+        if self.is_landed() {
+            "landed_on_trunk"
+        } else {
+            "left_in_working_tree"
+        }
+    }
+
     /// The trunk sha the work actually landed at, when it did.
     pub fn landed_head(&self) -> Option<&str> {
         match self {
@@ -340,6 +364,47 @@ mod tests {
             trunk: "main".into()
         }
         .is_landed());
+    }
+
+    /// E1 (harness loop, Round E, from Lane F9 forensics 2026-09-10): the
+    /// landing receipt must distinguish "the fix actually reached trunk"
+    /// from every shape where it did not, independent of `outcome_key`'s own
+    /// coarser "landed"/"needs_merge"/"skipped" grouping (which already
+    /// folds `NeedsMerge` and `Skipped`/`NoCommits` together as "not
+    /// landed" but does not say so in a field named for exactly that).
+    /// Pre-fix: `trunk_state` does not exist at all (fails to compile).
+    #[test]
+    fn trunk_state_distinguishes_landed_from_everything_left_off_trunk() {
+        assert_eq!(
+            LandOutcome::FastForwarded {
+                branch: "goal/cli-1".into(),
+                trunk: "main".into(),
+                head: "deadbeefcafe".into(),
+            }
+            .trunk_state(),
+            "landed_on_trunk"
+        );
+        assert_eq!(
+            LandOutcome::AlreadyLanded {
+                trunk: "main".into(),
+            }
+            .trunk_state(),
+            "landed_on_trunk"
+        );
+        assert_eq!(
+            LandOutcome::NeedsMerge {
+                branch: "goal/cli-1".into(),
+                trunk: "main".into(),
+            }
+            .trunk_state(),
+            "left_in_working_tree",
+            "a real commit stuck on an unmerged branch is not on trunk"
+        );
+        assert_eq!(LandOutcome::NoCommits.trunk_state(), "left_in_working_tree");
+        assert_eq!(
+            LandOutcome::Skipped("no root_path".into()).trunk_state(),
+            "left_in_working_tree"
+        );
     }
 
     fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
