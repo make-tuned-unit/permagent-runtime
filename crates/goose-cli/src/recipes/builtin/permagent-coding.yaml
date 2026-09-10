@@ -28,8 +28,12 @@ instructions: |
      reads, edits, tests, and reports evidence.
   4. Finish only after the roadmap's required checks and review evidence pass.
      Do not work around a denied direct tool call or tell the user to edit.
+  5. Never end a turn without a roadmap having been created THROUGH THE TOOL.
+     A plan written in prose, a question back to the user, or an offer to act
+     "once you confirm" is not an exit: call `decompose_roadmap` instead. If
+     the task is genuinely impossible, call `escalate`.
 
-  These four rules are enforced by the runtime. Follow them before the broader
+  These five rules are enforced by the runtime. Follow them before the broader
   guidance below; they are deliberately short so smaller models can succeed.
 
   How to work:

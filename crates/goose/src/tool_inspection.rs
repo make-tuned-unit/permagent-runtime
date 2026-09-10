@@ -16,7 +16,7 @@ pub struct CodingDagInspector {
 }
 
 pub const CODING_DAG_INSPECTOR_NAME: &str = "coding_dag";
-const CODING_HARNESS_RECIPE_TITLE: &str = "Permagent Coding Harness";
+pub(crate) const CODING_HARNESS_RECIPE_TITLE: &str = "Permagent Coding Harness";
 
 impl CodingDagInspector {
     pub fn new(session_manager: std::sync::Arc<crate::session::SessionManager>) -> Self {
@@ -24,7 +24,17 @@ impl CodingDagInspector {
     }
 }
 
-fn is_top_level_coding_harness(
+/// The one definition of "this is the coding harness COORDINATOR" — the
+/// top-level planner session the recipe's protocol addresses, as opposed to
+/// a dispatched worker (which has a parent) or any other recipe.
+///
+/// Shared, not copied: [`CodingDagInspector`] uses it to decide whether a
+/// mutation must be refused here, and
+/// [`NoRoadmapGuard`](crate::after_turn::NoRoadmapGuard) uses the identical
+/// predicate to decide whether a turn may end without a roadmap. Two guards
+/// enforcing halves of the same protocol must never disagree about who they
+/// apply to.
+pub(crate) fn is_top_level_coding_harness(
     recipe_title: Option<&str>,
     parent_session_id: Option<&str>,
 ) -> bool {

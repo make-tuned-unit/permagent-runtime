@@ -1588,6 +1588,16 @@ impl RoadmapDispatchGuard {
 /// proposal should not be created after all correctly stopped to let a
 /// human decide; that is not the fx10 "stuck" shape and must never be held.
 fn turn_called_escalate(messages: &[Message]) -> bool {
+    turn_called_any_tool(messages, &["escalate"])
+}
+
+/// Whether any tool request anywhere in `messages` has one of `names` as its
+/// BASE tool name — the part after the extension prefix, so `orchestrator__
+/// decompose_roadmap` and a bare `decompose_roadmap` are the same call. The
+/// shared spine of [`turn_called_escalate`] and
+/// [`NoRoadmapGuard`]'s roadmap check, so the two can never drift on how a
+/// tool name is matched.
+fn turn_called_any_tool(messages: &[Message], names: &[&str]) -> bool {
     use crate::conversation::message::MessageContent;
     messages
         .iter()
@@ -1599,7 +1609,8 @@ fn turn_called_escalate(messages: &[Message]) -> bool {
             let Ok(call) = req.tool_call.as_ref() else {
                 return false;
             };
-            call.name.rsplit("__").next().unwrap_or(call.name.as_ref()) == "escalate"
+            let base = call.name.rsplit("__").next().unwrap_or(call.name.as_ref());
+            names.contains(&base)
         })
 }
 
@@ -1653,6 +1664,208 @@ impl AfterTurn for RoadmapDispatchGuard {
         }
 
         AfterTurnAction::Allow
+    }
+}
+
+// ── Fourth implementor: a coordinator turn cannot end without a roadmap ────
+
+/// The two orchestrator tools that turn a plan into durable goal cards. Either
+/// one having been called is proof the coordinator did the thing the recipe
+/// asks for; neither having been called is [`NoRoadmapGuard`]'s whole trigger.
+const ROADMAP_TOOL_NAMES: [&str; 2] = ["decompose_roadmap", "create_roadmap"];
+
+/// Opening sentence of the injected nudge. Written once, then recognised again
+/// on any later pass through [`NoRoadmapGuard::after_turn`], which is how this
+/// hook enforces its own once-per-session budget.
+///
+/// It cannot use `AfterTurnContext::prior_holds` for that — the reply loop
+/// keeps ONE counter shared by every hook, so a hold spent by
+/// [`PrematureDoneGuard`] or [`ReviewerMandate`] would read here as "I already
+/// asked". The injected message is a durable user message in the conversation,
+/// so looking for it is both hook-local and survives restarts. Same mechanism,
+/// same reasoning, as [`REVIEW_ASK_OPENING`].
+const NO_ROADMAP_INJECT_OPENING: &str = "You ended the turn without a roadmap.";
+
+/// The message injected when a coding-harness coordinator's turn ends with no
+/// roadmap. Names the rule it is enforcing rather than merely scolding, and
+/// closes the two exits the live failures actually took — a prose plan
+/// (fx02: *"Say the word and I'll create and dispatch this immediately"*) and
+/// a question to the user (fx06, after `CodingDagInspector` denied its
+/// `shell` call).
+const NO_ROADMAP_INJECT_TEXT: &str =
+    "You ended the turn without a roadmap. Call `decompose_roadmap` \
+     now with the concrete nodes for this task. Do not ask the user, and do not describe a plan in \
+     prose: a proposed roadmap in a message, a question, or an offer to act \"once confirmed\" is \
+     not an exit from this turn. In unattended mode the operator's launch is already the approval. \
+     A tiny fix is a valid one-node roadmap. If a direct tool call was denied, that denial is the \
+     protocol working — decompose and let the dispatched worker run it. If the task is genuinely \
+     impossible, call `escalate` instead.";
+
+/// Refuses to let a coding-harness COORDINATOR turn end having never asked for
+/// a roadmap at all.
+///
+/// Lane A13's forensics on the M13 slice (harness loop, 2026-09-10) found two
+/// fixtures that exited in ten seconds with nothing done and no guard firing:
+///
+///   - **fx02** made four read-only calls, wrote a full "Proposed roadmap"
+///     table in prose, and ended *"Say the word and I'll create and dispatch
+///     this immediately."*
+///   - **fx06** had its one `shell` call denied by
+///     [`CodingDagInspector`](crate::tool_inspection::CodingDagInspector) —
+///     correctly — and then asked the user a question instead of decomposing.
+///
+/// Both violate protocol rule 1 of `permagent-coding.yaml` ("your first
+/// execution tool call is `decompose_roadmap`"), and neither existing hook can
+/// see it. [`PrematureDoneGuard`] needs a SUCCESSFUL mutation (fx06's denied
+/// `shell` is not one, and fx02 never even tried). [`RoadmapDispatchGuard`]
+/// needs either goal cards or an approved `decompose_roadmap` proposal — this
+/// shape has neither, because the tool was never called. That is the gap: the
+/// recipe claims its rules "are enforced by the runtime", and rule 1's
+/// *first-call* framing was in fact enforced by nothing.
+///
+/// Applicability is the identical predicate `CodingDagInspector` uses —
+/// [`is_top_level_coding_harness`](crate::tool_inspection::is_top_level_coding_harness):
+/// recipe title `"Permagent Coding Harness"` AND `parent_session_id` absent. A
+/// dispatched worker (which has a parent) is the thing that MAY edit and must
+/// never be told to decompose; any other recipe, and ordinary conversation,
+/// never reaches the check at all. Like the other guards keyed on that
+/// predicate, no headless/interactive distinction is drawn — interactive rule 2
+/// still says "present that exact graph once", and presenting it means calling
+/// `decompose_roadmap`, not describing it.
+///
+/// Fires **at most once per session**: the nudge is a nudge, not a cage. A
+/// coordinator that reads it and still declines has made a decision a human
+/// should see, and the run's own transcript now carries the reason.
+pub struct NoRoadmapGuard;
+
+impl NoRoadmapGuard {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// The pool-parameterised half, testable against an isolated in-memory
+    /// database exactly like [`RoadmapDispatchGuard::undispatched_goal_for`] —
+    /// "does this session own any goal card at all", the complement of that
+    /// guard's "is one of this session's cards stuck".
+    async fn has_roadmap_cards(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        session_id: &str,
+    ) -> Result<bool, String> {
+        Ok(
+            !crate::cards::goal_cards_created_by_session(pool, session_id)
+                .await?
+                .is_empty(),
+        )
+    }
+
+    /// True when this hook's own nudge is already in the conversation. One
+    /// nudge per session, whether or not the model obliged.
+    fn already_nudged(messages: &[Message]) -> bool {
+        use crate::conversation::message::MessageContent;
+        messages.iter().flat_map(|m| m.content.iter()).any(|c| {
+            matches!(c, MessageContent::Text(text) if text.text.contains(NO_ROADMAP_INJECT_OPENING))
+        })
+    }
+
+    /// The whole policy as one pure fold, so every branch is unit-testable
+    /// without a session store or a database — the same shape as
+    /// [`decide`], `ReviewerMandate`'s pure half.
+    ///
+    /// Every "do not fire" reason is a first-class parameter rather than an
+    /// early return in the live path, so a test can pin each one
+    /// independently.
+    fn decide(
+        is_coding_coordinator: bool,
+        has_roadmap_cards: bool,
+        called_roadmap_tool: bool,
+        called_escalate: bool,
+        already_nudged: bool,
+        prior_holds: u8,
+    ) -> AfterTurnAction {
+        if !is_coding_coordinator
+            || has_roadmap_cards
+            || called_roadmap_tool
+            || called_escalate
+            || already_nudged
+        {
+            return AfterTurnAction::Allow;
+        }
+        if prior_holds < crate::cost_router::MAX_HOLDS {
+            AfterTurnAction::Continue {
+                inject: NO_ROADMAP_INJECT_TEXT.to_string(),
+            }
+        } else {
+            // Honest about which budget ran out, like `ReviewerMandate`'s
+            // `HoldBudgetExhausted`: the turn is ending with nothing done, and
+            // saying so beats exiting silently the way fx02/fx06 did.
+            AfterTurnAction::Park {
+                reason: NO_ROADMAP_PARK_REASON.to_string(),
+            }
+        }
+    }
+}
+
+/// Surfaced instead of the nudge once the shared hold budget is spent. Never
+/// claims a roadmap was refused — only that none was ever requested.
+const NO_ROADMAP_PARK_REASON: &str = "the coding coordinator's turn ended without a roadmap: \
+     neither decompose_roadmap nor create_roadmap was ever called and no goal cards exist, and \
+     the hold budget was exhausted before one could be requested";
+
+impl Default for NoRoadmapGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl AfterTurn for NoRoadmapGuard {
+    fn name(&self) -> &'static str {
+        "no_roadmap"
+    }
+
+    async fn after_turn(&self, ctx: &AfterTurnContext<'_>) -> AfterTurnAction {
+        // Transcript-only gates first, so the overwhelmingly common case — a
+        // turn that DID decompose — costs no session read and no DB round
+        // trip. `Self::decide` encodes the same three conditions, and the
+        // tests pin them there.
+        let called_roadmap_tool = turn_called_any_tool(ctx.messages, &ROADMAP_TOOL_NAMES);
+        let called_escalate = turn_called_escalate(ctx.messages);
+        let already_nudged = Self::already_nudged(ctx.messages);
+        if called_roadmap_tool || called_escalate || already_nudged {
+            return AfterTurnAction::Allow;
+        }
+
+        let manager = crate::session::SessionManager::instance();
+        // Fail open on a degraded session store, the same choice
+        // `CodingDagInspector` makes for the identical lookup: this is a
+        // quality-policy guard, and an unrelated storage outage must not turn
+        // every turn end into a hold.
+        let Ok(session) = manager.get_session(ctx.session_id, false).await else {
+            return AfterTurnAction::Allow;
+        };
+        let title = session.recipe.as_ref().map(|recipe| recipe.title.as_str());
+        if !crate::tool_inspection::is_top_level_coding_harness(
+            title,
+            session.parent_session_id.as_deref(),
+        ) {
+            return AfterTurnAction::Allow;
+        }
+
+        let Ok(pool) = manager.pool_clone().await else {
+            return AfterTurnAction::Allow;
+        };
+        let Ok(has_roadmap_cards) = Self::has_roadmap_cards(&pool, ctx.session_id).await else {
+            return AfterTurnAction::Allow;
+        };
+
+        Self::decide(
+            true,
+            has_roadmap_cards,
+            called_roadmap_tool,
+            called_escalate,
+            already_nudged,
+            ctx.prior_holds,
+        )
     }
 }
 
@@ -3636,6 +3849,277 @@ mod tests {
                 .after_turn(&AfterTurnContext {
                     session_id: &session_id,
                     messages: &escalated,
+                    prior_holds: 0,
+                })
+                .await,
+            AfterTurnAction::Allow
+        );
+    }
+
+    // ── NoRoadmapGuard (Lane Y5): a coordinator turn cannot end with no roadmap ──
+    //
+    // The live path reads the process-global session store to answer "is this
+    // a coding-harness coordinator" and the durable card table to answer "does
+    // a roadmap exist". `NoRoadmapGuard::decide` takes both answers as
+    // parameters precisely so each branch below is a pure, isolated test —
+    // the same seam `RoadmapDispatchGuard::undispatched_goal_for` and
+    // `ReviewerMandate::decide` already established in this file.
+
+    /// A coordinator that made only read-only calls and then wrote its plan in
+    /// prose — fx02's exact shape ("Say the word and I'll create and dispatch
+    /// this immediately") — is sent back to call the tool.
+    #[test]
+    fn no_roadmap_read_only_turn_is_sent_back_to_decompose() {
+        let prose = vec![
+            tool_exchange("analyze__map_query", "call-1", true),
+            tool_exchange("developer__search", "call-2", true),
+            Message::assistant().with_text(
+                "Proposed roadmap: one node, no dependencies — a single routed worker owns it \
+                 end to end. Say the word and I'll create and dispatch this immediately.",
+            ),
+        ];
+        assert!(
+            !conversation_mutated_files(&prose),
+            "read-only calls must not read as a mutation: PrematureDoneGuard is silent here"
+        );
+        let called_roadmap_tool = turn_called_any_tool(&prose, &ROADMAP_TOOL_NAMES);
+        assert!(
+            !called_roadmap_tool,
+            "a prose roadmap is not a decompose_roadmap call"
+        );
+
+        match NoRoadmapGuard::decide(
+            true,
+            false,
+            called_roadmap_tool,
+            turn_called_escalate(&prose),
+            NoRoadmapGuard::already_nudged(&prose),
+            0,
+        ) {
+            AfterTurnAction::Continue { inject } => {
+                assert!(
+                    inject.starts_with(NO_ROADMAP_INJECT_OPENING),
+                    "the nudge must be recognisable to `already_nudged`: {inject}"
+                );
+                assert!(inject.contains("decompose_roadmap"), "{inject}");
+                assert!(inject.contains("escalate"), "{inject}");
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    /// fx06's shape: the coordinator's one `shell` call was DENIED by
+    /// `CodingDagInspector` and it asked the user a question instead of
+    /// decomposing. A denied call is not a mutation, so `PrematureDoneGuard`
+    /// is silent — this guard must not be.
+    #[test]
+    fn no_roadmap_fires_after_a_denied_shell_and_a_question() {
+        let denied = vec![
+            tool_exchange_with_text(
+                "developer__shell",
+                "call-1",
+                "The user has declined to run this tool. DO NOT attempt to call this tool again.",
+                false,
+            ),
+            Message::assistant()
+                .with_text("Would you like me to fix the Makefile, or should I skip that target?"),
+        ];
+        assert!(
+            !conversation_mutated_files(&denied),
+            "a denied shell call must not read as a mutation"
+        );
+        assert!(matches!(
+            NoRoadmapGuard::decide(
+                true,
+                false,
+                turn_called_any_tool(&denied, &ROADMAP_TOOL_NAMES),
+                turn_called_escalate(&denied),
+                NoRoadmapGuard::already_nudged(&denied),
+                0,
+            ),
+            AfterTurnAction::Continue { .. }
+        ));
+    }
+
+    /// The tool WAS called — nothing to nudge, whichever of the two names was
+    /// used and whichever extension prefixed it.
+    #[test]
+    fn no_roadmap_does_not_fire_when_decompose_roadmap_was_called() {
+        for name in [
+            "decompose_roadmap",
+            "orchestrator__decompose_roadmap",
+            "orchestrator__create_roadmap",
+        ] {
+            let called = vec![tool_exchange(name, "call-1", true)];
+            assert!(
+                turn_called_any_tool(&called, &ROADMAP_TOOL_NAMES),
+                "{name} must be recognised as a roadmap call"
+            );
+            assert_eq!(
+                NoRoadmapGuard::decide(
+                    true,
+                    false,
+                    turn_called_any_tool(&called, &ROADMAP_TOOL_NAMES),
+                    false,
+                    false,
+                    0,
+                ),
+                AfterTurnAction::Allow,
+                "{name}"
+            );
+        }
+    }
+
+    /// Once per session. The nudge is a durable user message, so the second
+    /// pass recognises its own handwriting and stands down — this hook cannot
+    /// use the shared `prior_holds` counter for that (see
+    /// `NO_ROADMAP_INJECT_OPENING`).
+    #[test]
+    fn no_roadmap_does_not_fire_a_second_time() {
+        let AfterTurnAction::Continue { inject } =
+            NoRoadmapGuard::decide(true, false, false, false, false, 0)
+        else {
+            panic!("the first pass must hold");
+        };
+
+        let after = vec![
+            Message::assistant().with_text("Here is the plan I propose."),
+            Message::user().with_text(inject.as_str()),
+            Message::assistant().with_text("Understood — but I would still like your approval."),
+        ];
+        assert!(NoRoadmapGuard::already_nudged(&after));
+        assert_eq!(
+            NoRoadmapGuard::decide(
+                true,
+                false,
+                turn_called_any_tool(&after, &ROADMAP_TOOL_NAMES),
+                turn_called_escalate(&after),
+                NoRoadmapGuard::already_nudged(&after),
+                0,
+            ),
+            AfterTurnAction::Allow,
+            "the guard must nudge at most once per session"
+        );
+    }
+
+    /// A dispatched worker has a parent session and is the thing that MAY
+    /// edit; telling it to decompose would be exactly backwards. Same
+    /// predicate `CodingDagInspector` gates on, asserted here so the two
+    /// halves of the protocol can never disagree about who they apply to.
+    #[test]
+    fn no_roadmap_does_not_fire_for_a_dispatched_worker() {
+        let is_coordinator = crate::tool_inspection::is_top_level_coding_harness(
+            Some(crate::tool_inspection::CODING_HARNESS_RECIPE_TITLE),
+            Some("parent-session-1"),
+        );
+        assert!(
+            !is_coordinator,
+            "a session with a parent is not the coordinator"
+        );
+        assert_eq!(
+            NoRoadmapGuard::decide(is_coordinator, false, false, false, false, 0),
+            AfterTurnAction::Allow
+        );
+    }
+
+    /// Any other recipe — and a session with no recipe at all — is ordinary
+    /// conversation this guard must never touch.
+    #[test]
+    fn no_roadmap_does_not_fire_outside_the_coding_harness() {
+        for title in [Some("Some Other Recipe"), None] {
+            let is_coordinator = crate::tool_inspection::is_top_level_coding_harness(title, None);
+            assert_eq!(
+                NoRoadmapGuard::decide(is_coordinator, false, false, false, false, 0),
+                AfterTurnAction::Allow,
+                "{title:?}"
+            );
+        }
+    }
+
+    /// An explicit `escalate` is the honest exit the nudge itself names: a
+    /// coordinator that put the decision in front of a human is not the
+    /// fx02/fx06 shape and must never be held.
+    #[test]
+    fn no_roadmap_releases_a_turn_that_escalated() {
+        let escalated = vec![tool_exchange("escalate", "call-1", true)];
+        assert_eq!(
+            NoRoadmapGuard::decide(
+                true,
+                false,
+                turn_called_any_tool(&escalated, &ROADMAP_TOOL_NAMES),
+                turn_called_escalate(&escalated),
+                false,
+                0,
+            ),
+            AfterTurnAction::Allow
+        );
+    }
+
+    /// Bounded like every other hook: once the shared hold budget is spent the
+    /// turn ends, but with an honest reason instead of the silent ten-second
+    /// exit fx02/fx06 produced.
+    #[test]
+    fn no_roadmap_parks_once_the_hold_budget_is_exhausted() {
+        match NoRoadmapGuard::decide(
+            true,
+            false,
+            false,
+            false,
+            false,
+            crate::cost_router::MAX_HOLDS,
+        ) {
+            AfterTurnAction::Park { reason } => {
+                assert_eq!(reason, NO_ROADMAP_PARK_REASON);
+            }
+            other => panic!("expected Park, got {other:?}"),
+        }
+    }
+
+    /// A session that already minted goal cards HAS a roadmap — the durable
+    /// half of the applicability gate, against the isolated in-memory pool.
+    #[tokio::test]
+    async fn no_roadmap_has_roadmap_cards_detects_this_sessions_cards() {
+        let pool = roadmap_guard_test_pool().await;
+        let session_id = format!("y5-cards-{}", uuid::Uuid::now_v7());
+        assert!(
+            !NoRoadmapGuard::has_roadmap_cards(&pool, &session_id)
+                .await
+                .unwrap(),
+            "a session that never called create_roadmap owns no cards"
+        );
+
+        insert_session_goal_card(
+            &pool,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &session_id,
+            "ready",
+            true,
+            None,
+        )
+        .await;
+        assert!(NoRoadmapGuard::has_roadmap_cards(&pool, &session_id)
+            .await
+            .unwrap());
+        assert_eq!(
+            NoRoadmapGuard::decide(true, true, false, false, false, 0),
+            AfterTurnAction::Allow,
+            "a session with a roadmap is never nudged to create one"
+        );
+    }
+
+    /// The trait impl end to end for the case that matters most for blast
+    /// radius: an unknown/non-harness session id (the session store cannot
+    /// confirm a coding-harness coordinator) is let through untouched.
+    #[tokio::test]
+    async fn no_roadmap_guard_allows_a_session_it_cannot_confirm() {
+        let session_id = format!("y5-unknown-{}", uuid::Uuid::now_v7());
+        let guard = NoRoadmapGuard::new();
+        let prose = vec![Message::assistant().with_text("Here is a plan. Say the word.")];
+        assert_eq!(
+            guard
+                .after_turn(&AfterTurnContext {
+                    session_id: &session_id,
+                    messages: &prose,
                     prior_holds: 0,
                 })
                 .await,
