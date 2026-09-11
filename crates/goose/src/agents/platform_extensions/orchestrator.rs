@@ -16798,6 +16798,31 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        // `trg_goal_complete_guard` (spectral_schema.rs) ABORTs any move into a
+        // complete-bound column — raw UPDATE included, that is the point of it —
+        // unless an answered `approve` decision exists for the goal. The real
+        // path gets one from `approve_review`; the fixture files the same row so
+        // it is standing in for a completion handler that did its job, not
+        // bypassing the guard.
+        if state_binding == "complete" {
+            let now = chrono::Utc::now()
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string();
+            sqlx::query(
+                "INSERT INTO decisions (id, kind, goal_id, tier, headline, detail, status, \
+                 answer, acted_by, created_at, resolved_at) \
+                 VALUES (?, 'approve_review', ?, 1, 'fixture approval', \
+                 'fixture: the completion handler already filed and answered this', \
+                 'answered', 'approve', 'system', ?, ?)",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(card_id)
+            .bind(&now)
+            .bind(&now)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
         sqlx::query("UPDATE cards SET column_id = ? WHERE id = ?")
             .bind(&col.id)
             .bind(card_id)
