@@ -418,6 +418,80 @@ fn push_word(word: &mut String, out: &mut Vec<Tok>) {
     }
 }
 
+type ShellChars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
+
+/// The delimiter word of a heredoc (`<<EOF`, `<<'EOF'`, `<<"EOF"`, `<<\EOF`).
+/// Quoting the delimiter only changes whether the BODY is expanded, never the
+/// delimiter itself, so the quotes are stripped here exactly as bash strips
+/// them before matching the terminator line.
+fn heredoc_delimiter(chars: &mut ShellChars<'_>) -> String {
+    let mut delimiter = String::new();
+    while matches!(chars.peek(), Some(' ') | Some('\t')) {
+        chars.next();
+    }
+    let mut quote: Option<char> = None;
+    while let Some(&c) = chars.peek() {
+        if let Some(q) = quote {
+            chars.next();
+            if c == q {
+                quote = None;
+            } else {
+                delimiter.push(c);
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                chars.next();
+                quote = Some(c);
+            }
+            '\\' => {
+                chars.next();
+                if let Some(next) = chars.next() {
+                    delimiter.push(next);
+                }
+            }
+            c if c.is_whitespace() => break,
+            ';' | '|' | '&' | '<' | '>' | '(' | ')' => break,
+            _ => {
+                chars.next();
+                delimiter.push(c);
+            }
+        }
+    }
+    delimiter
+}
+
+/// Consume a heredoc BODY — every line up to and including the terminator
+/// line — emitting nothing. The body is DATA: before M5 it was tokenized as
+/// commands, so `cat > setup.sh <<'EOF' … cd /usr/local … rm /abs/path … EOF`
+/// (or a README/Makefile quoting either line) was refused on its own prose.
+/// An unterminated heredoc consumes the remaining input, which is what bash
+/// does with it too.
+fn skip_heredoc_body(chars: &mut ShellChars<'_>, delimiter: &str, strip_tabs: bool) {
+    if delimiter.is_empty() {
+        return;
+    }
+    let mut line = String::new();
+    loop {
+        match chars.next() {
+            None => return,
+            Some('\n') => {
+                let candidate = if strip_tabs {
+                    line.trim_start_matches('\t')
+                } else {
+                    line.as_str()
+                };
+                if candidate.trim_end() == delimiter {
+                    return;
+                }
+                line.clear();
+            }
+            Some(c) => line.push(c),
+        }
+    }
+}
+
 /// Split a command line into words, separators and output redirections.
 /// Quotes and backslash escapes are honored so a quoted path stays one token;
 /// everything else (expansion, heredoc bodies, subshell semantics) is left
@@ -427,6 +501,7 @@ fn tokenize(command: &str) -> Vec<Tok> {
     let mut word = String::new();
     let mut chars = command.chars().peekable();
     let mut quote: Option<char> = None;
+    let mut pending_heredocs: Vec<(String, bool)> = Vec::new();
 
     while let Some(c) = chars.next() {
         if let Some(q) = quote {
@@ -445,9 +520,18 @@ fn tokenize(command: &str) -> Vec<Tok> {
                 None | Some('\n') => {}
                 Some(next) => word.push(next),
             },
-            ';' | '\n' | '(' | ')' => {
+            ';' | '(' | ')' => {
                 push_word(&mut word, &mut out);
                 out.push(Tok::Sep);
+            }
+            '\n' => {
+                push_word(&mut word, &mut out);
+                out.push(Tok::Sep);
+                // A heredoc's BODY starts on the next line and is data, not
+                // commands (M5). Bash allows several on one line, in order.
+                for (delimiter, strip_tabs) in std::mem::take(&mut pending_heredocs) {
+                    skip_heredoc_body(&mut chars, &delimiter, strip_tabs);
+                }
             }
             '&' => {
                 push_word(&mut word, &mut out);
@@ -472,13 +556,30 @@ fn tokenize(command: &str) -> Vec<Tok> {
                 out.push(Tok::Sep);
             }
             '<' => {
-                // Input redirection and heredocs are reads: end the command,
-                // and let whatever follows be ordinary words nothing matches.
                 push_word(&mut word, &mut out);
-                while chars.peek() == Some(&'<') {
+                if chars.peek() == Some(&'<') {
                     chars.next();
+                    // `<<<` is a here-STRING: one word of data follows on the
+                    // same line, and it is not a file. `<<`/`<<-` is a
+                    // heredoc: the delimiter word follows, then the BODY
+                    // starts on the next line.
+                    if chars.peek() == Some(&'<') {
+                        chars.next();
+                        out.push(Tok::Sep);
+                    } else {
+                        let strip_tabs = chars.peek() == Some(&'-');
+                        if strip_tabs {
+                            chars.next();
+                        }
+                        // No `Sep`: the rest of the LINE still belongs to this
+                        // command (`cat <<EOF > out.txt` redirects to out.txt).
+                        pending_heredocs.push((heredoc_delimiter(&mut chars), strip_tabs));
+                    }
+                } else {
+                    // A plain input redirection is a read: end the command, and
+                    // let the filename be an ordinary word nothing matches.
+                    out.push(Tok::Sep);
                 }
-                out.push(Tok::Sep);
             }
             '>' => {
                 // A leading file descriptor (`2>`) belongs to the operator.
@@ -1519,6 +1620,48 @@ mod tests {
         );
     }
 
+    /// G13 M5: a heredoc BODY is data. Writing a setup script whose text
+    /// happens to contain `cd /usr/local` or `rm /abs/path` is an ordinary
+    /// in-worktree write, and before the fix each body line was tokenized as
+    /// a command and refused.
+    #[tokio::test]
+    async fn goal_worker_heredoc_body_is_data_not_commands() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (jail, session_id) = worker_jail(&tmp, WORKTREE).await;
+
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[shell_request(
+                "heredoc",
+                "cat > setup.sh <<'EOF'\ncd /usr/local\nrm /abs/path\nEOF\n",
+            )],
+        )
+        .await;
+        assert!(
+            results.is_empty(),
+            "the heredoc body is the file's CONTENT, and setup.sh is inside: {results:?}"
+        );
+
+        // …and the rest of the LINE after the delimiter still belongs to the
+        // command, so a redirection written after the heredoc is still judged.
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[shell_request(
+                "heredoc-escape",
+                &format!("cat <<EOF > {TRUNK}/setup.sh\nhello\nEOF\n"),
+            )],
+        )
+        .await;
+        assert_eq!(
+            results.len(),
+            1,
+            "a redirection after the heredoc must still be refused: {results:?}"
+        );
+        assert_eq!(results[0].action, InspectionAction::Deny);
+    }
+
     #[tokio::test]
     async fn goal_worker_shell_writes_outside_are_refused_and_reads_are_not() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1648,6 +1791,33 @@ mod tests {
             None
         );
         assert_eq!(goal_worktree_root(Path::new("/repos/y9-trunk")), None);
+    }
+
+    #[test]
+    fn tokenizer_drops_heredoc_bodies() {
+        let segs = segments(tokenize(
+            "cat > setup.sh <<'EOF'\ncd /usr/local\nrm /abs/path\nEOF\necho done",
+        ));
+        assert_eq!(segs.len(), 2, "the body must produce no segments: {segs:?}");
+        assert_eq!(segs[0].words, vec!["cat"]);
+        assert_eq!(segs[0].redirects, vec!["setup.sh"]);
+        assert_eq!(
+            segs[1].words,
+            vec!["echo", "done"],
+            "tokenizing resumes after the terminator line: {segs:?}"
+        );
+
+        // `<<-` strips leading TABS from the terminator line.
+        let segs = segments(tokenize("cat <<-EOF\n\trm /abs/path\n\tEOF\necho done"));
+        assert_eq!(segs.len(), 2, "{segs:?}");
+        assert_eq!(segs[1].words, vec!["echo", "done"]);
+
+        // The rest of the line after the delimiter still belongs to the
+        // command — no `Sep` is emitted for a heredoc.
+        let segs = segments(tokenize("cat <<EOF > out/log.txt\nbody\nEOF"));
+        assert_eq!(segs.len(), 1, "{segs:?}");
+        assert_eq!(segs[0].words, vec!["cat"]);
+        assert_eq!(segs[0].redirects, vec!["out/log.txt"]);
     }
 
     #[test]
