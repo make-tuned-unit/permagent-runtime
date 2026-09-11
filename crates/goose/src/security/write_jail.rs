@@ -61,6 +61,13 @@
 //! Reads stay unrestricted everywhere, temp scratch and
 //! `SECURITY_WRITE_JAIL_ALLOW` keep working, and every other session — the
 //! coordinator included — keeps the confirmation semantics unchanged.
+//!
+//! Lane Y9b (G13 M7) extends only the FIRST of those two defects, not the
+//! boundary: a `SubAgent` that was dispatched by another session (it has a
+//! `parent_session_id`) but got no worktree is refused against its own
+//! working dir when this process cannot serve the Decision Inbox, because a
+//! confirmation filed there can never be answered. In the daemon, where the
+//! card IS answerable, it keeps the confirmation. See [`jail_role`].
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -286,6 +293,10 @@ enum JailRole {
     /// outside write — or a shell command that structurally escapes — is
     /// REFUSED, with a reason naming `worktree`.
     GoalWorker { worktree: PathBuf },
+    /// A dispatched `SubAgent` that is NOT in a goal worktree, in a process
+    /// that has no answerer for a confirmation (G13 M7): jailed to its own
+    /// working dir, with the same refuse-don't-park semantics.
+    HeadlessSubAgent { working_dir: PathBuf },
 }
 
 impl JailRole {
@@ -296,6 +307,28 @@ impl JailRole {
         match self {
             JailRole::Confirm => working_dir,
             JailRole::GoalWorker { worktree } => worktree.as_path(),
+            JailRole::HeadlessSubAgent { working_dir } => working_dir.as_path(),
+        }
+    }
+
+    /// The root an outside verdict is REFUSED against, or `None` when an
+    /// outside verdict is C3's confirmation.
+    fn denying_root(&self) -> Option<&Path> {
+        match self {
+            JailRole::Confirm => None,
+            JailRole::GoalWorker { worktree } => Some(worktree.as_path()),
+            JailRole::HeadlessSubAgent { working_dir } => Some(working_dir.as_path()),
+        }
+    }
+
+    /// The Y4c-shaped refusal text, or `None` for a role that confirms.
+    fn denial_reason(&self, what: &str, target: &Path) -> Option<String> {
+        match self {
+            JailRole::Confirm => None,
+            JailRole::GoalWorker { worktree } => Some(worker_denial_reason(what, target, worktree)),
+            JailRole::HeadlessSubAgent { working_dir } => {
+                Some(subagent_denial_reason(what, target, working_dir))
+            }
         }
     }
 }
@@ -334,14 +367,47 @@ fn goal_worktree_root(path: &Path) -> Option<PathBuf> {
 ///
 /// The predicate reads the same `sessions.working_dir` column Lane Y3 repoints
 /// at dispatch, so there is no second source of truth to drift from.
+///
+/// ## G13 M7: the `SubAgent` that got no worktree
+///
+/// A `SubAgent` outside the worktree namespace — `resolve_internal_isolation`
+/// yielded no worktree, or a child summoned in the project root — kept
+/// `Confirm`, which is the very verdict Y9's root-cause section calls
+/// unenforceable for a worker: in-process the park in
+/// `tool_execution::handle_approval_tool_requests` waits on a oneshot nobody
+/// holds, and on the CLI's non-interactive surface it is silently
+/// auto-allowed. So the CHOICE here, deliberately narrow:
+///
+/// - If the session has a `parent_session_id` (it was dispatched by another
+///   session — it has no human of its own) AND this process does not serve
+///   the Decision Inbox (`decisions::process_serves_inbox()`, the same gate
+///   `create_tool_approval_decision` uses before filing a `tool_approval`
+///   card), then NOBODY can answer a confirmation from here and the honest
+///   verdict is `Deny`, jailed to the session's own working dir.
+/// - Otherwise keep `Confirm`. In the daemon the flag is set, a card IS filed
+///   and answerable, and a confirmation is a real question put to a real
+///   person — the C3 contract, unchanged. A top-level session (no parent)
+///   likewise keeps it.
+///
+/// `process_serves_inbox()` is preferred over `Agent::is_headless` (an
+/// inspector has no agent handle, and no goal worker is ever marked headless
+/// anyway — only `scheduler.rs` calls `set_headless`) and over sniffing the
+/// harness recipe title (a string match on a display name is not a safety
+/// predicate). It asks exactly the question that matters: can an approval
+/// filed from this process ever be answered?
 fn jail_role(session: &Session) -> JailRole {
     if !matches!(session.session_type, SessionType::SubAgent) {
         return JailRole::Confirm;
     }
-    match goal_worktree_root(&session.working_dir) {
-        Some(worktree) => JailRole::GoalWorker { worktree },
-        None => JailRole::Confirm,
+    if let Some(worktree) = goal_worktree_root(&session.working_dir) {
+        return JailRole::GoalWorker { worktree };
     }
+    if session.parent_session_id.is_some() && !crate::decisions::process_serves_inbox() {
+        return JailRole::HeadlessSubAgent {
+            working_dir: session.working_dir.clone(),
+        };
+    }
+    JailRole::Confirm
 }
 
 /// The refusal a goal worker gets, in the Y4c shape: say who is refusing, name
@@ -359,6 +425,26 @@ fn worker_denial_reason(what: &str, target: &Path, worktree: &Path) -> String {
          and the shell's working directory already resolve there — and commit on your goal branch \
          in that worktree.",
         worktree = worktree.display(),
+        target = target.display(),
+        what = what,
+    )
+}
+
+/// The refusal a dispatched `SubAgent` with no worktree gets (G13 M7). Same
+/// Y4c shape as [`worker_denial_reason`], minus the goal/worktree specifics
+/// it does not have: name the one writable root, say what to do instead, and
+/// say why this is a refusal rather than a question (there is no one in this
+/// process to ask).
+fn subagent_denial_reason(what: &str, target: &Path, working_dir: &Path) -> String {
+    format!(
+        "Refused by the write jail. You are a dispatched subagent: {working_dir} is the ONLY \
+         directory you may write in, and {what} resolves to {target}, which is outside it. \
+         Reading anywhere is fine; creating, editing or deleting files is not. This is a refusal \
+         and not a request for approval because no one can answer an approval on your behalf — \
+         you were dispatched by another session, not opened by a person. Redo this inside \
+         {working_dir} (relative paths and the shell's working directory already resolve there), \
+         or report back that the change you need is outside your working directory.",
+        working_dir = working_dir.display(),
         target = target.display(),
         what = what,
     )
@@ -932,9 +1018,9 @@ impl ToolInspector for WriteJailInspector {
         };
         let working_dir = session.working_dir.clone();
         let role = jail_role(&session);
-        // Nothing to do for an ordinary session with no write in the batch:
-        // shell confinement is the goal worker's rule only.
-        if !has_write && matches!(role, JailRole::Confirm) {
+        // Nothing to do for a CONFIRMING session with no write in the batch:
+        // shell confinement is the dispatched worker's rule only.
+        if !has_write && role.denying_root().is_none() {
             return Ok(Vec::new());
         }
 
@@ -951,37 +1037,37 @@ impl ToolInspector for WriteJailInspector {
                             "write jail: allowlisted write outside the working dir"
                         );
                     }
-                    JailVerdict::Outside { resolved } => match &role {
-                        JailRole::GoalWorker { worktree } => {
-                            tracing::info!(
-                                monotonic_counter.goose.write_jail_worker_denials = 1,
-                                tool_request_id = %request.id,
-                                path = %resolved.display(),
-                                worktree = %worktree.display(),
-                                "write jail: goal worker refused a write outside its worktree"
-                            );
-                            results.push(InspectionResult {
-                                tool_request_id: request.id.clone(),
-                                action: InspectionAction::Deny,
-                                reason: worker_denial_reason(
-                                    "The write target",
-                                    &resolved,
-                                    worktree,
-                                ),
-                                confidence: 1.0,
-                                inspector_name: self.name().to_string(),
-                                finding_id: Some(WORKER_JAIL_FINDING_ID.to_string()),
-                            });
-                        }
-                        JailRole::Confirm => {
-                            tracing::info!(
-                                monotonic_counter.goose.write_jail_confirmations = 1,
-                                tool_request_id = %request.id,
-                                path = %resolved.display(),
-                                working_dir = %working_dir.display(),
-                                "write jail: write outside the session working dir requires approval"
-                            );
-                            results.push(InspectionResult {
+                    JailVerdict::Outside { resolved } => {
+                        match role.denial_reason("The write target", &resolved) {
+                            Some(reason) => {
+                                tracing::info!(
+                                    monotonic_counter.goose.write_jail_worker_denials = 1,
+                                    tool_request_id = %request.id,
+                                    path = %resolved.display(),
+                                    jail_root = %role
+                                        .denying_root()
+                                        .unwrap_or(working_dir.as_path())
+                                        .display(),
+                                    "write jail: a dispatched worker was refused a write outside its jail"
+                                );
+                                results.push(InspectionResult {
+                                    tool_request_id: request.id.clone(),
+                                    action: InspectionAction::Deny,
+                                    reason,
+                                    confidence: 1.0,
+                                    inspector_name: self.name().to_string(),
+                                    finding_id: Some(WORKER_JAIL_FINDING_ID.to_string()),
+                                });
+                            }
+                            None => {
+                                tracing::info!(
+                                    monotonic_counter.goose.write_jail_confirmations = 1,
+                                    tool_request_id = %request.id,
+                                    path = %resolved.display(),
+                                    working_dir = %working_dir.display(),
+                                    "write jail: write outside the session working dir requires approval"
+                                );
+                                results.push(InspectionResult {
                                 tool_request_id: request.id.clone(),
                                 action: InspectionAction::RequireApproval(Some(format!(
                                     "🔒 Write outside the working directory\n\n\
@@ -1000,30 +1086,36 @@ impl ToolInspector for WriteJailInspector {
                                 inspector_name: self.name().to_string(),
                                 finding_id: None,
                             });
+                            }
                         }
-                    },
+                    }
                 }
                 continue;
             }
 
-            let JailRole::GoalWorker { worktree } = &role else {
+            // Shell confinement applies to every REFUSING role: a dispatched
+            // subagent's shell can leave its working dir exactly as a goal
+            // worker's can, and neither has an answerer for a confirmation.
+            let Some(jail_root) = role.denying_root() else {
                 continue;
             };
             let Some(command) = shell_command(request) else {
                 continue;
             };
-            if let Some(escape) = shell_escape(&command, &working_dir, worktree) {
+            if let Some(escape) = shell_escape(&command, &working_dir, jail_root) {
                 tracing::info!(
                     monotonic_counter.goose.write_jail_worker_denials = 1,
                     tool_request_id = %request.id,
                     path = %escape.target.display(),
-                    worktree = %worktree.display(),
-                    "write jail: goal worker refused a shell command that leaves its worktree"
+                    jail_root = %jail_root.display(),
+                    "write jail: a dispatched worker was refused a shell command that leaves its jail"
                 );
                 results.push(InspectionResult {
                     tool_request_id: request.id.clone(),
                     action: InspectionAction::Deny,
-                    reason: worker_denial_reason(&escape.what, &escape.target, worktree),
+                    reason: role
+                        .denial_reason(&escape.what, &escape.target)
+                        .unwrap_or_default(),
                     confidence: 1.0,
                     inspector_name: self.name().to_string(),
                     finding_id: Some(WORKER_JAIL_FINDING_ID.to_string()),
@@ -1727,6 +1819,120 @@ mod tests {
         .await;
         assert_eq!(results.len(), 1, "{results:?}");
         assert_eq!(results[0].action, InspectionAction::Deny);
+    }
+
+    /// G13 M7: a dispatched `SubAgent` that got NO worktree still has no
+    /// answerer for a confirmation in a process that does not serve the
+    /// Decision Inbox — which every `permagent` lib test process is, by the
+    /// standing rule that they never call `mark_process_serves_inbox`. It is
+    /// refused against its own working dir instead of parking.
+    #[tokio::test]
+    async fn dispatched_subagent_without_a_worktree_is_denied_outside_its_working_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("checkout");
+        std::fs::create_dir_all(&work).unwrap();
+        let session_manager = Arc::new(SessionManager::new(tmp.path().join("sessions")));
+        let parent = session_manager
+            .create_session(
+                work.clone(),
+                "coordinator".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .expect("create parent");
+        let child = session_manager
+            .create_session_with_parent(
+                Some(&parent.id),
+                work.clone(),
+                "dispatched worker".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .expect("create child");
+        let jail = WriteJailInspector::new(Some(session_manager));
+
+        let results = verdicts(
+            &jail,
+            &child.id,
+            &[write_request("outside", "write", "/repos/y9-trunk/a.rs")],
+        )
+        .await;
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(
+            results[0].action,
+            InspectionAction::Deny,
+            "a dispatched subagent cannot answer a confirmation: {:?}",
+            results[0].action
+        );
+        assert!(
+            results[0].reason.contains(work.to_str().unwrap()),
+            "the refusal must name the one writable root: {}",
+            results[0].reason
+        );
+        assert_eq!(
+            results[0].finding_id.as_deref(),
+            Some(WORKER_JAIL_FINDING_ID)
+        );
+
+        // Its shell is confined for the same reason, and its own tree is free.
+        let results = verdicts(
+            &jail,
+            &child.id,
+            &[shell_request("shell", "rm -f /repos/y9-trunk/a.rs")],
+        )
+        .await;
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].action, InspectionAction::Deny);
+
+        let results = verdicts(
+            &jail,
+            &child.id,
+            &[
+                write_request("inside", "write", work.join("a.rs").to_str().unwrap()),
+                shell_request("inside-shell", "rm -f build/stale"),
+            ],
+        )
+        .await;
+        assert!(results.is_empty(), "its own tree stays free: {results:?}");
+    }
+
+    /// The other half of M7's choice: a `SubAgent` with NO parent session was
+    /// not dispatched by anyone, so the C3 confirmation still has a plausible
+    /// answerer and the semantics are unchanged.
+    #[tokio::test]
+    async fn parentless_subagent_keeps_the_confirmation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("checkout");
+        std::fs::create_dir_all(&work).unwrap();
+        let session_manager = Arc::new(SessionManager::new(tmp.path().join("sessions")));
+        let session = session_manager
+            .create_session(
+                work.clone(),
+                "orphan subagent".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .expect("create session");
+        let jail = WriteJailInspector::new(Some(session_manager));
+
+        let results = verdicts(
+            &jail,
+            &session.id,
+            &[write_request("outside", "write", "/repos/y9-trunk/a.rs")],
+        )
+        .await;
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert!(
+            matches!(
+                results[0].action,
+                InspectionAction::RequireApproval(Some(_))
+            ),
+            "no parent ⇒ C3's confirmation, unchanged: {:?}",
+            results[0].action
+        );
     }
 
     /// The coordinator is a top-level session working in the project root. Y9
