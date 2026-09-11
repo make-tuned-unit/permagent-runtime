@@ -59,7 +59,7 @@ pub fn decide_hold(
     decide_goal_hold(role, verify_ran, false, signals, prior_holds)
 }
 
-/// Goal workers must also leave clean, committed work past their dispatch baseline.
+/// Goal workers must also leave committed work past their dispatch baseline.
 /// Ordinary after-turn callers have no goal branch and use [`decide_hold`].
 pub fn decide_goal_hold(
     role: WorkflowRole,

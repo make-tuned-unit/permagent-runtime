@@ -494,13 +494,13 @@ async fn land_approved_goal(
         .flatten()
         .and_then(|project| project.root_path);
 
-    // Empty committed history can hide real, verified edits in the worktree.
+    // Missing evidence or empty history cannot establish committed work.
     // Preserve an actionable refusal even if the upstream hold was bypassed.
     if card
         .metadata_json
         .pointer("/dispatch_evidence/commits")
         .and_then(|v| v.as_array())
-        .is_some_and(|commits| commits.is_empty())
+        .is_none_or(|commits| commits.is_empty())
     {
         let worktree = card
             .metadata_json
@@ -2349,6 +2349,34 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(repeated.id, unblock.id);
+    }
+
+    #[tokio::test]
+    async fn land_absent_dispatch_evidence_reports_note_and_unblock() {
+        let pool = test_pool().await;
+        let card = goal_in_review(&pool).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_remove(metadata_json, '$.dispatch_evidence') WHERE id = ?",
+        )
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (landing, note) = land_approved_goal(&pool, &card.id, None).await;
+        assert!(matches!(
+            landing,
+            Some((_, crate::goal_landing::LandOutcome::Skipped(_)))
+        ));
+        let note = note.unwrap();
+        assert!(note.contains("note: not landed"));
+        assert!(note.contains("unknown worktree"));
+        assert_eq!(goal_state_of(&pool, &card.id).await, "failed");
+        let unblock = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(unblock.detail.contains(&note));
     }
 
     async fn goal_state_of(pool: &Pool<Sqlite>, card_id: &str) -> String {
