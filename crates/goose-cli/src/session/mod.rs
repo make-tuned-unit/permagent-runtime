@@ -1505,8 +1505,12 @@ impl CliSession {
             .process_message(message, CancellationToken::default(), false)
             .await;
         self.print_harness_overhead_line().await;
-        println!("{}", permagent::cost_router::routing_receipt::format_line());
         result
+    }
+
+    /// Print final harness receipts after the headless goal drain completes.
+    pub fn print_harness_receipts(&self) {
+        println!("{}", permagent::cost_router::routing_receipt::format_line());
     }
 
     /// Lane X-lat-2 (coding-harness excellence iteration): print the
@@ -3080,6 +3084,34 @@ mod tests {
     use permagent::config::ExtensionConfig;
     use std::time::Duration;
     use test_case::test_case;
+
+    #[test]
+    fn cost_routing_receipt_is_printed_only_after_the_goal_drain() {
+        let cli = include_str!("../cli.rs");
+        let headless_call = cli
+            .find("let result = session.headless(contents).await;")
+            .unwrap();
+        let tail = &cli[headless_call..];
+        let drain = tail.find(".drain_dispatched_goals(").unwrap();
+        let drain_done = drain + tail[drain..].find(".await;").unwrap() + ".await;".len();
+        let receipts = tail.find("session.print_harness_receipts();").unwrap();
+        let completion = tail.find("log_session_completion(").unwrap();
+        assert!(drain_done < receipts && receipts < completion);
+        assert_eq!(cli.matches("session.print_harness_receipts();").count(), 1);
+
+        let session = include_str!("mod.rs")
+            .split("\nmod tests {")
+            .next()
+            .unwrap();
+        let headless = session.split("pub async fn headless(").nth(1).unwrap();
+        let (headless, receipt_sink) = headless
+            .split_once("pub fn print_harness_receipts(")
+            .unwrap();
+        assert!(!headless.contains("routing_receipt::format_line()"));
+        assert!(headless.contains("self.print_harness_overhead_line().await;"));
+        assert!(receipt_sink.contains("routing_receipt::format_line()"));
+        assert_eq!(session.matches("routing_receipt::format_line()").count(), 1);
+    }
 
     // ── Harness loop, Lane T / T3: bounded post-run drain gate ──────────────
 

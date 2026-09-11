@@ -2839,36 +2839,26 @@ pub(crate) async fn select_worker_detailed(
     })
 }
 
-/// Audit the actual resolved model, after assessment/escalation, against the
-/// same dispatchable pool and enforced kinds used by worker selection. This
-/// measures routing; it does not turn missing graduation evidence into a veto.
-async fn audit_cost_routing(
+async fn cost_routing_candidates(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     probe_cache: &ProbeCache,
-    worker_key: &str,
+    config: &agent_identity::AgentConfig,
+    restricted: bool,
+    required: &[String],
     snapshot: &serde_json::Value,
-    policy: Option<&HeadlessDispatchPolicy>,
-) -> (bool, bool) {
-    use crate::cost_router::{routing_matrix, WorkflowRole};
-
-    let config = agent_identity::load_agent_config();
-    let restricted = policy.is_some_and(|p| p.restrict_ranked_selection_to_internal_engine);
-    let dispatchable = dispatchable_personas(&config, restricted, Some(probe_cache));
-    let required: Vec<String> = snapshot
-        .get("required_kinds")
-        .and_then(|value| serde_json::from_value(value.clone()).ok())
-        .unwrap_or_default();
+) -> Vec<goal_state::WorkerCandidate> {
+    let dispatchable = dispatchable_personas(config, restricted, Some(probe_cache));
     let considered = snapshot["candidates_considered"].as_array();
     let load = if considered.is_none() {
         cards::active_worker_load(pool).await.unwrap_or_default()
     } else {
         Default::default()
     };
-    let mut ranked: Vec<goal_state::WorkerCandidate> = config
+    config
         .workers
         .iter()
         .filter(|(_, persona)| dispatchable.iter().any(|p| std::ptr::eq(*p, *persona)))
-        .filter(|(_, persona)| worker_satisfies(persona, &required))
+        .filter(|(_, persona)| worker_satisfies(persona, required))
         .filter(|(key, _)| {
             considered.is_none_or(|rows| {
                 rows.iter().any(|row| {
@@ -2888,7 +2878,32 @@ async fn audit_cost_routing(
                 .and_then(|count| usize::try_from(count).ok())
                 .unwrap_or_else(|| load.get(key).copied().unwrap_or(0)),
         })
-        .collect();
+        .collect()
+}
+
+/// Audit the actual resolved model, after assessment/escalation, against the
+/// same dispatchable pool and enforced kinds used by worker selection. This
+/// measures routing; it does not turn missing graduation evidence into a veto.
+/// The eligible candidate pool in `cost_routing_candidates` must stay identical
+/// to `select_worker_detailed`: mirror any engine, probe, capability, or policy
+/// filter changes there here too, or the receipt will audit a different pool.
+async fn audit_cost_routing(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    probe_cache: &ProbeCache,
+    worker_key: &str,
+    snapshot: &serde_json::Value,
+    policy: Option<&HeadlessDispatchPolicy>,
+) -> (bool, bool) {
+    use crate::cost_router::{routing_matrix, WorkflowRole};
+
+    let config = agent_identity::load_agent_config();
+    let restricted = policy.is_some_and(|p| p.restrict_ranked_selection_to_internal_engine);
+    let required: Vec<String> = snapshot
+        .get("required_kinds")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default();
+    let mut ranked =
+        cost_routing_candidates(pool, probe_cache, &config, restricted, &required, snapshot).await;
     let directory = crate::cost_router::cached_capability_directory().await;
     let derived = crate::cost_router::derived_role_map().await;
     let routing = &snapshot["model_routing"];
@@ -16781,9 +16796,10 @@ mod tests {
     /// non-hypothetical risk on Jesse's own dev machine where these tools are
     /// installed. Asserting the ENGINE KIND of the restricted call's result
     /// (rather than which specific worker) keeps this deterministic
-    /// regardless of which external CLIs happen to be on PATH.
+    /// regardless of which external CLIs happen to be on PATH. G15 MED-4:
+    /// also pin the audit's eligible pool and ranking to the selection snapshot.
     #[tokio::test]
-    async fn select_worker_detailed_restricted_never_selects_an_external_cli_worker() {
+    async fn internal_only_selection_and_cost_audit_agree_on_candidates() {
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(crate::session::SessionManager::new(
             tmp.path().to_path_buf(),
@@ -16799,6 +16815,45 @@ mod tests {
             );
 
         let config = agent_identity::load_agent_config();
+        let required: Vec<String> =
+            serde_json::from_value(restricted.snapshot["required_kinds"].clone()).unwrap();
+        let ordinary: Vec<&String> = required
+            .iter()
+            .filter(|kind| {
+                agent_identity::WorkerCapabilities::default()
+                    .supports_requirement(kind)
+                    .is_none()
+            })
+            .collect();
+        let mut expected: Vec<serde_json::Value> = restricted.snapshot["candidates_considered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| {
+                let kinds: Vec<String> =
+                    serde_json::from_value(row["tool_kinds"].clone()).unwrap();
+                row["available"] == true
+                    && (kinds.is_empty() || ordinary.iter().all(|kind| kinds.contains(kind)))
+            })
+            .cloned()
+            .collect();
+        expected.sort_by_key(|row| row["key"].as_str().unwrap().to_string());
+        assert!(!expected.is_empty());
+        // Check both the real selection snapshot and the audit's no-snapshot
+        // fallback, so snapshot filtering cannot hide an extra audit candidate.
+        for snapshot in [&restricted.snapshot, &serde_json::Value::Null] {
+            let candidates =
+                cost_routing_candidates(&pool, &probe_cache, &config, true, &required, snapshot)
+                    .await;
+            assert_eq!(
+                goal_state::select_best_worker(&candidates, &[]).unwrap(),
+                restricted.worker_key
+            );
+            let audit = build_capability_snapshot(&restricted.worker_key, &required, &candidates);
+            let mut actual = audit["candidates_considered"].as_array().unwrap().clone();
+            actual.sort_by_key(|row| row["key"].as_str().unwrap().to_string());
+            assert_eq!(actual, expected);
+        }
         let engine = config
             .workers
             .get(&restricted.worker_key)

@@ -1712,6 +1712,7 @@ async fn handle_run_command(
         session
             .drain_dispatched_goals(std::time::Duration::from_secs(drain_cap_secs))
             .await;
+        session.print_harness_receipts();
 
         log_session_completion(&session, session_start, session_type, succeeded).await;
         result
