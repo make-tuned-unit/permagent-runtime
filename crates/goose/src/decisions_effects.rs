@@ -2303,6 +2303,14 @@ mod tests {
                 kind: "approve_review".into(),
                 goal_id: Some(card.id.clone()),
                 project_id: Some(card.project_id.clone()),
+                // `decisions` CHECKs length(headline) > 0 AND length(detail) > 0,
+                // and `create_decision` stores a validation failure as a
+                // `malformed` row rather than erroring — without these two the
+                // row comes back `malformed` and `answer_decision` refuses it
+                // ("outbox kind 'approve_review' does not match decision kind
+                // 'malformed'"), which is what this fixture hit.
+                headline: Some("Review the finished work".into()),
+                detail: Some("evidence".into()),
                 payload: serde_json::json!({}),
                 ..Default::default()
             },
@@ -2783,6 +2791,23 @@ mod tests {
 
         let pool = test_pool().await;
         let parent = goal_in_review(&pool).await;
+        // Y15 refuses to land — and now PARKS — a goal whose dispatch evidence
+        // carries no commits past the baseline. This pin is about dependent
+        // promotion, not about that refusal, so give the parent the one thing
+        // Y15's new precondition asks for. Deliberately no `worktree_path` /
+        // `head_commit`: `evidence_head_and_worktree` then still returns None
+        // and the landing is skipped exactly as it was before Y15, so this test
+        // exercises the same promotion path it always did.
+        crate::cards::set_goal_dispatch_evidence(
+            &pool,
+            &parent.id,
+            serde_json::json!({
+                "verdict": {"status": "pass"},
+                "commits": ["deadbeef"],
+            }),
+        )
+        .await
+        .unwrap();
         let triage = crate::cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "triage")
             .await
             .unwrap()

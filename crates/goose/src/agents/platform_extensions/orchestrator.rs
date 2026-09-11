@@ -11798,7 +11798,9 @@ async fn goal_has_uncommitted_work(
                 .fetch_optional(pool)
                 .await
                 .map_err(|e| e.to_string())?
-                .ok_or_else(|| "cannot inspect goal branch: worker worktree is missing".to_string())?
+                .ok_or_else(|| {
+                    "cannot inspect goal branch: worker worktree is missing".to_string()
+                })?
         }
     };
     worktree_has_uncommitted_work(std::path::Path::new(&worktree), baseline).await
@@ -11876,9 +11878,8 @@ async fn maybe_hold_review(
         Err(error) => (true, String::new(), Some(error)),
     };
     let outcome = if let Some(error) = &inspection_error {
-        let plan = format!(
-            "could not inspect the goal worktree: {error}; commit and declare done again"
-        );
+        let plan =
+            format!("could not inspect the goal worktree: {error}; commit and declare done again");
         if hold_state
             .last_plan
             .as_deref()
