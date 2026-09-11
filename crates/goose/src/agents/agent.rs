@@ -2992,8 +2992,24 @@ impl Agent {
                                     break;
                                 }
                             }
+                            // G13 L6: "please retry" is a lie for an error the
+                            // retry layer has already refused to retry. A
+                            // stream-budget breach is OURS — we stopped the
+                            // reply — and resending the identical request walks
+                            // straight back into the same runaway.
+                            let advice = if provider_err.is_stream_budget_exceeded() {
+                                "We stopped this reply ourselves: it ran past a streaming safety budget. \
+                                 Do not retry the same request — it would hit the same bound. \
+                                 Continue from the work that is already done, or split what is left into \
+                                 smaller steps and take the first one."
+                            } else if provider_err.is_permanent() {
+                                "This failure is permanent — retrying the same request will not help. \
+                                 Proceed with what you have, or take a different approach."
+                            } else {
+                                "Please retry if you think this is a transient or recoverable error."
+                            };
                             let message = Message::assistant().with_text(
-                                format!("Ran into this error: {provider_err}.\n\nPlease retry if you think this is a transient or recoverable error.")
+                                format!("Ran into this error: {provider_err}.\n\n{advice}")
                             );
                             persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
                             yield AgentEvent::Message(message);
