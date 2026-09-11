@@ -3017,6 +3017,50 @@ async fn write_scope_conflict(
     Ok(None)
 }
 
+/// Y16b (harness loop, 2026-09-11, A16z's fx07 evidence): the tip commit of
+/// the card's PREVIOUS worker session's goal branch, when one still exists.
+///
+/// A dispatched goal's commits live on its OWN `goal/<run_id>` branch
+/// (`goal_engine::goal_branch_name`) — never on trunk until a human approves
+/// the review — so re-dispatching from trunk HEAD (the pre-Y16b behaviour)
+/// is indistinguishable from a genuine first dispatch and strands whatever
+/// the prior worker actually committed. fx07: worker `_2` committed
+/// `dd79d7d` on its goal branch, was held for an unverified "done", and `_3`
+/// was dispatched fresh off the seed — `dd79d7d` was never reachable from
+/// `_3`'s history.
+///
+/// Returns `None` — the caller then falls back to trunk HEAD exactly as
+/// before this lane — on a genuine first dispatch (`worker_session_id` not
+/// yet recorded) or when the prior branch is simply gone (reaped, or a
+/// caller-supplied metadata value with no matching branch). Never errors:
+/// a missing/unreadable branch is not this lane's business to diagnose.
+async fn prior_goal_branch_tip(
+    working_dir: &std::path::Path,
+    card_metadata: &serde_json::Value,
+) -> Option<(String, String)> {
+    let prev_session_id = card_metadata
+        .get("worker_session_id")?
+        .as_str()?
+        .to_string();
+    let branch = goal_engine::goal_branch_name(&prev_session_id);
+    let output = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(working_dir)
+        .args(["rev-parse", "--verify", &format!("refs/heads/{branch}")])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if sha.is_empty() {
+        None
+    } else {
+        Some((prev_session_id, sha))
+    }
+}
+
 /// Dispatch a goal card to a worker via subagent.
 ///
 /// Precondition: card must be card_type='goal' in state='ready'.
@@ -3300,16 +3344,25 @@ pub(crate) async fn dispatch_goal_fn(
         }
     };
 
-    let baseline_commit = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(&working_dir)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .await
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
+    // Y16b: a re-dispatch continues from the PREVIOUS worker session's own
+    // goal branch tip when one still exists, rather than always branching
+    // fresh off trunk HEAD (see `prior_goal_branch_tip`'s doc comment for
+    // why). `None` on a genuine first dispatch or a reaped branch — the
+    // trunk-HEAD read below is then unchanged from before this lane.
+    let redispatch_base = prior_goal_branch_tip(&working_dir, &card.metadata_json).await;
+    let baseline_commit = match redispatch_base.as_ref() {
+        Some((_, tip)) => Some(tip.clone()),
+        None => tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(&working_dir)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .await
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty()),
+    };
 
     // Author the goal's completion criterion at dispatch, in precedence
     // order (all seed the SAME `metadata_json.completion_checks` the #682
@@ -3627,6 +3680,18 @@ pub(crate) async fn dispatch_goal_fn(
     );
     if let Some(ref baseline) = baseline_commit {
         claim_patch.insert("baseline_commit".to_string(), serde_json::json!(baseline));
+    }
+    // Y16b: record which base this dispatch actually used, so the dispatch
+    // evidence can distinguish "continued from a prior worker's goal branch"
+    // from an ordinary trunk-HEAD first dispatch.
+    if let Some((prev_session_id, tip)) = redispatch_base.as_ref() {
+        claim_patch.insert(
+            "redispatch_continued_from".to_string(),
+            serde_json::json!({
+                "prior_worker_session_id": prev_session_id,
+                "base_commit": tip,
+            }),
+        );
     }
     if let Some(checks) = seeded_checks.clone() {
         claim_patch.insert("completion_checks".to_string(), checks);
@@ -16493,6 +16558,84 @@ mod tests {
         std::fs::write(repo.join("README.md"), "hi").unwrap();
         git(&["add", "."]);
         git(&["commit", "-q", "-m", "base"]);
+    }
+
+    /// Y16b pin: a genuine first dispatch (no `worker_session_id` recorded
+    /// yet) must be completely unaffected — falls straight through to
+    /// `None`, and the caller's trunk-HEAD read is exactly the pre-Y16b
+    /// behaviour.
+    #[tokio::test]
+    async fn prior_goal_branch_tip_is_none_on_a_first_dispatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("proj");
+        init_git_repo_for_dispatch_test(&repo);
+
+        let tip = prior_goal_branch_tip(&repo, &serde_json::json!({})).await;
+        assert!(tip.is_none());
+    }
+
+    /// Y16b pin, the fx07 shape: a re-dispatched goal whose PREVIOUS worker
+    /// session left a real commit on its `goal/<session_id>` branch must
+    /// continue from that branch's tip — not trunk HEAD — so the prior
+    /// worker's work is never stranded.
+    #[tokio::test]
+    async fn prior_goal_branch_tip_returns_the_prior_sessions_branch_tip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("proj");
+        init_git_repo_for_dispatch_test(&repo);
+
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                status.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&status.stderr)
+            );
+        };
+        let branch = goal_engine::goal_branch_name("prev-session-id");
+        git(&["checkout", "-b", branch.as_str()]);
+        std::fs::write(repo.join("work.txt"), "the prior worker's real commit").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "prior worker's real commit"]);
+        let expected = String::from_utf8(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        let metadata = serde_json::json!({ "worker_session_id": "prev-session-id" });
+        let (session_id, tip) = prior_goal_branch_tip(&repo, &metadata)
+            .await
+            .expect("an existing prior goal branch must be found");
+        assert_eq!(session_id, "prev-session-id");
+        assert_eq!(tip, expected);
+    }
+
+    /// Y16b pin: a prior session id recorded on the card but whose goal
+    /// branch no longer exists (reaped, or never created) must fall through
+    /// to `None` — the caller's pre-Y16b trunk-HEAD fallback, never an error.
+    #[tokio::test]
+    async fn prior_goal_branch_tip_is_none_when_the_branch_is_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("proj");
+        init_git_repo_for_dispatch_test(&repo);
+
+        let metadata = serde_json::json!({ "worker_session_id": "reaped-session-id" });
+        let tip = prior_goal_branch_tip(&repo, &metadata).await;
+        assert!(tip.is_none());
     }
 
     #[tokio::test]
