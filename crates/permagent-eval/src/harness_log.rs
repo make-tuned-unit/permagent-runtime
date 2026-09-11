@@ -5,7 +5,8 @@
 //! --output-format text` is a human transcript — so this is a dumb line
 //! scanner over the CLI's *current* rendering, not a parser of a stable
 //! machine format. If that rendering changes, these counts silently drift to
-//! zero rather than error: treat [`LogSignals`] as a coarse, best-effort
+//! zero rather than error for legacy counts (v1 receipts stay `None`):
+//! treat [`LogSignals`] as a coarse, best-effort
 //! supplement to the oracle's pass/fail verdict, never a substitute for it.
 //!
 //! [`LogSignals::tool_names`] IS the tool-call sequence G3's
@@ -114,6 +115,44 @@ pub struct LandedGoal {
     pub sha: String,
 }
 
+/// Atomic RECEIPT CONTRACT v1 evidence for `dag_enforcement`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DagEnforcementReceipt {
+    pub roadmap_dispatched: usize,
+    pub bypass_attempts: usize,
+    pub bypass_passes: usize,
+    pub coordinator_mutations: usize,
+}
+
+/// Atomic RECEIPT CONTRACT v1 evidence for `verification_integrity`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct VerificationIntegrityReceipt {
+    pub goals: usize,
+    pub review_reached: usize,
+    pub vacuous_passes: usize,
+    pub reviewer_mutations: usize,
+    pub reviewer_not_independent: usize,
+}
+
+/// Atomic RECEIPT CONTRACT v1 evidence for `safety_and_trust`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SafetyAndTrustReceipt {
+    pub jail_denials: usize,
+    pub jail_bypasses: usize,
+    pub unapproved_skill_runs: usize,
+    pub approval_bypasses: usize,
+    pub adversary_blocks: usize,
+}
+
+/// Atomic RECEIPT CONTRACT v1 evidence for `cost_routing`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CostRoutingReceipt {
+    pub dispatches: usize,
+    pub cheapest_capable: usize,
+    pub pack_honored: usize,
+    pub planner: String,
+}
+
 /// Coarse signals mined from one harness run's combined stdout+stderr log.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LogSignals {
@@ -170,6 +209,14 @@ pub struct LogSignals {
     /// X-verify's vacuous-pass counter), case-insensitive. `None` means no
     /// such line was found — see [`Self::reviewer_not_independent`].
     pub vacuous_pass: Option<usize>,
+    /// Complete `dag_enforcement` receipt; absent or malformed lines remain unknown.
+    pub dag_enforcement: Option<DagEnforcementReceipt>,
+    /// Complete `verification_integrity` receipt; absent or malformed lines remain unknown.
+    pub verification_integrity: Option<VerificationIntegrityReceipt>,
+    /// Complete `safety_and_trust` receipt; absent or malformed lines remain unknown.
+    pub safety_and_trust: Option<SafetyAndTrustReceipt>,
+    /// Complete `cost_routing` receipt; absent or malformed lines remain unknown.
+    pub cost_routing: Option<CostRoutingReceipt>,
 }
 
 /// One coordinator's routing decision, as best-effort parsed from a
@@ -288,6 +335,91 @@ static VACUOUS_PASS_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
     regex::Regex::new(r"(?i)vacuous[_ ]pass").expect("VACUOUS_PASS_RE is a valid regex")
 });
 
+// Receipt regexes are anchored: prose, partial fields, signed counts and
+// trailing junk cannot masquerade as a complete exit receipt.
+static DAG_ENFORCEMENT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"^\s*receipt\s+dag_enforcement\s+roadmap_dispatched=([0-9]+)\s+bypass_attempts=([0-9]+)\s+bypass_passes=([0-9]+)\s+coordinator_mutations=([0-9]+)\s*$",
+    )
+    .expect("DAG_ENFORCEMENT_RE is a valid regex")
+});
+
+fn parse_dag_enforcement(line: &str) -> Option<DagEnforcementReceipt> {
+    let caps = DAG_ENFORCEMENT_RE.captures(line)?;
+    Some(DagEnforcementReceipt {
+        roadmap_dispatched: caps[1].parse().ok()?,
+        bypass_attempts: caps[2].parse().ok()?,
+        bypass_passes: caps[3].parse().ok()?,
+        coordinator_mutations: caps[4].parse().ok()?,
+    })
+}
+
+static VERIFICATION_INTEGRITY_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(
+    || {
+        regex::Regex::new(
+        r"^\s*receipt\s+verification_integrity\s+goals=([0-9]+)\s+review_reached=([0-9]+)\s+vacuous_passes=([0-9]+)\s+reviewer_mutations=([0-9]+)\s+reviewer_not_independent=([0-9]+)\s*$",
+    )
+    .expect("VERIFICATION_INTEGRITY_RE is a valid regex")
+    },
+);
+
+fn parse_verification_integrity(line: &str) -> Option<VerificationIntegrityReceipt> {
+    let caps = VERIFICATION_INTEGRITY_RE.captures(line)?;
+    Some(VerificationIntegrityReceipt {
+        goals: caps[1].parse().ok()?,
+        review_reached: caps[2].parse().ok()?,
+        vacuous_passes: caps[3].parse().ok()?,
+        reviewer_mutations: caps[4].parse().ok()?,
+        reviewer_not_independent: caps[5].parse().ok()?,
+    })
+}
+
+static SAFETY_AND_TRUST_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"^\s*receipt\s+safety_and_trust\s+jail_denials=([0-9]+)\s+jail_bypasses=([0-9]+)\s+unapproved_skill_runs=([0-9]+)\s+approval_bypasses=([0-9]+)\s+adversary_blocks=([0-9]+)\s*$",
+    )
+    .expect("SAFETY_AND_TRUST_RE is a valid regex")
+});
+
+fn parse_safety_and_trust(line: &str) -> Option<SafetyAndTrustReceipt> {
+    let caps = SAFETY_AND_TRUST_RE.captures(line)?;
+    Some(SafetyAndTrustReceipt {
+        jail_denials: caps[1].parse().ok()?,
+        jail_bypasses: caps[2].parse().ok()?,
+        unapproved_skill_runs: caps[3].parse().ok()?,
+        approval_bypasses: caps[4].parse().ok()?,
+        adversary_blocks: caps[5].parse().ok()?,
+    })
+}
+
+static COST_ROUTING_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"^\s*receipt\s+cost_routing\s+dispatches=([0-9]+)\s+cheapest_capable=([0-9]+)\s+pack_honored=([0-9]+)\s+planner=(\S+/\S+)\s*$",
+    )
+    .expect("COST_ROUTING_RE is a valid regex")
+});
+
+/// The string `routing_receipt.rs`'s `snapshot()` prints when `set_planner`
+/// was never called — the PLANNER mutex is still empty. It has exactly one
+/// slash, so it satisfies `COST_ROUTING_RE`'s `\S+/\S+` cleanly; without this
+/// guard an unresolved planner would be recorded as real evidence, which the
+/// contract's "zero is evidence only when the receipt explicitly prints it"
+/// principle forbids (G16 MED-1).
+const PLANNER_UNSET_SENTINEL: &str = "unknown/unknown";
+
+fn parse_cost_routing(line: &str) -> Option<CostRoutingReceipt> {
+    let caps = COST_ROUTING_RE.captures(line)?;
+    if &caps[4] == PLANNER_UNSET_SENTINEL {
+        return None;
+    }
+    Some(CostRoutingReceipt {
+        dispatches: caps[1].parse().ok()?,
+        cheapest_capable: caps[2].parse().ok()?,
+        pack_honored: caps[3].parse().ok()?,
+        planner: caps[4].to_string(),
+    })
+}
+
 /// Scan a harness run's captured log text for tool-call, rate-limit,
 /// turn-limit and (best-effort, see the module docs' "X-obs-1" section) the
 /// still-landing lanes' signals. Pure and best-effort: see the module docs
@@ -297,6 +429,25 @@ pub fn scan(log_text: &str) -> LogSignals {
     let mut seen_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for line in log_text.lines() {
+        // Keep receipt fields separate from legacy diagnostic counters. In
+        // particular, `vacuous_passes=0` is not a vacuous-pass event.
+        let receipt_line = strip_ansi(line);
+        if receipt_line.split_whitespace().next() == Some("receipt") {
+            if signals.dag_enforcement.is_none() {
+                signals.dag_enforcement = parse_dag_enforcement(&receipt_line);
+            }
+            if signals.verification_integrity.is_none() {
+                signals.verification_integrity = parse_verification_integrity(&receipt_line);
+            }
+            if signals.safety_and_trust.is_none() {
+                signals.safety_and_trust = parse_safety_and_trust(&receipt_line);
+            }
+            if signals.cost_routing.is_none() {
+                signals.cost_routing = parse_cost_routing(&receipt_line);
+            }
+            continue;
+        }
+
         if let Some(tool) = tool_call_banner_tool(line) {
             signals.tool_calls += 1;
             if seen_tools.insert(tool.clone()) {
@@ -767,5 +918,112 @@ mod tests {
         assert_eq!(signals.reviewer_not_independent, None);
         assert_eq!(signals.reviewer_mutated, None);
         assert_eq!(signals.vacuous_pass, None);
+    }
+
+    #[test]
+    fn contract_v1_dag_receipt_is_atomic() {
+        let line = "receipt dag_enforcement roadmap_dispatched=3 bypass_attempts=2 bypass_passes=0 coordinator_mutations=0";
+        assert_eq!(
+            scan(line).dag_enforcement,
+            Some(DagEnforcementReceipt {
+                roadmap_dispatched: 3,
+                bypass_attempts: 2,
+                bypass_passes: 0,
+                coordinator_mutations: 0,
+            })
+        );
+        assert!(scan(&line.replace("bypass_passes=0", "bypass_passes=-1"))
+            .dag_enforcement
+            .is_none());
+    }
+
+    #[test]
+    fn contract_v1_verification_receipt_is_not_a_legacy_violation() {
+        let line = "receipt verification_integrity goals=3 review_reached=2 vacuous_passes=0 reviewer_mutations=0 reviewer_not_independent=0";
+        let signals = scan(line);
+        assert_eq!(
+            signals.verification_integrity,
+            Some(VerificationIntegrityReceipt {
+                goals: 3,
+                review_reached: 2,
+                vacuous_passes: 0,
+                reviewer_mutations: 0,
+                reviewer_not_independent: 0,
+            })
+        );
+        assert_eq!(signals.vacuous_pass, None);
+        assert_eq!(signals.reviewer_mutated, None);
+        assert!(scan(&line.replace(" review_reached=2", ""))
+            .verification_integrity
+            .is_none());
+    }
+
+    #[test]
+    fn contract_v1_safety_receipt_retains_informational_counts() {
+        let line = "receipt safety_and_trust jail_denials=7 jail_bypasses=0 unapproved_skill_runs=0 approval_bypasses=0 adversary_blocks=4";
+        assert_eq!(
+            scan(line).safety_and_trust,
+            Some(SafetyAndTrustReceipt {
+                jail_denials: 7,
+                jail_bypasses: 0,
+                unapproved_skill_runs: 0,
+                approval_bypasses: 0,
+                adversary_blocks: 4,
+            })
+        );
+        assert!(scan(&format!("{line}junk")).safety_and_trust.is_none());
+    }
+
+    #[test]
+    fn contract_v1_routing_receipt_retains_planner() {
+        let line = "receipt cost_routing dispatches=4 cheapest_capable=4 pack_honored=4 planner=openrouter/qwen/model";
+        assert_eq!(
+            scan(line).cost_routing,
+            Some(CostRoutingReceipt {
+                dispatches: 4,
+                cheapest_capable: 4,
+                pack_honored: 4,
+                planner: "openrouter/qwen/model".to_string(),
+            })
+        );
+        assert!(scan(&line.replace("openrouter/qwen/model", "unknown"))
+            .cost_routing
+            .is_none());
+        // G16 MED-1: the routing receipt's own unset sentinel — the literal
+        // string `routing_receipt.rs` prints when `set_planner` never ran —
+        // is not evidence of a resolved planner, even though it satisfies the
+        // regex's `\S+/\S+` shape. Asserted with that exact string, not an
+        // invented one.
+        assert!(
+            scan(&line.replace("openrouter/qwen/model", PLANNER_UNSET_SENTINEL))
+                .cost_routing
+                .is_none()
+        );
+        // A terminal routing receipt must not overwrite the separate route trace.
+        assert!(scan(line).planner.is_none());
+    }
+
+    #[test]
+    fn contract_v1_absence_overflow_and_prose_never_fabricate_zero() {
+        let line = "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0";
+        for invalid in [
+            String::new(),
+            format!("the model says {line}"),
+            line.replace(
+                "roadmap_dispatched=1",
+                &format!("roadmap_dispatched={}", "9".repeat(100)),
+            ),
+        ] {
+            let signals = scan(&invalid);
+            assert!(signals.dag_enforcement.is_none());
+            assert!(signals.verification_integrity.is_none());
+            assert!(signals.safety_and_trust.is_none());
+            assert!(signals.cost_routing.is_none());
+        }
+        let decorated = format!(
+            "\x1b[32m  {}  \x1b[0m",
+            line.replace("receipt ", "receipt\t")
+        );
+        assert!(scan(&decorated).dag_enforcement.is_some());
     }
 }

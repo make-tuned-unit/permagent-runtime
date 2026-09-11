@@ -42,8 +42,9 @@ use permagent_eval::graduate::{
 use permagent_eval::invocation::build_invocation;
 use permagent_eval::metrics::TaskResult;
 use permagent_eval::qualification::{
-    build_run_qualification_record, qualification_input_from_records, BinaryProvenance,
-    QualificationInput, RunQualificationRecord,
+    build_run_qualification_record, build_token_verdict,
+    qualification_input_with_token_comparisons, BinaryProvenance, CapabilityVerdict,
+    QualificationInput, RunQualificationRecord, TokenComparisons,
 };
 use permagent_eval::report::{
     overall_dag_selection_pct, render_json, render_markdown, render_text, TierReport,
@@ -225,6 +226,24 @@ struct QualifyArgs {
     /// held-out is a policy decision the raw records do not carry.
     #[arg(long = "record", value_name = "FILE")]
     records: Vec<PathBuf>,
+
+    /// Locked token baseline; must contain exactly one qualification record.
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "records",
+        conflicts_with = "input"
+    )]
+    token_baseline: Option<PathBuf>,
+
+    /// Passing token reference records; repeatable, accepts objects or arrays.
+    #[arg(
+        long = "reference-record",
+        value_name = "FILE",
+        requires = "records",
+        conflicts_with = "input"
+    )]
+    reference_records: Vec<PathBuf>,
 
     /// Task id(s) used while optimizing a candidate (pairs with `--record`).
     #[arg(long = "optimizer-task", value_name = "ID")]
@@ -1109,11 +1128,27 @@ fn cmd_qualify(args: QualifyArgs) -> Result<()> {
         for path in &args.records {
             records.extend(read_qualification_records(path)?);
         }
-        qualification_input_from_records(
+        let baseline = args
+            .token_baseline
+            .as_deref()
+            .map(read_qualification_records)
+            .transpose()?;
+        if baseline.as_ref().is_some_and(|records| records.len() != 1) {
+            bail!("--token-baseline requires exactly one locked qualification record");
+        }
+        let mut references = Vec::new();
+        for path in &args.reference_records {
+            references.extend(read_qualification_records(path)?);
+        }
+        qualification_input_with_token_comparisons(
             &records,
             args.benchmark_version.clone(),
             args.optimizer_tasks.clone(),
             args.heldout_tasks.clone(),
+            &TokenComparisons {
+                baseline: baseline.as_ref().and_then(|records| records.first()),
+                references: &references,
+            },
         )
     } else {
         let path = args
@@ -1670,7 +1705,7 @@ fn build_qualification_records(
     reports
         .iter()
         .map(|tr| {
-            build_run_qualification_record(
+            let mut record = build_run_qualification_record(
                 format!("run-{stamp}-{}", tr.tier),
                 fixture_revision.clone(),
                 binary.clone(),
@@ -1678,9 +1713,55 @@ fn build_qualification_records(
                 tr.model.clone(),
                 tr.pinned_packs,
                 &tr.results,
-            )
+            );
+            record.capability_verdict = capability_verdict(
+                &record,
+                &tr.tier,
+                &tr.results,
+                chrono::Utc::now().date_naive(),
+            );
+            record
         })
         .collect()
+}
+
+/// Reuse graduation's per-run rule; the scorecard owns the trailing streak.
+/// Missing smoke/selection measurements stay absent, not failed or graduated.
+fn capability_verdict(
+    record: &RunQualificationRecord,
+    tier: &str,
+    results: &[TaskResult],
+    today: chrono::NaiveDate,
+) -> Option<CapabilityVerdict> {
+    use permagent_eval::graduate::{
+        build_run_evidence_from_qual_json, compute_role_evidence, run_qualifies,
+        DEFAULT_ORCHESTRATE_SMOKE_TASK_ID,
+    };
+
+    let mut run = build_run_evidence_from_qual_json(
+        record,
+        Path::new("retained qualification record"),
+        Some(&today.to_string()),
+        Some(DEFAULT_ORCHESTRATE_SMOKE_TASK_ID),
+    )
+    .ok()?;
+    // A/B repeats must all pass the smoke, not just its first occurrence.
+    let smoke: Vec<_> = results
+        .iter()
+        .filter(|r| r.task_id == DEFAULT_ORCHESTRATE_SMOKE_TASK_ID)
+        .collect();
+    run.smoke_passed_this_run = (!smoke.is_empty()).then(|| smoke.iter().all(|r| r.solved));
+    run.smoke_passed_this_run?;
+    run.dag_selection_pct = permagent_eval::metrics::dag_selection_pct(results);
+    run.dag_selection_pct?;
+    let role = compute_role_evidence(None, std::slice::from_ref(&run), today).ok()?;
+    Some(CapabilityVerdict {
+        tier: tier.to_string(),
+        graduated: run_qualifies(&run),
+        smoke_passed: role.smoke_passed,
+        micro_suite_pass_pct: role.micro_suite_pass_pct,
+        dag_selection_pct: role.dag_selection_pct,
+    })
 }
 
 /// Write one or more qualification records as a JSON array to `path`,
@@ -1884,7 +1965,7 @@ fn cmd_ab(args: AbArgs) -> Result<()> {
         git_sha: detect_binary_git_sha(&bin_path),
     };
     let stamp = qualification_run_stamp();
-    let records = vec![
+    let mut records = vec![
         build_run_qualification_record(
             format!("ab-{stamp}-{}", arm_a.label),
             fixture_revision.clone(),
@@ -1904,6 +1985,11 @@ fn cmd_ab(args: AbArgs) -> Result<()> {
             &b_results,
         ),
     ];
+    for (record, results) in records.iter_mut().zip([&a_results, &b_results]) {
+        record.capability_verdict =
+            capability_verdict(record, &tier.name, results, chrono::Utc::now().date_naive());
+    }
+    records[1].token_verdict = build_token_verdict(&report, &records[0], &records[1]);
     write_qualification_records(&qual_path, &records)?;
     println!("qualification record: {}", qual_path.display());
 
@@ -2672,6 +2758,136 @@ mod tests {
         assert!(args.records.is_empty());
     }
 
+    #[test]
+    fn qualify_accepts_token_flags_only_with_records() {
+        let cli = Cli::try_parse_from([
+            "permagent-eval",
+            "qualify",
+            "--record",
+            "run.qual.json",
+            "--heldout-task",
+            "fizzbuzz",
+            "--token-baseline",
+            "locked.qual.json",
+            "--reference-record",
+            "ref-a.qual.json",
+            "--reference-record",
+            "ref-b.qual.json",
+        ])
+        .unwrap();
+        let Command::Qualify(args) = cli.command else {
+            panic!("expected Qualify");
+        };
+        assert_eq!(args.token_baseline, Some(PathBuf::from("locked.qual.json")));
+        assert_eq!(args.reference_records.len(), 2);
+        assert!(Cli::try_parse_from([
+            "permagent-eval",
+            "qualify",
+            "--input",
+            "abstract.json",
+            "--token-baseline",
+            "locked.qual.json",
+        ])
+        .is_err());
+    }
+
+    fn capability_test_record(results: &[TaskResult]) -> RunQualificationRecord {
+        build_run_qualification_record(
+            "capability-test",
+            None,
+            BinaryProvenance {
+                path: "unused".to_string(),
+                version: None,
+                git_sha: None,
+            },
+            "test-provider",
+            "test-model",
+            true,
+            results,
+        )
+    }
+
+    #[test]
+    fn capability_builder_reuses_per_run_graduation_and_requires_measurements() {
+        use permagent_eval::cost::CostReading;
+        use permagent_eval::oracle::OracleOutcome;
+
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 11).unwrap();
+        let smoke = TaskResult::new(
+            "fizzbuzz",
+            "classic",
+            OracleOutcome::Pass,
+            CostReading::unknown(),
+        );
+        let mut selection = TaskResult::new(
+            "select-dag",
+            "selection",
+            OracleOutcome::Pass,
+            CostReading::unknown(),
+        );
+        selection.selection_correct = Some(true);
+        let mut results = vec![smoke, selection];
+        let record = capability_test_record(&results);
+        let verdict = capability_verdict(&record, "test-tier", &results, today).unwrap();
+        assert!(verdict.graduated);
+        assert_eq!(verdict.tier, "test-tier");
+        assert_eq!(verdict.micro_suite_pass_pct, Some(1.0));
+        assert_eq!(verdict.dag_selection_pct, Some(1.0));
+        results[1].selection_correct = Some(false);
+        let record = capability_test_record(&results);
+        assert!(
+            !capability_verdict(&record, "test-tier", &results, today)
+                .unwrap()
+                .graduated
+        );
+        results[1].selection_correct = None;
+        let record = capability_test_record(&results);
+        assert!(capability_verdict(&record, "test-tier", &results, today).is_none());
+        results.remove(0);
+        results[0].selection_correct = Some(true);
+        let record = capability_test_record(&results);
+        assert!(capability_verdict(&record, "test-tier", &results, today).is_none());
+    }
+
+    #[test]
+    fn qualify_command_uses_locked_token_baseline_without_rewriting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let record_path = dir.path().join("runs.qual.json");
+        let baseline_path = dir.path().join("locked.qual.json");
+        let out = dir.path().join("scorecard.json");
+        let mut task = TaskResult::new(
+            "fizzbuzz",
+            "classic",
+            permagent_eval::oracle::OracleOutcome::Pass,
+            permagent_eval::cost::CostReading::unknown(),
+        );
+        task.cost.input_tokens = Some(80);
+        let record = capability_test_record(&[task]);
+        let records: Vec<_> = (0..3)
+            .map(|i| {
+                let mut copy = record.clone();
+                copy.run_id = format!("r{i}");
+                copy
+            })
+            .collect();
+        let mut baseline = record;
+        baseline.input_tokens_per_solved_median = Some(100.0);
+        let locked_bytes = serde_json::to_vec(&baseline).unwrap();
+        std::fs::write(&record_path, serde_json::to_vec(&records).unwrap()).unwrap();
+        std::fs::write(&baseline_path, &locked_bytes).unwrap();
+        cmd_qualify(QualifyArgs {
+            records: vec![record_path],
+            heldout_tasks: vec!["fizzbuzz".to_string()],
+            token_baseline: Some(baseline_path.clone()),
+            ..qualify_args(Some(out.clone()))
+        })
+        .unwrap();
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(out).unwrap()).unwrap();
+        assert_eq!(report["areas"]["token_efficiency"]["rating"], "Excellent");
+        assert_eq!(std::fs::read(baseline_path).unwrap(), locked_bytes);
+    }
+
     /// The default `QualifyArgs` this test module reuses for both the
     /// `--input` and `--record` paths — filling in the new X-obs-1 fields
     /// with their empty/default values so each test only sets what it cares
@@ -2680,6 +2896,8 @@ mod tests {
         QualifyArgs {
             input: None,
             records: Vec::new(),
+            token_baseline: None,
+            reference_records: Vec::new(),
             optimizer_tasks: Vec::new(),
             heldout_tasks: Vec::new(),
             benchmark_version: "eval-records-v1".to_string(),
