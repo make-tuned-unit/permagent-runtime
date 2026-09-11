@@ -9720,6 +9720,16 @@ async fn park_refused_auto_land(
         );
     }
 
+    park_refused_goal(pool, card, reason).await;
+}
+
+/// Shared Y10b park/unblock rail, also used when an answered review cannot land.
+/// The caller owns any still-open review decision; never supersede an answered one.
+pub(crate) async fn park_refused_goal(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    reason: &str,
+) {
     // One open unblock per goal, same dedupe every other park path uses.
     match decisions::find_open_decision_for_goal(pool, &card.id, "unblock").await {
         Ok(Some(_)) => {}
@@ -11948,6 +11958,76 @@ async fn maybe_credit_and_bypass_hold(
     Ok(Some(None))
 }
 
+/// Inspect live git state, not the evidence snapshot collected at worker exit.
+/// No-write and legacy non-git goals have no commit requirement.
+async fn goal_has_uncommitted_work(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+) -> Result<(bool, String), String> {
+    let meta = &card.metadata_json;
+    if meta.pointer("/program/delivery").and_then(|v| v.as_str()) == Some("no_write") {
+        return Ok((false, String::new()));
+    }
+    let Some(baseline) = meta
+        .get("baseline_commit")
+        .or_else(|| meta.pointer("/dispatch_evidence/baseline_commit"))
+        .and_then(|v| v.as_str())
+    else {
+        return Ok((false, String::new()));
+    };
+    let worktree = match meta
+        .pointer("/dispatch_evidence/worktree_path")
+        .and_then(|v| v.as_str())
+    {
+        Some(path) => path.to_string(),
+        None => {
+            let session_id = meta.get("worker_session_id").and_then(|v| v.as_str());
+            sqlx::query_scalar::<_, String>("SELECT working_dir FROM sessions WHERE id = ?")
+                .bind(session_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| {
+                    "cannot inspect goal branch: worker worktree is missing".to_string()
+                })?
+        }
+    };
+    worktree_has_uncommitted_work(std::path::Path::new(&worktree), baseline).await
+}
+
+async fn worktree_has_uncommitted_work(
+    worktree: &std::path::Path,
+    baseline: &str,
+) -> Result<(bool, String), String> {
+    async fn git(worktree: &std::path::Path, args: &[&str]) -> Result<String, String> {
+        let mut command = tokio::process::Command::new("git");
+        command
+            .arg("-C")
+            .arg(worktree)
+            .args(args)
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(std::time::Duration::from_secs(20), command.output())
+            .await
+            .map_err(|_| "git inspection timed out after 20 s".to_string())?
+            .map_err(|e| format!("cannot inspect goal branch: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "cannot inspect goal branch in {}: {}",
+                worktree.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    let range = format!("{baseline}..HEAD");
+    let no_commits = git(worktree, &["rev-list", "--max-count=1", &range])
+        .await?
+        .is_empty();
+    let tracked_status = git(worktree, &["status", "--porcelain", "--untracked-files=no"]).await?;
+    Ok((no_commits, tracked_status))
+}
+
 /// Hold a premature InProgress → Review. `None` means allow the transition.
 async fn maybe_hold_review(
     pool: &sqlx::Pool<sqlx::Sqlite>,
@@ -11975,23 +12055,67 @@ async fn maybe_hold_review(
     } else {
         live
     };
-    let prior = crate::cost_router::HoldState::from_metadata(&meta).count;
+    let hold_state = crate::cost_router::HoldState::from_metadata(&meta);
+    let prior = hold_state.count;
+    let inspection = if verify_ran {
+        goal_has_uncommitted_work(pool, card).await
+    } else {
+        Ok((false, String::new()))
+    };
+    let (uncommitted_work, tracked_status, inspection_error) = match inspection {
+        Ok((no_commits, status)) => (no_commits, status, None),
+        Err(error) => (true, String::new(), Some(error)),
+    };
+    let outcome = if let Some(error) = &inspection_error {
+        let plan =
+            format!("could not inspect the goal worktree: {error}; commit and declare done again");
+        if hold_state
+            .last_plan
+            .as_deref()
+            .is_some_and(|plan| plan.starts_with("could not inspect the goal worktree:"))
+        {
+            park_refused_goal(pool, card, &plan).await;
+            if let Some(kill) = take_goal_worker(&card.id) {
+                kill.kill();
+            }
+            return Ok(Some(format!(
+                "Parked to the Decision Inbox: {plan}. The goal is not done."
+            )));
+        }
+        crate::cost_router::HoldOutcome::Hold {
+            inject_plan: plan,
+            hold_count: prior.saturating_add(1),
+        }
+    } else {
+        crate::cost_router::hold_done::decide_goal_hold(
+            role,
+            verify_ran,
+            uncommitted_work,
+            &signals,
+            prior,
+        )
+    };
 
-    match crate::cost_router::decide_hold(role, verify_ran, &signals, prior) {
+    match outcome {
         crate::cost_router::HoldOutcome::Allow => Ok(None),
         crate::cost_router::HoldOutcome::Hold {
-            inject_plan,
+            mut inject_plan,
             hold_count,
         } => {
+            if !tracked_status.is_empty() {
+                inject_plan.push_str(&format!("\n\nTracked modifications:\n{tracked_status}"));
+            }
             // Z2-1: before holding on an AC-literal mismatch, credit any
             // sibling roadmap goal this diff actually satisfies, and — if the
             // ORIGINAL goal's own detected build/test command also passes —
             // bypass the hold entirely instead of requeuing correct work.
-            if let Some(bypass) =
-                maybe_credit_and_bypass_hold(pool, card, headless_auto_land, calling_session_id)
-                    .await?
-            {
-                return Ok(bypass);
+            if !uncommitted_work {
+                if let Some(bypass) =
+                    maybe_credit_and_bypass_hold(pool, card, headless_auto_land, calling_session_id)
+                        .await?
+                {
+                    return Ok(bypass);
+                }
             }
             persist_card_meta(pool, &card.id, |m| {
                 crate::cost_router::HoldState {
@@ -12001,7 +12125,13 @@ async fn maybe_hold_review(
                 .write_into(m);
                 crate::cost_router::RoutingSnapshot::from_signals(
                     &signals,
-                    Some("held — still verifying"),
+                    Some(if inspection_error.is_some() {
+                        "held — could not inspect goal worktree"
+                    } else if uncommitted_work {
+                        "held — verified but uncommitted"
+                    } else {
+                        "held — still verifying"
+                    }),
                 )
                 .write_into(m);
             })
@@ -12033,11 +12163,13 @@ async fn maybe_hold_review(
             // held twice without ever passing its literal AC still deserves
             // the chance to be credited (or to complete on its own
             // underlying check) before it is parked for a human.
-            if let Some(bypass) =
-                maybe_credit_and_bypass_hold(pool, card, headless_auto_land, calling_session_id)
-                    .await?
-            {
-                return Ok(bypass);
+            if !uncommitted_work {
+                if let Some(bypass) =
+                    maybe_credit_and_bypass_hold(pool, card, headless_auto_land, calling_session_id)
+                        .await?
+                {
+                    return Ok(bypass);
+                }
             }
             persist_card_meta(pool, &card.id, |m| {
                 crate::cost_router::RoutingSnapshot::from_signals(&signals, Some(&reason))
@@ -15501,6 +15633,126 @@ mod tests {
         assert!(updated.metadata_json.get("completed_at").is_some());
     }
 
+    /// Only an empty baseline range holds verified work; tracked edits are
+    /// informational and untracked build artifacts are ignored.
+    #[tokio::test]
+    async fn hold_verified_goal_until_work_is_committed_uncommitted_status_is_informational() {
+        fn git(repo: &std::path::Path, args: &[&str]) -> String {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {output:?}");
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        }
+
+        for (committed, dirty) in [(false, true), (true, false), (true, true), (false, false)] {
+            let tmp = tempfile::tempdir().unwrap();
+            git(tmp.path(), &["init", "-q", "-b", "goal/test"]);
+            std::fs::write(tmp.path().join("tracked.txt"), "baseline\n").unwrap();
+            git(tmp.path(), &["add", "tracked.txt"]);
+            git(tmp.path(), &["commit", "-qm", "baseline"]);
+            let baseline = git(tmp.path(), &["rev-parse", "HEAD"]);
+            if committed {
+                std::fs::write(tmp.path().join("work.txt"), "verified work\n").unwrap();
+                git(tmp.path(), &["add", "work.txt"]);
+                git(tmp.path(), &["commit", "-qm", "work"]);
+            }
+            if dirty {
+                std::fs::write(tmp.path().join("tracked.txt"), "verified edits\n").unwrap();
+            }
+            for dir in ["target", "__pycache__"] {
+                std::fs::create_dir(tmp.path().join(dir)).unwrap();
+                std::fs::write(tmp.path().join(dir).join("artifact"), "cache\n").unwrap();
+            }
+            let pool = test_pool().await;
+            let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+            stamp_successful_verify(&pool, &card.id).await;
+            persist_card_meta(&pool, &card.id, |meta| {
+                meta.insert("baseline_commit".into(), serde_json::json!(baseline));
+                meta.insert(
+                    "dispatch_evidence".into(),
+                    serde_json::json!({"worktree_path": tmp.path().to_str().unwrap()}),
+                );
+            })
+            .await
+            .unwrap();
+            let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+            let held = maybe_hold_review(&pool, &card, false, None).await.unwrap();
+            if committed {
+                assert!(held.is_none());
+            } else {
+                let plan = held.unwrap();
+                assert!(plan.contains(
+                    "verified but uncommitted: commit your work on the goal branch, then declare done"
+                ));
+                assert_eq!(plan.contains("tracked.txt"), dirty);
+                assert!(!plan.contains("artifact"));
+                let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+                assert_eq!(updated.metadata_json["hold_done"]["count"], 1);
+                assert_eq!(updated.metadata_json["goal_state"], "ready");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hold_inspection_error_once_then_park_with_unblock() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_successful_verify(&pool, &card.id).await;
+        let tmp = tempfile::tempdir().unwrap();
+        // Inject a missing worktree so the real git inspection returns an error.
+        let missing = tmp.path().join("missing-worktree");
+        persist_card_meta(&pool, &card.id, |meta| {
+            meta.insert("baseline_commit".into(), serde_json::json!("HEAD"));
+            meta.insert(
+                "dispatch_evidence".into(),
+                serde_json::json!({"worktree_path": missing.to_str().unwrap()}),
+            );
+        })
+        .await
+        .unwrap();
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+        let held = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(held.metadata_json["hold_done"]["count"], 1);
+        assert_eq!(held.metadata_json["goal_state"], "ready");
+        let plan = held.metadata_json["hold_done"]["last_plan"]
+            .as_str()
+            .unwrap();
+        assert!(plan.contains("could not inspect the goal worktree:"));
+        assert!(plan.contains("missing-worktree"));
+        assert!(plan.ends_with("; commit and declare done again"));
+        assert_eq!(held.metadata_json["last_error"], plan);
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        force_goal_in_progress(&pool, &card.id).await;
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+        let parked = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(parked.metadata_json["goal_state"], "failed");
+        assert_eq!(parked.metadata_json["needs_human_attention"], true);
+        let unblock = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(unblock.detail.contains(plan));
+    }
+
     #[tokio::test]
     async fn completion_without_verify_requeues_with_plan_and_preserves_attempt() {
         let pool = test_pool().await;
@@ -15603,13 +15855,17 @@ mod tests {
         let pool = test_pool().await;
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
 
+        let (repo, head) = v1_repo_with_finished_goal_branch("cite-evidence");
+        let baseline = git_v1(repo.path(), &["rev-parse", "HEAD"]);
+        git_v1(repo.path(), &["checkout", "goal/cite-evidence"]);
+
         // The tracker writes this before calling handle_goal_completion.
         let evidence = goal_engine::GoalEvidence {
-            worktree_path: "/tmp/.permagent-goal-worktrees/cli-abc".to_string(),
-            baseline_commit: "a1190cd".to_string(),
-            head_commit: Some("7d4f9ea".to_string()),
-            work_base_commit: Some("a1190cd".to_string()),
-            commits: vec!["7d4f9ea Create the thread".to_string()],
+            worktree_path: repo.path().to_string_lossy().into_owned(),
+            baseline_commit: baseline.clone(),
+            head_commit: Some(head.clone()),
+            work_base_commit: Some(baseline),
+            commits: vec![format!("{head} Create the thread")],
             diffstat: " 3 files changed, 1159 insertions(+)".to_string(),
             files_changed: 3,
             insertions: 1159,
@@ -15638,7 +15894,7 @@ mod tests {
 
         // Decision detail cites the commit + push target (not bare success).
         assert!(
-            decision.detail.contains("7d4f9ea") && decision.detail.contains("origin/main"),
+            decision.detail.contains(&head) && decision.detail.contains("origin/main"),
             "detail must cite proof of work, got: {}",
             decision.detail
         );
@@ -15649,7 +15905,7 @@ mod tests {
             .get("completion_check")
             .and_then(|v| v.as_str())
             .expect("completion_check populated");
-        assert!(check.contains("7d4f9ea") && check.contains("origin/main"));
+        assert!(check.contains(&head) && check.contains("origin/main"));
 
         // The card metadata carries the full structured evidence the panel
         // and discuss read.
@@ -15662,9 +15918,9 @@ mod tests {
         // Layer 3: the discuss-with-Henry block (same formatter the route uses)
         // surfaces ground truth + the keep-off-stale-main rule.
         let block = format_dispatch_evidence_full(card_evidence).expect("formats");
-        assert!(block.contains("7d4f9ea"));
+        assert!(block.contains(&head));
         assert!(block.contains("origin/main"));
-        assert!(block.contains("/tmp/.permagent-goal-worktrees/cli-abc"));
+        assert!(block.contains(repo.path().to_str().unwrap()));
         assert!(
             block.contains("stale") && block.contains("local `main`"),
             "must warn the orchestrator off the stale local main"
