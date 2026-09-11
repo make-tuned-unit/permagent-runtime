@@ -1822,9 +1822,8 @@ pub(crate) struct ProviderInvocationContext {
     pub reservation_id: Option<String>,
     /// Y7: physical provider attempts this invocation's hold pays for, or
     /// `None` when the call took no paid hold. The dispatch seam installs it
-    /// with `cost_router::with_authorized_attempts_opt` so the provider's
-    /// retry loop refuses an attempt the reservation does not cover instead of
-    /// spending past it.
+    /// with an extension authorizer so retries beyond this count require a
+    /// new one-attempt reservation grant.
     pub attempts_reserved: Option<u32>,
 }
 
@@ -2008,12 +2007,11 @@ impl AccountedFastCompletion {
             invocation.reservation_id.clone(),
         );
 
-        // Y7 (harness loop, from Lane A12's Q6): this dispatch may retry
-        // physically inside the provider, and each retry is another billable
-        // request. Publish how many attempts the hold above actually paid for
-        // so `providers::retry` refuses an unauthorized one instead of
-        // spending past the reservation. `None` (unpaid work) runs unchanged.
-        let (response, mut usage) = match crate::cost_router::with_authorized_attempts_opt(
+        // Physical retries beyond the hold's count require a one-attempt
+        // extension grant. Unpaid work keeps the retry policy unchanged.
+        let (response, mut usage) = match crate::cost_router::authorized_attempts::with_reservation_attempts(
+            Arc::clone(&self.manager),
+            invocation.invocation_id.clone(),
             invocation.attempts_reserved,
             self.provider
                 // permagent-dispatch: seam=complete_fast_attempt_v1 class=wrapped contract=reservation_settlement

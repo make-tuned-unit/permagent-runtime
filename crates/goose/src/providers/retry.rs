@@ -247,10 +247,14 @@ pub fn should_retry(error: &ProviderError, config: &RetryConfig) -> bool {
 /// variant, and a rate limit that went unretried is still a rate limit. Only
 /// the four retryable-class messages are annotated; a permanent error never
 /// reaches this path.
-fn unauthorized_retry(error: ProviderError, authorized_attempts: u32) -> ProviderError {
+fn unauthorized_retry(
+    error: ProviderError,
+    authorized_attempts: u32,
+    extension_reason: &str,
+) -> ProviderError {
     let note = format!(
         " (not retried: this call's cost reservation authorizes {authorized_attempts} physical \
-         attempt(s); raise {} to authorize more)",
+         attempt(s); raise {} to authorize more) (reservation extension refused: {extension_reason})",
         crate::cost_router::RESERVE_ATTEMPTS_ENV
     );
     match error {
@@ -384,34 +388,27 @@ impl<P: Provider> ProviderRetry for P {
 
                     let budget = config.retries_for(&error);
                     if should_retry(&error, &config) && attempts < budget {
-                        // Y7 (harness loop, from Lane A12's Q6): a physical
-                        // retry is another billable request. The reservation
-                        // taken before this dispatch bounds how many of those
-                        // the caller may pay for; before Y7 that bound was the
-                        // whole retry envelope, held in dollars up front, and
-                        // it starved the session ceiling (~70–330×
-                        // over-reservation, measured). Now the hold covers the
-                        // reserved attempts only, so an unreserved retry must
-                        // be refused here rather than spent and reconciled
-                        // afterwards — the reservation is an authorization,
-                        // and spending past it is exactly what it exists to
-                        // prevent. `None` means no reservation governs this
-                        // call at all (local/free work, a provider's own
-                        // auxiliary request); those keep the full budget.
+                        // Each physical retry needs a paid attempt. Extend the
+                        // enclosing hold by one only when its count is exhausted;
+                        // calls without a reservation keep the full retry budget.
                         let next_attempt = attempts as u32 + 2;
-                        if !crate::cost_router::attempt_is_authorized(next_attempt) {
+                        if let Err(reason) =
+                            crate::cost_router::authorized_attempts::authorize_attempt(next_attempt)
+                                .await
+                        {
                             let authorized =
                                 crate::cost_router::authorized_attempts().unwrap_or_default();
                             tracing::warn!(
                                 target: "permagent::cost_router::reservation",
                                 provider = %self.get_name(),
                                 authorized_attempts = authorized,
+                                extension_reason = %reason,
                                 attempts_made = attempts + 1,
                                 error = %error,
                                 "physical retry refused: the cost reservation for this call does \
                                  not authorize another attempt"
                             );
-                            return Err(unauthorized_retry(error, authorized));
+                            return Err(unauthorized_retry(error, authorized, &reason));
                         }
                         attempts += 1;
                         tracing::warn!(
@@ -944,6 +941,88 @@ mod tests {
         })
         .await;
         (attempts.load(Ordering::SeqCst), error)
+    }
+
+    #[tokio::test]
+    async fn retry_extensions_grant_one_attempt_or_report_the_ceiling() {
+        use crate::config::GooseMode;
+        use crate::cost_router::authorized_attempts::{
+            authorized_attempts, extension_calls, with_reservation_attempts,
+        };
+        use crate::cost_router::budget::{BudgetCeilings, BudgetConfig};
+        use crate::session::{CostReservationOutcome, CostTier, SessionManager, SessionType};
+        use std::sync::Arc;
+
+        // One extra call, immediate ceiling refusal, and no extension while
+        // the initial hold covers the retry policy's entire four-call budget.
+        for (reserved, ceiling_attempts, physical, extensions) in
+            [(1, 2.5, 2, 2), (1, 1.5, 1, 1), (4, 10.0, 4, 0)]
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let manager = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+            let session = manager
+                .create_session(
+                    temp.path().to_path_buf(),
+                    "retry extension".into(),
+                    SessionType::SubAgent,
+                    GooseMode::Auto,
+                )
+                .await
+                .unwrap();
+            let task = manager.begin_budget_task(&session.id).await.unwrap();
+            let model = crate::model::ModelConfig::new("glm-4.7")
+                .unwrap()
+                .with_context_limit(Some(204_800))
+                .with_max_tokens(Some(131_072));
+            let bound = crate::cost_router::plan_reservation_bound(
+                "zai",
+                "glm-4.7",
+                CostTier::PaidApi,
+                &model,
+                reserved,
+            )
+            .unwrap()
+            .unwrap();
+            let ceiling = bound.amount_usd / f64::from(reserved) * ceiling_attempts;
+            let limits = BudgetCeilings {
+                soft: 0.0,
+                gate: ceiling,
+                hard: ceiling,
+            };
+            let config = BudgetConfig {
+                task: limits,
+                session: limits,
+            };
+            let outcome = manager
+                .reserve_bounded_provider_invocation(
+                    "retry",
+                    &session.id,
+                    Some(&task),
+                    bound,
+                    "2099-01-01T00:00:00Z",
+                    &config,
+                )
+                .await
+                .unwrap();
+            assert!(matches!(outcome, CostReservationOutcome::Granted { .. }));
+            with_reservation_attempts(manager, "retry".into(), Some(reserved), async {
+                let (attempts, error) = attempts_under_reservation(None).await;
+                assert_eq!(attempts, physical);
+                assert_eq!(extension_calls(), extensions);
+                assert_eq!(authorized_attempts(), Some(physical as u32));
+                assert!(matches!(error, ProviderError::ServerError(_)));
+                let message = error.to_string();
+                if extensions > 0 {
+                    assert!(message.contains("upstream 503"), "{message}");
+                    assert!(message.contains("not retried"), "{message}");
+                    assert!(message.contains("extension refused: Refused"), "{message}");
+                    assert!(message.contains("ceiling_usd"), "{message}");
+                } else {
+                    assert!(!message.contains("not retried"), "{message}");
+                }
+            })
+            .await;
+        }
     }
 
     /// Y7 (harness loop, from Lane A12's Q6): the reservation is an
