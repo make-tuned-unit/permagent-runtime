@@ -22110,7 +22110,13 @@ mod tests {
     /// `false` and R3 requeues a live worker (A12 measured exactly this in
     /// fx04/05/09/10 — fx09's coordinator read `session_alive:false` at
     /// 21:22:2x and that same worker committed `5f38917` at 21:23:35).
+    // `GOAL_WORKERS` is process-global and the fixture's session ids are
+    // sequential per fresh temp DB, so two of these tests in parallel hold the
+    // SAME worker session id under different card ids and
+    // `live_goal_worker_card_for_session` answers with the other test's card.
+    // Serialized against each other, not against the whole suite.
     #[tokio::test]
+    #[serial_test::serial(goal_workers)]
     async fn goal_status_reports_a_registered_goal_worker_as_alive_and_leaves_it_alone() {
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
@@ -22189,7 +22195,13 @@ mod tests {
     /// The refusal, and the advice that makes it actionable. Same fixture
     /// shape as the Y4b pin: the ONLY thing that makes this session refuse is
     /// its `GOAL_WORKERS` entry.
+    // `GOAL_WORKERS` is process-global and the fixture's session ids are
+    // sequential per fresh temp DB, so two of these tests in parallel hold the
+    // SAME worker session id under different card ids and
+    // `live_goal_worker_card_for_session` answers with the other test's card.
+    // Serialized against each other, not against the whole suite.
     #[tokio::test]
+    #[serial_test::serial(goal_workers)]
     async fn send_message_refuses_a_live_goal_worker_and_says_what_can_be_done_instead() {
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
@@ -22611,7 +22623,13 @@ mod tests {
     /// `goal_status` through `GOAL_WORKERS`; `view_session` was left on
     /// `AgentManager::is_session_busy`, a map a dispatched goal worker never
     /// enters. This test fails on the second assertion against pre-Y8c code.
+    // `GOAL_WORKERS` is process-global and the fixture's session ids are
+    // sequential per fresh temp DB, so two of these tests in parallel hold the
+    // SAME worker session id under different card ids and
+    // `live_goal_worker_card_for_session` answers with the other test's card.
+    // Serialized against each other, not against the whole suite.
     #[tokio::test]
+    #[serial_test::serial(goal_workers)]
     async fn view_session_and_goal_status_agree_that_a_live_goal_worker_is_alive() {
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
