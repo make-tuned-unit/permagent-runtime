@@ -498,10 +498,17 @@ enum Tok {
     Redirect,
 }
 
-fn push_word(word: &mut String, out: &mut Vec<Tok>) {
-    if !word.is_empty() {
+/// Emit the word under construction, if there is one. A QUOTED word is
+/// emitted even when it is empty (L4): `''` is a real, positional operand, and
+/// dropping it shifts every later operand left — which matters for
+/// [`MUTATES_LAST_ARG`], where the destination is identified BY position
+/// (`cp a b ''` writes to `''`, not to `b`). `quoted` is cleared by the same
+/// call, so it only ever describes the word being emitted.
+fn push_word(word: &mut String, quoted: &mut bool, out: &mut Vec<Tok>) {
+    if !word.is_empty() || *quoted {
         out.push(Tok::Word(std::mem::take(word)));
     }
+    *quoted = false;
 }
 
 type ShellChars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
@@ -587,6 +594,8 @@ fn tokenize(command: &str) -> Vec<Tok> {
     let mut word = String::new();
     let mut chars = command.chars().peekable();
     let mut quote: Option<char> = None;
+    // Did the word under construction come (partly) from inside quotes?
+    let mut quoted_word = false;
     let mut pending_heredocs: Vec<(String, bool)> = Vec::new();
 
     while let Some(c) = chars.next() {
@@ -599,7 +608,10 @@ fn tokenize(command: &str) -> Vec<Tok> {
             continue;
         }
         match c {
-            '\'' | '"' => quote = Some(c),
+            '\'' | '"' => {
+                quote = Some(c);
+                quoted_word = true;
+            }
             // A backslash escapes the next character (a line continuation
             // escapes the newline away entirely).
             '\\' => match chars.next() {
@@ -607,11 +619,11 @@ fn tokenize(command: &str) -> Vec<Tok> {
                 Some(next) => word.push(next),
             },
             ';' | '(' | ')' => {
-                push_word(&mut word, &mut out);
+                push_word(&mut word, &mut quoted_word, &mut out);
                 out.push(Tok::Sep);
             }
             '\n' => {
-                push_word(&mut word, &mut out);
+                push_word(&mut word, &mut quoted_word, &mut out);
                 out.push(Tok::Sep);
                 // A heredoc's BODY starts on the next line and is data, not
                 // commands (M5). Bash allows several on one line, in order.
@@ -620,7 +632,7 @@ fn tokenize(command: &str) -> Vec<Tok> {
                 }
             }
             '&' => {
-                push_word(&mut word, &mut out);
+                push_word(&mut word, &mut quoted_word, &mut out);
                 if chars.peek() == Some(&'&') {
                     chars.next();
                     out.push(Tok::Sep);
@@ -635,14 +647,14 @@ fn tokenize(command: &str) -> Vec<Tok> {
                 }
             }
             '|' => {
-                push_word(&mut word, &mut out);
+                push_word(&mut word, &mut quoted_word, &mut out);
                 if chars.peek() == Some(&'|') {
                     chars.next();
                 }
                 out.push(Tok::Sep);
             }
             '<' => {
-                push_word(&mut word, &mut out);
+                push_word(&mut word, &mut quoted_word, &mut out);
                 if chars.peek() == Some(&'<') {
                     chars.next();
                     // `<<<` is a here-STRING: one word of data follows on the
@@ -672,7 +684,7 @@ fn tokenize(command: &str) -> Vec<Tok> {
                 if word == "1" || word == "2" {
                     word.clear();
                 }
-                push_word(&mut word, &mut out);
+                push_word(&mut word, &mut quoted_word, &mut out);
                 if chars.peek() == Some(&'>') {
                     chars.next();
                 }
@@ -684,11 +696,11 @@ fn tokenize(command: &str) -> Vec<Tok> {
                     out.push(Tok::Redirect);
                 }
             }
-            c if c.is_whitespace() => push_word(&mut word, &mut out),
+            c if c.is_whitespace() => push_word(&mut word, &mut quoted_word, &mut out),
             _ => word.push(c),
         }
     }
-    push_word(&mut word, &mut out);
+    push_word(&mut word, &mut quoted_word, &mut out);
     out
 }
 
@@ -2116,5 +2128,28 @@ mod tests {
         let segs = segments(tokenize("echo hi >> out/log.txt"));
         assert_eq!(segs[0].redirects, vec!["out/log.txt"]);
         assert_eq!(segs[0].words, vec!["echo", "hi"]);
+    }
+
+    /// G13 L4: a QUOTED empty word is a positional operand. Dropping it shifts
+    /// every later operand left, and `MUTATES_LAST_ARG` identifies the
+    /// destination BY position.
+    #[test]
+    fn tokenizer_keeps_a_quoted_empty_word() {
+        let segs = segments(tokenize("cp a '' dst"));
+        assert_eq!(segs.len(), 1, "{segs:?}");
+        assert_eq!(segs[0].words, vec!["cp", "a", "", "dst"]);
+
+        // The shape that made the position wrong: the last operand IS the
+        // empty word, so nothing outside is written and nothing is refused.
+        let segs = segments(tokenize("cp a b ''"));
+        assert_eq!(segs[0].words, vec!["cp", "a", "b", ""]);
+
+        // `sed -i ''` (BSD sed's empty suffix) keeps its operand count too.
+        let segs = segments(tokenize("sed -i '' 's/a/b/' f.py"));
+        assert_eq!(segs[0].words, vec!["sed", "-i", "", "s/a/b/", "f.py"]);
+
+        // An UNquoted empty word is still nothing at all.
+        let segs = segments(tokenize("cp   a   dst"));
+        assert_eq!(segs[0].words, vec!["cp", "a", "dst"]);
     }
 }
