@@ -1501,10 +1501,12 @@ impl CliSession {
     /// Process a single message and exit
     pub async fn headless(&mut self, prompt: String) -> Result<()> {
         let message = Message::user().with_text(&prompt);
-        self.process_message(message, CancellationToken::default(), false)
-            .await?;
+        let result = self
+            .process_message(message, CancellationToken::default(), false)
+            .await;
         self.print_harness_overhead_line().await;
-        Ok(())
+        println!("{}", permagent::cost_router::routing_receipt::format_line());
+        result
     }
 
     /// Lane X-lat-2 (coding-harness excellence iteration): print the

@@ -192,7 +192,7 @@ pub fn plan_reservation_bound(
     calculate_bound(model_config, max_physical_attempts, pricing, provenance).map(Some)
 }
 
-fn resolve_pricing(
+pub(crate) fn resolve_pricing(
     provider: &str,
     model: &str,
 ) -> Result<(Pricing, PricingProvenance), ReservationBoundError> {
