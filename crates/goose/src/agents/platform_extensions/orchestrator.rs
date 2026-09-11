@@ -22403,10 +22403,7 @@ mod tests {
     /// and changed nothing. Run against the REAL default roster.
     #[test]
     fn the_internal_only_dispatch_pool_does_not_claim_an_external_clis_capabilities() {
-        let config = agent_identity::AgentConfig {
-            primary: Default::default(),
-            workers: agent_identity::default_roster(),
-        };
+        let config = default_config();
 
         let unrestricted = dispatchable_worker_capabilities(&config, false);
         let internal_only = dispatchable_worker_capabilities(&config, true);
@@ -22434,10 +22431,12 @@ mod tests {
         );
     }
 
+    /// The real shipped roster. `..Default::default()` rather than naming every
+    /// field, so a new field on `AgentConfig` cannot break these tests.
     fn default_config() -> agent_identity::AgentConfig {
         agent_identity::AgentConfig {
-            primary: Default::default(),
             workers: agent_identity::default_roster(),
+            ..Default::default()
         }
     }
 
