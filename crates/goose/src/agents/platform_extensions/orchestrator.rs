@@ -12045,8 +12045,7 @@ async fn maybe_hold_review(
                     },
                     Some(&refusal.reason),
                 )
-                .await
-                .map_err(String::from)?;
+                .await?;
                 if let Some(kill) = take_goal_worker(&card.id) {
                     kill.kill();
                 }
