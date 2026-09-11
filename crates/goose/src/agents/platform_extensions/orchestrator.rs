@@ -3713,18 +3713,25 @@ impl OrchestratorClient {
         )];
         for session in &sessions {
             let is_loaded = active_ids.contains(&session.id);
-            let is_busy = if is_loaded {
-                manager.is_session_busy(&session.id).await
-            } else {
-                false
-            };
+            // Y8c: the GOAL_WORKERS registry answers first, exactly as
+            // `handle_goal_status` does since Y4b. `is_session_busy` reads
+            // `AgentManager`'s `cancel_tokens`, a map a dispatched goal worker
+            // never enters — so this printed "○ idle" for a worker that was
+            // demonstrably mid-tool-call, in the same turn as `goal_status`
+            // said `session_alive: true`.
+            let goal_card = live_goal_worker_card_for_session(&session.id);
+            let is_busy = goal_card.is_some()
+                || if is_loaded {
+                    manager.is_session_busy(&session.id).await
+                } else {
+                    false
+                };
 
-            let status = if is_busy {
-                "🔄 busy"
-            } else if is_loaded {
-                "✓ loaded"
-            } else {
-                "○ idle"
+            let status = match &goal_card {
+                Some(card_id) => format!("🔄 busy (live worker for goal {card_id})"),
+                None if is_busy => "🔄 busy".to_string(),
+                None if is_loaded => "✓ loaded".to_string(),
+                None => "○ idle".to_string(),
             };
 
             lines.push(format!(
@@ -3774,15 +3781,40 @@ impl OrchestratorClient {
             .await
             .map_err(|e| format!("Session '{}' not found: {}", session_id, e))?;
 
-        let manager = self.get_agent_manager().await?;
-        let is_busy = manager.is_session_busy(&session_id).await;
+        // Y8c (harness loop 2026-09-10, from Lane A14's M14 forensics): ask the
+        // registry goal workers are ACTUALLY in first, the way
+        // `handle_goal_status` has since Y4b. `AgentManager::is_session_busy`
+        // reads `cancel_tokens`, a map a dispatched goal worker never enters,
+        // so this reported "idle" for every live worker — and fx04's
+        // coordinator read `goal_status → session_alive: true` and
+        // `view_session → Status: idle` IN THE SAME TURN. Its last three tool
+        // calls were `view_session`, and its very next model call was the
+        // 441-second runaway. A tool that contradicts its sibling is what kept
+        // it polling.
+        //
+        // The agent-manager lookup is now lazy and non-fatal: a live goal
+        // worker is answerable from the registry alone, so this no longer fails
+        // the whole call when no AgentManager can be instantiated.
+        let goal_card = live_goal_worker_card_for_session(&session_id);
+        let is_busy = match &goal_card {
+            Some(_) => true,
+            None => match self.get_agent_manager().await {
+                Ok(manager) => manager.is_session_busy(&session_id).await,
+                Err(_) => false,
+            },
+        };
+        let status = match &goal_card {
+            Some(card_id) => format!("🔄 busy (live worker for goal {card_id})"),
+            None if is_busy => "🔄 busy".to_string(),
+            None => "idle".to_string(),
+        };
 
         let mut output = vec![format!(
             "# Session: {} ({})\n\nType: {} | Status: {} | Working dir: {}\nMessages: {} | Updated: {}\n",
             session.name,
             session.id,
             session.session_type,
-            if is_busy { "🔄 busy" } else { "idle" },
+            status,
             session.working_dir.display(),
             session.message_count,
             session.updated_at.format("%Y-%m-%d %H:%M"),
@@ -21925,7 +21957,9 @@ mod tests {
             let _guard = env_lock::lock_env([(SEND_MESSAGE_MAX_SECS_ENV, None::<&str>)]);
             assert_eq!(
                 send_message_reply_budget_from_env(),
-                Some(std::time::Duration::from_secs(SEND_MESSAGE_DEFAULT_MAX_SECS)),
+                Some(std::time::Duration::from_secs(
+                    SEND_MESSAGE_DEFAULT_MAX_SECS
+                )),
                 "an unset budget is 120s, not unlimited"
             );
         }
@@ -21949,9 +21983,101 @@ mod tests {
             let _guard = env_lock::lock_env([(SEND_MESSAGE_MAX_SECS_ENV, Some("soon"))]);
             assert_eq!(
                 send_message_reply_budget_from_env(),
-                Some(std::time::Duration::from_secs(SEND_MESSAGE_DEFAULT_MAX_SECS))
+                Some(std::time::Duration::from_secs(
+                    SEND_MESSAGE_DEFAULT_MAX_SECS
+                ))
             );
         }
+    }
+
+    // ── Y8c: every liveness reader tells the same story ──────────────────
+
+    /// A14's ranked mechanism 3, pinned as the contradiction it actually was:
+    /// fx04's coordinator read `goal_status → "session_alive": true` and
+    /// `view_session → "Status: idle"` IN THE SAME TURN, kept polling
+    /// `view_session` (offsets 19, 21, 23 were all `view_session`), and its
+    /// very next model call was the 441-second runaway. Y4b routed
+    /// `goal_status` through `GOAL_WORKERS`; `view_session` was left on
+    /// `AgentManager::is_session_busy`, a map a dispatched goal worker never
+    /// enters. This test fails on the second assertion against pre-Y8c code.
+    #[tokio::test]
+    async fn view_session_and_goal_status_agree_that_a_live_goal_worker_is_alive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = dead_silent_worker_goal(&pool, &sm, None, 200).await;
+        let worker_session_id = card
+            .metadata_json
+            .get("worker_session_id")
+            .and_then(|v| v.as_str())
+            .expect("fixture stamps a worker session id")
+            .to_string();
+
+        register_goal_worker(
+            &card.id,
+            &worker_session_id,
+            goal_engine::GoalKill::None,
+            None,
+        );
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut status_args = JsonObject::new();
+        status_args.insert("card_id".to_string(), serde_json::json!(card.id));
+        let status_text = client
+            .handle_goal_status(Some(status_args))
+            .await
+            .expect("goal_status must report a live worker normally")
+            .content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .clone();
+
+        let mut view_args = JsonObject::new();
+        view_args.insert(
+            "session_id".to_string(),
+            serde_json::json!(worker_session_id),
+        );
+        let view_text = client
+            .handle_view_session("20260910_coordinator", Some(view_args))
+            .await
+            .expect("view_session must read a live worker's session")
+            .content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .clone();
+
+        // GOAL_WORKERS is process-global; drop this test's entry before any
+        // assertion can unwind past it.
+        take_goal_worker(&card.id);
+        assert!(
+            live_goal_worker_card_for_session(&worker_session_id).is_none(),
+            "both readers are registry-driven"
+        );
+
+        let status: serde_json::Value =
+            serde_json::from_str(&status_text).expect("the status JSON");
+        assert_eq!(
+            status.get("session_alive").and_then(|v| v.as_bool()),
+            Some(true),
+            "Y4b's half: {status_text}"
+        );
+        assert!(
+            !view_text.contains("Status: idle"),
+            "view_session must not call a live goal worker idle in the same turn \
+             goal_status calls it alive: {view_text}"
+        );
+        assert!(
+            view_text.contains("busy") && view_text.contains(&card.id),
+            "view_session must say busy and name the goal: {view_text}"
+        );
     }
 
     // ── F1a: R3 misfire guard — a minimum-elapsed grace period and an
