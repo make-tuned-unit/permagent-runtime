@@ -938,6 +938,107 @@ fn git_changes_under(dir: &Path) -> Option<Vec<String>> {
         .collect::<Vec<_>>();
     paths.sort();
     paths.dedup();
+    // Y10e: `diff HEAD` + `ls-files --others` describes the WORKING TREE, so
+    // the instant a goal worker commits its work the change set goes empty and
+    // `select_checks` answers "no changed files were found under this
+    // verification path" — M15 fx05, fx08, fx09 and fx10 each burned a turn on
+    // exactly that, having just committed on their `goal/<session>` branch.
+    // The work is not gone, it is one commit down. Only in that case (nothing
+    // uncommitted to describe, so today's answer is a useless NO CHECKS) widen
+    // the base to this branch's fork point. See [`branch_fork_point`].
+    if paths.is_empty() {
+        if let Some(committed) = changes_since_branch_fork_point(&root, &relative_dir) {
+            return Some(committed);
+        }
+    }
+    Some(paths)
+}
+
+/// Run `git -C root <args>` and return its stdout, or `None` on any failure.
+fn git_stdout(root: &Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    String::from_utf8(output.stdout).ok()
+}
+
+/// Y10e: the commit this branch forked from — the parent of the OLDEST commit
+/// reachable from `HEAD` but from no other branch or remote.
+///
+/// This is what "the work this goal branch has done" means once the worker has
+/// committed: a goal worktree checks out `goal/<session>` off the trunk, so the
+/// trunk's own tip is reachable from some other ref and every commit the worker
+/// made is not. Deliberately narrow — `None` on a detached HEAD (no branch to
+/// scope to), on a branch with no unique commits (nothing was committed here),
+/// and when the oldest unique commit is a root commit (no parent to diff
+/// against, and diffing the whole history is not a scoped check).
+fn branch_fork_point(root: &Path) -> Option<String> {
+    let branch = git_stdout(root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = branch.trim();
+    if branch.is_empty() || branch == "HEAD" {
+        return None;
+    }
+    // `--exclude` is matched against the ref name with the `refs/heads/`
+    // prefix ALREADY STRIPPED when it feeds `--branches`, so the pattern is
+    // the bare branch name. Spelled `refs/heads/<branch>` it matches nothing,
+    // `--branches` re-includes this branch, every commit on it is excluded by
+    // `--not`, and the walk returns empty — no fork point, no fallback.
+    let exclude = format!("--exclude={branch}");
+    let unique = git_stdout(
+        root,
+        &[
+            "rev-list",
+            "HEAD",
+            "--not",
+            &exclude,
+            "--branches",
+            "--remotes",
+        ],
+    )?;
+    // `rfind`, not `last()`: `rev-list` prints newest first, so the oldest
+    // unique commit is the last non-empty line. Walking from the back is what
+    // clippy's `double_ended_iterator_last` / `filter_next` pair insists on;
+    // the element chosen is identical.
+    let oldest = unique
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())?;
+    // A root commit has no parent: `rev-parse --verify` fails and we stop,
+    // rather than diffing the whole history and calling it a scoped check.
+    let parent = format!("{oldest}^");
+    let sha = git_stdout(root, &["rev-parse", "--verify", "--quiet", &parent])?;
+    let sha = sha.trim().to_string();
+    if sha.is_empty() {
+        return None;
+    }
+    Some(sha)
+}
+
+/// The paths changed since [`branch_fork_point`], filtered to `relative_dir`
+/// exactly as the working-tree scan is. `None` when there is no fork point to
+/// measure from, so the caller keeps its existing (empty) answer.
+fn changes_since_branch_fork_point(root: &Path, relative_dir: &Path) -> Option<Vec<String>> {
+    let base = branch_fork_point(root)?;
+    let text = git_stdout(root, &["diff", "--name-only", &base])?;
+    let mut paths = text
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .filter(|path| {
+            let path = Path::new(path);
+            relative_dir.as_os_str().is_empty() || path.starts_with(relative_dir)
+        })
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        return None;
+    }
     Some(paths)
 }
 
@@ -1482,12 +1583,43 @@ fn zero_test_marker(output: &str) -> Option<String> {
     ZERO_TESTS_RE.find(output).map(|m| m.as_str().to_string())
 }
 
+/// Y10a: the counter-marker to [`ZERO_TESTS_RE`] — "at least one test actually
+/// ran here". `cargo test` prints one `test result:` block PER TARGET, so a
+/// crate whose real tests all pass still emits an empty doc-test block beside
+/// them:
+///
+/// ```text
+/// running 6 tests ... test result: ok. 6 passed; 0 failed; ...
+///    Doc-tests bench_rs
+/// running 0 tests ... test result: ok. 0 passed; 0 failed; ...
+/// ```
+///
+/// [`ZERO_TESTS_RE`] scans the whole joined output, so it matched that trailing
+/// `0 passed` and judged every multi-target `cargo test` vacuous. A non-zero
+/// pass count (or a `running N tests` header with N > 0) anywhere in the SAME
+/// output proves the run exercised something, which makes the zero marker a
+/// sibling target rather than an empty run. Same conservative bias the
+/// [`ZERO_TESTS_RE`] comment declares: missing a vacuous pass costs a great
+/// deal less than blocking a real one.
+static NONZERO_TESTS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(\b[1-9]\d* passed\b|\brunning [1-9]\d* tests?\b)").unwrap());
+
+/// Return the matched "at least one test ran" marker text, if the combined
+/// check output contains one. See [`NONZERO_TESTS_RE`].
+fn nonzero_test_marker(output: &str) -> Option<String> {
+    NONZERO_TESTS_RE
+        .find(output)
+        .map(|m| m.as_str().to_string())
+}
+
 /// X-verify-2: why a set of PASSED checks does not count as real coverage, if
 /// any reason applies. Checked in order: (1) every check that ran was a
 /// syntax-only smoke ([`Check::is_smoke`]) — the code was never executed at
 /// all; (2) the combined output of the checks that actually ran contains a
-/// recognized "zero tests" marker — a real test command that nonetheless
-/// collected/ran nothing. `None` when neither applies: a genuine pass.
+/// recognized "zero tests" marker ([`ZERO_TESTS_RE`]) AND no counter-marker
+/// ([`NONZERO_TESTS_RE`]) proving some other target in the same output did run
+/// tests — a real test command that nonetheless collected/ran nothing. `None`
+/// when neither applies: a genuine pass.
 fn vacuous_pass_reason_for_checks(checks: &[Check], outputs: &[String]) -> Option<String> {
     if !checks.is_empty() && checks.iter().all(|check| check.is_smoke) {
         return Some(
@@ -1497,6 +1629,12 @@ fn vacuous_pass_reason_for_checks(checks: &[Check], outputs: &[String]) -> Optio
         );
     }
     let combined = outputs.join("\n");
+    // Y10a: a non-zero pass count anywhere in the same output means tests DID
+    // run, so any "0 passed" beside it belongs to a sibling target (cargo's
+    // doc-tests) and this pass is not vacuous. See [`NONZERO_TESTS_RE`].
+    if nonzero_test_marker(&combined).is_some() {
+        return None;
+    }
     zero_test_marker(&combined)
         .map(|marker| format!("the check's own output reports zero tests ran (\"{marker}\")"))
 }
@@ -1682,6 +1820,134 @@ mod tests {
         );
     }
 
+    // ── Y10a: the multi-target counter-marker ──────────────────────────────
+
+    /// The M15 regression this closes, verbatim from the fx10 worker's own
+    /// `cargo test` output: a crate with six real passing tests and an empty
+    /// doc-test target. `ZERO_TESTS_RE` matched the doc-test block's
+    /// `0 passed`, so verify stamped `vacuous` on a genuine pass, the goal was
+    /// held, and fx03/fx10 (and zai fx01) failed on it.
+    #[test]
+    fn a_cargo_run_with_an_empty_doc_test_target_is_not_vacuous() {
+        let output = "\
+running 6 tests
+test coupons::tests::trims ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+   Doc-tests bench_rs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+";
+        let result = pass_result(&[Check::direct("cargo", &["test"])], &[output.to_string()]);
+        assert!(is_authoritative_pass(&result));
+        assert_eq!(
+            vacuous_pass_reason(&result),
+            None,
+            "6 real passing tests beside an empty doc-test target is a genuine pass"
+        );
+        assert!(
+            is_genuine_pass(&result),
+            "the goal engine must be able to land this verdict"
+        );
+    }
+
+    /// The other half of the same regression: with nothing but zero-count
+    /// blocks, the marker must still fire.
+    #[test]
+    fn a_cargo_run_with_only_empty_targets_is_still_vacuous() {
+        let output = "\
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+   Doc-tests bench_rs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+";
+        let result = pass_result(&[Check::direct("cargo", &["test"])], &[output.to_string()]);
+        let reason = vacuous_pass_reason(&result);
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("zero tests")),
+            "an all-empty cargo run is still vacuous, got {reason:?}"
+        );
+    }
+
+    /// Separate checks, separate output strings: the counter-marker is scanned
+    /// over the same joined output the zero marker is, so a real `cargo test`
+    /// beside a clippy run that happens to print `0 passed` still counts.
+    #[test]
+    fn the_counter_marker_is_scanned_across_all_check_outputs() {
+        let result = pass_result(
+            &[
+                Check::direct("cargo", &["test"]),
+                Check::direct("cargo", &["test", "--doc"]),
+            ],
+            &[
+                "test result: ok. 6 passed; 0 failed; 0 ignored".to_string(),
+                "test result: ok. 0 passed; 0 failed; 0 ignored".to_string(),
+            ],
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+    }
+
+    /// pytest and jest keep their existing behaviour in both directions: a
+    /// genuine run is not vacuous, an empty collection still is.
+    #[test]
+    fn pytest_and_jest_equivalents_are_unchanged_by_the_counter_marker() {
+        for genuine in [
+            "===== 12 passed, 1 skipped in 0.42s =====",
+            "Tests:       3 passed, 3 total\nSnapshots:   0 total",
+        ] {
+            let result = pass_result(&[Check::direct("pytest", &["-q"])], &[genuine.to_string()]);
+            assert_eq!(
+                vacuous_pass_reason(&result),
+                None,
+                "a genuine run must not be vacuous: {genuine:?}"
+            );
+        }
+        for empty in [
+            "collected 0 items\n\n===== no tests ran in 0.01s =====",
+            "No tests found, exiting with code 0\nNo test files",
+            "===== 0 passed in 0.01s =====",
+        ] {
+            let result = pass_result(&[Check::direct("pytest", &["-q"])], &[empty.to_string()]);
+            assert!(
+                vacuous_pass_reason(&result).is_some(),
+                "an empty run must stay vacuous: {empty:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nonzero_marker_matches_only_real_counts() {
+        for text in [
+            "test result: ok. 6 passed; 0 failed",
+            "running 6 tests",
+            "running 1 test",
+            "12 passed, 1 skipped",
+        ] {
+            assert!(
+                nonzero_test_marker(text).is_some(),
+                "expected a counter-marker in {text:?}"
+            );
+        }
+        for text in [
+            "test result: ok. 0 passed; 0 failed",
+            "running 0 tests",
+            "collected 0 items",
+            "no tests ran",
+        ] {
+            assert!(
+                nonzero_test_marker(text).is_none(),
+                "must not claim tests ran in {text:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_failing_result_is_never_reported_as_vacuous() {
         // Vacuousness is a property of a PASS; a failure is handled by the
@@ -1770,6 +2036,140 @@ mod tests {
                 "must not match a non-zero count in {text:?}"
             );
         }
+    }
+
+    // ── Y10e: a committed goal branch still has a change set ───────────────
+
+    /// `git -C dir <args>`, panicking with the real stderr so a fixture that
+    /// fails to build says why.
+    fn git_y10e(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git must be on PATH for this test");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A repo seeded exactly like a bench fixture: one commit on `main`, then
+    /// a `goal/<session>` branch carrying the worker's committed change and a
+    /// CLEAN working tree — the state every M15 worker was in when it called
+    /// `verify` right after committing.
+    fn y10e_committed_goal_branch() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        // Canonicalize: `git rev-parse --show-toplevel` resolves symlinks
+        // (/var → /private/var on macOS) and `git_changes_under` compares the
+        // two, so the fixture must hand back the resolved path.
+        let dir = tmp.path().canonicalize().unwrap();
+        let dir = dir.as_path();
+        git_y10e(dir, &["init", "-b", "main"]);
+        git_y10e(dir, &["config", "user.email", "t@example.com"]);
+        git_y10e(dir, &["config", "user.name", "T"]);
+        git_y10e(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"fx\"\n").unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "seed"]);
+
+        git_y10e(dir, &["checkout", "-b", "goal/session-1"]);
+        std::fs::write(dir.join("src/coupons.rs"), "pub fn trim() {}\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "worker: add coupons"]);
+        let resolved = dir.to_path_buf();
+        (tmp, resolved)
+    }
+
+    /// The M15 regression: with the work COMMITTED the working tree is clean,
+    /// so `diff HEAD` + `ls-files --others` return nothing and verify answered
+    /// "no changed files were found under this verification path". fx05, fx08,
+    /// fx09 and fx10 each burned a turn on it. The branch's fork point still
+    /// knows what this goal changed.
+    #[test]
+    fn a_committed_goal_branch_still_reports_its_changed_files() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        let dir = dir.as_path();
+
+        assert_eq!(
+            git_y10e(dir, &["status", "--porcelain"]),
+            "",
+            "the fixture's working tree must be clean, or it proves nothing"
+        );
+
+        let changes = git_changes_under(dir).expect("the repo resolves");
+        assert_eq!(
+            changes,
+            vec!["src/coupons.rs".to_string()],
+            "a committed goal branch must still describe what it changed"
+        );
+    }
+
+    /// The narrowing that follows: because the change set is no longer empty,
+    /// `select_checks` infers a real scoped Rust check instead of NO CHECKS.
+    #[test]
+    fn a_committed_goal_branch_infers_a_real_check_instead_of_no_checks() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        let outcome = select_checks(
+            dir.as_path(),
+            VerificationScope::Auto,
+            VerificationRisk::Low,
+            None,
+        )
+        .expect("auto scope must not error on an all-Rust change set");
+        match outcome {
+            DetectOutcome::Checks(checks) => assert!(
+                checks.iter().any(|check| check.label.starts_with("cargo ")),
+                "expected a Cargo check, got {:?}",
+                checks.iter().map(|c| &c.label).collect::<Vec<_>>()
+            ),
+            other => panic!("expected runnable checks, got {other:?}"),
+        }
+    }
+
+    /// The fallback must stay a FALLBACK: while there is uncommitted work, the
+    /// working tree is still the answer — widening to the fork point there
+    /// would silently broaden every ordinary verify call.
+    #[test]
+    fn uncommitted_work_still_wins_over_the_fork_point() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        let dir = dir.as_path();
+        std::fs::write(dir.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
+
+        let changes = git_changes_under(dir).expect("the repo resolves");
+        assert_eq!(
+            changes,
+            vec!["src/lib.rs".to_string()],
+            "with a dirty tree the working-tree scan must be untouched by Y10e"
+        );
+    }
+
+    /// A branch with nothing unique to it (the trunk itself, clean) has no
+    /// fork point to widen to, and must keep answering "nothing changed"
+    /// rather than diffing its whole history.
+    #[test]
+    fn a_clean_trunk_has_no_fork_point_to_widen_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        let dir = dir.as_path();
+        git_y10e(dir, &["init", "-b", "main"]);
+        git_y10e(dir, &["config", "user.email", "t@example.com"]);
+        git_y10e(dir, &["config", "user.name", "T"]);
+        git_y10e(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.rs"), "// seed\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "seed"]);
+
+        assert!(
+            branch_fork_point(dir).is_none(),
+            "a single root commit has no parent to diff against"
+        );
+        assert_eq!(git_changes_under(dir), Some(Vec::new()));
     }
 
     /// Unwrap a detection that must have produced runnable checks.
