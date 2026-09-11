@@ -1961,6 +1961,25 @@ impl OrchestratorClient {
 // on construction. The `OrchestratorClient` methods above are thin wrappers;
 // these free functions are the real bodies.
 
+/// Wall-clock ceiling on the reply `send_message` drives inline, in seconds.
+/// `0` disables the bound (the pre-Y8b behaviour). See `handle_send_message`.
+pub const SEND_MESSAGE_MAX_SECS_ENV: &str = "PERMAGENT_SEND_MESSAGE_MAX_SECS";
+pub const SEND_MESSAGE_DEFAULT_MAX_SECS: u64 = 120;
+
+/// The "budget disabled" sleep. `tokio::select!` needs a future in every arm
+/// even when the arm's guard is false, so an unlimited budget arms a timer that
+/// cannot fire within any process lifetime rather than a special-cased branch.
+const SEND_MESSAGE_NEVER: std::time::Duration = std::time::Duration::from_secs(86_400 * 365);
+
+/// Y8b: how long `send_message` may spend draining the target session's reply.
+fn send_message_reply_budget_from_env() -> Option<std::time::Duration> {
+    let secs = std::env::var(SEND_MESSAGE_MAX_SECS_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(SEND_MESSAGE_DEFAULT_MAX_SECS);
+    (secs > 0).then(|| std::time::Duration::from_secs(secs))
+}
+
 /// AgentManager handle (free-fn form; needs no client state).
 async fn get_agent_manager_fn() -> Result<Arc<AgentManager>, String> {
     AgentManager::instance()
@@ -4152,6 +4171,35 @@ impl OrchestratorClient {
             return Err("Cannot send a message to the orchestrator's own session".into());
         }
 
+        // Y8b (harness loop 2026-09-10, from Lane A14's M14 forensics): a goal
+        // worker is NOT a session you may drive with `send_message`.
+        //
+        // `send_message` runs the target session's entire reply inline, in the
+        // caller's turn, and `try_register_cancel_token` below does not stop it
+        // from doing that to a session that is already running: goal workers
+        // live in `GOAL_WORKERS`, not in `AgentManager`'s `cancel_tokens` map —
+        // the same registry split Y4b fixed for `goal_status`. A14 measured the
+        // consequence on glm47/fx06: the coordinator's `send_message` text
+        // landed in worker session `20260910_2` as message #26 at 23:30:26
+        // while the goal-engine dispatch was mid-tool-call in the SAME session
+        // (its prompt was message #17, ten seconds earlier). Two reply loops,
+        // one session. The coordinator never spoke again; the run died at the
+        // driver's ceiling and filed an open "needs a manual merge" unblock.
+        // fx05 is the pure form: 61 worker provider calls after the
+        // `send_message`, $0.4732 of that fixture's $0.5042.
+        //
+        // Refuse, and name the tools that DO talk to a running goal. This is
+        // checked before the agent manager is touched: nothing about a live
+        // worker's session should be created, looked up or locked on this path.
+        if let Some(card_id) = live_goal_worker_card_for_session(&session_id) {
+            return Err(format!(
+                "Session '{session_id}' is the live worker for goal '{card_id}' — it is already \
+                 running a reply of its own, and send_message would start a second one in the same \
+                 session. Use message_goal (card_id: '{card_id}') to pass it information, \
+                 steer_goal to change what it is doing, or goal_status to read its progress."
+            ));
+        }
+
         let manager = self.get_agent_manager().await?;
 
         let agent = manager
@@ -4205,12 +4253,27 @@ impl OrchestratorClient {
 
         let mut response_parts: Vec<String> = Vec::new();
         let mut cancelled = false;
+        let mut timed_out = false;
+
+        // Y8b: this drain had no timeout at all. Its only exits were "the
+        // stream ended" and "the harness cancelled the whole process", so the
+        // coordinator's turn was hostage to however long the target session
+        // chose to run — A14 measured 500 s on glm47/fx05, ending only when the
+        // eval driver killed the process. A third exit, named and honest.
+        let budget = send_message_reply_budget_from_env();
+        let deadline = tokio::time::sleep(budget.unwrap_or(SEND_MESSAGE_NEVER));
+        tokio::pin!(deadline);
 
         loop {
             tokio::select! {
                 _ = parent_cancel.cancelled() => {
                     cancel_token.cancel();
                     cancelled = true;
+                    break;
+                }
+                _ = &mut deadline, if budget.is_some() => {
+                    cancel_token.cancel();
+                    timed_out = true;
                     break;
                 }
                 event = stream.next() => {
@@ -4238,6 +4301,32 @@ impl OrchestratorClient {
 
         if cancelled {
             return Err("Cancelled by parent session".into());
+        }
+
+        if timed_out {
+            // Report what actually arrived rather than claiming nothing did:
+            // the work the target session did is real and may have landed, and
+            // a coordinator told "no response" will duplicate it.
+            let received = if response_parts.is_empty() {
+                "no text output arrived before the budget expired".to_string()
+            } else {
+                format!(
+                    "{} message part(s) arrived before the budget expired:\n\n{}",
+                    response_parts.len(),
+                    response_parts.join("\n\n")
+                )
+            };
+            return Err(format!(
+                "send_message to session '{}' exceeded its {}s reply budget ({}) and the reply was \
+                 cancelled. The session may have done real work — read it with view_session before \
+                 sending anything again, and raise or disable {} (0 = unlimited) if this session \
+                 legitimately needs longer. {}",
+                session_id,
+                budget.map(|d| d.as_secs()).unwrap_or(0),
+                SEND_MESSAGE_MAX_SECS_ENV,
+                SEND_MESSAGE_MAX_SECS_ENV,
+                received,
+            ));
         }
 
         if response_parts.is_empty() {
@@ -21749,6 +21838,120 @@ mod tests {
             "R3's auto-requeue must never fire on a live worker: {:?}",
             updated.metadata_json
         );
+    }
+
+    // ── Y8b: send_message is not a way to drive a live goal worker ───────
+    //
+    // A14's M14 forensics, glm47/fx06: the coordinator's `send_message` text
+    // landed in worker session `20260910_2` as message #26 at 23:30:26 while
+    // the goal-engine dispatch was mid-tool-call in that SAME session (its
+    // prompt was message #17, ten seconds earlier). Two reply loops, one
+    // session; the coordinator never spoke again and the run died at the
+    // driver's ceiling. `try_register_cancel_token` cannot catch this — goal
+    // workers live in `GOAL_WORKERS`, not in `AgentManager`'s `cancel_tokens`,
+    // the same registry split Y4b fixed for `goal_status`.
+
+    /// The refusal, and the redirect that makes it actionable. Same fixture
+    /// shape as the Y4b pin: the ONLY thing that makes this session refuse is
+    /// its `GOAL_WORKERS` entry.
+    #[tokio::test]
+    async fn send_message_refuses_a_live_goal_worker_and_points_at_message_goal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = dead_silent_worker_goal(&pool, &sm, None, 200).await;
+        let worker_session_id = card
+            .metadata_json
+            .get("worker_session_id")
+            .and_then(|v| v.as_str())
+            .expect("fixture stamps a worker session id")
+            .to_string();
+
+        register_goal_worker(
+            &card.id,
+            &worker_session_id,
+            goal_engine::GoalKill::None,
+            None,
+        );
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+        let mut args = JsonObject::new();
+        args.insert(
+            "session_id".to_string(),
+            serde_json::json!(worker_session_id),
+        );
+        args.insert(
+            "message".to_string(),
+            serde_json::json!("How is the fragile-package work going?"),
+        );
+        let cancel = CancellationToken::new();
+        let err = client
+            .handle_send_message("20260910_coordinator", &cancel, Some(args))
+            .await
+            .expect_err("a live goal worker must refuse send_message");
+
+        // GOAL_WORKERS is process-global; drop this test's entry before any
+        // assertion can unwind past it.
+        take_goal_worker(&card.id);
+        assert!(
+            live_goal_worker_card_for_session(&worker_session_id).is_none(),
+            "the guard is registry-driven: with the handle taken, this session \
+             is no longer a live worker"
+        );
+
+        assert!(
+            err.contains(&card.id),
+            "the refusal must name the goal so the coordinator can act on it: {err}"
+        );
+        assert!(
+            err.contains("message_goal"),
+            "the refusal must redirect to the tool that DOES talk to a running goal: {err}"
+        );
+        assert!(err.contains("steer_goal"), "{err}");
+    }
+
+    /// The inline drain's wall-clock budget: default, explicit, and disabled.
+    /// A14 measured 500 s of unbounded drain on glm47/fx05 — 61 worker provider
+    /// calls and $0.4732 of that fixture's $0.5042 — ending only when the eval
+    /// driver killed the process.
+    #[test]
+    fn the_send_message_reply_budget_defaults_and_can_be_disabled() {
+        {
+            let _guard = env_lock::lock_env([(SEND_MESSAGE_MAX_SECS_ENV, None::<&str>)]);
+            assert_eq!(
+                send_message_reply_budget_from_env(),
+                Some(std::time::Duration::from_secs(SEND_MESSAGE_DEFAULT_MAX_SECS)),
+                "an unset budget is 120s, not unlimited"
+            );
+        }
+        {
+            let _guard = env_lock::lock_env([(SEND_MESSAGE_MAX_SECS_ENV, Some("5"))]);
+            assert_eq!(
+                send_message_reply_budget_from_env(),
+                Some(std::time::Duration::from_secs(5))
+            );
+        }
+        {
+            let _guard = env_lock::lock_env([(SEND_MESSAGE_MAX_SECS_ENV, Some("0"))]);
+            assert_eq!(
+                send_message_reply_budget_from_env(),
+                None,
+                "0 means unlimited — the pre-Y8b behaviour, opt-in"
+            );
+        }
+        {
+            // Garbage must not silently disable the bound.
+            let _guard = env_lock::lock_env([(SEND_MESSAGE_MAX_SECS_ENV, Some("soon"))]);
+            assert_eq!(
+                send_message_reply_budget_from_env(),
+                Some(std::time::Duration::from_secs(SEND_MESSAGE_DEFAULT_MAX_SECS))
+            );
+        }
     }
 
     // ── F1a: R3 misfire guard — a minimum-elapsed grace period and an
