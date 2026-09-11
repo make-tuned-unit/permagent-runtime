@@ -3613,6 +3613,13 @@ pub(crate) async fn dispatch_goal_fn(
             serde_json::json!(dispatched_at),
         );
     }
+    // Y16a: give a headless goal a real wallclock cap for the wall-budget
+    // gate. Idempotent — never overrides an already-configured cap.
+    if policy.is_some() {
+        if let Some(budget) = headless_wallclock_cap_patch(&card.metadata_json) {
+            claim_patch.insert("budget".to_string(), budget);
+        }
+    }
     claim_patch.insert("attempt_count".to_string(), serde_json::json!(next_attempt));
     claim_patch.insert(
         "dispatched_lifecycle".to_string(),
@@ -7204,6 +7211,39 @@ fn headless_max_redispatch_from_env() -> u32 {
             .unwrap_or(DEFAULT_HEADLESS_MAX_REDISPATCH),
         Err(_) => DEFAULT_HEADLESS_MAX_REDISPATCH,
     }
+}
+
+/// Y16a: a headless goal's `wallclock_cap_secs` was NEVER populated in
+/// production (only two hardcoded test fixtures set it), so
+/// [`wall_budget_exhausted_refusal`] always read `None` and silently
+/// no-opped (A16z: M16 zai fx04/05/08). Fill it from the headless drain's
+/// own cap (`PERMAGENT_HEADLESS_DRAIN_SECS`, mirrored by name here since
+/// `crates/goose` cannot depend on `goose-cli`) at dispatch — never
+/// overriding an already-configured (user- or roadmap-authored) cap.
+fn headless_wallclock_cap_patch(
+    existing_metadata: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    if goal_transition::goal_budget(existing_metadata)
+        .wallclock_cap_secs
+        .is_some()
+    {
+        return None;
+    }
+    let drain_secs: u64 = std::env::var("PERMAGENT_HEADLESS_DRAIN_SECS")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    let mut budget = existing_metadata
+        .get("budget")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    budget.insert(
+        "wallclock_cap_secs".to_string(),
+        serde_json::json!(drain_secs),
+    );
+    Some(serde_json::Value::Object(budget))
 }
 
 /// Env override (Lane Y6b, G12 HIGH-1) for how much of the drain's wall-clock
@@ -11804,6 +11844,64 @@ async fn maybe_hold_review(
             {
                 return Ok(bypass);
             }
+            // ── Y16a BEGIN: wall_budget_exhausted_refusal was wired only into
+            // handle_goal_completion's Err arm (:9179-ish); this Hold arm went
+            // straight to requeue_goal regardless of remaining wall-clock,
+            // stranding the goal in a doomed second attempt (A16z: M16 zai
+            // fx04/05/08). Refuse the same way, park honestly instead.
+            // Integrator note (fix/harness-y15, unmerged): Y15 adds an
+            // uncommitted-work check near this same spot — independent of
+            // this block, keep both on reconcile.
+            if let Some(refusal) = wall_budget_exhausted_refusal(&card.metadata_json) {
+                if let Err(e) = cards::merge_card_metadata(
+                    pool,
+                    &card.id,
+                    serde_json::json!({
+                        "wall_budget_exhausted": {
+                            "reason": refusal.reason,
+                            "partial_state": refusal.partial_state,
+                            "recorded_at": chrono::Utc::now().to_rfc3339(),
+                        }
+                    }),
+                    false,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        goal_id = %card.id,
+                        "could not record the wall_budget_exhausted receipt: {e}"
+                    );
+                }
+                let decision_id = crate::goal_transition::exhaust_and_park(
+                    pool,
+                    &card.id,
+                    &card.title,
+                    &card.project_id,
+                    crate::goal_transition::BudgetExhaustion::Wallclock {
+                        spent_secs: refusal.spent_secs,
+                        cap_secs: refusal.cap_secs,
+                    },
+                    Some(&refusal.reason),
+                )
+                .await
+                .map_err(String::from)?;
+                if let Some(kill) = take_goal_worker(&card.id) {
+                    kill.kill();
+                }
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "Goal '{}' held but wall budget too small for another attempt — parked \
+                     with unblock decision {}",
+                    card.title,
+                    decision_id
+                );
+                return Ok(Some(format!(
+                    "Held, but the wall budget is exhausted — parked instead of requeued: {}",
+                    refusal.reason
+                )));
+            }
+            // ── Y16a ── END ──────────────────────────────────────────────
             persist_card_meta(pool, &card.id, |m| {
                 crate::cost_router::HoldState {
                     count: hold_count,
@@ -15793,6 +15891,135 @@ mod tests {
             "ample remaining wall budget must still requeue for retry, unchanged"
         );
         assert!(updated.metadata_json.get("wall_budget_exhausted").is_none());
+    }
+
+    /// Y16a: shared Hold-pin setup — a 400s cap, `remaining_secs` left, a
+    /// `last_attempt_secs`-long last attempt.
+    async fn setup_hold_with_wall_budget(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        remaining_secs: i64,
+        last_attempt_secs: i64,
+    ) -> cards::Card {
+        let card = setup_goal_in_state(pool, "in_progress", 1).await;
+        let now = chrono::Utc::now();
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.budget', \
+             json('{\"wallclock_cap_secs\": 400}')) WHERE id = ?",
+        )
+        .bind(&card.id)
+        .execute(pool)
+        .await
+        .unwrap();
+        cards::merge_card_metadata(
+            pool,
+            &card.id,
+            serde_json::json!({
+                "first_dispatched_at":
+                    (now - chrono::Duration::seconds(400 - remaining_secs)).to_rfc3339(),
+                "dispatched_at": (now - chrono::Duration::seconds(last_attempt_secs)).to_rfc3339(),
+            }),
+            false,
+        )
+        .await
+        .unwrap();
+        card
+    }
+
+    /// Y16a pin: Hold-arm requeue gated on remaining wall budget — ample
+    /// (200s/100s) requeues unchanged, too small (60s/100s, M16 zai
+    /// fx04/05/08's shape) parks with an honest unblock instead.
+    #[tokio::test]
+    async fn hold_gates_requeue_on_remaining_wall_budget() {
+        let pool = test_pool().await;
+
+        let ample = setup_hold_with_wall_budget(&pool, 200, 100).await;
+        handle_goal_completion(&pool, &ample.id, &ample.project_id, Ok(()), false)
+            .await
+            .unwrap();
+        let held = cards::get_card(&pool, &ample.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &held.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "ample wall budget on a Hold must still requeue, unchanged"
+        );
+        assert_eq!(
+            held.metadata_json[crate::cost_router::HOLD_METADATA_KEY]["count"],
+            1
+        );
+
+        let tight = setup_hold_with_wall_budget(&pool, 60, 100).await;
+        handle_goal_completion(&pool, &tight.id, &tight.project_id, Ok(()), false)
+            .await
+            .unwrap();
+        let parked = cards::get_card(&pool, &tight.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &parked.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "an exhausted wall budget on a Hold must park, never requeue"
+        );
+        assert!(
+            parked
+                .metadata_json
+                .get(crate::cost_router::HOLD_METADATA_KEY)
+                .is_none(),
+            "the ordinary Hold receipt must never be written once budget refuses the requeue"
+        );
+        let receipt = parked
+            .metadata_json
+            .get("wall_budget_exhausted")
+            .expect("the honest wall_budget_exhausted receipt must be recorded on the card");
+        assert!(receipt
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .contains("wall budget exhausted"));
+        let unblock = decisions::find_open_decision_for_goal(&pool, &tight.id, "unblock")
+            .await
+            .unwrap()
+            .expect("wall-budget exhaustion on a Hold must raise an unblock decision");
+        assert_eq!(
+            unblock.payload.get("reason").and_then(|v| v.as_str()),
+            Some("wallclock_cap")
+        );
+    }
+
+    /// Y16a: a headless goal's first dispatch gets `budget.wallclock_cap_secs`
+    /// populated from `PERMAGENT_HEADLESS_DRAIN_SECS` — previously never set
+    /// in production, which is why the checks above needed hand-seeded
+    /// `budget` rows to exercise at all.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn headless_wallclock_cap_patch_reads_the_drain_env_when_no_cap_is_configured() {
+        std::env::set_var("PERMAGENT_HEADLESS_DRAIN_SECS", "555");
+        let patch = headless_wallclock_cap_patch(&serde_json::json!({}));
+        std::env::remove_var("PERMAGENT_HEADLESS_DRAIN_SECS");
+        assert_eq!(
+            patch,
+            Some(serde_json::json!({ "wallclock_cap_secs": 555 }))
+        );
+    }
+
+    /// Y16a: an already-configured per-goal cap (user- or roadmap-authored)
+    /// is never overridden by the drain env, and other budget fields on the
+    /// same card survive untouched.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn headless_wallclock_cap_patch_leaves_an_existing_cap_alone() {
+        std::env::set_var("PERMAGENT_HEADLESS_DRAIN_SECS", "100");
+        let existing = serde_json::json!({
+            "budget": { "wallclock_cap_secs": 999, "attempt_cap": 5 }
+        });
+        let patch = headless_wallclock_cap_patch(&existing);
+        std::env::remove_var("PERMAGENT_HEADLESS_DRAIN_SECS");
+        assert_eq!(patch, None);
     }
 
     #[tokio::test]
