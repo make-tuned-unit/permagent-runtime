@@ -864,11 +864,21 @@ fn shell_escape(command: &str, cwd: &Path, worktree: &Path) -> Option<ShellEscap
         let args = &segment.words[1..];
         match command_base_name(command_word) {
             "cd" | "pushd" => {
+                let operands: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+                // `cd -` (and `cd --` with nothing after it) goes to $OLDPWD,
+                // which this inspector cannot know. Treat it as INSIDE (L2):
+                // refusing on an UNKNOWN costs the worker a turn for nothing,
+                // and every command that actually writes is still judged on
+                // its own target wherever the shell ends up — the containment
+                // root never moves. `cd -- <dir>` still has an operand and is
+                // judged normally.
+                if operands.is_empty() && args.iter().any(|a| a == "-" || a == "--") {
+                    continue;
+                }
                 // A bare `cd` goes to $HOME, which is outside by construction.
-                let raw = args
-                    .iter()
-                    .find(|a| !a.starts_with('-'))
-                    .cloned()
+                let raw = operands
+                    .first()
+                    .map(|a| (*a).clone())
                     .unwrap_or_else(|| "~".to_string());
                 if let Some(target) = outside_worktree(&raw, cwd, &root) {
                     return Some(ShellEscape {
@@ -1650,6 +1660,9 @@ mod tests {
             // `..`-relative, landing on the trunk: judged by where it LANDS.
             "cd ../../y9-trunk && git add -A".to_string(),
             format!("pushd {TRUNK}"),
+            // `--` ends option parsing; the operand after it is still a real
+            // target and is still judged (L2 exempts only `cd -`/bare `cd --`).
+            format!("cd -- {TRUNK}"),
         ] {
             let results = verdicts(&jail, &session_id, &[shell_request("cd", &command)]).await;
             assert_eq!(
@@ -1664,6 +1677,11 @@ mod tests {
             "cd src && python -m pytest".to_string(),
             format!("cd {WORKTREE} && git status"),
             "python -m pytest tests/".to_string(),
+            // G13 L2: `cd -`/`cd --` go to $OLDPWD, which is unknown here.
+            // An unknown must not be a refusal — the previous directory was
+            // itself reached by a `cd` this inspector already judged.
+            "cd - && git status".to_string(),
+            "cd --".to_string(),
         ] {
             let results = verdicts(&jail, &session_id, &[shell_request("ok", &command)]).await;
             assert!(
