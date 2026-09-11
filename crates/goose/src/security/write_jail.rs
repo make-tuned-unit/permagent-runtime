@@ -519,7 +519,7 @@ type ShellChars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
 /// them before matching the terminator line.
 fn heredoc_delimiter(chars: &mut ShellChars<'_>) -> String {
     let mut delimiter = String::new();
-    while matches!(chars.peek(), Some(' ') | Some('\t')) {
+    while matches!(chars.peek(), Some(&' ') | Some(&'\t')) {
         chars.next();
     }
     let mut quote: Option<char> = None;
@@ -1090,14 +1090,12 @@ impl ToolInspector for WriteJailInspector {
                     JailVerdict::Outside { resolved } => {
                         match role.denial_reason("The write target", &resolved) {
                             Some(reason) => {
+                                let jail_root = role.denying_root().unwrap_or(&working_dir);
                                 tracing::info!(
                                     monotonic_counter.goose.write_jail_worker_denials = 1,
                                     tool_request_id = %request.id,
                                     path = %resolved.display(),
-                                    jail_root = %role
-                                        .denying_root()
-                                        .unwrap_or(working_dir.as_path())
-                                        .display(),
+                                    jail_root = %jail_root.display(),
                                     "write jail: a dispatched worker was refused a write outside its jail"
                                 );
                                 results.push(InspectionResult {
@@ -1118,24 +1116,25 @@ impl ToolInspector for WriteJailInspector {
                                     "write jail: write outside the session working dir requires approval"
                                 );
                                 results.push(InspectionResult {
-                                tool_request_id: request.id.clone(),
-                                action: InspectionAction::RequireApproval(Some(format!(
-                                    "🔒 Write outside the working directory\n\n\
-                                     This session works in {} but the agent wants to write to {}. \
-                                     Approve if you asked for this; deny otherwise. \
-                                     (Standing exceptions can be added via SECURITY_WRITE_JAIL_ALLOW.)",
-                                    working_dir.display(),
-                                    resolved.display()
-                                ))),
-                                reason: format!(
-                                    "Write target {} is outside the session working directory {}",
-                                    resolved.display(),
-                                    working_dir.display()
-                                ),
-                                confidence: 1.0,
-                                inspector_name: self.name().to_string(),
-                                finding_id: None,
-                            });
+                                    tool_request_id: request.id.clone(),
+                                    action: InspectionAction::RequireApproval(Some(format!(
+                                        "🔒 Write outside the working directory\n\n\
+                                         This session works in {} but the agent wants to write to \
+                                         {}. Approve if you asked for this; deny otherwise. \
+                                         (Standing exceptions can be added via \
+                                         SECURITY_WRITE_JAIL_ALLOW.)",
+                                        working_dir.display(),
+                                        resolved.display()
+                                    ))),
+                                    reason: format!(
+                                        "Write target {} is outside the session working directory {}",
+                                        resolved.display(),
+                                        working_dir.display()
+                                    ),
+                                    confidence: 1.0,
+                                    inspector_name: self.name().to_string(),
+                                    finding_id: None,
+                                });
                             }
                         }
                     }
