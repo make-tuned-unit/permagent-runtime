@@ -18,6 +18,7 @@ use super::inventory::{config_secret_value, serialize_string_map, InventoryIdent
 use super::openai_compatible::handle_status_openai_compat;
 use super::openai_compatible::map_http_error_to_provider_error;
 use super::retry::ProviderRetry;
+use super::stream_budget::StreamBudget;
 use crate::config::declarative_providers::DeclarativeProviderConfig;
 use crate::conversation::message::Message;
 use crate::cost_router::cache::SystemPromptParts;
@@ -364,8 +365,26 @@ impl Provider for AnthropicProvider {
 
             let message_stream = response_to_streaming_message(framed);
             pin!(message_stream);
-            while let Some(message) = futures::StreamExt::next(&mut message_stream).await {
+            // Y8a: the same per-response budget `stream_openai_compat` carries.
+            // Anthropic has its own framing and therefore its own loop, so the
+            // bound has to be applied here too — an unbounded `while let` is
+            // the defect, not the provider.
+            let mut budget = StreamBudget::from_env();
+            loop {
+                // An INACTIVITY window, not the remaining total (G13 H2) — the
+                // same shape `stream_openai_compat` carries.
+                let next = match budget.next_timeout() {
+                    Some(window) => tokio::time::timeout(
+                        window,
+                        futures::StreamExt::next(&mut message_stream),
+                    )
+                    .await
+                    .map_err(|_| budget.timeout_error())?,
+                    None => futures::StreamExt::next(&mut message_stream).await,
+                };
+                let Some(message) = next else { break };
                 let (message, usage) = message.map_err(ProviderError::stream_decode)?;
+                budget.record(message.as_ref())?;
                 log.write(&message, usage.as_ref().map(|f| f.usage).as_ref())?;
                 yield (message, usage);
             }

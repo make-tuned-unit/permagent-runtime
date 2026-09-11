@@ -1961,6 +1961,25 @@ impl OrchestratorClient {
 // on construction. The `OrchestratorClient` methods above are thin wrappers;
 // these free functions are the real bodies.
 
+/// Wall-clock ceiling on the reply `send_message` drives inline, in seconds.
+/// `0` disables the bound (the pre-Y8b behaviour). See `handle_send_message`.
+pub const SEND_MESSAGE_MAX_SECS_ENV: &str = "PERMAGENT_SEND_MESSAGE_MAX_SECS";
+pub const SEND_MESSAGE_DEFAULT_MAX_SECS: u64 = 120;
+
+/// The "budget disabled" sleep. `tokio::select!` needs a future in every arm
+/// even when the arm's guard is false, so an unlimited budget arms a timer that
+/// cannot fire within any process lifetime rather than a special-cased branch.
+const SEND_MESSAGE_NEVER: std::time::Duration = std::time::Duration::from_secs(86_400 * 365);
+
+/// Y8b: how long `send_message` may spend draining the target session's reply.
+fn send_message_reply_budget_from_env() -> Option<std::time::Duration> {
+    let secs = std::env::var(SEND_MESSAGE_MAX_SECS_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(SEND_MESSAGE_DEFAULT_MAX_SECS);
+    (secs > 0).then(|| std::time::Duration::from_secs(secs))
+}
+
 /// AgentManager handle (free-fn form; needs no client state).
 async fn get_agent_manager_fn() -> Result<Arc<AgentManager>, String> {
     AgentManager::instance()
@@ -2352,13 +2371,25 @@ pub(crate) async fn select_requested_worker(
         ));
     }
 
-    if let Some(missing) = missing_adapter_requirement(&goal_required_kinds(goal), persona) {
+    // The adapter guard runs against the model's RAW tags (G13 M2). Intersecting
+    // first drops exactly the adapter capability this persona lacks, so checking
+    // the intersected set could never refuse anything: explicitly requesting a
+    // worker that genuinely cannot do the job would dispatch in silence. An
+    // explicit request is a claim about THIS worker, and it has to be answerable
+    // with "no".
+    let declared_tags = goal_declared_tags(goal).unwrap_or_default();
+    if let Some(missing) = missing_adapter_requirement(&declared_tags, persona) {
         return Err(format!(
             "Worker '{}' adapter does not support required capability '{}' — not dispatched. \
              Inspect the worker capabilities before selecting another adapter.",
             requested, missing
         ));
     }
+
+    // An explicitly requested worker is the only worker this dispatch can use,
+    // so IT is the whole satisfiable set — not the roster (Y8d). Used for the
+    // receipt only, now that the refusal above reads the raw tags.
+    let required_kinds = goal_required_kinds(goal, &[persona]);
 
     let (available, reason) = match probe_cache.get(requested) {
         Some(cached) => (cached.available, cached.reason.clone()),
@@ -2390,12 +2421,13 @@ pub(crate) async fn select_requested_worker(
             // The audit trail must record that cost ranking did NOT decide this,
             // so a later "why did an expensive worker run?" has an answer.
             "selection_mode": "explicitly_requested",
-            "required_kinds": goal
-                .metadata_json
-                .get("tags")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default(),
+            // Y8d: the receipt records the requirement this worker is actually
+            // being dispatched AGAINST — the model's tags narrowed to what this
+            // one persona can satisfy — not the raw tags. The adapter refusal
+            // itself reads the raw tags (G13 M2); a receipt that names a
+            // requirement nothing was checked against is how "why did this not
+            // dispatch?" went unanswerable on glm47/fx08.
+            "required_kinds": required_kinds,
             "selected": {
                 "key": requested,
                 "available": true,
@@ -2409,16 +2441,287 @@ pub(crate) async fn select_requested_worker(
     })
 }
 
-fn goal_required_kinds(goal: &cards::Card) -> Vec<String> {
-    goal.metadata_json
-        .get("tags")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
+/// The requirement set a goal falls back to when it has no usable tags. This
+/// is what an untagged goal has always been dispatched with.
+pub(crate) const BASE_REQUIRED_KINDS: [&str; 2] = ["code_edit", "shell"];
+
+/// One capability tag, in the spelling the roster union uses.
+///
+/// `WorkerCapabilities::supports_requirement` accepts several spellings per
+/// adapter capability (`cancel`/`cancellation`, `mcp_tools`/`mcp`, …) while
+/// `configured_worker_capabilities` emits only the canonical one. Without this,
+/// a model that wrote `"cancel"` would have a satisfiable tag dropped as
+/// unknown. Ordinary `tool_kinds` are compared lowercased and trimmed.
+fn canonical_capability_tag(tag: &str) -> String {
+    let tag = tag.trim().to_ascii_lowercase();
+    match tag.as_str() {
+        "model-routing" | "model_routing" => "model_override".to_string(),
+        "stream" => "streaming".to_string(),
+        "steer" => "steering".to_string(),
+        "cancel" => "cancellation".to_string(),
+        "permission-gates" | "permissions" => "permission_gates".to_string(),
+        "mcp_tools" => "mcp".to_string(),
+        "cli_tools" => "cli".to_string(),
+        _ => tag,
+    }
+}
+
+/// Y8d (harness loop 2026-09-10, from Lane A14's M14 forensics): a capability
+/// tag NO configured worker can satisfy must not be able to veto dispatch.
+///
+/// glm47/fx08: `decompose_roadmap` tagged the card
+/// `["code_edit", "cli", "testing"]`. `cli` is an ADAPTER requirement
+/// (`WorkerCapabilities::supports_cli_tools`), the internal `permagent` persona
+/// does not declare it, and external workers were off
+/// (`PERMAGENT_HEADLESS_WORKER=internal`), so `missing_adapter_requirement`
+/// marked every candidate unavailable, `select_best_worker` returned `None`,
+/// `attempt_count` stayed at 0, and the coordinator escalated twice into
+/// decisions nobody can answer — the goal was permanently undispatchable, on a
+/// fixture DeepSeek tagged `["code_edit", "shell", "testing"]` and dispatched
+/// without incident. The tags are model-authored free text; the roster is the
+/// authority on what is actually runnable.
+///
+/// Intersect, then fall back — never silently accept an empty requirement set,
+/// because `select_best_worker` reads empty as "any worker will do" and that
+/// would route a goal to a worker chosen on cost alone.
+///
+/// `allowed` empty means "the roster could not be read", NOT "nothing is
+/// supported": filtering on it would drop every tag on every goal. In that case
+/// the tags pass through exactly as before.
+pub(crate) fn required_kinds_within_roster(
+    tags: Vec<String>,
+    allowed: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let base = || {
+        BASE_REQUIRED_KINDS
+            .iter()
+            .map(|k| k.to_string())
+            .collect::<Vec<_>>()
+    };
+
+    // An empty tag LIST is not an accident and not a missing requirement set:
+    // Z1-3's `constrain_tags` deliberately produces one at card-creation time
+    // when grounding rejects every tag, precisely because
+    // `select_best_worker` reads empty as "any available worker matches"
+    // rather than "blocked". That contract is unchanged here. The case Y8d
+    // adds is different: tags that SURVIVED grounding but that no dispatchable
+    // worker can satisfy at selection time.
+    if tags.is_empty() {
+        return tags;
+    }
+    if allowed.is_empty() {
+        return tags;
+    }
+
+    let allowed_canonical: std::collections::BTreeSet<String> = allowed
+        .iter()
+        .map(|k| canonical_capability_tag(k.as_str()))
+        .collect();
+    let (kept, dropped): (Vec<String>, Vec<String>) = tags
+        .into_iter()
+        .partition(|tag| allowed_canonical.contains(&canonical_capability_tag(tag)));
+
+    if !dropped.is_empty() {
+        tracing::warn!(
+            target: "permagentd::brain",
+            dropped = %dropped.join(", "),
+            kept = %kept.join(", "),
+            roster = %allowed.iter().cloned().collect::<Vec<_>>().join(", "),
+            "goal tags name capabilities no configured worker declares — dropping them so the \
+             goal stays dispatchable"
+        );
+    }
+
+    if kept.is_empty() {
+        // Every tag was unknown. Fall back to the base requirement, itself
+        // narrowed to what the roster declares, so the fallback cannot
+        // reintroduce the same veto.
+        let narrowed: Vec<String> = base()
+            .into_iter()
+            .filter(|kind| allowed_canonical.contains(&canonical_capability_tag(kind)))
+            .collect();
+        return if narrowed.is_empty() {
+            base()
+        } else {
+            narrowed
+        };
+    }
+    kept
+}
+
+/// Everything the workers this dispatch may actually choose from can satisfy
+/// BETWEEN them — not what any one of them can satisfy alone, which is
+/// [`satisfiable_by_one_worker`]'s half.
+///
+/// Deliberately NOT `council::plan::configured_worker_capabilities()`, which
+/// unions the whole roster. A headless run with
+/// `PERMAGENT_HEADLESS_WORKER=internal` — fx08's configuration — never
+/// considers an external worker for ranked dispatch, so an external CLI's
+/// `cli` capability is not a capability THIS dispatch can satisfy, and
+/// counting it would let exactly the fx08 tag through untouched.
+fn pool_capabilities(
+    dispatchable: &[&agent_identity::WorkerPersona],
+) -> std::collections::BTreeSet<String> {
+    crate::council::plan::worker_capabilities(dispatchable.iter().copied())
+}
+
+/// Is this worker actually available on this machine?
+///
+/// The one definition, shared by the candidate list and by the pool the
+/// requirement set is narrowed against (G13 M1 — deriving "dispatchable" from
+/// the roster alone let an absent binary's exclusive capability survive the
+/// intersection and then mark every candidate unavailable, which is fx08 again
+/// in the DEFAULT configuration).
+fn probed_worker_available(
+    probe_cache: &ProbeCache,
+    key: &str,
+    persona: &agent_identity::WorkerPersona,
+) -> bool {
+    match probe_cache.get(key) {
+        Some(cached) => cached.available,
+        None => {
+            let (ok, reason) = worker_probe::probe_worker(&persona.availability_check);
+            probe_cache.set(key, ok, reason);
+            ok
+        }
+    }
+}
+
+/// The workers this dispatch may actually choose from. `probe_cache` `None`
+/// asks the roster question only ("could this engine ever run here?"); `Some`
+/// adds the availability question the candidate list asks.
+fn dispatchable_personas<'a>(
+    config: &'a agent_identity::AgentConfig,
+    restrict_to_internal_engine: bool,
+    probe_cache: Option<&ProbeCache>,
+) -> Vec<&'a agent_identity::WorkerPersona> {
+    config
+        .workers
+        .iter()
+        .filter(|(_, persona)| persona.engine.is_dispatchable())
+        .filter(|(_, persona)| {
+            worker_engine_allowed_for_ranked_dispatch(&persona.engine, restrict_to_internal_engine)
         })
-        .unwrap_or_else(|| vec!["code_edit".to_string(), "shell".to_string()])
+        .filter(|(key, persona)| match probe_cache {
+            Some(cache) => probed_worker_available(cache, key, persona),
+            None => true,
+        })
+        .map(|(_, persona)| persona)
+        .collect()
+}
+
+/// The model's tags exactly as written on the card. `None` means the card has
+/// no `tags` key at all (or it is not an array) — the untagged-goal path, which
+/// is distinct from an explicitly empty list.
+fn goal_declared_tags(goal: &cards::Card) -> Option<Vec<String>> {
+    let raw = goal.metadata_json.get("tags").and_then(|v| v.as_array())?;
+    Some(
+        raw.iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+    )
+}
+
+/// Does this ONE worker satisfy every one of these kinds?
+///
+/// The same two tests the selectors apply, in one place: adapter requirements
+/// through [`missing_adapter_requirement`], ordinary kinds through the exact
+/// `tool_kinds.contains` that `goal_state::select_best_worker` uses. Exact
+/// rather than canonical on purpose — a set this call reports as satisfiable
+/// must be one the selector will also accept.
+fn worker_satisfies(persona: &agent_identity::WorkerPersona, required_kinds: &[String]) -> bool {
+    if missing_adapter_requirement(required_kinds, persona).is_some() {
+        return false;
+    }
+    // `select_best_worker` treats a worker that declares NO tool kinds as
+    // matching everything. Mirror it exactly, or this could narrow a set that
+    // did not need narrowing.
+    if persona.tool_kinds.is_empty() {
+        return true;
+    }
+    required_kinds.iter().all(|kind| {
+        agent_identity::WorkerCapabilities::default()
+            .supports_requirement(kind)
+            .is_some()
+            || persona.tool_kinds.contains(kind)
+    })
+}
+
+/// Narrow a requirement set to one a SINGLE dispatchable worker can satisfy.
+///
+/// G13 H3: the roster intersection above is a UNION over the pool, but
+/// `select_best_worker` requires one candidate to satisfy every kind
+/// (`goal_state.rs`: `required_kinds.iter().all(|req| w.tool_kinds.contains(req))`).
+/// Under `PERMAGENT_HEADLESS_WORKER=internal` the pool is `permagent`
+/// (`code_edit, shell, git, search, testing`) and `reviewer` (`review`), so a
+/// goal tagged `["code_edit", "review"]` passes the intersection untouched and
+/// still returns "No suitable worker available" — the fx08 deadlock class,
+/// one union away from unfixed.
+///
+/// Keep the largest satisfiable subset, dropping tags from the END in the order
+/// the model wrote them: the first tag is the job, the tail is the trimming.
+/// Never an empty set — `select_best_worker` reads empty as "any available
+/// worker matches", so an emptied requirement would route on cost alone; fall
+/// back to [`BASE_REQUIRED_KINDS`] instead, exactly as the all-unknown case does.
+fn satisfiable_by_one_worker(
+    required_kinds: Vec<String>,
+    dispatchable: &[&agent_identity::WorkerPersona],
+) -> Vec<String> {
+    // No requirement, or no pool to measure against: nothing to narrow. An
+    // empty pool is "we cannot tell", not "nothing is satisfiable".
+    if required_kinds.is_empty() || dispatchable.is_empty() {
+        return required_kinds;
+    }
+
+    for len in (1..=required_kinds.len()).rev() {
+        let candidate = &required_kinds[..len];
+        if dispatchable
+            .iter()
+            .any(|persona| worker_satisfies(persona, candidate))
+        {
+            if len < required_kinds.len() {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    kept = %candidate.join(", "),
+                    dropped = %required_kinds[len..].join(", "),
+                    "no single dispatchable worker satisfies every required capability — \
+                     dispatching against the largest subset one of them does"
+                );
+            }
+            return candidate.to_vec();
+        }
+    }
+
+    tracing::warn!(
+        target: "permagentd::brain",
+        dropped = %required_kinds.join(", "),
+        "no single dispatchable worker satisfies even one required capability — \
+         falling back to the base requirement rather than leaving the goal undispatchable"
+    );
+    BASE_REQUIRED_KINDS.iter().map(|k| k.to_string()).collect()
+}
+
+/// The requirement set a goal is dispatched against: the model's tags,
+/// intersected with what `dispatchable` can satisfy between them
+/// ([`required_kinds_within_roster`]) and then narrowed to what ONE of them can
+/// satisfy alone ([`satisfiable_by_one_worker`]).
+fn goal_required_kinds(
+    goal: &cards::Card,
+    dispatchable: &[&agent_identity::WorkerPersona],
+) -> Vec<String> {
+    // No `tags` key at all (or not an array) keeps the historical default —
+    // this is the untagged-goal path, distinct from an explicitly empty list.
+    let Some(tags) = goal_declared_tags(goal) else {
+        return BASE_REQUIRED_KINDS.iter().map(|k| k.to_string()).collect();
+    };
+
+    // `handle_decompose_roadmap` already puts the roster's capabilities in the
+    // planner's prompt as 'Available capability tags (only these are ever
+    // dispatchable)'. That is advice a model can ignore — zai did. This is the
+    // enforcement.
+    let allowed = pool_capabilities(dispatchable);
+    let within_roster = required_kinds_within_roster(tags, &allowed);
+    satisfiable_by_one_worker(within_roster, dispatchable)
 }
 
 fn missing_adapter_requirement(
@@ -2462,8 +2765,18 @@ pub(crate) async fn select_worker_detailed(
 ) -> Result<WorkerSelection, String> {
     let config = agent_identity::load_agent_config();
 
-    // Derive required tool_kinds from goal metadata, default to code_edit + shell
-    let required_kinds = goal_required_kinds(goal);
+    // Derive required tool_kinds from goal metadata, default to code_edit +
+    // shell — intersected (Y8d) with what the workers THIS dispatch may choose
+    // from can actually satisfy, so a model-authored tag no candidate declares
+    // cannot make the goal permanently undispatchable.
+    // "Dispatchable" includes the availability probe (G13 M1): a persona whose
+    // binary is missing is not a worker this goal can be routed to, so its
+    // exclusive capabilities must not keep a tag alive that then marks every
+    // remaining candidate unavailable. The probe results are cached, so the
+    // candidate list below reuses these answers rather than re-probing.
+    let dispatchable =
+        dispatchable_personas(&config, restrict_to_internal_engine, Some(probe_cache));
+    let required_kinds = goal_required_kinds(goal, &dispatchable);
 
     // Per-worker active load for the tie-break (#212): count in-progress goal
     // cards grouped by their spawning `worker_key`. Authoritative and engine-
@@ -2485,14 +2798,7 @@ pub(crate) async fn select_worker_detailed(
             worker_engine_allowed_for_ranked_dispatch(&persona.engine, restrict_to_internal_engine)
         })
         .map(|(key, persona)| {
-            let probed_available = match probe_cache.get(key) {
-                Some(cached) => cached.available,
-                None => {
-                    let (ok, reason) = worker_probe::probe_worker(&persona.availability_check);
-                    probe_cache.set(key, ok, reason);
-                    ok
-                }
-            };
+            let probed_available = probed_worker_available(probe_cache, key, persona);
             // Adapter-level requirements (MCP, steering, sandbox, model
             // override, etc.) are validated separately from ordinary
             // `tool_kinds`, so a CLI cannot win routing while lacking the
@@ -3701,18 +4007,25 @@ impl OrchestratorClient {
         )];
         for session in &sessions {
             let is_loaded = active_ids.contains(&session.id);
-            let is_busy = if is_loaded {
-                manager.is_session_busy(&session.id).await
-            } else {
-                false
-            };
+            // Y8c: the GOAL_WORKERS registry answers first, exactly as
+            // `handle_goal_status` does since Y4b. `is_session_busy` reads
+            // `AgentManager`'s `cancel_tokens`, a map a dispatched goal worker
+            // never enters — so this printed "○ idle" for a worker that was
+            // demonstrably mid-tool-call, in the same turn as `goal_status`
+            // said `session_alive: true`.
+            let goal_card = live_goal_worker_card_for_session(&session.id);
+            let is_busy = goal_card.is_some()
+                || if is_loaded {
+                    manager.is_session_busy(&session.id).await
+                } else {
+                    false
+                };
 
-            let status = if is_busy {
-                "🔄 busy"
-            } else if is_loaded {
-                "✓ loaded"
-            } else {
-                "○ idle"
+            let status = match &goal_card {
+                Some(card_id) => format!("🔄 busy (live worker for goal {card_id})"),
+                None if is_busy => "🔄 busy".to_string(),
+                None if is_loaded => "✓ loaded".to_string(),
+                None => "○ idle".to_string(),
             };
 
             lines.push(format!(
@@ -3762,15 +4075,44 @@ impl OrchestratorClient {
             .await
             .map_err(|e| format!("Session '{}' not found: {}", session_id, e))?;
 
-        let manager = self.get_agent_manager().await?;
-        let is_busy = manager.is_session_busy(&session_id).await;
+        // Y8c (harness loop 2026-09-10, from Lane A14's M14 forensics): ask the
+        // registry goal workers are ACTUALLY in first, the way
+        // `handle_goal_status` has since Y4b. `AgentManager::is_session_busy`
+        // reads `cancel_tokens`, a map a dispatched goal worker never enters,
+        // so this reported "idle" for every live worker — and fx04's
+        // coordinator read `goal_status → session_alive: true` and
+        // `view_session → Status: idle` IN THE SAME TURN. Its last three tool
+        // calls were `view_session`, and its very next model call was the
+        // 441-second runaway. A tool that contradicts its sibling is what kept
+        // it polling.
+        //
+        // The agent-manager lookup is now lazy and non-fatal: a live goal
+        // worker is answerable from the registry alone, so this no longer fails
+        // the whole call when no AgentManager can be instantiated.
+        // `None` is "we could not look": G13 L1. Reporting a session we cannot
+        // see as "idle" is a positive claim, and a liveness reader that makes
+        // one it cannot support is exactly what Y8c exists to stop.
+        let goal_card = live_goal_worker_card_for_session(&session_id);
+        let is_busy = match &goal_card {
+            Some(_) => Some(true),
+            None => match self.get_agent_manager().await {
+                Ok(manager) => Some(manager.is_session_busy(&session_id).await),
+                Err(_) => None,
+            },
+        };
+        let status = match (&goal_card, is_busy) {
+            (Some(card_id), _) => format!("🔄 busy (live worker for goal {card_id})"),
+            (None, Some(true)) => "🔄 busy".to_string(),
+            (None, Some(false)) => "idle".to_string(),
+            (None, None) => "unknown (agent manager unavailable)".to_string(),
+        };
 
         let mut output = vec![format!(
             "# Session: {} ({})\n\nType: {} | Status: {} | Working dir: {}\nMessages: {} | Updated: {}\n",
             session.name,
             session.id,
             session.session_type,
-            if is_busy { "🔄 busy" } else { "idle" },
+            status,
             session.working_dir.display(),
             session.message_count,
             session.updated_at.format("%Y-%m-%d %H:%M"),
@@ -4159,6 +4501,47 @@ impl OrchestratorClient {
             return Err("Cannot send a message to the orchestrator's own session".into());
         }
 
+        // Y8b (harness loop 2026-09-10, from Lane A14's M14 forensics): a goal
+        // worker is NOT a session you may drive with `send_message`.
+        //
+        // `send_message` runs the target session's entire reply inline, in the
+        // caller's turn, and `try_register_cancel_token` below does not stop it
+        // from doing that to a session that is already running: goal workers
+        // live in `GOAL_WORKERS`, not in `AgentManager`'s `cancel_tokens` map —
+        // the same registry split Y4b fixed for `goal_status`. A14 measured the
+        // consequence on glm47/fx06: the coordinator's `send_message` text
+        // landed in worker session `20260910_2` as message #26 at 23:30:26
+        // while the goal-engine dispatch was mid-tool-call in the SAME session
+        // (its prompt was message #17, ten seconds earlier). Two reply loops,
+        // one session. The coordinator never spoke again; the run died at the
+        // driver's ceiling and filed an open "needs a manual merge" unblock.
+        // fx05 is the pure form: 61 worker provider calls after the
+        // `send_message`, $0.4732 of that fixture's $0.5042.
+        //
+        // Refuse — and say what can actually be done instead. G13 M3: the
+        // first wording redirected to `message_goal (card_id: …)` and
+        // `steer_goal`, and under PERMAGENT_HEADLESS_WORKER=internal (the eval
+        // configuration) both are dead ends. `steer_goal` refuses an internal
+        // worker outright ("internal-subagent and codex workers are not
+        // steerable yet"), and `message_goal` takes `from_goal`/`to_goal` —
+        // real cards on both sides — not a `card_id`, which a coordinator
+        // holding one card does not have. A refusal whose advice does not work
+        // is the same lie class as the "idle" Y8c removed.
+        //
+        // Checked before the agent manager is touched: nothing about a live
+        // worker's session should be created, looked up or locked on this path.
+        if let Some(card_id) = live_goal_worker_card_for_session(&session_id) {
+            return Err(format!(
+                "Session '{session_id}' is the live worker for goal '{card_id}' — it is already \
+                 running a reply of its own, and send_message would start a second one in the same \
+                 session. A live internal worker cannot be interjected on this branch: let it \
+                 finish, read where it has got to with goal_status (card_id: '{card_id}'), and \
+                 act on what it produces. If it is doing the wrong thing, the goal has to be \
+                 cancelled from the Decision Inbox or the Kanban board, which also stops the \
+                 worker."
+            ));
+        }
+
         let manager = self.get_agent_manager().await?;
 
         let agent = manager
@@ -4212,12 +4595,27 @@ impl OrchestratorClient {
 
         let mut response_parts: Vec<String> = Vec::new();
         let mut cancelled = false;
+        let mut timed_out = false;
+
+        // Y8b: this drain had no timeout at all. Its only exits were "the
+        // stream ended" and "the harness cancelled the whole process", so the
+        // coordinator's turn was hostage to however long the target session
+        // chose to run — A14 measured 500 s on glm47/fx05, ending only when the
+        // eval driver killed the process. A third exit, named and honest.
+        let budget = send_message_reply_budget_from_env();
+        let deadline = tokio::time::sleep(budget.unwrap_or(SEND_MESSAGE_NEVER));
+        tokio::pin!(deadline);
 
         loop {
             tokio::select! {
                 _ = parent_cancel.cancelled() => {
                     cancel_token.cancel();
                     cancelled = true;
+                    break;
+                }
+                _ = &mut deadline, if budget.is_some() => {
+                    cancel_token.cancel();
+                    timed_out = true;
                     break;
                 }
                 event = stream.next() => {
@@ -4245,6 +4643,32 @@ impl OrchestratorClient {
 
         if cancelled {
             return Err("Cancelled by parent session".into());
+        }
+
+        if timed_out {
+            // Report what actually arrived rather than claiming nothing did:
+            // the work the target session did is real and may have landed, and
+            // a coordinator told "no response" will duplicate it.
+            let received = if response_parts.is_empty() {
+                "no text output arrived before the budget expired".to_string()
+            } else {
+                format!(
+                    "{} message part(s) arrived before the budget expired:\n\n{}",
+                    response_parts.len(),
+                    response_parts.join("\n\n")
+                )
+            };
+            return Err(format!(
+                "send_message to session '{}' exceeded its {}s reply budget ({}) and the reply was \
+                 cancelled. The session may have done real work — read it with view_session before \
+                 sending anything again, and raise or disable {} (0 = unlimited) if this session \
+                 legitimately needs longer. {}",
+                session_id,
+                budget.map(|d| d.as_secs()).unwrap_or(0),
+                SEND_MESSAGE_MAX_SECS_ENV,
+                SEND_MESSAGE_MAX_SECS_ENV,
+                received,
+            ));
         }
 
         if response_parts.is_empty() {
@@ -22983,7 +23407,13 @@ mod tests {
     /// `false` and R3 requeues a live worker (A12 measured exactly this in
     /// fx04/05/09/10 — fx09's coordinator read `session_alive:false` at
     /// 21:22:2x and that same worker committed `5f38917` at 21:23:35).
+    // `GOAL_WORKERS` is process-global and the fixture's session ids are
+    // sequential per fresh temp DB, so two of these tests in parallel hold the
+    // SAME worker session id under different card ids and
+    // `live_goal_worker_card_for_session` answers with the other test's card.
+    // Serialized against each other, not against the whole suite.
     #[tokio::test]
+    #[serial_test::serial(goal_workers)]
     async fn goal_status_reports_a_registered_goal_worker_as_alive_and_leaves_it_alone() {
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
@@ -23045,6 +23475,534 @@ mod tests {
             updated.metadata_json.get("retry_count").is_none(),
             "R3's auto-requeue must never fire on a live worker: {:?}",
             updated.metadata_json
+        );
+    }
+
+    // ── Y8b: send_message is not a way to drive a live goal worker ───────
+    //
+    // A14's M14 forensics, glm47/fx06: the coordinator's `send_message` text
+    // landed in worker session `20260910_2` as message #26 at 23:30:26 while
+    // the goal-engine dispatch was mid-tool-call in that SAME session (its
+    // prompt was message #17, ten seconds earlier). Two reply loops, one
+    // session; the coordinator never spoke again and the run died at the
+    // driver's ceiling. `try_register_cancel_token` cannot catch this — goal
+    // workers live in `GOAL_WORKERS`, not in `AgentManager`'s `cancel_tokens`,
+    // the same registry split Y4b fixed for `goal_status`.
+
+    /// The refusal, and the advice that makes it actionable. Same fixture
+    /// shape as the Y4b pin: the ONLY thing that makes this session refuse is
+    /// its `GOAL_WORKERS` entry.
+    // `GOAL_WORKERS` is process-global and the fixture's session ids are
+    // sequential per fresh temp DB, so two of these tests in parallel hold the
+    // SAME worker session id under different card ids and
+    // `live_goal_worker_card_for_session` answers with the other test's card.
+    // Serialized against each other, not against the whole suite.
+    #[tokio::test]
+    #[serial_test::serial(goal_workers)]
+    async fn send_message_refuses_a_live_goal_worker_and_says_what_can_be_done_instead() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = dead_silent_worker_goal(&pool, &sm, None, 200).await;
+        let worker_session_id = card
+            .metadata_json
+            .get("worker_session_id")
+            .and_then(|v| v.as_str())
+            .expect("fixture stamps a worker session id")
+            .to_string();
+
+        register_goal_worker(
+            &card.id,
+            &worker_session_id,
+            goal_engine::GoalKill::None,
+            None,
+        );
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+        let mut args = JsonObject::new();
+        args.insert(
+            "session_id".to_string(),
+            serde_json::json!(worker_session_id),
+        );
+        args.insert(
+            "message".to_string(),
+            serde_json::json!("How is the fragile-package work going?"),
+        );
+        let cancel = CancellationToken::new();
+        let err = client
+            .handle_send_message("20260910_coordinator", &cancel, Some(args))
+            .await
+            .expect_err("a live goal worker must refuse send_message");
+
+        // GOAL_WORKERS is process-global; drop this test's entry before any
+        // assertion can unwind past it.
+        take_goal_worker(&card.id);
+        assert!(
+            live_goal_worker_card_for_session(&worker_session_id).is_none(),
+            "the guard is registry-driven: with the handle taken, this session \
+             is no longer a live worker"
+        );
+
+        assert!(
+            err.contains(&card.id),
+            "the refusal must name the goal so the coordinator can act on it: {err}"
+        );
+        assert!(
+            err.contains("goal_status"),
+            "the refusal must point at the one reader that DOES answer for a live worker: {err}"
+        );
+        // G13 M3: under PERMAGENT_HEADLESS_WORKER=internal neither of the
+        // original redirects works — `steer_goal` refuses an internal worker
+        // outright and `message_goal` takes `from_goal`/`to_goal`, not a
+        // `card_id`. Advice that cannot be followed is worse than none.
+        assert!(
+            !err.contains("steer_goal"),
+            "an internal worker is not steerable; do not send the coordinator there: {err}"
+        );
+        assert!(
+            !err.contains("message_goal"),
+            "message_goal needs a card on BOTH sides, which a coordinator does not have: {err}"
+        );
+    }
+
+    /// The inline drain's wall-clock budget: default, explicit, and disabled.
+    /// A14 measured 500 s of unbounded drain on glm47/fx05 — 61 worker provider
+    /// calls and $0.4732 of that fixture's $0.5042 — ending only when the eval
+    /// driver killed the process.
+    #[test]
+    fn the_send_message_reply_budget_defaults_and_can_be_disabled() {
+        {
+            let _guard = env_lock::lock_env([(SEND_MESSAGE_MAX_SECS_ENV, None::<&str>)]);
+            assert_eq!(
+                send_message_reply_budget_from_env(),
+                Some(std::time::Duration::from_secs(
+                    SEND_MESSAGE_DEFAULT_MAX_SECS
+                )),
+                "an unset budget is 120s, not unlimited"
+            );
+        }
+        {
+            let _guard = env_lock::lock_env([(SEND_MESSAGE_MAX_SECS_ENV, Some("5"))]);
+            assert_eq!(
+                send_message_reply_budget_from_env(),
+                Some(std::time::Duration::from_secs(5))
+            );
+        }
+        {
+            let _guard = env_lock::lock_env([(SEND_MESSAGE_MAX_SECS_ENV, Some("0"))]);
+            assert_eq!(
+                send_message_reply_budget_from_env(),
+                None,
+                "0 means unlimited — the pre-Y8b behaviour, opt-in"
+            );
+        }
+        {
+            // Garbage must not silently disable the bound.
+            let _guard = env_lock::lock_env([(SEND_MESSAGE_MAX_SECS_ENV, Some("soon"))]);
+            assert_eq!(
+                send_message_reply_budget_from_env(),
+                Some(std::time::Duration::from_secs(
+                    SEND_MESSAGE_DEFAULT_MAX_SECS
+                ))
+            );
+        }
+    }
+
+    // ── Y8d: a model-authored tag cannot veto dispatch ───────────────────
+    //
+    // A14's ranked mechanism 5, glm47/fx08: `decompose_roadmap` tagged the
+    // card `["code_edit", "cli", "testing"]`. `cli` is an ADAPTER requirement
+    // (`WorkerCapabilities::supports_cli_tools`); the internal `permagent`
+    // persona does not declare it and external workers were off
+    // (`PERMAGENT_HEADLESS_WORKER=internal`), so every candidate was marked
+    // unavailable, `select_best_worker` returned `None`, `attempt_count`
+    // stayed at 0, and the coordinator escalated twice into decisions nobody
+    // can answer. DeepSeek tagged the same fixture
+    // `["code_edit", "shell", "testing"]` and dispatched fine — the tags are
+    // model-authored free text, and the roster is the authority.
+
+    /// The `permagent` persona's real declared kinds, as A14 recorded them.
+    fn permagent_roster() -> std::collections::BTreeSet<String> {
+        tags(&["code_edit", "shell", "git", "search", "testing"])
+    }
+
+    #[test]
+    fn fx08s_cli_tag_is_dropped_so_the_goal_stays_dispatchable() {
+        let required = required_kinds_within_roster(
+            vec![
+                "code_edit".to_string(),
+                "cli".to_string(),
+                "testing".to_string(),
+            ],
+            &permagent_roster(),
+        );
+        assert_eq!(
+            required,
+            vec!["code_edit".to_string(), "testing".to_string()],
+            "the two satisfiable tags survive; `cli` — which no worker declares — does not"
+        );
+    }
+
+    /// Never an empty requirement set from a non-empty tag list:
+    /// `select_best_worker` reads empty as "any available worker matches", so
+    /// silently emptying a real requirement would route a goal on cost alone.
+    #[test]
+    fn a_goal_whose_every_tag_is_unknown_falls_back_to_the_base_kinds() {
+        let required = required_kinds_within_roster(
+            vec!["cli".to_string(), "telepathy".to_string()],
+            &permagent_roster(),
+        );
+        assert_eq!(
+            required,
+            BASE_REQUIRED_KINDS
+                .iter()
+                .map(|k| k.to_string())
+                .collect::<Vec<_>>()
+        );
+        assert!(!required.is_empty(), "never an empty requirement set");
+    }
+
+    /// Z1-3's contract is untouched: an explicitly EMPTY tag list means "no
+    /// requirement", which `constrain_tags` produces on purpose at card
+    /// creation so a fully-ungrounded goal is dispatchable rather than blocked.
+    #[test]
+    fn an_explicitly_empty_tag_list_still_means_no_requirement() {
+        assert!(required_kinds_within_roster(vec![], &permagent_roster()).is_empty());
+    }
+
+    /// An unreadable/empty roster is "we do not know", not "nothing is
+    /// supported" — filtering on it would drop every tag on every goal.
+    #[test]
+    fn an_empty_roster_filters_nothing() {
+        let original = vec!["code_edit".to_string(), "cli".to_string()];
+        assert_eq!(
+            required_kinds_within_roster(original.clone(), &tags(&[])),
+            original
+        );
+    }
+
+    /// `supports_requirement` accepts several spellings per adapter capability
+    /// while `configured_worker_capabilities` emits only the canonical one. A
+    /// satisfiable tag must not be dropped over spelling.
+    #[test]
+    fn an_alias_spelling_of_a_declared_capability_survives() {
+        let roster = tags(&["code_edit", "cancellation", "mcp"]);
+        assert_eq!(
+            required_kinds_within_roster(
+                vec!["cancel".to_string(), "mcp_tools".to_string()],
+                &roster
+            ),
+            vec!["cancel".to_string(), "mcp_tools".to_string()],
+            "aliases are compared canonically and kept in their original spelling"
+        );
+    }
+
+    /// The half of Y8d that makes it bite on fx08's actual configuration. That
+    /// run had `PERMAGENT_HEADLESS_WORKER=internal`, so ranked dispatch could
+    /// only ever pick `permagent` — but the roster still CONTAINS external
+    /// CLIs, and the whole-roster union
+    /// (`council::plan::configured_worker_capabilities`) therefore claims
+    /// `cli`. Intersecting against that union would have kept fx08's `cli` tag
+    /// and changed nothing. Run against the REAL default roster.
+    #[test]
+    fn the_internal_only_dispatch_pool_does_not_claim_an_external_clis_capabilities() {
+        let config = default_config();
+
+        let unrestricted = pool_capabilities(&dispatchable_personas(&config, false, None));
+        let internal_only = pool_capabilities(&dispatchable_personas(&config, true, None));
+
+        assert!(
+            internal_only.contains("code_edit"),
+            "the internal worker's own kinds survive: {internal_only:?}"
+        );
+        assert!(
+            internal_only.len() < unrestricted.len(),
+            "restricting the pool must narrow what it can satisfy: \
+             {internal_only:?} vs {unrestricted:?}"
+        );
+        assert_eq!(
+            required_kinds_within_roster(
+                vec![
+                    "code_edit".to_string(),
+                    "cli".to_string(),
+                    "testing".to_string()
+                ],
+                &internal_only,
+            ),
+            vec!["code_edit".to_string(), "testing".to_string()],
+            "fx08's tag set, against fx08's actual dispatch pool"
+        );
+    }
+
+    /// The real shipped roster. `..Default::default()` rather than naming every
+    /// field, so a new field on `AgentConfig` cannot break these tests.
+    fn default_config() -> agent_identity::AgentConfig {
+        agent_identity::AgentConfig {
+            workers: agent_identity::default_roster(),
+            ..Default::default()
+        }
+    }
+
+    fn kinds(list: &[&str]) -> Vec<String> {
+        list.iter().map(|k| k.to_string()).collect()
+    }
+
+    /// G13 H3. The roster intersection is a UNION over the pool, but
+    /// `select_best_worker` needs ONE worker to satisfy every kind. Under
+    /// `PERMAGENT_HEADLESS_WORKER=internal` the pool is `permagent`
+    /// (code_edit, shell, git, search, testing) and `reviewer` (review), so
+    /// `["code_edit", "review"]` survived Y8d untouched and still deadlocked —
+    /// the fx08 class, one union away from fixed. Both halves are asserted
+    /// here: the narrowing, and the fact that the narrowed set is one
+    /// `select_best_worker` actually accepts.
+    #[test]
+    fn a_tag_set_no_single_worker_satisfies_is_narrowed_rather_than_deadlocked() {
+        let config = default_config();
+        let dispatchable = dispatchable_personas(&config, true, None);
+
+        let candidates: Vec<goal_state::WorkerCandidate> = config
+            .workers
+            .iter()
+            .filter(|(_, persona)| persona.engine.is_dispatchable())
+            .filter(|(_, persona)| worker_engine_allowed_for_ranked_dispatch(&persona.engine, true))
+            .map(|(key, persona)| goal_state::WorkerCandidate {
+                key: key.clone(),
+                available: true,
+                tool_kinds: persona.tool_kinds.clone(),
+                cost_tier: persona.cost_tier.clone(),
+                active_sessions: 0,
+            })
+            .collect();
+
+        let asked = kinds(&["code_edit", "review"]);
+        assert!(
+            goal_state::select_best_worker(&candidates, &asked).is_err(),
+            "precondition: no single internal worker does both, which is the deadlock"
+        );
+
+        let narrowed = satisfiable_by_one_worker(asked, &dispatchable);
+        assert_eq!(
+            narrowed,
+            kinds(&["code_edit"]),
+            "the job survives; the trailing tag no worker can pair with it does not"
+        );
+        assert_eq!(
+            goal_state::select_best_worker(&candidates, &narrowed).unwrap(),
+            "permagent",
+            "and the narrowed set is one the selector answers"
+        );
+    }
+
+    /// Never an empty requirement set out of this path either: empty means
+    /// "any worker will do" to `select_best_worker`, which would route a real
+    /// requirement on cost alone.
+    #[test]
+    fn a_requirement_no_worker_satisfies_at_all_falls_back_to_the_base_kinds() {
+        let config = default_config();
+        let dispatchable = dispatchable_personas(&config, true, None);
+        assert_eq!(
+            satisfiable_by_one_worker(kinds(&["telepathy", "finance"]), &dispatchable),
+            kinds(&BASE_REQUIRED_KINDS),
+        );
+        assert!(
+            satisfiable_by_one_worker(vec![], &dispatchable).is_empty(),
+            "an explicitly empty requirement is still Z1-3's 'anyone may take this'"
+        );
+    }
+
+    /// G13 M1. "Dispatchable" has to mean the same thing here as in the
+    /// candidate list, which requires the availability probe. With the CLI
+    /// binaries absent — the DEFAULT configuration on a machine without them —
+    /// `cli` is not a capability this dispatch can satisfy, and keeping it
+    /// would mark every remaining candidate unavailable: fx08, outside the one
+    /// configuration Y8d tested. The cache is seeded so this test never shells
+    /// out and never depends on what is installed.
+    #[test]
+    fn an_unavailable_workers_exclusive_capability_is_not_this_dispatchs_capability() {
+        let config = default_config();
+        let cache = ProbeCache::new();
+        for key in config.workers.keys() {
+            cache.set(key, key == "permagent", None);
+        }
+
+        let roster_only = pool_capabilities(&dispatchable_personas(&config, false, None));
+        let really_available =
+            pool_capabilities(&dispatchable_personas(&config, false, Some(&cache)));
+
+        assert!(
+            roster_only.contains("cli"),
+            "precondition: an external CLI declares `cli` in the default roster: {roster_only:?}"
+        );
+        assert!(
+            !really_available.contains("cli"),
+            "a worker whose binary is missing cannot satisfy anything: {really_available:?}"
+        );
+        assert_eq!(
+            required_kinds_within_roster(kinds(&["code_edit", "cli"]), &really_available),
+            kinds(&["code_edit"]),
+            "so the tag that would have vetoed dispatch is dropped"
+        );
+    }
+
+    async fn goal_card_with_tags(pool: &sqlx::Pool<sqlx::Sqlite>, tags: &[&str]) -> cards::Card {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let col = cards::get_goal_column(pool, PERSONAL_PROJECT_ID, "in_progress")
+            .await
+            .unwrap()
+            .unwrap();
+        cards::create_card(
+            pool,
+            cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "G13 explicit-request test goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "goal_state": "in_progress",
+                    "tags": tags,
+                })),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    /// G13 M2. Y8d intersected the tags against the requested persona's OWN
+    /// capabilities before the adapter guard read them, which dropped exactly
+    /// the capability the guard exists to refuse — so explicitly requesting a
+    /// worker that genuinely cannot do the job dispatched in silence. The
+    /// guard now reads the raw tags. `permagent` is the in-process subagent:
+    /// `supports_cli_tools` is false, and this goal asks for `cli`.
+    #[tokio::test]
+    async fn an_explicitly_requested_worker_that_cannot_do_the_job_is_still_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No agent.yaml under this root, so the roster is the default one.
+        let _guard =
+            env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap()))]);
+        let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = goal_card_with_tags(&pool, &["code_edit", "cli"]).await;
+
+        let err = select_requested_worker(&pool, &ProbeCache::new(), &card, "permagent", true)
+            .await
+            .expect_err("an in-process subagent cannot run CLI tools, and must say so");
+        assert!(
+            err.contains("cli"),
+            "the refusal must name the capability it lacks: {err}"
+        );
+
+        // The control: the same request without the impossible tag goes through.
+        let ok_card = goal_card_with_tags(&pool, &["code_edit", "testing"]).await;
+        let selection =
+            select_requested_worker(&pool, &ProbeCache::new(), &ok_card, "permagent", true)
+                .await
+                .expect("a satisfiable explicit request still dispatches");
+        assert_eq!(selection.worker_key, "permagent");
+    }
+
+    // ── Y8c: every liveness reader tells the same story ──────────────────
+
+    /// A14's ranked mechanism 3, pinned as the contradiction it actually was:
+    /// fx04's coordinator read `goal_status → "session_alive": true` and
+    /// `view_session → "Status: idle"` IN THE SAME TURN, kept polling
+    /// `view_session` (offsets 19, 21, 23 were all `view_session`), and its
+    /// very next model call was the 441-second runaway. Y4b routed
+    /// `goal_status` through `GOAL_WORKERS`; `view_session` was left on
+    /// `AgentManager::is_session_busy`, a map a dispatched goal worker never
+    /// enters. This test fails on the second assertion against pre-Y8c code.
+    // `GOAL_WORKERS` is process-global and the fixture's session ids are
+    // sequential per fresh temp DB, so two of these tests in parallel hold the
+    // SAME worker session id under different card ids and
+    // `live_goal_worker_card_for_session` answers with the other test's card.
+    // Serialized against each other, not against the whole suite.
+    #[tokio::test]
+    #[serial_test::serial(goal_workers)]
+    async fn view_session_and_goal_status_agree_that_a_live_goal_worker_is_alive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = dead_silent_worker_goal(&pool, &sm, None, 200).await;
+        let worker_session_id = card
+            .metadata_json
+            .get("worker_session_id")
+            .and_then(|v| v.as_str())
+            .expect("fixture stamps a worker session id")
+            .to_string();
+
+        register_goal_worker(
+            &card.id,
+            &worker_session_id,
+            goal_engine::GoalKill::None,
+            None,
+        );
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut status_args = JsonObject::new();
+        status_args.insert("card_id".to_string(), serde_json::json!(card.id));
+        let status_text = client
+            .handle_goal_status(Some(status_args))
+            .await
+            .expect("goal_status must report a live worker normally")
+            .content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .clone();
+
+        let mut view_args = JsonObject::new();
+        view_args.insert(
+            "session_id".to_string(),
+            serde_json::json!(worker_session_id),
+        );
+        let view_text = client
+            .handle_view_session("20260910_coordinator", Some(view_args))
+            .await
+            .expect("view_session must read a live worker's session")
+            .content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .clone();
+
+        // GOAL_WORKERS is process-global; drop this test's entry before any
+        // assertion can unwind past it.
+        take_goal_worker(&card.id);
+        assert!(
+            live_goal_worker_card_for_session(&worker_session_id).is_none(),
+            "both readers are registry-driven"
+        );
+
+        let status: serde_json::Value =
+            serde_json::from_str(&status_text).expect("the status JSON");
+        assert_eq!(
+            status.get("session_alive").and_then(|v| v.as_bool()),
+            Some(true),
+            "Y4b's half: {status_text}"
+        );
+        assert!(
+            !view_text.contains("Status: idle"),
+            "view_session must not call a live goal worker idle in the same turn \
+             goal_status calls it alive: {view_text}"
+        );
+        assert!(
+            view_text.contains("busy") && view_text.contains(&card.id),
+            "view_session must say busy and name the goal: {view_text}"
         );
     }
 

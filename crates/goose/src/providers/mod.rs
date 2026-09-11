@@ -54,6 +54,7 @@ mod retry;
 pub mod sagemaker_tgi;
 pub mod snowflake;
 pub mod sovereign_guard;
+pub mod stream_budget;
 pub mod testprovider;
 pub mod tetrate;
 pub mod toolshim;
