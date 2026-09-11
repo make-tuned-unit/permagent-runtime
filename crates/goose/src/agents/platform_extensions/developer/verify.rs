@@ -984,7 +984,10 @@ fn git_changes_under(dir: &Path) -> Option<GitChanges> {
     // the base to this branch's fork point. See [`branch_fork_point`].
     if paths.is_empty() {
         if let Some(committed) = changes_since_branch_fork_point(&root, &relative_dir) {
-            tracing::debug!(?committed, "verify using fork-point diff for empty working tree");
+            tracing::debug!(
+                ?committed,
+                "verify using fork-point diff for empty working tree"
+            );
             paths = committed;
         }
     }
