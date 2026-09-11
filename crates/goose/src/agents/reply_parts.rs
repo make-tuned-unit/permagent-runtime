@@ -1689,12 +1689,20 @@ pub(crate) async fn reserve_provider_invocation_for_model(
     max_physical_attempts: u32,
     invocation_id: String,
 ) -> std::result::Result<ProviderInvocationContext, ProviderAuthorizationFailure> {
+    // Y7 (harness loop, from Lane A12's Q6 measurement): reserve for ONE
+    // physical attempt by default instead of the provider's whole retry
+    // envelope. `max_physical_attempts` stays the envelope — it is the
+    // ceiling this knob clamps to, and the number the retry policy will
+    // actually honour if the reservation is extended to cover it. See
+    // `cost_router::reservation::RESERVE_ATTEMPTS_ENV` for the measured
+    // reason (holds of $1.66 against settled calls of $0.005).
+    let attempts_reserved = crate::cost_router::reserved_physical_attempts(max_physical_attempts);
     let bound = crate::cost_router::plan_reservation_bound(
         provider,
         &model_config.model_name,
         cost_tier,
         &model_config,
-        max_physical_attempts,
+        attempts_reserved,
     )
     .map_err(|e| ProviderAuthorizationFailure::Unknown {
         reason: format!("cannot authorize provider call: {e}"),
@@ -1706,6 +1714,11 @@ pub(crate) async fn reserve_provider_invocation_for_model(
         model: model_config.model_name,
         cost_tier,
         reservation_id: None,
+        // Only a paid hold constrains how many physical attempts may be made:
+        // `plan_reservation_bound` returns `None` for local/subscription work,
+        // which holds no dollars and therefore keeps the retry policy's own
+        // budget (see `cost_router::authorized_attempts`).
+        attempts_reserved: bound.as_ref().map(|bound| bound.max_physical_attempts),
     };
 
     // Local and subscription calls retain typed attribution, but never create
@@ -1732,7 +1745,12 @@ pub(crate) async fn reserve_provider_invocation_for_model(
         canonical = %canonical_name(&context.provider, &context.model),
         bound_usd = bound.amount_usd,
         pricing_source = crate::cost_router::describe_pricing_source(bound.pricing_provenance),
-        max_physical_attempts = bound.max_physical_attempts,
+        // Y7: `attempts_reserved` is what this hold actually pays for (1 by
+        // default); `retry_envelope_attempts` is what the provider's retry
+        // policy would spend if every attempt were authorized. They were the
+        // same number — and the reason a single call held $1.66 — until Y7.
+        attempts_reserved = bound.max_physical_attempts,
+        retry_envelope_attempts = max_physical_attempts,
         "reservation bound computed"
     );
     let task_id = budget_task_id(&session.extension_data);
@@ -1802,6 +1820,12 @@ pub(crate) struct ProviderInvocationContext {
     pub model: String,
     pub cost_tier: CostTier,
     pub reservation_id: Option<String>,
+    /// Y7: physical provider attempts this invocation's hold pays for, or
+    /// `None` when the call took no paid hold. The dispatch seam installs it
+    /// with `cost_router::with_authorized_attempts_opt` so the provider's
+    /// retry loop refuses an attempt the reservation does not cover instead of
+    /// spending past it.
+    pub attempts_reserved: Option<u32>,
 }
 
 /// One reserved `complete_fast` attempt. It owns an immutable provider and
@@ -1984,11 +2008,18 @@ impl AccountedFastCompletion {
             invocation.reservation_id.clone(),
         );
 
-        let (response, mut usage) = match self
-            .provider
-            // permagent-dispatch: seam=complete_fast_attempt_v1 class=wrapped contract=reservation_settlement
-            .complete(&model_config, &self.session.id, system, messages, tools)
-            .await
+        // Y7 (harness loop, from Lane A12's Q6): this dispatch may retry
+        // physically inside the provider, and each retry is another billable
+        // request. Publish how many attempts the hold above actually paid for
+        // so `providers::retry` refuses an unauthorized one instead of
+        // spending past the reservation. `None` (unpaid work) runs unchanged.
+        let (response, mut usage) = match crate::cost_router::with_authorized_attempts_opt(
+            invocation.attempts_reserved,
+            self.provider
+                // permagent-dispatch: seam=complete_fast_attempt_v1 class=wrapped contract=reservation_settlement
+                .complete(&model_config, &self.session.id, system, messages, tools),
+        )
+        .await
         {
             Ok(result) => result,
             Err(error) => {
