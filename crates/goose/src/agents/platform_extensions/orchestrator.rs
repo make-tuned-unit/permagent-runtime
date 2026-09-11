@@ -2873,7 +2873,10 @@ async fn cost_routing_candidates(
             tool_kinds: persona.tool_kinds.clone(),
             cost_tier: persona.cost_tier.clone(),
             active_sessions: considered
-                .and_then(|rows| rows.iter().find(|row| row["key"].as_str() == Some(key.as_str())))
+                .and_then(|rows| {
+                    rows.iter()
+                        .find(|row| row["key"].as_str() == Some(key.as_str()))
+                })
                 .and_then(|row| row["active_sessions"].as_u64())
                 .and_then(|count| usize::try_from(count).ok())
                 .unwrap_or_else(|| load.get(key).copied().unwrap_or(0)),
@@ -2910,7 +2913,12 @@ async fn audit_cost_routing(
     let actual_role = WorkflowRole::all()
         .into_iter()
         .find(|role| Some(role.as_str()) == routing["role"].as_str())
-        .or_else(|| config.workers.get(worker_key).and_then(|worker| worker.routing_role()));
+        .or_else(|| {
+            config
+                .workers
+                .get(worker_key)
+                .and_then(|worker| worker.routing_role())
+        });
     let actual = routing["provider"].as_str().zip(routing["model"].as_str());
     let session = routing["session_provider"]
         .as_str()
@@ -2963,7 +2971,8 @@ async fn audit_cost_routing(
                 .and_then(|card| card.role(role))
                 .is_some_and(|evidence| evidence.graduated())
         });
-        let cost = pair.and_then(|(provider, model)| routing_matrix::nominal_call_cost(provider, model));
+        let cost =
+            pair.and_then(|(provider, model)| routing_matrix::nominal_call_cost(provider, model));
         candidates.push(routing_matrix::WorkerCandidate {
             name: key,
             // worker_satisfies above includes adapter requirements and wildcard
@@ -3706,7 +3715,10 @@ pub(crate) async fn dispatch_goal_fn(
             }
             if let Some(obj) = model_routing.as_object_mut() {
                 let session_model = provider.get_model_config().model_name.clone();
-                obj.insert("session_provider".into(), serde_json::json!(provider.get_name()));
+                obj.insert(
+                    "session_provider".into(),
+                    serde_json::json!(provider.get_name()),
+                );
                 obj.insert("session_model".into(), serde_json::json!(session_model));
                 if resolved.is_none() {
                     obj.insert("provider".into(), serde_json::json!(provider.get_name()));
@@ -3728,8 +3740,14 @@ pub(crate) async fn dispatch_goal_fn(
         }
     };
 
-    let (cheapest_capable, pack_honored) =
-        audit_cost_routing(&pool, probe_cache, &worker_key, &capability_snapshot, policy).await;
+    let (cheapest_capable, pack_honored) = audit_cost_routing(
+        &pool,
+        probe_cache,
+        &worker_key,
+        &capability_snapshot,
+        policy,
+    )
+    .await;
     capability_snapshot["cost_routing"] = serde_json::json!({
         "cheapest_capable": cheapest_capable,
         "pack_honored": pack_honored,
@@ -16830,8 +16848,7 @@ mod tests {
             .unwrap()
             .iter()
             .filter(|row| {
-                let kinds: Vec<String> =
-                    serde_json::from_value(row["tool_kinds"].clone()).unwrap();
+                let kinds: Vec<String> = serde_json::from_value(row["tool_kinds"].clone()).unwrap();
                 row["available"] == true
                     && (kinds.is_empty() || ordinary.iter().all(|kind| kinds.contains(kind)))
             })

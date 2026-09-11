@@ -629,58 +629,85 @@ mod goal_routing_tests {
         };
         let rows = vec![
             (
-                "cheapest graduated", vec!["code_edit"],
-                vec![full(), cheap()], Some("cheap"),
+                "cheapest graduated",
+                vec!["code_edit"],
+                vec![full(), cheap()],
+                Some("cheap"),
             ),
             (
-                "ungraduated skipped", vec!["code_edit"],
-                vec![worker("unrated", &["code_edit"], false, 0.0), full()], Some("full"),
+                "ungraduated skipped",
+                vec!["code_edit"],
+                vec![worker("unrated", &["code_edit"], false, 0.0), full()],
+                Some("full"),
             ),
             (
-                "all kinds required", vec!["code_edit", "testing"],
-                vec![cheap(), full()], Some("full"),
+                "all kinds required",
+                vec!["code_edit", "testing"],
+                vec![cheap(), full()],
+                Some("full"),
             ),
             (
-                "stable tie order", vec!["code_edit"],
-                vec![worker("z-first", &["code_edit"], true, 1.0), cheap()], Some("z-first"),
+                "stable tie order",
+                vec!["code_edit"],
+                vec![worker("z-first", &["code_edit"], true, 1.0), cheap()],
+                Some("z-first"),
             ),
             (
-                "no graduated worker", vec!["code_edit"],
-                vec![worker("unrated", &["code_edit"], false, 0.0)], None,
+                "no graduated worker",
+                vec!["code_edit"],
+                vec![worker("unrated", &["code_edit"], false, 0.0)],
+                None,
+            ),
+            ("unsatisfiable", vec!["review"], vec![cheap(), full()], None),
+            (
+                "empty requirements",
+                vec![],
+                vec![full(), cheap()],
+                Some("cheap"),
             ),
             (
-                "unsatisfiable", vec!["review"],
-                vec![cheap(), full()], None,
+                "empty declarations reject",
+                vec!["review"],
+                vec![worker("empty", &[], true, 0.0), cheap()],
+                None,
             ),
             (
-                "empty requirements", vec![],
-                vec![full(), cheap()], Some("cheap"),
+                "internal-only pool",
+                vec!["code_edit"],
+                pool(true),
+                Some("full"),
             ),
             (
-                "empty declarations reject", vec!["review"],
-                vec![worker("empty", &[], true, 0.0), cheap()], None,
+                "external allowed",
+                vec!["code_edit"],
+                pool(false),
+                Some("cheap"),
             ),
             (
-                "internal-only pool", vec!["code_edit"],
-                pool(true), Some("full"),
+                "unknown price",
+                vec!["code_edit"],
+                vec![
+                    worker("unknown", &["code_edit"], true, f64::INFINITY),
+                    cheap(),
+                ],
+                Some("cheap"),
             ),
             (
-                "external allowed", vec!["code_edit"],
-                pool(false), Some("cheap"),
-            ),
-            (
-                "unknown price", vec!["code_edit"],
-                vec![worker("unknown", &["code_edit"], true, f64::INFINITY), cheap()], Some("cheap"),
-            ),
-            (
-                "invalid price", vec!["code_edit"],
-                vec![worker("nan", &["code_edit"], true, f64::NAN), worker("negative", &["code_edit"], true, -1.0)], None,
+                "invalid price",
+                vec!["code_edit"],
+                vec![
+                    worker("nan", &["code_edit"], true, f64::NAN),
+                    worker("negative", &["code_edit"], true, -1.0),
+                ],
+                None,
             ),
         ];
         for (label, required, candidates, expected) in rows {
             let required = required.into_iter().map(String::from).collect::<Vec<_>>();
             assert_eq!(
-                cheapest_capable_worker(&required, &candidates), expected, "{label}"
+                cheapest_capable_worker(&required, &candidates),
+                expected,
+                "{label}"
             );
         }
     }
