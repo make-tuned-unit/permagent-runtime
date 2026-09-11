@@ -4083,18 +4083,22 @@ impl OrchestratorClient {
         // The agent-manager lookup is now lazy and non-fatal: a live goal
         // worker is answerable from the registry alone, so this no longer fails
         // the whole call when no AgentManager can be instantiated.
+        // `None` is "we could not look": G13 L1. Reporting a session we cannot
+        // see as "idle" is a positive claim, and a liveness reader that makes
+        // one it cannot support is exactly what Y8c exists to stop.
         let goal_card = live_goal_worker_card_for_session(&session_id);
         let is_busy = match &goal_card {
-            Some(_) => true,
+            Some(_) => Some(true),
             None => match self.get_agent_manager().await {
-                Ok(manager) => manager.is_session_busy(&session_id).await,
-                Err(_) => false,
+                Ok(manager) => Some(manager.is_session_busy(&session_id).await),
+                Err(_) => None,
             },
         };
-        let status = match &goal_card {
-            Some(card_id) => format!("🔄 busy (live worker for goal {card_id})"),
-            None if is_busy => "🔄 busy".to_string(),
-            None => "idle".to_string(),
+        let status = match (&goal_card, is_busy) {
+            (Some(card_id), _) => format!("🔄 busy (live worker for goal {card_id})"),
+            (None, Some(true)) => "🔄 busy".to_string(),
+            (None, Some(false)) => "idle".to_string(),
+            (None, None) => "unknown (agent manager unavailable)".to_string(),
         };
 
         let mut output = vec![format!(
