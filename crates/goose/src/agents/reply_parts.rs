@@ -594,7 +594,8 @@ async fn goal_scoped_auto_answer_count(pool: &sqlx::Pool<sqlx::Sqlite>, goal_id:
     sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM decisions
          WHERE kind = 'choice' AND goal_id = ? AND status = 'answered'
-           AND acted_by = ?",
+           AND acted_by = ?
+           AND json_extract(payload_json, '$.reservation_gate.requesting_session_id') IS NOT NULL",
     )
     .bind(goal_id)
     .bind(crate::decisions::ACTOR_HEADLESS_POLICY)
@@ -3421,6 +3422,38 @@ mod tests {
             GOAL_GATE_AUTO_ANSWER_CAP_DEFAULT,
             "the ninth gate must stay unanswered for a human"
         );
+    }
+
+    #[tokio::test]
+    async fn goal_scoped_gate_count_excludes_headless_escalation_answers() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture, true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let card = dispatched_goal_card(&pool, &session.id).await;
+
+        sqlx::query(
+            "INSERT INTO decisions
+                (id, kind, goal_id, tier, headline, detail, payload_json,
+                 status, answer, answer_note, acted_by, resolved_at)
+             VALUES (?, 'choice', ?, 1, 'escalation', 'retry requested', '{}',
+                     'answered', 'choice', 'headless escalation retry', ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&card.id)
+        .bind(crate::decisions::ACTOR_HEADLESS_POLICY)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            goal_scoped_auto_answer_count(&pool, &card.id).await,
+            0,
+            "headless escalation answers must not consume the reservation-gate cap"
+        );
+
+        insert_answered_gate_decision(&pool, Some(&card.id), &session.id).await;
+        assert_eq!(goal_scoped_auto_answer_count(&pool, &card.id).await, 1);
     }
 
     #[tokio::test]
