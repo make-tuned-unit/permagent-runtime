@@ -1724,7 +1724,29 @@ impl SummonClient {
     ///     reach this function at all; checked again here so this gate's own
     ///     correctness does not silently depend on staying downstream of
     ///     that unrelated refusal.
-    ///   - a session with no active roadmap of its own — nothing to bypass.
+    ///   - an ordinary session with no active roadmap of its own and no
+    ///     coding-harness identity — nothing to bypass.
+    ///
+    /// Harness loop, Lane Y10c (A15 Q3): "active roadmap" was too narrow a
+    /// window. M15 fx04's coordinator called `delegate` at 02:00:30.513 and
+    /// minted its roadmap at 02:00:46.097 — 15 s LATER. With no cards yet
+    /// attributed to the session, `session_has_an_active_roadmap` is false
+    /// and this gate was a no-op, so a coding-harness coordinator could get a
+    /// worker holding `write`/`edit` simply by delegating BEFORE
+    /// `create_roadmap`. X-dag-1 closed "inside an active roadmap"; "before
+    /// the roadmap exists" stayed open.
+    ///
+    /// So the gate now fires on EITHER identity: a top-level coding-harness
+    /// coordinator (the identical
+    /// [`is_top_level_coding_harness`](crate::tool_inspection::is_top_level_coding_harness)
+    /// predicate `CodingDagInspector` and `NoRoadmapGuard` use — that session
+    /// never mutates, roadmap or not, so there is no window at all), or any
+    /// session with an active roadmap (unchanged). The identity check is
+    /// first because it costs no query.
+    ///
+    /// Read-only delegates are still allowed: this strips the MUTATING tools
+    /// (`restrict_to_non_mutating`), it does not refuse the call — fx04's own
+    /// `analyze`/`search` scope audit would pass through untouched.
     ///
     /// Returns a note for the delegate's result text when it restricts,
     /// per the brief: a session that loses `write`/`edit` here must be told
@@ -1739,18 +1761,29 @@ impl SummonClient {
         if is_reviewer || session.session_type == SessionType::SubAgent {
             return Ok(None);
         }
-        let cards = crate::cards::goal_cards_created_by_session(pool, &session.id).await?;
-        if !crate::cards::session_has_an_active_roadmap(&cards) {
-            return Ok(None);
-        }
-        Self::restrict_to_non_mutating(extensions);
-        Ok(Some(
-            "Note: this delegate call was restricted to non-mutating tools because this \
-             session has an active roadmap of its own — dispatch its goals with \
+
+        let recipe_title = session.recipe.as_ref().map(|recipe| recipe.title.as_str());
+        let why = if crate::tool_inspection::is_top_level_coding_harness(
+            recipe_title,
+            session.parent_session_id.as_deref(),
+        ) {
+            "this session is the coding-harness coordinator, which plans and dispatches \
+             rather than edits — decompose the work with `create_roadmap` and dispatch its \
+             goals with `goal_advance` (action: dispatch)"
+        } else {
+            let cards = crate::cards::goal_cards_created_by_session(pool, &session.id).await?;
+            if !crate::cards::session_has_an_active_roadmap(&cards) {
+                return Ok(None);
+            }
+            "this session has an active roadmap of its own — dispatch its goals with \
              `goal_advance` (action: dispatch) instead of editing directly through a \
-             delegated worker."
-                .to_string(),
-        ))
+             delegated worker"
+        };
+
+        Self::restrict_to_non_mutating(extensions);
+        Ok(Some(format!(
+            "Note: this delegate call was restricted to non-mutating tools because {why}."
+        )))
     }
 
     /// Instructions a worker cannot act on.
@@ -3351,6 +3384,118 @@ mod tests {
         assert!(
             developer_available_tools(&extensions).is_empty(),
             "no active roadmap must leave developer's tools unrestricted (empty == every tool)"
+        );
+    }
+
+    /// Y10c (A15 Q3): M15 fx04's coordinator called `delegate` 15 SECONDS
+    /// before it minted its roadmap. With no cards yet attributed to the
+    /// session the old `session_has_an_active_roadmap` predicate was false and
+    /// this gate was a no-op — so a coding-harness coordinator could get a
+    /// worker holding `write`/`edit` just by delegating first. The identity
+    /// itself now closes that window.
+    #[tokio::test]
+    async fn a_coding_harness_coordinator_with_no_roadmap_yet_is_still_restricted() {
+        let tmp = TempDir::new().unwrap();
+        let sm = crate::session::SessionManager::new(tmp.path().to_path_buf());
+        let mut session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "pre-roadmap-coordinator".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        // Deliberately NO cards: this is the 15-second window before
+        // `create_roadmap`.
+        session.recipe = Some(
+            Recipe::builder()
+                .version("1.0.0")
+                .title(crate::tool_inspection::CODING_HARNESS_RECIPE_TITLE)
+                .description("coding harness")
+                .prompt("plan and dispatch")
+                .build()
+                .unwrap(),
+        );
+        assert!(session.parent_session_id.is_none(), "top-level by fixture");
+
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+
+        let note = note.expect("a restricted delegate must say why");
+        assert!(
+            note.contains("coding-harness coordinator"),
+            "the note must name the identity that restricted it, got {note:?}"
+        );
+        let allowed = developer_available_tools(&extensions);
+        for mutating in ["write", "edit", "apply_patch"] {
+            assert!(
+                !allowed.iter().any(|t| t == mutating),
+                "must not be granted '{mutating}', got: {allowed:?}"
+            );
+        }
+        // Read-only sources stay available — the gate strips mutation, it does
+        // not refuse the delegate (fx04's own `analyze` scope audit).
+        for readonly in ["search", "read", "shell"] {
+            assert!(
+                allowed.iter().any(|t| t == readonly),
+                "a read-only '{readonly}' must survive the restriction, got: {allowed:?}"
+            );
+        }
+    }
+
+    /// The identity is TOP-LEVEL: a coding-harness session with a parent is a
+    /// dispatched worker, the thing that MAY edit. Same boundary
+    /// `CodingDagInspector`/`NoRoadmapGuard` draw.
+    #[tokio::test]
+    async fn a_coding_harness_session_with_a_parent_is_not_restricted_by_identity() {
+        let tmp = TempDir::new().unwrap();
+        let sm = crate::session::SessionManager::new(tmp.path().to_path_buf());
+        let mut session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "child-coordinator".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        session.recipe = Some(
+            Recipe::builder()
+                .version("1.0.0")
+                .title(crate::tool_inspection::CODING_HARNESS_RECIPE_TITLE)
+                .description("coding harness")
+                .prompt("plan and dispatch")
+                .build()
+                .unwrap(),
+        );
+        session.parent_session_id = Some("parent-session".to_string());
+
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+
+        assert!(note.is_none());
+        assert!(
+            developer_available_tools(&extensions).is_empty(),
+            "a dispatched worker keeps every tool (empty == unrestricted)"
         );
     }
 
