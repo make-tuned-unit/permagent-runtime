@@ -1125,6 +1125,22 @@ pub async fn apply_decision_effect_with_auto_land(
                     "attempt_count".to_string(),
                     serde_json::json!(attempt_count + 1),
                 );
+                // Y16c (G19 MED): stamp which session's work this reject
+                // decision covers, so a later re-dispatch's
+                // `prior_goal_branch_tip` (orchestrator.rs) can refuse to
+                // rebuild on this exact branch even if the card later cycles
+                // back through Ready with `worker_session_id` still pointing
+                // at it (e.g. via a reconciliation path unrelated to review
+                // outcome). Only meaningful when a worker actually ran;
+                // `null` on a card rejected before any dispatch is harmless
+                // (it can never equal a real session id).
+                patch.insert(
+                    "goal_branch_rejected_session_id".to_string(),
+                    card.metadata_json
+                        .get("worker_session_id")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                );
                 goal_transition::advance_goal_checked(
                     pool,
                     goal_id,
@@ -2541,6 +2557,75 @@ mod tests {
             .unwrap();
         assert!(effect.unwrap().contains("verifier verdict is fail"));
         assert_eq!(goal_state_of(&pool, &goal.id).await, "review");
+    }
+
+    /// Y16c (G19 MED): a rejected review under the attempt cap advances to
+    /// InProgress for rework (unchanged), AND stamps
+    /// `goal_branch_rejected_session_id` with the exact worker session whose
+    /// branch was rejected — the marker `prior_goal_branch_tip`
+    /// (orchestrator.rs) refuses to continue from, even if the card later
+    /// cycles back through Ready with `worker_session_id` still intact.
+    #[tokio::test]
+    async fn rejected_review_stamps_the_rejected_session_for_prior_goal_branch_tip() {
+        let pool = test_pool().await;
+        let goal = goal_in_review(&pool).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.worker_session_id', ?) WHERE id = ?",
+        )
+        .bind("worker-session-rejected")
+        .bind(&goal.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let decision = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Reject the reviewed work".to_string()),
+                detail: Some("test".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &DecisionAnswer {
+                answer: "reject".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+
+        let (effect, _warning) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+        assert_eq!(
+            effect.as_deref(),
+            Some("goal rejected: Review → InProgress for rework")
+        );
+        assert_eq!(goal_state_of(&pool, &goal.id).await, "in_progress");
+
+        let after = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after
+                .metadata_json
+                .get("goal_branch_rejected_session_id")
+                .and_then(|v| v.as_str()),
+            Some("worker-session-rejected"),
+            "the reject arm must stamp which session's branch was rejected so \
+             `prior_goal_branch_tip` can refuse to continue from it"
+        );
     }
 
     // I1 (harness loop, 2026-09-10, gate fix): GOAL_DISPATCH_HOOK is a

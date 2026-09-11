@@ -3031,9 +3031,18 @@ async fn write_scope_conflict(
 ///
 /// Returns `None` — the caller then falls back to trunk HEAD exactly as
 /// before this lane — on a genuine first dispatch (`worker_session_id` not
-/// yet recorded) or when the prior branch is simply gone (reaped, or a
-/// caller-supplied metadata value with no matching branch). Never errors:
-/// a missing/unreadable branch is not this lane's business to diagnose.
+/// yet recorded), when the prior branch is simply gone (reaped, or a
+/// caller-supplied metadata value with no matching branch), or (Y16c, G19
+/// MED) when a human reviewer explicitly REJECTED that exact session's work:
+/// the reject arm (`decisions_effects.rs`'s `("approve_review", Some("reject"))`
+/// handler, under the attempt cap) stamps `goal_branch_rejected_session_id`
+/// on the card before it can cycle back through Ready for rework, and this
+/// check refuses to rebuild on those commits even if `worker_session_id`
+/// still points at that branch and the branch itself is still reachable —
+/// reaping/GC is unrelated to review outcome and must not be the only thing
+/// standing between a re-dispatch and a reviewer's rejected work. Never
+/// errors: a missing/unreadable branch is not this lane's business to
+/// diagnose.
 async fn prior_goal_branch_tip(
     working_dir: &std::path::Path,
     card_metadata: &serde_json::Value,
@@ -3042,6 +3051,13 @@ async fn prior_goal_branch_tip(
         .get("worker_session_id")?
         .as_str()?
         .to_string();
+    if card_metadata
+        .get("goal_branch_rejected_session_id")
+        .and_then(|v| v.as_str())
+        == Some(prev_session_id.as_str())
+    {
+        return None;
+    }
     let branch = goal_engine::goal_branch_name(&prev_session_id);
     let output = tokio::process::Command::new("git")
         .arg("-C")
@@ -7285,6 +7301,22 @@ fn headless_max_redispatch_from_env() -> u32 {
 /// own cap (`PERMAGENT_HEADLESS_DRAIN_SECS`, mirrored by name here since
 /// `crates/goose` cannot depend on `goose-cli`) at dispatch — never
 /// overriding an already-configured (user- or roadmap-authored) cap.
+///
+/// Y16c (G19 HIGH): the raw drain value alone is measured from the WRONG
+/// clock. `wall_budget_exhausted_refusal` measures elapsed against THIS
+/// goal's `first_dispatched_at`, but the eval harness's own SIGKILL clock
+/// (`permagent-eval`'s `harness.run(&inv, Duration::from_secs(harness_timeout_secs), …)`,
+/// `crates/permagent-eval/src/runner.rs`) starts at CLI PROCESS start —
+/// which can be up to ~270s earlier than a late `first_dispatched_at`
+/// (A16z's fx04/05/08 evidence: the coordinator's own turns ran that long
+/// before dispatching any worker). Reusing the flat drain value verbatim as
+/// this goal's cap can therefore let its deadline land AFTER the harness's
+/// real SIGKILL. Anchor the cap to how much of the drain allowance is
+/// already gone by dispatch time, via [`PERMAGENT_HEADLESS_STARTED_AT_ENV`]
+/// (unix seconds, stamped once at CLI startup — `crates/goose` cannot see
+/// the CLI's own process-start `Instant` across the crate boundary, so this
+/// mirrors the drain env's own raw-`std::env::var` idiom). Missing/unparseable
+/// falls back to the raw drain value — the pre-Y16c behaviour — never worse.
 fn headless_wallclock_cap_patch(
     existing_metadata: &serde_json::Value,
 ) -> Option<serde_json::Value> {
@@ -7299,6 +7331,16 @@ fn headless_wallclock_cap_patch(
         .trim()
         .parse()
         .ok()?;
+    let cap_secs = match std::env::var(PERMAGENT_HEADLESS_STARTED_AT_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+    {
+        Some(started_at_unix) => {
+            let elapsed_since_process_start = chrono::Utc::now().timestamp() - started_at_unix;
+            headless_wallclock_cap_from_process_start(drain_secs, elapsed_since_process_start)
+        }
+        None => drain_secs,
+    };
     let mut budget = existing_metadata
         .get("budget")
         .and_then(|v| v.as_object())
@@ -7306,9 +7348,37 @@ fn headless_wallclock_cap_patch(
         .unwrap_or_default();
     budget.insert(
         "wallclock_cap_secs".to_string(),
-        serde_json::json!(drain_secs),
+        serde_json::json!(cap_secs),
     );
     Some(serde_json::Value::Object(budget))
+}
+
+/// Env var the CLI stamps (unix seconds) at process startup so a headless
+/// goal's wallclock cap ([`headless_wallclock_cap_patch`]) can be anchored to
+/// real process elapsed time instead of only this goal's own (possibly late)
+/// `first_dispatched_at`. Same naming family as
+/// [`PERMAGENT_HEADLESS_MAX_REDISPATCH_ENV`]; unset (e.g. a test harness, or
+/// a build that predates this lane) is a documented, safe fallback — see
+/// [`headless_wallclock_cap_patch`].
+pub const PERMAGENT_HEADLESS_STARTED_AT_ENV: &str = "PERMAGENT_HEADLESS_STARTED_AT";
+
+/// Pure: [`headless_wallclock_cap_patch`]'s arithmetic, split out so it is
+/// testable without real sleeps or process spawns. `drain_secs` is the raw
+/// `PERMAGENT_HEADLESS_DRAIN_SECS` allowance; `elapsed_since_process_start_secs`
+/// is how long the CLI process has been alive when THIS goal is dispatched.
+/// Returns the drain allowance minus time already spent, floored at 0 —
+/// never above `drain_secs` itself, so a negative elapsed reading (clock
+/// skew, or a start stamp that is somehow in the future) cannot inflate the
+/// cap past the raw drain value; it is simply treated as "no time spent
+/// yet."
+fn headless_wallclock_cap_from_process_start(
+    drain_secs: u64,
+    elapsed_since_process_start_secs: i64,
+) -> u64 {
+    if elapsed_since_process_start_secs <= 0 {
+        return drain_secs;
+    }
+    drain_secs.saturating_sub(elapsed_since_process_start_secs as u64)
 }
 
 /// Env override (Lane Y6b, G12 HIGH-1) for how much of the drain's wall-clock
@@ -10350,6 +10420,19 @@ async fn drain_dispatched_goals_with(
         // headroom the drain reverts to being a pure waiter for what is
         // already running; the cap-expiry park pass below still accounts for
         // everything, so nothing is dropped by standing down.
+        //
+        // Y16c (G19 LOW): this `remaining` and the per-goal wall-budget gate
+        // in `wall_budget_exhausted_refusal` (below) are two INTENTIONALLY
+        // independent clocks answering related but distinct questions — this
+        // one gates the sweep starting a NEW worker (monotonic `Instant`
+        // since `drain_dispatched_goals` began), the other gates redispatch
+        // of THIS goal after it fails/holds (`chrono::Utc::now()` deltas from
+        // the goal's own `first_dispatched_at`). They are not meant to share
+        // a start reference — the wall-budget gate's reference point is
+        // earlier (a goal's `first_dispatched_at` predates or equals the
+        // sweep pass that could redispatch it), which makes IT the more
+        // conservative of the two. Keep both in mind together when touching
+        // either: nothing enforces that they stay this way.
         let remaining = cap.saturating_sub(start.elapsed());
         let inside_headroom = remaining < redispatch.sweep_headroom;
         if inside_headroom && !headroom_logged {
@@ -11917,6 +12000,19 @@ async fn maybe_hold_review(
             // Integrator note (fix/harness-y15, unmerged): Y15 adds an
             // uncommitted-work check near this same spot — independent of
             // this block, keep both on reconcile.
+            //
+            // Y16c (G19 LOW): `wall_budget_exhausted_refusal` here and the
+            // drain sweep's own headroom check (Y6b, `orchestrator.rs`'s
+            // `remaining = cap.saturating_sub(start.elapsed())`) are two
+            // INTENTIONALLY independent "is there enough wall budget left"
+            // clocks, not one gate accidentally duplicated. This one measures
+            // from the goal's own `first_dispatched_at` (chrono wall-clock
+            // deltas); the sweep's measures from when the drain pass began
+            // (a monotonic `Instant`). Because a goal's `first_dispatched_at`
+            // is always at or before any sweep pass that could touch it, this
+            // gate's reference point is the earlier one — making THIS the
+            // more conservative of the two. See the sweep's own comment for
+            // the mirror of this note.
             if let Some(refusal) = wall_budget_exhausted_refusal(&card.metadata_json) {
                 if let Err(e) = cards::merge_card_metadata(
                     pool,
@@ -16060,9 +16156,14 @@ mod tests {
     /// populated from `PERMAGENT_HEADLESS_DRAIN_SECS` — previously never set
     /// in production, which is why the checks above needed hand-seeded
     /// `budget` rows to exercise at all.
+    ///
+    /// Y16c (G19 HIGH, documented fallback): no `PERMAGENT_HEADLESS_STARTED_AT`
+    /// is set here, so the cap is the raw drain value unmodified — exactly
+    /// the pre-Y16c behaviour when the process-start anchor is missing.
     #[tokio::test]
     #[serial_test::serial]
     async fn headless_wallclock_cap_patch_reads_the_drain_env_when_no_cap_is_configured() {
+        std::env::remove_var("PERMAGENT_HEADLESS_STARTED_AT");
         std::env::set_var("PERMAGENT_HEADLESS_DRAIN_SECS", "555");
         let patch = headless_wallclock_cap_patch(&serde_json::json!({}));
         std::env::remove_var("PERMAGENT_HEADLESS_DRAIN_SECS");
@@ -16085,6 +16186,69 @@ mod tests {
         let patch = headless_wallclock_cap_patch(&existing);
         std::env::remove_var("PERMAGENT_HEADLESS_DRAIN_SECS");
         assert_eq!(patch, None);
+    }
+
+    /// Y16c (G19 HIGH): pure arithmetic — dispatching 200s after process
+    /// start with a 440s drain leaves a 240s cap.
+    #[test]
+    fn wallclock_cap_from_process_start_subtracts_elapsed_time() {
+        assert_eq!(headless_wallclock_cap_from_process_start(440, 200), 240);
+    }
+
+    /// Y16c: dispatching at t=0 (no time spent yet) leaves the cap equal to
+    /// the full raw drain value.
+    #[test]
+    fn wallclock_cap_from_process_start_at_dispatch_time_zero() {
+        assert_eq!(headless_wallclock_cap_from_process_start(440, 0), 440);
+    }
+
+    /// Y16c: the cap can never exceed the raw drain value, even under clock
+    /// skew that makes elapsed time read as negative.
+    #[test]
+    fn wallclock_cap_from_process_start_never_exceeds_the_raw_drain() {
+        assert_eq!(headless_wallclock_cap_from_process_start(440, -30), 440);
+    }
+
+    /// Y16c: fully spent drain floors the cap at 0 rather than underflowing.
+    #[test]
+    fn wallclock_cap_from_process_start_floors_at_zero() {
+        assert_eq!(headless_wallclock_cap_from_process_start(200, 500), 0);
+    }
+
+    /// Y16c (G19 HIGH): `headless_wallclock_cap_patch` end to end — a
+    /// dispatch 200s after the stamped process start with a 440s drain gets
+    /// a 240s cap, not the raw 440s (which could land its deadline after the
+    /// eval harness's own SIGKILL — see the function's doc comment).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn headless_wallclock_cap_patch_anchors_to_process_start_when_the_env_is_set() {
+        let started_at = chrono::Utc::now().timestamp() - 200;
+        std::env::set_var("PERMAGENT_HEADLESS_DRAIN_SECS", "440");
+        std::env::set_var("PERMAGENT_HEADLESS_STARTED_AT", started_at.to_string());
+        let patch = headless_wallclock_cap_patch(&serde_json::json!({}));
+        std::env::remove_var("PERMAGENT_HEADLESS_DRAIN_SECS");
+        std::env::remove_var("PERMAGENT_HEADLESS_STARTED_AT");
+        assert_eq!(
+            patch,
+            Some(serde_json::json!({ "wallclock_cap_secs": 240 }))
+        );
+    }
+
+    /// Y16c: dispatching right at process start (no time spent yet) gets the
+    /// full raw drain value as its cap, even with the anchor env set.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn headless_wallclock_cap_patch_at_process_start_keeps_the_full_drain() {
+        let started_at = chrono::Utc::now().timestamp();
+        std::env::set_var("PERMAGENT_HEADLESS_DRAIN_SECS", "440");
+        std::env::set_var("PERMAGENT_HEADLESS_STARTED_AT", started_at.to_string());
+        let patch = headless_wallclock_cap_patch(&serde_json::json!({}));
+        std::env::remove_var("PERMAGENT_HEADLESS_DRAIN_SECS");
+        std::env::remove_var("PERMAGENT_HEADLESS_STARTED_AT");
+        assert_eq!(
+            patch,
+            Some(serde_json::json!({ "wallclock_cap_secs": 440 }))
+        );
     }
 
     #[tokio::test]
@@ -16636,6 +16800,88 @@ mod tests {
         let metadata = serde_json::json!({ "worker_session_id": "reaped-session-id" });
         let tip = prior_goal_branch_tip(&repo, &metadata).await;
         assert!(tip.is_none());
+    }
+
+    /// Y16c (G19 MED): a branch whose work a human reviewer REJECTED must
+    /// never be continued from, even though the branch is still fully
+    /// reachable — matching `decisions_effects.rs`'s reject arm, which
+    /// stamps `goal_branch_rejected_session_id` on the card before it can
+    /// cycle back through Ready. Falls back to trunk HEAD, same as a first
+    /// dispatch.
+    #[tokio::test]
+    async fn prior_goal_branch_tip_is_none_when_the_review_rejected_that_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("proj");
+        init_git_repo_for_dispatch_test(&repo);
+
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                status.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&status.stderr)
+            );
+        };
+        let branch = goal_engine::goal_branch_name("rejected-session-id");
+        git(&["checkout", "-b", branch.as_str()]);
+        std::fs::write(repo.join("work.txt"), "work a reviewer rejected").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "rejected worker's commit"]);
+
+        let metadata = serde_json::json!({
+            "worker_session_id": "rejected-session-id",
+            "goal_branch_rejected_session_id": "rejected-session-id",
+        });
+        let tip = prior_goal_branch_tip(&repo, &metadata).await;
+        assert!(
+            tip.is_none(),
+            "must refuse to continue from a branch the review rejected"
+        );
+    }
+
+    /// Y16c: the rejection marker only refuses the SPECIFIC session it names
+    /// — a card whose marker points at some earlier, unrelated session must
+    /// still continue from the current prior session's (unrejected) branch.
+    #[tokio::test]
+    async fn prior_goal_branch_tip_still_continues_when_the_rejection_marker_is_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("proj");
+        init_git_repo_for_dispatch_test(&repo);
+
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                status.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&status.stderr)
+            );
+        };
+        let branch = goal_engine::goal_branch_name("prev-session-id");
+        git(&["checkout", "-b", branch.as_str()]);
+        std::fs::write(repo.join("work.txt"), "unrejected work").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "unrejected worker's commit"]);
+
+        let metadata = serde_json::json!({
+            "worker_session_id": "prev-session-id",
+            "goal_branch_rejected_session_id": "some-older-rejected-session-id",
+        });
+        let (session_id, _tip) = prior_goal_branch_tip(&repo, &metadata)
+            .await
+            .expect("a stale rejection marker for a different session must not block this one");
+        assert_eq!(session_id, "prev-session-id");
     }
 
     #[tokio::test]

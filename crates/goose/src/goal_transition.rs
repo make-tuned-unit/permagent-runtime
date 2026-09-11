@@ -49,6 +49,12 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     "completed_at",
     "depends_on",
     "auto_approve",
+    // Y16c (harness loop, G19 MED): which worker session's branch a human
+    // reviewer explicitly rejected. `prior_goal_branch_tip`
+    // (orchestrator.rs) reads this to refuse continuing a re-dispatch from
+    // that exact branch; a rejected worker must not be able to clear its
+    // own rejection marker via the agent-facing metadata PATCH tool.
+    "goal_branch_rejected_session_id",
     // X-dag-1 (harness loop, coding-harness excellence iteration): which
     // session created this roadmap card, stamped once at materialization.
     // Protected so a mutating worker cannot launder a card into (or out of)
