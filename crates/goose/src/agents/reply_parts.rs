@@ -577,6 +577,80 @@ async fn session_scoped_auto_answer_count(
     .unwrap_or(0)
 }
 
+/// Per-goal counterpart of the session cap, shared by all workers for a goal.
+const GOAL_GATE_AUTO_ANSWER_CAP_DEFAULT: u32 = 8;
+
+fn goal_gate_auto_answer_cap() -> u32 {
+    std::env::var("PERMAGENT_GOAL_GATE_AUTO_ANSWER_CAP")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(GOAL_GATE_AUTO_ANSWER_CAP_DEFAULT)
+}
+
+/// NULL goal_id rows cannot contribute. Match the session counter's fallback
+/// on query failure; the hard ceiling remains independently enforced.
+async fn goal_scoped_auto_answer_count(pool: &sqlx::Pool<sqlx::Sqlite>, goal_id: &str) -> u32 {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM decisions
+         WHERE kind = 'choice' AND goal_id = ? AND status = 'answered'
+           AND acted_by = ?",
+    )
+    .bind(goal_id)
+    .bind(crate::decisions::ACTOR_HEADLESS_POLICY)
+    .fetch_one(pool)
+    .await
+    .map(|count| count.max(0) as u32)
+    .unwrap_or(0)
+}
+
+/// Check the goal cap immediately before auto-answering, with an explicit
+/// headless seam so tests need no process-global policy.
+#[allow(clippy::too_many_arguments)]
+async fn try_auto_answer_goal_scoped_reservation_gate(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    goal_id: &str,
+    session: &Session,
+    invocation_id: &str,
+    failure: &ProviderAuthorizationFailure,
+    decision_id: &str,
+    headless: bool,
+    session_manager: &Arc<SessionManager>,
+    detail: &str,
+    provider: &str,
+    model: &str,
+) -> Option<ProviderAuthorizationOutcome> {
+    if headless {
+        let auto_answer_count = goal_scoped_auto_answer_count(pool, goal_id).await;
+        let cap = goal_gate_auto_answer_cap();
+        if auto_answer_count >= cap {
+            tracing::warn!(
+                goal_id,
+                decision_id,
+                auto_answer_count,
+                cap,
+                "goal-scoped reservation gate auto-answer cap reached; escalating to a human \
+                 instead of auto-answering again"
+            );
+            return Some(ProviderAuthorizationOutcome::parked(detail.to_string()));
+        }
+    }
+    try_auto_answer_reservation_gate(
+        pool,
+        goal_id,
+        session,
+        invocation_id,
+        failure,
+        decision_id,
+        headless,
+        session_manager,
+        detail,
+        provider,
+        model,
+    )
+    .await
+}
+
 impl Agent {
     /// Immutable identity captured immediately before a provider dispatch.
     /// Keeping these fields outside the mutable session/provider state prevents
@@ -786,7 +860,7 @@ impl Agent {
                 )
                 .await
                 .is_some();
-            if let Some(retry_outcome) = try_auto_answer_reservation_gate(
+            if let Some(retry_outcome) = try_auto_answer_goal_scoped_reservation_gate(
                 &pool,
                 &card_id,
                 session,
@@ -2682,7 +2756,7 @@ mod tests {
             .unwrap();
 
         let invocation_id = uuid::Uuid::new_v4().to_string();
-        let outcome = try_auto_answer_reservation_gate(
+        let outcome = try_auto_answer_goal_scoped_reservation_gate(
             &pool,
             &card.id,
             &session,
@@ -2807,7 +2881,7 @@ mod tests {
             .unwrap();
 
         let invocation_id = uuid::Uuid::new_v4().to_string();
-        let outcome = try_auto_answer_reservation_gate(
+        let outcome = try_auto_answer_goal_scoped_reservation_gate(
             &pool,
             &card.id,
             &session,
@@ -3247,6 +3321,133 @@ mod tests {
             decision.is_some(),
             "a decision must exist and stay open for a human once the cap is reached"
         );
+    }
+
+    async fn insert_answered_gate_decision(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        goal_id: Option<&str>,
+        session_id: &str,
+    ) {
+        let payload = serde_json::json!({
+            "reservation_gate": { "requesting_session_id": session_id },
+        });
+        sqlx::query(
+            "INSERT INTO decisions
+                (id, kind, goal_id, tier, headline, detail, payload_json,
+                 status, answer, acted_by, resolved_at)
+             VALUES (?, 'choice', ?, 1, 'fake auto-answer', 'fake auto-answer detail', ?,
+                     'answered', 'choice', ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(goal_id)
+        .bind(payload.to_string())
+        .bind(crate::decisions::ACTOR_HEADLESS_POLICY)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn goal_scoped_gate_auto_answer_escalates_once_the_cap_is_reached() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture, true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let card = dispatched_goal_card(&pool, &session.id).await;
+
+        for _ in 0..GOAL_GATE_AUTO_ANSWER_CAP_DEFAULT {
+            insert_answered_gate_decision(&pool, Some(&card.id), &session.id).await;
+        }
+        assert_eq!(
+            goal_scoped_auto_answer_count(&pool, &card.id).await,
+            GOAL_GATE_AUTO_ANSWER_CAP_DEFAULT
+        );
+
+        let failure = ProviderAuthorizationFailure::NeedsGate {
+            scope: crate::cost_router::budget::BudgetScope::Task,
+            spent_usd: 5.0,
+            held_usd: 0.0,
+            requested_usd: 0.20,
+            ceiling_usd: 5.0,
+        };
+        let request = crate::cost_router::budget::reservation_gate_decision_request(
+            crate::cost_router::budget::BudgetScope::Task,
+            5.0,
+            0.0,
+            0.20,
+            5.0,
+            5.0,
+            Some(card.id.clone()),
+            None,
+        );
+        let decision = crate::decisions::create_decision(&pool, request)
+            .await
+            .unwrap();
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let outcome = try_auto_answer_goal_scoped_reservation_gate(
+            &pool,
+            &card.id,
+            &session,
+            &invocation_id,
+            &failure,
+            &decision.id,
+            true,
+            &manager,
+            "budget gate detail",
+            "zai",
+            "glm-4.7",
+        )
+        .await
+        .expect("the cap must report an explicit not-minted outcome");
+        assert_eq!(outcome.detail, "budget gate detail");
+        assert!(!outcome.gate_grant_minted);
+
+        let reservation_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cost_reservations WHERE invocation_id = ?")
+                .bind(&invocation_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(reservation_count, 0, "the ninth gate must not mint a grant");
+        let reloaded = crate::decisions::get_decision(&pool, &decision.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.status, "open");
+        assert!(reloaded.acted_by.is_none());
+        assert_eq!(
+            goal_scoped_auto_answer_count(&pool, &card.id).await,
+            GOAL_GATE_AUTO_ANSWER_CAP_DEFAULT,
+            "the ninth gate must stay unanswered for a human"
+        );
+    }
+
+    #[tokio::test]
+    async fn goal_scoped_gate_and_session_scoped_gate_counts_are_independent() {
+        let fixture = Arc::new(FastAccountingProvider::paid(Usage::default()));
+        let (_directory, manager, session, _completion) =
+            fast_accounting_fixture(fixture, true).await;
+        let pool = manager.storage().pool().await.unwrap().clone();
+        let card = dispatched_goal_card(&pool, &session.id).await;
+        let other_card = dispatched_goal_card(&pool, &session.id).await;
+
+        insert_answered_gate_decision(&pool, None, &session.id).await;
+        assert_eq!(session_scoped_auto_answer_count(&pool, &session.id).await, 1);
+        assert_eq!(goal_scoped_auto_answer_count(&pool, &card.id).await, 0);
+
+        // Even matching requesting_session_id values cannot inflate the
+        // session counter. The goal counter spans worker sessions instead.
+        insert_answered_gate_decision(&pool, Some(&card.id), &session.id).await;
+        insert_answered_gate_decision(&pool, Some(&card.id), "another-worker").await;
+        insert_answered_gate_decision(&pool, Some(&other_card.id), &session.id).await;
+        assert_eq!(session_scoped_auto_answer_count(&pool, &session.id).await, 1);
+        assert_eq!(goal_scoped_auto_answer_count(&pool, &card.id).await, 2);
+        assert_eq!(goal_scoped_auto_answer_count(&pool, &other_card.id).await, 1);
+
+        insert_answered_gate_decision(&pool, None, &session.id).await;
+        assert_eq!(session_scoped_auto_answer_count(&pool, &session.id).await, 2);
+        assert_eq!(goal_scoped_auto_answer_count(&pool, &card.id).await, 2);
     }
 
     /// Grants a reservation for `session` via a headless gate auto-answer
