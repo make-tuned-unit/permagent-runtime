@@ -10494,20 +10494,36 @@ pub async fn needs_merge_goals_for_session(
 /// Harmless (empty) for a daemon/interactive session, where nothing calls
 /// it. Used by the CLI's post-drain summary to print "landed `<id>` →
 /// `<sha>`" lines.
+///
+/// Harness loop, Lane Y10d (A15 Q4a): deduplicated on `card_id`. This walks
+/// SESSIONS, and since Y6 a re-dispatched goal has more than one worker
+/// session — every attempt's id is kept in the card's `worker_session_ids`,
+/// and [`goal_card_for_worker_session`] resolves each of them back to the
+/// SAME card. M15 fx05 and fx08 (both Y6 re-dispatches, both first-ever
+/// solves of their fixture) each printed their single landing twice. The
+/// duplicate was cosmetic in the notice line and wrong in anything counting
+/// landings off it.
 pub async fn landed_goals_for_session(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     coordinator_session_id: &str,
 ) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for session_id in descendant_session_ids(pool, coordinator_session_id).await? {
         let Some((card_id, _project_id)) = goal_card_for_worker_session(pool, &session_id).await?
         else {
             continue;
         };
+        // One line per GOAL, not per worker session: attempt 2 of a
+        // re-dispatched card resolves to the card attempt 1 already reported.
+        if seen.contains(&card_id) {
+            continue;
+        }
         if goal_state_for_card(pool, &card_id).await? != GoalState::Complete {
             continue;
         }
         if let Some(sha) = goal_landed_head_commit(pool, &card_id).await {
+            seen.insert(card_id.clone());
             out.push((card_id, sha));
         }
     }
@@ -17070,6 +17086,90 @@ mod tests {
         assert_eq!(
             landed,
             vec![(landed_card.id.clone(), "deadbeefcafe".to_string())]
+        );
+    }
+
+    /// Y10d (A15 Q4a): M15 fx05 and fx08 — both Y6 re-dispatches, both
+    /// first-ever solves of their fixture — each printed
+    /// `note: landed <id> → <sha>` TWICE. `landed_goals_for_session` walks
+    /// SESSIONS, and a re-dispatched card has one worker session per attempt
+    /// (all kept in `worker_session_ids`), every one of which resolves back to
+    /// the same card. One line per goal, not per attempt.
+    #[tokio::test]
+    async fn landed_goals_for_session_reports_a_re_dispatched_card_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        // Two worker sessions, the shape Y6's requeue leaves behind: attempt 1
+        // ran out of rope, attempt 2 finished the same card.
+        let mut worker_ids = Vec::new();
+        for attempt in 1..=2 {
+            let child = sm
+                .create_session_with_parent(
+                    Some(&coordinator.id),
+                    tmp.path().to_path_buf(),
+                    format!("Goal: attempt {attempt}"),
+                    SessionType::SubAgent,
+                    GooseMode::Auto,
+                )
+                .await
+                .unwrap();
+            worker_ids.push(child.id);
+        }
+
+        let card = setup_goal_in_state(&pool, "complete", 1).await;
+        let stored = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let mut meta = stored.metadata_json.as_object().cloned().unwrap_or_default();
+        meta.insert(
+            "worker_session_ids".to_string(),
+            serde_json::json!(worker_ids),
+        );
+        meta.insert(
+            "worker_session_id".to_string(),
+            serde_json::json!(worker_ids[1]),
+        );
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::Value::Object(meta).to_string())
+            .bind(&card.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "head_commit": "f7b9c90aaaa",
+                "commits": ["one"],
+                "landing": {
+                    "outcome": "landed",
+                    "landed_head": "f7b9c90aaaa",
+                    "describe": "landed: main fast-forwarded to f7b9c90 (goal/run-2)",
+                    "at": "2026-09-10T00:00:00Z",
+                },
+            }),
+        )
+        .await
+        .unwrap();
+
+        let landed = landed_goals_for_session(&pool, &coordinator.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            landed,
+            vec![(card.id.clone(), "f7b9c90aaaa".to_string())],
+            "a re-dispatched card must be reported exactly once, not once per attempt"
         );
     }
 
