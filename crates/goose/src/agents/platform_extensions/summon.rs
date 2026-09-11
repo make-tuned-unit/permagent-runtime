@@ -1563,6 +1563,11 @@ impl SummonClient {
         if paths.is_empty() {
             return None;
         }
+        crate::receipts::record_once(
+            "verification_integrity",
+            "reviewer_mutations",
+            subagent_session_id,
+        );
         tracing::warn!(
             target: "permagentd::brain",
             paths = ?paths,
@@ -1780,7 +1785,18 @@ impl SummonClient {
              delegated worker"
         };
 
+        let strips_mutating_tools = extensions.iter().any(|ext| {
+            ext.name() == super::developer::EXTENSION_NAME
+                && (ext.available_tools().is_empty()
+                    || ext
+                        .available_tools()
+                        .iter()
+                        .any(|name| crate::after_turn::is_mutating_tool_name(name)))
+        });
         Self::restrict_to_non_mutating(extensions);
+        if strips_mutating_tools {
+            crate::receipts::record("dag_enforcement", "bypass_attempts");
+        }
         Ok(Some(format!(
             "Note: this delegate call was restricted to non-mutating tools because {why}."
         )))
@@ -2410,6 +2426,7 @@ impl SummonClient {
                 Some(rm) => rm.provider == target.provider,
             };
             if !explicit_override && target_matches {
+                crate::receipts::record("verification_integrity", "reviewer_not_independent");
                 tracing::warn!(target: "permagentd::brain", "review gate: {}", warning);
             }
         }

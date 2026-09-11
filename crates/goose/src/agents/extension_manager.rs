@@ -2195,7 +2195,35 @@ impl ExtensionManager {
         )
         .with_model(ctx.model.clone());
 
+        let session_manager = self.context.session_manager.clone();
         let fut = async move {
+            // Count execution after resolution, tool scoping and argument validation,
+            // when the future is polled, independently of the inspector's denial path.
+            if crate::receipts::is_active()
+                && crate::tool_inspection::requires_dispatched_coding_worker(&actual_tool_name)
+            {
+                match session_manager
+                    .get_session(&owned_ctx.session_id, false)
+                    .await
+                {
+                    Ok(session) => {
+                        let title = session.recipe.as_ref().map(|recipe| recipe.title.as_str());
+                        if crate::tool_inspection::is_top_level_coding_harness(
+                            title,
+                            session.parent_session_id.as_deref(),
+                        ) {
+                            crate::receipts::record("dag_enforcement", "bypass_passes");
+                            if crate::after_turn::is_mutating_tool_name(&actual_tool_name) {
+                                crate::receipts::record("dag_enforcement", "coordinator_mutations");
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        crate::receipts::mark_unknown("dag_enforcement", "bypass_passes");
+                        crate::receipts::mark_unknown("dag_enforcement", "coordinator_mutations");
+                    }
+                }
+            }
             tracing::debug!(
                 "dispatch_tool_call: calling client.call_tool tool={} session_id={} working_dir={:?}",
                 actual_tool_name,

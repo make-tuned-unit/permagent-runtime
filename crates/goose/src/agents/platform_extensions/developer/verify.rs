@@ -1643,6 +1643,9 @@ fn pass_result(checks: &[Check], outputs: &[String]) -> CallToolResult {
     let labels: Vec<&str> = checks.iter().map(|check| check.label.as_str()).collect();
     let message = format!("PASS - all checks passed: {}.", labels.join(", "));
     let vacuous_reason = vacuous_pass_reason_for_checks(checks, outputs);
+    if vacuous_reason.is_some() {
+        crate::receipts::record("verification_integrity", "vacuous_passes");
+    }
     observation(
         CallToolResult::success(vec![Content::text(message.clone()).with_priority(0.0)]),
         Some(&labels.join(", ")),

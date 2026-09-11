@@ -676,6 +676,14 @@ async fn execute_command(
     command.arg("-c").arg(cmd).current_dir(exec_dir);
     crate::subprocess::configure_subprocess(&mut command);
 
+    // The execution seam independently checks the ladder verdict supplied by
+    // the gate. A parked or denied verdict here is an unapproved run.
+    if matches!(
+        ladder.audit_row.decision,
+        GateDecision::Parked | GateDecision::Denied
+    ) {
+        crate::receipts::record("safety_and_trust", "unapproved_skill_runs");
+    }
     let run_result = timeout(RUN_TIMEOUT, command.output()).await;
     let duration_ms = started.elapsed().as_millis() as i64;
 

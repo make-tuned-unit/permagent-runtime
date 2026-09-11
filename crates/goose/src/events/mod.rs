@@ -598,6 +598,9 @@ pub fn goal_state_changed(
     to: &str,
     actor: &str,
 ) -> PermagentEvent {
+    if to == "review" {
+        crate::receipts::record_once("verification_integrity", "review_reached", goal_id);
+    }
     PermagentEvent::new(
         PermagentEventType::GoalStateChanged,
         serde_json::json!({

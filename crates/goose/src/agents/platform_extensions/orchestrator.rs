@@ -1561,6 +1561,7 @@ async fn materialize_roadmap_transaction_with_budget(
         .await
         .map_err(|e| format!("Could not commit roadmap materialization: {e}"))?;
 
+    crate::receipts::record_count("verification_integrity", "goals", created_ids.len() as u64);
     Ok(RoadmapMaterialization {
         project_name,
         created_ids,
@@ -6326,6 +6327,7 @@ impl OrchestratorClient {
             ));
         }
         let dispatched = nudge_dispatch_ready_goals(&pool, &project.id, "roadmap approval").await;
+        crate::receipts::record_count("dag_enforcement", "roadmap_dispatched", dispatched as u64);
         self.invalidate_kanban_cache().await;
 
         // M3-1(b) (harness loop): the coordinator had no tool that returned
