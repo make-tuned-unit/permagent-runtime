@@ -635,10 +635,10 @@ fn shell_path_candidate(raw: &str, cwd: &Path) -> Option<PathBuf> {
     Some(canonical_for_containment(&expanded))
 }
 
-/// `Some(target)` when `raw` resolves outside the worktree and outside every
-/// allowlisted root.
-fn outside_worktree(raw: &str, worktree: &Path, root: &Path) -> Option<PathBuf> {
-    let candidate = shell_path_candidate(raw, worktree)?;
+/// `Some(target)` when `raw` — resolved against the session's cwd — lands
+/// outside the jail `root` and outside every allowlisted root.
+fn outside_worktree(raw: &str, cwd: &Path, root: &Path) -> Option<PathBuf> {
+    let candidate = shell_path_candidate(raw, cwd)?;
     if candidate.starts_with(root) || universally_allowlisted(&candidate).is_some() {
         return None;
     }
@@ -652,11 +652,19 @@ fn command_base_name(word: &str) -> &str {
 }
 
 /// The first structural escape in `command`, if any. See the SCOPE note.
-fn shell_escape(command: &str, worktree: &Path) -> Option<ShellEscape> {
+///
+/// `cwd` is the session's ACTUAL working directory — the directory the shell
+/// will run in, so the directory a relative word resolves against — and
+/// `worktree` is the jail root that word is then tested for containment in.
+/// They differ whenever a worker's session sits in a SUBDIRECTORY of its
+/// worktree, which `goal_worktree_root` explicitly supports: resolving
+/// `rm ../build/stale` against the ROOT would compute `<root>/..` and refuse a
+/// path that is in fact inside the tree (G13 M4).
+fn shell_escape(command: &str, cwd: &Path, worktree: &Path) -> Option<ShellEscape> {
     let root = canonical_for_containment(worktree);
     for segment in segments(tokenize(command)) {
         for redirect in &segment.redirects {
-            if let Some(target) = outside_worktree(redirect, worktree, &root) {
+            if let Some(target) = outside_worktree(redirect, cwd, &root) {
                 return Some(ShellEscape {
                     what: format!("The output redirection `> {redirect}`"),
                     target,
@@ -675,7 +683,7 @@ fn shell_escape(command: &str, worktree: &Path) -> Option<ShellEscape> {
                     .find(|a| !a.starts_with('-'))
                     .cloned()
                     .unwrap_or_else(|| "~".to_string());
-                if let Some(target) = outside_worktree(&raw, worktree, &root) {
+                if let Some(target) = outside_worktree(&raw, cwd, &root) {
                     return Some(ShellEscape {
                         what: format!("The `cd {raw}`"),
                         target,
@@ -683,26 +691,26 @@ fn shell_escape(command: &str, worktree: &Path) -> Option<ShellEscape> {
                 }
             }
             "git" => {
-                if let Some(escape) = git_escape(args, worktree, &root) {
+                if let Some(escape) = git_escape(args, cwd, &root) {
                     return Some(escape);
                 }
             }
             // In-place edit only: `sed 's/a/b/' <outside>` merely READS it.
             "sed" if args.iter().any(|a| a.starts_with("-i")) => {
-                if let Some(escape) = first_outside_arg(args, "`sed -i`", worktree, &root, false) {
+                if let Some(escape) = first_outside_arg(args, "`sed -i`", cwd, &root, false) {
                     return Some(escape);
                 }
             }
             base if MUTATES_EVERY_ARG.contains(&base) => {
                 if let Some(escape) =
-                    first_outside_arg(args, &format!("`{base}`"), worktree, &root, false)
+                    first_outside_arg(args, &format!("`{base}`"), cwd, &root, false)
                 {
                     return Some(escape);
                 }
             }
             base if MUTATES_LAST_ARG.contains(&base) => {
                 if let Some(escape) =
-                    first_outside_arg(args, &format!("`{base}`"), worktree, &root, true)
+                    first_outside_arg(args, &format!("`{base}`"), cwd, &root, true)
                 {
                     return Some(escape);
                 }
@@ -715,7 +723,7 @@ fn shell_escape(command: &str, worktree: &Path) -> Option<ShellEscape> {
 
 /// `git -C <dir>` / `--git-dir=` / `--work-tree=` pointed outside the worktree,
 /// with a subcommand that would CHANGE that repository.
-fn git_escape(args: &[String], worktree: &Path, root: &Path) -> Option<ShellEscape> {
+fn git_escape(args: &[String], cwd: &Path, root: &Path) -> Option<ShellEscape> {
     let mut elsewhere: Option<(String, PathBuf)> = None;
     let mut subcommand: Option<&str> = None;
     let mut index = 0;
@@ -734,7 +742,7 @@ fn git_escape(args: &[String], worktree: &Path, root: &Path) -> Option<ShellEsca
         };
         if let Some((flag, raw)) = flagged {
             if elsewhere.is_none() {
-                elsewhere = outside_worktree(&raw, worktree, root)
+                elsewhere = outside_worktree(&raw, cwd, root)
                     .map(|target| (format!("`git {flag} {raw}`"), target));
             }
             index += if arg.contains('=') { 1 } else { 2 };
@@ -763,7 +771,7 @@ fn git_escape(args: &[String], worktree: &Path, root: &Path) -> Option<ShellEsca
 fn first_outside_arg(
     args: &[String],
     what: &str,
-    worktree: &Path,
+    cwd: &Path,
     root: &Path,
     last_only: bool,
 ) -> Option<ShellEscape> {
@@ -774,7 +782,7 @@ fn first_outside_arg(
         operands
     };
     for raw in considered {
-        if let Some(target) = outside_worktree(raw, worktree, root) {
+        if let Some(target) = outside_worktree(raw, cwd, root) {
             return Some(ShellEscape {
                 what: format!("{what}'s target `{raw}`"),
                 target,
@@ -903,7 +911,7 @@ impl ToolInspector for WriteJailInspector {
             let Some(command) = shell_command(request) else {
                 continue;
             };
-            if let Some(escape) = shell_escape(&command, worktree) {
+            if let Some(escape) = shell_escape(&command, &working_dir, worktree) {
                 tracing::info!(
                     monotonic_counter.goose.write_jail_worker_denials = 1,
                     tool_request_id = %request.id,
@@ -1470,6 +1478,45 @@ mod tests {
                 "movement inside the worktree must stay allowed: {command} → {results:?}"
             );
         }
+    }
+
+    /// G13 M4: a worker whose session sits in a SUBDIRECTORY of its worktree
+    /// (which `goal_worktree_root` exists to support) resolves relative shell
+    /// words against that subdirectory, not against the jail root — otherwise
+    /// `../build` reads as `<root>/..` and an ordinary in-tree path is refused.
+    #[tokio::test]
+    async fn goal_worker_relative_shell_paths_resolve_against_the_session_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (jail, session_id) = worker_jail(&tmp, &format!("{WORKTREE}/sub")).await;
+
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[shell_request("sibling", "rm ../build/stale")],
+        )
+        .await;
+        assert!(
+            results.is_empty(),
+            "`../build` from <worktree>/sub is INSIDE the worktree: {results:?}"
+        );
+
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[shell_request("escape", "rm ../../outside")],
+        )
+        .await;
+        assert_eq!(
+            results.len(),
+            1,
+            "`../../outside` from <worktree>/sub leaves the worktree: {results:?}"
+        );
+        assert_eq!(results[0].action, InspectionAction::Deny);
+        assert!(
+            results[0].reason.contains(WORKTREE),
+            "containment is still tested against the worktree ROOT: {}",
+            results[0].reason
+        );
     }
 
     #[tokio::test]
