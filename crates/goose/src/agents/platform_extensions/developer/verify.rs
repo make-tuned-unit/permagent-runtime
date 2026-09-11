@@ -1482,12 +1482,42 @@ fn zero_test_marker(output: &str) -> Option<String> {
     ZERO_TESTS_RE.find(output).map(|m| m.as_str().to_string())
 }
 
+/// Y10a: the counter-marker to [`ZERO_TESTS_RE`] — "at least one test actually
+/// ran here". `cargo test` prints one `test result:` block PER TARGET, so a
+/// crate whose real tests all pass still emits an empty doc-test block beside
+/// them:
+///
+/// ```text
+/// running 6 tests ... test result: ok. 6 passed; 0 failed; ...
+///    Doc-tests bench_rs
+/// running 0 tests ... test result: ok. 0 passed; 0 failed; ...
+/// ```
+///
+/// [`ZERO_TESTS_RE`] scans the whole joined output, so it matched that trailing
+/// `0 passed` and judged every multi-target `cargo test` vacuous. A non-zero
+/// pass count (or a `running N tests` header with N > 0) anywhere in the SAME
+/// output proves the run exercised something, which makes the zero marker a
+/// sibling target rather than an empty run. Same conservative bias the
+/// [`ZERO_TESTS_RE`] comment declares: missing a vacuous pass costs a great
+/// deal less than blocking a real one.
+static NONZERO_TESTS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(\b[1-9]\d* passed\b|\brunning [1-9]\d* tests?\b)").unwrap()
+});
+
+/// Return the matched "at least one test ran" marker text, if the combined
+/// check output contains one. See [`NONZERO_TESTS_RE`].
+fn nonzero_test_marker(output: &str) -> Option<String> {
+    NONZERO_TESTS_RE.find(output).map(|m| m.as_str().to_string())
+}
+
 /// X-verify-2: why a set of PASSED checks does not count as real coverage, if
 /// any reason applies. Checked in order: (1) every check that ran was a
 /// syntax-only smoke ([`Check::is_smoke`]) — the code was never executed at
 /// all; (2) the combined output of the checks that actually ran contains a
-/// recognized "zero tests" marker — a real test command that nonetheless
-/// collected/ran nothing. `None` when neither applies: a genuine pass.
+/// recognized "zero tests" marker ([`ZERO_TESTS_RE`]) AND no counter-marker
+/// ([`NONZERO_TESTS_RE`]) proving some other target in the same output did run
+/// tests — a real test command that nonetheless collected/ran nothing. `None`
+/// when neither applies: a genuine pass.
 fn vacuous_pass_reason_for_checks(checks: &[Check], outputs: &[String]) -> Option<String> {
     if !checks.is_empty() && checks.iter().all(|check| check.is_smoke) {
         return Some(
@@ -1497,6 +1527,12 @@ fn vacuous_pass_reason_for_checks(checks: &[Check], outputs: &[String]) -> Optio
         );
     }
     let combined = outputs.join("\n");
+    // Y10a: a non-zero pass count anywhere in the same output means tests DID
+    // run, so any "0 passed" beside it belongs to a sibling target (cargo's
+    // doc-tests) and this pass is not vacuous. See [`NONZERO_TESTS_RE`].
+    if nonzero_test_marker(&combined).is_some() {
+        return None;
+    }
     zero_test_marker(&combined)
         .map(|marker| format!("the check's own output reports zero tests ran (\"{marker}\")"))
 }
@@ -1680,6 +1716,135 @@ mod tests {
             None,
             "'120 passed' must never be misread as '0 passed'"
         );
+    }
+
+    // ── Y10a: the multi-target counter-marker ──────────────────────────────
+
+    /// The M15 regression this closes, verbatim from the fx10 worker's own
+    /// `cargo test` output: a crate with six real passing tests and an empty
+    /// doc-test target. `ZERO_TESTS_RE` matched the doc-test block's
+    /// `0 passed`, so verify stamped `vacuous` on a genuine pass, the goal was
+    /// held, and fx03/fx10 (and zai fx01) failed on it.
+    #[test]
+    fn a_cargo_run_with_an_empty_doc_test_target_is_not_vacuous() {
+        let output = "\
+running 6 tests
+test coupons::tests::trims ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+   Doc-tests bench_rs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+";
+        let result = pass_result(&[Check::direct("cargo", &["test"])], &[output.to_string()]);
+        assert!(is_authoritative_pass(&result));
+        assert_eq!(
+            vacuous_pass_reason(&result),
+            None,
+            "6 real passing tests beside an empty doc-test target is a genuine pass"
+        );
+        assert!(
+            is_genuine_pass(&result),
+            "the goal engine must be able to land this verdict"
+        );
+    }
+
+    /// The other half of the same regression: with nothing but zero-count
+    /// blocks, the marker must still fire.
+    #[test]
+    fn a_cargo_run_with_only_empty_targets_is_still_vacuous() {
+        let output = "\
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+   Doc-tests bench_rs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+";
+        let result = pass_result(&[Check::direct("cargo", &["test"])], &[output.to_string()]);
+        let reason = vacuous_pass_reason(&result);
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("zero tests")),
+            "an all-empty cargo run is still vacuous, got {reason:?}"
+        );
+    }
+
+    /// Separate checks, separate output strings: the counter-marker is scanned
+    /// over the same joined output the zero marker is, so a real `cargo test`
+    /// beside a clippy run that happens to print `0 passed` still counts.
+    #[test]
+    fn the_counter_marker_is_scanned_across_all_check_outputs() {
+        let result = pass_result(
+            &[
+                Check::direct("cargo", &["test"]),
+                Check::direct("cargo", &["test", "--doc"]),
+            ],
+            &[
+                "test result: ok. 6 passed; 0 failed; 0 ignored".to_string(),
+                "test result: ok. 0 passed; 0 failed; 0 ignored".to_string(),
+            ],
+        );
+        assert_eq!(vacuous_pass_reason(&result), None);
+    }
+
+    /// pytest and jest keep their existing behaviour in both directions: a
+    /// genuine run is not vacuous, an empty collection still is.
+    #[test]
+    fn pytest_and_jest_equivalents_are_unchanged_by_the_counter_marker() {
+        for genuine in [
+            "===== 12 passed, 1 skipped in 0.42s =====",
+            "Tests:       3 passed, 3 total\nSnapshots:   0 total",
+        ] {
+            let result =
+                pass_result(&[Check::direct("pytest", &["-q"])], &[genuine.to_string()]);
+            assert_eq!(
+                vacuous_pass_reason(&result),
+                None,
+                "a genuine run must not be vacuous: {genuine:?}"
+            );
+        }
+        for empty in [
+            "collected 0 items\n\n===== no tests ran in 0.01s =====",
+            "No tests found, exiting with code 0\nNo test files",
+            "===== 0 passed in 0.01s =====",
+        ] {
+            let result = pass_result(&[Check::direct("pytest", &["-q"])], &[empty.to_string()]);
+            assert!(
+                vacuous_pass_reason(&result).is_some(),
+                "an empty run must stay vacuous: {empty:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nonzero_marker_matches_only_real_counts() {
+        for text in [
+            "test result: ok. 6 passed; 0 failed",
+            "running 6 tests",
+            "running 1 test",
+            "12 passed, 1 skipped",
+        ] {
+            assert!(
+                nonzero_test_marker(text).is_some(),
+                "expected a counter-marker in {text:?}"
+            );
+        }
+        for text in [
+            "test result: ok. 0 passed; 0 failed",
+            "running 0 tests",
+            "collected 0 items",
+            "no tests ran",
+        ] {
+            assert!(
+                nonzero_test_marker(text).is_none(),
+                "must not claim tests ran in {text:?}"
+            );
+        }
     }
 
     #[test]
