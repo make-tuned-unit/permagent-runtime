@@ -6564,10 +6564,9 @@ async fn record_escalation(
         .map_err(|e| format!("Failed to record escalation: {}", e))?;
 
     if headless {
-        let cap = std::env::var("PERMAGENT_HEADLESS_ESCALATE_CAP")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(2);
+        let cap = parse_headless_escalate_cap(
+            std::env::var("PERMAGENT_HEADLESS_ESCALATE_CAP").ok().as_deref(),
+        );
         if headless_escalate_policy(pool, &recorded.decision_id, true, cap).await? {
             return Ok(format!(
                 "Escalation {} answered by headless_policy; goal resumed.",
@@ -6591,6 +6590,13 @@ async fn record_escalation(
         &draft,
         &recorded.decision_id,
     ))
+}
+
+fn parse_headless_escalate_cap(value: Option<&str>) -> u32 {
+    value
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(2)
 }
 
 /// Only called for a freshly recorded escalation, never for general inbox answers.
@@ -6649,6 +6655,19 @@ async fn headless_escalate_policy(
         ).await;
         return Ok(false);
     }
+    // Park/resume own their transactions. Record the pending retry BEFORE
+    // answering, atomically with the answer, so a crash after this commit
+    // leaves an audit trail naming the escalation whose resume may be unfinished.
+    decisions::append_audit_tx(
+        &mut tx,
+        decision_id,
+        Some(goal_id),
+        decisions::ACTOR_HEADLESS_POLICY,
+        d.tier,
+        "headless escalation retry requested; park/resume pending",
+        None,
+    )
+    .await?;
     let changed = sqlx::query(
         "UPDATE decisions SET status = 'answered', answer = 'choice', answer_choice_id = ?, \
          answer_note = 'headless escalation retry', acted_by = ?, \
@@ -14144,6 +14163,93 @@ mod tests {
             "nothing auto-answers a real Decision Inbox item either"
         );
         assert_eq!(kind, "choice");
+    }
+
+    #[test]
+    fn headless_escalate_cap_requires_a_positive_integer() {
+        for value in [None, Some("0"), Some("-1"), Some("invalid"), Some("4294967296")] {
+            assert_eq!(parse_headless_escalate_cap(value), 2, "{value:?}");
+        }
+        assert_eq!(parse_headless_escalate_cap(Some("1")), 1);
+        assert_eq!(parse_headless_escalate_cap(Some("3")), 3);
+    }
+
+    #[tokio::test]
+    async fn headless_escalate_record_resumes_goal() {
+        let pool = test_pool().await;
+        let goal = create_roadmap_goal(&pool, "triage", "Retry goal", "y13b", &[]).await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let mut draft = choice_escalation_draft("y13b");
+        draft.evidence_refs = vec![format!("goal:{}", goal.id)];
+        draft.options[1].id = "retry".to_string();
+
+        let text = record_escalation(&pool, &sink, draft, true).await.unwrap();
+
+        let id: String = sqlx::query_scalar("SELECT id FROM decisions WHERE goal_id = ?")
+            .bind(&goal.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            text,
+            format!("Escalation {id} answered by headless_policy; goal resumed.")
+        );
+        let d = decisions::get_decision(&pool, &id).await.unwrap().unwrap();
+        assert_eq!(d.status, "answered");
+        assert_eq!(d.acted_by.as_deref(), Some(decisions::ACTOR_HEADLESS_POLICY));
+        assert_eq!(d.answer_choice_id.as_deref(), Some("retry"));
+        assert_eq!(state_binding_of(&pool, &goal.id).await, "ready");
+    }
+
+    #[tokio::test]
+    async fn headless_escalate_park_failure_preserves_pending_retry_audit() {
+        use crate::decision_inbox::escalate::DecisionSink;
+
+        let pool = test_pool().await;
+        let goal = create_roadmap_goal(&pool, "triage", "Retry goal", "y13b", &[]).await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let mut draft = choice_escalation_draft("y13b");
+        draft.evidence_refs = vec![format!("goal:{}", goal.id)];
+        draft.options[1].id = "retry".to_string();
+        let id = sink.record(draft).await.unwrap().decision_id;
+        // Pin the audit-before-answer order as well as its durability after failure.
+        sqlx::query(
+            "CREATE TRIGGER require_pending_retry_audit BEFORE UPDATE OF status ON decisions \
+             WHEN NEW.status = 'answered' AND NOT EXISTS ( \
+                 SELECT 1 FROM decision_audit WHERE decision_id = NEW.id \
+                 AND outcome = 'headless escalation retry requested; park/resume pending' \
+             ) BEGIN SELECT RAISE(ABORT, 'missing pending retry audit'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER fail_escalation_park BEFORE UPDATE ON cards \
+             BEGIN SELECT RAISE(ABORT, 'injected park failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let error = headless_escalate_policy(&pool, &id, true, 2)
+            .await
+            .unwrap_err();
+        assert!(error.contains("injected park failure"), "{error}");
+        let d = decisions::get_decision(&pool, &id).await.unwrap().unwrap();
+        assert_eq!(d.status, "answered");
+        assert_eq!(state_binding_of(&pool, &goal.id).await, "triage");
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decision_audit WHERE decision_id = ? AND goal_id = ? \
+             AND acted_by = ? \
+             AND outcome = 'headless escalation retry requested; park/resume pending'",
+        )
+        .bind(&id)
+        .bind(&goal.id)
+        .bind(decisions::ACTOR_HEADLESS_POLICY)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending, 1);
     }
 
     #[tokio::test]
