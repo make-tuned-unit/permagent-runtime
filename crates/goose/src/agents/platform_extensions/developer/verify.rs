@@ -727,10 +727,14 @@ fn select_checks(
         )]));
     }
 
+    let mut git_context = None;
     let changes = match supplied_changes {
         Some(paths) => normalize_supplied_changes(dir, paths)?,
         None => match git_changes_under(dir) {
-            Some(changes) => changes,
+            Some(changes) => {
+                git_context = Some((changes.root, changes.relative_dir));
+                changes.paths
+            }
             None if dir.join("Cargo.toml").is_file() => {
                 return Ok(DetectOutcome::NoChecksConfigured(
                     "could not determine the changed files, so no Cargo check is inferred; pass an "
@@ -784,14 +788,8 @@ fn select_checks(
             // projects. A Cargo marker alone is not permission to run a broad
             // test when the changed set is unrelated to Rust.
             if dir.join("Cargo.toml").is_file() {
-                if supplied_changes.is_none()
-                    && !changes.iter().any(|path| is_documentation_path(path))
-                {
-                    let committed = git_root(dir).and_then(|root| {
-                        let canonical = dir.canonicalize().ok()?;
-                        let relative_dir = canonical.strip_prefix(&root).ok()?;
-                        changes_since_branch_fork_point(&root, relative_dir)
-                    });
+                if let Some((root, relative_dir)) = git_context {
+                    let committed = changes_since_branch_fork_point(&root, &relative_dir);
                     if let Some(committed) = committed {
                         let mut union = changes;
                         union.extend(committed);
@@ -920,9 +918,16 @@ fn normalize_supplied_changes(dir: &Path, paths: &[String]) -> Result<Vec<String
     Ok(normalized)
 }
 
+struct GitChanges {
+    root: PathBuf,
+    relative_dir: PathBuf,
+    paths: Vec<String>,
+}
+
 /// Resolve the repository root and return tracked/untracked paths below `dir`.
+/// Retain the resolved context for a later fork-point fallback.
 /// A failure is surfaced rather than falling back to a broad Cargo command.
-fn git_changes_under(dir: &Path) -> Option<Vec<String>> {
+fn git_changes_under(dir: &Path) -> Option<GitChanges> {
     let root = std::process::Command::new("git")
         .args(["-C", dir.to_str()?, "rev-parse", "--show-toplevel"])
         .output()
@@ -980,10 +985,14 @@ fn git_changes_under(dir: &Path) -> Option<Vec<String>> {
     if paths.is_empty() {
         if let Some(committed) = changes_since_branch_fork_point(&root, &relative_dir) {
             tracing::debug!(?committed, "verify using fork-point diff for empty working tree");
-            return Some(committed);
+            paths = committed;
         }
     }
-    Some(paths)
+    Some(GitChanges {
+        root,
+        relative_dir,
+        paths,
+    })
 }
 
 /// Run `git -C root <args>` and return its stdout, or `None` on any failure.
@@ -2134,7 +2143,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             "the fixture's working tree must be clean, or it proves nothing"
         );
 
-        let changes = git_changes_under(dir).expect("the repo resolves");
+        let changes = git_changes_under(dir).expect("the repo resolves").paths;
         assert_eq!(
             changes,
             vec!["src/coupons.rs".to_string()],
@@ -2171,7 +2180,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         std::fs::create_dir(dir.join("scratch")).unwrap();
         std::fs::write(dir.join("scratch/result.json"), "{}\n").unwrap();
         assert_eq!(
-            git_changes_under(&dir).unwrap(),
+            git_changes_under(&dir).unwrap().paths,
             vec!["runner.sh".to_string(), "scratch/result.json".to_string()]
         );
         assert_eq!(
@@ -2193,11 +2202,43 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     }
 
     #[test]
+    fn select_checks_uses_fork_point_with_docs_and_script_only() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        std::fs::write(dir.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
+        git_y10e(&dir, &["add", "src/lib.rs"]);
+        git_y10e(&dir, &["commit", "-m", "worker: update lib"]);
+        std::fs::write(dir.join("README.md"), "# Fixture\n").unwrap();
+        std::fs::write(dir.join("oracle_check.sh"), "exit 0\n").unwrap();
+        assert_eq!(
+            git_changes_under(&dir).unwrap().paths,
+            vec!["README.md".to_string(), "oracle_check.sh".to_string()]
+        );
+        assert_eq!(
+            select_checks(&dir, VerificationScope::Auto, VerificationRisk::Low, None).unwrap(),
+            DetectOutcome::Checks(vec![Check::direct("cargo", &["test", "-p", "fx"])])
+        );
+    }
+
+    #[test]
+    fn git_changes_retains_subdirectory_context_for_fork_point() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        std::fs::write(dir.join("src/oracle_check.sh"), "exit 0\n").unwrap();
+        let changes = git_changes_under(&dir.join("src")).unwrap();
+        assert_eq!(changes.root, dir);
+        assert_eq!(changes.relative_dir, PathBuf::from("src"));
+        assert_eq!(changes.paths, vec!["src/oracle_check.sh".to_string()]);
+        assert_eq!(
+            changes_since_branch_fork_point(&changes.root, &changes.relative_dir),
+            Some(vec!["src/coupons.rs".to_string()])
+        );
+    }
+
+    #[test]
     fn select_checks_keeps_untracked_new_rust_source() {
         let (_tmp, dir) = y10e_committed_goal_branch();
         std::fs::write(dir.join("src/new.rs"), "pub fn new() {}\n").unwrap();
         assert_eq!(
-            git_changes_under(&dir).unwrap(),
+            git_changes_under(&dir).unwrap().paths,
             vec!["src/new.rs".to_string()]
         );
         assert_eq!(
@@ -2210,7 +2251,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     fn select_checks_with_no_changes_anywhere_still_has_no_checks() {
         let (_tmp, dir) = y10e_committed_goal_branch();
         git_y10e(&dir, &["checkout", "main"]);
-        assert_eq!(git_changes_under(&dir), Some(Vec::new()));
+        assert_eq!(git_changes_under(&dir).unwrap().paths, Vec::<String>::new());
         assert!(matches!(
             select_checks(&dir, VerificationScope::Auto, VerificationRisk::Low, None).unwrap(),
             DetectOutcome::NoChecksConfigured(reason) if reason.contains("no changed files")
@@ -2231,7 +2272,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         let dir = dir.as_path();
         std::fs::write(dir.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
 
-        let changes = git_changes_under(dir).expect("the repo resolves");
+        let changes = git_changes_under(dir).expect("the repo resolves").paths;
         assert_eq!(
             changes,
             vec!["src/lib.rs".to_string()],
@@ -2259,7 +2300,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             branch_fork_point(dir).is_none(),
             "a single root commit has no parent to diff against"
         );
-        assert_eq!(git_changes_under(dir), Some(Vec::new()));
+        assert_eq!(git_changes_under(dir).unwrap().paths, Vec::<String>::new());
     }
 
     /// Unwrap a detection that must have produced runnable checks.
