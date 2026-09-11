@@ -370,9 +370,9 @@ pub fn configured_worker_capabilities() -> BTreeSet<String> {
 /// `tool_kinds` PLUS the adapter capabilities their engines actually support.
 /// Non-dispatchable engines are skipped — an unbuilt engine declares nothing.
 ///
-/// `pub(crate)` since Y8d: `orchestrator::dispatchable_worker_capabilities`
-/// needs the same union over a narrower worker set (the ranked-dispatch pool,
-/// or a single explicitly requested persona) and must not re-derive it.
+/// `pub(crate)` since Y8d: `orchestrator::pool_capabilities` needs the same
+/// union over a narrower worker set (the ranked-dispatch pool, or a single
+/// explicitly requested persona) and must not re-derive it.
 pub(crate) fn worker_capabilities<'a>(
     workers: impl Iterator<Item = &'a crate::config::agent_identity::WorkerPersona>,
 ) -> BTreeSet<String> {

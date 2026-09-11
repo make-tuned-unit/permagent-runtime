@@ -2549,7 +2549,9 @@ pub(crate) fn required_kinds_within_roster(
     kept
 }
 
-/// Everything the workers this dispatch may actually choose from can satisfy.
+/// Everything the workers this dispatch may actually choose from can satisfy
+/// BETWEEN them — not what any one of them can satisfy alone, which is
+/// [`satisfiable_by_one_worker`]'s half.
 ///
 /// Deliberately NOT `council::plan::configured_worker_capabilities()`, which
 /// unions the whole roster. A headless run with
@@ -2557,13 +2559,10 @@ pub(crate) fn required_kinds_within_roster(
 /// considers an external worker for ranked dispatch, so an external CLI's
 /// `cli` capability is not a capability THIS dispatch can satisfy, and
 /// counting it would let exactly the fx08 tag through untouched.
-fn dispatchable_worker_capabilities(
-    config: &agent_identity::AgentConfig,
-    restrict_to_internal_engine: bool,
+fn pool_capabilities(
+    dispatchable: &[&agent_identity::WorkerPersona],
 ) -> std::collections::BTreeSet<String> {
-    crate::council::plan::worker_capabilities(
-        dispatchable_personas(config, restrict_to_internal_engine, None).into_iter(),
-    )
+    crate::council::plan::worker_capabilities(dispatchable.iter().copied())
 }
 
 /// Is this worker actually available on this machine?
@@ -2720,7 +2719,7 @@ fn goal_required_kinds(
     // planner's prompt as 'Available capability tags (only these are ever
     // dispatchable)'. That is advice a model can ignore — zai did. This is the
     // enforcement.
-    let allowed = crate::council::plan::worker_capabilities(dispatchable.iter().copied());
+    let allowed = pool_capabilities(dispatchable);
     let within_roster = required_kinds_within_roster(tags, &allowed);
     satisfiable_by_one_worker(within_roster, dispatchable)
 }
@@ -22405,8 +22404,8 @@ mod tests {
     fn the_internal_only_dispatch_pool_does_not_claim_an_external_clis_capabilities() {
         let config = default_config();
 
-        let unrestricted = dispatchable_worker_capabilities(&config, false);
-        let internal_only = dispatchable_worker_capabilities(&config, true);
+        let unrestricted = pool_capabilities(&dispatchable_personas(&config, false, None));
+        let internal_only = pool_capabilities(&dispatchable_personas(&config, true, None));
 
         assert!(
             internal_only.contains("code_edit"),
@@ -22522,12 +22521,9 @@ mod tests {
             cache.set(key, key == "permagent", None);
         }
 
-        let roster_only = crate::council::plan::worker_capabilities(
-            dispatchable_personas(&config, false, None).into_iter(),
-        );
-        let really_available = crate::council::plan::worker_capabilities(
-            dispatchable_personas(&config, false, Some(&cache)).into_iter(),
-        );
+        let roster_only = pool_capabilities(&dispatchable_personas(&config, false, None));
+        let really_available =
+            pool_capabilities(&dispatchable_personas(&config, false, Some(&cache)));
 
         assert!(
             roster_only.contains("cli"),
