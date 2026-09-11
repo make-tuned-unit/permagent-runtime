@@ -1099,6 +1099,7 @@ impl ToolInspector for WriteJailInspector {
                                     jail_root = %jail_root.display(),
                                     "write jail: a dispatched worker was refused a write outside its jail"
                                 );
+                                crate::receipts::record("safety_and_trust", "jail_denials");
                                 results.push(InspectionResult {
                                     tool_request_id: request.id.clone(),
                                     action: InspectionAction::Deny,
@@ -1160,6 +1161,7 @@ impl ToolInspector for WriteJailInspector {
                     jail_root = %jail_root.display(),
                     "write jail: a dispatched worker was refused a shell command that leaves its jail"
                 );
+                crate::receipts::record("safety_and_trust", "jail_denials");
                 results.push(InspectionResult {
                     tool_request_id: request.id.clone(),
                     action: InspectionAction::Deny,

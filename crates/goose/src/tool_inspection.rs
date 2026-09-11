@@ -41,7 +41,7 @@ pub(crate) fn is_top_level_coding_harness(
     recipe_title == Some(CODING_HARNESS_RECIPE_TITLE) && parent_session_id.is_none()
 }
 
-fn requires_dispatched_coding_worker(name: &str) -> bool {
+pub(crate) fn requires_dispatched_coding_worker(name: &str) -> bool {
     let base = name.rsplit("__").next().unwrap_or(name);
     crate::after_turn::is_mutating_tool_name(name)
         || matches!(
@@ -97,6 +97,7 @@ impl ToolInspector for CodingDagInspector {
                     requires_dispatched_coding_worker(call.name.as_ref())
                 })
             })
+            .inspect(|_| crate::receipts::record("dag_enforcement", "bypass_attempts"))
             .map(|request| InspectionResult {
                 tool_request_id: request.id.clone(),
                 action: InspectionAction::Deny,

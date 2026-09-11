@@ -1507,6 +1507,14 @@ impl CliSession {
         Ok(())
     }
 
+    /// Print once after the headless run's goal drain, including on failure.
+    pub fn print_harness_receipts(&self) {
+        for line in permagent::receipts::snapshot().lines() {
+            println!("{line}");
+        }
+        permagent::receipts::end_run();
+    }
+
     /// Lane X-lat-2 (coding-harness excellence iteration): print the
     /// session's per-turn harness-overhead rollup as one stable plain-text
     /// line so `permagent-eval`'s harness_log parser can read it without

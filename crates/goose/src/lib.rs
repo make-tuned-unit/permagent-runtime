@@ -98,6 +98,7 @@ pub mod providers;
 pub mod public_apis;
 pub mod python_runtime;
 pub mod reader;
+pub mod receipts;
 pub mod recipe;
 pub mod recipe_deeplink;
 pub mod recognition;
