@@ -2371,7 +2371,12 @@ pub(crate) async fn select_requested_worker(
         ));
     }
 
-    if let Some(missing) = missing_adapter_requirement(&goal_required_kinds(goal), persona) {
+    // An explicitly requested worker is the only worker this dispatch can use,
+    // so IT is the whole satisfiable set — not the roster (Y8d).
+    let satisfiable = crate::council::plan::worker_capabilities(std::iter::once(persona));
+    let required_kinds = goal_required_kinds(goal, &satisfiable);
+
+    if let Some(missing) = missing_adapter_requirement(&required_kinds, persona) {
         return Err(format!(
             "Worker '{}' adapter does not support required capability '{}' — not dispatched. \
              Inspect the worker capabilities before selecting another adapter.",
@@ -2409,12 +2414,12 @@ pub(crate) async fn select_requested_worker(
             // The audit trail must record that cost ranking did NOT decide this,
             // so a later "why did an expensive worker run?" has an answer.
             "selection_mode": "explicitly_requested",
-            "required_kinds": goal
-                .metadata_json
-                .get("tags")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default(),
+            // Y8d: the receipt records the requirement that was actually
+            // ENFORCED (the roster-intersected set the adapter check two
+            // dozen lines above used), not the model's raw tags. A receipt
+            // that names a requirement nothing was checked against is how
+            // "why did this not dispatch?" went unanswerable on glm47/fx08.
+            "required_kinds": required_kinds,
             "selected": {
                 "key": requested,
                 "available": true,
@@ -2428,16 +2433,152 @@ pub(crate) async fn select_requested_worker(
     })
 }
 
-fn goal_required_kinds(goal: &cards::Card) -> Vec<String> {
-    goal.metadata_json
-        .get("tags")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_else(|| vec!["code_edit".to_string(), "shell".to_string()])
+/// The requirement set a goal falls back to when it has no usable tags. This
+/// is what an untagged goal has always been dispatched with.
+pub(crate) const BASE_REQUIRED_KINDS: [&str; 2] = ["code_edit", "shell"];
+
+/// One capability tag, in the spelling the roster union uses.
+///
+/// `WorkerCapabilities::supports_requirement` accepts several spellings per
+/// adapter capability (`cancel`/`cancellation`, `mcp_tools`/`mcp`, …) while
+/// `configured_worker_capabilities` emits only the canonical one. Without this,
+/// a model that wrote `"cancel"` would have a satisfiable tag dropped as
+/// unknown. Ordinary `tool_kinds` are compared lowercased and trimmed.
+fn canonical_capability_tag(tag: &str) -> String {
+    let tag = tag.trim().to_ascii_lowercase();
+    match tag.as_str() {
+        "model-routing" | "model_routing" => "model_override".to_string(),
+        "stream" => "streaming".to_string(),
+        "steer" => "steering".to_string(),
+        "cancel" => "cancellation".to_string(),
+        "permission-gates" | "permissions" => "permission_gates".to_string(),
+        "mcp_tools" => "mcp".to_string(),
+        "cli_tools" => "cli".to_string(),
+        _ => tag,
+    }
+}
+
+/// Y8d (harness loop 2026-09-10, from Lane A14's M14 forensics): a capability
+/// tag NO configured worker can satisfy must not be able to veto dispatch.
+///
+/// glm47/fx08: `decompose_roadmap` tagged the card
+/// `["code_edit", "cli", "testing"]`. `cli` is an ADAPTER requirement
+/// (`WorkerCapabilities::supports_cli_tools`), the internal `permagent` persona
+/// does not declare it, and external workers were off
+/// (`PERMAGENT_HEADLESS_WORKER=internal`), so `missing_adapter_requirement`
+/// marked every candidate unavailable, `select_best_worker` returned `None`,
+/// `attempt_count` stayed at 0, and the coordinator escalated twice into
+/// decisions nobody can answer — the goal was permanently undispatchable, on a
+/// fixture DeepSeek tagged `["code_edit", "shell", "testing"]` and dispatched
+/// without incident. The tags are model-authored free text; the roster is the
+/// authority on what is actually runnable.
+///
+/// Intersect, then fall back — never silently accept an empty requirement set,
+/// because `select_best_worker` reads empty as "any worker will do" and that
+/// would route a goal to a worker chosen on cost alone.
+///
+/// `allowed` empty means "the roster could not be read", NOT "nothing is
+/// supported": filtering on it would drop every tag on every goal. In that case
+/// the tags pass through exactly as before.
+pub(crate) fn required_kinds_within_roster(
+    tags: Vec<String>,
+    allowed: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let base = || {
+        BASE_REQUIRED_KINDS
+            .iter()
+            .map(|k| k.to_string())
+            .collect::<Vec<_>>()
+    };
+
+    // An empty tag LIST is not an accident and not a missing requirement set:
+    // Z1-3's `constrain_tags` deliberately produces one at card-creation time
+    // when grounding rejects every tag, precisely because
+    // `select_best_worker` reads empty as "any available worker matches"
+    // rather than "blocked". That contract is unchanged here. The case Y8d
+    // adds is different: tags that SURVIVED grounding but that no dispatchable
+    // worker can satisfy at selection time.
+    if tags.is_empty() {
+        return tags;
+    }
+    if allowed.is_empty() {
+        return tags;
+    }
+
+    let allowed_canonical: std::collections::BTreeSet<String> = allowed
+        .iter()
+        .map(|k| canonical_capability_tag(k.as_str()))
+        .collect();
+    let (kept, dropped): (Vec<String>, Vec<String>) = tags
+        .into_iter()
+        .partition(|tag| allowed_canonical.contains(&canonical_capability_tag(tag)));
+
+    if !dropped.is_empty() {
+        tracing::warn!(
+            target: "permagentd::brain",
+            dropped = %dropped.join(", "),
+            kept = %kept.join(", "),
+            roster = %allowed.iter().cloned().collect::<Vec<_>>().join(", "),
+            "goal tags name capabilities no configured worker declares — dropping them so the \
+             goal stays dispatchable"
+        );
+    }
+
+    if kept.is_empty() {
+        // Every tag was unknown. Fall back to the base requirement, itself
+        // narrowed to what the roster declares, so the fallback cannot
+        // reintroduce the same veto.
+        let narrowed: Vec<String> = base()
+            .into_iter()
+            .filter(|kind| allowed_canonical.contains(&canonical_capability_tag(kind)))
+            .collect();
+        return if narrowed.is_empty() {
+            base()
+        } else {
+            narrowed
+        };
+    }
+    kept
+}
+
+/// Everything the workers this dispatch may actually choose from can satisfy.
+///
+/// Deliberately NOT `council::plan::configured_worker_capabilities()`, which
+/// unions the whole roster. A headless run with
+/// `PERMAGENT_HEADLESS_WORKER=internal` — fx08's configuration — never
+/// considers an external worker for ranked dispatch, so an external CLI's
+/// `cli` capability is not a capability THIS dispatch can satisfy, and
+/// counting it would let exactly the fx08 tag through untouched.
+fn dispatchable_worker_capabilities(
+    config: &agent_identity::AgentConfig,
+    restrict_to_internal_engine: bool,
+) -> std::collections::BTreeSet<String> {
+    crate::council::plan::worker_capabilities(config.workers.values().filter(|persona| {
+        worker_engine_allowed_for_ranked_dispatch(&persona.engine, restrict_to_internal_engine)
+    }))
+}
+
+/// The requirement set a goal is dispatched against, already intersected with
+/// what `allowed` can satisfy. See [`required_kinds_within_roster`].
+fn goal_required_kinds(
+    goal: &cards::Card,
+    allowed: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    // No `tags` key at all (or not an array) keeps the historical default —
+    // this is the untagged-goal path, distinct from an explicitly empty list.
+    let Some(raw) = goal.metadata_json.get("tags").and_then(|v| v.as_array()) else {
+        return BASE_REQUIRED_KINDS.iter().map(|k| k.to_string()).collect();
+    };
+    let tags: Vec<String> = raw
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+
+    // `handle_decompose_roadmap` already puts the roster's capabilities in the
+    // planner's prompt as 'Available capability tags (only these are ever
+    // dispatchable)'. That is advice a model can ignore — zai did. This is the
+    // enforcement.
+    required_kinds_within_roster(tags, allowed)
 }
 
 fn missing_adapter_requirement(
@@ -2481,8 +2622,14 @@ pub(crate) async fn select_worker_detailed(
 ) -> Result<WorkerSelection, String> {
     let config = agent_identity::load_agent_config();
 
-    // Derive required tool_kinds from goal metadata, default to code_edit + shell
-    let required_kinds = goal_required_kinds(goal);
+    // Derive required tool_kinds from goal metadata, default to code_edit +
+    // shell — intersected (Y8d) with what the workers THIS dispatch may choose
+    // from can actually satisfy, so a model-authored tag no candidate declares
+    // cannot make the goal permanently undispatchable.
+    let required_kinds = goal_required_kinds(
+        goal,
+        &dispatchable_worker_capabilities(&config, restrict_to_internal_engine),
+    );
 
     // Per-worker active load for the tie-break (#212): count in-progress goal
     // cards grouped by their spawning `worker_key`. Authoritative and engine-
@@ -21988,6 +22135,135 @@ mod tests {
                 ))
             );
         }
+    }
+
+    // ── Y8d: a model-authored tag cannot veto dispatch ───────────────────
+    //
+    // A14's ranked mechanism 5, glm47/fx08: `decompose_roadmap` tagged the
+    // card `["code_edit", "cli", "testing"]`. `cli` is an ADAPTER requirement
+    // (`WorkerCapabilities::supports_cli_tools`); the internal `permagent`
+    // persona does not declare it and external workers were off
+    // (`PERMAGENT_HEADLESS_WORKER=internal`), so every candidate was marked
+    // unavailable, `select_best_worker` returned `None`, `attempt_count`
+    // stayed at 0, and the coordinator escalated twice into decisions nobody
+    // can answer. DeepSeek tagged the same fixture
+    // `["code_edit", "shell", "testing"]` and dispatched fine — the tags are
+    // model-authored free text, and the roster is the authority.
+
+    /// The `permagent` persona's real declared kinds, as A14 recorded them.
+    fn permagent_roster() -> std::collections::BTreeSet<String> {
+        tags(&["code_edit", "shell", "git", "search", "testing"])
+    }
+
+    #[test]
+    fn fx08s_cli_tag_is_dropped_so_the_goal_stays_dispatchable() {
+        let required = required_kinds_within_roster(
+            vec![
+                "code_edit".to_string(),
+                "cli".to_string(),
+                "testing".to_string(),
+            ],
+            &permagent_roster(),
+        );
+        assert_eq!(
+            required,
+            vec!["code_edit".to_string(), "testing".to_string()],
+            "the two satisfiable tags survive; `cli` — which no worker declares — does not"
+        );
+    }
+
+    /// Never an empty requirement set from a non-empty tag list:
+    /// `select_best_worker` reads empty as "any available worker matches", so
+    /// silently emptying a real requirement would route a goal on cost alone.
+    #[test]
+    fn a_goal_whose_every_tag_is_unknown_falls_back_to_the_base_kinds() {
+        let required = required_kinds_within_roster(
+            vec!["cli".to_string(), "telepathy".to_string()],
+            &permagent_roster(),
+        );
+        assert_eq!(
+            required,
+            BASE_REQUIRED_KINDS
+                .iter()
+                .map(|k| k.to_string())
+                .collect::<Vec<_>>()
+        );
+        assert!(!required.is_empty(), "never an empty requirement set");
+    }
+
+    /// Z1-3's contract is untouched: an explicitly EMPTY tag list means "no
+    /// requirement", which `constrain_tags` produces on purpose at card
+    /// creation so a fully-ungrounded goal is dispatchable rather than blocked.
+    #[test]
+    fn an_explicitly_empty_tag_list_still_means_no_requirement() {
+        assert!(required_kinds_within_roster(vec![], &permagent_roster()).is_empty());
+    }
+
+    /// An unreadable/empty roster is "we do not know", not "nothing is
+    /// supported" — filtering on it would drop every tag on every goal.
+    #[test]
+    fn an_empty_roster_filters_nothing() {
+        let original = vec!["code_edit".to_string(), "cli".to_string()];
+        assert_eq!(
+            required_kinds_within_roster(original.clone(), &tags(&[])),
+            original
+        );
+    }
+
+    /// `supports_requirement` accepts several spellings per adapter capability
+    /// while `configured_worker_capabilities` emits only the canonical one. A
+    /// satisfiable tag must not be dropped over spelling.
+    #[test]
+    fn an_alias_spelling_of_a_declared_capability_survives() {
+        let roster = tags(&["code_edit", "cancellation", "mcp"]);
+        assert_eq!(
+            required_kinds_within_roster(
+                vec!["cancel".to_string(), "mcp_tools".to_string()],
+                &roster
+            ),
+            vec!["cancel".to_string(), "mcp_tools".to_string()],
+            "aliases are compared canonically and kept in their original spelling"
+        );
+    }
+
+    /// The half of Y8d that makes it bite on fx08's actual configuration. That
+    /// run had `PERMAGENT_HEADLESS_WORKER=internal`, so ranked dispatch could
+    /// only ever pick `permagent` — but the roster still CONTAINS external
+    /// CLIs, and the whole-roster union
+    /// (`council::plan::configured_worker_capabilities`) therefore claims
+    /// `cli`. Intersecting against that union would have kept fx08's `cli` tag
+    /// and changed nothing. Run against the REAL default roster.
+    #[test]
+    fn the_internal_only_dispatch_pool_does_not_claim_an_external_clis_capabilities() {
+        let config = agent_identity::AgentConfig {
+            primary: Default::default(),
+            workers: agent_identity::default_roster(),
+        };
+
+        let unrestricted = dispatchable_worker_capabilities(&config, false);
+        let internal_only = dispatchable_worker_capabilities(&config, true);
+
+        assert!(
+            internal_only.contains("code_edit"),
+            "the internal worker's own kinds survive: {internal_only:?}"
+        );
+        assert!(
+            internal_only.len() < unrestricted.len(),
+            "restricting the pool must narrow what it can satisfy: \
+             {internal_only:?} vs {unrestricted:?}"
+        );
+        assert_eq!(
+            required_kinds_within_roster(
+                vec![
+                    "code_edit".to_string(),
+                    "cli".to_string(),
+                    "testing".to_string()
+                ],
+                &internal_only,
+            ),
+            vec!["code_edit".to_string(), "testing".to_string()],
+            "fx08's tag set, against fx08's actual dispatch pool"
+        );
     }
 
     // ── Y8c: every liveness reader tells the same story ──────────────────
