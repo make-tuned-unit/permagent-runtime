@@ -982,7 +982,12 @@ fn branch_fork_point(root: &Path) -> Option<String> {
     if branch.is_empty() || branch == "HEAD" {
         return None;
     }
-    let exclude = format!("--exclude=refs/heads/{branch}");
+    // `--exclude` is matched against the ref name with the `refs/heads/`
+    // prefix ALREADY STRIPPED when it feeds `--branches`, so the pattern is
+    // the bare branch name. Spelled `refs/heads/<branch>` it matches nothing,
+    // `--branches` re-includes this branch, every commit on it is excluded by
+    // `--not`, and the walk returns empty — no fork point, no fallback.
+    let exclude = format!("--exclude={branch}");
     let unique = git_stdout(
         root,
         &[
@@ -994,11 +999,14 @@ fn branch_fork_point(root: &Path) -> Option<String> {
             "--remotes",
         ],
     )?;
+    // `rfind`, not `last()`: `rev-list` prints newest first, so the oldest
+    // unique commit is the last non-empty line. Walking from the back is what
+    // clippy's `double_ended_iterator_last` / `filter_next` pair insists on;
+    // the element chosen is identical.
     let oldest = unique
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .last()?;
+        .rfind(|line| !line.is_empty())?;
     // A root commit has no parent: `rev-parse --verify` fails and we stop,
     // rather than diffing the whole history and calling it a scoped check.
     let parent = format!("{oldest}^");
@@ -1593,14 +1601,15 @@ fn zero_test_marker(output: &str) -> Option<String> {
 /// sibling target rather than an empty run. Same conservative bias the
 /// [`ZERO_TESTS_RE`] comment declares: missing a vacuous pass costs a great
 /// deal less than blocking a real one.
-static NONZERO_TESTS_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(\b[1-9]\d* passed\b|\brunning [1-9]\d* tests?\b)").unwrap()
-});
+static NONZERO_TESTS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(\b[1-9]\d* passed\b|\brunning [1-9]\d* tests?\b)").unwrap());
 
 /// Return the matched "at least one test ran" marker text, if the combined
 /// check output contains one. See [`NONZERO_TESTS_RE`].
 fn nonzero_test_marker(output: &str) -> Option<String> {
-    NONZERO_TESTS_RE.find(output).map(|m| m.as_str().to_string())
+    NONZERO_TESTS_RE
+        .find(output)
+        .map(|m| m.as_str().to_string())
 }
 
 /// X-verify-2: why a set of PASSED checks does not count as real coverage, if
@@ -1893,8 +1902,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             "===== 12 passed, 1 skipped in 0.42s =====",
             "Tests:       3 passed, 3 total\nSnapshots:   0 total",
         ] {
-            let result =
-                pass_result(&[Check::direct("pytest", &["-q"])], &[genuine.to_string()]);
+            let result = pass_result(&[Check::direct("pytest", &["-q"])], &[genuine.to_string()]);
             assert_eq!(
                 vacuous_pass_reason(&result),
                 None,

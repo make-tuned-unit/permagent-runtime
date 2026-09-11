@@ -17131,7 +17131,11 @@ mod tests {
 
         let card = setup_goal_in_state(&pool, "complete", 1).await;
         let stored = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
-        let mut meta = stored.metadata_json.as_object().cloned().unwrap_or_default();
+        let mut meta = stored
+            .metadata_json
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
         meta.insert(
             "worker_session_ids".to_string(),
             serde_json::json!(worker_ids),
