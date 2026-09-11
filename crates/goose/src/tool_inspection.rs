@@ -137,7 +137,8 @@ pub const SAFETY_SWITCHES: &[SafetySwitch] = &[
     SafetySwitch {
         inspector: "write_jail",
         switch: "SECURITY_WRITE_JAIL_ENABLED",
-        loses: "writes outside the session working directory are no longer flagged for approval",
+        loses: "writes outside the session working directory are no longer flagged for approval, \
+                and a dispatched goal worker is no longer confined to its own worktree",
     },
     SafetySwitch {
         inspector: "security",

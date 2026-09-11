@@ -20,6 +20,55 @@
 //! config over hidden defaults). If the session's working directory cannot be
 //! resolved, the jail FAILS OPEN (allows, with a warning log): a jail that
 //! cannot see its own boundary must not take the agent down with it.
+//!
+//! ## Lane Y9: a dispatched goal worker gets a HARD jail, not a confirmation
+//!
+//! One session type cannot use the confirmation semantics above: an internal
+//! goal worker (a `SubAgent` session whose working dir is its own
+//! `.permagent-goal-worktrees/<run_id>` worktree, repointed there by Lane Y3's
+//! `goal_engine::point_session_at_worktree`). For it, "outside the working
+//! directory" means the project checkout its goal will later be landed into,
+//! and `RequireApproval` resolves to neither a clean allow nor a clean deny:
+//!   - in-process there is no approver at all — a worker `Agent` is never
+//!     `set_headless(true)` (only `scheduler.rs` does that), and
+//!     `subagent_handler::get_agent_messages` never answers a confirmation, so
+//!     the park in `tool_execution::handle_approval_tool_requests` waits on a
+//!     oneshot nobody holds;
+//!   - on the CLI's own non-interactive surface the park is auto-ALLOWED
+//!     (`goose-cli/src/session/mod.rs`: "Tool confirmation required in
+//!     non-interactive mode, auto-allowing" → `Permission::AllowOnce`).
+//!
+//! And `shell` was never inspected here at all, so `git -C <trunk> commit`,
+//! `cd <trunk> && …` and `sed -i <trunk>/f` bypassed the jail outright. Lane
+//! A14's M14 forensics measured the consequences on 4 of 8 zai runs: two
+//! workers committed straight onto `main`, two left the fix uncommitted in the
+//! trunk working tree (which the oracle then graded), and one produced a
+//! byte-identical duplicate write whose dirty trunk made auto-land refuse with
+//! "the project root has uncommitted changes".
+//!
+//! So for a goal-worker session this inspector returns [`InspectionAction::Deny`]
+//! with a reason that NAMES the worktree (Y4c delivers an inspector's reason
+//! verbatim to the model, so it can correct itself and retry inside its own
+//! tree), for:
+//!   - `write`/`edit`/`text_editor`/`str_replace_editor` targets outside the
+//!     worktree — including another goal's worktree, so the namespace
+//!     allowlist above does NOT apply to a worker;
+//!   - `shell` commands that escape it structurally: `cd`/`pushd` out,
+//!     `git -C`/`--git-dir`/`--work-tree` at an outside repo with a mutating
+//!     subcommand, an output redirection to an outside path, or a mutating
+//!     file command (`rm`, `cp`, `mv`, `tee`, `sed -i`, …) with an outside
+//!     target.
+//!
+//! Reads stay unrestricted everywhere, temp scratch and
+//! `SECURITY_WRITE_JAIL_ALLOW` keep working, and every other session — the
+//! coordinator included — keeps the confirmation semantics unchanged.
+//!
+//! Lane Y9b (G13 M7) extends only the FIRST of those two defects, not the
+//! boundary: a `SubAgent` that was dispatched by another session (it has a
+//! `parent_session_id`) but got no worktree is refused against its own
+//! working dir when this process cannot serve the Decision Inbox, because a
+//! confirmation filed there can never be answered. In the daemon, where the
+//! card IS answerable, it keeps the confirmation. See [`jail_role`].
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -28,7 +77,7 @@ use std::sync::Arc;
 
 use crate::config::{Config, GooseMode};
 use crate::conversation::message::{Message, ToolRequest};
-use crate::session::SessionManager;
+use crate::session::{Session, SessionManager, SessionType};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 
 pub const WRITE_JAIL_INSPECTOR_NAME: &str = "write_jail";
@@ -36,6 +85,11 @@ pub const WRITE_JAIL_INSPECTOR_NAME: &str = "write_jail";
 /// Directory component that marks the goal-engine worktree namespace (see
 /// `goal_engine::GOAL_WORKTREES_DIR`).
 const GOAL_WORKTREES_COMPONENT: &str = ".permagent-goal-worktrees";
+
+/// Finding id on every Lane Y9 goal-worker refusal — the one string to grep
+/// for when asking "did a worker try to leave its worktree, and was it
+/// stopped".
+pub const WORKER_JAIL_FINDING_ID: &str = "goal_worker_outside_worktree";
 
 pub struct WriteJailInspector {
     session_manager: Option<Arc<SessionManager>>,
@@ -46,10 +100,13 @@ impl WriteJailInspector {
         Self { session_manager }
     }
 
-    async fn session_working_dir(&self, session_id: &str) -> Option<PathBuf> {
+    /// The session row this jail's boundary is read from. Y9 needs the whole
+    /// row, not just `working_dir`: `session_type` is half of the goal-worker
+    /// predicate ([`jail_role`]).
+    async fn session_row(&self, session_id: &str) -> Option<Session> {
         let manager = self.session_manager.as_ref()?;
         match manager.get_session(session_id, false).await {
-            Ok(session) => Some(session.working_dir),
+            Ok(session) => Some(session),
             Err(e) => {
                 tracing::warn!(
                     session_id = %session_id,
@@ -134,6 +191,11 @@ fn has_goal_worktree_component(path: &Path) -> bool {
 
 /// Built-in always-allowed roots: the temp directories agents and the coding
 /// harness use as scratch space.
+///
+/// The character-device sinks (`/dev/null`, `/dev/fd/*`, …) are NOT here on
+/// purpose: see [`is_device_sink`], which judges them on the RAW word because
+/// canonicalizing `/dev/stdout` follows it to whatever this process's stdout
+/// currently is — a path in some unrelated tree.
 fn builtin_allowed_roots() -> Vec<PathBuf> {
     let mut roots = vec![
         std::env::temp_dir(),
@@ -165,32 +227,49 @@ fn configured_allowed_roots() -> Vec<PathBuf> {
     Vec::new()
 }
 
+/// Is `candidate` (already canonicalized) under a root this jail allows
+/// without asking, regardless of session? Temp scratch and the operator's own
+/// `SECURITY_WRITE_JAIL_ALLOW` prefixes — the two exceptions a goal worker
+/// keeps too (Y9), unlike the goal-worktree namespace.
+fn universally_allowlisted(candidate: &Path) -> Option<&'static str> {
+    for allowed in builtin_allowed_roots() {
+        if candidate.starts_with(&allowed) {
+            return Some("temp directory");
+        }
+    }
+    for allowed in configured_allowed_roots() {
+        if candidate.starts_with(canonical_for_containment(&allowed)) {
+            return Some("configured allowlist");
+        }
+    }
+    None
+}
+
 /// The jail decision for one write target. `raw_path` is the tool argument
 /// verbatim; relative paths resolve against `working_dir` exactly as the
 /// developer tools resolve them at execution time.
-fn jail_verdict(raw_path: &str, working_dir: &Path) -> JailVerdict {
+///
+/// Y9: `role` decides only what an OUTSIDE verdict means downstream — a
+/// confirmation for an ordinary session, a refusal for a goal worker — plus
+/// one boundary difference the worker needs: the `.permagent-goal-worktrees`
+/// namespace allowlist is for a SUPERVISING session reaching into a worker's
+/// tree, so it must not let one worker write into another worker's tree.
+fn jail_verdict(raw_path: &str, working_dir: &Path, role: &JailRole) -> JailVerdict {
     let resolved = crate::agents::platform_extensions::developer::edit::resolve_path(
         raw_path,
         Some(working_dir),
     );
     let candidate = canonical_for_containment(&resolved);
-    let root = canonical_for_containment(working_dir);
+    let root = canonical_for_containment(role.containment_root(working_dir));
 
     if candidate.starts_with(&root) {
         return JailVerdict::Inside;
     }
-    if has_goal_worktree_component(&candidate) {
+    if matches!(role, JailRole::Confirm) && has_goal_worktree_component(&candidate) {
         return JailVerdict::Allowlisted("goal worktree namespace");
     }
-    for allowed in builtin_allowed_roots() {
-        if candidate.starts_with(&allowed) {
-            return JailVerdict::Allowlisted("temp directory");
-        }
-    }
-    for allowed in configured_allowed_roots() {
-        if candidate.starts_with(canonical_for_containment(&allowed)) {
-            return JailVerdict::Allowlisted("configured allowlist");
-        }
+    if let Some(kind) = universally_allowlisted(&candidate) {
+        return JailVerdict::Allowlisted(kind);
     }
     JailVerdict::Outside {
         resolved: candidate,
@@ -201,6 +280,754 @@ enum JailVerdict {
     Inside,
     Allowlisted(&'static str),
     Outside { resolved: PathBuf },
+}
+
+// ── Lane Y9: the dispatched goal worker's hard jail ───────────────────────
+
+/// What this session's jail boundary MEANS (see the module docs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JailRole {
+    /// Every ordinary session, the coding-harness coordinator included: a
+    /// write outside the working dir is a CONFIRMATION, exactly as C3 shipped.
+    Confirm,
+    /// A dispatched goal worker, jailed to the worktree it was given: an
+    /// outside write — or a shell command that structurally escapes — is
+    /// REFUSED, with a reason naming `worktree`.
+    GoalWorker { worktree: PathBuf },
+    /// A dispatched `SubAgent` that is NOT in a goal worktree, in a process
+    /// that has no answerer for a confirmation (G13 M7): jailed to its own
+    /// working dir, with the same refuse-don't-park semantics.
+    HeadlessSubAgent { working_dir: PathBuf },
+}
+
+impl JailRole {
+    /// The directory writes must stay under. For a worker this is its worktree
+    /// root even if its session sits in a subdirectory of it; for everyone else
+    /// it is the session's working dir, unchanged.
+    fn containment_root<'a>(&'a self, working_dir: &'a Path) -> &'a Path {
+        match self {
+            JailRole::Confirm => working_dir,
+            JailRole::GoalWorker { worktree } => worktree.as_path(),
+            JailRole::HeadlessSubAgent { working_dir } => working_dir.as_path(),
+        }
+    }
+
+    /// The root an outside verdict is REFUSED against, or `None` when an
+    /// outside verdict is C3's confirmation.
+    fn denying_root(&self) -> Option<&Path> {
+        match self {
+            JailRole::Confirm => None,
+            JailRole::GoalWorker { worktree } => Some(worktree.as_path()),
+            JailRole::HeadlessSubAgent { working_dir } => Some(working_dir.as_path()),
+        }
+    }
+
+    /// The Y4c-shaped refusal text, or `None` for a role that confirms.
+    fn denial_reason(&self, what: &str, target: &Path) -> Option<String> {
+        match self {
+            JailRole::Confirm => None,
+            JailRole::GoalWorker { worktree } => Some(worker_denial_reason(what, target, worktree)),
+            JailRole::HeadlessSubAgent { working_dir } => {
+                Some(subagent_denial_reason(what, target, working_dir))
+            }
+        }
+    }
+}
+
+/// `<…>/.permagent-goal-worktrees/<run_id>` — the goal worktree ROOT that
+/// `path` sits in, or `None` when `path` is not in the worktree namespace.
+///
+/// Truncating at the run-id component (rather than trusting `path` itself to
+/// be the root) means a worker whose cwd is a subdirectory of its worktree is
+/// still jailed to the whole worktree, and a path that names only the
+/// namespace directory itself (`…/.permagent-goal-worktrees`) yields `None`
+/// rather than a root that would contain every worker's tree.
+fn goal_worktree_root(path: &Path) -> Option<PathBuf> {
+    let mut root = PathBuf::new();
+    let mut components = path.components();
+    let mut found_namespace = false;
+    for component in components.by_ref() {
+        root.push(component.as_os_str());
+        if component.as_os_str() == GOAL_WORKTREES_COMPONENT {
+            found_namespace = true;
+            break;
+        }
+    }
+    if !found_namespace {
+        return None;
+    }
+    let run_id = components.next()?;
+    root.push(run_id.as_os_str());
+    Some(root)
+}
+
+/// A session is a dispatched goal worker when it is a `SubAgent` AND it is
+/// running inside a goal worktree. Both halves are required: `SubAgent` alone
+/// is every summoned child (they legitimately work in the project root), and a
+/// worktree path alone is any session a user opened there by hand.
+///
+/// The predicate reads the same `sessions.working_dir` column Lane Y3 repoints
+/// at dispatch, so there is no second source of truth to drift from.
+///
+/// ## G13 M7: the `SubAgent` that got no worktree
+///
+/// A `SubAgent` outside the worktree namespace — `resolve_internal_isolation`
+/// yielded no worktree, or a child summoned in the project root — kept
+/// `Confirm`, which is the very verdict Y9's root-cause section calls
+/// unenforceable for a worker: in-process the park in
+/// `tool_execution::handle_approval_tool_requests` waits on a oneshot nobody
+/// holds, and on the CLI's non-interactive surface it is silently
+/// auto-allowed. So the CHOICE here, deliberately narrow:
+///
+/// - If the session has a `parent_session_id` (it was dispatched by another
+///   session — it has no human of its own) AND this process does not serve
+///   the Decision Inbox (`decisions::process_serves_inbox()`, the same gate
+///   `create_tool_approval_decision` uses before filing a `tool_approval`
+///   card), then NOBODY can answer a confirmation from here and the honest
+///   verdict is `Deny`, jailed to the session's own working dir.
+/// - Otherwise keep `Confirm`. In the daemon the flag is set, a card IS filed
+///   and answerable, and a confirmation is a real question put to a real
+///   person — the C3 contract, unchanged. A top-level session (no parent)
+///   likewise keeps it.
+///
+/// `process_serves_inbox()` is preferred over `Agent::is_headless` (an
+/// inspector has no agent handle, and no goal worker is ever marked headless
+/// anyway — only `scheduler.rs` calls `set_headless`) and over sniffing the
+/// harness recipe title (a string match on a display name is not a safety
+/// predicate). It asks exactly the question that matters: can an approval
+/// filed from this process ever be answered?
+fn jail_role(session: &Session) -> JailRole {
+    if !matches!(session.session_type, SessionType::SubAgent) {
+        return JailRole::Confirm;
+    }
+    if let Some(worktree) = goal_worktree_root(&session.working_dir) {
+        return JailRole::GoalWorker { worktree };
+    }
+    if session.parent_session_id.is_some() && !crate::decisions::process_serves_inbox() {
+        return JailRole::HeadlessSubAgent {
+            working_dir: session.working_dir.clone(),
+        };
+    }
+    JailRole::Confirm
+}
+
+/// The refusal a goal worker gets, in the Y4c shape: say who is refusing, name
+/// the ONE writable root, say what to do instead, and say why it matters to
+/// the worker's own goal (a dirty trunk blocks its own land).
+fn worker_denial_reason(what: &str, target: &Path, worktree: &Path) -> String {
+    format!(
+        "Refused by the goal-worker write jail. You are a dispatched goal worker and {worktree} \
+         — the worktree your goal/<id> branch is checked out in — is the ONLY directory you may \
+         write in. {what} resolves to {target}, which is outside it. Reading anywhere is fine; \
+         creating, editing, deleting or committing files is not. The project checkout is \
+         especially off limits: a stray write there leaves it dirty and BLOCKS your own goal from \
+         landing (auto-land refuses with \"the project root has uncommitted changes\"), and a \
+         commit made there bypasses review entirely. Redo this inside {worktree} — relative paths \
+         and the shell's working directory already resolve there — and commit on your goal branch \
+         in that worktree.",
+        worktree = worktree.display(),
+        target = target.display(),
+        what = what,
+    )
+}
+
+/// The refusal a dispatched `SubAgent` with no worktree gets (G13 M7). Same
+/// Y4c shape as [`worker_denial_reason`], minus the goal/worktree specifics
+/// it does not have: name the one writable root, say what to do instead, and
+/// say why this is a refusal rather than a question (there is no one in this
+/// process to ask).
+fn subagent_denial_reason(what: &str, target: &Path, working_dir: &Path) -> String {
+    format!(
+        "Refused by the write jail. You are a dispatched subagent: {working_dir} is the ONLY \
+         directory you may write in, and {what} resolves to {target}, which is outside it. \
+         Reading anywhere is fine; creating, editing or deleting files is not. This is a refusal \
+         and not a request for approval because no one can answer an approval on your behalf — \
+         you were dispatched by another session, not opened by a person. Redo this inside \
+         {working_dir} (relative paths and the shell's working directory already resolve there), \
+         or report back that the change you need is outside your working directory.",
+        working_dir = working_dir.display(),
+        target = target.display(),
+        what = what,
+    )
+}
+
+// ── Lane Y9: shell confinement for a goal worker ──────────────────────────
+//
+// SCOPE, stated up front: this is a STRUCTURAL escape detector over a
+// shallowly tokenized command, not a shell parser and not a sandbox. It
+// refuses the four shapes that actually produced M12/M14's bypasses — a cwd
+// change out of the worktree, a `git` pointed at another repo with a mutating
+// subcommand, an output redirection to an outside path, and a mutating file
+// command with an outside target. It deliberately does NOT try to judge
+// arbitrary absolute paths appearing anywhere in a command line (that would
+// refuse ordinary READS, e.g. `cat <trunk>/README.md`), and a command that
+// hides its target behind a variable, a heredoc body, an `eval`, or an
+// interpreter one-liner still gets through. The real containment for a
+// hostile process is an OS sandbox; this is the correctness guard that keeps a
+// COOPERATIVE model — which is what a dispatched worker is — inside its tree,
+// and tells it why when it strays.
+
+fn is_shell_tool(name: &str) -> bool {
+    let base = name.rsplit("__").next().unwrap_or(name);
+    matches!(
+        base,
+        "shell" | "bash" | "execute_command" | "run_command" | "terminal"
+    )
+}
+
+fn shell_command(request: &ToolRequest) -> Option<String> {
+    let tool_call = request.tool_call.as_ref().ok()?;
+    if !is_shell_tool(tool_call.name.as_ref()) {
+        return None;
+    }
+    let args = tool_call.arguments.as_ref()?;
+    args.get("command")
+        .or_else(|| args.get("cmd"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// One shallow shell token.
+#[derive(Debug, PartialEq, Eq)]
+enum Tok {
+    Word(String),
+    /// Anything that ends the current command: `;`, `&&`, `||`, `|`, `&`,
+    /// newline, `(`/`)`, and (for our purposes) an input redirection.
+    Sep,
+    /// An OUTPUT redirection (`>`, `>>`, `2>`, `&>`): the next word is a file
+    /// the command writes to.
+    Redirect,
+}
+
+/// Emit the word under construction, if there is one. A QUOTED word is
+/// emitted even when it is empty (L4): `''` is a real, positional operand, and
+/// dropping it shifts every later operand left — which matters for
+/// [`MUTATES_LAST_ARG`], where the destination is identified BY position
+/// (`cp a b ''` writes to `''`, not to `b`). `quoted` is cleared by the same
+/// call, so it only ever describes the word being emitted.
+fn push_word(word: &mut String, quoted: &mut bool, out: &mut Vec<Tok>) {
+    if !word.is_empty() || *quoted {
+        out.push(Tok::Word(std::mem::take(word)));
+    }
+    *quoted = false;
+}
+
+type ShellChars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
+
+/// The delimiter word of a heredoc (`<<EOF`, `<<'EOF'`, `<<"EOF"`, `<<\EOF`).
+/// Quoting the delimiter only changes whether the BODY is expanded, never the
+/// delimiter itself, so the quotes are stripped here exactly as bash strips
+/// them before matching the terminator line.
+fn heredoc_delimiter(chars: &mut ShellChars<'_>) -> String {
+    let mut delimiter = String::new();
+    while matches!(chars.peek(), Some(&' ') | Some(&'\t')) {
+        chars.next();
+    }
+    let mut quote: Option<char> = None;
+    while let Some(&c) = chars.peek() {
+        if let Some(q) = quote {
+            chars.next();
+            if c == q {
+                quote = None;
+            } else {
+                delimiter.push(c);
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                chars.next();
+                quote = Some(c);
+            }
+            '\\' => {
+                chars.next();
+                if let Some(next) = chars.next() {
+                    delimiter.push(next);
+                }
+            }
+            c if c.is_whitespace() => break,
+            ';' | '|' | '&' | '<' | '>' | '(' | ')' => break,
+            _ => {
+                chars.next();
+                delimiter.push(c);
+            }
+        }
+    }
+    delimiter
+}
+
+/// Consume a heredoc BODY — every line up to and including the terminator
+/// line — emitting nothing. The body is DATA: before M5 it was tokenized as
+/// commands, so `cat > setup.sh <<'EOF' … cd /usr/local … rm /abs/path … EOF`
+/// (or a README/Makefile quoting either line) was refused on its own prose.
+/// An unterminated heredoc consumes the remaining input, which is what bash
+/// does with it too.
+fn skip_heredoc_body(chars: &mut ShellChars<'_>, delimiter: &str, strip_tabs: bool) {
+    if delimiter.is_empty() {
+        return;
+    }
+    let mut line = String::new();
+    loop {
+        match chars.next() {
+            None => return,
+            Some('\n') => {
+                let candidate = if strip_tabs {
+                    line.trim_start_matches('\t')
+                } else {
+                    line.as_str()
+                };
+                if candidate.trim_end() == delimiter {
+                    return;
+                }
+                line.clear();
+            }
+            Some(c) => line.push(c),
+        }
+    }
+}
+
+/// Split a command line into words, separators and output redirections.
+/// Quotes and backslash escapes are honored so a quoted path stays one token;
+/// everything else (expansion, heredoc bodies, subshell semantics) is left
+/// alone — see the SCOPE note above.
+fn tokenize(command: &str) -> Vec<Tok> {
+    let mut out: Vec<Tok> = Vec::new();
+    let mut word = String::new();
+    let mut chars = command.chars().peekable();
+    let mut quote: Option<char> = None;
+    // Did the word under construction come (partly) from inside quotes?
+    let mut quoted_word = false;
+    let mut pending_heredocs: Vec<(String, bool)> = Vec::new();
+
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            } else {
+                word.push(c);
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                quoted_word = true;
+            }
+            // A backslash escapes the next character (a line continuation
+            // escapes the newline away entirely).
+            '\\' => match chars.next() {
+                None | Some('\n') => {}
+                Some(next) => word.push(next),
+            },
+            ';' | '(' | ')' => {
+                push_word(&mut word, &mut quoted_word, &mut out);
+                out.push(Tok::Sep);
+            }
+            '\n' => {
+                push_word(&mut word, &mut quoted_word, &mut out);
+                out.push(Tok::Sep);
+                // A heredoc's BODY starts on the next line and is data, not
+                // commands (M5). Bash allows several on one line, in order.
+                for (delimiter, strip_tabs) in std::mem::take(&mut pending_heredocs) {
+                    skip_heredoc_body(&mut chars, &delimiter, strip_tabs);
+                }
+            }
+            '&' => {
+                push_word(&mut word, &mut quoted_word, &mut out);
+                if chars.peek() == Some(&'&') {
+                    chars.next();
+                    out.push(Tok::Sep);
+                } else if chars.peek() == Some(&'>') {
+                    chars.next();
+                    if chars.peek() == Some(&'>') {
+                        chars.next();
+                    }
+                    out.push(Tok::Redirect);
+                } else {
+                    out.push(Tok::Sep);
+                }
+            }
+            '|' => {
+                push_word(&mut word, &mut quoted_word, &mut out);
+                if chars.peek() == Some(&'|') {
+                    chars.next();
+                }
+                out.push(Tok::Sep);
+            }
+            '<' => {
+                push_word(&mut word, &mut quoted_word, &mut out);
+                if chars.peek() == Some(&'<') {
+                    chars.next();
+                    // `<<<` is a here-STRING: one word of data follows on the
+                    // same line, and it is not a file. `<<`/`<<-` is a
+                    // heredoc: the delimiter word follows, then the BODY
+                    // starts on the next line.
+                    if chars.peek() == Some(&'<') {
+                        chars.next();
+                        out.push(Tok::Sep);
+                    } else {
+                        let strip_tabs = chars.peek() == Some(&'-');
+                        if strip_tabs {
+                            chars.next();
+                        }
+                        // No `Sep`: the rest of the LINE still belongs to this
+                        // command (`cat <<EOF > out.txt` redirects to out.txt).
+                        pending_heredocs.push((heredoc_delimiter(&mut chars), strip_tabs));
+                    }
+                } else {
+                    // A plain input redirection is a read: end the command, and
+                    // let the filename be an ordinary word nothing matches.
+                    out.push(Tok::Sep);
+                }
+            }
+            '>' => {
+                // A leading file descriptor (`2>`) belongs to the operator.
+                if word == "1" || word == "2" {
+                    word.clear();
+                }
+                push_word(&mut word, &mut quoted_word, &mut out);
+                if chars.peek() == Some(&'>') {
+                    chars.next();
+                }
+                if chars.peek() == Some(&'&') {
+                    // `>&2` duplicates a descriptor; there is no file target.
+                    chars.next();
+                    out.push(Tok::Sep);
+                } else {
+                    out.push(Tok::Redirect);
+                }
+            }
+            c if c.is_whitespace() => push_word(&mut word, &mut quoted_word, &mut out),
+            _ => word.push(c),
+        }
+    }
+    push_word(&mut word, &mut quoted_word, &mut out);
+    out
+}
+
+/// One command in a pipeline/list: its words, plus the files it redirects
+/// output into.
+#[derive(Debug, Default)]
+struct Segment {
+    words: Vec<String>,
+    redirects: Vec<String>,
+}
+
+fn segments(tokens: Vec<Tok>) -> Vec<Segment> {
+    let mut out: Vec<Segment> = Vec::new();
+    let mut current = Segment::default();
+    let mut redirect_next = false;
+    for token in tokens {
+        match token {
+            Tok::Sep => {
+                redirect_next = false;
+                if !current.words.is_empty() || !current.redirects.is_empty() {
+                    out.push(std::mem::take(&mut current));
+                }
+            }
+            Tok::Redirect => redirect_next = true,
+            Tok::Word(w) => {
+                if redirect_next {
+                    redirect_next = false;
+                    current.redirects.push(w);
+                } else {
+                    current.words.push(w);
+                }
+            }
+        }
+    }
+    if !current.words.is_empty() || !current.redirects.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// `git` subcommands that CHANGE a repository. `git -C <other-repo> log` stays
+/// allowed — reads are never the harm, and refusing them would cost a turn for
+/// nothing.
+const MUTATING_GIT_SUBCOMMANDS: &[&str] = &[
+    "add",
+    "am",
+    "apply",
+    "branch",
+    "checkout",
+    "cherry-pick",
+    "clean",
+    "commit",
+    "commit-tree",
+    "config",
+    "fetch",
+    "filter-branch",
+    "gc",
+    "init",
+    "merge",
+    "mv",
+    "notes",
+    "prune",
+    "pull",
+    "push",
+    "rebase",
+    "reset",
+    "restore",
+    "revert",
+    "rm",
+    "stash",
+    "submodule",
+    "switch",
+    "tag",
+    "update-ref",
+    "worktree",
+    "write-tree",
+];
+
+/// READ-ONLY forms of subcommands that are otherwise on
+/// [`MUTATING_GIT_SUBCOMMANDS`]: `git config --get x`, `git stash list`,
+/// `git worktree list`. Leaving them on the mutating list cost a worker a
+/// whole turn for a pure read (G13 L3). The subcommands that are read-only
+/// OUTRIGHT — `log`, `show`, `diff`, `status`, `rev-parse`, `blame`,
+/// `describe`, `ls-files`, `cat-file` — are simply absent from the mutating
+/// list and were already allowed; the test pins that.
+const READ_ONLY_GIT_FORMS: &[(&str, &[&str])] = &[
+    (
+        "config",
+        &["--get", "--get-all", "--get-regexp", "--list", "-l"],
+    ),
+    ("stash", &["list", "show"]),
+    ("worktree", &["list"]),
+];
+
+/// Is this `git <subcommand> …` one of the read-only forms above?
+fn is_read_only_git_form(subcommand: &str, rest: &[String]) -> bool {
+    READ_ONLY_GIT_FORMS.iter().any(|(name, forms)| {
+        *name == subcommand && rest.iter().any(|arg| forms.contains(&arg.as_str()))
+    })
+}
+
+/// Commands where EVERY non-flag argument is a file they may modify.
+const MUTATES_EVERY_ARG: &[&str] = &[
+    "rm", "rmdir", "mkdir", "touch", "truncate", "tee", "chmod", "chown", "shred", "unlink",
+    "patch",
+];
+
+/// Commands where the LAST non-flag argument is the destination they write
+/// (the earlier ones are sources they only read).
+const MUTATES_LAST_ARG: &[&str] = &["cp", "mv", "ln", "install", "rsync"];
+
+/// A structural escape out of the worker's worktree.
+struct ShellEscape {
+    /// Y4c-style description of the offending construct, e.g. "The `cd` target".
+    what: String,
+    target: PathBuf,
+}
+
+/// Character-device sinks a shell redirects to. These are not files in any
+/// tree — `cmd > /dev/null`, `cmd 2>/dev/null`, `… >/dev/null 2>&1` are in
+/// practically every build/test/lint invocation a worker runs, and refusing
+/// them would be a guaranteed false denial (G13 H1).
+///
+/// Matched on the RAW word, before canonicalization, deliberately:
+/// `/dev/stdout` is a symlink to `/dev/fd/1` and `/dev/fd/1` to whatever this
+/// process's stdout currently is, so canonicalizing the word yields a path in
+/// an unrelated tree and the result would depend on how the daemon was
+/// launched. An allowlist ROOT cannot express that; a raw-word test can.
+fn is_device_sink(raw: &str) -> bool {
+    matches!(raw, "/dev/null" | "/dev/zero" | "/dev/stdout" | "/dev/stderr")
+        || raw.starts_with("/dev/fd/")
+        // `/dev/tty`, and the `/dev/ttys003` a terminal session is attached to.
+        || raw.starts_with("/dev/tty")
+}
+
+/// Resolve a shell word as a path against the session's cwd, expanding a
+/// leading `~`. Returns `None` for words that cannot be judged as paths:
+/// flags, device sinks, and anything carrying an unexpanded `$`.
+fn shell_path_candidate(raw: &str, cwd: &Path) -> Option<PathBuf> {
+    if raw.is_empty() || raw.starts_with('-') || raw.contains('$') || raw.contains('`') {
+        return None;
+    }
+    if is_device_sink(raw) {
+        return None;
+    }
+    let expanded = match raw.strip_prefix('~') {
+        Some(rest) => {
+            let home = std::env::var("HOME").ok()?;
+            let rest = rest.strip_prefix('/').unwrap_or(rest);
+            Path::new(&home).join(rest)
+        }
+        None => crate::agents::platform_extensions::developer::edit::resolve_path(raw, Some(cwd)),
+    };
+    Some(canonical_for_containment(&expanded))
+}
+
+/// `Some(target)` when `raw` — resolved against the session's cwd — lands
+/// outside the jail `root` and outside every allowlisted root.
+fn outside_worktree(raw: &str, cwd: &Path, root: &Path) -> Option<PathBuf> {
+    let candidate = shell_path_candidate(raw, cwd)?;
+    if candidate.starts_with(root) || universally_allowlisted(&candidate).is_some() {
+        return None;
+    }
+    Some(candidate)
+}
+
+/// Strip a leading path from a command word so `/bin/rm` is recognized as
+/// `rm`.
+fn command_base_name(word: &str) -> &str {
+    word.rsplit('/').next().unwrap_or(word)
+}
+
+/// The first structural escape in `command`, if any. See the SCOPE note.
+///
+/// `cwd` is the session's ACTUAL working directory — the directory the shell
+/// will run in, so the directory a relative word resolves against — and
+/// `worktree` is the jail root that word is then tested for containment in.
+/// They differ whenever a worker's session sits in a SUBDIRECTORY of its
+/// worktree, which `goal_worktree_root` explicitly supports: resolving
+/// `rm ../build/stale` against the ROOT would compute `<root>/..` and refuse a
+/// path that is in fact inside the tree (G13 M4).
+fn shell_escape(command: &str, cwd: &Path, worktree: &Path) -> Option<ShellEscape> {
+    let root = canonical_for_containment(worktree);
+    for segment in segments(tokenize(command)) {
+        for redirect in &segment.redirects {
+            if let Some(target) = outside_worktree(redirect, cwd, &root) {
+                return Some(ShellEscape {
+                    what: format!("The output redirection `> {redirect}`"),
+                    target,
+                });
+            }
+        }
+        let Some(command_word) = segment.words.first() else {
+            continue;
+        };
+        let args = &segment.words[1..];
+        match command_base_name(command_word) {
+            "cd" | "pushd" => {
+                let operands: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+                // `cd -` (and `cd --` with nothing after it) goes to $OLDPWD,
+                // which this inspector cannot know. Treat it as INSIDE (L2):
+                // refusing on an UNKNOWN costs the worker a turn for nothing,
+                // and every command that actually writes is still judged on
+                // its own target wherever the shell ends up — the containment
+                // root never moves. `cd -- <dir>` still has an operand and is
+                // judged normally.
+                if operands.is_empty() && args.iter().any(|a| a == "-" || a == "--") {
+                    continue;
+                }
+                // A bare `cd` goes to $HOME, which is outside by construction.
+                let raw = operands
+                    .first()
+                    .map(|a| (*a).clone())
+                    .unwrap_or_else(|| "~".to_string());
+                if let Some(target) = outside_worktree(&raw, cwd, &root) {
+                    return Some(ShellEscape {
+                        what: format!("The `cd {raw}`"),
+                        target,
+                    });
+                }
+            }
+            "git" => {
+                if let Some(escape) = git_escape(args, cwd, &root) {
+                    return Some(escape);
+                }
+            }
+            // In-place edit only: `sed 's/a/b/' <outside>` merely READS it.
+            "sed" if args.iter().any(|a| a.starts_with("-i")) => {
+                if let Some(escape) = first_outside_arg(args, "`sed -i`", cwd, &root, false) {
+                    return Some(escape);
+                }
+            }
+            base if MUTATES_EVERY_ARG.contains(&base) => {
+                if let Some(escape) =
+                    first_outside_arg(args, &format!("`{base}`"), cwd, &root, false)
+                {
+                    return Some(escape);
+                }
+            }
+            base if MUTATES_LAST_ARG.contains(&base) => {
+                if let Some(escape) =
+                    first_outside_arg(args, &format!("`{base}`"), cwd, &root, true)
+                {
+                    return Some(escape);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `git -C <dir>` / `--git-dir=` / `--work-tree=` pointed outside the worktree,
+/// with a subcommand that would CHANGE that repository.
+fn git_escape(args: &[String], cwd: &Path, root: &Path) -> Option<ShellEscape> {
+    let mut elsewhere: Option<(String, PathBuf)> = None;
+    let mut subcommand: Option<&str> = None;
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        let flagged: Option<(&str, String)> = if arg == "-C" {
+            args.get(index + 1).map(|v| ("-C", v.clone()))
+        } else if let Some(value) = arg.strip_prefix("--git-dir=") {
+            Some(("--git-dir", value.to_string()))
+        } else if let Some(value) = arg.strip_prefix("--work-tree=") {
+            Some(("--work-tree", value.to_string()))
+        } else if arg == "--git-dir" || arg == "--work-tree" {
+            args.get(index + 1).map(|v| (arg, v.clone()))
+        } else {
+            None
+        };
+        if let Some((flag, raw)) = flagged {
+            if elsewhere.is_none() {
+                elsewhere = outside_worktree(&raw, cwd, root)
+                    .map(|target| (format!("`git {flag} {raw}`"), target));
+            }
+            index += if arg.contains('=') { 1 } else { 2 };
+            continue;
+        }
+        if arg.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        subcommand = Some(arg);
+        break;
+    }
+    let (what, target) = elsewhere?;
+    let subcommand = subcommand?;
+    if !MUTATING_GIT_SUBCOMMANDS.contains(&subcommand) {
+        return None;
+    }
+    // `index` stopped on the subcommand, so everything after it is its own
+    // arguments — where the read-only forms live (L3).
+    if is_read_only_git_form(subcommand, &args[index + 1..]) {
+        return None;
+    }
+    Some(ShellEscape {
+        what: format!("{what} (a `{subcommand}` changes that repository)"),
+        target,
+    })
+}
+
+/// First argument that resolves outside the worktree. `last_only` checks just
+/// the destination argument (`cp src dst` reads `src` — only `dst` is written).
+fn first_outside_arg(
+    args: &[String],
+    what: &str,
+    cwd: &Path,
+    root: &Path,
+    last_only: bool,
+) -> Option<ShellEscape> {
+    let operands: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+    let considered: Vec<&String> = if last_only {
+        operands.last().into_iter().copied().collect()
+    } else {
+        operands
+    };
+    for raw in considered {
+        if let Some(target) = outside_worktree(raw, cwd, root) {
+            return Some(ShellEscape {
+                what: format!("{what}'s target `{raw}`"),
+                target,
+            });
+        }
+    }
+    None
 }
 
 #[async_trait]
@@ -226,59 +1053,123 @@ impl ToolInspector for WriteJailInspector {
         _messages: &[Message],
         _goose_mode: GooseMode,
     ) -> Result<Vec<InspectionResult>> {
-        // Resolve the session's working dir once per batch — and only when the
-        // batch actually contains a write, so read-only turns cost nothing.
-        if !tool_requests.iter().any(|r| write_path(r).is_some()) {
+        // Resolve the session once per batch — and only when the batch
+        // actually contains something this jail judges, so read-only turns
+        // cost nothing. Y9 adds `shell` to that set, because a goal worker's
+        // shell is the one tool that can both write into and commit onto the
+        // project checkout.
+        let has_write = tool_requests.iter().any(|r| write_path(r).is_some());
+        let has_shell = tool_requests.iter().any(|r| shell_command(r).is_some());
+        if !has_write && !has_shell {
             return Ok(Vec::new());
         }
-        let Some(working_dir) = self.session_working_dir(session_id).await else {
+        let Some(session) = self.session_row(session_id).await else {
             // Fail open: no boundary to enforce (see module docs).
             return Ok(Vec::new());
         };
+        let working_dir = session.working_dir.clone();
+        let role = jail_role(&session);
+        // Nothing to do for a CONFIRMING session with no write in the batch:
+        // shell confinement is the dispatched worker's rule only.
+        if !has_write && role.denying_root().is_none() {
+            return Ok(Vec::new());
+        }
 
         let mut results = Vec::new();
         for request in tool_requests {
-            let Some(raw_path) = write_path(request) else {
+            if let Some(raw_path) = write_path(request) {
+                match jail_verdict(&raw_path, &working_dir, &role) {
+                    JailVerdict::Inside => {}
+                    JailVerdict::Allowlisted(kind) => {
+                        tracing::debug!(
+                            tool_request_id = %request.id,
+                            path = %raw_path,
+                            allowlist = kind,
+                            "write jail: allowlisted write outside the working dir"
+                        );
+                    }
+                    JailVerdict::Outside { resolved } => {
+                        match role.denial_reason("The write target", &resolved) {
+                            Some(reason) => {
+                                let jail_root = role.denying_root().unwrap_or(&working_dir);
+                                tracing::info!(
+                                    monotonic_counter.goose.write_jail_worker_denials = 1,
+                                    tool_request_id = %request.id,
+                                    path = %resolved.display(),
+                                    jail_root = %jail_root.display(),
+                                    "write jail: a dispatched worker was refused a write outside its jail"
+                                );
+                                results.push(InspectionResult {
+                                    tool_request_id: request.id.clone(),
+                                    action: InspectionAction::Deny,
+                                    reason,
+                                    confidence: 1.0,
+                                    inspector_name: self.name().to_string(),
+                                    finding_id: Some(WORKER_JAIL_FINDING_ID.to_string()),
+                                });
+                            }
+                            None => {
+                                tracing::info!(
+                                    monotonic_counter.goose.write_jail_confirmations = 1,
+                                    tool_request_id = %request.id,
+                                    path = %resolved.display(),
+                                    working_dir = %working_dir.display(),
+                                    "write jail: write outside the session working dir requires approval"
+                                );
+                                results.push(InspectionResult {
+                                    tool_request_id: request.id.clone(),
+                                    action: InspectionAction::RequireApproval(Some(format!(
+                                        "🔒 Write outside the working directory\n\n\
+                                         This session works in {} but the agent wants to write to \
+                                         {}. Approve if you asked for this; deny otherwise. \
+                                         (Standing exceptions can be added via \
+                                         SECURITY_WRITE_JAIL_ALLOW.)",
+                                        working_dir.display(),
+                                        resolved.display()
+                                    ))),
+                                    reason: format!(
+                                        "Write target {} is outside the session working directory {}",
+                                        resolved.display(),
+                                        working_dir.display()
+                                    ),
+                                    confidence: 1.0,
+                                    inspector_name: self.name().to_string(),
+                                    finding_id: None,
+                                });
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Shell confinement applies to every REFUSING role: a dispatched
+            // subagent's shell can leave its working dir exactly as a goal
+            // worker's can, and neither has an answerer for a confirmation.
+            let Some(jail_root) = role.denying_root() else {
                 continue;
             };
-            match jail_verdict(&raw_path, &working_dir) {
-                JailVerdict::Inside => {}
-                JailVerdict::Allowlisted(kind) => {
-                    tracing::debug!(
-                        tool_request_id = %request.id,
-                        path = %raw_path,
-                        allowlist = kind,
-                        "write jail: allowlisted write outside the working dir"
-                    );
-                }
-                JailVerdict::Outside { resolved } => {
-                    tracing::info!(
-                        monotonic_counter.goose.write_jail_confirmations = 1,
-                        tool_request_id = %request.id,
-                        path = %resolved.display(),
-                        working_dir = %working_dir.display(),
-                        "write jail: write outside the session working dir requires approval"
-                    );
-                    results.push(InspectionResult {
-                        tool_request_id: request.id.clone(),
-                        action: InspectionAction::RequireApproval(Some(format!(
-                            "🔒 Write outside the working directory\n\n\
-                             This session works in {} but the agent wants to write to {}. \
-                             Approve if you asked for this; deny otherwise. \
-                             (Standing exceptions can be added via SECURITY_WRITE_JAIL_ALLOW.)",
-                            working_dir.display(),
-                            resolved.display()
-                        ))),
-                        reason: format!(
-                            "Write target {} is outside the session working directory {}",
-                            resolved.display(),
-                            working_dir.display()
-                        ),
-                        confidence: 1.0,
-                        inspector_name: self.name().to_string(),
-                        finding_id: None,
-                    });
-                }
+            let Some(command) = shell_command(request) else {
+                continue;
+            };
+            if let Some(escape) = shell_escape(&command, &working_dir, jail_root) {
+                tracing::info!(
+                    monotonic_counter.goose.write_jail_worker_denials = 1,
+                    tool_request_id = %request.id,
+                    path = %escape.target.display(),
+                    jail_root = %jail_root.display(),
+                    "write jail: a dispatched worker was refused a shell command that leaves its jail"
+                );
+                results.push(InspectionResult {
+                    tool_request_id: request.id.clone(),
+                    action: InspectionAction::Deny,
+                    reason: role
+                        .denial_reason(&escape.what, &escape.target)
+                        .unwrap_or_default(),
+                    confidence: 1.0,
+                    inspector_name: self.name().to_string(),
+                    finding_id: Some(WORKER_JAIL_FINDING_ID.to_string()),
+                });
             }
         }
         Ok(results)
@@ -288,7 +1179,6 @@ impl ToolInspector for WriteJailInspector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::SessionType;
     use rmcp::model::CallToolRequestParams;
     use rmcp::object;
 
@@ -516,14 +1406,18 @@ mod tests {
         assert_eq!(
             results.len(),
             1,
-            "a write back into the PRIMARY checkout must require approval now \
+            "a write back into the PRIMARY checkout must be refused now \
              that the session is repointed at its worktree: {:?}",
             results
         );
-        assert!(matches!(
-            results[0].action,
-            InspectionAction::RequireApproval(Some(_))
-        ));
+        // Lane Y9 strengthened the ACTION for this exact session shape (a
+        // `SubAgent` running in a goal worktree) from a confirmation to a
+        // refusal — the boundary Y3 fixed is unchanged, but a confirmation had
+        // no answerer in a worker (see the module docs), so it resolved to a
+        // hang in-process and to an auto-ALLOW on the CLI's non-interactive
+        // surface. Ordinary sessions still get `RequireApproval`
+        // (`absolute_write_outside_requires_approval_with_answerable_message`).
+        assert_eq!(results[0].action, InspectionAction::Deny);
     }
 
     #[tokio::test]
@@ -616,5 +1510,646 @@ mod tests {
         for name in ["shell", "search", "read_webpage", "rewrite", "credit"] {
             assert!(!is_write_tool(name), "{name}");
         }
+    }
+
+    // ── Lane Y9: the dispatched goal worker's hard jail ───────────────────
+    //
+    // Paths are deliberately fake absolutes outside any temp root (as in the
+    // Y3 test above): a tempdir-rooted fixture would sit under
+    // `std::env::temp_dir()`, which the builtin allowlist passes, masking the
+    // very boundary these tests pin.
+
+    const TRUNK: &str = "/repos/y9-trunk";
+    const WORKTREE: &str = "/repos/.permagent-goal-worktrees/run-1";
+
+    fn shell_request(id: &str, command: &str) -> ToolRequest {
+        ToolRequest {
+            id: id.to_string(),
+            tool_call: Ok(
+                CallToolRequestParams::new("shell").with_arguments(object!({"command": command}))
+            ),
+            metadata: None,
+            tool_meta: None,
+        }
+    }
+
+    /// A session shaped exactly like a dispatched internal goal worker after
+    /// Lane Y3's repoint: `SessionType::SubAgent`, working dir = its own
+    /// `.permagent-goal-worktrees/<run_id>` worktree.
+    async fn worker_jail(tmp: &tempfile::TempDir, worktree: &str) -> (WriteJailInspector, String) {
+        let session_manager = Arc::new(SessionManager::new(tmp.path().join("sessions")));
+        let session = session_manager
+            .create_session(
+                PathBuf::from(worktree),
+                "goal worker".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .expect("create worker session");
+        (WriteJailInspector::new(Some(session_manager)), session.id)
+    }
+
+    fn assert_worker_denial(results: &[InspectionResult], target: &str) {
+        assert_eq!(results.len(), 1, "expected exactly one denial: {results:?}");
+        assert_eq!(
+            results[0].action,
+            InspectionAction::Deny,
+            "a goal worker's escape must be REFUSED, not parked for approval"
+        );
+        assert!(
+            results[0].reason.contains(WORKTREE),
+            "the refusal must name the worktree so the model can correct itself: {}",
+            results[0].reason
+        );
+        assert!(
+            results[0].reason.contains(target),
+            "the refusal must name what it refused ({target}): {}",
+            results[0].reason
+        );
+        assert_eq!(
+            results[0].finding_id.as_deref(),
+            Some(WORKER_JAIL_FINDING_ID)
+        );
+    }
+
+    /// A12's fx07 and A14's fx05/fx07, in one assertion: the worker edits the
+    /// TRUNK copy of the file by absolute path, leaves the project root dirty,
+    /// and its own goal can then never land.
+    #[tokio::test]
+    async fn goal_worker_absolute_write_into_the_trunk_is_refused_naming_its_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (jail, session_id) = worker_jail(&tmp, WORKTREE).await;
+
+        let target = format!("{TRUNK}/inventory.py");
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[write_request("trunk-edit", "edit", &target)],
+        )
+        .await;
+        assert_worker_denial(&results, &target);
+    }
+
+    #[tokio::test]
+    async fn goal_worker_writes_inside_its_own_worktree_pass_silently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (jail, session_id) = worker_jail(&tmp, WORKTREE).await;
+
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[
+                write_request("abs", "edit", &format!("{WORKTREE}/inventory.py")),
+                write_request("rel", "write", "src/new_module.py"),
+                write_request("temp", "write", "/tmp/y9-scratch.txt"),
+            ],
+        )
+        .await;
+        assert!(
+            results.is_empty(),
+            "the worker's own worktree (and temp scratch) must stay silent: {results:?}"
+        );
+    }
+
+    /// Lane I1's macOS finding: `/var` is a symlink to `/private/var`, so the
+    /// SAME directory has two spellings. Containment is judged on the
+    /// symlink-resolved form, so a worker whose session was recorded under one
+    /// spelling may still write to its own tree under the other.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn goal_worker_worktree_alias_var_and_private_var_is_the_same_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        // `/var/tmp` exists on macOS and is NOT one of the builtin temp roots
+        // (`/tmp`, `/private/tmp`, `/var/folders`, `std::env::temp_dir()`), so
+        // the allowlist cannot mask this.
+        let worktree = "/var/tmp/y9-alias/.permagent-goal-worktrees/run-1";
+        let (jail, session_id) = worker_jail(&tmp, worktree).await;
+
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[write_request(
+                "aliased",
+                "edit",
+                "/private/var/tmp/y9-alias/.permagent-goal-worktrees/run-1/src/lib.rs",
+            )],
+        )
+        .await;
+        assert!(
+            results.is_empty(),
+            "/private/var and /var name the same worktree: {results:?}"
+        );
+
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[write_request(
+                "aliased-trunk",
+                "edit",
+                "/private/var/tmp/y9-alias/workspace/inventory.py",
+            )],
+        )
+        .await;
+        assert_eq!(
+            results.len(),
+            1,
+            "the alias must not smuggle a trunk write through: {results:?}"
+        );
+    }
+
+    /// A14's fx03/fx04: "the worker committed directly on `main`". The write
+    /// jail never saw those calls at all — they were `shell`.
+    #[tokio::test]
+    async fn goal_worker_shell_git_c_at_the_trunk_is_refused_for_mutations_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (jail, session_id) = worker_jail(&tmp, WORKTREE).await;
+
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[shell_request(
+                "commit",
+                &format!("git -C {TRUNK} commit -am \"fix inventory\""),
+            )],
+        )
+        .await;
+        assert_worker_denial(&results, TRUNK);
+
+        // The WRITE forms of the same subcommands stay refused (L3 exempts
+        // the read-only forms only).
+        for command in [
+            format!("git -C {TRUNK} config user.email w@example.com"),
+            format!("git -C {TRUNK} stash push -m wip"),
+            format!("git -C {TRUNK} worktree add ../scratch"),
+        ] {
+            let results = verdicts(&jail, &session_id, &[shell_request("mutate", &command)]).await;
+            assert_eq!(
+                results.len(),
+                1,
+                "a mutating form must still be refused: {command} → {results:?}"
+            );
+            assert_eq!(results[0].action, InspectionAction::Deny);
+        }
+
+        for command in [
+            format!("git -C {TRUNK} log --oneline -5"),
+            format!("git --git-dir={TRUNK}/.git status"),
+            "git commit -am \"fix inventory\"".to_string(),
+            "git -C . add -A".to_string(),
+            // G13 L3: read-only FORMS of otherwise-mutating subcommands.
+            format!("git -C {TRUNK} config --get remote.origin.url"),
+            format!("git -C {TRUNK} stash list"),
+            format!("git -C {TRUNK} worktree list"),
+            // …and the subcommands that are read-only outright, which were
+            // already absent from the mutating list.
+            format!("git -C {TRUNK} log --oneline"),
+            format!("git -C {TRUNK} show HEAD"),
+            format!("git -C {TRUNK} diff --stat"),
+            format!("git -C {TRUNK} rev-parse HEAD"),
+        ] {
+            let results = verdicts(&jail, &session_id, &[shell_request("read", &command)]).await;
+            assert!(
+                results.is_empty(),
+                "reads elsewhere and mutations in its OWN tree must stay allowed: {command} → {results:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn goal_worker_shell_cd_out_of_the_worktree_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (jail, session_id) = worker_jail(&tmp, WORKTREE).await;
+
+        for command in [
+            format!("cd {TRUNK} && python -m pytest"),
+            // `..`-relative, landing on the trunk: judged by where it LANDS.
+            "cd ../../y9-trunk && git add -A".to_string(),
+            format!("pushd {TRUNK}"),
+            // `--` ends option parsing; the operand after it is still a real
+            // target and is still judged (L2 exempts only `cd -`/bare `cd --`).
+            format!("cd -- {TRUNK}"),
+        ] {
+            let results = verdicts(&jail, &session_id, &[shell_request("cd", &command)]).await;
+            assert_eq!(
+                results.len(),
+                1,
+                "a cwd change out of the worktree must be refused: {command} → {results:?}"
+            );
+            assert_eq!(results[0].action, InspectionAction::Deny);
+        }
+
+        for command in [
+            "cd src && python -m pytest".to_string(),
+            format!("cd {WORKTREE} && git status"),
+            "python -m pytest tests/".to_string(),
+            // G13 L2: `cd -`/`cd --` go to $OLDPWD, which is unknown here.
+            // An unknown must not be a refusal — the previous directory was
+            // itself reached by a `cd` this inspector already judged.
+            "cd - && git status".to_string(),
+            "cd --".to_string(),
+        ] {
+            let results = verdicts(&jail, &session_id, &[shell_request("ok", &command)]).await;
+            assert!(
+                results.is_empty(),
+                "movement inside the worktree must stay allowed: {command} → {results:?}"
+            );
+        }
+    }
+
+    /// G13 M4: a worker whose session sits in a SUBDIRECTORY of its worktree
+    /// (which `goal_worktree_root` exists to support) resolves relative shell
+    /// words against that subdirectory, not against the jail root — otherwise
+    /// `../build` reads as `<root>/..` and an ordinary in-tree path is refused.
+    #[tokio::test]
+    async fn goal_worker_relative_shell_paths_resolve_against_the_session_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (jail, session_id) = worker_jail(&tmp, &format!("{WORKTREE}/sub")).await;
+
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[shell_request("sibling", "rm ../build/stale")],
+        )
+        .await;
+        assert!(
+            results.is_empty(),
+            "`../build` from <worktree>/sub is INSIDE the worktree: {results:?}"
+        );
+
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[shell_request("escape", "rm ../../outside")],
+        )
+        .await;
+        assert_eq!(
+            results.len(),
+            1,
+            "`../../outside` from <worktree>/sub leaves the worktree: {results:?}"
+        );
+        assert_eq!(results[0].action, InspectionAction::Deny);
+        assert!(
+            results[0].reason.contains(WORKTREE),
+            "containment is still tested against the worktree ROOT: {}",
+            results[0].reason
+        );
+    }
+
+    /// G13 M5: a heredoc BODY is data. Writing a setup script whose text
+    /// happens to contain `cd /usr/local` or `rm /abs/path` is an ordinary
+    /// in-worktree write, and before the fix each body line was tokenized as
+    /// a command and refused.
+    #[tokio::test]
+    async fn goal_worker_heredoc_body_is_data_not_commands() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (jail, session_id) = worker_jail(&tmp, WORKTREE).await;
+
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[shell_request(
+                "heredoc",
+                "cat > setup.sh <<'EOF'\ncd /usr/local\nrm /abs/path\nEOF\n",
+            )],
+        )
+        .await;
+        assert!(
+            results.is_empty(),
+            "the heredoc body is the file's CONTENT, and setup.sh is inside: {results:?}"
+        );
+
+        // …and the rest of the LINE after the delimiter still belongs to the
+        // command, so a redirection written after the heredoc is still judged.
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[shell_request(
+                "heredoc-escape",
+                &format!("cat <<EOF > {TRUNK}/setup.sh\nhello\nEOF\n"),
+            )],
+        )
+        .await;
+        assert_eq!(
+            results.len(),
+            1,
+            "a redirection after the heredoc must still be refused: {results:?}"
+        );
+        assert_eq!(results[0].action, InspectionAction::Deny);
+    }
+
+    #[tokio::test]
+    async fn goal_worker_shell_writes_outside_are_refused_and_reads_are_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (jail, session_id) = worker_jail(&tmp, WORKTREE).await;
+
+        for command in [
+            format!("echo 'patched' > {TRUNK}/inventory.py"),
+            format!("cat inventory.py >> {TRUNK}/inventory.py"),
+            format!("sed -i '' 's/a/b/' {TRUNK}/inventory.py"),
+            format!("rm -f {TRUNK}/inventory.py"),
+            format!("cp inventory.py {TRUNK}/inventory.py"),
+            format!("mkdir -p {TRUNK}/newdir"),
+        ] {
+            let results = verdicts(&jail, &session_id, &[shell_request("w", &command)]).await;
+            assert_eq!(
+                results.len(),
+                1,
+                "a write outside the worktree must be refused: {command} → {results:?}"
+            );
+            assert_eq!(results[0].action, InspectionAction::Deny);
+        }
+
+        for command in [
+            format!("cat {TRUNK}/inventory.py"),
+            format!("diff inventory.py {TRUNK}/inventory.py"),
+            format!("cp {TRUNK}/inventory.py ./reference.py"),
+            "echo hi > out.txt".to_string(),
+            "python -m pytest 2>&1 | tail -20".to_string(),
+            "rm -rf .pytest_cache".to_string(),
+            // G13 H1: the device sinks every build/test invocation redirects
+            // to. They are outside the worktree by spelling and on no
+            // allowlist root, so before the fix these were hard denials.
+            "pytest -q > /dev/null 2>&1".to_string(),
+            "grep -rn TODO . 2>/dev/null".to_string(),
+            "cargo build >/dev/null 2>/dev/null".to_string(),
+            "echo note > /dev/stderr".to_string(),
+        ] {
+            let results = verdicts(&jail, &session_id, &[shell_request("r", &command)]).await;
+            assert!(
+                results.is_empty(),
+                "reads outside and writes inside must stay allowed: {command} → {results:?}"
+            );
+        }
+    }
+
+    /// The `.permagent-goal-worktrees` namespace allowlist exists for a
+    /// SUPERVISING session reaching into a worker's tree. It must not let one
+    /// worker write into another worker's tree.
+    #[tokio::test]
+    async fn one_workers_jail_does_not_include_another_workers_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (jail, session_id) = worker_jail(&tmp, WORKTREE).await;
+
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[write_request(
+                "sibling",
+                "write",
+                "/repos/.permagent-goal-worktrees/run-2/src/lib.rs",
+            )],
+        )
+        .await;
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].action, InspectionAction::Deny);
+    }
+
+    /// G13 M7: a dispatched `SubAgent` that got NO worktree still has no
+    /// answerer for a confirmation in a process that does not serve the
+    /// Decision Inbox — which every `permagent` lib test process is, by the
+    /// standing rule that they never call `mark_process_serves_inbox`. It is
+    /// refused against its own working dir instead of parking.
+    #[tokio::test]
+    async fn dispatched_subagent_without_a_worktree_is_denied_outside_its_working_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("checkout");
+        std::fs::create_dir_all(&work).unwrap();
+        let session_manager = Arc::new(SessionManager::new(tmp.path().join("sessions")));
+        let parent = session_manager
+            .create_session(
+                work.clone(),
+                "coordinator".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .expect("create parent");
+        let child = session_manager
+            .create_session_with_parent(
+                Some(&parent.id),
+                work.clone(),
+                "dispatched worker".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .expect("create child");
+        let jail = WriteJailInspector::new(Some(session_manager));
+
+        let results = verdicts(
+            &jail,
+            &child.id,
+            &[write_request("outside", "write", "/repos/y9-trunk/a.rs")],
+        )
+        .await;
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(
+            results[0].action,
+            InspectionAction::Deny,
+            "a dispatched subagent cannot answer a confirmation: {:?}",
+            results[0].action
+        );
+        assert!(
+            results[0].reason.contains(work.to_str().unwrap()),
+            "the refusal must name the one writable root: {}",
+            results[0].reason
+        );
+        assert_eq!(
+            results[0].finding_id.as_deref(),
+            Some(WORKER_JAIL_FINDING_ID)
+        );
+
+        // Its shell is confined for the same reason, and its own tree is free.
+        let results = verdicts(
+            &jail,
+            &child.id,
+            &[shell_request("shell", "rm -f /repos/y9-trunk/a.rs")],
+        )
+        .await;
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].action, InspectionAction::Deny);
+
+        let results = verdicts(
+            &jail,
+            &child.id,
+            &[
+                write_request("inside", "write", work.join("a.rs").to_str().unwrap()),
+                shell_request("inside-shell", "rm -f build/stale"),
+            ],
+        )
+        .await;
+        assert!(results.is_empty(), "its own tree stays free: {results:?}");
+    }
+
+    /// The other half of M7's choice: a `SubAgent` with NO parent session was
+    /// not dispatched by anyone, so the C3 confirmation still has a plausible
+    /// answerer and the semantics are unchanged.
+    #[tokio::test]
+    async fn parentless_subagent_keeps_the_confirmation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("checkout");
+        std::fs::create_dir_all(&work).unwrap();
+        let session_manager = Arc::new(SessionManager::new(tmp.path().join("sessions")));
+        let session = session_manager
+            .create_session(
+                work.clone(),
+                "orphan subagent".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .expect("create session");
+        let jail = WriteJailInspector::new(Some(session_manager));
+
+        let results = verdicts(
+            &jail,
+            &session.id,
+            &[write_request("outside", "write", "/repos/y9-trunk/a.rs")],
+        )
+        .await;
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert!(
+            matches!(
+                results[0].action,
+                InspectionAction::RequireApproval(Some(_))
+            ),
+            "no parent ⇒ C3's confirmation, unchanged: {:?}",
+            results[0].action
+        );
+    }
+
+    /// The coordinator is a top-level session working in the project root. Y9
+    /// must not change anything about it: its shell is not inspected here at
+    /// all (`CodingDagInspector` owns that policy), and an outside write is
+    /// still the C3 confirmation.
+    #[tokio::test]
+    async fn coordinator_session_is_unaffected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (jail, session_id, work) = jail_with_session(&tmp).await;
+
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[
+                shell_request("git", &format!("git -C {TRUNK} commit -am x")),
+                shell_request("cd", "cd / && rm -rf build"),
+            ],
+        )
+        .await;
+        assert!(
+            results.is_empty(),
+            "the write jail must not start policing an ordinary session's shell: {results:?}"
+        );
+
+        let results = verdicts(
+            &jail,
+            &session_id,
+            &[
+                write_request("inside", "write", work.join("a.rs").to_str().unwrap()),
+                write_request("outside", "write", "/definitely/not/allowed/b.rs"),
+            ],
+        )
+        .await;
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert!(
+            matches!(
+                results[0].action,
+                InspectionAction::RequireApproval(Some(_))
+            ),
+            "an ordinary session keeps the confirmation semantics: {:?}",
+            results[0].action
+        );
+    }
+
+    #[test]
+    fn goal_worktree_root_truncates_at_the_run_id() {
+        assert_eq!(
+            goal_worktree_root(Path::new(
+                "/repos/.permagent-goal-worktrees/run-1/src/deep/dir"
+            )),
+            Some(PathBuf::from("/repos/.permagent-goal-worktrees/run-1"))
+        );
+        assert_eq!(
+            goal_worktree_root(Path::new("/repos/.permagent-goal-worktrees/run-1")),
+            Some(PathBuf::from("/repos/.permagent-goal-worktrees/run-1"))
+        );
+        // The namespace directory alone is NOT a worktree root — treating it
+        // as one would jail a worker to every worker's tree at once.
+        assert_eq!(
+            goal_worktree_root(Path::new("/repos/.permagent-goal-worktrees")),
+            None
+        );
+        assert_eq!(goal_worktree_root(Path::new("/repos/y9-trunk")), None);
+    }
+
+    #[test]
+    fn tokenizer_drops_heredoc_bodies() {
+        let segs = segments(tokenize(
+            "cat > setup.sh <<'EOF'\ncd /usr/local\nrm /abs/path\nEOF\necho done",
+        ));
+        assert_eq!(segs.len(), 2, "the body must produce no segments: {segs:?}");
+        assert_eq!(segs[0].words, vec!["cat"]);
+        assert_eq!(segs[0].redirects, vec!["setup.sh"]);
+        assert_eq!(
+            segs[1].words,
+            vec!["echo", "done"],
+            "tokenizing resumes after the terminator line: {segs:?}"
+        );
+
+        // `<<-` strips leading TABS from the terminator line.
+        let segs = segments(tokenize("cat <<-EOF\n\trm /abs/path\n\tEOF\necho done"));
+        assert_eq!(segs.len(), 2, "{segs:?}");
+        assert_eq!(segs[1].words, vec!["echo", "done"]);
+
+        // The rest of the line after the delimiter still belongs to the
+        // command — no `Sep` is emitted for a heredoc.
+        let segs = segments(tokenize("cat <<EOF > out/log.txt\nbody\nEOF"));
+        assert_eq!(segs.len(), 1, "{segs:?}");
+        assert_eq!(segs[0].words, vec!["cat"]);
+        assert_eq!(segs[0].redirects, vec!["out/log.txt"]);
+    }
+
+    #[test]
+    fn tokenizer_keeps_quoted_paths_whole_and_finds_redirect_targets() {
+        let segs = segments(tokenize("sed -i '' 's/a b/c/' \"/repos/y9 trunk/f.py\""));
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].words[0], "sed");
+        assert_eq!(
+            segs[0].words.last().map(String::as_str),
+            Some("/repos/y9 trunk/f.py"),
+            "a quoted path with a space must stay one token: {segs:?}"
+        );
+
+        let segs = segments(tokenize("python -m pytest | tee /repos/y9-trunk/log.txt"));
+        assert_eq!(segs.len(), 2, "{segs:?}");
+        assert_eq!(segs[1].words, vec!["tee", "/repos/y9-trunk/log.txt"]);
+
+        let segs = segments(tokenize("echo hi >> out/log.txt"));
+        assert_eq!(segs[0].redirects, vec!["out/log.txt"]);
+        assert_eq!(segs[0].words, vec!["echo", "hi"]);
+    }
+
+    /// G13 L4: a QUOTED empty word is a positional operand. Dropping it shifts
+    /// every later operand left, and `MUTATES_LAST_ARG` identifies the
+    /// destination BY position.
+    #[test]
+    fn tokenizer_keeps_a_quoted_empty_word() {
+        let segs = segments(tokenize("cp a '' dst"));
+        assert_eq!(segs.len(), 1, "{segs:?}");
+        assert_eq!(segs[0].words, vec!["cp", "a", "", "dst"]);
+
+        // The shape that made the position wrong: the last operand IS the
+        // empty word, so nothing outside is written and nothing is refused.
+        let segs = segments(tokenize("cp a b ''"));
+        assert_eq!(segs[0].words, vec!["cp", "a", "b", ""]);
+
+        // `sed -i ''` (BSD sed's empty suffix) keeps its operand count too.
+        let segs = segments(tokenize("sed -i '' 's/a/b/' f.py"));
+        assert_eq!(segs[0].words, vec!["sed", "-i", "", "s/a/b/", "f.py"]);
+
+        // An UNquoted empty word is still nothing at all.
+        let segs = segments(tokenize("cp   a   dst"));
+        assert_eq!(segs[0].words, vec!["cp", "a", "dst"]);
     }
 }

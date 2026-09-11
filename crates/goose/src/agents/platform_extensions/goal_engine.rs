@@ -71,6 +71,25 @@ pub(crate) const COMMIT_ONLY_BRIEF: &str =
 Pushing from this worktree is disabled — Permagent scans your commits for \
 credential-shaped content and performs the push itself after the scan passes.";
 
+/// Lane Y9: name the worker's worktree as its ONE writable root, in the prompt
+/// as well as in the enforcement.
+///
+/// The enforcement is `security::write_jail`'s goal-worker jail (a refusal that
+/// names this same path). A model that is told the boundary up front does not
+/// have to discover it by being refused: A12's fx07 and A14's fx05/fx07 each
+/// edited the project checkout by absolute path FIRST and the worktree second,
+/// leaving a dirty trunk that then blocked their own goal from landing.
+pub(crate) fn worktree_scope_brief(worktree: &Path) -> String {
+    format!(
+        "\n\nWRITABLE ROOT: {} — this worktree is the ONLY directory you may create, edit, \
+         delete or commit files in, and it is where your goal branch is checked out. Read \
+         anywhere you like, but never write outside it: the project checkout is NOT yours to \
+         touch, and a stray write or commit there blocks your own work from landing. Your \
+         shell already starts in this worktree and relative paths resolve there.",
+        worktree.display()
+    )
+}
+
 /// Compose the ephemeral `GIT_CONFIG_*` env pairs injected into the worker's
 /// process (#523 hooks pattern): the push block is unconditional; the
 /// work-base hooks path is added when available. Inherited only by this
@@ -537,7 +556,7 @@ impl GoalEngine for InternalSubagentEngine {
         // `working_dir` reads this DB column directly: the developer tools'
         // `ToolCallContext` (`agent.rs::dispatch_tool_call`, built from
         // `session.working_dir.clone()`) and the write jail's containment root
-        // (`security/write_jail.rs::session_working_dir`). `TaskConfig::parent_working_dir`
+        // (`security/write_jail.rs::session_row`). `TaskConfig::parent_working_dir`
         // below is set to the worktree too, but nothing in the subagent reply loop
         // (`subagent_handler.rs::get_agent_messages`) ever reads it back out for cwd
         // purposes — it is inert. Without this repoint, the worker's shell/edit/write
@@ -609,7 +628,12 @@ impl GoalEngine for InternalSubagentEngine {
             GoosePlatform::GooseCli,
         );
 
-        let worker_prompt = format!("{}{}", task.instructions, COMMIT_ONLY_BRIEF);
+        let worker_prompt = format!(
+            "{}{}{}",
+            task.instructions,
+            COMMIT_ONLY_BRIEF,
+            worktree_scope_brief(&work_dir)
+        );
         let recipe = Recipe::builder()
             .version("1.0.0")
             .title(format!("Goal: {}", task.card_title))
@@ -1168,7 +1192,7 @@ pub(crate) async fn resolve_internal_isolation(
 /// `agent.rs::dispatch_tool_call` is built from `session.working_dir.clone()`,
 /// which the developer tools' shell/edit/write/tree/search clients all
 /// resolve relative paths against; the write jail's containment root
-/// (`security/write_jail.rs::WriteJailInspector::session_working_dir`) reads
+/// (`security/write_jail.rs::WriteJailInspector::session_row`) reads
 /// the identical column to decide what counts as "inside" vs. an
 /// approval-gated write "outside" the worker's sandbox.
 /// `TaskConfig::parent_working_dir`, set to this same worktree a few lines
@@ -3033,6 +3057,25 @@ mod tests {
         assert_eq!(
             prompt,
             format!("You are Claude Code.\n\nDo the work{}", COMMIT_ONLY_BRIEF)
+        );
+    }
+
+    /// Lane Y9: the internal worker's prompt must NAME its worktree as the
+    /// only writable root, so the boundary the write jail enforces is stated
+    /// before it is hit. Pins the path interpolation and the "only" wording —
+    /// a brief that says "this worktree" without saying WHICH is exactly what
+    /// the workers that edited the trunk by absolute path already had.
+    #[test]
+    fn worktree_scope_brief_names_the_worktree_as_the_only_writable_root() {
+        let brief = worktree_scope_brief(Path::new("/repos/.permagent-goal-worktrees/run-1"));
+        assert!(
+            brief.contains("/repos/.permagent-goal-worktrees/run-1"),
+            "{brief}"
+        );
+        assert!(brief.contains("ONLY directory"), "{brief}");
+        assert!(
+            brief.contains("never write outside it"),
+            "the brief must be a prohibition, not a preference: {brief}"
         );
     }
 
