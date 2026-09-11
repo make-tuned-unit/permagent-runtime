@@ -354,12 +354,14 @@ fn parse_dag_enforcement(line: &str) -> Option<DagEnforcementReceipt> {
     })
 }
 
-static VERIFICATION_INTEGRITY_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(
+static VERIFICATION_INTEGRITY_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(
+    || {
+        regex::Regex::new(
         r"^\s*receipt\s+verification_integrity\s+goals=([0-9]+)\s+review_reached=([0-9]+)\s+vacuous_passes=([0-9]+)\s+reviewer_mutations=([0-9]+)\s+reviewer_not_independent=([0-9]+)\s*$",
     )
     .expect("VERIFICATION_INTEGRITY_RE is a valid regex")
-});
+    },
+);
 
 fn parse_verification_integrity(line: &str) -> Option<VerificationIntegrityReceipt> {
     let caps = VERIFICATION_INTEGRITY_RE.captures(line)?;
@@ -397,8 +399,19 @@ static COST_ROUTING_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
     .expect("COST_ROUTING_RE is a valid regex")
 });
 
+/// The string `routing_receipt.rs`'s `snapshot()` prints when `set_planner`
+/// was never called — the PLANNER mutex is still empty. It has exactly one
+/// slash, so it satisfies `COST_ROUTING_RE`'s `\S+/\S+` cleanly; without this
+/// guard an unresolved planner would be recorded as real evidence, which the
+/// contract's "zero is evidence only when the receipt explicitly prints it"
+/// principle forbids (G16 MED-1).
+const PLANNER_UNSET_SENTINEL: &str = "unknown/unknown";
+
 fn parse_cost_routing(line: &str) -> Option<CostRoutingReceipt> {
     let caps = COST_ROUTING_RE.captures(line)?;
+    if &caps[4] == PLANNER_UNSET_SENTINEL {
+        return None;
+    }
     Some(CostRoutingReceipt {
         dispatches: caps[1].parse().ok()?,
         cheapest_capable: caps[2].parse().ok()?,
@@ -976,6 +989,16 @@ mod tests {
         assert!(scan(&line.replace("openrouter/qwen/model", "unknown"))
             .cost_routing
             .is_none());
+        // G16 MED-1: the routing receipt's own unset sentinel — the literal
+        // string `routing_receipt.rs` prints when `set_planner` never ran —
+        // is not evidence of a resolved planner, even though it satisfies the
+        // regex's `\S+/\S+` shape. Asserted with that exact string, not an
+        // invented one.
+        assert!(
+            scan(&line.replace("openrouter/qwen/model", PLANNER_UNSET_SENTINEL))
+                .cost_routing
+                .is_none()
+        );
         // A terminal routing receipt must not overwrite the separate route trace.
         assert!(scan(line).planner.is_none());
     }
@@ -997,7 +1020,10 @@ mod tests {
             assert!(signals.safety_and_trust.is_none());
             assert!(signals.cost_routing.is_none());
         }
-        let decorated = format!("\x1b[32m  {}  \x1b[0m", line.replace("receipt ", "receipt\t"));
+        let decorated = format!(
+            "\x1b[32m  {}  \x1b[0m",
+            line.replace("receipt ", "receipt\t")
+        );
         assert!(scan(&decorated).dag_enforcement.is_some());
     }
 }

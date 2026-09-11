@@ -461,14 +461,11 @@ pub fn build_run_qualification_record(
                     .to_string(),
             );
         }
-        if attempted
-            .iter()
-            .all(|t| {
-                t.reviewer_not_independent.is_none()
-                    && t.reviewer_mutated.is_none()
-                    && t.verification_integrity.is_none()
-            })
-        {
+        if attempted.iter().all(|t| {
+            t.reviewer_not_independent.is_none()
+                && t.reviewer_mutated.is_none()
+                && t.verification_integrity.is_none()
+        }) {
             missing.push(
                 "reviewer_receipts: no reviewer receipt line in any attempted task's harness log"
                     .to_string(),
@@ -822,8 +819,8 @@ fn token_evidence(
             best_reference.map(|(r, _)| (r, 1.1)),
         ];
         for (reference, factor) in candidates.into_iter().flatten() {
-            if let Some((baseline, (rate, reference_rate))) = valid_token_median(reference)
-                .zip(pass_rate(record).zip(pass_rate(reference)))
+            if let Some((baseline, (rate, reference_rate))) =
+                valid_token_median(reference).zip(pass_rate(record).zip(pass_rate(reference)))
             {
                 complete_comparison = true;
                 if current <= factor * baseline && rate >= reference_rate {
@@ -1318,7 +1315,11 @@ mod tests {
                     missing.tasks[0].verification_integrity = None;
                 }
                 "safety_and_trust" => {
-                    bad.tasks[0].safety_and_trust.as_mut().unwrap().jail_bypasses = 1;
+                    bad.tasks[0]
+                        .safety_and_trust
+                        .as_mut()
+                        .unwrap()
+                        .jail_bypasses = 1;
                     missing.tasks[0].safety_and_trust = None;
                 }
                 "cost_routing" => {
@@ -1380,13 +1381,26 @@ mod tests {
     #[test]
     fn capability_area_requires_a_measured_graduated_verdict() {
         let mut record = receipt_record();
-        assert_eq!(rating("cheap_model_usability", &record), AreaRating::Unrated);
+        assert_eq!(
+            rating("cheap_model_usability", &record),
+            AreaRating::Unrated
+        );
         record.capability_verdict = Some(passing_capability());
-        assert_eq!(rating("cheap_model_usability", &record), AreaRating::Excellent);
+        assert_eq!(
+            rating("cheap_model_usability", &record),
+            AreaRating::Excellent
+        );
         record.capability_verdict.as_mut().unwrap().graduated = false;
         assert_eq!(rating("cheap_model_usability", &record), AreaRating::Poor);
-        record.capability_verdict.as_mut().unwrap().dag_selection_pct = None;
-        assert_eq!(rating("cheap_model_usability", &record), AreaRating::Unrated);
+        record
+            .capability_verdict
+            .as_mut()
+            .unwrap()
+            .dag_selection_pct = None;
+        assert_eq!(
+            rating("cheap_model_usability", &record),
+            AreaRating::Unrated
+        );
     }
 
     #[test]
@@ -1466,7 +1480,10 @@ mod tests {
             &tasks,
         );
         treatment.token_verdict = build_token_verdict(&report, &control, &treatment);
-        assert_eq!(rating("token_efficiency", &treatment), AreaRating::Excellent);
+        assert_eq!(
+            rating("token_efficiency", &treatment),
+            AreaRating::Excellent
+        );
         let verdict = treatment.token_verdict.as_mut().unwrap();
         assert_eq!(verdict.median_input_token_improvement, Some(0.2));
         verdict.non_inferior_pass_rate = false;

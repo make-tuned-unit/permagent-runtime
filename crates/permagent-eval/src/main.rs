@@ -42,8 +42,9 @@ use permagent_eval::graduate::{
 use permagent_eval::invocation::build_invocation;
 use permagent_eval::metrics::TaskResult;
 use permagent_eval::qualification::{
-    build_run_qualification_record, build_token_verdict, qualification_input_with_token_comparisons,
-    BinaryProvenance, CapabilityVerdict, QualificationInput, RunQualificationRecord, TokenComparisons,
+    build_run_qualification_record, build_token_verdict,
+    qualification_input_with_token_comparisons, BinaryProvenance, CapabilityVerdict,
+    QualificationInput, RunQualificationRecord, TokenComparisons,
 };
 use permagent_eval::report::{
     overall_dag_selection_pct, render_json, render_markdown, render_text, TierReport,
@@ -227,7 +228,12 @@ struct QualifyArgs {
     records: Vec<PathBuf>,
 
     /// Locked token baseline; must contain exactly one qualification record.
-    #[arg(long, value_name = "FILE", requires = "records", conflicts_with = "input")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "records",
+        conflicts_with = "input"
+    )]
     token_baseline: Option<PathBuf>,
 
     /// Passing token reference records; repeatable, accepts objects or arrays.
@@ -2829,9 +2835,11 @@ mod tests {
         assert_eq!(verdict.dag_selection_pct, Some(1.0));
         results[1].selection_correct = Some(false);
         let record = capability_test_record(&results);
-        assert!(!capability_verdict(&record, "test-tier", &results, today)
-            .unwrap()
-            .graduated);
+        assert!(
+            !capability_verdict(&record, "test-tier", &results, today)
+                .unwrap()
+                .graduated
+        );
         results[1].selection_correct = None;
         let record = capability_test_record(&results);
         assert!(capability_verdict(&record, "test-tier", &results, today).is_none());
