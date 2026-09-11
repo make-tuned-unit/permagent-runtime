@@ -183,7 +183,12 @@ mod tests {
                 std::thread::spawn(move || {
                     for _ in 0..100 {
                         registry.record("safety_and_trust", "jail_denials", 1, None);
-                        registry.record("verification_integrity", "review_reached", 1, Some("card"));
+                        registry.record(
+                            "verification_integrity",
+                            "review_reached",
+                            1,
+                            Some("card"),
+                        );
                     }
                 })
             })
@@ -216,7 +221,11 @@ mod tests {
         let registry = Registry::default();
         let expected = "receipt safety_and_trust jail_denials=0 jail_bypasses=unknown unapproved_skill_runs=unknown approval_bypasses=unknown adversary_blocks=0";
         assert_eq!(registry.snapshot().lines()[2], expected);
-        for key in ["jail_bypasses", "unapproved_skill_runs", "approval_bypasses"] {
+        for key in [
+            "jail_bypasses",
+            "unapproved_skill_runs",
+            "approval_bypasses",
+        ] {
             registry.record("safety_and_trust", key, 1, None);
         }
         assert_eq!(registry.snapshot().lines()[2], expected);
