@@ -938,6 +938,99 @@ fn git_changes_under(dir: &Path) -> Option<Vec<String>> {
         .collect::<Vec<_>>();
     paths.sort();
     paths.dedup();
+    // Y10e: `diff HEAD` + `ls-files --others` describes the WORKING TREE, so
+    // the instant a goal worker commits its work the change set goes empty and
+    // `select_checks` answers "no changed files were found under this
+    // verification path" — M15 fx05, fx08, fx09 and fx10 each burned a turn on
+    // exactly that, having just committed on their `goal/<session>` branch.
+    // The work is not gone, it is one commit down. Only in that case (nothing
+    // uncommitted to describe, so today's answer is a useless NO CHECKS) widen
+    // the base to this branch's fork point. See [`branch_fork_point`].
+    if paths.is_empty() {
+        if let Some(committed) = changes_since_branch_fork_point(&root, &relative_dir) {
+            return Some(committed);
+        }
+    }
+    Some(paths)
+}
+
+/// Run `git -C root <args>` and return its stdout, or `None` on any failure.
+fn git_stdout(root: &Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    String::from_utf8(output.stdout).ok()
+}
+
+/// Y10e: the commit this branch forked from — the parent of the OLDEST commit
+/// reachable from `HEAD` but from no other branch or remote.
+///
+/// This is what "the work this goal branch has done" means once the worker has
+/// committed: a goal worktree checks out `goal/<session>` off the trunk, so the
+/// trunk's own tip is reachable from some other ref and every commit the worker
+/// made is not. Deliberately narrow — `None` on a detached HEAD (no branch to
+/// scope to), on a branch with no unique commits (nothing was committed here),
+/// and when the oldest unique commit is a root commit (no parent to diff
+/// against, and diffing the whole history is not a scoped check).
+fn branch_fork_point(root: &Path) -> Option<String> {
+    let branch = git_stdout(root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = branch.trim();
+    if branch.is_empty() || branch == "HEAD" {
+        return None;
+    }
+    let exclude = format!("--exclude=refs/heads/{branch}");
+    let unique = git_stdout(
+        root,
+        &[
+            "rev-list",
+            "HEAD",
+            "--not",
+            &exclude,
+            "--branches",
+            "--remotes",
+        ],
+    )?;
+    let oldest = unique
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .last()?;
+    // A root commit has no parent: `rev-parse --verify` fails and we stop,
+    // rather than diffing the whole history and calling it a scoped check.
+    let parent = format!("{oldest}^");
+    let sha = git_stdout(root, &["rev-parse", "--verify", "--quiet", &parent])?;
+    let sha = sha.trim().to_string();
+    if sha.is_empty() {
+        return None;
+    }
+    Some(sha)
+}
+
+/// The paths changed since [`branch_fork_point`], filtered to `relative_dir`
+/// exactly as the working-tree scan is. `None` when there is no fork point to
+/// measure from, so the caller keeps its existing (empty) answer.
+fn changes_since_branch_fork_point(root: &Path, relative_dir: &Path) -> Option<Vec<String>> {
+    let base = branch_fork_point(root)?;
+    let text = git_stdout(root, &["diff", "--name-only", &base])?;
+    let mut paths = text
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .filter(|path| {
+            let path = Path::new(path);
+            relative_dir.as_os_str().is_empty() || path.starts_with(relative_dir)
+        })
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        return None;
+    }
     Some(paths)
 }
 
@@ -1935,6 +2028,140 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
                 "must not match a non-zero count in {text:?}"
             );
         }
+    }
+
+    // ── Y10e: a committed goal branch still has a change set ───────────────
+
+    /// `git -C dir <args>`, panicking with the real stderr so a fixture that
+    /// fails to build says why.
+    fn git_y10e(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git must be on PATH for this test");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A repo seeded exactly like a bench fixture: one commit on `main`, then
+    /// a `goal/<session>` branch carrying the worker's committed change and a
+    /// CLEAN working tree — the state every M15 worker was in when it called
+    /// `verify` right after committing.
+    fn y10e_committed_goal_branch() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        // Canonicalize: `git rev-parse --show-toplevel` resolves symlinks
+        // (/var → /private/var on macOS) and `git_changes_under` compares the
+        // two, so the fixture must hand back the resolved path.
+        let dir = tmp.path().canonicalize().unwrap();
+        let dir = dir.as_path();
+        git_y10e(dir, &["init", "-b", "main"]);
+        git_y10e(dir, &["config", "user.email", "t@example.com"]);
+        git_y10e(dir, &["config", "user.name", "T"]);
+        git_y10e(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"fx\"\n").unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "seed"]);
+
+        git_y10e(dir, &["checkout", "-b", "goal/session-1"]);
+        std::fs::write(dir.join("src/coupons.rs"), "pub fn trim() {}\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "worker: add coupons"]);
+        let resolved = dir.to_path_buf();
+        (tmp, resolved)
+    }
+
+    /// The M15 regression: with the work COMMITTED the working tree is clean,
+    /// so `diff HEAD` + `ls-files --others` return nothing and verify answered
+    /// "no changed files were found under this verification path". fx05, fx08,
+    /// fx09 and fx10 each burned a turn on it. The branch's fork point still
+    /// knows what this goal changed.
+    #[test]
+    fn a_committed_goal_branch_still_reports_its_changed_files() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        let dir = dir.as_path();
+
+        assert_eq!(
+            git_y10e(dir, &["status", "--porcelain"]),
+            "",
+            "the fixture's working tree must be clean, or it proves nothing"
+        );
+
+        let changes = git_changes_under(dir).expect("the repo resolves");
+        assert_eq!(
+            changes,
+            vec!["src/coupons.rs".to_string()],
+            "a committed goal branch must still describe what it changed"
+        );
+    }
+
+    /// The narrowing that follows: because the change set is no longer empty,
+    /// `select_checks` infers a real scoped Rust check instead of NO CHECKS.
+    #[test]
+    fn a_committed_goal_branch_infers_a_real_check_instead_of_no_checks() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        let outcome = select_checks(
+            dir.as_path(),
+            VerificationScope::Auto,
+            VerificationRisk::Low,
+            None,
+        )
+        .expect("auto scope must not error on an all-Rust change set");
+        match outcome {
+            DetectOutcome::Checks(checks) => assert!(
+                checks.iter().any(|check| check.label.starts_with("cargo ")),
+                "expected a Cargo check, got {:?}",
+                checks.iter().map(|c| &c.label).collect::<Vec<_>>()
+            ),
+            other => panic!("expected runnable checks, got {other:?}"),
+        }
+    }
+
+    /// The fallback must stay a FALLBACK: while there is uncommitted work, the
+    /// working tree is still the answer — widening to the fork point there
+    /// would silently broaden every ordinary verify call.
+    #[test]
+    fn uncommitted_work_still_wins_over_the_fork_point() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        let dir = dir.as_path();
+        std::fs::write(dir.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
+
+        let changes = git_changes_under(dir).expect("the repo resolves");
+        assert_eq!(
+            changes,
+            vec!["src/lib.rs".to_string()],
+            "with a dirty tree the working-tree scan must be untouched by Y10e"
+        );
+    }
+
+    /// A branch with nothing unique to it (the trunk itself, clean) has no
+    /// fork point to widen to, and must keep answering "nothing changed"
+    /// rather than diffing its whole history.
+    #[test]
+    fn a_clean_trunk_has_no_fork_point_to_widen_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        let dir = dir.as_path();
+        git_y10e(dir, &["init", "-b", "main"]);
+        git_y10e(dir, &["config", "user.email", "t@example.com"]);
+        git_y10e(dir, &["config", "user.name", "T"]);
+        git_y10e(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.rs"), "// seed\n").unwrap();
+        git_y10e(dir, &["add", "-A"]);
+        git_y10e(dir, &["commit", "-m", "seed"]);
+
+        assert!(
+            branch_fork_point(dir).is_none(),
+            "a single root commit has no parent to diff against"
+        );
+        assert_eq!(git_changes_under(dir), Some(Vec::new()));
     }
 
     /// Unwrap a detection that must have produced runnable checks.
