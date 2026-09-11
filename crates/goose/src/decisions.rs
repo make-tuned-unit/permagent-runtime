@@ -57,7 +57,8 @@ pub const ACTOR_AUTO_LAUNCH: &str = "auto-mode-launch";
 ///
 /// Deliberately NOT in [`VALID_ACTORS`], same reasoning as
 /// [`ACTOR_AUTO_LAUNCH`]: usable only through
-/// [`auto_approve_reservation_gate`], never through the general
+/// [`auto_approve_reservation_gate`] or the bounded orchestrator escalation
+/// policy, never through the general
 /// [`answer_decision`]/[`answer_decision_as_session`] family.
 pub const ACTOR_HEADLESS_POLICY: &str = "headless_policy";
 
