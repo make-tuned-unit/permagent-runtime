@@ -6062,7 +6062,15 @@ mod tests {
             let row = reservation_row(&session.id, &task, "extend", 0.25);
             assert!(sm
                 .settle_provider_invocation(
-                    "invocation:extend", &row, None, None, None, None, 15, 10, 5,
+                    "invocation:extend",
+                    &row,
+                    None,
+                    None,
+                    None,
+                    None,
+                    15,
+                    10,
+                    5,
                 )
                 .await
                 .unwrap());

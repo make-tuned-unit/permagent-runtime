@@ -126,7 +126,9 @@ pub(crate) async fn authorize_attempt(next_attempt: u32) -> Result<(), String> {
         return Err("no reservation extension authorizer installed".into());
     };
     #[cfg(test)]
-    authorization.extension_calls.fetch_add(1, Ordering::Relaxed);
+    authorization
+        .extension_calls
+        .fetch_add(1, Ordering::Relaxed);
     match manager.extend_reservation(invocation_id, 1).await {
         Ok(CostReservationOutcome::Granted { .. }) => {
             let granted = authorization.granted.fetch_add(1, Ordering::Release) + 1;

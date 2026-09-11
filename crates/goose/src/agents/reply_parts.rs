@@ -2009,24 +2009,25 @@ impl AccountedFastCompletion {
 
         // Physical retries beyond the hold's count require a one-attempt
         // extension grant. Unpaid work keeps the retry policy unchanged.
-        let (response, mut usage) = match crate::cost_router::authorized_attempts::with_reservation_attempts(
-            Arc::clone(&self.manager),
-            invocation.invocation_id.clone(),
-            invocation.attempts_reserved,
-            self.provider
-                // permagent-dispatch: seam=complete_fast_attempt_v1 class=wrapped contract=reservation_settlement
-                .complete(&model_config, &self.session.id, system, messages, tools),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                unknown_guard.mark_unknown().await?;
-                return Err(anyhow::anyhow!(
-                    "complete_fast physical attempt failed: {error}"
-                ));
-            }
-        };
+        let (response, mut usage) =
+            match crate::cost_router::authorized_attempts::with_reservation_attempts(
+                Arc::clone(&self.manager),
+                invocation.invocation_id.clone(),
+                invocation.attempts_reserved,
+                self.provider
+                    // permagent-dispatch: seam=complete_fast_attempt_v1 class=wrapped contract=reservation_settlement
+                    .complete(&model_config, &self.session.id, system, messages, tools),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    unknown_guard.mark_unknown().await?;
+                    return Err(anyhow::anyhow!(
+                        "complete_fast physical attempt failed: {error}"
+                    ));
+                }
+            };
 
         let has_authoritative_usage = usage.usage.input_tokens.is_some()
             || usage.usage.output_tokens.is_some()
