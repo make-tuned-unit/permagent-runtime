@@ -3041,6 +3041,18 @@ pub async fn apply_cost_reservations_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .await?;
     }
 
+    // Original bound/config evidence for retry extensions; NULL fails closed.
+    let has_extension: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = 'extension_json'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_extension == 0 {
+        sqlx::query("ALTER TABLE cost_reservations ADD COLUMN extension_json TEXT")
+            .execute(&mut *tx)
+            .await?;
+    }
+
     tx.commit().await?;
     Ok(())
 }

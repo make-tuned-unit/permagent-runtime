@@ -244,6 +244,22 @@ pub enum CostReservationOutcome {
     },
 }
 
+/// Extension uses the same granted/gate/refused/unknown vocabulary as a hold.
+pub type ExtendOutcome = CostReservationOutcome;
+
+#[derive(Serialize, Deserialize)]
+struct ReservationExtension {
+    attempts: u32,
+    per_attempt_usd: f64,
+    config: crate::cost_router::budget::BudgetConfig,
+}
+
+#[derive(Clone, Copy)]
+enum ReservationRequest {
+    Initial(Option<u32>),
+    Extend(u32),
+}
+
 /// One child's contribution inside a [`ParentSessionCost`] rollup.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -788,13 +804,77 @@ impl SessionManager {
         config: &crate::cost_router::budget::BudgetConfig,
     ) -> Result<CostReservationOutcome> {
         self.storage
-            .reserve_provider_invocation(
+            .reserve_provider_invocation_inner(
                 invocation_id,
                 session_id,
                 task_id,
                 amount_usd,
                 lease_until,
                 config,
+                ReservationRequest::Initial(None),
+            )
+            .await
+    }
+
+    /// Reserve a planner-produced bound and retain immutable extension evidence.
+    pub async fn reserve_bounded_provider_invocation(
+        &self,
+        invocation_id: &str,
+        session_id: &str,
+        task_id: Option<&str>,
+        bound: crate::cost_router::reservation::ReservationBound,
+        lease_until: &str,
+        config: &crate::cost_router::budget::BudgetConfig,
+    ) -> Result<CostReservationOutcome> {
+        anyhow::ensure!(bound.max_physical_attempts > 0, "invalid reserved attempts");
+        self.storage
+            .reserve_provider_invocation_inner(
+                invocation_id,
+                session_id,
+                task_id,
+                bound.amount_usd,
+                lease_until,
+                config,
+                ReservationRequest::Initial(Some(bound.max_physical_attempts)),
+            )
+            .await
+    }
+
+    /// Extend only a live hold with durable bound/config evidence. Gate grants
+    /// and legacy scalar holds lack that evidence and fail closed. No gate is
+    /// auto-approved here, and settlement still releases the entire same row.
+    pub async fn extend_reservation(
+        &self,
+        invocation_id: &str,
+        additional_attempts: u32,
+    ) -> Result<ExtendOutcome> {
+        anyhow::ensure!(
+            additional_attempts > 0,
+            "extension attempts must be positive"
+        );
+        let pool = self.storage.pool().await?;
+        let row: Option<(String, Option<String>, String, Option<String>)> = sqlx::query_as(
+            "SELECT session_id, task_id, lease_until, extension_json
+             FROM cost_reservations WHERE invocation_id = ?",
+        )
+        .bind(invocation_id)
+        .fetch_optional(pool)
+        .await?;
+        let Some((session_id, task_id, lease, Some(json))) = row else {
+            return Ok(CostReservationOutcome::Unknown {
+                reason: "reservation has no durable extension evidence".to_string(),
+            });
+        };
+        let evidence: ReservationExtension = serde_json::from_str(&json)?;
+        self.storage
+            .reserve_provider_invocation_inner(
+                invocation_id,
+                &session_id,
+                task_id.as_deref(),
+                evidence.per_attempt_usd,
+                &lease,
+                &evidence.config,
+                ReservationRequest::Extend(additional_attempts),
             )
             .await
     }
@@ -2660,14 +2740,16 @@ impl SessionStorage {
         Ok(())
     }
 
-    async fn reserve_provider_invocation(
+    #[allow(clippy::too_many_arguments)]
+    async fn reserve_provider_invocation_inner(
         &self,
         invocation_id: &str,
         session_id: &str,
         task_id: Option<&str>,
-        amount_usd: f64,
+        mut amount_usd: f64,
         lease_until: &str,
         config: &crate::cost_router::budget::BudgetConfig,
+        request: ReservationRequest,
     ) -> Result<CostReservationOutcome> {
         if invocation_id.trim().is_empty() {
             return Err(anyhow::anyhow!("provider invocation id must not be empty"));
@@ -2718,36 +2800,39 @@ impl SessionStorage {
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
         let now = chrono::Utc::now().to_rfc3339();
 
-        // An expired provider call may already have been accepted remotely;
-        // preserve its hold as unknown rather than fabricating free allowance.
-        sqlx::query(
-            "UPDATE cost_reservations SET state = 'unknown', updated_at = ?
-             WHERE state = 'pending' AND lease_until <= ?",
-        )
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
+        let mut extension = match request {
+            ReservationRequest::Initial(Some(attempts)) => Some(ReservationExtension {
+                attempts,
+                per_attempt_usd: amount_usd / f64::from(attempts),
+                config: *config,
+            }),
+            _ => None,
+        };
+        let mut extension_from = None;
+        if matches!(request, ReservationRequest::Initial(_)) {
+            // An expired provider call may already have been accepted remotely;
+            // preserve its hold as unknown rather than fabricating free allowance.
+            sqlx::query(
+                "UPDATE cost_reservations SET state = 'unknown', updated_at = ?
+                 WHERE state = 'pending' AND lease_until <= ?",
+            )
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
 
-        // B7 (Lane Y1, 2026-09-09 harness evidence): `unknown` exists to fail
-        // closed while a call's outcome is genuinely unproven, but nothing
-        // ever moved a row back out of it — so a single ambiguous failure
-        // (a stalled `decompose_roadmap` internal completion in the observed
-        // fixtures) permanently refused every later provider call under the
-        // SAME task, including `dispatch_goal_fn`'s own worker dispatch,
-        // since a dispatched goal inherits the coordinator's task identity
-        // (`dispatch_budget_task_id`, orchestrator.rs). Resolve every stale
-        // `unknown` hold for THIS task before evaluating this call's own
-        // authorization: settle it to its recorded ledger cost when one
-        // exists (spend is never silently dropped), otherwise release it
-        // (nothing durable proves it was ever billed, and holding it forever
-        // recovers no spend — it only blocks honest future work).
-        Self::reconcile_stale_reservations(&mut tx, task_id, &now).await?;
+            // Initial reservations reconcile stale unknown holds (Y1). An
+            // extension must not release its own evidence or mutate on refusal.
+            Self::reconcile_stale_reservations(&mut tx, task_id, &now).await?;
+        }
 
         let reservation_id = format!("invocation:{invocation_id}");
-        if let Some((existing_id, existing_session, existing_task, state)) =
-            sqlx::query_as::<_, (String, String, Option<String>, String)>(
-                "SELECT reservation_id, session_id, task_id, state
+        if let Some((existing_id, existing_session, existing_task, state, amount, json, lease)) =
+            sqlx::query_as::<
+                _,
+                (String, String, Option<String>, String, f64, Option<String>, String),
+            >(
+                "SELECT reservation_id, session_id, task_id, state, amount_usd, extension_json, lease_until
                  FROM cost_reservations WHERE invocation_id = ?",
             )
             .bind(invocation_id)
@@ -2759,24 +2844,51 @@ impl SessionStorage {
                     "provider invocation id is already bound to another budget scope"
                 ));
             }
-            tx.commit().await?;
-            return Ok(match state.as_str() {
-                "pending" => CostReservationOutcome::AlreadyReserved {
-                    reservation_id: existing_id,
-                },
-                "settled" => CostReservationOutcome::AlreadySettled {
-                    reservation_id: existing_id,
-                },
-                "unknown" => CostReservationOutcome::Unknown {
-                    reason: "provider reservation lease expired before settlement".to_string(),
-                },
-                "released" => CostReservationOutcome::Unknown {
-                    reason: "provider invocation reservation was already released".to_string(),
-                },
-                _ => CostReservationOutcome::Unknown {
-                    reason: format!("unrecognized reservation state: {state}"),
-                },
-            });
+            if let ReservationRequest::Extend(additional) = request {
+                anyhow::ensure!(state == "pending" && lease > now, "reservation is not live");
+                let mut evidence: ReservationExtension = serde_json::from_str(
+                    json.as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("missing extension evidence"))?,
+                )?;
+                let to_attempts = evidence
+                    .attempts
+                    .checked_add(additional)
+                    .ok_or_else(|| anyhow::anyhow!("extension attempts overflow"))?;
+                amount_usd = evidence.per_attempt_usd * f64::from(additional);
+                anyhow::ensure!(
+                    evidence.config == *config
+                        && amount_usd.is_finite()
+                        && amount_usd > 0.0
+                        && amount.is_finite()
+                        && amount > 0.0
+                        && (amount + amount_usd).is_finite(),
+                    "invalid extension arithmetic or changed budget evidence"
+                );
+                extension_from = Some((amount, evidence.attempts));
+                evidence.attempts = to_attempts;
+                extension = Some(evidence);
+            } else {
+                tx.commit().await?;
+                return Ok(match state.as_str() {
+                    "pending" => CostReservationOutcome::AlreadyReserved {
+                        reservation_id: existing_id,
+                    },
+                    "settled" => CostReservationOutcome::AlreadySettled {
+                        reservation_id: existing_id,
+                    },
+                    "unknown" => CostReservationOutcome::Unknown {
+                        reason: "provider reservation lease expired before settlement".to_string(),
+                    },
+                    "released" => CostReservationOutcome::Unknown {
+                        reason: "provider invocation reservation was already released".to_string(),
+                    },
+                    _ => CostReservationOutcome::Unknown {
+                        reason: format!("unrecognized reservation state: {state}"),
+                    },
+                });
+            }
+        } else if matches!(request, ReservationRequest::Extend(_)) {
+            return Err(anyhow::anyhow!("reservation disappeared before extension"));
         }
 
         let session_exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
@@ -2924,11 +3036,35 @@ impl SessionStorage {
             });
         }
 
+        if let Some((from_usd, from_attempts)) = extension_from {
+            let evidence = extension
+                .as_ref()
+                .expect("extension evidence was validated");
+            let to_usd = from_usd + amount_usd;
+            sqlx::query(
+                "UPDATE cost_reservations SET amount_usd = ?, extension_json = ?, updated_at = ?
+                 WHERE invocation_id = ? AND state = 'pending'",
+            )
+            .bind(to_usd)
+            .bind(serde_json::to_string(evidence)?)
+            .bind(&now)
+            .bind(invocation_id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            tracing::info!(
+                target: "permagent::cost_router::reservation",
+                invocation_id, from_usd, to_usd, from_attempts,
+                to_attempts = evidence.attempts, "reservation extended"
+            );
+            return Ok(CostReservationOutcome::Granted { reservation_id });
+        }
+
         sqlx::query(
             "INSERT INTO cost_reservations
                 (reservation_id, invocation_id, session_id, task_id, amount_usd,
-                 state, lease_until, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                 state, lease_until, created_at, updated_at, extension_json)
+             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
         )
         .bind(&reservation_id)
         .bind(invocation_id)
@@ -2938,6 +3074,7 @@ impl SessionStorage {
         .bind(lease_until)
         .bind(&now)
         .bind(&now)
+        .bind(extension.as_ref().map(serde_json::to_string).transpose()?)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -5852,6 +5989,98 @@ mod tests {
             .collect();
         assert!((by_id[child_a.id.as_str()] - 0.10).abs() < 1e-12);
         assert!((by_id[child_b.id.as_str()] - 0.07).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn extend_reservation_checks_ceiling_and_settles_the_enlarged_hold() {
+        use crate::cost_router::plan_reservation_bound;
+        let model = ModelConfig::new("glm-4.7")
+            .unwrap()
+            .with_context_limit(Some(204_800))
+            .with_max_tokens(Some(131_072));
+        let bound = plan_reservation_bound("zai", "glm-4.7", CostTier::PaidApi, &model, 2)
+            .unwrap()
+            .unwrap();
+        let one = bound.amount_usd / 2.0;
+        let ceiling = bound.amount_usd + one + one;
+        for hard in [false, true] {
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let session = sm
+                .create_session(
+                    temp.path().to_path_buf(),
+                    "extension".into(),
+                    SessionType::SubAgent,
+                    GooseMode::Auto,
+                )
+                .await
+                .unwrap();
+            let task = sm.begin_budget_task(&session.id).await.unwrap();
+            let cfg = reservation_config(10.0, 20.0, ceiling, if hard { ceiling } else { 20.0 });
+            let granted = sm
+                .reserve_bounded_provider_invocation(
+                    "extend",
+                    &session.id,
+                    Some(&task),
+                    bound,
+                    "2099-01-01T00:00:00Z",
+                    &cfg,
+                )
+                .await
+                .unwrap();
+            assert!(matches!(granted, CostReservationOutcome::Granted { .. }));
+            // Evidence survives restart; concurrent extensions cannot overdraw.
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let (a, b) = tokio::join!(
+                sm.extend_reservation("extend", 1),
+                sm.extend_reservation("extend", 1)
+            );
+            let outcomes = [a.unwrap(), b.unwrap()];
+            assert_eq!(
+                outcomes
+                    .iter()
+                    .filter(|o| matches!(o, CostReservationOutcome::Granted { .. }))
+                    .count(),
+                1
+            );
+            assert!(outcomes.iter().any(|o| if hard {
+                matches!(o, CostReservationOutcome::Refused { .. })
+            } else {
+                matches!(o, CostReservationOutcome::NeedsGate { .. })
+            }));
+            let pool = sm.storage().pool().await.unwrap();
+            let (amount, json): (f64, String) = sqlx::query_as(
+                "SELECT amount_usd, extension_json FROM cost_reservations WHERE invocation_id = 'extend'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(amount, bound.amount_usd + one);
+            let evidence: ReservationExtension = serde_json::from_str(&json).unwrap();
+            assert_eq!(evidence.attempts, 3);
+            assert_eq!(evidence.config, cfg);
+            let row = reservation_row(&session.id, &task, "extend", 0.25);
+            assert!(sm
+                .settle_provider_invocation(
+                    "invocation:extend", &row, None, None, None, None, 15, 10, 5,
+                )
+                .await
+                .unwrap());
+            let held: f64 = sqlx::query_scalar(
+                "SELECT CAST(COALESCE(SUM(amount_usd), 0) AS REAL) FROM cost_reservations
+                 WHERE state IN ('pending', 'unknown')",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(held, 0.0);
+            let spent: f64 = sqlx::query_scalar("SELECT SUM(cost_usd) FROM cost_ledger")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            assert_eq!(spent, 0.25);
+            assert!(sm.extend_reservation("extend", 1).await.is_err());
+        }
     }
 
     #[tokio::test]

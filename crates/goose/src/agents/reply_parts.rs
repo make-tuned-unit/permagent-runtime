@@ -1756,11 +1756,11 @@ pub(crate) async fn reserve_provider_invocation_for_model(
     let task_id = budget_task_id(&session.extension_data);
     let lease_until = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
     let outcome = manager
-        .reserve_provider_invocation(
+        .reserve_bounded_provider_invocation(
             &context.invocation_id,
             &session.id,
             task_id.as_deref(),
-            bound.amount_usd,
+            bound,
             &lease_until,
             &crate::cost_router::budget::load_budget_config(),
         )

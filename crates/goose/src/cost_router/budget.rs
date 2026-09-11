@@ -38,7 +38,7 @@ pub const KEY_SESSION_GATE: &str = "PERMAGENT_BUDGET_SESSION_GATE_USD";
 pub const KEY_SESSION_HARD: &str = "PERMAGENT_BUDGET_SESSION_HARD_USD";
 
 /// Per-scope thresholds in USD, ascending: soft ≤ gate ≤ hard.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BudgetCeilings {
     pub soft: f64,
     pub gate: f64,
@@ -65,7 +65,7 @@ impl BudgetCeilings {
 
 /// Task + session ceilings. CONFIGURABLE — the defaults are the only free
 /// parameters and are the owner's call to tune.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BudgetConfig {
     pub task: BudgetCeilings,
     pub session: BudgetCeilings,
