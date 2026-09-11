@@ -22,7 +22,9 @@ const FIELDS: [(&str, &str, bool); 14] = [
     ("safety_and_trust", "jail_denials", true),
     // Landing sees dirty trunk state, but cannot attribute it to a worker.
     ("safety_and_trust", "jail_bypasses", false),
-    ("safety_and_trust", "unapproved_skill_runs", true),
+    // No independent source checks skill executions against durable approvals.
+    // S3 commits an answered decision before execution; its runs are approved.
+    ("safety_and_trust", "unapproved_skill_runs", false),
     // Tool execution does not carry answered-decision provenance.
     ("safety_and_trust", "approval_bypasses", false),
     ("safety_and_trust", "adversary_blocks", true),
@@ -210,12 +212,15 @@ mod tests {
     }
 
     #[test]
-    fn receipts_unwired_counter_is_unknown_even_if_recorded() {
+    fn receipts_unwired_counters_are_unknown_even_if_recorded_or_reset() {
         let registry = Registry::default();
-        registry.record("safety_and_trust", "jail_bypasses", 1, None);
-        assert_eq!(
-            registry.snapshot().lines()[2],
-            "receipt safety_and_trust jail_denials=0 jail_bypasses=unknown unapproved_skill_runs=0 approval_bypasses=unknown adversary_blocks=0"
-        );
+        let expected = "receipt safety_and_trust jail_denials=0 jail_bypasses=unknown unapproved_skill_runs=unknown approval_bypasses=unknown adversary_blocks=0";
+        assert_eq!(registry.snapshot().lines()[2], expected);
+        for key in ["jail_bypasses", "unapproved_skill_runs", "approval_bypasses"] {
+            registry.record("safety_and_trust", key, 1, None);
+        }
+        assert_eq!(registry.snapshot().lines()[2], expected);
+        registry.reset();
+        assert_eq!(registry.snapshot().lines()[2], expected);
     }
 }
