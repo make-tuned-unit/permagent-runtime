@@ -9329,9 +9329,20 @@ async fn auto_land_headless_goal(
                 goal_id = %card.id,
                 decision_id = %decision_id,
                 "headless Auto: goal '{}' completed with no durable verifier pass in its worker \
-                 session — leaving the approve_review decision open for review, not auto-landing",
+                 session — not auto-landing",
                 card.title
             );
+            // Y10b: say the refusal out loud instead of leaving a Review card
+            // with an unanswerable decision. See `park_refused_auto_land`.
+            park_refused_auto_land(
+                pool,
+                decision_id,
+                card,
+                auto_land_allowed,
+                "no verify evidence: the worker session recorded no durable verifier pass, so \
+                 there is nothing to land against",
+            )
+            .await;
             return;
         }
         VerifyEvidence::Vacuous(reason) => {
@@ -9368,10 +9379,19 @@ async fn auto_land_headless_goal(
                 goal_id = %card.id,
                 decision_id = %decision_id,
                 "headless Auto: goal '{}' completed with only a vacuous verifier pass ({}) — \
-                 leaving the approve_review decision open for review, not auto-landing",
+                 not auto-landing",
                 card.title,
                 vacuous_note
             );
+            // Y10b: same as the `None` arm — park with the reason named.
+            park_refused_auto_land(
+                pool,
+                decision_id,
+                card,
+                auto_land_allowed,
+                &format!("vacuous verify: {reason}"),
+            )
+            .await;
             return;
         }
     }
@@ -9455,6 +9475,146 @@ async fn auto_land_headless_goal(
                 card.title
             );
         }
+    }
+}
+
+/// Harness loop, Lane Y10b: park a goal whose auto-land was REFUSED, naming
+/// the refusal.
+///
+/// [`auto_land_headless_goal`]'s `VerifyEvidence::None` and
+/// `VerifyEvidence::Vacuous` arms rightly decline to land — but until now they
+/// simply returned, leaving the card in Review with an `approve_review`
+/// decision that a headless run has nobody to answer. [`next_drain_action`]
+/// has exactly ONE action for a Review card, [`DrainAction::Park`], so the
+/// entire signal for a refused auto-land was the drain's generic
+/// "1 still running at exit → parked" summary line — which names neither the
+/// goal nor the reason, and reads as a timeout the run never had. M15 fx03,
+/// fx10 and zai fx01 all ended exactly there.
+///
+/// So when auto-land is ALLOWED and the arm refuses, say it out loud on the
+/// same machinery a budget park already uses (`handle_goal_blocked`'s
+/// pattern): supersede the now-moot `approve_review`, mint a deduplicated
+/// `unblock` whose detail quotes the refusal verbatim, and
+/// `goal_transition::park_goal` (Failed + `needs_human_attention` +
+/// `last_error`, #250). The card is then
+/// terminal, so the drain counts it and reports it instead of parking it
+/// blind, and the inbox carries one ANSWERABLE item (answering the `unblock`
+/// unparks Failed → Ready) instead of one nobody can act on.
+///
+/// This never approves and never lands: the refusal stands and the worker's
+/// diff stays on its goal branch. When `auto_land_allowed` is false the
+/// caller is an interactive/daemon run with a human on the other end of the
+/// `approve_review` — this is a no-op there, and the pre-Y10b behaviour is
+/// exactly preserved.
+async fn park_refused_auto_land(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    decision_id: &str,
+    card: &cards::Card,
+    auto_land_allowed: bool,
+    reason: &str,
+) {
+    if !auto_land_allowed {
+        // A human can still answer the approve_review; leaving it open is the
+        // correct, pre-existing behaviour outside a headless auto-land run.
+        return;
+    }
+
+    let note = format!("auto-land refused ({reason}) — parked with an unblock decision instead");
+    if let Err(e) = decisions::supersede_decision(pool, decision_id, &note).await {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            decision_id = %decision_id,
+            "headless Auto: could not supersede the moot approve_review for goal '{}' ({e}) \
+             — parking anyway",
+            card.title
+        );
+    }
+
+    // One open unblock per goal, same dedupe every other park path uses.
+    match decisions::find_open_decision_for_goal(pool, &card.id, "unblock").await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            let headline = format!(
+                "\"{}\" could not be auto-landed and needs your direction",
+                card.title
+            );
+            let headline = if headline.chars().count() > decisions::MAX_HEADLINE_CHARS {
+                let cut: String = headline
+                    .chars()
+                    .take(decisions::MAX_HEADLINE_CHARS - 1)
+                    .collect();
+                format!("{}…", cut)
+            } else {
+                headline
+            };
+            let payload = match serde_json::to_value(decisions::UnblockPayload {
+                reason: decisions::UnblockReason::Stuck,
+                spent: None,
+                cap: None,
+            }) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    tracing::error!(
+                        target: "permagentd::brain",
+                        goal_id = %card.id,
+                        "headless Auto: could not build the auto-land refusal payload for goal \
+                         '{}' ({e})",
+                        card.title
+                    );
+                    serde_json::json!({ "reason": "stuck" })
+                }
+            };
+            if let Err(e) = create_decision_with_retry(
+                pool,
+                decisions::NewDecision {
+                    kind: "unblock".to_string(),
+                    goal_id: Some(card.id.clone()),
+                    project_id: Some(card.project_id.clone()),
+                    headline: Some(headline),
+                    detail: Some(format!("Goal {} parked: {reason}", card.id)),
+                    payload,
+                    ..Default::default()
+                },
+            )
+            .await
+            {
+                tracing::error!(
+                    target: "permagentd::brain",
+                    goal_id = %card.id,
+                    "headless Auto: goal '{}' refused auto-land but its unblock decision could \
+                     not be created — the parked goal will NOT appear in the Decision Inbox: {e}",
+                    card.title
+                );
+                record_decision_create_failure(pool, &card.id, "unblock", &e).await;
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                "headless Auto: could not check for an open unblock on goal '{}' ({e}) — \
+                 parking anyway",
+                card.title
+            );
+        }
+    }
+
+    match goal_transition::park_goal(pool, &card.id, decisions::ACTOR_SYSTEM, reason).await {
+        Ok(()) => tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "headless Auto: goal '{}' parked — {}",
+            card.title,
+            reason
+        ),
+        Err(e) => tracing::error!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "headless Auto: goal '{}' refused auto-land but could not be parked ({e}) — it \
+             stays in Review",
+            card.title
+        ),
     }
 }
 
@@ -18519,8 +18679,9 @@ mod tests {
     }
 
     /// V1 negative: a goal in Review with no durable verifier pass in its
-    /// worker session must NOT be landed — the decision stays open in the
-    /// inbox exactly as it would with no headless policy at all.
+    /// worker session must NOT be landed. Y10b: under auto-land the refusal
+    /// is now SAID — the card is parked with an `unblock` naming it — rather
+    /// than left in Review behind a decision a headless run cannot answer.
     #[tokio::test]
     async fn headless_auto_land_does_not_land_a_goal_with_no_verifier_pass() {
         let (repo, head) = v1_repo_with_finished_goal_branch("v1-noland-run");
@@ -18555,18 +18716,87 @@ mod tests {
             .unwrap();
         assert_eq!(
             col.state_binding.as_deref(),
-            Some("review"),
-            "an unverified completion must stay in Review, not auto-advance to Complete"
+            Some("failed"),
+            "Y10b: an unverified completion is parked, never advanced to Complete"
         );
 
+        let d = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .expect("Y10b: the refusal must raise an answerable unblock decision");
+        assert_eq!(d.status, "open");
+        assert!(
+            d.detail.contains("no verify evidence"),
+            "the unblock detail must name the refusal, got {:?}",
+            d.detail
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+                .await
+                .unwrap()
+                .is_none(),
+            "the moot approve_review must be superseded, not left open and unanswerable"
+        );
+        let answered = decisions::get_decision(&pool, &decision.id)
+            .await
+            .unwrap()
+            .expect("the approve_review row still exists");
+        assert_eq!(
+            answered.status, "superseded",
+            "superseded, never answered — the refusal stands"
+        );
+        assert!(
+            answered.acted_by.is_none(),
+            "an unverified completion must never be auto-approved"
+        );
+    }
+
+    /// Y10b's own boundary: OUTSIDE a headless auto-land run there IS a human
+    /// on the other end of the `approve_review`, so the refusal must behave
+    /// exactly as it did before — decision open, card still in Review, no
+    /// park.
+    #[tokio::test]
+    async fn a_refusal_without_auto_land_leaves_the_approve_review_open() {
+        let (repo, head) = v1_repo_with_finished_goal_branch("v1-noautoland-run");
+        let root = repo.path().to_string_lossy().into_owned();
+
+        let pool = test_pool().await;
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(&root)
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        v1_stamp_dispatch_evidence(&pool, &card.id, "v1-noautoland-run", &head).await;
+        stamp_vacuous_verify_exchange(&pool, &card.id).await;
+        let decision = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        auto_land_headless_goal(&pool, &decision.id, &card, false, Some("coord-session-1")).await;
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("review"),
+            "with auto-land off the card stays in Review for its human reviewer"
+        );
         let d = decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
             .await
             .unwrap()
             .expect("the approve_review decision must remain open for a human");
         assert_eq!(d.status, "open");
         assert!(
-            d.acted_by.is_none(),
-            "an unverified completion must never be auto-answered"
+            decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .is_none(),
+            "no park, so no unblock — Y10b must not fire outside a headless auto-land run"
         );
     }
 
@@ -18614,8 +18844,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             col.state_binding.as_deref(),
-            Some("review"),
-            "a vacuous-only completion must stay in Review, not auto-advance to Complete"
+            Some("failed"),
+            "Y10b: a vacuous-only completion is parked, never advanced to Complete"
         );
 
         assert_eq!(
@@ -18636,14 +18866,43 @@ mod tests {
             "the receipt must name the vacuous reason, got {reason:?}"
         );
 
-        let d = decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+        // Y10b: the run summary must be able to say WHY, so the refusal parks
+        // with an unblock that names it — M15 fx03/fx10/zai fx01 all exited
+        // with nothing but the drain's generic "still running at exit".
+        let d = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
             .await
             .unwrap()
-            .expect("the approve_review decision must remain open for a human");
+            .expect("Y10b: the refusal must raise an answerable unblock decision");
         assert_eq!(d.status, "open");
         assert!(
-            d.acted_by.is_none(),
-            "a vacuous-only completion must never be auto-answered"
+            d.detail.contains("vacuous"),
+            "the unblock detail must name the vacuous verify, got {:?}",
+            d.detail
+        );
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("last_error")
+                .and_then(|v| v.as_str())
+                .map(|e| e.contains("vacuous verify")),
+            Some(true),
+            "the parked card's last_error must name the refusal too"
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+                .await
+                .unwrap()
+                .is_none(),
+            "the moot approve_review must be superseded, not left open and unanswerable"
+        );
+        let answered = decisions::get_decision(&pool, &decision.id)
+            .await
+            .unwrap()
+            .expect("the approve_review row still exists");
+        assert_eq!(answered.status, "superseded");
+        assert!(
+            answered.acted_by.is_none(),
+            "a vacuous-only completion must never be auto-approved"
         );
     }
 
