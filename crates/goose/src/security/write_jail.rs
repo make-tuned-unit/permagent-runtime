@@ -58,6 +58,7 @@
 //!     subcommand, an output redirection to an outside path, or a mutating
 //!     file command (`rm`, `cp`, `mv`, `tee`, `sed -i`, …) with an outside
 //!     target.
+//!
 //! Reads stay unrestricted everywhere, temp scratch and
 //! `SECURITY_WRITE_JAIL_ALLOW` keep working, and every other session — the
 //! coordinator included — keeps the confirmation semantics unchanged.
