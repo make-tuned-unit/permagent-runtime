@@ -65,6 +65,7 @@ pub mod review_gate;
 pub mod reviewer_pick;
 pub mod role_map;
 pub mod routing_matrix;
+pub mod routing_receipt;
 pub mod snapshot;
 pub mod tier;
 pub mod tool_signals;

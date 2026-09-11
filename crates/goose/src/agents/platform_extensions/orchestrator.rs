@@ -2840,6 +2840,153 @@ pub(crate) async fn select_worker_detailed(
     })
 }
 
+async fn cost_routing_candidates(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    probe_cache: &ProbeCache,
+    config: &agent_identity::AgentConfig,
+    restricted: bool,
+    required: &[String],
+    snapshot: &serde_json::Value,
+) -> Vec<goal_state::WorkerCandidate> {
+    let dispatchable = dispatchable_personas(config, restricted, Some(probe_cache));
+    let considered = snapshot["candidates_considered"].as_array();
+    let load = if considered.is_none() {
+        cards::active_worker_load(pool).await.unwrap_or_default()
+    } else {
+        Default::default()
+    };
+    config
+        .workers
+        .iter()
+        .filter(|(_, persona)| dispatchable.iter().any(|p| std::ptr::eq(*p, *persona)))
+        .filter(|(_, persona)| worker_satisfies(persona, required))
+        .filter(|(key, _)| {
+            considered.is_none_or(|rows| {
+                rows.iter().any(|row| {
+                    row["key"].as_str() == Some(key.as_str())
+                        && row["available"].as_bool() == Some(true)
+                })
+            })
+        })
+        .map(|(key, persona)| goal_state::WorkerCandidate {
+            key: key.clone(),
+            available: true,
+            tool_kinds: persona.tool_kinds.clone(),
+            cost_tier: persona.cost_tier.clone(),
+            active_sessions: considered
+                .and_then(|rows| {
+                    rows.iter()
+                        .find(|row| row["key"].as_str() == Some(key.as_str()))
+                })
+                .and_then(|row| row["active_sessions"].as_u64())
+                .and_then(|count| usize::try_from(count).ok())
+                .unwrap_or_else(|| load.get(key).copied().unwrap_or(0)),
+        })
+        .collect()
+}
+
+/// Audit the actual resolved model, after assessment/escalation, against the
+/// same dispatchable pool and enforced kinds used by worker selection. This
+/// measures routing; it does not turn missing graduation evidence into a veto.
+/// The eligible candidate pool in `cost_routing_candidates` must stay identical
+/// to `select_worker_detailed`: mirror any engine, probe, capability, or policy
+/// filter changes there here too, or the receipt will audit a different pool.
+async fn audit_cost_routing(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    probe_cache: &ProbeCache,
+    worker_key: &str,
+    snapshot: &serde_json::Value,
+    policy: Option<&HeadlessDispatchPolicy>,
+) -> (bool, bool) {
+    use crate::cost_router::{routing_matrix, WorkflowRole};
+
+    let config = agent_identity::load_agent_config();
+    let restricted = policy.is_some_and(|p| p.restrict_ranked_selection_to_internal_engine);
+    let required: Vec<String> = snapshot
+        .get("required_kinds")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default();
+    let mut ranked =
+        cost_routing_candidates(pool, probe_cache, &config, restricted, &required, snapshot).await;
+    let directory = crate::cost_router::cached_capability_directory().await;
+    let derived = crate::cost_router::derived_role_map().await;
+    let routing = &snapshot["model_routing"];
+    let actual_role = WorkflowRole::all()
+        .into_iter()
+        .find(|role| Some(role.as_str()) == routing["role"].as_str())
+        .or_else(|| {
+            config
+                .workers
+                .get(worker_key)
+                .and_then(|worker| worker.routing_role())
+        });
+    let actual = routing["provider"].as_str().zip(routing["model"].as_str());
+    let session = routing["session_provider"]
+        .as_str()
+        .zip(routing["session_model"].as_str());
+    let pin = actual_role.and_then(|role| {
+        crate::cost_router::role_map::role_model(role).or_else(|| {
+            crate::cost_router::packs::pack_role_for_workflow_role(role)
+                .and_then(crate::cost_router::packs::pack_pin)
+                .map(crate::cost_router::delegate::pack_to_role_model)
+        })
+    });
+    let pack_honored = pin
+        .as_ref()
+        .is_none_or(|pin| actual == Some((pin.provider.as_str(), pin.model.as_str())));
+    let mut candidates = Vec::new();
+    // Reuse the existing tier/load/name order exactly for equal dollar costs.
+    while let Ok(key) = goal_state::select_best_worker(&ranked, &[]) {
+        ranked.retain(|candidate| candidate.key != key);
+        let persona = &config.workers[&key];
+        let internal = matches!(
+            persona.engine,
+            agent_identity::WorkerEngineKind::InternalSubagent
+        );
+        let role = if internal {
+            actual_role.or_else(|| persona.routing_role())
+        } else {
+            persona.routing_role()
+        };
+        let resolved = if internal {
+            role.and_then(|role| resolve_dispatch_role_model(role, &derived, policy))
+                .map(|(model, _)| model)
+        } else {
+            None
+        };
+        let pair = if key == worker_key {
+            actual
+        } else if internal {
+            resolved
+                .as_ref()
+                .map(|model| (model.provider.as_str(), model.model.as_str()))
+                .or(session)
+        } else {
+            persona.provider.as_deref().zip(persona.model.as_deref())
+        };
+        let graduated = pair.zip(role).is_some_and(|((provider, model), role)| {
+            directory
+                .cards
+                .iter()
+                .find(|card| card.provider == provider && card.model == model)
+                .and_then(|card| card.role(role))
+                .is_some_and(|evidence| evidence.graduated())
+        });
+        let cost =
+            pair.and_then(|(provider, model)| routing_matrix::nominal_call_cost(provider, model));
+        candidates.push(routing_matrix::WorkerCandidate {
+            name: key,
+            // worker_satisfies above includes adapter requirements and wildcard
+            // declarations. Materialize those enforced kinds for the pure core.
+            kinds: required.clone(),
+            graduated,
+            est_cost_per_call: cost.unwrap_or(f64::INFINITY),
+        });
+    }
+    let cheapest = routing_matrix::cheapest_capable_worker(&required, &candidates);
+    (cheapest == Some(worker_key), pack_honored)
+}
+
 /// Add adapter-discovered capability metadata to the routing receipt.  The
 /// pure worker selector intentionally knows only about tool kinds and costs;
 /// this enrichment happens at the registry boundary where the concrete engine
@@ -3567,6 +3714,18 @@ pub(crate) async fn dispatch_goal_fn(
                     &planner_reason.describe(),
                 );
             }
+            if let Some(obj) = model_routing.as_object_mut() {
+                let session_model = provider.get_model_config().model_name.clone();
+                obj.insert(
+                    "session_provider".into(),
+                    serde_json::json!(provider.get_name()),
+                );
+                obj.insert("session_model".into(), serde_json::json!(session_model));
+                if resolved.is_none() {
+                    obj.insert("provider".into(), serde_json::json!(provider.get_name()));
+                    obj.insert("model".into(), serde_json::json!(session_model));
+                }
+            }
             if let Some(obj) = capability_snapshot.as_object_mut() {
                 obj.insert("model_routing".to_string(), model_routing);
             }
@@ -3581,6 +3740,19 @@ pub(crate) async fn dispatch_goal_fn(
             })
         }
     };
+
+    let (cheapest_capable, pack_honored) = audit_cost_routing(
+        &pool,
+        probe_cache,
+        &worker_key,
+        &capability_snapshot,
+        policy,
+    )
+    .await;
+    capability_snapshot["cost_routing"] = serde_json::json!({
+        "cheapest_capable": cheapest_capable,
+        "pack_honored": pack_honored,
+    });
 
     // Atomically claim this Ready goal before starting any worker. The claim
     // token ties all post-spawn bookkeeping and cleanup to this exact attempt.
@@ -3673,6 +3845,14 @@ pub(crate) async fn dispatch_goal_fn(
             return Err(error);
         }
     };
+
+    crate::cost_router::routing_receipt::record("cost_routing", "dispatches");
+    if cheapest_capable {
+        crate::cost_router::routing_receipt::record("cost_routing", "cheapest_capable");
+    }
+    if pack_honored {
+        crate::cost_router::routing_receipt::record("cost_routing", "pack_honored");
+    }
 
     // Register the worker handles: kill for the cancel path (#490), steer for
     // mid-run correction (claude workers only), and the worker's own session
@@ -6021,6 +6201,13 @@ impl OrchestratorClient {
             .as_ref()
             .map(|rm| format!("{}/{}", rm.provider, rm.model))
             .unwrap_or_else(|| "session".to_string());
+        if let Some(route) = planner_route.as_ref() {
+            crate::cost_router::routing_receipt::set_planner(&route.provider, &route.model);
+        } else if let Some(session) = self.context.session.as_ref() {
+            if let (Some(provider), Some(model)) = (&session.provider_name, &session.model_config) {
+                crate::cost_router::routing_receipt::set_planner(provider, &model.model_name);
+            }
+        }
         let worker_map = crate::cost_router::derived_role_map().await;
         let workers_label = crate::cost_router::WorkflowRole::all()
             .iter()
@@ -16629,9 +16816,10 @@ mod tests {
     /// non-hypothetical risk on Jesse's own dev machine where these tools are
     /// installed. Asserting the ENGINE KIND of the restricted call's result
     /// (rather than which specific worker) keeps this deterministic
-    /// regardless of which external CLIs happen to be on PATH.
+    /// regardless of which external CLIs happen to be on PATH. G15 MED-4:
+    /// also pin the audit's eligible pool and ranking to the selection snapshot.
     #[tokio::test]
-    async fn select_worker_detailed_restricted_never_selects_an_external_cli_worker() {
+    async fn internal_only_selection_and_cost_audit_agree_on_candidates() {
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(crate::session::SessionManager::new(
             tmp.path().to_path_buf(),
@@ -16647,6 +16835,44 @@ mod tests {
             );
 
         let config = agent_identity::load_agent_config();
+        let required: Vec<String> =
+            serde_json::from_value(restricted.snapshot["required_kinds"].clone()).unwrap();
+        let ordinary: Vec<&String> = required
+            .iter()
+            .filter(|kind| {
+                agent_identity::WorkerCapabilities::default()
+                    .supports_requirement(kind)
+                    .is_none()
+            })
+            .collect();
+        let mut expected: Vec<serde_json::Value> = restricted.snapshot["candidates_considered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| {
+                let kinds: Vec<String> = serde_json::from_value(row["tool_kinds"].clone()).unwrap();
+                row["available"] == true
+                    && (kinds.is_empty() || ordinary.iter().all(|kind| kinds.contains(kind)))
+            })
+            .cloned()
+            .collect();
+        expected.sort_by_key(|row| row["key"].as_str().unwrap().to_string());
+        assert!(!expected.is_empty());
+        // Check both the real selection snapshot and the audit's no-snapshot
+        // fallback, so snapshot filtering cannot hide an extra audit candidate.
+        for snapshot in [&restricted.snapshot, &serde_json::Value::Null] {
+            let candidates =
+                cost_routing_candidates(&pool, &probe_cache, &config, true, &required, snapshot)
+                    .await;
+            assert_eq!(
+                goal_state::select_best_worker(&candidates, &[]).unwrap(),
+                restricted.worker_key
+            );
+            let audit = build_capability_snapshot(&restricted.worker_key, &required, &candidates);
+            let mut actual = audit["candidates_considered"].as_array().unwrap().clone();
+            actual.sort_by_key(|row| row["key"].as_str().unwrap().to_string());
+            assert_eq!(actual, expected);
+        }
         let engine = config
             .workers
             .get(&restricted.worker_key)

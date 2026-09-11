@@ -12,20 +12,65 @@
 //! candidate is denied outright, never chosen as a fallback, no matter how
 //! cheap.
 //!
-//! ## Not yet wired to real dispatch — on purpose
+//! ## Fixture routing and goal-dispatch auditing
 //!
 //! The capability-card / graduation registry now exists
 //! ([`super::capability_directory::CapabilityCard`], Round C Lane Z3) and
 //! [`RoutingCandidate`] has a [`From`] impl for it below — the TODO(X-grad)
 //! that used to sit here is resolved at that ONE seam. `choose_worker` itself
-//! is still NOT wired into a real dispatch path: no clean seam exists yet
+//! is still not the goal dispatch selector: no clean seam exists yet
 //! (real dispatch routes by [`super::recommend::WorkflowRole`] via
 //! [`super::derived::derive_role_map`] and
 //! [`super::capability_directory::CapabilityDirectory::planner`], not by
 //! [`FixtureCapability`]), and rewiring it would be exactly the scope
 //! creep the lane briefs ask to avoid ("wire it to real selection only if a
 //! clean seam exists"). This stays a pure decision function over
-//! caller-supplied candidates, now buildable from real cards.
+//! caller-supplied candidates, now buildable from real cards. The separate
+//! [`cheapest_capable_worker`] core below audits live goal dispatches using
+//! their enforced tool kinds and role graduation evidence.
+
+/// A goal-dispatch candidate. Callers supply the existing tie-break order and
+/// remove unavailable engines and unsatisfied adapter requirements first.
+#[derive(Debug, Clone)]
+pub struct WorkerCandidate {
+    pub name: String,
+    pub kinds: Vec<String>,
+    pub graduated: bool,
+    pub est_cost_per_call: f64,
+}
+
+/// Lowest nominal 8k-input / 1k-output cost among graduated, capable workers.
+/// Equal costs retain the caller's order. Unknown/invalid prices cannot win.
+pub fn cheapest_capable_worker<'a>(
+    required_kinds: &[String],
+    candidates: &'a [WorkerCandidate],
+) -> Option<&'a str> {
+    let mut best: Option<&WorkerCandidate> = None;
+    for candidate in candidates {
+        if !candidate.graduated
+            || !candidate.est_cost_per_call.is_finite()
+            || candidate.est_cost_per_call < 0.0
+            || !required_kinds
+                .iter()
+                .all(|kind| candidate.kinds.contains(kind))
+        {
+            continue;
+        }
+        if best.is_none_or(|current| candidate.est_cost_per_call < current.est_cost_per_call) {
+            best = Some(candidate);
+        }
+    }
+    best.map(|candidate| candidate.name.as_str())
+}
+
+/// Reuse reservation pricing: canonical registry, knowledge base, worst case.
+pub fn nominal_call_cost(provider: &str, model: &str) -> Option<f64> {
+    let (pricing, _) = super::reservation::resolve_pricing(provider, model).ok()?;
+    let input = pricing.input?;
+    let output = pricing.output?;
+    (input.is_finite() && output.is_finite() && input >= 0.0 && output >= 0.0)
+        .then_some((8_000.0 * input + 1_000.0 * output) / 1_000_000.0)
+}
 
 use serde::{Deserialize, Serialize};
 
@@ -548,5 +593,158 @@ mod tests {
         let rc: RoutingCandidate = (&graduated_weak).into();
         assert!(rc.graduated);
         assert!(!rc.graduated_for_hard);
+    }
+}
+
+#[cfg(test)]
+mod goal_routing_tests {
+    use super::{cheapest_capable_worker, nominal_call_cost, WorkerCandidate};
+    use crate::agents::platform_extensions::orchestrator::worker_engine_allowed_for_ranked_dispatch;
+    use crate::config::agent_identity::WorkerEngineKind;
+    use crate::cost_router::{delegate, RoleModel, WorkflowRole};
+
+    #[test]
+    fn goal_routing_matrix() {
+        let worker = |name: &str, kinds: &[&str], graduated, cost| WorkerCandidate {
+            name: name.into(),
+            kinds: kinds.iter().map(|kind| (*kind).into()).collect(),
+            graduated,
+            est_cost_per_call: cost,
+        };
+        let cheap = || worker("cheap", &["code_edit"], true, 1.0);
+        let full = || worker("full", &["code_edit", "testing"], true, 2.0);
+        let cli = WorkerEngineKind::ExternalCli {
+            bin: "unused".into(),
+            args: vec![],
+        };
+        let internal = WorkerEngineKind::InternalSubagent;
+        // The bool is the already-resolved PERMAGENT_HEADLESS_WORKER=internal
+        // policy. Use the production engine predicate without changing env.
+        let pool = |restricted| {
+            [(cheap(), &cli), (full(), &internal)]
+                .into_iter()
+                .filter(|(_, engine)| worker_engine_allowed_for_ranked_dispatch(engine, restricted))
+                .map(|(candidate, _)| candidate)
+                .collect::<Vec<_>>()
+        };
+        let rows = vec![
+            (
+                "cheapest graduated",
+                vec!["code_edit"],
+                vec![full(), cheap()],
+                Some("cheap"),
+            ),
+            (
+                "ungraduated skipped",
+                vec!["code_edit"],
+                vec![worker("unrated", &["code_edit"], false, 0.0), full()],
+                Some("full"),
+            ),
+            (
+                "all kinds required",
+                vec!["code_edit", "testing"],
+                vec![cheap(), full()],
+                Some("full"),
+            ),
+            (
+                "stable tie order",
+                vec!["code_edit"],
+                vec![worker("z-first", &["code_edit"], true, 1.0), cheap()],
+                Some("z-first"),
+            ),
+            (
+                "no graduated worker",
+                vec!["code_edit"],
+                vec![worker("unrated", &["code_edit"], false, 0.0)],
+                None,
+            ),
+            ("unsatisfiable", vec!["review"], vec![cheap(), full()], None),
+            (
+                "empty requirements",
+                vec![],
+                vec![full(), cheap()],
+                Some("cheap"),
+            ),
+            (
+                "empty declarations reject",
+                vec!["review"],
+                vec![worker("empty", &[], true, 0.0), cheap()],
+                None,
+            ),
+            (
+                "internal-only pool",
+                vec!["code_edit"],
+                pool(true),
+                Some("full"),
+            ),
+            (
+                "external allowed",
+                vec!["code_edit"],
+                pool(false),
+                Some("cheap"),
+            ),
+            (
+                "unknown price",
+                vec!["code_edit"],
+                vec![
+                    worker("unknown", &["code_edit"], true, f64::INFINITY),
+                    cheap(),
+                ],
+                Some("cheap"),
+            ),
+            (
+                "invalid price",
+                vec!["code_edit"],
+                vec![
+                    worker("nan", &["code_edit"], true, f64::NAN),
+                    worker("negative", &["code_edit"], true, -1.0),
+                ],
+                None,
+            ),
+        ];
+        for (label, required, candidates, expected) in rows {
+            let required = required.into_iter().map(String::from).collect::<Vec<_>>();
+            assert_eq!(
+                cheapest_capable_worker(&required, &candidates),
+                expected,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn routing_matrix_pin_overrides_use_the_dispatch_precedence() {
+        let model = |name: &str| RoleModel {
+            provider: "zai".into(),
+            model: name.into(),
+        };
+        for (role_pin, pack_pin, expected) in [
+            (Some(model("glm-4.7")), Some(model("glm-5")), "glm-4.7"),
+            (None, Some(model("glm-4.7")), "glm-4.7"),
+        ] {
+            let decision = delegate::decide_delegate_model(
+                Some(WorkflowRole::Edit),
+                role_pin,
+                pack_pin,
+                Some(model("glm-5")),
+                false,
+                None,
+                &|_| true,
+                None,
+            );
+            let resolved = decision.role_model.unwrap();
+            assert_eq!(resolved.model, expected);
+            let candidate = WorkerCandidate {
+                name: "pinned-worker".into(),
+                kinds: vec!["code_edit".into()],
+                graduated: true,
+                est_cost_per_call: nominal_call_cost(&resolved.provider, &resolved.model).unwrap(),
+            };
+            assert!((candidate.est_cost_per_call - 0.007).abs() < 1e-12);
+            assert_eq!(
+                cheapest_capable_worker(&["code_edit".into()], &[candidate]),
+                Some("pinned-worker")
+            );
+        }
     }
 }
