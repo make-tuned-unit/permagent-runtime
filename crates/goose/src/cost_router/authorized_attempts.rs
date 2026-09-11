@@ -9,14 +9,14 @@
 //! exceed it — at the cost of holding ~70–330× the money any call actually
 //! settled for (see `cost_router::reservation::RESERVE_ATTEMPTS_ENV`).
 //!
-//! Now the hold covers one attempt by default, so the retry loop has to be
+//! Now the hold covers two attempts by default, so the retry loop has to be
 //! told what it may spend. The count travels as a task-local rather than as a
 //! new argument threaded through `Provider::stream`/`Provider::complete` and
 //! every provider implementation: the reserved dispatch seams
 //! (`agents::agent`'s primary stream and `agents::reply_parts`'
 //! `AccountedFastCompletion::complete_one`) wrap their own provider call in
-//! [`with_authorized_attempts`], and the retry loop reads it back with
-//! [`authorized_attempts`].
+//! an async reservation authorizer. The retry loop reads the granted count
+//! and requests a one-attempt extension only when that count is exhausted.
 //!
 //! `None` — no scope installed — means *no reservation governs this call*:
 //! local/free work, a provider's own auxiliary requests (Databricks
@@ -28,15 +28,41 @@
 //! function that took the hold.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+
+use crate::session::{CostReservationOutcome, SessionManager};
+
+struct AttemptAuthorization {
+    granted: AtomicU32,
+    extension: Option<(Arc<SessionManager>, String)>,
+    extension_lock: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    extension_calls: AtomicU32,
+}
+
+impl AttemptAuthorization {
+    fn new(attempts: u32, extension: Option<(Arc<SessionManager>, String)>) -> Arc<Self> {
+        Arc::new(Self {
+            granted: AtomicU32::new(attempts),
+            extension,
+            extension_lock: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            extension_calls: AtomicU32::new(0),
+        })
+    }
+}
 
 tokio::task_local! {
-    static AUTHORIZED_ATTEMPTS: u32;
+    static AUTHORIZED_ATTEMPTS: Arc<AttemptAuthorization>;
 }
 
 /// Run `future` with `attempts` physical provider attempts authorized by the
 /// caller's reservation.
 pub async fn with_authorized_attempts<F: Future>(attempts: u32, future: F) -> F::Output {
-    AUTHORIZED_ATTEMPTS.scope(attempts, future).await
+    AUTHORIZED_ATTEMPTS
+        .scope(AttemptAuthorization::new(attempts, None), future)
+        .await
 }
 
 /// [`with_authorized_attempts`] for a caller that may have no paid hold at
@@ -55,7 +81,9 @@ pub async fn with_authorized_attempts_opt<F: Future>(
 /// How many physical attempts the enclosing reservation authorized, or `None`
 /// when no reservation governs this call.
 pub fn authorized_attempts() -> Option<u32> {
-    AUTHORIZED_ATTEMPTS.try_with(|attempts| *attempts).ok()
+    AUTHORIZED_ATTEMPTS
+        .try_with(|authorization| authorization.granted.load(Ordering::Acquire))
+        .ok()
 }
 
 /// Would a physical attempt numbered `next_attempt` (1-based) be covered by
@@ -64,6 +92,61 @@ pub fn authorized_attempts() -> Option<u32> {
 /// `None` (no reservation scope) authorizes everything — see the module doc.
 pub fn attempt_is_authorized(next_attempt: u32) -> bool {
     authorized_attempts().is_none_or(|authorized| next_attempt <= authorized)
+}
+
+/// Install an extensible authorization at a hold-taking dispatch seam.
+/// No paid hold leaves the enclosing task-local scope untouched.
+pub(crate) async fn with_reservation_attempts<F: Future>(
+    manager: Arc<SessionManager>,
+    invocation_id: String,
+    attempts: Option<u32>,
+    future: F,
+) -> F::Output {
+    match attempts {
+        Some(attempts) => {
+            let authorization = AttemptAuthorization::new(attempts, Some((manager, invocation_id)));
+            AUTHORIZED_ATTEMPTS.scope(authorization, future).await
+        }
+        None => future.await,
+    }
+}
+
+/// Extend by one only when needed. Serialize the database grant and count
+/// update, rechecking after the lock so concurrent checks cannot double-extend.
+pub(crate) async fn authorize_attempt(next_attempt: u32) -> Result<(), String> {
+    if attempt_is_authorized(next_attempt) {
+        return Ok(());
+    }
+    let authorization = AUTHORIZED_ATTEMPTS.with(Arc::clone);
+    let _guard = authorization.extension_lock.lock().await;
+    if next_attempt <= authorization.granted.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let Some((manager, invocation_id)) = &authorization.extension else {
+        return Err("no reservation extension authorizer installed".into());
+    };
+    #[cfg(test)]
+    authorization
+        .extension_calls
+        .fetch_add(1, Ordering::Relaxed);
+    match manager.extend_reservation(invocation_id, 1).await {
+        Ok(CostReservationOutcome::Granted { .. }) => {
+            let granted = authorization.granted.fetch_add(1, Ordering::Release) + 1;
+            if next_attempt <= granted {
+                Ok(())
+            } else {
+                Err("one-attempt extension does not cover the requested attempt".into())
+            }
+        }
+        Ok(CostReservationOutcome::Unknown { reason }) => Err(reason),
+        Ok(outcome) => Err(format!("{outcome:?}")),
+        Err(error) => Err(format!("{error:#}")),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn extension_calls() -> u32 {
+    AUTHORIZED_ATTEMPTS.with(|authorization| authorization.extension_calls.load(Ordering::Relaxed))
 }
 
 #[cfg(test)]

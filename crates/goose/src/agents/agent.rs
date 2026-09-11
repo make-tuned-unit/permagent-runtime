@@ -2137,16 +2137,12 @@ impl Agent {
                 };
 
                 turn_timing.start_model();
-                // Y7 (harness loop, from Lane A12's Q6): the provider's own
-                // retry loop runs inside this call, and every physical retry
-                // is another billable request. Publish how many attempts the
-                // reservation above actually paid for (1 by default now,
-                // instead of the whole 5-attempt envelope held in dollars up
-                // front) so `providers::retry` refuses an attempt the hold
-                // does not cover, honestly and in the error it returns,
-                // rather than spending past the authorization. `None` is
-                // unpaid work and runs exactly as before.
-                let mut stream = match crate::cost_router::with_authorized_attempts_opt(
+                // Carry the hold's count and extension authorizer into physical
+                // retries. Exhausting the count requires a new one-attempt grant.
+                // Unpaid work keeps the provider's retry policy unchanged.
+                let mut stream = match crate::cost_router::authorized_attempts::with_reservation_attempts(
+                    Arc::clone(&session_manager),
+                    invocation.invocation_id.clone(),
                     invocation.attempts_reserved,
                     Self::stream_response_from_provider(
                         turn_provider.clone(),

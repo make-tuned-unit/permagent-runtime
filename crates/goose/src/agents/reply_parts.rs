@@ -1831,11 +1831,11 @@ pub(crate) async fn reserve_provider_invocation_for_model(
     let task_id = budget_task_id(&session.extension_data);
     let lease_until = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
     let outcome = manager
-        .reserve_provider_invocation(
+        .reserve_bounded_provider_invocation(
             &context.invocation_id,
             &session.id,
             task_id.as_deref(),
-            bound.amount_usd,
+            bound,
             &lease_until,
             &crate::cost_router::budget::load_budget_config(),
         )
@@ -1897,9 +1897,8 @@ pub(crate) struct ProviderInvocationContext {
     pub reservation_id: Option<String>,
     /// Y7: physical provider attempts this invocation's hold pays for, or
     /// `None` when the call took no paid hold. The dispatch seam installs it
-    /// with `cost_router::with_authorized_attempts_opt` so the provider's
-    /// retry loop refuses an attempt the reservation does not cover instead of
-    /// spending past it.
+    /// with an extension authorizer so retries beyond this count require a
+    /// new one-attempt reservation grant.
     pub attempts_reserved: Option<u32>,
 }
 
@@ -2083,27 +2082,27 @@ impl AccountedFastCompletion {
             invocation.reservation_id.clone(),
         );
 
-        // Y7 (harness loop, from Lane A12's Q6): this dispatch may retry
-        // physically inside the provider, and each retry is another billable
-        // request. Publish how many attempts the hold above actually paid for
-        // so `providers::retry` refuses an unauthorized one instead of
-        // spending past the reservation. `None` (unpaid work) runs unchanged.
-        let (response, mut usage) = match crate::cost_router::with_authorized_attempts_opt(
-            invocation.attempts_reserved,
-            self.provider
-                // permagent-dispatch: seam=complete_fast_attempt_v1 class=wrapped contract=reservation_settlement
-                .complete(&model_config, &self.session.id, system, messages, tools),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                unknown_guard.mark_unknown().await?;
-                return Err(anyhow::anyhow!(
-                    "complete_fast physical attempt failed: {error}"
-                ));
-            }
-        };
+        // Physical retries beyond the hold's count require a one-attempt
+        // extension grant. Unpaid work keeps the retry policy unchanged.
+        let (response, mut usage) =
+            match crate::cost_router::authorized_attempts::with_reservation_attempts(
+                Arc::clone(&self.manager),
+                invocation.invocation_id.clone(),
+                invocation.attempts_reserved,
+                self.provider
+                    // permagent-dispatch: seam=complete_fast_attempt_v1 class=wrapped contract=reservation_settlement
+                    .complete(&model_config, &self.session.id, system, messages, tools),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    unknown_guard.mark_unknown().await?;
+                    return Err(anyhow::anyhow!(
+                        "complete_fast physical attempt failed: {error}"
+                    ));
+                }
+            };
 
         let has_authoritative_usage = usage.usage.input_tokens.is_some()
             || usage.usage.output_tokens.is_some()
