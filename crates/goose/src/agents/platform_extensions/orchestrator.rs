@@ -2371,18 +2371,25 @@ pub(crate) async fn select_requested_worker(
         ));
     }
 
-    // An explicitly requested worker is the only worker this dispatch can use,
-    // so IT is the whole satisfiable set — not the roster (Y8d).
-    let satisfiable = crate::council::plan::worker_capabilities(std::iter::once(persona));
-    let required_kinds = goal_required_kinds(goal, &satisfiable);
-
-    if let Some(missing) = missing_adapter_requirement(&required_kinds, persona) {
+    // The adapter guard runs against the model's RAW tags (G13 M2). Intersecting
+    // first drops exactly the adapter capability this persona lacks, so checking
+    // the intersected set could never refuse anything: explicitly requesting a
+    // worker that genuinely cannot do the job would dispatch in silence. An
+    // explicit request is a claim about THIS worker, and it has to be answerable
+    // with "no".
+    let declared_tags = goal_declared_tags(goal).unwrap_or_default();
+    if let Some(missing) = missing_adapter_requirement(&declared_tags, persona) {
         return Err(format!(
             "Worker '{}' adapter does not support required capability '{}' — not dispatched. \
              Inspect the worker capabilities before selecting another adapter.",
             requested, missing
         ));
     }
+
+    // An explicitly requested worker is the only worker this dispatch can use,
+    // so IT is the whole satisfiable set — not the roster (Y8d). Used for the
+    // receipt only, now that the refusal above reads the raw tags.
+    let required_kinds = goal_required_kinds(goal, &[persona]);
 
     let (available, reason) = match probe_cache.get(requested) {
         Some(cached) => (cached.available, cached.reason.clone()),
@@ -2414,11 +2421,12 @@ pub(crate) async fn select_requested_worker(
             // The audit trail must record that cost ranking did NOT decide this,
             // so a later "why did an expensive worker run?" has an answer.
             "selection_mode": "explicitly_requested",
-            // Y8d: the receipt records the requirement that was actually
-            // ENFORCED (the roster-intersected set the adapter check two
-            // dozen lines above used), not the model's raw tags. A receipt
-            // that names a requirement nothing was checked against is how
-            // "why did this not dispatch?" went unanswerable on glm47/fx08.
+            // Y8d: the receipt records the requirement this worker is actually
+            // being dispatched AGAINST — the model's tags narrowed to what this
+            // one persona can satisfy — not the raw tags. The adapter refusal
+            // itself reads the raw tags (G13 M2); a receipt that names a
+            // requirement nothing was checked against is how "why did this not
+            // dispatch?" went unanswerable on glm47/fx08.
             "required_kinds": required_kinds,
             "selected": {
                 "key": requested,
@@ -2553,32 +2561,168 @@ fn dispatchable_worker_capabilities(
     config: &agent_identity::AgentConfig,
     restrict_to_internal_engine: bool,
 ) -> std::collections::BTreeSet<String> {
-    crate::council::plan::worker_capabilities(config.workers.values().filter(|persona| {
-        worker_engine_allowed_for_ranked_dispatch(&persona.engine, restrict_to_internal_engine)
-    }))
+    crate::council::plan::worker_capabilities(
+        dispatchable_personas(config, restrict_to_internal_engine, None).into_iter(),
+    )
 }
 
-/// The requirement set a goal is dispatched against, already intersected with
-/// what `allowed` can satisfy. See [`required_kinds_within_roster`].
+/// Is this worker actually available on this machine?
+///
+/// The one definition, shared by the candidate list and by the pool the
+/// requirement set is narrowed against (G13 M1 — deriving "dispatchable" from
+/// the roster alone let an absent binary's exclusive capability survive the
+/// intersection and then mark every candidate unavailable, which is fx08 again
+/// in the DEFAULT configuration).
+fn probed_worker_available(
+    probe_cache: &ProbeCache,
+    key: &str,
+    persona: &agent_identity::WorkerPersona,
+) -> bool {
+    match probe_cache.get(key) {
+        Some(cached) => cached.available,
+        None => {
+            let (ok, reason) = worker_probe::probe_worker(&persona.availability_check);
+            probe_cache.set(key, ok, reason);
+            ok
+        }
+    }
+}
+
+/// The workers this dispatch may actually choose from. `probe_cache` `None`
+/// asks the roster question only ("could this engine ever run here?"); `Some`
+/// adds the availability question the candidate list asks.
+fn dispatchable_personas<'a>(
+    config: &'a agent_identity::AgentConfig,
+    restrict_to_internal_engine: bool,
+    probe_cache: Option<&ProbeCache>,
+) -> Vec<&'a agent_identity::WorkerPersona> {
+    config
+        .workers
+        .iter()
+        .filter(|(_, persona)| persona.engine.is_dispatchable())
+        .filter(|(_, persona)| {
+            worker_engine_allowed_for_ranked_dispatch(&persona.engine, restrict_to_internal_engine)
+        })
+        .filter(|(key, persona)| match probe_cache {
+            Some(cache) => probed_worker_available(cache, key, persona),
+            None => true,
+        })
+        .map(|(_, persona)| persona)
+        .collect()
+}
+
+/// The model's tags exactly as written on the card. `None` means the card has
+/// no `tags` key at all (or it is not an array) — the untagged-goal path, which
+/// is distinct from an explicitly empty list.
+fn goal_declared_tags(goal: &cards::Card) -> Option<Vec<String>> {
+    let raw = goal.metadata_json.get("tags").and_then(|v| v.as_array())?;
+    Some(
+        raw.iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+    )
+}
+
+/// Does this ONE worker satisfy every one of these kinds?
+///
+/// The same two tests the selectors apply, in one place: adapter requirements
+/// through [`missing_adapter_requirement`], ordinary kinds through the exact
+/// `tool_kinds.contains` that `goal_state::select_best_worker` uses. Exact
+/// rather than canonical on purpose — a set this call reports as satisfiable
+/// must be one the selector will also accept.
+fn worker_satisfies(persona: &agent_identity::WorkerPersona, required_kinds: &[String]) -> bool {
+    if missing_adapter_requirement(required_kinds, persona).is_some() {
+        return false;
+    }
+    // `select_best_worker` treats a worker that declares NO tool kinds as
+    // matching everything. Mirror it exactly, or this could narrow a set that
+    // did not need narrowing.
+    if persona.tool_kinds.is_empty() {
+        return true;
+    }
+    required_kinds.iter().all(|kind| {
+        agent_identity::WorkerCapabilities::default()
+            .supports_requirement(kind)
+            .is_some()
+            || persona.tool_kinds.contains(kind)
+    })
+}
+
+/// Narrow a requirement set to one a SINGLE dispatchable worker can satisfy.
+///
+/// G13 H3: the roster intersection above is a UNION over the pool, but
+/// `select_best_worker` requires one candidate to satisfy every kind
+/// (`goal_state.rs`: `required_kinds.iter().all(|req| w.tool_kinds.contains(req))`).
+/// Under `PERMAGENT_HEADLESS_WORKER=internal` the pool is `permagent`
+/// (`code_edit, shell, git, search, testing`) and `reviewer` (`review`), so a
+/// goal tagged `["code_edit", "review"]` passes the intersection untouched and
+/// still returns "No suitable worker available" — the fx08 deadlock class,
+/// one union away from unfixed.
+///
+/// Keep the largest satisfiable subset, dropping tags from the END in the order
+/// the model wrote them: the first tag is the job, the tail is the trimming.
+/// Never an empty set — `select_best_worker` reads empty as "any available
+/// worker matches", so an emptied requirement would route on cost alone; fall
+/// back to [`BASE_REQUIRED_KINDS`] instead, exactly as the all-unknown case does.
+fn satisfiable_by_one_worker(
+    required_kinds: Vec<String>,
+    dispatchable: &[&agent_identity::WorkerPersona],
+) -> Vec<String> {
+    // No requirement, or no pool to measure against: nothing to narrow. An
+    // empty pool is "we cannot tell", not "nothing is satisfiable".
+    if required_kinds.is_empty() || dispatchable.is_empty() {
+        return required_kinds;
+    }
+
+    for len in (1..=required_kinds.len()).rev() {
+        let candidate = &required_kinds[..len];
+        if dispatchable
+            .iter()
+            .any(|persona| worker_satisfies(persona, candidate))
+        {
+            if len < required_kinds.len() {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    kept = %candidate.join(", "),
+                    dropped = %required_kinds[len..].join(", "),
+                    "no single dispatchable worker satisfies every required capability — \
+                     dispatching against the largest subset one of them does"
+                );
+            }
+            return candidate.to_vec();
+        }
+    }
+
+    tracing::warn!(
+        target: "permagentd::brain",
+        dropped = %required_kinds.join(", "),
+        "no single dispatchable worker satisfies even one required capability — \
+         falling back to the base requirement rather than leaving the goal undispatchable"
+    );
+    BASE_REQUIRED_KINDS.iter().map(|k| k.to_string()).collect()
+}
+
+/// The requirement set a goal is dispatched against: the model's tags,
+/// intersected with what `dispatchable` can satisfy between them
+/// ([`required_kinds_within_roster`]) and then narrowed to what ONE of them can
+/// satisfy alone ([`satisfiable_by_one_worker`]).
 fn goal_required_kinds(
     goal: &cards::Card,
-    allowed: &std::collections::BTreeSet<String>,
+    dispatchable: &[&agent_identity::WorkerPersona],
 ) -> Vec<String> {
     // No `tags` key at all (or not an array) keeps the historical default —
     // this is the untagged-goal path, distinct from an explicitly empty list.
-    let Some(raw) = goal.metadata_json.get("tags").and_then(|v| v.as_array()) else {
+    let Some(tags) = goal_declared_tags(goal) else {
         return BASE_REQUIRED_KINDS.iter().map(|k| k.to_string()).collect();
     };
-    let tags: Vec<String> = raw
-        .iter()
-        .filter_map(|v| v.as_str().map(String::from))
-        .collect();
 
     // `handle_decompose_roadmap` already puts the roster's capabilities in the
     // planner's prompt as 'Available capability tags (only these are ever
     // dispatchable)'. That is advice a model can ignore — zai did. This is the
     // enforcement.
-    required_kinds_within_roster(tags, allowed)
+    let allowed = crate::council::plan::worker_capabilities(dispatchable.iter().copied());
+    let within_roster = required_kinds_within_roster(tags, &allowed);
+    satisfiable_by_one_worker(within_roster, dispatchable)
 }
 
 fn missing_adapter_requirement(
@@ -2626,10 +2770,14 @@ pub(crate) async fn select_worker_detailed(
     // shell — intersected (Y8d) with what the workers THIS dispatch may choose
     // from can actually satisfy, so a model-authored tag no candidate declares
     // cannot make the goal permanently undispatchable.
-    let required_kinds = goal_required_kinds(
-        goal,
-        &dispatchable_worker_capabilities(&config, restrict_to_internal_engine),
-    );
+    // "Dispatchable" includes the availability probe (G13 M1): a persona whose
+    // binary is missing is not a worker this goal can be routed to, so its
+    // exclusive capabilities must not keep a tag alive that then marks every
+    // remaining candidate unavailable. The probe results are cached, so the
+    // candidate list below reuses these answers rather than re-probing.
+    let dispatchable =
+        dispatchable_personas(&config, restrict_to_internal_engine, Some(probe_cache));
+    let required_kinds = goal_required_kinds(goal, &dispatchable);
 
     // Per-worker active load for the tie-break (#212): count in-progress goal
     // cards grouped by their spawning `worker_key`. Authoritative and engine-
@@ -2651,14 +2799,7 @@ pub(crate) async fn select_worker_detailed(
             worker_engine_allowed_for_ranked_dispatch(&persona.engine, restrict_to_internal_engine)
         })
         .map(|(key, persona)| {
-            let probed_available = match probe_cache.get(key) {
-                Some(cached) => cached.available,
-                None => {
-                    let (ok, reason) = worker_probe::probe_worker(&persona.availability_check);
-                    probe_cache.set(key, ok, reason);
-                    ok
-                }
-            };
+            let probed_available = probed_worker_available(probe_cache, key, persona);
             // Adapter-level requirements (MCP, steering, sandbox, model
             // override, etc.) are validated separately from ordinary
             // `tool_kinds`, so a CLI cannot win routing while lacking the
@@ -22264,6 +22405,178 @@ mod tests {
             vec!["code_edit".to_string(), "testing".to_string()],
             "fx08's tag set, against fx08's actual dispatch pool"
         );
+    }
+
+    fn default_config() -> agent_identity::AgentConfig {
+        agent_identity::AgentConfig {
+            primary: Default::default(),
+            workers: agent_identity::default_roster(),
+        }
+    }
+
+    fn kinds(list: &[&str]) -> Vec<String> {
+        list.iter().map(|k| k.to_string()).collect()
+    }
+
+    /// G13 H3. The roster intersection is a UNION over the pool, but
+    /// `select_best_worker` needs ONE worker to satisfy every kind. Under
+    /// `PERMAGENT_HEADLESS_WORKER=internal` the pool is `permagent`
+    /// (code_edit, shell, git, search, testing) and `reviewer` (review), so
+    /// `["code_edit", "review"]` survived Y8d untouched and still deadlocked —
+    /// the fx08 class, one union away from fixed. Both halves are asserted
+    /// here: the narrowing, and the fact that the narrowed set is one
+    /// `select_best_worker` actually accepts.
+    #[test]
+    fn a_tag_set_no_single_worker_satisfies_is_narrowed_rather_than_deadlocked() {
+        let config = default_config();
+        let dispatchable = dispatchable_personas(&config, true, None);
+
+        let candidates: Vec<goal_state::WorkerCandidate> = config
+            .workers
+            .iter()
+            .filter(|(_, persona)| persona.engine.is_dispatchable())
+            .filter(|(_, persona)| worker_engine_allowed_for_ranked_dispatch(&persona.engine, true))
+            .map(|(key, persona)| goal_state::WorkerCandidate {
+                key: key.clone(),
+                available: true,
+                tool_kinds: persona.tool_kinds.clone(),
+                cost_tier: persona.cost_tier.clone(),
+                active_sessions: 0,
+            })
+            .collect();
+
+        let asked = kinds(&["code_edit", "review"]);
+        assert!(
+            goal_state::select_best_worker(&candidates, &asked).is_err(),
+            "precondition: no single internal worker does both, which is the deadlock"
+        );
+
+        let narrowed = satisfiable_by_one_worker(asked, &dispatchable);
+        assert_eq!(
+            narrowed,
+            kinds(&["code_edit"]),
+            "the job survives; the trailing tag no worker can pair with it does not"
+        );
+        assert_eq!(
+            goal_state::select_best_worker(&candidates, &narrowed).unwrap(),
+            "permagent",
+            "and the narrowed set is one the selector answers"
+        );
+    }
+
+    /// Never an empty requirement set out of this path either: empty means
+    /// "any worker will do" to `select_best_worker`, which would route a real
+    /// requirement on cost alone.
+    #[test]
+    fn a_requirement_no_worker_satisfies_at_all_falls_back_to_the_base_kinds() {
+        let config = default_config();
+        let dispatchable = dispatchable_personas(&config, true, None);
+        assert_eq!(
+            satisfiable_by_one_worker(kinds(&["telepathy", "finance"]), &dispatchable),
+            kinds(&BASE_REQUIRED_KINDS),
+        );
+        assert!(
+            satisfiable_by_one_worker(vec![], &dispatchable).is_empty(),
+            "an explicitly empty requirement is still Z1-3's 'anyone may take this'"
+        );
+    }
+
+    /// G13 M1. "Dispatchable" has to mean the same thing here as in the
+    /// candidate list, which requires the availability probe. With the CLI
+    /// binaries absent — the DEFAULT configuration on a machine without them —
+    /// `cli` is not a capability this dispatch can satisfy, and keeping it
+    /// would mark every remaining candidate unavailable: fx08, outside the one
+    /// configuration Y8d tested. The cache is seeded so this test never shells
+    /// out and never depends on what is installed.
+    #[test]
+    fn an_unavailable_workers_exclusive_capability_is_not_this_dispatchs_capability() {
+        let config = default_config();
+        let cache = ProbeCache::new();
+        for key in config.workers.keys() {
+            cache.set(key, key == "permagent", None);
+        }
+
+        let roster_only = crate::council::plan::worker_capabilities(
+            dispatchable_personas(&config, false, None).into_iter(),
+        );
+        let really_available = crate::council::plan::worker_capabilities(
+            dispatchable_personas(&config, false, Some(&cache)).into_iter(),
+        );
+
+        assert!(
+            roster_only.contains("cli"),
+            "precondition: an external CLI declares `cli` in the default roster: {roster_only:?}"
+        );
+        assert!(
+            !really_available.contains("cli"),
+            "a worker whose binary is missing cannot satisfy anything: {really_available:?}"
+        );
+        assert_eq!(
+            required_kinds_within_roster(kinds(&["code_edit", "cli"]), &really_available),
+            kinds(&["code_edit"]),
+            "so the tag that would have vetoed dispatch is dropped"
+        );
+    }
+
+    async fn goal_card_with_tags(pool: &sqlx::Pool<sqlx::Sqlite>, tags: &[&str]) -> cards::Card {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let col = cards::get_goal_column(pool, PERSONAL_PROJECT_ID, "in_progress")
+            .await
+            .unwrap()
+            .unwrap();
+        cards::create_card(
+            pool,
+            cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "G13 explicit-request test goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "goal_state": "in_progress",
+                    "tags": tags,
+                })),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    /// G13 M2. Y8d intersected the tags against the requested persona's OWN
+    /// capabilities before the adapter guard read them, which dropped exactly
+    /// the capability the guard exists to refuse — so explicitly requesting a
+    /// worker that genuinely cannot do the job dispatched in silence. The
+    /// guard now reads the raw tags. `permagent` is the in-process subagent:
+    /// `supports_cli_tools` is false, and this goal asks for `cli`.
+    #[tokio::test]
+    async fn an_explicitly_requested_worker_that_cannot_do_the_job_is_still_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No agent.yaml under this root, so the roster is the default one.
+        let _guard =
+            env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap()))]);
+        let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = goal_card_with_tags(&pool, &["code_edit", "cli"]).await;
+
+        let err = select_requested_worker(&pool, &ProbeCache::new(), &card, "permagent", true)
+            .await
+            .expect_err("an in-process subagent cannot run CLI tools, and must say so");
+        assert!(
+            err.contains("cli"),
+            "the refusal must name the capability it lacks: {err}"
+        );
+
+        // The control: the same request without the impossible tag goes through.
+        let ok_card = goal_card_with_tags(&pool, &["code_edit", "testing"]).await;
+        let selection =
+            select_requested_worker(&pool, &ProbeCache::new(), &ok_card, "permagent", true)
+                .await
+                .expect("a satisfiable explicit request still dispatches");
+        assert_eq!(selection.worker_key, "permagent");
     }
 
     // ── Y8c: every liveness reader tells the same story ──────────────────
