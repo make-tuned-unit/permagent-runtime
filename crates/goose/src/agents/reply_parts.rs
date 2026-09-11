@@ -3466,7 +3466,10 @@ mod tests {
         let other_card = dispatched_goal_card(&pool, &session.id).await;
 
         insert_answered_gate_decision(&pool, None, &session.id).await;
-        assert_eq!(session_scoped_auto_answer_count(&pool, &session.id).await, 1);
+        assert_eq!(
+            session_scoped_auto_answer_count(&pool, &session.id).await,
+            1
+        );
         assert_eq!(goal_scoped_auto_answer_count(&pool, &card.id).await, 0);
 
         // Even matching requesting_session_id values cannot inflate the
@@ -3474,12 +3477,21 @@ mod tests {
         insert_answered_gate_decision(&pool, Some(&card.id), &session.id).await;
         insert_answered_gate_decision(&pool, Some(&card.id), "another-worker").await;
         insert_answered_gate_decision(&pool, Some(&other_card.id), &session.id).await;
-        assert_eq!(session_scoped_auto_answer_count(&pool, &session.id).await, 1);
+        assert_eq!(
+            session_scoped_auto_answer_count(&pool, &session.id).await,
+            1
+        );
         assert_eq!(goal_scoped_auto_answer_count(&pool, &card.id).await, 2);
-        assert_eq!(goal_scoped_auto_answer_count(&pool, &other_card.id).await, 1);
+        assert_eq!(
+            goal_scoped_auto_answer_count(&pool, &other_card.id).await,
+            1
+        );
 
         insert_answered_gate_decision(&pool, None, &session.id).await;
-        assert_eq!(session_scoped_auto_answer_count(&pool, &session.id).await, 2);
+        assert_eq!(
+            session_scoped_auto_answer_count(&pool, &session.id).await,
+            2
+        );
         assert_eq!(goal_scoped_auto_answer_count(&pool, &card.id).await, 2);
     }
 
