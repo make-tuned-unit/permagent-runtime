@@ -494,9 +494,30 @@ async fn land_approved_goal(
         .flatten()
         .and_then(|project| project.root_path);
 
-    // The worker committed nothing landable at all (no dispatch evidence, or
-    // an empty commit range) — unchanged from before this lane: silence here
-    // is correct, there is genuinely nothing to report on.
+    // Empty committed history can hide real, verified edits in the worktree.
+    // Preserve an actionable refusal even if the upstream hold was bypassed.
+    if card
+        .metadata_json
+        .pointer("/dispatch_evidence/commits")
+        .and_then(|v| v.as_array())
+        .is_some_and(|commits| commits.is_empty())
+    {
+        let worktree = card
+            .metadata_json
+            .pointer("/dispatch_evidence/worktree_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown worktree");
+        let note = format!(
+            "note: not landed — goal {goal_id} has no commits past the baseline \
+             (uncommitted work in {worktree})"
+        );
+        tracing::warn!(goal_id, "{note}");
+        let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
+        persist_landing_outcome(pool, goal_id, &card, &outcome).await;
+        crate::agents::platform_extensions::orchestrator::park_refused_goal(pool, &card, &note)
+            .await;
+        return (Some((project_id, outcome)), Some(note));
+    }
     let Some((worktree_path, _head_commit)) =
         crate::goal_landing::evidence_head_and_worktree(&card.metadata_json)
     else {
@@ -928,6 +949,12 @@ pub async fn apply_decision_effect_with_auto_land(
             } else {
                 land_approved_goal(pool, goal_id, decision.project_id.as_deref()).await
             };
+            if goal_state(pool, goal_id).await?.as_deref() == Some("failed") {
+                return Ok((
+                    Some("goal not landed — parked with an unblock decision".to_string()),
+                    landing_warning,
+                ));
+            }
             let effect = match &landing {
                 Some((_, outcome)) => {
                     format!("goal approved: Review → Complete; {}", outcome.describe())
@@ -2249,6 +2276,79 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn land_empty_commit_evidence_reports_note_and_unblock() {
+        let pool = test_pool().await;
+        let card = goal_in_review(&pool).await;
+        crate::cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": "/missing/goal-worktree",
+                "baseline_commit": "seed",
+                "head_commit": "seed",
+                "commits": [],
+                "verdict": {"status": "pass"},
+            }),
+        )
+        .await
+        .unwrap();
+        // Exercise the approval effect as well: a parked goal must not be
+        // described as Complete or reach dependent promotion.
+        let decision = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".into(),
+                goal_id: Some(card.id.clone()),
+                project_id: Some(card.project_id.clone()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &DecisionAnswer {
+                answer: "approve".into(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let answered = decisions::get_decision(&pool, &decision.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let proof = DecisionProof::from_answered_row(&answered).unwrap();
+        let (effect, note) = apply_decision_effect(&pool, &answered, proof, "approve_review")
+            .await
+            .unwrap();
+        assert!(effect.unwrap().contains("parked"));
+        let expected = format!(
+            "note: not landed — goal {} has no commits past the baseline \
+             (uncommitted work in /missing/goal-worktree)",
+            card.id
+        );
+        assert_eq!(note.as_deref(), Some(expected.as_str()));
+        assert_eq!(goal_state_of(&pool, &card.id).await, "failed");
+        let unblock = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(unblock.detail.contains(&expected));
+        // Repeating the landing refusal reuses the same open unblock.
+        let (_, repeated_note) = land_approved_goal(&pool, &card.id, None).await;
+        assert_eq!(repeated_note, note);
+        let repeated = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(repeated.id, unblock.id);
     }
 
     async fn goal_state_of(pool: &Pool<Sqlite>, card_id: &str) -> String {

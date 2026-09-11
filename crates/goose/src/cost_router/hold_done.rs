@@ -46,13 +46,25 @@ impl HoldState {
 
 /// Pure: should this worker's "done" be accepted, held, or parked?
 ///
-/// - Any role after a successful verify → Allow.
+/// - Any role after a successful verify → Allow (goal callers also require committed work).
 /// - Any role without one → Hold (or Park past [`MAX_HOLDS`]).
 /// - The one exception to the receipt: a hands-on role that verified green and
 ///   then went on repeating a failing command still holds.
 pub fn decide_hold(
     role: WorkflowRole,
     verify_ran: bool,
+    signals: &ToolTranscriptSignals,
+    prior_holds: u8,
+) -> HoldOutcome {
+    decide_goal_hold(role, verify_ran, false, signals, prior_holds)
+}
+
+/// Goal workers must also leave clean, committed work past their dispatch baseline.
+/// Ordinary after-turn callers have no goal branch and use [`decide_hold`].
+pub fn decide_goal_hold(
+    role: WorkflowRole,
+    verify_ran: bool,
+    uncommitted_work: bool,
     signals: &ToolTranscriptSignals,
     prior_holds: u8,
 ) -> HoldOutcome {
@@ -66,18 +78,25 @@ pub fn decide_hold(
     // kept re-running one failing command has not finished, and that residual
     // spin is the only thing left that can outrank the receipt.
     let hands_on = matches!(role, WorkflowRole::Mechanical | WorkflowRole::Local);
-    if verify_ran && !(hands_on && signals.spinning >= 0.5) {
+    if verify_ran && !uncommitted_work && !(hands_on && signals.spinning >= 0.5) {
         return HoldOutcome::Allow;
     }
 
     let next = prior_holds.saturating_add(1);
     if next > MAX_HOLDS {
         return HoldOutcome::Park {
-            reason: "held twice without verify — handing to the Decision Inbox".into(),
+            reason: if verify_ran && uncommitted_work {
+                "held twice with verified but uncommitted work — handing to the Decision Inbox"
+                    .into()
+            } else {
+                "held twice without verify — handing to the Decision Inbox".into()
+            },
         };
     }
 
-    let inject_plan = if verify_ran {
+    let inject_plan = if verify_ran && uncommitted_work {
+        "verified but uncommitted: commit your work on the goal branch, then declare done".into()
+    } else if verify_ran {
         // Never "verify is still failing" — verify passed. Name what is.
         "Verify passed, but you are still repeating a command that keeps failing. Stop retrying it; change the approach, then verify once.".into()
     } else {
@@ -134,6 +153,23 @@ mod tests {
             decide_hold(WorkflowRole::Mechanical, true, &quiet(), 0),
             HoldOutcome::Allow
         );
+    }
+
+    #[test]
+    fn verified_but_uncommitted_hold_uses_the_existing_cap() {
+        for prior in 0..MAX_HOLDS {
+            assert_eq!(
+                decide_goal_hold(WorkflowRole::Mechanical, true, true, &quiet(), prior),
+                HoldOutcome::Hold {
+                    inject_plan: "verified but uncommitted: commit your work on the goal branch, then declare done".into(),
+                    hold_count: prior + 1,
+                }
+            );
+        }
+        match decide_goal_hold(WorkflowRole::Mechanical, true, true, &quiet(), MAX_HOLDS) {
+            HoldOutcome::Park { reason } => assert!(reason.contains("uncommitted")),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
