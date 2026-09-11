@@ -1509,12 +1509,19 @@ impl CliSession {
     }
 
     /// Print final harness receipts after the headless goal drain completes.
+    /// Print once after the headless run's goal drain, including on failure.
+    ///
+    /// M17 integration (G15's HIGH-1 and its integration note): Q-receipts and
+    /// Q-routing each landed their own exit print. Q-routing's printed from
+    /// `headless()` BEFORE `cli.rs`'s `drain_dispatched_goals().await`, so any
+    /// goal the Y6 drain dispatched mid-drain incremented the routing atomics
+    /// after the line had already gone out. Both now print from this one sink,
+    /// called after the drain, so all four RECEIPT CONTRACT v1 lines describe
+    /// the same finished run. Q-routing's `result`-capturing rewrite of
+    /// `headless()` is kept (it also fixed `print_harness_overhead_line` being
+    /// skipped on the error path via `?`); only its `println!` moved here.
     pub fn print_harness_receipts(&self) {
         println!("{}", permagent::cost_router::routing_receipt::format_line());
-    }
-
-    /// Print once after the headless run's goal drain, including on failure.
-    pub fn print_harness_receipts(&self) {
         for line in permagent::receipts::snapshot().lines() {
             println!("{line}");
         }
