@@ -741,6 +741,11 @@ fn select_checks(
             None => return detect_checks(dir),
         },
     };
+    tracing::debug!(
+        ?changes,
+        supplied = supplied_changes.is_some(),
+        "verify initial change set"
+    );
     if changes.is_empty() {
         return Ok(DetectOutcome::NoChecksConfigured(
             "no changed files were found under this verification path — no scoped check is safe to infer"
@@ -779,6 +784,32 @@ fn select_checks(
             // projects. A Cargo marker alone is not permission to run a broad
             // test when the changed set is unrelated to Rust.
             if dir.join("Cargo.toml").is_file() {
+                if supplied_changes.is_none()
+                    && !changes.iter().any(|path| is_documentation_path(path))
+                {
+                    let committed = git_root(dir).and_then(|root| {
+                        let canonical = dir.canonicalize().ok()?;
+                        let relative_dir = canonical.strip_prefix(&root).ok()?;
+                        changes_since_branch_fork_point(&root, relative_dir)
+                    });
+                    if let Some(committed) = committed {
+                        let mut union = changes;
+                        union.extend(committed);
+                        union.sort();
+                        union.dedup();
+                        tracing::debug!(?union, "verify using working-tree and fork-point union");
+                        // Retry scoped selection on recognized paths in the union.
+                        // Unmapped paths must not hide committed Rust work, nor
+                        // authorize a workspace-wide check. Never filter by name.
+                        let rust_paths: Vec<_> = union
+                            .into_iter()
+                            .filter(|path| is_rust_path(path))
+                            .collect();
+                        if !rust_paths.is_empty() {
+                            return narrow_rust_checks(dir, &rust_paths);
+                        }
+                    }
+                }
                 return Ok(DetectOutcome::NoChecksConfigured("the changed files are not Rust, so no Cargo check is inferred; use the matching project check or an explicit command".to_string()));
             }
             detect_checks(dir)
@@ -948,6 +979,7 @@ fn git_changes_under(dir: &Path) -> Option<Vec<String>> {
     // the base to this branch's fork point. See [`branch_fork_point`].
     if paths.is_empty() {
         if let Some(committed) = changes_since_branch_fork_point(&root, &relative_dir) {
+            tracing::debug!(?committed, "verify using fork-point diff for empty working tree");
             return Some(committed);
         }
     }
@@ -2130,6 +2162,64 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             ),
             other => panic!("expected runnable checks, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn select_checks_uses_fork_point_with_only_untracked_non_rust_files() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        std::fs::write(dir.join("runner.sh"), "exit 0\n").unwrap();
+        std::fs::create_dir(dir.join("scratch")).unwrap();
+        std::fs::write(dir.join("scratch/result.json"), "{}\n").unwrap();
+        assert_eq!(
+            git_changes_under(&dir).unwrap(),
+            vec!["runner.sh".to_string(), "scratch/result.json".to_string()]
+        );
+        assert_eq!(
+            select_checks(&dir, VerificationScope::Auto, VerificationRisk::Low, None).unwrap(),
+            DetectOutcome::Checks(vec![Check::direct("cargo", &["test", "-p", "fx"])])
+        );
+        // Explicit caller scope remains authoritative even on this branch.
+        let supplied = ["runner.sh".to_string()];
+        assert!(matches!(
+            select_checks(
+                &dir,
+                VerificationScope::Auto,
+                VerificationRisk::Low,
+                Some(&supplied),
+            )
+            .unwrap(),
+            DetectOutcome::NoChecksConfigured(_)
+        ));
+    }
+
+    #[test]
+    fn select_checks_keeps_untracked_new_rust_source() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        std::fs::write(dir.join("src/new.rs"), "pub fn new() {}\n").unwrap();
+        assert_eq!(
+            git_changes_under(&dir).unwrap(),
+            vec!["src/new.rs".to_string()]
+        );
+        assert_eq!(
+            select_checks(&dir, VerificationScope::Auto, VerificationRisk::Low, None).unwrap(),
+            DetectOutcome::Checks(vec![Check::direct("cargo", &["test", "-p", "fx"])])
+        );
+    }
+
+    #[test]
+    fn select_checks_with_no_changes_anywhere_still_has_no_checks() {
+        let (_tmp, dir) = y10e_committed_goal_branch();
+        git_y10e(&dir, &["checkout", "main"]);
+        assert_eq!(git_changes_under(&dir), Some(Vec::new()));
+        assert!(matches!(
+            select_checks(&dir, VerificationScope::Auto, VerificationRisk::Low, None).unwrap(),
+            DetectOutcome::NoChecksConfigured(reason) if reason.contains("no changed files")
+        ));
+        std::fs::write(dir.join("runner.sh"), "exit 0\n").unwrap();
+        assert!(matches!(
+            select_checks(&dir, VerificationScope::Auto, VerificationRisk::Low, None).unwrap(),
+            DetectOutcome::NoChecksConfigured(reason) if reason.contains("not Rust")
+        ));
     }
 
     /// The fallback must stay a FALLBACK: while there is uncommitted work, the
