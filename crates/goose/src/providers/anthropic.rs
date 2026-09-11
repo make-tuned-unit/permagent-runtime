@@ -371,13 +371,15 @@ impl Provider for AnthropicProvider {
             // the defect, not the provider.
             let mut budget = StreamBudget::from_env();
             loop {
-                let next = match budget.remaining() {
-                    Some(remaining) => tokio::time::timeout(
-                        remaining,
+                // An INACTIVITY window, not the remaining total (G13 H2) — the
+                // same shape `stream_openai_compat` carries.
+                let next = match budget.next_timeout() {
+                    Some(window) => tokio::time::timeout(
+                        window,
                         futures::StreamExt::next(&mut message_stream),
                     )
                     .await
-                    .map_err(|_| budget.wall_clock_error())?,
+                    .map_err(|_| budget.timeout_error())?,
                     None => futures::StreamExt::next(&mut message_stream).await,
                 };
                 let Some(message) = next else { break };

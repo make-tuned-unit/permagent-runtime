@@ -406,10 +406,13 @@ pub fn stream_openai_compat(
         // this exists to stop.
         let mut budget = StreamBudget::from_env();
         loop {
-            let next = match budget.remaining() {
-                Some(remaining) => tokio::time::timeout(remaining, message_stream.next())
+            // An INACTIVITY window, not the remaining total (G13 H2): a healthy
+            // long response is bounded by `record`'s per-delta total check, not
+            // by a clock that shrinks under it while it works.
+            let next = match budget.next_timeout() {
+                Some(window) => tokio::time::timeout(window, message_stream.next())
                     .await
-                    .map_err(|_| budget.wall_clock_error())?,
+                    .map_err(|_| budget.timeout_error())?,
                 None => message_stream.next().await,
             };
             let Some(message) = next else { break };
@@ -683,15 +686,17 @@ mod tests {
                 crate::providers::stream_budget::MAX_OUTPUT_CHARS_ENV,
                 Some("0"),
             ),
+            (crate::providers::stream_budget::STALL_SECS_ENV, Some("0")),
         ]);
 
         let chunk =
             sse_line("Good! Cart preview is now updated. Need to check admin and API next.\n\n");
         // `stream::repeat` needs a `Clone` item and `io::Error` is not one, so
         // the endless body is an endless ITERATOR of freshly cloned chunks.
-        let body = reqwest::Body::wrap_stream(futures::stream::iter(std::iter::repeat_with(
-            move || Ok::<_, std::io::Error>(bytes::Bytes::from(chunk.clone())),
-        )));
+        let body =
+            reqwest::Body::wrap_stream(futures::stream::iter(std::iter::repeat_with(move || {
+                Ok::<_, std::io::Error>(bytes::Bytes::from(chunk.clone()))
+            })));
         let log = throwaway_log();
         let mut stream = stream_openai_compat(fake_response(body), log).expect("stream starts");
 
@@ -719,14 +724,16 @@ mod tests {
     }
 
     /// The other half: a body that goes silent forever after one delta. The
-    /// wall-clock budget must end it, and `Duration` is counted per response,
-    /// not per delta.
+    /// INACTIVITY window must end it (G13 H2) — with the total unlimited, so
+    /// this pins the stall window on its own and proves a stalled stream is
+    /// still bounded when `PERMAGENT_PROVIDER_STREAM_MAX_SECS=0`.
     #[tokio::test]
-    async fn a_stalled_sse_body_is_stopped_by_the_wall_clock_budget() {
+    async fn a_stalled_sse_body_is_stopped_by_the_inactivity_window() {
         let tmp = tempfile::tempdir().unwrap();
         let _guard = env_lock::lock_env([
             ("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap())),
-            (crate::providers::stream_budget::MAX_SECS_ENV, Some("1")),
+            (crate::providers::stream_budget::MAX_SECS_ENV, Some("0")),
+            (crate::providers::stream_budget::STALL_SECS_ENV, Some("1")),
             (
                 crate::providers::stream_budget::MAX_OUTPUT_CHARS_ENV,
                 Some("0"),
@@ -757,7 +764,7 @@ mod tests {
         assert!(err.is_permanent(), "{err}");
         assert!(
             err.to_string()
-                .contains(crate::providers::stream_budget::MAX_SECS_ENV),
+                .contains(crate::providers::stream_budget::STALL_SECS_ENV),
             "the error must name the budget it broke: {err}"
         );
         assert!(
