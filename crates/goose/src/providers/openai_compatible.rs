@@ -13,6 +13,7 @@ use super::api_client::ApiClient;
 use super::base::{MessageStream, Provider};
 use super::errors::{is_billing_message, ProviderError};
 use super::retry::ProviderRetry;
+use super::stream_budget::StreamBudget;
 use super::utils::{ImageFormat, RequestLog};
 use crate::conversation::message::Message;
 use crate::cost_router::cache::SystemPromptParts;
@@ -381,6 +382,12 @@ pub async fn handle_response_openai_compat(response: Response) -> Result<Value, 
     })
 }
 
+/// The ONE SSE consumer eight providers share — `openai`, `openai_compatible`
+/// (z.ai, x.ai, Azure, …), `openrouter`, `nanogpt`, `githubcopilot`,
+/// `databricks` and `tetrate` all route their streams through here. The Y8a
+/// budget therefore lives in exactly this function rather than in each caller;
+/// `anthropic.rs` keeps its own loop (different framing) and carries the same
+/// budget separately.
 pub fn stream_openai_compat(
     response: Response,
     mut log: RequestLog,
@@ -394,11 +401,23 @@ pub fn stream_openai_compat(
 
         let message_stream = response_to_streaming_message(framed);
         pin!(message_stream);
-        while let Some(message) = message_stream.next().await {
+        // Y8a: bound the response. See `providers::stream_budget` for the M14
+        // runaway (441 s / 12 960 deltas / 3.0 MB of one repeated sentence)
+        // this exists to stop.
+        let mut budget = StreamBudget::from_env();
+        loop {
+            let next = match budget.remaining() {
+                Some(remaining) => tokio::time::timeout(remaining, message_stream.next())
+                    .await
+                    .map_err(|_| budget.wall_clock_error())?,
+                None => message_stream.next().await,
+            };
+            let Some(message) = next else { break };
             let (message, usage) = message.map_err(|e|
                 e.downcast::<ProviderError>()
                     .unwrap_or_else(ProviderError::stream_decode)
             )?;
+            budget.record(message.as_ref())?;
             log.write(&message, usage.as_ref().map(|f| f.usage).as_ref())?;
             yield (message, usage);
         }
@@ -615,6 +634,135 @@ mod tests {
         assert_eq!(
             actual, expected_telemetry,
             "Expected {expected_variant}, got error: {err:?}"
+        );
+    }
+
+    // ── Y8a: the shared SSE loop is bounded ──────────────────────────────
+    //
+    // Lane A14's M14 forensics: one z.ai `glm-4.7` response streamed 441 s /
+    // 12 960 deltas / 3.0 MB of the same sentence and stopped only when the
+    // eval driver killed the process. Both tests below drive the REAL
+    // `stream_openai_compat` loop over a body that never ends, and both fail
+    // against the pre-Y8a `while let Some(..)` — it has no exit at all.
+
+    fn sse_line(content: &str) -> String {
+        format!(
+            "data: {}\n",
+            json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": content},
+                    "finish_reason": serde_json::Value::Null,
+                }]
+            })
+        )
+    }
+
+    fn fake_response(body: reqwest::Body) -> Response {
+        Response::from(http::Response::new(body))
+    }
+
+    fn throwaway_log() -> RequestLog {
+        // `RequestLog::start` writes under `Paths::in_state_dir("logs")`; the
+        // env guard in each test points that at a tempdir.
+        RequestLog::start(&ModelConfig::new_or_fail("y8a-test-model"), &json!({}))
+            .expect("the request log opens under the test path root")
+    }
+
+    /// The fx04 shape: an endless body repeating one substantial delta. The
+    /// repetition detector must end the stream with a permanent, non-retried
+    /// stream-budget error.
+    #[tokio::test]
+    async fn an_endless_repeating_sse_body_is_stopped_by_the_stream_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap())),
+            (crate::providers::stream_budget::MAX_SECS_ENV, Some("60")),
+            // Unlimited, so there is no ambiguity about which bound fired.
+            (
+                crate::providers::stream_budget::MAX_OUTPUT_CHARS_ENV,
+                Some("0"),
+            ),
+        ]);
+
+        let chunk =
+            sse_line("Good! Cart preview is now updated. Need to check admin and API next.\n\n");
+        // `stream::repeat` needs a `Clone` item and `io::Error` is not one, so
+        // the endless body is an endless ITERATOR of freshly cloned chunks.
+        let body = reqwest::Body::wrap_stream(futures::stream::iter(std::iter::repeat_with(
+            move || Ok::<_, std::io::Error>(bytes::Bytes::from(chunk.clone())),
+        )));
+        let log = throwaway_log();
+        let mut stream = stream_openai_compat(fake_response(body), log).expect("stream starts");
+
+        let mut deltas = 0usize;
+        let err = loop {
+            match StreamExt::next(&mut stream).await {
+                Some(Ok(_)) => {
+                    deltas += 1;
+                    assert!(
+                        deltas < 10_000,
+                        "the repetition detector must fire long before this"
+                    );
+                }
+                Some(Err(e)) => break e,
+                None => panic!("an endless body must never end cleanly"),
+            }
+        };
+
+        assert!(err.is_stream_budget_exceeded(), "{err}");
+        assert!(
+            err.is_permanent(),
+            "a looping stream must not be retried into the same loop: {err}"
+        );
+        assert!(err.to_string().contains("looping"), "{err}");
+    }
+
+    /// The other half: a body that goes silent forever after one delta. The
+    /// wall-clock budget must end it, and `Duration` is counted per response,
+    /// not per delta.
+    #[tokio::test]
+    async fn a_stalled_sse_body_is_stopped_by_the_wall_clock_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap())),
+            (crate::providers::stream_budget::MAX_SECS_ENV, Some("1")),
+            (
+                crate::providers::stream_budget::MAX_OUTPUT_CHARS_ENV,
+                Some("0"),
+            ),
+        ]);
+
+        let first = futures::stream::once(async {
+            Ok::<_, std::io::Error>(bytes::Bytes::from(sse_line("thinking...")))
+        });
+        let body = reqwest::Body::wrap_stream(futures::StreamExt::chain(
+            first,
+            futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>(),
+        ));
+        let log = throwaway_log();
+        let mut stream = stream_openai_compat(fake_response(body), log).expect("stream starts");
+
+        let started = std::time::Instant::now();
+        let err = loop {
+            match StreamExt::next(&mut stream).await {
+                Some(Ok(_)) => {}
+                Some(Err(e)) => break e,
+                None => panic!("a stalled body must not end cleanly"),
+            }
+        };
+        let elapsed = started.elapsed();
+
+        assert!(err.is_stream_budget_exceeded(), "{err}");
+        assert!(err.is_permanent(), "{err}");
+        assert!(
+            err.to_string()
+                .contains(crate::providers::stream_budget::MAX_SECS_ENV),
+            "the error must name the budget it broke: {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "the 1s budget must bite promptly, took {elapsed:?}"
         );
     }
 }

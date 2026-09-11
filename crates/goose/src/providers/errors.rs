@@ -44,6 +44,11 @@ pub enum ProviderError {
     },
 }
 
+/// Marker prefix for [`ProviderError::stream_budget_exceeded`]. It is a prefix,
+/// not a separate variant, so the whole provider surface (telemetry class,
+/// retry policy, every `match` over `ProviderError`) keeps working unchanged.
+pub(crate) const STREAM_BUDGET_PREFIX: &str = "Provider stream budget exceeded: ";
+
 impl ProviderError {
     pub fn telemetry_type(&self) -> &'static str {
         match self {
@@ -89,6 +94,11 @@ impl ProviderError {
             | ProviderError::EndpointNotFound(_)
             | ProviderError::NotImplemented(_) => true,
             ProviderError::RequestFailed(msg) => is_permanent_client_message(msg),
+            // Y8a: a stream that blew its budget is permanent BY CONSTRUCTION.
+            // The bytes we would resend are identical, and the failure mode is
+            // the model repeating itself — a retry re-enters the same runaway
+            // and burns the same wall-clock and the same unmetered tokens.
+            ProviderError::ExecutionError(msg) => msg.starts_with(STREAM_BUDGET_PREFIX),
             _ => false,
         }
     }
@@ -115,10 +125,38 @@ impl ProviderError {
         }
     }
 
+    /// A provider response that ran past its own safety budget and was stopped
+    /// by us, not by the provider (Y8a, harness loop 2026-09-10).
+    ///
+    /// M14 slice, fixture glm47/fx04: one z.ai `glm-4.7` response streamed
+    /// **441 s, 12 960 delta events and 3.0 MB** of the same sentence
+    /// (`"Good! Cart preview is now updated. Need to check admin and API
+    /// next."`) and stopped only when the eval driver killed the process at its
+    /// 600 s ceiling. `stream_openai_compat`'s `while let Some(..)` had no
+    /// wall-clock and no output budget, so the only bound on a degenerate model
+    /// was the process lifetime. The reservation for that call never settled —
+    /// the tokens were streamed and billed, and no ledger row was written.
+    ///
+    /// Typed as `ExecutionError` deliberately: `should_retry` already returns
+    /// `false` for that variant, and [`is_permanent`](Self::is_permanent) also
+    /// reports it as permanent, so neither the retry layer nor a pre-commit
+    /// failover can walk straight back into the same loop.
+    pub fn stream_budget_exceeded(detail: impl std::fmt::Display) -> Self {
+        ProviderError::ExecutionError(format!("{STREAM_BUDGET_PREFIX}{detail}"))
+    }
+
+    pub fn is_stream_budget_exceeded(&self) -> bool {
+        matches!(self, ProviderError::ExecutionError(msg) if msg.starts_with(STREAM_BUDGET_PREFIX))
+    }
+
     /// A short, human sentence safe to show a user or read aloud — never the
     /// raw provider payload. `raw` bodies carry request ids, model ids, JSON
     /// braces and support URLs; session 20260823_4 read one of those out loud.
     pub fn user_facing_summary(&self) -> String {
+        if self.is_stream_budget_exceeded() {
+            return "the model kept generating past its safety budget, so the reply was stopped"
+                .to_string();
+        }
         if self.is_stream_decode() {
             return "the model stream dropped before the reply finished".to_string();
         }
