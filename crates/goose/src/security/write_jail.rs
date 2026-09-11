@@ -767,6 +767,29 @@ const MUTATING_GIT_SUBCOMMANDS: &[&str] = &[
     "write-tree",
 ];
 
+/// READ-ONLY forms of subcommands that are otherwise on
+/// [`MUTATING_GIT_SUBCOMMANDS`]: `git config --get x`, `git stash list`,
+/// `git worktree list`. Leaving them on the mutating list cost a worker a
+/// whole turn for a pure read (G13 L3). The subcommands that are read-only
+/// OUTRIGHT — `log`, `show`, `diff`, `status`, `rev-parse`, `blame`,
+/// `describe`, `ls-files`, `cat-file` — are simply absent from the mutating
+/// list and were already allowed; the test pins that.
+const READ_ONLY_GIT_FORMS: &[(&str, &[&str])] = &[
+    (
+        "config",
+        &["--get", "--get-all", "--get-regexp", "--list", "-l"],
+    ),
+    ("stash", &["list", "show"]),
+    ("worktree", &["list"]),
+];
+
+/// Is this `git <subcommand> …` one of the read-only forms above?
+fn is_read_only_git_form(subcommand: &str, rest: &[String]) -> bool {
+    READ_ONLY_GIT_FORMS.iter().any(|(name, forms)| {
+        *name == subcommand && rest.iter().any(|arg| forms.contains(&arg.as_str()))
+    })
+}
+
 /// Commands where EVERY non-flag argument is a file they may modify.
 const MUTATES_EVERY_ARG: &[&str] = &[
     "rm", "rmdir", "mkdir", "touch", "truncate", "tee", "chmod", "chown", "shred", "unlink",
@@ -955,6 +978,11 @@ fn git_escape(args: &[String], cwd: &Path, root: &Path) -> Option<ShellEscape> {
     let (what, target) = elsewhere?;
     let subcommand = subcommand?;
     if !MUTATING_GIT_SUBCOMMANDS.contains(&subcommand) {
+        return None;
+    }
+    // `index` stopped on the subcommand, so everything after it is its own
+    // arguments — where the read-only forms live (L3).
+    if is_read_only_git_form(subcommand, &args[index + 1..]) {
         return None;
     }
     Some(ShellEscape {
@@ -1636,11 +1664,37 @@ mod tests {
         .await;
         assert_worker_denial(&results, TRUNK);
 
+        // The WRITE forms of the same subcommands stay refused (L3 exempts
+        // the read-only forms only).
+        for command in [
+            format!("git -C {TRUNK} config user.email w@example.com"),
+            format!("git -C {TRUNK} stash push -m wip"),
+            format!("git -C {TRUNK} worktree add ../scratch"),
+        ] {
+            let results = verdicts(&jail, &session_id, &[shell_request("mutate", &command)]).await;
+            assert_eq!(
+                results.len(),
+                1,
+                "a mutating form must still be refused: {command} → {results:?}"
+            );
+            assert_eq!(results[0].action, InspectionAction::Deny);
+        }
+
         for command in [
             format!("git -C {TRUNK} log --oneline -5"),
             format!("git --git-dir={TRUNK}/.git status"),
             "git commit -am \"fix inventory\"".to_string(),
             "git -C . add -A".to_string(),
+            // G13 L3: read-only FORMS of otherwise-mutating subcommands.
+            format!("git -C {TRUNK} config --get remote.origin.url"),
+            format!("git -C {TRUNK} stash list"),
+            format!("git -C {TRUNK} worktree list"),
+            // …and the subcommands that are read-only outright, which were
+            // already absent from the mutating list.
+            format!("git -C {TRUNK} log --oneline"),
+            format!("git -C {TRUNK} show HEAD"),
+            format!("git -C {TRUNK} diff --stat"),
+            format!("git -C {TRUNK} rev-parse HEAD"),
         ] {
             let results = verdicts(&jail, &session_id, &[shell_request("read", &command)]).await;
             assert!(
