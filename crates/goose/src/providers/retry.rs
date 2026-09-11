@@ -964,7 +964,10 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("upstream 503"), "{message}");
         assert!(message.contains("not retried"), "{message}");
-        assert!(message.contains("authorizes 1 physical attempt"), "{message}");
+        assert!(
+            message.contains("authorizes 1 physical attempt"),
+            "{message}"
+        );
         assert!(
             message.contains(crate::cost_router::RESERVE_ATTEMPTS_ENV),
             "the refusal names the knob that would authorize more: {message}"

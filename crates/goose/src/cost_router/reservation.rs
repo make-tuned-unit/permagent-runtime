@@ -74,15 +74,25 @@ pub fn describe_pricing_source(provenance: PricingProvenance) -> &'static str {
 /// ceiling $5.00"). The ceiling was never the binding constraint; this
 /// multiplier was.
 ///
-/// Default 1: reserve what one attempt can actually cost. The retry envelope
-/// is then enforced against the reservation at the seam where a physical
-/// retry would happen (`cost_router::authorized_attempts`), so a retry that
-/// the hold does not cover is refused with an honest error
-/// rather than silently spending past the authorization.
+/// Default 2 (orchestrator ruling, 2026-09-10): reserve what one attempt can
+/// actually cost, plus one real retry. The retry envelope is then enforced
+/// against the reservation at the seam where a physical retry would happen
+/// (`cost_router::authorized_attempts`), so a retry that the hold does not
+/// cover is refused with an honest error rather than silently spending past
+/// the authorization.
+///
+/// Two rather than one because a default of one would mean a paid call that
+/// hits a 429 or a 5xx never retries at all — the exact failure
+/// `RATE_LIMIT_MIN_RETRY_INTERVAL_MS` / `RATE_LIMIT_MAX_RETRIES` were added
+/// for on 2026-08-25 (Z.AI 1302). Two holds `$0.665` on the measured
+/// `zai`/`glm-4.7` inputs: still 7 concurrent holds under a `$5.00` ceiling
+/// instead of the pre-Y7 2, so the spend cap goes back to being the binding
+/// constraint, and one rate-limit retry still survives.
 pub const RESERVE_ATTEMPTS_ENV: &str = "PERMAGENT_RESERVE_ATTEMPTS";
 
-/// Physical attempts reserved when [`RESERVE_ATTEMPTS_ENV`] says nothing.
-pub const DEFAULT_RESERVED_ATTEMPTS: u32 = 1;
+/// Physical attempts reserved when [`RESERVE_ATTEMPTS_ENV`] says nothing:
+/// one attempt plus one retry (see [`RESERVE_ATTEMPTS_ENV`] for why two).
+pub const DEFAULT_RESERVED_ATTEMPTS: u32 = 2;
 
 /// How many physical attempts to reserve, given the retry policy's own
 /// envelope.
@@ -502,15 +512,16 @@ mod tests {
         );
     }
 
-    /// Y7 pin (harness loop, from Lane A12's Q6 measurement): reserving ONE
-    /// physical attempt holds exactly one fifth of what the same call held
-    /// before, for the identical live inputs pinned by the test above — the
-    /// $1.662976 hold that starved a $5.00 session ceiling after two calls
-    /// becomes $0.3325952, against a *settled* cost measured at $0.005–$0.0234
-    /// on the same slice. Nothing about pricing changes: the only difference
-    /// is how many attempts' worth of money is held up front.
+    /// Y7 pin (harness loop, from Lane A12's Q6 measurement): the hold scales
+    /// linearly with the reserved attempt count, for the identical live inputs
+    /// pinned by the test above. One attempt holds exactly one fifth of what
+    /// the same call held before ($1.662976 → $0.3325952), and the SHIPPED
+    /// default of two holds exactly two fifths ($0.6651904) — against a
+    /// *settled* cost measured at $0.005–$0.0234 on the same slice. Nothing
+    /// about pricing changes: the only difference is how many attempts' worth
+    /// of money is held up front.
     #[test]
-    fn one_reserved_attempt_holds_exactly_a_fifth_of_the_five_attempt_bound() {
+    fn the_reserved_attempt_count_scales_the_hold_off_the_five_attempt_bound() {
         let cfg = config(Some(204_800), Some(131_072));
         let five = plan_reservation_bound("zai", "glm-4.7", CostTier::PaidApi, &cfg, 5)
             .unwrap()
@@ -525,12 +536,27 @@ mod tests {
         assert_eq!(one.input_tokens, five.input_tokens);
         assert_eq!(one.output_tokens, five.output_tokens);
         assert_eq!(one.pricing_provenance, five.pricing_provenance);
+
+        // The shipped default: two attempts, two fifths of the old hold.
+        let shipped = plan_reservation_bound(
+            "zai",
+            "glm-4.7",
+            CostTier::PaidApi,
+            &cfg,
+            DEFAULT_RESERVED_ATTEMPTS,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(shipped.max_physical_attempts, 2);
+        assert_eq!(shipped.amount_usd, one.amount_usd * 2.0);
+        assert_eq!(shipped.amount_usd * 2.5, five.amount_usd);
     }
 
     /// Y7: the knob can lower the hold but never authorize more attempts than
-    /// the retry policy would ever physically make, and never zero.
+    /// the retry policy would ever physically make, and never zero. The
+    /// shipped default is two (one attempt plus one retry).
     #[test]
-    fn reserved_attempts_default_to_one_and_clamp_to_the_retry_envelope() {
+    fn reserved_attempts_default_to_two_and_clamp_to_the_retry_envelope() {
         let env = |value: Option<&str>| {
             let value = value.map(str::to_string);
             move |key: &str| {
@@ -538,16 +564,19 @@ mod tests {
                 value.clone()
             }
         };
-        assert_eq!(DEFAULT_RESERVED_ATTEMPTS, 1);
-        assert_eq!(reserved_physical_attempts_with(5, env(None)), 1);
+        assert_eq!(DEFAULT_RESERVED_ATTEMPTS, 2);
+        assert_eq!(reserved_physical_attempts_with(5, env(None)), 2);
+        assert_eq!(reserved_physical_attempts_with(5, env(Some("1"))), 1);
         assert_eq!(reserved_physical_attempts_with(5, env(Some("3"))), 3);
         assert_eq!(reserved_physical_attempts_with(5, env(Some(" 5 "))), 5);
         // Above the envelope: clamped down, never over-reserved again.
         assert_eq!(reserved_physical_attempts_with(5, env(Some("9"))), 5);
         // Meaningless values fall back to the default rather than to zero.
-        assert_eq!(reserved_physical_attempts_with(5, env(Some("0"))), 1);
-        assert_eq!(reserved_physical_attempts_with(5, env(Some("many"))), 1);
-        assert_eq!(reserved_physical_attempts_with(5, env(Some(""))), 1);
+        assert_eq!(reserved_physical_attempts_with(5, env(Some("0"))), 2);
+        assert_eq!(reserved_physical_attempts_with(5, env(Some("many"))), 2);
+        assert_eq!(reserved_physical_attempts_with(5, env(Some(""))), 2);
+        // A one-attempt envelope still clamps the two-attempt default down.
+        assert_eq!(reserved_physical_attempts_with(1, env(None)), 1);
         // A zero envelope stays zero so `plan_reservation_bound` still fails
         // closed instead of this function inventing an attempt.
         assert_eq!(reserved_physical_attempts_with(0, env(Some("4"))), 0);

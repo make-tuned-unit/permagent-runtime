@@ -70,6 +70,10 @@ pub mod tier;
 pub mod tool_signals;
 
 pub use assess::{assess_goal, Assessment};
+pub use authorized_attempts::{
+    attempt_is_authorized, authorized_attempts, with_authorized_attempts,
+    with_authorized_attempts_opt,
+};
 pub use best_of_n::{
     best_of_n_enabled, best_of_n_from, difficulty, load_best_of_n, plan_candidates, run_best_of_n,
     select as select_candidate, BestOfNOutcome, BestOfNPlan, CandidateSource, CandidateVerdict,
@@ -128,10 +132,6 @@ pub use recommend::{
     recommend_configured, recommend_configured_async, recommend_from_available, resolve_known,
     AvailableModel, CapabilityFloor, ProviderModels, Recommendation, RoleRecommendation,
     WorkflowRole, EDIT_RELIABILITY_FLOOR,
-};
-pub use authorized_attempts::{
-    attempt_is_authorized, authorized_attempts, with_authorized_attempts,
-    with_authorized_attempts_opt,
 };
 pub use reservation::{
     describe_pricing_source, plan_reservation_bound, reserved_physical_attempts,
