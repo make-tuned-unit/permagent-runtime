@@ -183,6 +183,11 @@ fn has_goal_worktree_component(path: &Path) -> bool {
 
 /// Built-in always-allowed roots: the temp directories agents and the coding
 /// harness use as scratch space.
+///
+/// The character-device sinks (`/dev/null`, `/dev/fd/*`, …) are NOT here on
+/// purpose: see [`is_device_sink`], which judges them on the RAW word because
+/// canonicalizing `/dev/stdout` follows it to whatever this process's stdout
+/// currently is — a path in some unrelated tree.
 fn builtin_allowed_roots() -> Vec<PathBuf> {
     let mut roots = vec![
         std::env::temp_dir(),
@@ -592,11 +597,31 @@ struct ShellEscape {
     target: PathBuf,
 }
 
-/// Resolve a shell word as a path against the worker's cwd (its worktree),
-/// expanding a leading `~`. Returns `None` for words that cannot be judged as
-/// paths: flags, and anything carrying an unexpanded `$`.
-fn shell_path_candidate(raw: &str, worktree: &Path) -> Option<PathBuf> {
+/// Character-device sinks a shell redirects to. These are not files in any
+/// tree — `cmd > /dev/null`, `cmd 2>/dev/null`, `… >/dev/null 2>&1` are in
+/// practically every build/test/lint invocation a worker runs, and refusing
+/// them would be a guaranteed false denial (G13 H1).
+///
+/// Matched on the RAW word, before canonicalization, deliberately:
+/// `/dev/stdout` is a symlink to `/dev/fd/1` and `/dev/fd/1` to whatever this
+/// process's stdout currently is, so canonicalizing the word yields a path in
+/// an unrelated tree and the result would depend on how the daemon was
+/// launched. An allowlist ROOT cannot express that; a raw-word test can.
+fn is_device_sink(raw: &str) -> bool {
+    matches!(raw, "/dev/null" | "/dev/zero" | "/dev/stdout" | "/dev/stderr")
+        || raw.starts_with("/dev/fd/")
+        // `/dev/tty`, and the `/dev/ttys003` a terminal session is attached to.
+        || raw.starts_with("/dev/tty")
+}
+
+/// Resolve a shell word as a path against the session's cwd, expanding a
+/// leading `~`. Returns `None` for words that cannot be judged as paths:
+/// flags, device sinks, and anything carrying an unexpanded `$`.
+fn shell_path_candidate(raw: &str, cwd: &Path) -> Option<PathBuf> {
     if raw.is_empty() || raw.starts_with('-') || raw.contains('$') || raw.contains('`') {
+        return None;
+    }
+    if is_device_sink(raw) {
         return None;
     }
     let expanded = match raw.strip_prefix('~') {
@@ -605,9 +630,7 @@ fn shell_path_candidate(raw: &str, worktree: &Path) -> Option<PathBuf> {
             let rest = rest.strip_prefix('/').unwrap_or(rest);
             Path::new(&home).join(rest)
         }
-        None => {
-            crate::agents::platform_extensions::developer::edit::resolve_path(raw, Some(worktree))
-        }
+        None => crate::agents::platform_extensions::developer::edit::resolve_path(raw, Some(cwd)),
     };
     Some(canonical_for_containment(&expanded))
 }
@@ -1478,6 +1501,13 @@ mod tests {
             "echo hi > out.txt".to_string(),
             "python -m pytest 2>&1 | tail -20".to_string(),
             "rm -rf .pytest_cache".to_string(),
+            // G13 H1: the device sinks every build/test invocation redirects
+            // to. They are outside the worktree by spelling and on no
+            // allowlist root, so before the fix these were hard denials.
+            "pytest -q > /dev/null 2>&1".to_string(),
+            "grep -rn TODO . 2>/dev/null".to_string(),
+            "cargo build >/dev/null 2>/dev/null".to_string(),
+            "echo note > /dev/stderr".to_string(),
         ] {
             let results = verdicts(&jail, &session_id, &[shell_request("r", &command)]).await;
             assert!(
