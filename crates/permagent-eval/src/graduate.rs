@@ -1915,6 +1915,10 @@ mod tests {
             reviewer_not_independent: None,
             reviewer_mutated: None,
             vacuous_pass: None,
+            dag_enforcement: None,
+            verification_integrity: None,
+            safety_and_trust: None,
+            cost_routing: None,
         }
     }
 
@@ -1937,6 +1941,9 @@ mod tests {
             pinned_packs: true,
             tasks: vec![qual_task("fizzbuzz", "pass", cost_usd, 10.0)],
             missing: Vec::new(),
+            capability_verdict: None,
+            input_tokens_per_solved_median: None,
+            token_verdict: None,
         }
     }
 
