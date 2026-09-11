@@ -4508,15 +4508,27 @@ impl OrchestratorClient {
         // fx05 is the pure form: 61 worker provider calls after the
         // `send_message`, $0.4732 of that fixture's $0.5042.
         //
-        // Refuse, and name the tools that DO talk to a running goal. This is
-        // checked before the agent manager is touched: nothing about a live
+        // Refuse — and say what can actually be done instead. G13 M3: the
+        // first wording redirected to `message_goal (card_id: …)` and
+        // `steer_goal`, and under PERMAGENT_HEADLESS_WORKER=internal (the eval
+        // configuration) both are dead ends. `steer_goal` refuses an internal
+        // worker outright ("internal-subagent and codex workers are not
+        // steerable yet"), and `message_goal` takes `from_goal`/`to_goal` —
+        // real cards on both sides — not a `card_id`, which a coordinator
+        // holding one card does not have. A refusal whose advice does not work
+        // is the same lie class as the "idle" Y8c removed.
+        //
+        // Checked before the agent manager is touched: nothing about a live
         // worker's session should be created, looked up or locked on this path.
         if let Some(card_id) = live_goal_worker_card_for_session(&session_id) {
             return Err(format!(
                 "Session '{session_id}' is the live worker for goal '{card_id}' — it is already \
                  running a reply of its own, and send_message would start a second one in the same \
-                 session. Use message_goal (card_id: '{card_id}') to pass it information, \
-                 steer_goal to change what it is doing, or goal_status to read its progress."
+                 session. A live internal worker cannot be interjected on this branch: let it \
+                 finish, read where it has got to with goal_status (card_id: '{card_id}'), and \
+                 act on what it produces. If it is doing the wrong thing, the goal has to be \
+                 cancelled from the Decision Inbox or the Kanban board, which also stops the \
+                 worker."
             ));
         }
 
@@ -22171,11 +22183,11 @@ mod tests {
     // workers live in `GOAL_WORKERS`, not in `AgentManager`'s `cancel_tokens`,
     // the same registry split Y4b fixed for `goal_status`.
 
-    /// The refusal, and the redirect that makes it actionable. Same fixture
+    /// The refusal, and the advice that makes it actionable. Same fixture
     /// shape as the Y4b pin: the ONLY thing that makes this session refuse is
     /// its `GOAL_WORKERS` entry.
     #[tokio::test]
-    async fn send_message_refuses_a_live_goal_worker_and_points_at_message_goal() {
+    async fn send_message_refuses_a_live_goal_worker_and_says_what_can_be_done_instead() {
         let tmp = tempfile::tempdir().unwrap();
         let sm = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
         let pool = sm.pool_clone().await.unwrap();
@@ -22229,10 +22241,21 @@ mod tests {
             "the refusal must name the goal so the coordinator can act on it: {err}"
         );
         assert!(
-            err.contains("message_goal"),
-            "the refusal must redirect to the tool that DOES talk to a running goal: {err}"
+            err.contains("goal_status"),
+            "the refusal must point at the one reader that DOES answer for a live worker: {err}"
         );
-        assert!(err.contains("steer_goal"), "{err}");
+        // G13 M3: under PERMAGENT_HEADLESS_WORKER=internal neither of the
+        // original redirects works — `steer_goal` refuses an internal worker
+        // outright and `message_goal` takes `from_goal`/`to_goal`, not a
+        // `card_id`. Advice that cannot be followed is worse than none.
+        assert!(
+            !err.contains("steer_goal"),
+            "an internal worker is not steerable; do not send the coordinator there: {err}"
+        );
+        assert!(
+            !err.contains("message_goal"),
+            "message_goal needs a card on BOTH sides, which a coordinator does not have: {err}"
+        );
     }
 
     /// The inline drain's wall-clock budget: default, explicit, and disabled.
