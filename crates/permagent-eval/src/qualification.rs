@@ -190,6 +190,19 @@ pub fn qualify(input: &QualificationInput) -> Result<QualificationReport> {
                     .collect();
                 if missing.is_empty() {
                     "required evidence or three-run sample is missing".into()
+                } else if missing.len() == 1
+                    && missing
+                        .iter()
+                        .next()
+                        .is_some_and(|m| m.starts_with("record invalid:"))
+                {
+                    // Lane K10: a `"record invalid: …"` entry (currently only
+                    // `coding_success`'s provider-unavailable case) is
+                    // already a complete, honest sentence on its own — the
+                    // generic "missing: …" framing would misleadingly imply
+                    // a piece of evidence was merely absent rather than the
+                    // whole record being disqualified.
+                    (*missing.iter().next().expect("checked non-empty above")).to_string()
                 } else {
                     format!(
                         "missing: {}",
@@ -374,6 +387,14 @@ pub struct TaskQualificationEvidence {
     /// fabricated as seeded when the record predates seeding entirely).
     #[serde(default)]
     pub seeded_state: bool,
+    /// Lane K10 (2026-09-14 M22 zai w1 defect): the
+    /// [`crate::provider_unavailable`] marker when this task's `errored`
+    /// result was forced by a provider billing/auth/quota failure — see
+    /// [`crate::metrics::TaskResult::provider_error`]. `#[serde(default)]`
+    /// so a pre-Lane-K10 record still parses, with `None` correctly read as
+    /// "not known to be provider-unavailable", never "confirmed healthy".
+    #[serde(default)]
+    pub provider_error: Option<String>,
 }
 
 /// This run's capability gate, using graduate's per-run qualification rules.
@@ -432,6 +453,16 @@ pub struct RunQualificationRecord {
     pub input_tokens_per_solved_median: Option<f64>,
     #[serde(default)]
     pub token_verdict: Option<TokenVerdict>,
+    /// Lane K10 (2026-09-14 M22 zai w1 defect): true when at least one task
+    /// in this record has `provider_error: Some(_)` — i.e. the provider
+    /// itself was billing/auth/quota unavailable for at least one attempted
+    /// task. This record is then not a valid qualifying sample: `qualify`
+    /// reads it as "record invalid: provider unavailable" rather than a
+    /// plain area-gate failure (see `area_evidence`'s `"coding_success"`
+    /// arm). Derived, never asserted, from `tasks` — see
+    /// [`build_run_qualification_record`].
+    #[serde(default)]
+    pub provider_unavailable: bool,
 }
 
 /// Build a [`RunQualificationRecord`] from one tier/arm's [`TaskResult`]s,
@@ -499,8 +530,10 @@ pub fn build_run_qualification_record(
             refused_calls: r.signals.refused_tool_calls.clone(),
             harness_timeout_secs: r.harness_timeout_secs,
             seeded_state: r.seeded_state,
+            provider_error: r.provider_error.clone(),
         })
         .collect();
+    let provider_unavailable = tasks.iter().any(|t| t.provider_error.is_some());
 
     // Name a harness-log signal ONCE at the record level when it is absent
     // across EVERY attempted task, rather than once per task — the common
@@ -557,6 +590,7 @@ pub fn build_run_qualification_record(
         token_verdict: None,
         tasks,
         missing,
+        provider_unavailable,
     }
 }
 
@@ -693,6 +727,20 @@ fn area_evidence(
         }
         // Preserve the auto-land evidence prerequisite, but require every
         // attempted held-out task (including any other mode) to be solved.
+        //
+        // Lane K10 (2026-09-14 M22 zai w1 defect): a record where the
+        // provider itself was billing/auth/quota unavailable for at least
+        // one task is not a valid coding_success sample at all — every
+        // provider-unavailable task is already `errored` (never `pass`), so
+        // `heldout_attempted.iter().all(task_solved)` below would already
+        // fail the gate correctly, but reporting it as a plain "area gate
+        // did not pass" reason would misleadingly suggest the harness was
+        // actually attempted and lost. Check this FIRST and report the
+        // specific, honest reason instead: the record is invalid, not a
+        // failed run.
+        "coding_success" if record.provider_unavailable => {
+            return unrated(vec!["record invalid: provider unavailable".to_string()]);
+        }
         "coding_success" => {
             let heldout_attempted: Vec<_> = attempted
                 .iter()
@@ -1991,6 +2039,8 @@ mod tests {
             "capability_verdict",
             "input_tokens_per_solved_median",
             "token_verdict",
+            // Lane K10.
+            "provider_unavailable",
         ] {
             record.remove(field);
         }
@@ -2000,6 +2050,8 @@ mod tests {
             "verification_integrity",
             "safety_and_trust",
             "cost_routing",
+            // Lane K10.
+            "provider_error",
         ] {
             task.remove(field);
         }
@@ -2012,6 +2064,101 @@ mod tests {
         assert!(old.tasks[0].verification_integrity.is_none());
         assert!(old.tasks[0].safety_and_trust.is_none());
         assert!(old.tasks[0].cost_routing.is_none());
+        // A pre-Lane-K10 record must read as "not known to be
+        // provider-unavailable", never fabricated as confirmed-healthy in a
+        // way a caller could mistake for a checked `false`.
+        assert!(!old.provider_unavailable);
+        assert!(old.tasks[0].provider_error.is_none());
+    }
+
+    /// Lane K10 (2026-09-14 M22 zai w1 defect): the record-level flag is
+    /// derived from `tasks`, and serializes/deserializes round-trip.
+    #[test]
+    fn provider_unavailable_flag_is_derived_and_serializes_round_trip() {
+        let mut healthy = passing_task("held-1");
+        healthy.provider_error = None;
+        let healthy_record = build_run_qualification_record(
+            "r-healthy",
+            Some("deadbeef".to_string()),
+            complete_binary(),
+            "p",
+            "m",
+            true,
+            &[healthy],
+        );
+        assert!(!healthy_record.provider_unavailable);
+
+        let mut unavailable = passing_task("held-1");
+        unavailable.oracle = OracleOutcome::Errored;
+        unavailable.provider_error = Some("credits exhausted".to_string());
+        let unavailable_record = build_run_qualification_record(
+            "r-unavailable",
+            Some("deadbeef".to_string()),
+            complete_binary(),
+            "p",
+            "m",
+            true,
+            &[unavailable],
+        );
+        assert!(unavailable_record.provider_unavailable);
+
+        let json = serde_json::to_string(&unavailable_record).unwrap();
+        let back: RunQualificationRecord = serde_json::from_str(&json).unwrap();
+        assert!(back.provider_unavailable);
+        assert_eq!(
+            back.tasks[0].provider_error.as_deref(),
+            Some("credits exhausted")
+        );
+    }
+
+    /// Lane K10: a record where the provider itself was unavailable for at
+    /// least one task must not be graded as a plain `coding_success`
+    /// failure — `qualify` must say the record is invalid, not that the
+    /// harness lost.
+    #[test]
+    fn coding_success_reports_record_invalid_when_provider_unavailable() {
+        let mut record = receipt_record();
+        record.provider_unavailable = true;
+        let evidence = classify("coding_success", &record);
+        assert!(!evidence.gate_passed);
+        assert!(!evidence.evidence_complete);
+        assert_eq!(
+            evidence.missing_fields,
+            vec!["record invalid: provider unavailable".to_string()]
+        );
+    }
+
+    /// End-to-end through `qualify`: the rendered reason text names the
+    /// record as invalid, not "area gate did not pass" or a generic
+    /// "missing: …" — see `qualify`'s `AreaRating::Unrated if !complete`
+    /// arm's Lane K10 special case.
+    #[test]
+    fn qualify_reason_text_names_provider_unavailable_records_invalid() {
+        let mut record = receipt_record();
+        record.provider_unavailable = true;
+        let records: Vec<_> = (0..3)
+            .map(|i| {
+                let mut copy = record.clone();
+                copy.run_id = format!("r{i}");
+                copy
+            })
+            .collect();
+        let input = qualification_input_from_records(
+            &records,
+            "contract-v1",
+            Vec::new(),
+            vec!["held-1".to_string()],
+        );
+        let report = qualify(&input).unwrap();
+        assert_eq!(report.areas["coding_success"].rating, AreaRating::Unrated);
+        assert_eq!(
+            report.areas["coding_success"].reason,
+            "record invalid: provider unavailable"
+        );
+        assert!(report
+            .reasons
+            .iter()
+            .any(|r| r == "coding_success: record invalid: provider unavailable"));
     }
 
     #[test]

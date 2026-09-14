@@ -22,6 +22,7 @@ use crate::harness_log;
 use crate::invocation::{build_invocation, is_scrubbed_env, recipe_with_prompt, Invocation};
 use crate::metrics::TaskResult;
 use crate::oracle::{outcome_from_run, OracleOutcome};
+use crate::provider_unavailable;
 use crate::seed_state;
 use crate::task::Task;
 use crate::tier::Tier;
@@ -312,9 +313,11 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     )?;
     // Best-effort: a missing/unreadable log just yields zeroed signals rather
     // than failing the whole task (the oracle's verdict is authoritative).
-    let mut signals = fs::read_to_string(&harness_log_path)
-        .map(|text| harness_log::scan(&text))
-        .unwrap_or_default();
+    // Lane K10: keep the raw text too — `provider_unavailable::detect_in_run`
+    // below scans it (and, if that comes up empty, this run's own
+    // `data/logs/llm_request.*.jsonl`) for a billing/auth/quota marker.
+    let harness_log_text = fs::read_to_string(&harness_log_path).unwrap_or_default();
+    let mut signals = harness_log::scan(&harness_log_text);
     // Lane R17a: fill in any of the five RECEIPT CONTRACT v1 fields the
     // captured stdout log is missing from the sidecar file above — a no-op
     // when the harness exited cleanly and already printed everything (see
@@ -347,7 +350,19 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     // `outcome_from_run`'s doc for why a SIGTERM'd process's own exit code
     // cannot be trusted as a graded verdict, and why an oracle timeout must
     // be reported `errored`, never `fail`.
-    let outcome = outcome_from_run(oracle_run.exit, oracle_run.timed_out);
+    let mut outcome = outcome_from_run(oracle_run.exit, oracle_run.timed_out);
+
+    // Lane K10 (2026-09-14 M22 zai w1 defect): a billing/auth/quota failure
+    // means the harness never got a real chance to attempt the task at
+    // all — grading it on whatever the oracle happened to see (typically
+    // `fail`, since nothing was produced) would be dishonest. Detected
+    // AFTER the oracle runs (the oracle's own verdict is otherwise
+    // authoritative) but always wins over it, the same way an oracle
+    // timeout always wins above.
+    let provider_error = provider_unavailable::detect_in_run(&harness_log_text, &data_root);
+    if provider_error.is_some() {
+        outcome = OracleOutcome::Errored;
+    }
 
     let reading = deps
         .cost
@@ -393,9 +408,16 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     // what the child actually received, not just the runner's own default.
     result.headless_autoland = inv.env("PERMAGENT_HEADLESS_AUTOLAND").map(str::to_string);
     result.headless_drain_secs = inv.env("PERMAGENT_HEADLESS_DRAIN_SECS").map(str::to_string);
-    if harness_run.timed_out {
+    // Lane K10: a provider-unavailable marker is the most specific, most
+    // actionable note available — prefer it over the generic timeout note
+    // (the two can coincide, e.g. a harness that hangs retrying a billing
+    // rejection until its wall-clock ceiling trips).
+    if let Some(marker) = &provider_error {
+        result.note = Some(format!("provider unavailable: {marker}"));
+    } else if harness_run.timed_out {
         result.note = Some("harness run hit its wall-clock ceiling".to_string());
     }
+    result.provider_error = provider_error;
 
     // `_scratch` cleans up the run dir here (and on every early return above).
     Ok(result)
@@ -574,12 +596,39 @@ fn not_run_result(task: &Task, reason: BudgetStopReason) -> TaskResult {
     r
 }
 
+/// Build a [`TaskResult`] for a task that was never launched because
+/// [`provider_unavailable::ConsecutiveTracker`] had already tripped — Lane
+/// K10 (2026-09-14 M22 zai w1 defect). Mirrors [`not_run_result`]'s shape
+/// (also [`OracleOutcome::NotRun`], not a fail) with its own note prefix so
+/// a report reader can immediately tell a provider-unavailable stop apart
+/// from a `--budget-usd` stop.
+fn provider_unavailable_not_run_result(task: &Task, marker: &str) -> TaskResult {
+    let mut r = TaskResult::new(
+        task.spec.id.as_str(),
+        task.spec.category.as_str(),
+        OracleOutcome::NotRun,
+        CostReading::unknown(),
+    );
+    r.note = Some(format!("skipped: provider unavailable ({marker})"));
+    r
+}
+
 /// Run every task in `tasks` under `tier`, turning a per-task hard error into an
 /// errored result so one failure never aborts the whole tier. `budget` is
 /// shared across every tier in the session (the caller passes the same
 /// tracker to each `run_tier` call): once its cap trips, every remaining task
 /// — in this tier and any later one — is recorded as
 /// [`OracleOutcome::NotRun`] instead of being launched.
+///
+/// Lane K10: independently of `budget`, this also tracks CONSECUTIVE
+/// provider-unavailable results (billing/auth/quota — see
+/// [`provider_unavailable`]) within THIS tier's own round. Once
+/// [`provider_unavailable::CONSECUTIVE_STOP_THRESHOLD`] hit in a row, every
+/// remaining task in this tier is recorded not-run the same way, and one
+/// `PROVIDER UNAVAILABLE: …` line is printed to stderr — the M22 zai w1
+/// round's actual failure was exactly this shape (task after task returning
+/// the identical billing error) and ran all the way to the end anyway,
+/// recording 11 dishonest `fail`s instead of stopping after the second one.
 pub fn run_tier(
     tasks: &[Task],
     tier: &Tier,
@@ -587,12 +636,16 @@ pub fn run_tier(
     deps: &Deps<'_>,
     budget: &mut BudgetTracker,
 ) -> Vec<TaskResult> {
+    let mut provider_unavailable = provider_unavailable::ConsecutiveTracker::new();
     tasks
         .iter()
         .map(|task| {
             if budget.cap_exceeded() {
                 let reason = budget.stop_reason.unwrap_or(BudgetStopReason::CapReached);
                 return not_run_result(task, reason);
+            }
+            if let Some(marker) = provider_unavailable.stopped_marker() {
+                return provider_unavailable_not_run_result(task, marker);
             }
             let result = run_task(task, tier, cfg, deps).unwrap_or_else(|e| {
                 let mut r = TaskResult::new(
@@ -605,6 +658,11 @@ pub fn run_tier(
                 r
             });
             budget.record(&result.cost);
+            if let Some(msg) =
+                provider_unavailable.record(&tier.name, result.provider_error.as_deref())
+            {
+                eprintln!("{msg}");
+            }
             result
         })
         .collect()
@@ -1846,6 +1904,168 @@ mod tests {
         let msg = budget.take_stop_message().unwrap();
         assert!(msg.contains("BUDGET STOP"), "{msg}");
         assert!(msg.contains("after 2 tasks"), "{msg}");
+    }
+
+    /// A harness stand-in that serves a different captured log (and exit
+    /// code) on each successive call, in call order — lets a `run_tier`
+    /// test exercise a MIX of provider-unavailable and healthy tasks
+    /// without needing a separate `Deps`/`run_tier` call per task.
+    struct SequencedHarness {
+        runs: std::cell::RefCell<std::vec::IntoIter<(&'static str, Option<i32>)>>,
+    }
+    impl SequencedHarness {
+        fn new(runs: Vec<(&'static str, Option<i32>)>) -> Self {
+            Self {
+                runs: std::cell::RefCell::new(runs.into_iter()),
+            }
+        }
+    }
+    impl HarnessRunner for SequencedHarness {
+        fn run(&self, _inv: &Invocation, _t: Duration, log_path: &Path) -> Result<HarnessRun> {
+            let (log_text, exit) = self
+                .runs
+                .borrow_mut()
+                .next()
+                .expect("SequencedHarness called more times than it was given runs for");
+            fs::write(log_path, log_text)?;
+            Ok(HarnessRun {
+                exit,
+                timed_out: false,
+                duration: Duration::from_secs_f64(0.5),
+            })
+        }
+    }
+
+    /// Lane K10 (2026-09-14 M22 zai w1 defect): the M22 zai w1 round's
+    /// actual shape — task after task returning the identical billing
+    /// error — reproduced against `run_tier` directly. The oracle here
+    /// (`NeverOracle`) would otherwise PASS every task, proving the
+    /// provider-unavailable override — not a real graded failure — is what
+    /// produces `Errored`, and that it wins even when the harness's own
+    /// exit code looks fine.
+    #[test]
+    fn run_tier_stops_after_two_consecutive_provider_unavailable_tasks_and_marks_the_rest_not_run()
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let tasks: Vec<Task> = ["t1", "t2", "t3"]
+            .iter()
+            .map(|id| make_task(&tmp.path().join(id), &[], &[]))
+            .collect();
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            ..Default::default()
+        };
+        const MARKER_LINE: &str =
+            "{\"error\": \"Credits exhausted: Insufficient balance or no resource package. Please recharge.\"}";
+        let deps = Deps {
+            harness: &SequencedHarness::new(vec![
+                (MARKER_LINE, Some(0)),
+                (MARKER_LINE, Some(0)),
+                // Never reached: the round stops after the second
+                // consecutive provider-unavailable task.
+                ("unused", Some(0)),
+            ]),
+            oracle: &NeverOracle,
+            cost: &FixedCost(CostReading::unknown()),
+            recipe: &FakeRecipe,
+        };
+        let mut budget = BudgetTracker::unlimited();
+        let results = run_tier(
+            &tasks,
+            &Tier::builtin("local").unwrap(),
+            &cfg,
+            &deps,
+            &mut budget,
+        );
+
+        assert_eq!(results.len(), 3);
+        for (i, r) in results.iter().take(2).enumerate() {
+            assert_eq!(r.oracle, OracleOutcome::Errored, "task {i}: {r:?}");
+            assert!(!r.solved, "task {i}");
+            assert_eq!(
+                r.provider_error.as_deref(),
+                Some("credits exhausted"),
+                "task {i}"
+            );
+            assert_eq!(
+                r.note.as_deref(),
+                Some("provider unavailable: credits exhausted"),
+                "task {i}"
+            );
+        }
+        assert_eq!(results[2].oracle, OracleOutcome::NotRun);
+        assert!(!results[2].solved, "not-run is not a pass");
+        assert_eq!(
+            results[2].note.as_deref(),
+            Some("skipped: provider unavailable (credits exhausted)")
+        );
+        assert!(
+            results[2].provider_error.is_none(),
+            "a never-launched task observed no provider error of its own"
+        );
+        // The budget guard is untouched — this is a distinct stop condition.
+        assert!(!budget.cap_exceeded());
+    }
+
+    /// A single provider-unavailable task, followed by a healthy one, must
+    /// NOT stop the round — only two in a row does. The third task (marker
+    /// again) actually runs and is graded `Errored`, proving the streak was
+    /// reset by task 2's success rather than carried over.
+    #[test]
+    fn run_tier_a_single_transient_provider_unavailable_task_does_not_stop_the_round() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tasks: Vec<Task> = ["t1", "t2", "t3"]
+            .iter()
+            .map(|id| make_task(&tmp.path().join(id), &[], &[]))
+            .collect();
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            ..Default::default()
+        };
+        const MARKER_LINE: &str = "insufficient_quota";
+        let deps = Deps {
+            harness: &SequencedHarness::new(vec![
+                (MARKER_LINE, Some(1)),
+                ("all clear", Some(0)),
+                (MARKER_LINE, Some(1)),
+            ]),
+            oracle: &NeverOracle,
+            cost: &FixedCost(CostReading::unknown()),
+            recipe: &FakeRecipe,
+        };
+        let mut budget = BudgetTracker::unlimited();
+        let results = run_tier(
+            &tasks,
+            &Tier::builtin("local").unwrap(),
+            &cfg,
+            &deps,
+            &mut budget,
+        );
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].oracle, OracleOutcome::Errored);
+        assert_eq!(
+            results[0].provider_error.as_deref(),
+            Some("insufficient_quota")
+        );
+        assert_eq!(
+            results[1].oracle,
+            OracleOutcome::Pass,
+            "the healthy task ran normally"
+        );
+        assert!(results[1].provider_error.is_none());
+        // Task 3 actually ran (not NotRun) — the streak reset at task 2.
+        assert_eq!(results[2].oracle, OracleOutcome::Errored);
+        assert_eq!(
+            results[2].provider_error.as_deref(),
+            Some("insufficient_quota")
+        );
     }
 
     #[test]
