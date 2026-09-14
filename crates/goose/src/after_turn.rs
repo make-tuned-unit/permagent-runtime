@@ -1692,14 +1692,24 @@ const NO_ROADMAP_INJECT_OPENING: &str = "You ended the turn without a roadmap.";
 /// (fx02: *"Say the word and I'll create and dispatch this immediately"*) and
 /// a question to the user (fx06, after `CodingDagInspector` denied its
 /// `shell` call).
+// R20c-b (A21 Q2): the old wording below offered `escalate` only for a task
+// that is "genuinely impossible" — narrower than the recipe's own carve-outs
+// (b)/(c) (ambiguity, a missing credential/provider, or any question to the
+// user, all of which are also `escalate`). A DeepSeek round literally quoted
+// this nudge back and followed it into `decompose_roadmap` on a fixture that
+// should have escalated instead — the nudge was overriding the carve-out it
+// was supposed to reinforce. Restated so `escalate` covers the same three
+// cases the recipe does, checked FIRST, matching the recipe's own reading
+// order.
 const NO_ROADMAP_INJECT_TEXT: &str =
-    "You ended the turn without a roadmap. Call `decompose_roadmap` \
-     now with the concrete nodes for this task. Do not ask the user, and do not describe a plan in \
-     prose: a proposed roadmap in a message, a question, or an offer to act \"once confirmed\" is \
-     not an exit from this turn. In unattended mode the operator's launch is already the approval. \
-     A tiny fix is a valid one-node roadmap. If a direct tool call was denied, that denial is the \
-     protocol working — decompose and let the dispatched worker run it. If the task is genuinely \
-     impossible, call `escalate` instead.";
+    "You ended the turn without a roadmap. If the request is ambiguous, a needed credential or \
+     provider is missing, or the task is genuinely impossible, call `escalate` with the exact \
+     question — do not guess, do not ask in prose. Otherwise call `decompose_roadmap` now with \
+     the concrete nodes for this task; a tiny fix is a valid one-node roadmap. A plan described \
+     in a message, a question, or an offer to act \"once confirmed\" is not an exit from this \
+     turn. In unattended mode the operator's launch is already the approval. If a direct tool \
+     call was denied, that denial is the protocol working — decompose and let the dispatched \
+     worker run it.";
 
 /// Refuses to let a coding-harness COORDINATOR turn end having never asked for
 /// a roadmap at all.
@@ -1931,6 +1941,52 @@ fn turn_tool_call_succeeded(messages: &[Message], names: &[&str]) -> bool {
     false
 }
 
+/// Lane R20c-b: how many CONSECUTIVE coordinator turns, counting backward
+/// from the most recent, ended with no tool call at all — the count
+/// [`Rule5HonestFailureGuard`] uses for its own two-strike rule, independent
+/// of `prior_holds` (the budget EVERY after-turn hook shares — see
+/// [`NO_ROADMAP_INJECT_OPENING`]'s doc comment). Only `Role::Assistant`
+/// messages count as turn boundaries; an injected nudge (`Message::user()`)
+/// or a tool response is skipped without affecting the count. A turn with
+/// ANY tool call — not only a roadmap/escalate call — resets the streak to
+/// zero the moment scanning reaches it, the same "any tool call at all"
+/// definition [`final_message_has_tool_call`] uses for the CURRENT turn.
+///
+/// M22 zai round w1 (A21 analysis, HARNESS_LOOP_LOG.md "Lane R20c-b"):
+/// before this fix, [`Rule5HonestFailureGuard::decide`] gated its own
+/// Continue/Park choice on the SHARED `prior_holds < MAX_HOLDS` (`MAX_HOLDS
+/// == 2`). [`NoRoadmapGuard`]'s nudge on the first free-text turn already
+/// spends one of those two shared holds, so on the SECOND free-text turn
+/// this guard still read `prior_holds (1) < MAX_HOLDS (2)` as true and
+/// injected its OWN extra nudge ([`RULE5_INJECT_TEXT`]) instead of parking —
+/// a three-attempt cascade (two nudges, then park on the third), not the
+/// two-strike rule the guard's own doc comment already claimed. Root cause
+/// of THAT specific round's instant exits was unrelated (the zai provider
+/// had exhausted its credit balance, confirmed via every
+/// `data/logs/llm_request.N.jsonl`'s `error` field reading "Credits
+/// exhausted"), but the extra-nudge-before-park defect this uncovered is
+/// real and independent of what triggers the free-text turns in the first
+/// place — it fires identically for any repeated free-text ending, billing
+/// failure or otherwise.
+fn consecutive_free_text_coordinator_turns(messages: &[Message]) -> u8 {
+    use crate::conversation::message::MessageContent;
+    let mut count: u8 = 0;
+    for msg in messages.iter().rev() {
+        if msg.role != rmcp::model::Role::Assistant {
+            continue;
+        }
+        let has_tool_call = msg
+            .content
+            .iter()
+            .any(|c| matches!(c, MessageContent::ToolRequest(_)));
+        if has_tool_call {
+            break;
+        }
+        count = count.saturating_add(1);
+    }
+    count
+}
+
 /// Lane R18f: set the one time [`Rule5HonestFailureGuard`] actually parks a
 /// headless coding-harness turn on a rule-5 free-text ending.
 /// `AfterTurnAction::Park` on its own only ends the turn with a message in
@@ -1960,9 +2016,9 @@ const RULE5_INJECT_TEXT: &str =
 
 const RULE5_PARK_REASON: &str =
     "rule5_free_text_turn: the coding coordinator's turn ended in free text — no roadmap, no \
-     dispatched goal, no escalate, and no tool call at all in the final message — after the \
-     hold budget for retrying was exhausted. Call decompose_roadmap or escalate; a free-text \
-     answer is not a valid way to end this turn unattended.";
+     dispatched goal, no escalate, and no tool call at all in the final message — on the second \
+     consecutive turn to end this way. Call decompose_roadmap or escalate; a free-text answer \
+     is not a valid way to end this turn unattended.";
 
 /// Lane R20c: the mid-session sibling of [`RULE5_INJECT_TEXT`] — a roadmap
 /// already exists, at least one goal is still not Done, and the turn ended
@@ -1981,8 +2037,8 @@ const RULE5_MIDSESSION_INJECT_TEXT: &str =
 const RULE5_MIDSESSION_PARK_REASON: &str =
     "rule5_free_text_question: the coding coordinator's turn ended on a free-text question or \
      decision request — an existing roadmap has a goal that is not yet Done, no escalate was \
-     called, and no tool call at all appeared in the final message — after the hold budget for \
-     retrying was exhausted. A question to the user must be an escalate call, never prose.";
+     called, and no tool call at all appeared in the final message — on the second consecutive \
+     turn to end this way. A question to the user must be an escalate call, never prose.";
 
 /// Headless-only backstop: a coding-harness coordinator turn that ends with
 /// no roadmap, no dispatched goal, no `escalate`, and NO TOOL CALL AT ALL in
@@ -2019,6 +2075,21 @@ const RULE5_MIDSESSION_PARK_REASON: &str =
 /// already Done/Cancelled — never fires, and an explicit `escalate` call
 /// anywhere in the turn (the cheapest gate below) still releases both
 /// shapes identically.
+///
+/// Lane R20c-b (A21 analysis, HARNESS_LOOP_LOG.md "Lane R20c-b"): both
+/// shapes above are meant to be TWO-STRIKE — the first free-text turn gets
+/// a nudge, the second consecutive one parks. Until this fix the Continue-
+/// vs-Park choice was gated on `prior_holds < MAX_HOLDS`, a budget SHARED
+/// with every other after-turn hook (see [`NoRoadmapGuard`]'s own doc
+/// comment on why it cannot use that counter either). Since
+/// [`NoRoadmapGuard`]'s turn-1 nudge already spends one of the two shared
+/// holds before this guard is even the deciding vote, the shared budget let
+/// a SECOND free-text turn still read as "under budget" and get an extra
+/// nudge of its own — three attempts before park, not two. `decide` now
+/// counts strikes via [`consecutive_free_text_coordinator_turns`] instead,
+/// a value derived purely from the transcript and specific to THIS guard's
+/// own two-strike rule; `prior_holds >= MAX_HOLDS` stays as an OR'd
+/// defensive ceiling only, never a reason to grant an extra nudge.
 pub struct Rule5HonestFailureGuard;
 
 impl Rule5HonestFailureGuard {
@@ -2033,12 +2104,24 @@ impl Rule5HonestFailureGuard {
     /// OUTSIDE this function (transcript-only, cheapest, checked first in the
     /// live path) so they need no DB round trip at all — a call reaching this
     /// function has already established neither is true for the turn.
+    ///
+    /// R20c-b: `consecutive_free_text_turns` (see
+    /// [`consecutive_free_text_coordinator_turns`]) drives the two-strike
+    /// Continue/Park choice, NOT the shared `prior_holds`. The FIRST
+    /// free-text turn (count == 1) always gets a nudge; the SECOND
+    /// consecutive one (count >= 2) always parks — regardless of whether
+    /// some other hook already spent a shared hold earlier in this same
+    /// reply for an unrelated reason. `prior_holds >= MAX_HOLDS` stays as a
+    /// second, OR'd condition: a defensive ceiling so this guard can never
+    /// exceed the reply loop's own global hold budget, but it no longer
+    /// GRANTS an extra nudge the two-strike count would have refused.
     fn decide(
         is_headless_coding_coordinator: bool,
         roadmap_tool_succeeded_this_turn: bool,
         has_roadmap_cards: bool,
         has_active_roadmap: bool,
         final_message_reads_as_question: bool,
+        consecutive_free_text_turns: u8,
         prior_holds: u8,
     ) -> AfterTurnAction {
         if !is_headless_coding_coordinator || roadmap_tool_succeeded_this_turn {
@@ -2056,7 +2139,9 @@ impl Rule5HonestFailureGuard {
             return AfterTurnAction::Allow;
         }
 
-        if prior_holds < crate::cost_router::MAX_HOLDS {
+        let second_strike =
+            consecutive_free_text_turns >= 2 || prior_holds >= crate::cost_router::MAX_HOLDS;
+        if !second_strike {
             AfterTurnAction::Continue {
                 inject: if mid_session_question {
                     RULE5_MIDSESSION_INJECT_TEXT
@@ -2209,6 +2294,10 @@ impl AfterTurn for Rule5HonestFailureGuard {
         let has_roadmap_cards = !cards.is_empty();
         let has_active_roadmap = crate::cards::session_has_an_active_roadmap(&cards);
         let reads_as_question = final_message_reads_as_question(ctx.messages);
+        // R20c-b: the two-strike count, not the shared `prior_holds` — see
+        // `Self::decide`'s doc comment and
+        // `consecutive_free_text_coordinator_turns`'s own doc comment for why.
+        let consecutive_free_text_turns = consecutive_free_text_coordinator_turns(ctx.messages);
 
         let action = Self::decide(
             true,  // is_top_level_coding_harness already confirmed above
@@ -2216,6 +2305,7 @@ impl AfterTurn for Rule5HonestFailureGuard {
             has_roadmap_cards,
             has_active_roadmap,
             reads_as_question,
+            consecutive_free_text_turns,
             ctx.prior_holds,
         );
 
@@ -4282,6 +4372,38 @@ mod tests {
         }
     }
 
+    /// R20c-b (A21 Q2): the nudge text itself must not override the recipe's
+    /// own carve-outs. Before this fix the nudge only offered `escalate` for
+    /// a task that is "genuinely impossible" — narrower than the recipe's
+    /// (b)/(c) carve-outs (ambiguity, a missing credential/provider, any
+    /// question to the user) — and a DeepSeek round followed the nudge's
+    /// narrower framing into `decompose_roadmap` on a fixture that should
+    /// have escalated. The nudge must now name all three cases AND put
+    /// `escalate` before `decompose_roadmap` in reading order, matching the
+    /// recipe's own carve-outs-before-rule-1 structure.
+    #[test]
+    fn no_roadmap_inject_text_offers_escalate_for_ambiguity_and_missing_credential_too() {
+        for phrase in [
+            "ambiguous",
+            "credential",
+            "provider",
+            "escalate",
+            "decompose_roadmap",
+        ] {
+            assert!(
+                NO_ROADMAP_INJECT_TEXT.to_ascii_lowercase().contains(phrase),
+                "nudge text is missing {phrase:?}: {NO_ROADMAP_INJECT_TEXT}"
+            );
+        }
+        let escalate_pos = NO_ROADMAP_INJECT_TEXT.find("escalate").unwrap();
+        let decompose_pos = NO_ROADMAP_INJECT_TEXT.find("decompose_roadmap").unwrap();
+        assert!(
+            escalate_pos < decompose_pos,
+            "escalate must be offered BEFORE decompose_roadmap in reading order, matching the \
+             recipe's carve-outs-before-rule-1 structure: {NO_ROADMAP_INJECT_TEXT}"
+        );
+    }
+
     /// fx06's shape: the coordinator's one `shell` call was DENIED by
     /// `CodingDagInspector` and it asked the user a question instead of
     /// decomposing. A denied call is not a mutation, so `PrematureDoneGuard`
@@ -4727,8 +4849,9 @@ mod tests {
     /// Done, and a free-text question — the exact
     /// `select-missing-credential-escalates-not-guesses` shape from the A20
     /// analysis (worker used free-text `send_message` instead of `escalate`
-    /// mid-session). Fires, and injects the mid-session nudge while budget
-    /// remains.
+    /// mid-session). The FIRST free-text turn (`consecutive_free_text_turns
+    /// == 1`) always gets the mid-session nudge, never a park — R20c-b's
+    /// requirement 1.
     #[test]
     fn rule5_decide_fires_for_a_mid_session_question_with_open_goals() {
         match Rule5HonestFailureGuard::decide(
@@ -4737,6 +4860,7 @@ mod tests {
             true,  // has_roadmap_cards
             true,  // has_active_roadmap: a goal is not yet Done
             true,  // final message reads as a question
+            1,     // first consecutive free-text turn
             0,
         ) {
             AfterTurnAction::Continue { inject } => {
@@ -4747,20 +4871,16 @@ mod tests {
         }
     }
 
-    /// Once the shared hold budget is exhausted, the mid-session shape parks
-    /// with the `rule5_free_text_question` marker — distinct from the
-    /// bare-session `rule5_free_text_turn` marker, per the task's own
-    /// requirement that this be receipt-visible and greppable.
+    /// R20c-b's core fix, mid-session shape: the SECOND consecutive
+    /// free-text turn parks with the `rule5_free_text_question` marker even
+    /// when `prior_holds` is nowhere near `MAX_HOLDS` (0, not 2) — proving
+    /// the two-strike count, not the shared hold budget, drives this
+    /// decision now. Before this fix the equivalent call
+    /// (`prior_holds < MAX_HOLDS` was the only gate) would have returned
+    /// `Continue` here instead, the extra-nudge bug the M22 round exposed.
     #[test]
-    fn rule5_decide_parks_the_mid_session_question_with_its_own_marker_once_budget_is_exhausted() {
-        match Rule5HonestFailureGuard::decide(
-            true,
-            false,
-            true,
-            true,
-            true,
-            crate::cost_router::MAX_HOLDS,
-        ) {
+    fn rule5_decide_parks_the_mid_session_question_on_the_second_consecutive_free_text_turn() {
+        match Rule5HonestFailureGuard::decide(true, false, true, true, true, 2, 0) {
             AfterTurnAction::Park { reason } => {
                 assert_eq!(reason, RULE5_MIDSESSION_PARK_REASON);
                 assert!(reason.starts_with("rule5_free_text_question"));
@@ -4781,34 +4901,76 @@ mod tests {
                 true,  // has_roadmap_cards
                 false, // has_active_roadmap: every card is complete/cancelled
                 true,  // even a question-shaped closing message
-                0,
+                1, 0,
             ),
             AfterTurnAction::Allow,
             "every goal already Done is a legitimate closing summary, not a rule-5 failure"
         );
     }
 
-    /// The bare-session shape (R18f, no cards at all) is untouched by the
-    /// R20c extension: `has_active_roadmap`/`reads_as_question` are both
-    /// irrelevant when there are no cards yet.
+    /// The bare-session shape (R18f, no cards at all): the FIRST free-text
+    /// turn nudges, never parks — R20c-b's requirement 1, bare-session side.
     #[test]
-    fn rule5_decide_still_fires_for_the_original_bare_session_shape() {
-        match Rule5HonestFailureGuard::decide(true, false, false, false, false, 0) {
+    fn rule5_decide_fires_a_nudge_not_a_park_on_the_first_bare_session_free_text_turn() {
+        match Rule5HonestFailureGuard::decide(true, false, false, false, false, 1, 0) {
             AfterTurnAction::Continue { inject } => assert_eq!(inject, RULE5_INJECT_TEXT),
             other => panic!("expected Continue, got {other:?}"),
         }
+    }
+
+    /// R20c-b's core fix, bare-session shape: the SECOND consecutive
+    /// free-text turn parks with `rule5_free_text_turn` even at
+    /// `prior_holds == 0` — the two-strike count alone is sufficient, no
+    /// shared-budget exhaustion required. This is exactly the M22 shape:
+    /// `NoRoadmapGuard`'s own turn-1 nudge already spent one shared hold
+    /// elsewhere, so `prior_holds` reaching this guard on turn 2 could be as
+    /// low as 1 (still `< MAX_HOLDS == 2`) — the count is what must catch it.
+    #[test]
+    fn rule5_decide_parks_the_bare_session_shape_on_the_second_consecutive_free_text_turn() {
+        match Rule5HonestFailureGuard::decide(true, false, false, false, false, 2, 0) {
+            AfterTurnAction::Park { reason } => {
+                assert_eq!(reason, RULE5_PARK_REASON);
+                assert!(reason.starts_with("rule5_free_text_turn"));
+            }
+            other => panic!("expected Park, got {other:?}"),
+        }
+    }
+
+    /// The exact M22 regression, at the `decide` level: a first strike
+    /// (`consecutive_free_text_turns == 1`) must still nudge, NEVER park,
+    /// even when `prior_holds` is already 1 (as it would be after
+    /// `NoRoadmapGuard`'s own turn-1 nudge spent one of the two shared
+    /// holds). Before R20c-b, `prior_holds (1) < MAX_HOLDS (2)` was the
+    /// ONLY gate, so this exact input already produced `Continue` — this
+    /// test does not change behaviour here, it PINS it, so a future edit
+    /// cannot silently make a first strike start parking early just because
+    /// some other hook happened to spend a hold first.
+    #[test]
+    fn rule5_decide_first_strike_never_parks_even_if_another_hook_already_spent_a_shared_hold() {
+        match Rule5HonestFailureGuard::decide(true, false, false, false, false, 1, 1) {
+            AfterTurnAction::Continue { .. } => {}
+            other => panic!("expected Continue on a first strike, got {other:?}"),
+        }
+    }
+
+    /// The defensive ceiling: `prior_holds >= MAX_HOLDS` still parks even on
+    /// what would otherwise read as a first strike (`consecutive_free_text_
+    /// turns == 1`) — the OR'd second condition in `decide`, so this guard
+    /// can never itself exceed the reply loop's own global hold budget no
+    /// matter how the two-strike count reads. Matches the task's "or when
+    /// no turns remain" clause.
+    #[test]
+    fn rule5_decide_parks_when_the_shared_hold_budget_is_exhausted_even_on_a_first_strike() {
         match Rule5HonestFailureGuard::decide(
             true,
             false,
             false,
             false,
             false,
+            1,
             crate::cost_router::MAX_HOLDS,
         ) {
-            AfterTurnAction::Park { reason } => {
-                assert_eq!(reason, RULE5_PARK_REASON);
-                assert!(reason.starts_with("rule5_free_text_turn"));
-            }
+            AfterTurnAction::Park { reason } => assert_eq!(reason, RULE5_PARK_REASON),
             other => panic!("expected Park, got {other:?}"),
         }
     }
@@ -4820,7 +4982,7 @@ mod tests {
     #[test]
     fn rule5_decide_allows_mid_session_free_text_that_does_not_read_as_a_question() {
         assert_eq!(
-            Rule5HonestFailureGuard::decide(true, false, true, true, false, 0),
+            Rule5HonestFailureGuard::decide(true, false, true, true, false, 1, 0),
             AfterTurnAction::Allow,
             "an open goal alone is not enough — the final message must also read as a question"
         );
@@ -4828,30 +4990,82 @@ mod tests {
 
     /// Interactive sessions (non-headless) never fire, for either shape —
     /// `is_headless_coding_coordinator` gates the whole function before any
-    /// card/question state is even consulted.
+    /// card/question/strike state is even consulted.
     #[test]
     fn rule5_decide_never_fires_for_an_interactive_non_headless_session() {
         assert_eq!(
-            Rule5HonestFailureGuard::decide(false, false, false, false, false, 0),
+            Rule5HonestFailureGuard::decide(false, false, false, false, false, 2, 0),
             AfterTurnAction::Allow,
-            "bare-session shape, interactive"
+            "bare-session shape, interactive, even at the second strike"
         );
         assert_eq!(
-            Rule5HonestFailureGuard::decide(false, false, true, true, true, 0),
+            Rule5HonestFailureGuard::decide(false, false, true, true, true, 2, 0),
             AfterTurnAction::Allow,
-            "mid-session question shape, interactive"
+            "mid-session question shape, interactive, even at the second strike"
         );
     }
 
     /// A roadmap tool call that SUCCEEDED this turn releases both shapes —
     /// the coordinator just re-decomposed/resumed, which is never a rule-5
-    /// failure regardless of card/question state.
+    /// failure regardless of card/question/strike state.
     #[test]
     fn rule5_decide_allows_when_a_roadmap_tool_succeeded_this_turn() {
         assert_eq!(
-            Rule5HonestFailureGuard::decide(true, true, true, true, true, 0),
+            Rule5HonestFailureGuard::decide(true, true, true, true, true, 2, 0),
             AfterTurnAction::Allow
         );
+    }
+
+    // ── consecutive_free_text_coordinator_turns (Lane R20c-b) ──────────────
+
+    /// The plain count: two trailing assistant messages with no tool call,
+    /// separated by an injected user nudge (which must be skipped, not
+    /// counted as its own turn) — the exact shape the M22 transcript took.
+    #[test]
+    fn consecutive_free_text_coordinator_turns_counts_trailing_free_text_assistant_turns() {
+        let messages = vec![
+            Message::assistant().with_text("Ran into this error: Credits exhausted."),
+            Message::user().with_text(NO_ROADMAP_INJECT_TEXT),
+            Message::assistant().with_text("Ran into this error: Credits exhausted."),
+        ];
+        assert_eq!(consecutive_free_text_coordinator_turns(&messages), 2);
+    }
+
+    /// A single free-text turn (nothing before it) counts as exactly one —
+    /// the first-strike shape.
+    #[test]
+    fn consecutive_free_text_coordinator_turns_is_one_for_a_lone_free_text_turn() {
+        let messages = vec![Message::assistant().with_text("Here is a plan. Say the word.")];
+        assert_eq!(consecutive_free_text_coordinator_turns(&messages), 1);
+    }
+
+    /// R20c-b's "a tool call in between resets the count" requirement: an
+    /// older free-text assistant turn sits behind a LATER assistant turn
+    /// that DID call a tool — scanning backward from the most recent
+    /// message must stop at that tool call, so only the ONE free-text turn
+    /// after it counts, not three.
+    #[test]
+    fn consecutive_free_text_coordinator_turns_resets_at_the_most_recent_tool_call() {
+        let messages = vec![
+            Message::assistant().with_text("An older free-text turn."),
+            tool_exchange("decompose_roadmap", "call-1", true),
+            Message::user().with_text(RULE5_INJECT_TEXT),
+            Message::assistant().with_text("A newer free-text turn, after the tool call."),
+        ];
+        assert_eq!(
+            consecutive_free_text_coordinator_turns(&messages),
+            1,
+            "the decompose_roadmap call must reset the streak — only the turn AFTER it counts"
+        );
+    }
+
+    /// An empty conversation, and a conversation with no assistant turns at
+    /// all, both count as zero — nothing to reset from, nothing to count.
+    #[test]
+    fn consecutive_free_text_coordinator_turns_is_zero_with_no_assistant_turns() {
+        assert_eq!(consecutive_free_text_coordinator_turns(&[]), 0);
+        let user_only = vec![Message::user().with_text("do the thing")];
+        assert_eq!(consecutive_free_text_coordinator_turns(&user_only), 0);
     }
 
     /// Trait-impl level, mirroring `rule5_guard_allows_a_turn_that_escalated_
