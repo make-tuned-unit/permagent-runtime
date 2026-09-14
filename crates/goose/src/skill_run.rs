@@ -390,6 +390,25 @@ async fn resolve_project(
         })
 }
 
+/// Lane R18a-b (G21 MED-1 + HIGH-1): the single source of truth for "does
+/// this `GateDecision` authorize a command to actually run" — `decide()`
+/// only ever returns `Auto`/`UserAuthored`/`AgentApproved`/`ApprovedOnce`
+/// from this call site today (verified by reading its full body; `Parked`
+/// is handled and returned on above, before this is ever consulted).
+/// `Denied` and `ApprovedAndAllowlisted` are listed explicitly (not folded
+/// into a wildcard) so both call sites below — `run_command_skill`'s
+/// pre-dispatch guard and `execute_command`'s per-run receipt — stay
+/// exhaustive and in lockstep if `GateDecision` ever grows a new variant.
+fn decision_authorizes_execution(decision: GateDecision) -> bool {
+    match decision {
+        GateDecision::Auto
+        | GateDecision::UserAuthored
+        | GateDecision::AgentApproved
+        | GateDecision::ApprovedOnce => true,
+        GateDecision::Parked | GateDecision::Denied | GateDecision::ApprovedAndAllowlisted => false,
+    }
+}
+
 /// What the ladder needs recorded once the run has an outcome, gathered
 /// before any process is spawned so `execute_command` can stay one function.
 struct LadderRecord {
@@ -541,6 +560,17 @@ async fn run_command_skill(
     }
 
     // Auto / AgentApproved / ApprovedOnce / UserAuthored — decide() says run.
+    // Lane R18a-b (G21 MED-1): explicit, not an implicit fallthrough — a
+    // future `decide()` change that starts returning `Denied` or
+    // `ApprovedAndAllowlisted` from this call site must refuse loudly here,
+    // never silently execute an unapproved command.
+    if !decision_authorizes_execution(outcome.decision) {
+        return Err(SkillRunError::Io(format!(
+            "internal error: gate decision {:?} is not an approving outcome — refusing to run \
+             a skill command without one",
+            outcome.decision
+        )));
+    }
     let spent_grants = if outcome.decision == GateDecision::ApprovedOnce {
         vec![cmd.clone()]
     } else {
@@ -671,6 +701,21 @@ async fn execute_command(
     project_id: &str,
     ladder: LadderRecord,
 ) -> Result<SkillRunSuccess, SkillRunError> {
+    // Lane R18a-b (G21 HIGH-1): a per-run observation, not a compile-time
+    // literal — every command execution touches `unapproved_skill_runs`
+    // here, at the one place a skill actually executes, so the printed 0
+    // reflects a real check of THIS run's ladder decision rather than an
+    // assumption baked in at compile time. `run_command_skill`'s own
+    // explicit match (MED-1, `decision_authorizes_execution`) already
+    // refuses to reach here on anything but an approving decision, so this
+    // records 0 today; it exists so a future regression there shows up as
+    // a non-zero receipt instead of nothing.
+    if decision_authorizes_execution(ladder.audit_row.decision) {
+        crate::receipts::record_count("safety_and_trust", "unapproved_skill_runs", 0);
+    } else {
+        crate::receipts::record("safety_and_trust", "unapproved_skill_runs");
+    }
+
     let started = Instant::now();
     let mut command = Command::new("sh");
     command.arg("-c").arg(cmd).current_dir(exec_dir);
@@ -1366,6 +1411,135 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(execution_count(&pool, &skill_id).await, 2);
+    }
+
+    // ── R18a-b (G21 HIGH-1/MED-1): the unapproved_skill_runs producer ───────
+
+    /// `decision_authorizes_execution` (the shared predicate `run_command_
+    /// skill`'s explicit match and `execute_command`'s per-run receipt both
+    /// consult) is exhaustive over `GateDecision` — every variant `decide()`
+    /// could ever add without this lane's knowledge is covered explicitly,
+    /// not folded into a wildcard.
+    #[test]
+    fn decision_authorizes_execution_covers_every_gate_decision_variant() {
+        for decision in [
+            GateDecision::Auto,
+            GateDecision::UserAuthored,
+            GateDecision::AgentApproved,
+            GateDecision::ApprovedOnce,
+        ] {
+            assert!(
+                decision_authorizes_execution(decision),
+                "{decision:?} must authorize execution"
+            );
+        }
+        for decision in [
+            GateDecision::Parked,
+            GateDecision::Denied,
+            GateDecision::ApprovedAndAllowlisted,
+        ] {
+            assert!(
+                !decision_authorizes_execution(decision),
+                "{decision:?} must NOT authorize execution"
+            );
+        }
+    }
+
+    fn audit_row_with_decision(decision: GateDecision) -> approval::AuditRow {
+        approval::AuditRow {
+            at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            command: "true".to_string(),
+            cwd: None,
+            tier: approval::Tier::Auto,
+            decision,
+            privilege: 0,
+            level: approval::PrivilegeLevel::Full,
+            reason: "test".to_string(),
+            deny: None,
+            goal_id: None,
+        }
+    }
+
+    /// Lane R18a-b (G21 HIGH-1): `execute_command` — the one place a skill
+    /// actually executes — calls `receipts::record_count`/`record` on EVERY
+    /// run, so the printed `unapproved_skill_runs` is a per-run observation
+    /// of THIS run's `ladder.audit_row.decision`, not a compile-time
+    /// literal. Calls `execute_command` directly (bypassing
+    /// `run_command_skill`'s own gate) with a hand-built `LadderRecord`
+    /// carrying `GateDecision::Denied` — a decision `run_command_skill`
+    /// itself can never actually produce today, but exactly the shape a
+    /// future regression in that guard would look like — and asserts the
+    /// receipt increments. A second call with `GateDecision::Auto` (a real
+    /// approving decision) must NOT increment it.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn execute_command_measures_unapproved_skill_runs_per_call() {
+        crate::receipts::begin_run();
+        let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest: SkillManifest = serde_json::from_value(command_manifest("true")).unwrap();
+        seed_skill(&pool, "unapproved-probe", command_manifest("true")).await;
+        let skill = get_skill_by_name(&pool, "unapproved-probe")
+            .await
+            .unwrap()
+            .unwrap();
+        let req = base_req("unapproved-probe");
+
+        // Absent grant: a `Denied` decision must increment the counter.
+        let denied_ladder = LadderRecord {
+            audit_row: audit_row_with_decision(GateDecision::Denied),
+            clean_if_verified: 0,
+            spent_grants: Vec::new(),
+        };
+        execute_command(
+            &pool,
+            &skill,
+            &manifest,
+            "true",
+            tmp.path(),
+            &req,
+            "hash-denied",
+            decisions::ACTOR_SYSTEM.to_string(),
+            None,
+            projects::PERSONAL_PROJECT_ID,
+            denied_ladder,
+        )
+        .await
+        .unwrap();
+        let line = crate::receipts::snapshot().lines()[2].clone();
+        assert!(
+            line.contains("unapproved_skill_runs=1"),
+            "an execution carrying a non-approving decision must count as one unapproved \
+             skill run: {line}"
+        );
+
+        // Present grant: an `Auto` decision must NOT increment it further.
+        let auto_ladder = LadderRecord {
+            audit_row: audit_row_with_decision(GateDecision::Auto),
+            clean_if_verified: 1,
+            spent_grants: Vec::new(),
+        };
+        execute_command(
+            &pool,
+            &skill,
+            &manifest,
+            "true",
+            tmp.path(),
+            &req,
+            "hash-auto",
+            decisions::ACTOR_SYSTEM.to_string(),
+            None,
+            projects::PERSONAL_PROJECT_ID,
+            auto_ladder,
+        )
+        .await
+        .unwrap();
+        let line = crate::receipts::snapshot().lines()[2].clone();
+        crate::receipts::end_run();
+        assert!(
+            line.contains("unapproved_skill_runs=1"),
+            "an execution carrying a real approving decision must not add to the count: {line}"
+        );
     }
 
     // ── S6: path traversal / absolute path regression (kept from the old tool) ─

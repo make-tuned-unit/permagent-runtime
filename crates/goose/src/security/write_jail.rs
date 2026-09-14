@@ -487,6 +487,21 @@ fn shell_command(request: &ToolRequest) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Lane R18a-b (G21 HIGH-2): how many requests in `tool_requests` this jail
+/// would have judged — a write/edit-tool target or a shell command. Public
+/// because both this jail's own fail-open branch (`WriteJailInspector::
+/// inspect`) and `tool_inspection::inspect_tools`'s disabled-inspector
+/// branch need it to count a conservative `jail_bypasses` receipt when the
+/// jail did not run at all: an unobserved write/shell request is scored as
+/// a bypass (fail CLOSED for scoring), never left `unknown` (an `unknown`
+/// value breaks the whole `safety_and_trust` line's parse).
+pub fn count_jail_relevant_requests(tool_requests: &[ToolRequest]) -> usize {
+    tool_requests
+        .iter()
+        .filter(|r| write_path(r).is_some() || shell_command(r).is_some())
+        .count()
+}
+
 /// One shallow shell token.
 #[derive(Debug, PartialEq, Eq)]
 enum Tok {
@@ -1064,7 +1079,27 @@ impl ToolInspector for WriteJailInspector {
             return Ok(Vec::new());
         }
         let Some(session) = self.session_row(session_id).await else {
-            // Fail open: no boundary to enforce (see module docs).
+            // Fail open: no boundary to enforce (see module docs). Lane
+            // R18a-b (G21 HIGH-2): safety fails CLOSED for SCORING even
+            // though it fails open for EXECUTION — without the session row
+            // this jail cannot tell a goal worker from an ordinary session,
+            // so every write/shell request in this batch goes completely
+            // unwatched. An `unknown` receipt would break the whole
+            // `safety_and_trust` line's parse (the exact defect this lane
+            // exists to fix), so each unobserved request counts as a
+            // `jail_bypasses` bypass instead — conservative, but honest:
+            // an unobserved write outside a jail that could not judge it is
+            // scored as a bypass. `has_write || has_shell` is already
+            // guaranteed true here (the check above returned early
+            // otherwise), so `bypassed` is always >= 1.
+            let bypassed = count_jail_relevant_requests(tool_requests);
+            tracing::warn!(
+                session_id,
+                bypassed,
+                "write jail: session lookup failed — counting {bypassed} unobserved write/shell \
+                 request(s) in this batch as jail_bypasses (fail-open)"
+            );
+            crate::receipts::record_count("safety_and_trust", "jail_bypasses", bypassed as u64);
             return Ok(Vec::new());
         };
         let working_dir = session.working_dir.clone();
@@ -1433,6 +1468,36 @@ mod tests {
         assert!(
             results.is_empty(),
             "a jail without a boundary must fail open, not strand the agent"
+        );
+    }
+
+    /// Lane R18a-b (G21 HIGH-2): the `jail_bypasses` producer for exactly
+    /// the fail-open path above — a session lookup failure means this jail
+    /// could not tell a goal worker from an ordinary session, so neither of
+    /// the two requests in this batch was ever judged. Fails CLOSED for
+    /// scoring: each unobserved write/shell request counts as one bypass
+    /// (`jail_bypasses=2` for two requests), never `unknown` (that would
+    /// break the whole line's parse — the exact defect this lane exists to
+    /// fix) and never a silent, unmeasured `jail_bypasses=0`.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn unknown_session_counts_unobserved_requests_as_jail_bypasses() {
+        crate::receipts::begin_run();
+        let tmp = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(SessionManager::new(tmp.path().join("sessions")));
+        let jail = WriteJailInspector::new(Some(session_manager));
+
+        let requests = vec![
+            write_request("x", "write", "/definitely/not/allowed/y.txt"),
+            write_request("y", "write", "/definitely/not/allowed/z.txt"),
+        ];
+        let _ = verdicts(&jail, "no-such-session", &requests).await;
+        let line = crate::receipts::snapshot().lines()[2].clone();
+        crate::receipts::end_run();
+        assert!(
+            line.contains("jail_bypasses=2"),
+            "two unobserved write requests behind a failed session lookup must count as two \
+             bypasses, never unknown: {line}"
         );
     }
 
