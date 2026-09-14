@@ -79,6 +79,13 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     // one-salvage-per-goal counter via the agent-facing metadata PATCH tool
     // — same reasoning as `headless_unblock_count` above.
     "salvage_attempted",
+    // Lane R21a (A21 Q1): whether this goal's acceptance is a code change
+    // (`true`, the default) or a report/review with no change expected
+    // (`false`) — decided once by the planner, from its own acceptance
+    // criteria, at roadmap-creation time (`hold_done::infer_expects_change`).
+    // Protected so a worker cannot flip its own goal to "read-only" via the
+    // agent-facing metadata PATCH tool and skip the commit-required rule.
+    "expects_change",
 ];
 
 // ── Errors ──────────────────────────────────────────────────────────────────

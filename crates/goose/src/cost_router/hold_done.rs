@@ -26,6 +26,13 @@ pub const PARK_REASON_NO_VERIFY: &str = "held twice without verify — handing t
 pub const PARK_REASON_UNCOMMITTED: &str =
     "held twice with verified but uncommitted work — handing to the Decision Inbox";
 
+/// Lane R21a (A21 Q1): the read-only counterpart of [`PARK_REASON_NO_VERIFY`]
+/// — a goal whose acceptance is a report/review (`expects_change: false`, see
+/// [`goal_expects_change`]) held twice without ever leaving a review report.
+/// Never raised for a mutating goal — see [`decide_goal_done_hold`].
+pub const PARK_REASON_NO_REVIEW_REPORT: &str =
+    "held twice without a review report — handing to the Decision Inbox";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HoldOutcome {
     Allow,
@@ -179,6 +186,198 @@ pub fn decide_goal_hold(
         inject_plan,
         hold_count: next,
     }
+}
+
+// ── Lane R21a (A21 Q1): read-only goals reach review with a verified
+// no-change report instead of a commit ─────────────────────────────────────
+//
+// The held-out fixture `select-review-request-does-not-mutate` asks the
+// harness to REVIEW code and report, without changing anything. The worker
+// correctly makes no edits and reports its findings — but `decide_goal_hold`
+// only ever recognizes "verified and committed" as a legitimate `done`, so a
+// correct read-only outcome held forever and the goal never reached review.
+//
+// The fix is honest, not permissive: a goal only ever takes this branch when
+// BOTH (a) its own card metadata says no code change was expected
+// (`expects_change: false`, set once by the planner at roadmap-creation time
+// from its acceptance criteria — never re-derived from, or overridable by,
+// anything the worker itself says) AND (b) the worktree the worker actually
+// touched is genuinely clean: zero commits past baseline and no tracked
+// modifications. A read-only goal whose worker DID mutate files is not
+// read-only for hold purposes — [`decide_goal_done_hold`] falls straight
+// back to the ordinary commit-required [`decide_goal_hold`], unchanged.
+
+/// Metadata key on the goal card (written once, at roadmap-creation time, by
+/// `materialize_roadmap_transaction`'s call to [`infer_expects_change`]).
+/// Absent on every goal minted before this lane and on every non-roadmap
+/// creation path — [`goal_expects_change`] treats absence as `true`, so
+/// those goals keep today's commit-required behavior exactly as before.
+pub const EXPECTS_CHANGE_METADATA_KEY: &str = "expects_change";
+
+/// Read a goal card's `expects_change` intent. Defaults to `true` (a normal,
+/// mutating goal) whenever the key is missing or not a bool — an explicit
+/// `false` is the only thing that ever opts a goal out of the commit-required
+/// rule, so a card this lane never touched behaves exactly as it always has.
+pub fn goal_expects_change(meta: &serde_json::Map<String, serde_json::Value>) -> bool {
+    meta.get(EXPECTS_CHANGE_METADATA_KEY)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
+/// Keywords whose presence in a goal's acceptance criteria (or description)
+/// mean a code change IS expected, however review-shaped the rest of the
+/// text reads — these always win over a read-only-sounding phrase in the
+/// same goal, because a mixed "review this AND fix it" goal is not
+/// read-only.
+const CHANGE_KEYWORDS: &[&str] = &[
+    "fix",
+    "implement",
+    "add ",
+    "change",
+    "modify",
+    "refactor",
+    "update",
+    "write ",
+    "create",
+    "remove",
+    "delete",
+    "patch",
+    "commit",
+    "rename",
+    "migrate",
+    "upgrade",
+    "install",
+    "configure",
+    "build ",
+    "generate",
+];
+
+/// Keywords whose presence signals a read-only, report-shaped goal — only
+/// consulted when nothing in [`CHANGE_KEYWORDS`] matched first.
+const READ_ONLY_KEYWORDS: &[&str] = &[
+    "review",
+    "report",
+    "analy", // analyze / analysis / analyse
+    "audit",
+    "evaluate",
+    "assess",
+    "investigate",
+    "examine",
+    "inspect",
+    "summariz",
+    "summaris",
+    "no code change",
+    "no change",
+    "without changing",
+    "without mutating",
+    "does not mutate",
+    "read-only",
+    "read only",
+];
+
+/// Lane R21a: the ONLY place `expects_change` is ever derived — called once,
+/// at roadmap-creation time (`materialize_roadmap_transaction`), from the
+/// planner's own acceptance criteria plus the goal description (the planner
+/// already writes ACs; this never re-runs later and a worker's own claims
+/// can never influence it). Conservative by construction: any change-shaped
+/// keyword anywhere in the text wins outright; only text that reads as pure
+/// review/report/analysis with no change-shaped keyword at all comes back
+/// `false`. Empty/ambiguous input defaults `true` — silence is never treated
+/// as a licence to skip the commit-required rule.
+pub fn infer_expects_change(acceptance_criteria: &[String], description: &str) -> bool {
+    let mut haystack = description.to_ascii_lowercase();
+    for ac in acceptance_criteria {
+        haystack.push(' ');
+        haystack.push_str(&ac.to_ascii_lowercase());
+    }
+    if haystack.trim().is_empty() {
+        return true;
+    }
+    if CHANGE_KEYWORDS.iter().any(|kw| haystack.contains(kw)) {
+        return true;
+    }
+    !READ_ONLY_KEYWORDS.iter().any(|kw| haystack.contains(kw))
+}
+
+/// How long a worker's final report text must be, trimmed, to count as a
+/// genuine review artifact rather than a bare "done" claim. Deliberately
+/// low and generous — the reviewer, not this gate, judges whether the
+/// report is any good; this only asks whether the worker left SOMETHING to
+/// review at all.
+pub const MIN_REVIEW_REPORT_CHARS: usize = 40;
+
+/// Does this text read like a real review/analysis report? See
+/// [`MIN_REVIEW_REPORT_CHARS`] for the (generous) bar.
+pub fn looks_like_review_report(text: &str) -> bool {
+    text.trim().chars().count() >= MIN_REVIEW_REPORT_CHARS
+}
+
+/// The read-only counterpart of [`decide_goal_hold`]: a review artifact (the
+/// worker's own report text, a `review_report` tool result, or an equivalent
+/// findings message — anything [`looks_like_review_report`] recognizes)
+/// stands in for the commit+verify receipt. Never called directly by a goal
+/// caller — [`decide_goal_done_hold`] is the one dispatcher that decides
+/// whether a goal is eligible for this rule at all.
+pub fn decide_read_only_goal_hold(
+    role: WorkflowRole,
+    has_review_report: bool,
+    signals: &ToolTranscriptSignals,
+    prior_holds: u8,
+) -> HoldOutcome {
+    let hands_on = matches!(role, WorkflowRole::Mechanical | WorkflowRole::Local);
+    if has_review_report && !(hands_on && signals.spinning >= 0.5) {
+        return HoldOutcome::Allow;
+    }
+
+    let next = prior_holds.saturating_add(1);
+    if next > MAX_HOLDS {
+        return HoldOutcome::Park {
+            reason: PARK_REASON_NO_REVIEW_REPORT.into(),
+        };
+    }
+
+    let inject_plan = if has_review_report {
+        // Same shape as decide_goal_hold's spin brake: the report exists,
+        // but a hands-on role kept repeating a failing command afterward.
+        "You left a review report, but you are still repeating a command that keeps failing. \
+         Stop retrying it; your review is the deliverable here, not a passing command."
+            .to_string()
+    } else {
+        "This goal is read-only — no code change is expected. Do not declare this done without \
+         leaving a clear review report: what you checked and what you found. Do not make any \
+         edits; if you find the goal actually requires a change, say so in the report instead of \
+         making it."
+            .to_string()
+    };
+    HoldOutcome::Hold {
+        inject_plan,
+        hold_count: next,
+    }
+}
+
+/// Route a goal `done` claim to the read-only rule
+/// ([`decide_read_only_goal_hold`]) when the goal's own metadata says no code
+/// change was expected AND the worktree genuinely carries none — otherwise
+/// fall back to the ordinary commit-required [`decide_goal_hold`]. A
+/// read-only goal that DID mutate files (`worktree_mutated`) is not
+/// read-only for hold purposes: normal commit/verify rules apply, exactly as
+/// if `expects_change` were absent. This is the one function a goal `done`
+/// claim caller (`maybe_hold_review`) should call.
+#[allow(clippy::too_many_arguments)]
+pub fn decide_goal_done_hold(
+    role: WorkflowRole,
+    expects_change: bool,
+    worktree_mutated: bool,
+    verify_ran: bool,
+    uncommitted_work: bool,
+    has_review_report: bool,
+    signals: &ToolTranscriptSignals,
+    prior_holds: u8,
+) -> HoldOutcome {
+    if !expects_change && !worktree_mutated {
+        return decide_read_only_goal_hold(role, has_review_report, signals, prior_holds);
+    }
+    decide_goal_hold(role, verify_ran, uncommitted_work, signals, prior_holds)
 }
 
 #[cfg(test)]
@@ -380,5 +579,170 @@ mod tests {
             classify_park_reason("some brand new reason no producer has used before"),
             ParkReason::Other
         );
+    }
+
+    // ── Lane R21a: read-only goals reach review with a verified no-change
+    // report instead of a commit ────────────────────────────────────────────
+
+    fn report(chars: usize) -> String {
+        "x".repeat(chars)
+    }
+
+    #[test]
+    fn goal_expects_change_defaults_true_when_absent() {
+        let meta = serde_json::Map::new();
+        assert!(goal_expects_change(&meta));
+    }
+
+    #[test]
+    fn goal_expects_change_reads_an_explicit_false() {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            EXPECTS_CHANGE_METADATA_KEY.to_string(),
+            serde_json::json!(false),
+        );
+        assert!(!goal_expects_change(&meta));
+    }
+
+    #[test]
+    fn infer_expects_change_is_false_for_a_pure_review_goal() {
+        assert!(!infer_expects_change(
+            &["Review the billing module and report findings; do not mutate anything".into()],
+            "select-review-request-does-not-mutate",
+        ));
+    }
+
+    #[test]
+    fn infer_expects_change_defaults_true_on_empty_input() {
+        assert!(infer_expects_change(&[], ""));
+    }
+
+    #[test]
+    fn infer_expects_change_is_true_when_a_change_keyword_is_present() {
+        // "review and fix" is not read-only, even though "review" appears.
+        assert!(infer_expects_change(
+            &["Review the auth flow and fix the token refresh bug".into()],
+            "",
+        ));
+    }
+
+    #[test]
+    fn infer_expects_change_is_true_for_an_ordinary_implementation_goal() {
+        assert!(infer_expects_change(
+            &["The new endpoint returns 200 for a valid request".into()],
+            "Implement the /health endpoint",
+        ));
+    }
+
+    #[test]
+    fn looks_like_review_report_rejects_a_bare_done_claim() {
+        assert!(!looks_like_review_report(""));
+        assert!(!looks_like_review_report("done"));
+    }
+
+    #[test]
+    fn looks_like_review_report_accepts_real_findings() {
+        assert!(looks_like_review_report(&report(MIN_REVIEW_REPORT_CHARS)));
+    }
+
+    #[test]
+    fn read_only_goal_with_a_report_reaches_review() {
+        assert_eq!(
+            decide_goal_done_hold(
+                WorkflowRole::Mechanical,
+                /* expects_change */ false,
+                /* worktree_mutated */ false,
+                /* verify_ran */ false,
+                /* uncommitted_work */ false,
+                /* has_review_report */ true,
+                &quiet(),
+                0,
+            ),
+            HoldOutcome::Allow
+        );
+    }
+
+    #[test]
+    fn read_only_goal_without_a_report_holds_then_parks() {
+        for prior in 0..MAX_HOLDS {
+            let out = decide_goal_done_hold(
+                WorkflowRole::Mechanical,
+                false,
+                false,
+                false,
+                false,
+                false,
+                &quiet(),
+                prior,
+            );
+            match out {
+                HoldOutcome::Hold { hold_count, .. } => assert_eq!(hold_count, prior + 1),
+                other => panic!("{other:?}"),
+            }
+        }
+        match decide_goal_done_hold(
+            WorkflowRole::Mechanical,
+            false,
+            false,
+            false,
+            false,
+            false,
+            &quiet(),
+            MAX_HOLDS,
+        ) {
+            HoldOutcome::Park { reason } => assert_eq!(reason, PARK_REASON_NO_REVIEW_REPORT),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A read-only goal whose worker DID mutate files falls back to the
+    /// ordinary commit-required rule — a report is not enough once the
+    /// worktree is no longer clean.
+    #[test]
+    fn read_only_goal_that_mutated_falls_back_to_commit_required() {
+        let out = decide_goal_done_hold(
+            WorkflowRole::Mechanical,
+            /* expects_change */ false,
+            /* worktree_mutated */ true,
+            /* verify_ran */ false,
+            /* uncommitted_work */ false,
+            /* has_review_report */ true,
+            &quiet(),
+            0,
+        );
+        match out {
+            HoldOutcome::Hold { inject_plan, .. } => {
+                assert!(inject_plan.starts_with("Do not declare this done."));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A normal (mutating) goal with no commit still holds, unchanged by any
+    /// of the read-only machinery above.
+    #[test]
+    fn a_mutating_goal_with_no_commit_still_holds() {
+        let out = decide_goal_done_hold(
+            WorkflowRole::Mechanical,
+            true,
+            true,
+            false,
+            false,
+            false,
+            &quiet(),
+            0,
+        );
+        assert!(matches!(out, HoldOutcome::Hold { .. }));
+    }
+
+    #[test]
+    fn read_only_hold_plan_never_asks_for_a_verify() {
+        match decide_read_only_goal_hold(WorkflowRole::Mechanical, false, &quiet(), 0) {
+            HoldOutcome::Hold { inject_plan, .. } => {
+                assert!(!inject_plan.to_ascii_lowercase().contains("run verify"));
+                assert!(inject_plan.contains("review report"));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }
