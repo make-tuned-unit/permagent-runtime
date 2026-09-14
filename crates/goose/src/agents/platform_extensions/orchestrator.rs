@@ -9970,24 +9970,32 @@ pub async fn handle_goal_completion(
                 // goal with nothing committed, or with real committed work
                 // plus uncommitted changes on top, falls straight through to
                 // the ordinary park below, unchanged.
-                if let SalvageOutcome::Salvaged { note } =
-                    maybe_salvage_committed_work(pool, &card, None).await
-                {
-                    tracing::info!(
-                        target: "permagentd::brain",
-                        goal_id = %card_id,
-                        "Goal '{}' wall budget too small for another attempt, but its committed \
-                         work was salvaged instead of parked: {note}",
-                        card.title
-                    );
-                    return Ok(());
-                }
+                // G25/M21: `SalvageOutcome::NotSalvaged`'s `note` must not be
+                // silently dropped — fold it into the park reason and the
+                // receipt below so the explanation for why this goal was
+                // NOT salvaged (nothing committed, budget too tight, verify
+                // failed, …) is never lost, exactly as this function's own
+                // doc comment already promised.
+                let salvage_note = match maybe_salvage_committed_work(pool, &card, None).await {
+                    SalvageOutcome::Salvaged { note } => {
+                        tracing::info!(
+                            target: "permagentd::brain",
+                            goal_id = %card_id,
+                            "Goal '{}' wall budget too small for another attempt, but its \
+                             committed work was salvaged instead of parked: {note}",
+                            card.title
+                        );
+                        return Ok(());
+                    }
+                    SalvageOutcome::NotSalvaged { note } => note,
+                };
+                let reason = format!("{}; salvage: {salvage_note}", outcome.reason);
                 if let Err(e) = cards::merge_card_metadata(
                     pool,
                     card_id,
                     serde_json::json!({
                         "wall_budget_exhausted": {
-                            "reason": outcome.reason,
+                            "reason": reason,
                             "partial_state": outcome.partial_state,
                             "recorded_at": chrono::Utc::now().to_rfc3339(),
                         }
@@ -10011,7 +10019,7 @@ pub async fn handle_goal_completion(
                         spent_secs: outcome.spent_secs,
                         cap_secs: outcome.cap_secs,
                     },
-                    Some(&outcome.reason),
+                    Some(&reason),
                 )
                 .await?;
 
@@ -10020,7 +10028,7 @@ pub async fn handle_goal_completion(
                     "Goal '{}' refused another attempt — wall budget too small ({}) — parked \
                      with unblock decision {}",
                     card.title,
-                    outcome.reason,
+                    reason,
                     decision_id
                 );
             } else {
@@ -10466,30 +10474,34 @@ pub async fn handle_goal_timeout(
     // shutdown-signal sweep funnel through, so instrumenting it here covers
     // both. Give any work already committed one honest chance to verify,
     // review and land before parking — see `maybe_salvage_committed_work`.
-    if let SalvageOutcome::Salvaged { note } =
-        maybe_salvage_committed_work(pool, &card, grace_deadline).await
-    {
-        tracing::info!(
-            target: "permagentd::brain",
-            "Goal '{}' worker timed out after {}s, but its committed work was salvaged instead \
-             of parked: {note}",
-            card.title,
-            secs
-        );
-        return Ok(());
-    }
+    // G25/M21: fold `NotSalvaged`'s `note` into the park reason instead of
+    // discarding it — see `handle_goal_completion`'s sibling fix for why.
+    let salvage_note = match maybe_salvage_committed_work(pool, &card, grace_deadline).await {
+        SalvageOutcome::Salvaged { note } => {
+            tracing::info!(
+                target: "permagentd::brain",
+                "Goal '{}' worker timed out after {}s, but its committed work was salvaged \
+                 instead of parked: {note}",
+                card.title,
+                secs
+            );
+            return Ok(());
+        }
+        SalvageOutcome::NotSalvaged { note } => note,
+    };
 
     let exhaustion = goal_transition::BudgetExhaustion::Wallclock {
         spent_secs: secs,
         cap_secs: secs,
     };
+    let last_error = format!("worker exceeded its time bound; salvage: {salvage_note}");
     let decision_id = goal_transition::exhaust_and_park(
         pool,
         card_id,
         &card.title,
         project_id,
         exhaustion,
-        Some("worker exceeded its time bound"),
+        Some(&last_error),
     )
     .await?;
 
@@ -13113,6 +13125,11 @@ async fn maybe_salvage_committed_work(
         );
     }
     record_salvage_receipt(pool, &card.id, "salvaged_on_park", &note).await;
+    // M21 gate fix: the runtime receipts counter (same `dag_enforcement`
+    // area/convention as `roadmap_dispatched`/`roadmap_resumed`/`escalated`
+    // above), not just the card-metadata write — a no-op outside an active
+    // receipts run, mirroring every other `record_count` call site.
+    crate::receipts::record_count("dag_enforcement", "salvaged_on_park", 1);
     SalvageOutcome::Salvaged { note }
 }
 
@@ -13324,24 +13341,29 @@ async fn maybe_hold_review(
                 // normal `done` claim goes through — see
                 // `maybe_salvage_committed_work`'s own doc comment for why
                 // this can never recurse back into this same arm.
-                if let SalvageOutcome::Salvaged { note } =
-                    maybe_salvage_committed_work(pool, card, None).await
-                {
-                    tracing::info!(
-                        target: "permagentd::brain",
-                        goal_id = %card.id,
-                        "Goal '{}' held with wall budget too small for another attempt, but its \
-                         committed work was salvaged instead of parked: {note}",
-                        card.title
-                    );
-                    return Ok(Some(note));
-                }
+                // G25/M21: fold `NotSalvaged`'s `note` into the park reason
+                // instead of discarding it — see `handle_goal_completion`'s
+                // sibling fix for why.
+                let salvage_note = match maybe_salvage_committed_work(pool, card, None).await {
+                    SalvageOutcome::Salvaged { note } => {
+                        tracing::info!(
+                            target: "permagentd::brain",
+                            goal_id = %card.id,
+                            "Goal '{}' held with wall budget too small for another attempt, but \
+                             its committed work was salvaged instead of parked: {note}",
+                            card.title
+                        );
+                        return Ok(Some(note));
+                    }
+                    SalvageOutcome::NotSalvaged { note } => note,
+                };
+                let reason = format!("{}; salvage: {salvage_note}", refusal.reason);
                 if let Err(e) = cards::merge_card_metadata(
                     pool,
                     &card.id,
                     serde_json::json!({
                         "wall_budget_exhausted": {
-                            "reason": refusal.reason,
+                            "reason": reason,
                             "partial_state": refusal.partial_state,
                             "recorded_at": chrono::Utc::now().to_rfc3339(),
                         }
@@ -13365,7 +13387,7 @@ async fn maybe_hold_review(
                         spent_secs: refusal.spent_secs,
                         cap_secs: refusal.cap_secs,
                     },
-                    Some(&refusal.reason),
+                    Some(&reason),
                 )
                 .await?;
                 if let Some(kill) = take_goal_worker(&card.id) {
@@ -13379,8 +13401,7 @@ async fn maybe_hold_review(
                     decision_id
                 );
                 return Ok(Some(format!(
-                    "Held, but the wall budget is exhausted — parked instead of requeued: {}",
-                    refusal.reason
+                    "Held, but the wall budget is exhausted — parked instead of requeued: {reason}"
                 )));
             }
             // ── Y16a ── END ──────────────────────────────────────────────
@@ -18428,7 +18449,18 @@ mod tests {
             serde_json::json!({
                 "worktree_path": dir.path().to_string_lossy(),
                 "head_commit": head,
-                "commits": ["fix: the salvageable work"],
+                // M21 gate fix: deliberately EMPTY, not the real commit —
+                // `maybe_credit_and_bypass_hold`'s Z2-1 bypass (`ev.commits.
+                // is_empty()`) is an UNRELATED pre-existing mechanism that
+                // fires before `maybe_hold_review` ever reaches the Y16a
+                // wall-budget/salvage check, and this fixture's real,
+                // passing Rust project satisfied its own underlying-check
+                // condition — silently routing every r20b test straight to
+                // Review without ever calling `maybe_salvage_committed_work`
+                // at all. Salvage's own eligibility check
+                // (`commits_ahead_of_baseline`) reads real git history, not
+                // this cosmetic field, so it is unaffected.
+                "commits": [],
                 "baseline_commit": _baseline,
                 "files_changed": 1,
                 "insertions": 1,
@@ -18556,7 +18588,21 @@ mod tests {
             r20b_setup_goal_with_committed_work(&pool, "r20b-salvage-no-budget", Some((0, 100)))
                 .await;
 
-        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+        // M21 gate fix: drives `handle_goal_timeout`, not
+        // `handle_goal_completion`'s Ok(()) → `maybe_hold_review` Hold arm.
+        // That Hold arm pre-gates salvage on `wall_budget_exhausted_refusal`,
+        // which by DESIGN returns `None` (not just "not tight enough to
+        // refuse", but also) for a FULLY exhausted budget — assuming
+        // `check_budget`'s own Wallclock arm already owns that case
+        // elsewhere. Nothing calls `check_budget` on the success path, so a
+        // fully-exhausted goal reaching that Hold arm never even calls
+        // `maybe_salvage_committed_work` at all: `WallBudgetCeiling::
+        // Remaining(0)` can never be observed from that call site.
+        // `handle_goal_timeout` is the one salvage call site with NO such
+        // pre-gate — it always attempts salvage before its own
+        // `exhaust_and_park` — so it is the only one of the three that can
+        // actually exercise this skip path end to end.
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None)
             .await
             .unwrap();
 
@@ -18766,8 +18812,18 @@ mod tests {
             vec!["once_per_goal_spent".to_string()]
         );
 
-        // Gate 3: wall budget exhausted.
+        // Gate 3: wall budget exhausted. `setup_hold_with_wall_budget`
+        // returns the card snapshot from BEFORE it writes `budget`/
+        // `first_dispatched_at`/`dispatched_at` (it never re-fetches) — the
+        // OTHER pre-existing caller of this helper never notices because it
+        // hands only `.id`/`.project_id` to `handle_goal_completion`, which
+        // re-queries the card itself. This gate function reads
+        // `card.metadata_json` directly, so it needs a fresh fetch here —
+        // M21 gate fix (the stale snapshot has no configured wall budget at
+        // all, so `wall_budget_exhausted_refusal` read `None` and no gate
+        // ever refused).
         let tight = setup_hold_with_wall_budget(&pool, 60, 100).await;
+        let tight = cards::get_card(&pool, &tight.id).await.unwrap().unwrap();
         maybe_headless_unblock_verify_gap(
             &pool,
             &tight,
