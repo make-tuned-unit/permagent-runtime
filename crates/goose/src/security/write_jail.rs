@@ -1260,6 +1260,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn writes_inside_the_working_dir_pass_silently() {
         let tmp = tempfile::tempdir().unwrap();
         let (jail, session_id, work) = jail_with_session(&tmp).await;
@@ -1282,6 +1283,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn absolute_write_outside_requires_approval_with_answerable_message() {
         let tmp = tempfile::tempdir().unwrap();
         let (jail, session_id, work) = jail_with_session(&tmp).await;
@@ -1312,6 +1314,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn dot_dot_escape_is_judged_by_where_it_lands() {
         let tmp = tempfile::tempdir().unwrap();
         let (jail, session_id, _work) = jail_with_session(&tmp).await;
@@ -1331,6 +1334,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn temp_dirs_and_goal_worktrees_are_allowlisted() {
         let tmp = tempfile::tempdir().unwrap();
         let (jail, session_id, _work) = jail_with_session(&tmp).await;
@@ -1353,6 +1357,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn non_write_tools_and_missing_paths_are_ignored() {
         let tmp = tempfile::tempdir().unwrap();
         let (jail, session_id, _work) = jail_with_session(&tmp).await;
@@ -1388,6 +1393,7 @@ mod tests {
     /// was inverted — the jail treated the primary checkout as "inside" and
     /// silently allowed the worker to write there.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn worktree_repointed_session_treats_primary_checkout_as_outside() {
         let tmp = tempfile::tempdir().unwrap();
         // Deliberately NOT under the tempdir the harness itself runs in — the
@@ -1458,6 +1464,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn unknown_session_fails_open() {
         let tmp = tempfile::tempdir().unwrap();
         let session_manager = Arc::new(SessionManager::new(tmp.path().join("sessions")));
@@ -1728,6 +1735,7 @@ mod tests {
     /// A14's fx03/fx04: "the worker committed directly on `main`". The write
     /// jail never saw those calls at all — they were `shell`.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn goal_worker_shell_git_c_at_the_trunk_is_refused_for_mutations_only() {
         let tmp = tempfile::tempdir().unwrap();
         let (jail, session_id) = worker_jail(&tmp, WORKTREE).await;
@@ -1784,6 +1792,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn goal_worker_shell_cd_out_of_the_worktree_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
         let (jail, session_id) = worker_jail(&tmp, WORKTREE).await;
@@ -1906,6 +1915,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn goal_worker_shell_writes_outside_are_refused_and_reads_are_not() {
         let tmp = tempfile::tempdir().unwrap();
         let (jail, session_id) = worker_jail(&tmp, WORKTREE).await;
