@@ -346,8 +346,19 @@ mod tests {
     /// `routing_receipt_format_contract` test, since a zeroed run's lines are
     /// deterministic). `end_run` at the end returns the process to its
     /// pre-test (inactive) state.
+    /// Lane R17 gate fix: `begin_run`/`record`/`write_sidecar` and the
+    /// `PERMAGENT_RECEIPTS_SIDECAR` env var are all PROCESS-global, and libtest
+    /// runs these two tests on different threads of one process. Interleaved,
+    /// one test's `begin_run` re-points `SIDECAR_PATH` at the other's tempdir:
+    /// the first test's file then never appears (`NotFound`) and the second's
+    /// picks up the first's stray `harness_overhead` line. Serialize them —
+    /// this is the only pair in the crate that drives the global run state.
+    /// `into_inner` so one test's panic does not cascade into the other.
+    static SIDECAR_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn sidecar_receives_all_four_contract_lines_on_a_counter_change() {
+        let _guard = SIDECAR_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().expect("tempdir");
         let sidecar = dir.path().join("harness-receipts.txt");
         std::env::set_var("PERMAGENT_RECEIPTS_SIDECAR", &sidecar);
@@ -375,6 +386,7 @@ mod tests {
     /// (not only when the overhead line itself changes).
     #[test]
     fn sidecar_includes_harness_overhead_once_set() {
+        let _guard = SIDECAR_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().expect("tempdir");
         let sidecar = dir.path().join("harness-receipts.txt");
         std::env::set_var("PERMAGENT_RECEIPTS_SIDECAR", &sidecar);
