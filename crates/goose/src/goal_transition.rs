@@ -79,7 +79,26 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     // one-salvage-per-goal counter via the agent-facing metadata PATCH tool
     // — same reasoning as `headless_unblock_count` above.
     "salvage_attempted",
+    // Lane R21d (A23 Q2 #2): whether the most recent completed attempt made
+    // zero progress, and how many CONSECUTIVE attempts have (see
+    // `ZERO_PROGRESS_STREAK_METADATA_KEY`, `maybe_forgive_zero_progress_attempt`).
+    // Protected so a worker cannot spend its own one-forgiveness-per-goal
+    // allowance twice by resetting the streak via the agent-facing metadata
+    // PATCH tool — same reasoning as `headless_unblock_count` above.
+    "zero_progress",
+    ZERO_PROGRESS_STREAK_METADATA_KEY,
 ];
+
+/// Lane R21d (A23 Q2 #2): card metadata key tracking CONSECUTIVE
+/// zero-progress attempts. Absent/`0`: no streak (either no zero-progress
+/// attempt yet, or the last one was followed by a productive attempt, which
+/// resets it). `1`: the goal has spent its one forgiven zero-progress
+/// attempt (`attempt_count` was decremented back for it). `2`: a SECOND
+/// consecutive zero-progress attempt, which counted normally against
+/// `attempt_count` — [`park_goal_with_meta`] folds this into the park
+/// detail (`last_error`) so a human sees the goal spent a real attempt on
+/// nothing, not just the ordinary park reason.
+pub const ZERO_PROGRESS_STREAK_METADATA_KEY: &str = "zero_progress_streak";
 
 // ── Errors ──────────────────────────────────────────────────────────────────
 
@@ -744,6 +763,20 @@ pub async fn park_goal_with_meta(
 
     let journal_actor = journal_actor(actor, &goal.metadata);
     let mut meta = goal.metadata;
+    // Lane R21d (A23 Q2 #2): every park path (Hold-arm Park, budget
+    // exhaustion, wall-budget refusal) converges here — fold a SECOND
+    // consecutive zero-progress attempt's streak into the park detail so a
+    // human reading `last_error` sees the goal spent a real attempt on
+    // nothing, not just the ordinary park reason. A single forgiven
+    // zero-progress attempt (`streak == 1`) is not noted here — it never
+    // counted against the goal, so it left nothing to explain.
+    let annotated_reason = match meta
+        .get(ZERO_PROGRESS_STREAK_METADATA_KEY)
+        .and_then(|v| v.as_u64())
+    {
+        Some(streak) if streak >= 2 => format!("{reason}; zero_progress_streak={streak}"),
+        _ => reason.to_string(),
+    };
     meta.insert(
         "goal_state".to_string(),
         serde_json::Value::String("failed".to_string()),
@@ -754,7 +787,7 @@ pub async fn park_goal_with_meta(
     );
     meta.insert(
         "last_error".to_string(),
-        serde_json::Value::String(reason.to_string()),
+        serde_json::Value::String(annotated_reason),
     );
     for (key, value) in extra_meta {
         meta.insert((*key).to_string(), value.clone());
@@ -1523,6 +1556,24 @@ impl BudgetExhaustion {
         }
     }
 
+    /// Lane R21d (A23 Q2 #2): a short, stable slug naming which dimension
+    /// tripped — `record_headless_unblock_refusal` (orchestrator.rs) used to
+    /// log every `check_budget` refusal under the same generic string,
+    /// `"cost_budget_exhausted"`, no matter which variant fired; A23 traced a
+    /// real `AttemptCap { spent: 3, cap: 3 }` miscategorized that way, costing
+    /// real analysis time chasing a dollar cap that was never close. Callers
+    /// combine this with `spent_and_cap()` in the evidence digest so the next
+    /// analysis reads the dimension and the numbers straight off the audit
+    /// row instead of re-deriving them from `decision_audit`/`cards`.
+    pub fn gate_label(&self) -> &'static str {
+        match self {
+            Self::AttemptCap { .. } => "attempt_cap_exhausted",
+            Self::TokenBudget { .. } => "token_budget_exhausted",
+            Self::Wallclock { .. } => "wallclock_cap_exhausted",
+            Self::RefinementBudget { .. } => "refinement_budget_exhausted",
+        }
+    }
+
     pub fn describe(&self) -> String {
         match self {
             Self::AttemptCap { spent, cap } => {
@@ -1770,6 +1821,131 @@ pub async fn exhaust_and_park(
     .map_err(String::from)?;
 
     Ok(decision_id)
+}
+
+/// Lane R21d (A23 Q2 #2): whether a completed attempt made ANY progress —
+/// a commit, a file change, or a successful verify call beyond its own
+/// dispatch baseline. `false` for all three is the exact shape A23 found on
+/// both DeepSeek m1/m3 misses' 3rd dispatch (`commits: []`,
+/// `files_changed: 0`, no verify): a wasted attempt that immediately
+/// re-triggered the same hold and only spent the cap.
+pub fn attempt_made_zero_progress(
+    has_commit: bool,
+    has_file_change: bool,
+    verify_ran: bool,
+) -> bool {
+    !has_commit && !has_file_change && !verify_ran
+}
+
+/// Lane R21d (A23 Q2 #2): forgive a completed attempt's `attempt_count` when
+/// [`attempt_made_zero_progress`] found it produced nothing — A23 traced
+/// BOTH DeepSeek m1/m3 misses to exactly this: a zero-progress 3rd dispatch
+/// spent the last attempt without moving anything, parking a goal whose
+/// correct fix a SIBLING attempt (byte-identical) had already landed with
+/// one attempt to spare.
+///
+/// Called by the dispatch tracker right after this attempt's
+/// `dispatch_evidence` is persisted and BEFORE `handle_goal_completion`
+/// (`maybe_hold_review` → `check_budget`, an orchestrator.rs concern this
+/// module never reaches into) reads the card — the only point at which
+/// forgiving this attempt can still stop its OWN Hold/Park decision from
+/// spending it, not just the next one.
+///
+/// `attempt_count` is stamped optimistically at DISPATCH time (the claim
+/// patch in `dispatch_goal_fn`), not at completion — many existing tests
+/// read it immediately after dispatch and must keep doing so — so
+/// forgiveness here DECREMENTS the count already stamped for this attempt
+/// rather than skipping an increment that already happened.
+///
+/// Bounded to at most ONE forgiveness per goal
+/// ([`ZERO_PROGRESS_STREAK_METADATA_KEY`]): a card whose immediately prior
+/// attempt was ALSO zero-progress (`streak >= 1`) counts this one normally
+/// instead and records `streak = 2`, so a stuck worker cannot loop forever
+/// on free attempts. Any attempt that DOES make progress resets the streak.
+/// Best-effort: the caller only logs an `Err` — a failure here must never
+/// block the completion handler that runs right after it.
+pub async fn maybe_forgive_zero_progress_attempt(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    zero_progress: bool,
+) -> Result<(), String> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+    let row = sqlx::query(
+        "SELECT card_type, metadata_json FROM cards WHERE id = ? AND archived_at IS NULL",
+    )
+    .bind(card_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(row) = row else {
+        tx.rollback().await.map_err(|e| e.to_string())?;
+        return Ok(());
+    };
+    let card_type: String = row.try_get("card_type").map_err(|e| e.to_string())?;
+    if card_type != "goal" {
+        tx.rollback().await.map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    let meta_str: String = row.try_get("metadata_json").map_err(|e| e.to_string())?;
+    let mut meta = serde_json::from_str::<serde_json::Value>(&meta_str)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+
+    let prior_streak = meta
+        .get(ZERO_PROGRESS_STREAK_METADATA_KEY)
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    if !zero_progress {
+        if prior_streak == 0 {
+            // Nothing to reset — avoid a no-op write.
+            tx.rollback().await.map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        meta.remove(ZERO_PROGRESS_STREAK_METADATA_KEY);
+        meta.remove("zero_progress");
+    } else if prior_streak >= 1 {
+        // Second CONSECUTIVE zero-progress attempt: count it normally
+        // (attempt_count is left exactly as the claim patch stamped it) and
+        // record the streak so park_goal_with_meta can fold it into the
+        // park detail.
+        meta.insert(
+            ZERO_PROGRESS_STREAK_METADATA_KEY.to_string(),
+            serde_json::json!(2),
+        );
+        meta.insert("zero_progress".to_string(), serde_json::json!(true));
+    } else {
+        // First zero-progress attempt this streak: forgive it — undo the
+        // dispatch-time increment for THIS attempt.
+        let attempt_count = meta
+            .get("attempt_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        meta.insert(
+            "attempt_count".to_string(),
+            serde_json::json!(attempt_count.saturating_sub(1)),
+        );
+        meta.insert(
+            ZERO_PROGRESS_STREAK_METADATA_KEY.to_string(),
+            serde_json::json!(1),
+        );
+        meta.insert("zero_progress".to_string(), serde_json::json!(true));
+    }
+
+    let meta_str =
+        serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -3267,6 +3443,247 @@ mod tests {
                 .get("attempt_count")
                 .and_then(|v| v.as_u64()),
             Some(2)
+        );
+    }
+
+    /// Lane R21d (A23 Q2 #2): pure truth table for `attempt_made_zero_progress`
+    /// — ANY of a commit, a file change, or a successful verify disqualifies
+    /// an attempt from "zero progress".
+    #[test]
+    fn attempt_made_zero_progress_requires_all_three_signals_absent() {
+        assert!(attempt_made_zero_progress(false, false, false));
+        assert!(!attempt_made_zero_progress(true, false, false));
+        assert!(!attempt_made_zero_progress(false, true, false));
+        assert!(!attempt_made_zero_progress(false, false, true));
+        assert!(!attempt_made_zero_progress(true, true, true));
+    }
+
+    /// Lane R21d (A23 Q2 #2): a goal's first zero-progress attempt is
+    /// forgiven — `attempt_count` is decremented back to what it was before
+    /// this attempt was dispatched, and the streak is recorded at 1.
+    #[tokio::test]
+    async fn zero_progress_attempt_is_forgiven_once() {
+        let pool = test_pool().await;
+        // Attempt #3 was just dispatched (claim patch already stamped
+        // attempt_count = 3) and completed with nothing to show for it.
+        let goal = goal_in_state(&pool, "in_progress", 3).await;
+
+        maybe_forgive_zero_progress_attempt(&pool, &goal.id, true)
+            .await
+            .unwrap();
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(2),
+            "the zero-progress attempt must not count — attempt_count reverts to what it was \
+             before this attempt was dispatched"
+        );
+        assert_eq!(
+            card.metadata_json
+                .get(ZERO_PROGRESS_STREAK_METADATA_KEY)
+                .and_then(|v| v.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            card.metadata_json
+                .get("zero_progress")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        // check_budget must now see the forgiven count, not the stamped one
+        // — a goal at the default cap of 3 that has 2 real attempts left has
+        // NOT exhausted its attempt budget.
+        assert!(check_budget(&pool, &card.metadata_json)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// Lane R21d (A23 Q2 #2): a SECOND consecutive zero-progress attempt is
+    /// not forgiven — it counts normally against `attempt_count`, and the
+    /// streak advances to 2 so the eventual park detail can name it.
+    #[tokio::test]
+    async fn a_second_consecutive_zero_progress_attempt_counts_normally() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 3).await;
+
+        // First zero-progress attempt: forgiven (3 -> 2), streak = 1.
+        maybe_forgive_zero_progress_attempt(&pool, &goal.id, true)
+            .await
+            .unwrap();
+
+        // The goal gets its forgiven attempt back: redispatch stamps
+        // attempt_count = 3 again (mirrors the claim patch's own
+        // `attempt_count.saturating_add(1)`).
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.attempt_count', 3) \
+             WHERE id = ?",
+        )
+        .bind(&goal.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Second CONSECUTIVE zero-progress attempt: counts normally.
+        maybe_forgive_zero_progress_attempt(&pool, &goal.id, true)
+            .await
+            .unwrap();
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(3),
+            "a second consecutive zero-progress attempt must count — no second forgiveness"
+        );
+        assert_eq!(
+            card.metadata_json
+                .get(ZERO_PROGRESS_STREAK_METADATA_KEY)
+                .and_then(|v| v.as_u64()),
+            Some(2)
+        );
+
+        // At the default cap of 3, this now DOES exhaust the attempt budget.
+        assert!(matches!(
+            check_budget(&pool, &card.metadata_json).await.unwrap(),
+            Some(BudgetExhaustion::AttemptCap { spent: 3, cap: 3 })
+        ));
+    }
+
+    /// Lane R21d (A23 Q2 #2): a productive attempt (a commit, a file change,
+    /// or a successful verify) always counts, and resets any zero-progress
+    /// streak the goal was carrying.
+    #[tokio::test]
+    async fn a_productive_attempt_counts_and_resets_the_streak() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 3).await;
+
+        // A prior zero-progress attempt already spent this goal's one
+        // forgiveness.
+        maybe_forgive_zero_progress_attempt(&pool, &goal.id, true)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.attempt_count', 3) \
+             WHERE id = ?",
+        )
+        .bind(&goal.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // This attempt made real progress.
+        maybe_forgive_zero_progress_attempt(&pool, &goal.id, false)
+            .await
+            .unwrap();
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(3),
+            "a productive attempt is never forgiven and must count as stamped"
+        );
+        assert!(
+            card.metadata_json
+                .get(ZERO_PROGRESS_STREAK_METADATA_KEY)
+                .is_none(),
+            "a productive attempt resets the zero-progress streak"
+        );
+        assert!(card.metadata_json.get("zero_progress").is_none());
+    }
+
+    /// Lane R21d (A23 Q2 #2): every park path converges on
+    /// `park_goal_with_meta` — a SECOND consecutive zero-progress attempt's
+    /// streak must show up in the park detail (`last_error`) so a human
+    /// reading it sees the goal spent a real attempt on nothing.
+    #[tokio::test]
+    async fn park_detail_names_a_second_consecutive_zero_progress_streak() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 3).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.zero_progress_streak', 2) \
+             WHERE id = ?",
+        )
+        .bind(&goal.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        park_goal(
+            &pool,
+            &goal.id,
+            decisions::ACTOR_SYSTEM,
+            "held repeatedly with no verify",
+        )
+        .await
+        .unwrap();
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let last_error = card
+            .metadata_json
+            .get("last_error")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            last_error.contains("zero_progress_streak=2"),
+            "park detail must name the streak, got: {last_error}"
+        );
+        assert!(last_error.starts_with("held repeatedly with no verify"));
+    }
+
+    /// Lane R21d (A23 Q2 #2): a single forgiven zero-progress attempt
+    /// (streak == 1) never counted against the goal, so the park detail
+    /// stays exactly the caller's reason — nothing to explain.
+    #[tokio::test]
+    async fn park_detail_omits_a_single_forgiven_zero_progress_attempt() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 3).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.zero_progress_streak', 1) \
+             WHERE id = ?",
+        )
+        .bind(&goal.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        park_goal(
+            &pool,
+            &goal.id,
+            decisions::ACTOR_SYSTEM,
+            "held with no verify",
+        )
+        .await
+        .unwrap();
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("last_error")
+                .and_then(|v| v.as_str()),
+            Some("held with no verify")
         );
     }
 
