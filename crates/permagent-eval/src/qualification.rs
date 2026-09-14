@@ -336,10 +336,11 @@ pub struct TaskQualificationEvidence {
     /// them. Empty when `selection_correct` is `Some(true)` or `None`.
     #[serde(default)]
     pub selection_check_failures: Vec<String>,
-    /// Lane K6: the resolved harness wall-clock ceiling THIS run actually
-    /// used, seconds (`--harness-timeout-secs` CLI override > the task's own
-    /// `harness_timeout_secs:` > the tier's own default > the driver's
-    /// default — see [`crate::task::TaskSpec::resolved_harness_timeout_secs`]).
+    /// Lane K6 / K6-b: the resolved harness wall-clock ceiling THIS run
+    /// actually used, seconds — a `--harness-timeout-secs` CLI override if
+    /// given, else `max(the task's own `harness_timeout_secs:` or the
+    /// driver's default, the tier's own floor)` — see
+    /// [`crate::task::TaskSpec::resolved_harness_timeout_secs`].
     /// `#[serde(default)]` so a qual.json written before this lane still
     /// parses, with `None` meaning "unknown ceiling", never "no ceiling was
     /// applied". Retained so `seconds`/`t.result` can be read against the

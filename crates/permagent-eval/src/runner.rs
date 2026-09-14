@@ -101,14 +101,16 @@ pub struct RunConfig {
     /// Variable NAMES the arm removes from the child's inherited environment,
     /// merged into [`Invocation::unset_envs`].
     pub arm_unset: Vec<String>,
-    /// Lane K6: `--harness-timeout-secs <N>` — a per-INVOCATION override of
-    /// the harness wall-clock ceiling that beats every other source (a
-    /// task's own `harness_timeout_secs:` in `task.yaml` AND the tier's own
-    /// default; see [`crate::task::TaskSpec::resolved_harness_timeout_secs`]).
-    /// `None` (the default) leaves the task/tier/default precedence alone.
-    /// This is a deliberate measurement knob — e.g. to give a slower tier
-    /// more room on a fixture whose task-level cap was tuned for faster
-    /// tiers — and the resolved value it produces is retained on
+    /// Lane K6 / K6-b: `--harness-timeout-secs <N>` — a per-INVOCATION
+    /// override of the harness wall-clock ceiling that beats every other
+    /// source (a task's own `harness_timeout_secs:` in `task.yaml` AND the
+    /// tier's own floor; see
+    /// [`crate::task::TaskSpec::resolved_harness_timeout_secs`]). `None`
+    /// (the default) leaves the task-cap/tier-floor/default resolution
+    /// alone. This is a deliberate measurement knob for pinning an EXACT
+    /// ceiling on one invocation — the tier floor already scales a slow
+    /// provider's ceiling automatically without it — and the resolved
+    /// value it produces is retained on
     /// [`crate::metrics::TaskResult::harness_timeout_secs`] and from there on
     /// [`crate::qualification::TaskQualificationEvidence::harness_timeout_secs`]
     /// so latency evidence stays honest about which ceiling was actually used.
@@ -208,19 +210,19 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         &cfg.permagent_bin,
         cfg.use_keyring,
     );
-    // Lane K6: resolve the harness wall-clock ceiling this run actually uses
-    // — `--harness-timeout-secs` (this invocation's `cfg`) beats the task's
-    // own `harness_timeout_secs:` in `task.yaml`, which beats the tier's own
-    // default (e.g. the zai tiers' 900s), which beats
-    // `DEFAULT_HARNESS_TIMEOUT_SECS`. See
-    // `TaskSpec::resolved_harness_timeout_secs` for the precedence and why:
-    // zai (glm47/glm53) rounds z2/z3 on M19 hit the driver's flat 600s
-    // per-task ceiling on two fixtures whose task.yaml caps them tighter for
-    // faster tiers, while zai's own solved-task walls run 150-440s and it
-    // solved one of the two in 526s under isolation — the tier default
-    // raises the floor for every un-overridden task, and the CLI override
-    // lets one invocation lift even a task-level cap for a slower tier
-    // without editing the fixture.
+    // Lane K6 / K6-b: resolve the harness wall-clock ceiling this run
+    // actually uses — `--harness-timeout-secs` (this invocation's `cfg`)
+    // overrides everything; otherwise the tier's own floor (e.g. the zai
+    // tiers' 900s) is taken as `max(task cap or DEFAULT_HARNESS_TIMEOUT_SECS,
+    // tier value)`, never shortening a task's own cap. See
+    // `TaskSpec::resolved_harness_timeout_secs` for the full precedence and
+    // why: zai (glm47/glm53) rounds z2/z3 on M19 hit the driver's flat 600s
+    // per-task ceiling on two fixtures whose task.yaml caps them tighter
+    // than zai needs, while zai's own solved-task walls run 150-440s and it
+    // solved one of the two in 526s under isolation — the tier floor now
+    // raises those two fixtures' effective ceiling to `max(600, 900) = 900`
+    // automatically, and the CLI override still exists to pin an exact
+    // ceiling for one invocation when that isn't enough.
     let effective_harness_timeout_secs = task
         .spec
         .resolved_harness_timeout_secs(tier, cfg.harness_timeout_secs);
@@ -2120,7 +2122,8 @@ mod tests {
         assert_eq!(result.harness_timeout_secs, Some(900));
     }
 
-    // --- Lane K6: per-tier harness timeout, retained in the record --------
+    // --- Lane K6 / K6-b: per-tier harness timeout floor, retained in the
+    // record -----------------------------------------------------------
 
     /// A harness stand-in that records the `timeout` it was invoked with, so
     /// a test can assert `run_task` actually handed the RESOLVED ceiling to
@@ -2138,12 +2141,12 @@ mod tests {
     }
 
     /// A task with no `harness_timeout_secs:` of its own, run under the
-    /// `glm47` tier (900s default — see `Tier::builtin`), must resolve to
-    /// the TIER's default rather than `DEFAULT_HARNESS_TIMEOUT_SECS` (also
-    /// 900s here, so this alone would not distinguish the two — the
-    /// precedence tests below do that; this one just pins the wiring: the
-    /// resolved value reaches the subprocess timeout, the derived drain-secs
-    /// env, AND the retained record).
+    /// `glm47` tier (900s floor — see `Tier::builtin`), must resolve to the
+    /// TIER's floor rather than `DEFAULT_HARNESS_TIMEOUT_SECS` (also 900s
+    /// here, so this alone would not distinguish the two — the precedence
+    /// tests below do that; this one just pins the wiring: the resolved
+    /// value reaches the subprocess timeout, the derived drain-secs env,
+    /// AND the retained record).
     #[test]
     fn run_task_applies_the_tier_default_harness_timeout_when_task_has_none() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2168,12 +2171,14 @@ mod tests {
         assert_eq!(result.headless_drain_secs.as_deref(), Some("840"));
     }
 
-    /// Precedence: a task's own `harness_timeout_secs:` (600s here) beats
-    /// the tier's own default (glm47's 900s) — this is exactly the case
-    /// Lane K6's evidence found (zai's z2/z3 rounds on M19 hit the driver's
-    /// flat 600s ceiling on two fixtures whose task.yaml caps them tighter).
+    /// Lane K6-b: the tier's own floor (glm47's 900s) beats a TIGHTER
+    /// task-level cap (600s here) — `max(600, 900) = 900`. This is exactly
+    /// the case Lane K6's evidence found (zai's z2/z3 rounds on M19 hit the
+    /// driver's flat 600s ceiling on two fixtures whose task.yaml caps them
+    /// tighter than zai needs) — under the K6-b floor it now runs with room
+    /// to spare, with no `--harness-timeout-secs` override required.
     #[test]
-    fn run_task_task_override_beats_the_tier_default() {
+    fn run_task_tier_floor_beats_a_tighter_task_cap() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("demo");
         fs::create_dir_all(&dir).unwrap();
@@ -2202,24 +2207,23 @@ mod tests {
             recipe: &FakeRecipe,
         };
         let result = run_task(&task, &Tier::builtin("glm47").unwrap(), &cfg, &deps).unwrap();
-        assert_eq!(harness.0.lock().unwrap().unwrap(), Duration::from_secs(600));
-        assert_eq!(result.harness_timeout_secs, Some(600));
-        assert_eq!(result.headless_drain_secs.as_deref(), Some("540"));
+        assert_eq!(harness.0.lock().unwrap().unwrap(), Duration::from_secs(900));
+        assert_eq!(result.harness_timeout_secs, Some(900));
+        assert_eq!(result.headless_drain_secs.as_deref(), Some("840"));
     }
 
-    /// Precedence: `RunConfig::harness_timeout_secs` (the `--harness-
-    /// timeout-secs` CLI flag) beats BOTH the task's own override and the
-    /// tier's default — the knob Lane K6 adds so one invocation can lift a
-    /// task-level cap for a slower tier without editing the fixture.
+    /// Lane K6-b: a task-level cap LOOSER than the tier's floor (1200s here
+    /// vs glm47's 900s) is left alone — `max(1200, 900) = 1200`. The tier
+    /// value is a floor, never a shortening override.
     #[test]
-    fn run_task_cli_override_beats_both_task_and_tier() {
+    fn run_task_a_looser_task_cap_beats_the_tier_floor() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("demo");
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("task.yaml"),
             "id: demo\ntitle: Demo\ncategory: classic\nprompt: do it\ntest: [true]\n\
-             harness_timeout_secs: 600\n",
+             harness_timeout_secs: 1200\n",
         )
         .unwrap();
         let task = Task {
@@ -2231,7 +2235,6 @@ mod tests {
             runs_root: tmp.path().join("runs"),
             keep: false,
             use_keyring: false,
-            harness_timeout_secs: Some(1200),
             ..Default::default()
         };
         let harness = CaptureTimeout(std::sync::Mutex::new(None));
@@ -2248,6 +2251,48 @@ mod tests {
         );
         assert_eq!(result.harness_timeout_secs, Some(1200));
         assert_eq!(result.headless_drain_secs.as_deref(), Some("1140"));
+    }
+
+    /// Precedence: `RunConfig::harness_timeout_secs` (the `--harness-
+    /// timeout-secs` CLI flag) beats BOTH the task's own cap (600s) AND the
+    /// tier's floor (glm47's 900s) — 700s here is below the tier floor, so
+    /// this also proves the CLI override is not itself floored by the tier;
+    /// it is the knob Lane K6/K6-b adds so one invocation can pin an EXACT
+    /// ceiling regardless of task/tier.
+    #[test]
+    fn run_task_cli_override_beats_both_task_cap_and_tier_floor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("demo");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("task.yaml"),
+            "id: demo\ntitle: Demo\ncategory: classic\nprompt: do it\ntest: [true]\n\
+             harness_timeout_secs: 600\n",
+        )
+        .unwrap();
+        let task = Task {
+            spec: TaskSpec::from_yaml(&fs::read_to_string(dir.join("task.yaml")).unwrap()).unwrap(),
+            dir,
+        };
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            harness_timeout_secs: Some(700),
+            ..Default::default()
+        };
+        let harness = CaptureTimeout(std::sync::Mutex::new(None));
+        let deps = Deps {
+            harness: &harness,
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        let result = run_task(&task, &Tier::builtin("glm47").unwrap(), &cfg, &deps).unwrap();
+        assert_eq!(harness.0.lock().unwrap().unwrap(), Duration::from_secs(700));
+        assert_eq!(result.harness_timeout_secs, Some(700));
+        assert_eq!(result.headless_drain_secs.as_deref(), Some("640"));
     }
 
     /// An A/B arm must be able to override either headless-autoland default —

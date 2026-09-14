@@ -287,13 +287,13 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                         "duration_secs": r.duration_secs,
                         "harness_exit": r.harness_exit,
                         "harness_timed_out": r.harness_timed_out,
-                        // Lane K6: the resolved wall-clock ceiling THIS task
-                        // actually ran under (task override > tier default >
-                        // driver default, or a `--harness-timeout-secs` CLI
-                        // override) — so `duration_secs`/`harness_timed_out`
-                        // above can be read against the ceiling that
-                        // produced them, not assumed from the task's static
-                        // default.
+                        // Lane K6 / K6-b: the resolved wall-clock ceiling
+                        // THIS task actually ran under (a `--harness-
+                        // timeout-secs` CLI override if given, else
+                        // `max(task cap or driver default, tier floor)`) —
+                        // so `duration_secs`/`harness_timed_out` above can
+                        // be read against the ceiling that produced them,
+                        // not assumed from the task's static default.
                         "harness_timeout_secs": r.harness_timeout_secs,
                         "note": r.note,
                         "seed_commit": r.seed_commit,

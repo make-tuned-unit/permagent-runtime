@@ -38,16 +38,23 @@ pub struct Tier {
     /// The API-key env var this provider needs, if any (`None` = keyless, e.g.
     /// local Ollama). Used only for a pre-flight check.
     pub required_key_env: Option<String>,
-    /// Lane K6: this tier's own default harness wall-clock ceiling (seconds),
-    /// used when a task's `task.yaml` carries no `harness_timeout_secs:`
-    /// override of its own. `None` (most tiers) falls through to
-    /// [`crate::task::DEFAULT_HARNESS_TIMEOUT_SECS`]. See
-    /// [`crate::task::TaskSpec::resolved_harness_timeout_secs`] for the full
-    /// precedence (a task override, or a `--harness-timeout-secs` CLI
-    /// override, still both outrank this). The zai tiers (`glm47`, `glm53`)
+    /// Lane K6 / K6-b: this tier's own FLOOR on the harness wall-clock
+    /// ceiling (seconds). `None` (most tiers) applies no floor at all —
+    /// the task's own `harness_timeout_secs:` (or
+    /// [`crate::task::DEFAULT_HARNESS_TIMEOUT_SECS`] if it has none)
+    /// applies unchanged. When `Some`, the effective ceiling is
+    /// `max(task cap or default, this value)` — see
+    /// [`crate::task::TaskSpec::resolved_harness_timeout_secs`] for the
+    /// full resolution. It only ever RAISES the ceiling for a slow
+    /// provider, never shortens a task's own (possibly looser) cap; a
+    /// `--harness-timeout-secs` CLI override still outranks it when an
+    /// invocation needs an exact value. The zai tiers (`glm47`, `glm53`)
     /// default to 900s here — evidence: zai glm-4.7 rounds z2/z3 on M19 hit
     /// the driver's flat 600s per-task ceiling on two fixtures while its own
-    /// solved-task walls on this suite run 150-440s.
+    /// solved-task walls on this suite run 150-440s; K6-b's rationale is
+    /// that a fixture's cap encodes "fast enough for a fast model," not a
+    /// universal provider-speed claim, so a per-tier floor scales it for a
+    /// 3-5x-slower provider without rewriting every fixture.
     pub harness_timeout_secs: Option<u64>,
 }
 
@@ -336,12 +343,12 @@ mod tests {
         assert_eq!(t.harness_timeout_secs, None);
     }
 
-    /// Lane K6: the zai tiers (`glm47`/`glm53`) default to a 900s harness
-    /// ceiling; every other tier — `dschat` explicitly named, since
-    /// DeepSeek's own walls on this suite run comfortably under the flat
-    /// 900s default — carries no tier-level override (`None`, so
-    /// `TaskSpec::resolved_harness_timeout_secs` falls through to the task's
-    /// own override or `DEFAULT_HARNESS_TIMEOUT_SECS`).
+    /// Lane K6 / K6-b: the zai tiers (`glm47`/`glm53`) declare a 900s
+    /// harness ceiling FLOOR; every other tier — `dschat` explicitly named,
+    /// since DeepSeek's own walls on this suite run comfortably under the
+    /// flat 900s default — declares no tier-level floor (`None`, so
+    /// `TaskSpec::resolved_harness_timeout_secs` applies just the task's
+    /// own cap or `DEFAULT_HARNESS_TIMEOUT_SECS`, unchanged by the tier).
     #[test]
     fn zai_tiers_default_harness_timeout_to_900_others_are_unset() {
         for name in ["glm47", "glm53"] {

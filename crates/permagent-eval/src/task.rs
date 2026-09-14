@@ -192,18 +192,33 @@ impl TaskSpec {
             .unwrap_or(DEFAULT_HARNESS_TIMEOUT_SECS)
     }
 
-    /// Lane K6: resolve the harness wall-clock ceiling for one run of this
-    /// task under `tier`, applying (highest wins):
+    /// Lane K6 / K6-b: resolve the harness wall-clock ceiling for one run of
+    /// this task under `tier`:
     ///
     /// 1. `cli_override` — `--harness-timeout-secs <N>`, a deliberate
-    ///    measurement knob for ONE invocation that beats everything else,
-    ///    including a task's own tighter `harness_timeout_secs:`.
-    /// 2. This task's own [`Self::harness_timeout_secs`] override from
-    ///    `task.yaml`.
-    /// 3. `tier`'s own [`crate::tier::Tier::harness_timeout_secs`] default
-    ///    (e.g. the zai tiers, `glm47`/`glm53`, default to 900s — see
-    ///    `Tier::builtin`).
-    /// 4. [`DEFAULT_HARNESS_TIMEOUT_SECS`].
+    ///    measurement knob for ONE invocation that beats everything else.
+    /// 2. Otherwise, if `tier` declares its own
+    ///    [`crate::tier::Tier::harness_timeout_secs`] (e.g. the zai tiers,
+    ///    `glm47`/`glm53`, default to 900s — see `Tier::builtin`), the
+    ///    result is `max(task cap or DEFAULT_HARNESS_TIMEOUT_SECS, tier
+    ///    value)` — the tier value is a FLOOR, not an override, so it never
+    ///    shortens a task that already asked for MORE time than the tier's
+    ///    default.
+    /// 3. Otherwise, this task's own [`Self::harness_timeout_secs`] override
+    ///    from `task.yaml`, or [`DEFAULT_HARNESS_TIMEOUT_SECS`] if unset.
+    ///
+    /// Lane K6-b rationale: a fixture's `harness_timeout_secs:` encodes "a
+    /// competent harness finishes within N s on a fast model" — it is a
+    /// per-fixture correctness/complexity budget, not a claim about every
+    /// provider's speed. A per-tier FLOOR scales that budget for a provider
+    /// whose normal solved-task walls run 3-5x longer, without having to
+    /// rewrite every fixture's cap; the ceiling actually used is still
+    /// retained in the record (see `crate::metrics::TaskResult::
+    /// harness_timeout_secs`) so latency evidence stays honest about which
+    /// ceiling applied. Lane K6's original precedence (task cap always beat
+    /// the tier default, so a slow tier needed an explicit
+    /// `--harness-timeout-secs` to lift a fixture's own cap) is superseded
+    /// by this floor semantics.
     ///
     /// Evidence (Lane K6, `HARNESS_LOOP_LOG.md`): zai glm-4.7 rounds z2/z3 on
     /// M19 failed `harness-loc-refund-cents-drift` and
@@ -211,16 +226,23 @@ impl TaskSpec {
     /// flat 600s per-task ceiling (`harness_timed_out=true` at 600.3s),
     /// while zai's own solved-task walls on this suite run 150-440s and it
     /// solved `loc-refund` in 526s under isolation — the per-task 600s cap
-    /// on those two fixtures was sized for faster tiers, not zai.
+    /// on those two fixtures was sized for faster tiers, not zai; under
+    /// K6-b's floor, both now run under `max(600, 900) = 900`.
     pub fn resolved_harness_timeout_secs(
         &self,
         tier: &crate::tier::Tier,
         cli_override: Option<u64>,
     ) -> u64 {
-        cli_override
-            .or(self.harness_timeout_secs)
-            .or(tier.harness_timeout_secs)
-            .unwrap_or(DEFAULT_HARNESS_TIMEOUT_SECS)
+        if let Some(cli) = cli_override {
+            return cli;
+        }
+        let task_or_default = self
+            .harness_timeout_secs
+            .unwrap_or(DEFAULT_HARNESS_TIMEOUT_SECS);
+        match tier.harness_timeout_secs {
+            Some(tier_floor) => task_or_default.max(tier_floor),
+            None => task_or_default,
+        }
     }
 
     /// The effective oracle timeout, applying the default when unset.
@@ -560,8 +582,9 @@ mod tests {
         assert_eq!(spec.max_turns, Some(12));
     }
 
-    // ── Lane K6: resolved_harness_timeout_secs precedence ────────────────
-    // CLI override > task override > tier override > default.
+    // ── Lane K6 / K6-b: resolved_harness_timeout_secs precedence ─────────
+    // CLI override > max(task cap or default, tier floor) > task cap or
+    // default (when the tier declares no floor).
 
     #[test]
     fn resolved_timeout_falls_back_to_default_with_no_overrides_anywhere() {
@@ -582,23 +605,49 @@ mod tests {
         assert_eq!(spec.resolved_harness_timeout_secs(&tier, None), 900);
     }
 
+    /// Lane K6-b: the tier's 900s floor beats a TIGHTER task cap (600s) —
+    /// `max(600, 900) = 900`. This is the exact case the Lane K6 evidence
+    /// found (zai's z2/z3 rounds on M19 hit the driver's flat 600s ceiling
+    /// on two fixtures whose task.yaml caps them tighter than zai needs).
     #[test]
-    fn resolved_timeout_task_override_beats_the_tier_default() {
+    fn resolved_timeout_tier_floor_beats_a_tighter_task_cap() {
         let yaml = "id: t1\ntitle: T\nprompt: p\ntest: [x]\nharness_timeout_secs: 600\n";
         let spec = TaskSpec::from_yaml(yaml).unwrap();
         let tier = crate::tier::Tier::builtin("glm47").unwrap();
-        // The task's own 600s wins over the tier's 900s default — this is
-        // exactly the case the CLI override exists to lift for one
-        // invocation without editing the fixture.
-        assert_eq!(spec.resolved_harness_timeout_secs(&tier, None), 600);
+        assert_eq!(spec.resolved_harness_timeout_secs(&tier, None), 900);
     }
 
+    /// Lane K6-b: a task cap LOOSER than the tier's floor is left alone —
+    /// `max(1200, 900) = 1200`. The tier value is a floor, never a
+    /// shortening override.
     #[test]
-    fn resolved_timeout_cli_override_beats_both_task_and_tier() {
+    fn resolved_timeout_a_looser_task_cap_beats_the_tier_floor() {
+        let yaml = "id: t1\ntitle: T\nprompt: p\ntest: [x]\nharness_timeout_secs: 1200\n";
+        let spec = TaskSpec::from_yaml(yaml).unwrap();
+        let tier = crate::tier::Tier::builtin("glm47").unwrap();
+        assert_eq!(spec.resolved_harness_timeout_secs(&tier, None), 1200);
+    }
+
+    /// The `--harness-timeout-secs` CLI override still beats both the
+    /// task's own cap AND the tier's floor.
+    #[test]
+    fn resolved_timeout_cli_override_beats_both_task_cap_and_tier_floor() {
         let yaml = "id: t1\ntitle: T\nprompt: p\ntest: [x]\nharness_timeout_secs: 600\n";
         let spec = TaskSpec::from_yaml(yaml).unwrap();
         let tier = crate::tier::Tier::builtin("glm47").unwrap();
-        assert_eq!(spec.resolved_harness_timeout_secs(&tier, Some(1200)), 1200);
+        assert_eq!(spec.resolved_harness_timeout_secs(&tier, Some(700)), 700);
+    }
+
+    /// With no tier floor declared (`dschat` — DeepSeek's own walls on this
+    /// suite run comfortably under the flat default, so it gets none), the
+    /// task's own cap (or the driver default) applies unchanged.
+    #[test]
+    fn resolved_timeout_with_no_tier_floor_the_task_cap_applies() {
+        let yaml = "id: t1\ntitle: T\nprompt: p\ntest: [x]\nharness_timeout_secs: 600\n";
+        let spec = TaskSpec::from_yaml(yaml).unwrap();
+        let tier = crate::tier::Tier::builtin("dschat").unwrap();
+        assert_eq!(tier.harness_timeout_secs, None);
+        assert_eq!(spec.resolved_harness_timeout_secs(&tier, None), 600);
     }
 
     #[test]

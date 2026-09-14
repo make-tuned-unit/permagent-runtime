@@ -491,14 +491,14 @@ struct RunArgs {
     )]
     cassette_mode: String,
 
-    /// Lane K6: override the harness wall-clock ceiling (seconds) for EVERY
-    /// task in this invocation, beating both a task's own
-    /// `harness_timeout_secs:` in `task.yaml` and the tier's own default
-    /// (see `Tier::harness_timeout_secs`). This is a deliberate MEASUREMENT
-    /// KNOB, not a routine default — e.g. to give a slower tier (zai's
-    /// glm47/glm53 default to 900s already) enough room on a fixture whose
-    /// task-level cap was sized for faster tiers, without editing the
-    /// fixture. The resolved value is retained on every task's
+    /// Lane K6 / K6-b: override the harness wall-clock ceiling (seconds) for
+    /// EVERY task in this invocation, beating both a task's own
+    /// `harness_timeout_secs:` in `task.yaml` AND the tier's own floor (see
+    /// `Tier::harness_timeout_secs`) — the tier floor already raises the
+    /// ceiling automatically for a slow provider (zai's glm47/glm53 default
+    /// to a 900s floor), so this flag is for pinning an EXACT ceiling on
+    /// one invocation, not the routine way to give a slow tier more room.
+    /// The resolved value is retained on every task's
     /// `harness_timeout_secs` in the report/`.qual.json` record, so latency
     /// evidence stays honest about which ceiling this run actually used.
     #[arg(long, value_name = "N")]
@@ -599,9 +599,9 @@ struct AbArgs {
     #[arg(long)]
     require_conclusive: bool,
 
-    /// Lane K6: override the harness wall-clock ceiling (seconds) for EVERY
-    /// task in both arms of this comparison. See `run --help`'s
-    /// `--harness-timeout-secs` for the full precedence and why it exists.
+    /// Lane K6 / K6-b: override the harness wall-clock ceiling (seconds) for
+    /// EVERY task in both arms of this comparison. See `run --help`'s
+    /// `--harness-timeout-secs` for the full resolution and why it exists.
     #[arg(long, value_name = "N")]
     harness_timeout_secs: Option<u64>,
 }
