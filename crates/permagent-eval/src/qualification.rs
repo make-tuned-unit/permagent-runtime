@@ -739,7 +739,7 @@ fn area_evidence(
         // specific, honest reason instead: the record is invalid, not a
         // failed run.
         "coding_success" if record.provider_unavailable => {
-            return unrated(vec!["record invalid: provider unavailable".to_string()]);
+            unrated(vec!["record invalid: provider unavailable".to_string()])
         }
         "coding_success" => {
             let heldout_attempted: Vec<_> = attempted
