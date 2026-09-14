@@ -2102,6 +2102,11 @@ const RULE5_QUESTION_PHRASES: [&str; 5] = [
 /// merely as a substring of a larger word — so `"which"` matches "which file
 /// should I edit?" but not "sandwich". Both arguments are expected already
 /// lowercased by the caller.
+// Every index below is a char boundary by construction: `rel` comes from
+// `str::find`, which only ever returns the start of a match, and `after` is
+// that start plus the matched needle's own byte length — i.e. the match's end
+// boundary. So these slices cannot split a UTF-8 character.
+#[allow(clippy::string_slice)]
 fn contains_word_or_phrase(haystack: &str, needle: &str) -> bool {
     let mut start = 0usize;
     while let Some(rel) = haystack[start..].find(needle) {
