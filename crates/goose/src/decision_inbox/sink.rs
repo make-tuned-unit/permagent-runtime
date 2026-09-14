@@ -24,6 +24,21 @@ use crate::decisions::{self, NewDecision};
 /// `capability` escalations.
 pub const CAPABILITY_ACTION_CLASS: &str = "worker_capability_request";
 
+/// Seeded risk_policy class (tier 1, `spectral_schema.rs`'s risk_policy seed:
+/// `('goal_retry_within_budget', 1, 'Reject/retry requires a recorded
+/// decision with rationale')`) reused for an escalate-originated `choice`
+/// draft that names a bounded retry/continue answer
+/// (`escalate::has_resumable_option`). This is the SAME risk shape `unblock`
+/// already gets by default (`resolve_action_class` in decisions.rs maps
+/// `"unblock"` to this class directly) — a headless worker asking "should I
+/// retry the same goal within budget" is no riskier phrased as a `choice`
+/// than phrased as an `unblock`. A `choice` draft with no resumable option
+/// (a real pick between different outcomes) is deliberately left with no
+/// override here, so it keeps falling through `resolve_action_class` to the
+/// unseeded `"choice"` class and fails closed to Tier 2 — Lane Y13c does not
+/// widen headless auto-answering beyond the bounded retry case Y13 designed.
+pub const RESUMABLE_CHOICE_ACTION_CLASS: &str = "goal_retry_within_budget";
+
 /// SQL-backed decision sink (Part B). Installed at daemon startup via
 /// [`super::escalate::install_decision_sink`].
 pub struct SqlDecisionSink {
@@ -129,6 +144,14 @@ impl DecisionSink for SqlDecisionSink {
                 headline: Some(draft.headline.clone()),
                 detail: Some(compose_detail(&draft)),
                 payload: payload_for(&draft),
+                // G-M17 (Lane Y13c): a bounded resumable `choice` draft gets
+                // the honest, seeded risk_policy class instead of silently
+                // fail-closing to Tier 2 via the unseeded `"choice"`
+                // fallback in `resolve_action_class` — see
+                // `RESUMABLE_CHOICE_ACTION_CLASS`'s doc comment.
+                action_class: (draft.kind == DecisionKind::Choice
+                    && super::escalate::has_resumable_option(&draft.options))
+                .then(|| RESUMABLE_CHOICE_ACTION_CLASS.to_string()),
                 ..Default::default()
             },
         };
@@ -274,6 +297,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(d.kind, "choice");
+        assert_eq!(
+            d.tier, 2,
+            "a substantive choice between different outcomes has no resumable \
+             option, so it keeps the unseeded 'choice' class and fails closed"
+        );
         // Consequences flow into detail; payload carries L1's {id,label} shape.
         assert!(d.detail.contains("sqlite: Local SQLite — single machine"));
 
@@ -298,6 +326,42 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(answered.answer_choice_id.as_deref(), Some("postgres"));
+    }
+
+    /// G-M17 (Lane Y13c) root-cause regression: a `choice` draft naming a
+    /// bounded retry/continue option must be tiered honestly (seeded
+    /// `goal_retry_within_budget`, Tier 1) at mint time, not fail closed to
+    /// Tier 2 via the unseeded `"choice"` fallback — that mis-tiering is
+    /// exactly what made `headless_escalate_policy`'s `d.tier < 2` guard
+    /// never pass, so every headless escalate parked even when it named a
+    /// retry option (Gate run M17 finding).
+    #[tokio::test]
+    async fn resumable_choice_draft_gets_honest_retry_tier() {
+        let pool = test_pool().await;
+        let draft = draft_from_payload(
+            json!({
+                "kind": "decision",
+                "specific_ask": "Should the goal retry the same step?",
+                "why_blocked": "Worker died mid-task; retry or wait for a human.",
+                "options": [
+                    {"id": "sqlite", "label": "Local SQLite", "consequence": "single machine"},
+                    {"id": "retry", "label": "Retry the step", "consequence": "worker retries within budget"}
+                ],
+                "resume": "auto"
+            }),
+            &source(),
+        );
+        let sink = SqlDecisionSink::new(pool.clone());
+        let recorded = sink.record(draft).await.unwrap();
+        let d = decisions::get_decision(&pool, &recorded.decision_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d.kind, "choice");
+        assert_eq!(
+            d.tier, 1,
+            "a resumable choice reuses goal_retry_within_budget's seeded Tier 1"
+        );
     }
 
     #[tokio::test]

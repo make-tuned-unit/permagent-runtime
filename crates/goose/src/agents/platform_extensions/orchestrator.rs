@@ -6565,7 +6565,9 @@ async fn record_escalation(
 
     if headless {
         let cap = parse_headless_escalate_cap(
-            std::env::var("PERMAGENT_HEADLESS_ESCALATE_CAP").ok().as_deref(),
+            std::env::var("PERMAGENT_HEADLESS_ESCALATE_CAP")
+                .ok()
+                .as_deref(),
         );
         if headless_escalate_policy(pool, &recorded.decision_id, true, cap).await? {
             return Ok(format!(
@@ -6610,12 +6612,15 @@ async fn headless_escalate_policy(
     if !headless {
         return Ok(false);
     }
-    let d = decisions::get_decision(pool, decision_id).await?
+    let d = decisions::get_decision(pool, decision_id)
+        .await?
         .ok_or("Missing escalation")?;
     let Some(goal_id) = d.goal_id.as_deref() else {
         return Ok(false);
     };
-    let card = cards::get_card(pool, goal_id).await?.ok_or("Missing escalation goal")?;
+    let card = cards::get_card(pool, goal_id)
+        .await?
+        .ok_or("Missing escalation goal")?;
     if d.status != "open"
         || matches!(
             goal_state_for_card(pool, goal_id).await?,
@@ -6624,17 +6629,30 @@ async fn headless_escalate_policy(
     {
         return Ok(false);
     }
+    // G-M17 (Lane Y13c): `d.tier < 2` is the safety net, not decoration — a
+    // `choice` decision only lands below Tier 2 here when the sink stamped
+    // the honest `RESUMABLE_CHOICE_ACTION_CLASS` at mint time (a resumable
+    // option was present, `decision_inbox::sink::record`); any other choice
+    // — a real pick between different outcomes — keeps the unseeded
+    // `"choice"` class's fail-closed Tier 2 and never reaches the option
+    // lookup below. Do not drop this check: that would let headless
+    // auto-answer a decision tiered Tier 2 for a real reason.
     let choice = if d.kind == "choice" && d.tier < 2 {
         d.payload["options"].as_array().and_then(|options| {
             options.iter().find_map(|o| {
                 let id = o["id"].as_str()?;
-                matches!(id, "resume" | "retry" | "continue" | "resume-auto").then_some(id)
+                crate::decision_inbox::escalate::RESUMABLE_OPTION_IDS
+                    .contains(&id)
+                    .then_some(id)
             })
         })
     } else {
         None
     };
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| e.to_string())?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM decisions WHERE goal_id = ? AND acted_by = ? \
          AND answer_note = 'headless escalation retry'",
@@ -6642,11 +6660,15 @@ async fn headless_escalate_policy(
     .bind(goal_id)
     .bind(decisions::ACTOR_HEADLESS_POLICY)
     .fetch_one(&mut *tx)
-    .await.map_err(|e| e.to_string())?;
+    .await
+    .map_err(|e| e.to_string())?;
     let blocked: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM decisions WHERE goal_id = ? AND kind = 'unblock' AND status = 'open'",
     )
-    .bind(goal_id).fetch_one(&mut *tx).await.map_err(|e| e.to_string())?;
+    .bind(goal_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
     if choice.is_none() || count >= i64::from(cap) || blocked > 0 {
         tx.rollback().await.map_err(|e| e.to_string())?;
         park_headless_goal(
@@ -6678,28 +6700,47 @@ async fn headless_escalate_policy(
     .bind(decisions::ACTOR_HEADLESS_POLICY)
     .bind(decision_id)
     .execute(&mut *tx)
-    .await.map_err(|e| e.to_string())?;
+    .await
+    .map_err(|e| e.to_string())?;
     if changed.rows_affected() == 0 {
         return Ok(false);
     }
     decisions::append_audit_tx(
-        &mut tx, decision_id, Some(goal_id),
-        decisions::ACTOR_HEADLESS_POLICY, d.tier, "choice", None,
-    ).await?;
+        &mut tx,
+        decision_id,
+        Some(goal_id),
+        decisions::ACTOR_HEADLESS_POLICY,
+        d.tier,
+        "choice",
+        None,
+    )
+    .await?;
     tx.commit().await.map_err(|e| e.to_string())?;
     crate::events::emit(crate::events::decision_resolved(
-        decision_id, "choice", "choice", decisions::ACTOR_HEADLESS_POLICY, d.tier,
+        decision_id,
+        "choice",
+        "choice",
+        decisions::ACTOR_HEADLESS_POLICY,
+        d.tier,
     ));
-    let answered = decisions::get_decision(pool, decision_id).await?.ok_or("Missing answer")?;
+    let answered = decisions::get_decision(pool, decision_id)
+        .await?
+        .ok_or("Missing answer")?;
     let proof = decisions::DecisionProof::from_answered_row(&answered).ok_or("Missing proof")?;
     if goal_worker_is_live(goal_id) {
         return Ok(true);
     }
     goal_transition::park_goal(
-        pool, goal_id, decisions::ACTOR_HEADLESS_POLICY, "headless escalation retry",
-    ).await.map_err(|e| e.to_string())?;
+        pool,
+        goal_id,
+        decisions::ACTOR_HEADLESS_POLICY,
+        "headless escalation retry",
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let _ = crate::decision_inbox::policy::resume_answered_decision(pool, &answered, proof)
-        .await.map_err(|e| e.to_string())?;
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -14167,7 +14208,13 @@ mod tests {
 
     #[test]
     fn headless_escalate_cap_requires_a_positive_integer() {
-        for value in [None, Some("0"), Some("-1"), Some("invalid"), Some("4294967296")] {
+        for value in [
+            None,
+            Some("0"),
+            Some("-1"),
+            Some("invalid"),
+            Some("4294967296"),
+        ] {
             assert_eq!(parse_headless_escalate_cap(value), 2, "{value:?}");
         }
         assert_eq!(parse_headless_escalate_cap(Some("1")), 1);
@@ -14196,7 +14243,10 @@ mod tests {
         );
         let d = decisions::get_decision(&pool, &id).await.unwrap().unwrap();
         assert_eq!(d.status, "answered");
-        assert_eq!(d.acted_by.as_deref(), Some(decisions::ACTOR_HEADLESS_POLICY));
+        assert_eq!(
+            d.acted_by.as_deref(),
+            Some(decisions::ACTOR_HEADLESS_POLICY)
+        );
         assert_eq!(d.answer_choice_id.as_deref(), Some("retry"));
         assert_eq!(state_binding_of(&pool, &goal.id).await, "ready");
     }
@@ -14264,11 +14314,14 @@ mod tests {
                 draft.evidence_refs = vec![format!("goal:{}", goal.id)];
                 draft.options[1].id = "retry".to_string();
                 let id = sink.record(draft).await.unwrap().decision_id;
-                let resumed = headless_escalate_policy(&pool, &id, headless, 2).await.unwrap();
+                let resumed = headless_escalate_policy(&pool, &id, headless, 2)
+                    .await
+                    .unwrap();
                 assert_eq!(resumed, headless && attempt < 2);
                 let d = decisions::get_decision(&pool, &id).await.unwrap().unwrap();
                 assert_eq!(
-                    d.acted_by.as_deref(), resumed.then_some(decisions::ACTOR_HEADLESS_POLICY)
+                    d.acted_by.as_deref(),
+                    resumed.then_some(decisions::ACTOR_HEADLESS_POLICY)
                 );
                 assert_eq!(d.status, if resumed { "answered" } else { "open" });
                 if resumed {
@@ -14281,12 +14334,17 @@ mod tests {
                 if headless { "failed" } else { "triage" }
             );
             let unblock = decisions::find_open_decision_for_goal(&pool, &goal.id, "unblock")
-                .await.unwrap();
+                .await
+                .unwrap();
             assert_eq!(unblock.is_some(), headless);
             if let Some(unblock) = unblock {
                 assert!(unblock.acted_by.is_none());
-                assert!(unblock.detail.contains("escalated without a headless-resolvable option"));
-                assert!(!headless_escalate_policy(&pool, &unblock.id, true, 2).await.unwrap());
+                assert!(unblock
+                    .detail
+                    .contains("escalated without a headless-resolvable option"));
+                assert!(!headless_escalate_policy(&pool, &unblock.id, true, 2)
+                    .await
+                    .unwrap());
             }
         }
     }
@@ -14309,8 +14367,56 @@ mod tests {
         retry.evidence_refs = vec![format!("goal:{}", goal.id)];
         retry.options[0].id = "continue".to_string();
         let retry_id = sink.record(retry).await.unwrap().decision_id;
-        assert!(!headless_escalate_policy(&pool, &retry_id, true, 2).await.unwrap());
+        assert!(!headless_escalate_policy(&pool, &retry_id, true, 2)
+            .await
+            .unwrap());
         assert_eq!(state_binding_of(&pool, &goal.id).await, "failed");
+    }
+
+    /// G-M17 (Lane Y13c) regression: a genuinely high-risk escalation — a
+    /// `capability` request, which always carries the real, unseeded
+    /// `worker_capability_request` action_class and so fails closed to Tier
+    /// 2 for a real reason (never the "choice" kind's default fallback) —
+    /// must still park, never be auto-answered. Guards against widening the
+    /// Y13c tiering fix (or dropping the `d.tier < 2` check it depends on)
+    /// into auto-approving a real risk gate.
+    #[tokio::test]
+    async fn headless_escalate_high_risk_capability_gate_is_parked_not_answered() {
+        use crate::decision_inbox::escalate::DecisionSink;
+        let pool = test_pool().await;
+        let goal = create_roadmap_goal(&pool, "triage", "Capability request", "y13c", &[]).await;
+        let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
+        let mut draft = capability_escalation_draft("y13c");
+        draft.evidence_refs = vec![format!("goal:{}", goal.id)];
+        let id = sink.record(draft).await.unwrap().decision_id;
+
+        let d = decisions::get_decision(&pool, &id).await.unwrap().unwrap();
+        assert_eq!(d.kind, "risk_gate");
+        assert_eq!(
+            d.tier, 2,
+            "capability escalations carry a real, unseeded action_class and must fail closed"
+        );
+        assert_eq!(
+            d.payload.get("action_class").and_then(|v| v.as_str()),
+            Some(crate::decision_inbox::sink::CAPABILITY_ACTION_CLASS)
+        );
+
+        assert!(
+            !headless_escalate_policy(&pool, &id, true, 2).await.unwrap(),
+            "a real Tier-2 risk gate must never be headless-auto-answered"
+        );
+
+        let d = decisions::get_decision(&pool, &id).await.unwrap().unwrap();
+        assert_eq!(d.status, "open");
+        assert!(d.acted_by.is_none());
+        assert_eq!(state_binding_of(&pool, &goal.id).await, "failed");
+        let unblock = decisions::find_open_decision_for_goal(&pool, &goal.id, "unblock")
+            .await
+            .unwrap()
+            .expect("the goal must be parked with an answerable unblock");
+        assert!(unblock
+            .detail
+            .contains("escalated without a headless-resolvable option"));
     }
 
     // ── Z2-1 (M6 #2): credit real work to the goal it actually satisfies ──
