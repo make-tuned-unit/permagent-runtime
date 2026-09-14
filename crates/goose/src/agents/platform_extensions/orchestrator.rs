@@ -10014,7 +10014,10 @@ pub async fn handle_goal_completion(
                     .await
                     .ok()
                     .flatten()
-                    .unwrap_or(card);
+                    // Clone rather than move: this shadowing binding is scoped
+                    // to this block, and the OUTER `card` is still read further
+                    // down (the "moved to Review" log line).
+                    .unwrap_or_else(|| card.clone());
                 let evidence = card.metadata_json.get("dispatch_evidence");
                 let read_only_review = card.metadata_json.get("read_only_review");
                 let mut detail = build_review_detail(card_id, evidence, read_only_review);
