@@ -66,6 +66,13 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     "program",
     "program_receipts",
     "program_transition",
+    // Lane R18g: how many times a headless run has auto-answered this
+    // goal's tier-1 `unblock` decision (`decide_goal_hold`'s Park, a
+    // verify/commit-gap hold — never a jail/approval/safety refusal, which
+    // never reaches `decide_goal_hold` at all) and resumed it without a
+    // human. Protected so a worker cannot reset its own bounded-resume
+    // counter via the agent-facing metadata PATCH tool.
+    "headless_unblock_count",
 ];
 
 // ── Errors ──────────────────────────────────────────────────────────────────

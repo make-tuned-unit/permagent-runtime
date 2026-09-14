@@ -16,6 +16,16 @@ pub const HOLD_METADATA_KEY: &str = "hold_done";
 /// How many holds before we park instead of injecting another plan.
 pub const MAX_HOLDS: u8 = 2;
 
+/// Lane R18g: the exact two `Park` reasons [`decide_goal_hold`] ever raises —
+/// both a verify/commit gap, never a jail, approval, or safety refusal (those
+/// are raised by wholly separate code paths that never call this function).
+/// Named so a headless-run policy elsewhere can check a park reason against
+/// these by identity instead of duplicating (and risking drift from) the
+/// literal text.
+pub const PARK_REASON_NO_VERIFY: &str = "held twice without verify — handing to the Decision Inbox";
+pub const PARK_REASON_UNCOMMITTED: &str =
+    "held twice with verified but uncommitted work — handing to the Decision Inbox";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HoldOutcome {
     Allow,
@@ -86,10 +96,9 @@ pub fn decide_goal_hold(
     if next > MAX_HOLDS {
         return HoldOutcome::Park {
             reason: if verify_ran && uncommitted_work {
-                "held twice with verified but uncommitted work — handing to the Decision Inbox"
-                    .into()
+                PARK_REASON_UNCOMMITTED.into()
             } else {
-                "held twice without verify — handing to the Decision Inbox".into()
+                PARK_REASON_NO_VERIFY.into()
             },
         };
     }

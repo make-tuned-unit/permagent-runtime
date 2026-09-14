@@ -12608,6 +12608,29 @@ async fn maybe_hold_review(
                     return Ok(bypass);
                 }
             }
+            // Lane R18g: A17 Class 1 — 8/8 task-attempts across two DeepSeek
+            // rounds ended `dispatches=3, review_reached=0` because a
+            // headless `permagent run` never answers the tier-1 `unblock`
+            // this Park raises, so the goal just sat parked until the wall
+            // clock ended. Bounded, honest exception: a headless run gets
+            // ONE auto-answered resume per goal for exactly this park (a
+            // verify/commit gap — the only reason `decide_goal_hold` ever
+            // raises this Park; a jail/approval/safety refusal never reaches
+            // `decide_goal_hold` and so never reaches this arm at all), and
+            // only when the wall and cost/reservation budgets both still
+            // permit another attempt. A second park of the same goal finds
+            // the counter already spent and falls through to the ordinary
+            // park-and-wait path below, unchanged.
+            if let Some(resumed) = maybe_headless_unblock_verify_gap(
+                pool,
+                card,
+                &reason,
+                HEADLESS_DISPATCH_POLICY_CONFIG.get().is_some(),
+            )
+            .await?
+            {
+                return Ok(Some(resumed));
+            }
             persist_card_meta(pool, &card.id, |m| {
                 crate::cost_router::RoutingSnapshot::from_signals(&signals, Some(&reason))
                     .write_into(m);
@@ -12669,6 +12692,201 @@ async fn maybe_hold_review(
             )))
         }
     }
+}
+
+/// Lane R18g: card metadata key counting how many times a headless run has
+/// auto-answered this goal's tier-1 `unblock` decision and resumed it
+/// without a human — see [`maybe_headless_unblock_verify_gap`]. Listed in
+/// [`goal_transition::PROTECTED_GOAL_METADATA_KEYS`] so the agent-facing
+/// metadata PATCH tool cannot reset it.
+const HEADLESS_UNBLOCK_METADATA_KEY: &str = "headless_unblock_count";
+
+/// Lane R18g (A17 analysis, Class 1): extend Y13c's headless-answer pattern
+/// (`headless_escalate_policy`, above) to `decide_goal_hold`'s Park — a
+/// tier-1 `unblock` decision that a headless `permagent run` otherwise never
+/// answers, stranding the goal parked until the wall clock ends. `headless`
+/// is an explicit parameter rather than a read of
+/// [`HEADLESS_DISPATCH_POLICY_CONFIG`] for the same reason `record_escalation`
+/// takes one: that `OnceLock` can only ever be set once for the life of a
+/// `--lib` test binary, so a unit test exercises this function directly with
+/// an injected flag instead.
+///
+/// Honest limits, checked in order — any failure falls through to `Ok(None)`
+/// so the caller runs the ordinary park-and-wait path unchanged:
+///   - not headless: never auto-answers, ever;
+///   - at most ONE headless unblock per goal, tracked by
+///     [`HEADLESS_UNBLOCK_METADATA_KEY`] in the card's protected metadata —
+///     a second park of the same goal finds the counter already spent and
+///     stays parked with its own, honestly-open `unblock` decision;
+///   - the wall budget must still permit another attempt (reuses
+///     `wall_budget_exhausted_refusal`, Lane Y16a — an exhausted budget
+///     stays parked, same as the Hold arm above);
+///   - the reservation/cost budget must not be exhausted
+///     (`goal_transition::check_budget` — an attempt-cap, token-budget, or
+///     wallclock-cap hit stays parked).
+///
+/// A jail, approval, or safety refusal is never in scope here at all: those
+/// never route through `decide_goal_hold`'s Park, so this function is never
+/// asked to look past one.
+///
+/// On success: mints the tier-1 `unblock` decision exactly as the ordinary
+/// park path would, immediately answers it under
+/// [`decisions::ACTOR_HEADLESS_POLICY`] (answer `"input"` — the shape
+/// `decision_inbox::policy::resume_answered_decision` already treats as
+/// resumable for `kind = "unblock"`, though this function resumes the goal
+/// itself via the same `requeue_goal` call the Hold arm above uses, so the
+/// re-dispatch continues from the goal's prior worker session's own branch
+/// tip exactly as Y16b already does — no branch-tip bookkeeping of its own),
+/// records a `decision_audit` row (`outcome = "headless_unblock"`,
+/// `evidence_digest = reason`) so the Decision Inbox shows what happened,
+/// resets the hold count so the next two holds are honest, and bumps the
+/// spent counter to 1.
+async fn maybe_headless_unblock_verify_gap(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    reason: &str,
+    headless: bool,
+) -> Result<Option<String>, String> {
+    if !headless {
+        return Ok(None);
+    }
+    // Belt-and-braces on top of call-site scoping: only the exact two
+    // verify/commit-gap reasons `decide_goal_hold` ever raises are eligible.
+    // A jail, approval, or safety refusal never produces this text (they are
+    // raised by other code entirely), so an unrecognized reason — now or
+    // from any future Park reason added to `hold_done.rs` — falls through to
+    // the ordinary park-and-wait path rather than being auto-answered.
+    if reason != crate::cost_router::hold_done::PARK_REASON_NO_VERIFY
+        && reason != crate::cost_router::hold_done::PARK_REASON_UNCOMMITTED
+    {
+        return Ok(None);
+    }
+    let prior_unblocks = card
+        .metadata_json
+        .get(HEADLESS_UNBLOCK_METADATA_KEY)
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if prior_unblocks >= 1 {
+        return Ok(None);
+    }
+    if wall_budget_exhausted_refusal(&card.metadata_json).is_some() {
+        return Ok(None);
+    }
+    if goal_transition::check_budget(pool, &card.metadata_json)
+        .await?
+        .is_some()
+    {
+        return Ok(None);
+    }
+
+    let headline = format!(
+        "\"{}\" was held repeatedly and needs your direction",
+        card.title
+    );
+    let headline: String = headline
+        .chars()
+        .take(decisions::MAX_HEADLINE_CHARS)
+        .collect();
+    let payload = serde_json::to_value(decisions::UnblockPayload {
+        reason: decisions::UnblockReason::Stuck,
+        spent: None,
+        cap: None,
+    })
+    .map_err(|e| e.to_string())?;
+    // Same soft-fail as the ordinary park path just below: a persistent
+    // create_decision failure (already retried once, inside
+    // `create_decision_with_retry`) falls through to that ordinary path
+    // rather than hard-failing this whole completion-handling call — it logs
+    // and records the failure on the card the same way.
+    let Ok(decision) = create_decision_with_retry(
+        pool,
+        decisions::NewDecision {
+            kind: "unblock".to_string(),
+            goal_id: Some(card.id.clone()),
+            project_id: Some(card.project_id.clone()),
+            headline: Some(headline),
+            detail: Some(reason.to_string()),
+            payload,
+            ..Default::default()
+        },
+    )
+    .await
+    else {
+        return Ok(None);
+    };
+
+    let note = format!(
+        "Held twice ({reason}). Resumed once, headlessly, from your prior branch tip — this \
+         is the one automatic continuation for this goal; verify green AND commit the result \
+         before declaring done again, or the next hold parks for a human."
+    );
+
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+    let changed = sqlx::query(
+        "UPDATE decisions SET status = 'answered', answer = 'input', answer_input = ?, \
+         acted_by = ?, resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), staged_answer_json = NULL \
+         WHERE id = ? AND status = 'open'",
+    )
+    .bind(&note)
+    .bind(decisions::ACTOR_HEADLESS_POLICY)
+    .bind(&decision.id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    if changed.rows_affected() == 0 {
+        // Lost a race (a human answered first, or the decision otherwise
+        // stopped being open) — leave it to the ordinary park path.
+        tx.rollback().await.map_err(|e| e.to_string())?;
+        return Ok(None);
+    }
+    decisions::append_audit_tx(
+        &mut tx,
+        &decision.id,
+        Some(card.id.as_str()),
+        decisions::ACTOR_HEADLESS_POLICY,
+        decision.tier,
+        "headless_unblock",
+        Some(reason),
+    )
+    .await?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    crate::events::emit(crate::events::decision_resolved(
+        &decision.id,
+        &decision.kind,
+        "input",
+        decisions::ACTOR_HEADLESS_POLICY,
+        decision.tier,
+    ));
+
+    persist_card_meta(pool, &card.id, |m| {
+        crate::cost_router::HoldState::default().write_into(m);
+        m.insert(
+            HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+            serde_json::json!(prior_unblocks + 1),
+        );
+    })
+    .await?;
+
+    let attempt = current_attempt_count(&card.metadata_json);
+    goal_transition::requeue_goal(
+        pool,
+        &card.id,
+        decisions::ACTOR_HEADLESS_POLICY,
+        attempt,
+        &note,
+    )
+    .await
+    .map_err(String::from)?;
+    if let Some(kill) = take_goal_worker(&card.id) {
+        kill.kill();
+    }
+    Ok(Some(format!(
+        "Held, but resumed headlessly once from the prior branch tip (decision {}): {reason}",
+        decision.id
+    )))
 }
 
 /// Capture the current worker's uncommitted diff (`git diff HEAD` in the goal's
@@ -15004,6 +15222,240 @@ mod tests {
         assert!(unblock
             .detail
             .contains("escalated without a headless-resolvable option"));
+    }
+
+    // ── Lane R18g: bounded headless resume of a verify/commit-gap Park ──
+
+    #[tokio::test]
+    async fn headless_unblock_resumes_first_verify_gap_park_with_ample_budget() {
+        let pool = test_pool().await;
+        let goal =
+            create_roadmap_goal(&pool, "in_progress", "Flaky verify goal", "r18g", &[]).await;
+        // Leave the stale HoldState `decide_goal_hold` would have written
+        // behind before its Park fired, so the reset is actually observable.
+        persist_card_meta(&pool, &goal.id, |m| {
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: Some("Do not declare this done. Run verify...".to_string()),
+            }
+            .write_into(m);
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(&pool, &goal.id).await.unwrap().unwrap();
+
+        let resumed = maybe_headless_unblock_verify_gap(
+            &pool,
+            &card,
+            crate::cost_router::hold_done::PARK_REASON_NO_VERIFY,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(resumed.is_some(), "{resumed:?}");
+
+        assert_eq!(state_binding_of(&pool, &goal.id).await, "ready");
+        let updated = cards::get_card(&pool, &goal.id).await.unwrap().unwrap();
+        let meta = updated.metadata_json.as_object().unwrap();
+        assert_eq!(
+            crate::cost_router::HoldState::from_metadata(meta).count,
+            0,
+            "the hold count must reset so the next two holds are honest"
+        );
+        assert_eq!(
+            meta.get(HEADLESS_UNBLOCK_METADATA_KEY)
+                .and_then(|v| v.as_u64()),
+            Some(1)
+        );
+
+        let decision_id: String = sqlx::query_scalar("SELECT id FROM decisions WHERE goal_id = ?")
+            .bind(&goal.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let d = decisions::get_decision(&pool, &decision_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d.kind, "unblock");
+        assert_eq!(d.tier, 1);
+        assert_eq!(d.status, "answered");
+        assert_eq!(d.answer.as_deref(), Some("input"));
+        assert_eq!(
+            d.acted_by.as_deref(),
+            Some(decisions::ACTOR_HEADLESS_POLICY)
+        );
+
+        let audit: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decision_audit WHERE decision_id = ? AND goal_id = ? \
+             AND acted_by = ? AND outcome = 'headless_unblock' AND evidence_digest = ?",
+        )
+        .bind(&decision_id)
+        .bind(&goal.id)
+        .bind(decisions::ACTOR_HEADLESS_POLICY)
+        .bind(crate::cost_router::hold_done::PARK_REASON_NO_VERIFY)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(audit, 1, "the Decision Inbox must show what happened");
+    }
+
+    #[tokio::test]
+    async fn headless_unblock_second_park_of_same_goal_stays_parked() {
+        let pool = test_pool().await;
+        let goal =
+            create_roadmap_goal(&pool, "in_progress", "Twice-unblocked goal", "r18g", &[]).await;
+        persist_card_meta(&pool, &goal.id, |m| {
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(&pool, &goal.id).await.unwrap().unwrap();
+
+        let resumed = maybe_headless_unblock_verify_gap(
+            &pool,
+            &card,
+            crate::cost_router::hold_done::PARK_REASON_UNCOMMITTED,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(
+            resumed.is_none(),
+            "the one-per-goal budget is already spent"
+        );
+        assert_eq!(state_binding_of(&pool, &goal.id).await, "in_progress");
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &goal.id, "unblock")
+                .await
+                .unwrap()
+                .is_none(),
+            "must not mint a fresh decision once the counter is spent"
+        );
+    }
+
+    #[tokio::test]
+    async fn headless_unblock_refuses_a_non_verify_gap_reason() {
+        let pool = test_pool().await;
+        let goal = create_roadmap_goal(&pool, "in_progress", "Jailed goal", "r18g", &[]).await;
+        let card = cards::get_card(&pool, &goal.id).await.unwrap().unwrap();
+
+        // Never produced by `decide_goal_hold` — stands in for a jail /
+        // approval / safety refusal, which never reaches this function's
+        // one call site (`decide_goal_hold`'s Park) at all in production;
+        // this pins the belt-and-braces text check too.
+        let resumed = maybe_headless_unblock_verify_gap(
+            &pool,
+            &card,
+            "write-jail refused a path outside the sandbox",
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(resumed.is_none());
+        assert_eq!(state_binding_of(&pool, &goal.id).await, "in_progress");
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &goal.id, "unblock")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn headless_unblock_refuses_when_wall_budget_is_exhausted() {
+        let pool = test_pool().await;
+        let goal = create_roadmap_goal(&pool, "in_progress", "Wall-capped goal", "r18g", &[]).await;
+        let now = chrono::Utc::now();
+        // 100s into a 120s cap (not fully exhausted — that is check_budget's
+        // own gate) leaves 20s remaining, short of the 50s last attempt's
+        // 1.2x margin (60s) — `wall_budget_permits_another_attempt` refuses.
+        persist_card_meta(&pool, &goal.id, |m| {
+            m.insert(
+                "budget".to_string(),
+                serde_json::json!({ "wallclock_cap_secs": 120 }),
+            );
+            m.insert(
+                "first_dispatched_at".to_string(),
+                serde_json::json!((now - chrono::Duration::seconds(100)).to_rfc3339()),
+            );
+            m.insert(
+                "dispatched_at".to_string(),
+                serde_json::json!((now - chrono::Duration::seconds(50)).to_rfc3339()),
+            );
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(&pool, &goal.id).await.unwrap().unwrap();
+
+        let resumed = maybe_headless_unblock_verify_gap(
+            &pool,
+            &card,
+            crate::cost_router::hold_done::PARK_REASON_NO_VERIFY,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(resumed.is_none());
+        assert_eq!(state_binding_of(&pool, &goal.id).await, "in_progress");
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &goal.id, "unblock")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn headless_unblock_refuses_when_attempt_cap_is_exhausted() {
+        let pool = test_pool().await;
+        let goal =
+            create_roadmap_goal(&pool, "in_progress", "Attempt-capped goal", "r18g", &[]).await;
+        persist_card_meta(&pool, &goal.id, |m| {
+            m.insert(
+                "budget".to_string(),
+                serde_json::json!({ "attempt_cap": 1 }),
+            );
+            m.insert("attempt_count".to_string(), serde_json::json!(1));
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(&pool, &goal.id).await.unwrap().unwrap();
+
+        let resumed = maybe_headless_unblock_verify_gap(
+            &pool,
+            &card,
+            crate::cost_router::hold_done::PARK_REASON_NO_VERIFY,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(
+            resumed.is_none(),
+            "the reservation/cost budget is exhausted"
+        );
+        assert_eq!(state_binding_of(&pool, &goal.id).await, "in_progress");
+    }
+
+    #[tokio::test]
+    async fn headless_unblock_never_answers_a_non_headless_run() {
+        let pool = test_pool().await;
+        let goal = create_roadmap_goal(&pool, "in_progress", "Interactive goal", "r18g", &[]).await;
+        let card = cards::get_card(&pool, &goal.id).await.unwrap().unwrap();
+
+        let resumed = maybe_headless_unblock_verify_gap(
+            &pool,
+            &card,
+            crate::cost_router::hold_done::PARK_REASON_NO_VERIFY,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(resumed.is_none());
+        assert_eq!(state_binding_of(&pool, &goal.id).await, "in_progress");
     }
 
     // ── Z2-1 (M6 #2): credit real work to the goal it actually satisfies ──
