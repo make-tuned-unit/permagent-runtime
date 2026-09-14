@@ -6712,6 +6712,17 @@ impl OrchestratorClient {
         // Immediately dispatch any goals that became eligible while paused
         let dispatched = dispatch_eligible_goals(&pool, &project.id, self).await?;
 
+        // Lane R20a (RECEIPT CONTRACT v1.1): this is the resume path —
+        // the coordinator continued a pre-existing paused roadmap instead
+        // of decomposing a new one. Recorded once per successful call,
+        // independent of `dispatched` (a resume that finds zero newly
+        // eligible goals is still a genuine resume, not a no-op — see
+        // `select-existing-roadmap-resumes-not-redecomposes`). Gated (like
+        // every `receipts::record_count` call) on a headless CLI run
+        // actually collecting receipts (`receipts::is_active`); a no-op
+        // everywhere else.
+        crate::receipts::record_count("dag_enforcement", "roadmap_resumed", 1);
+
         self.invalidate_kanban_cache().await;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -6848,6 +6859,19 @@ async fn record_escalation(
         .record(draft.clone())
         .await
         .map_err(|e| format!("Failed to record escalation: {}", e))?;
+
+    // Lane R20a (RECEIPT CONTRACT v1.1): a coordinator `escalate` decision
+    // was just minted through the sink above — this is the real observation
+    // point, not the headless/interactive branches below (both of which are
+    // downstream of a decision that already exists). Counted regardless of
+    // `headless` (a headless-only counter would be wrong: an interactive
+    // coding-harness coordinator can escalate too, and the same
+    // `select-no-repo-facts-escalates-not-invents` shape must count either
+    // way). `receipts::record_count` is itself a no-op unless this process
+    // is a headless CLI run actively collecting receipts
+    // (`receipts::is_active`), the same gate every other counter in this
+    // module relies on — see `handle_create_roadmap`'s `roadmap_dispatched`.
+    crate::receipts::record_count("dag_enforcement", "escalated", 1);
 
     if headless {
         let cap = parse_headless_escalate_cap(
