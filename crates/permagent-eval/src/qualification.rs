@@ -345,6 +345,17 @@ pub struct TaskQualificationEvidence {
     /// them. Empty when `selection_correct` is `Some(true)` or `None`.
     #[serde(default)]
     pub selection_check_failures: Vec<String>,
+    /// Lane K9: [`crate::harness_log::LogSignals::refused_tool_calls`]
+    /// verbatim — tool calls this task's run ATTEMPTED but a guard (the
+    /// write jail / `CodingDagInspector`) REFUSED before they executed,
+    /// retained as evidence even though a refused call does not, by default,
+    /// count against a `must_not_call`/`before` selection rule ("a denial is
+    /// the protocol working" — see `crate::selection`'s module docs). Empty
+    /// for a task with no refused attempts, AND for a record retained before
+    /// this lane (`#[serde(default)]`) — never fabricated as "definitely
+    /// nothing was refused" for the latter case.
+    #[serde(default)]
+    pub refused_calls: Vec<String>,
     /// Lane K6 / K6-b: the resolved harness wall-clock ceiling THIS run
     /// actually used, seconds — a `--harness-timeout-secs` CLI override if
     /// given, else `max(the task's own `harness_timeout_secs:` or the
@@ -478,6 +489,7 @@ pub fn build_run_qualification_record(
             cost_routing: r.signals.cost_routing.clone(),
             selection_correct: r.selection_correct,
             selection_check_failures: r.selection_check_failures.clone(),
+            refused_calls: r.signals.refused_tool_calls.clone(),
             harness_timeout_secs: r.harness_timeout_secs,
         })
         .collect();

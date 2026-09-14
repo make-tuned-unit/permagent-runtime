@@ -319,6 +319,14 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                         "signals": {
                             "tool_calls": r.signals.tool_calls,
                             "tool_names": r.signals.tool_names,
+                            // Lane K9: executed vs refused (a denial is the
+                            // protocol working) — see `crate::harness_log`'s
+                            // module docs. `executed_tool_names` is what
+                            // `must_not_call`/`before` now grade against by
+                            // default; `refused_tool_calls` is retained as
+                            // evidence.
+                            "executed_tool_names": r.signals.executed_tool_names,
+                            "refused_tool_calls": r.signals.refused_tool_calls,
                             "rate_limit_events": r.signals.rate_limit_events,
                             "rate_limit_examples": r.signals.rate_limit_examples,
                             "max_turns_hit": r.signals.max_turns_hit,
