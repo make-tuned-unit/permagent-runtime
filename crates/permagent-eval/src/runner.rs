@@ -44,10 +44,17 @@ pub trait HarnessRunner {
 /// Runs a task's test oracle in the finished workspace.
 pub trait OracleRunner {
     /// Returns the oracle process exit code (`None` = killed / timed out).
+    /// `envs` are SET on top of the child's otherwise-inherited environment
+    /// — Lane R18c (A17 Class 3): the caller uses this to pin
+    /// `CARGO_TARGET_DIR` to a run-scoped directory (see
+    /// [`cargo_target_dir`]) rather than let the oracle's `cargo test`
+    /// inherit whatever the parent process's ambient environment happens to
+    /// carry.
     fn run(
         &self,
         workdir: &Path,
         argv: &[String],
+        envs: &[(String, String)],
         timeout: Duration,
         log_path: &Path,
     ) -> Result<Option<i32>>;
@@ -111,6 +118,27 @@ impl Drop for ScratchGuard {
             let _ = fs::remove_dir_all(&self.dir);
         }
     }
+}
+
+/// Lane R18c (A17 Class 3): a run-scoped `CARGO_TARGET_DIR`, set on BOTH the
+/// harness child (so a `shell`/`verify` tool call that runs `cargo build`/
+/// `cargo test` inside the workspace is scoped too) and the oracle child.
+/// `run_dir` is the run's own scratch directory (the parent of
+/// `workspace`/`logs`/`data`, unique per task run and removed with the rest
+/// of it by [`ScratchGuard`]).
+///
+/// Without this, a Rust fixture's `cargo test` falls back to whatever
+/// `CARGO_TARGET_DIR` happens to sit in the parent `permagent-eval`
+/// process's ambient environment (this driver never scrubs it, unlike the
+/// `PERMAGENT_*` secrets `is_scrubbed_env` covers) — M17 round 2 observed
+/// every Rust fixture's build land in `/Users/j/Documents/dev/permagent-
+/// runtime/target` (the HOST repo's own target dir, not the isolated
+/// per-run workspace), so concurrent rounds contended the SAME cargo build
+/// lock as each other and as the host repo's own builds: an 11x wall-clock
+/// blow-up on at least one task, and lock contention is indistinguishable
+/// from a genuine hang until you go read the oracle log.
+pub fn cargo_target_dir(run_dir: &Path) -> PathBuf {
+    run_dir.join("cargo-target")
 }
 
 /// Run a single task under a tier and return its [`TaskResult`].
@@ -195,6 +223,16 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         "PERMAGENT_RECEIPTS_SIDECAR".to_string(),
         receipts_sidecar_path.to_string_lossy().into_owned(),
     ));
+    // Lane R18c (A17 Class 3): pin CARGO_TARGET_DIR to this run's own
+    // directory — see `cargo_target_dir`'s doc for why. Set on the harness
+    // child too (not just the oracle below) so a `shell`/`verify` tool call
+    // that itself runs `cargo build`/`cargo test` inside the workspace is
+    // scoped the same way.
+    let cargo_target_dir_path = cargo_target_dir(&run_dir);
+    inv.envs.push((
+        "CARGO_TARGET_DIR".to_string(),
+        cargo_target_dir_path.to_string_lossy().into_owned(),
+    ));
     // The arm's knobs go on LAST so they outrank the invocation's own defaults
     // — including the two headless-autoland defaults just set above — as well
     // as the inherited environment: an A/B arm that could be silently
@@ -229,9 +267,14 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         copy_dir_contents(&task.oracle_dir(), &workdir).context("overlaying oracle files")?;
     }
 
+    let oracle_envs = [(
+        "CARGO_TARGET_DIR".to_string(),
+        cargo_target_dir_path.to_string_lossy().into_owned(),
+    )];
     let oracle_code = deps.oracle.run(
         &workdir,
         &task.spec.test,
+        &oracle_envs,
         Duration::from_secs(task.spec.oracle_timeout_secs()),
         &logs.join("oracle.log"),
     )?;
@@ -255,11 +298,15 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     // decision, not (only) the oracle's verdict — evaluate its declared
     // `selection_check` against THIS run's own signals, independent of
     // whether the oracle passed. `None` for every non-selection fixture.
-    result.selection_correct = task
+    // Lane R18c (A17 Q6): keep the specific rule(s) it violated too, so a
+    // report/`.qual.json` reader can see WHY without re-deriving it.
+    let selection_verdict = task
         .spec
         .selection_check
         .as_ref()
-        .map(|check| check.evaluate(&signals));
+        .map(|check| check.evaluate_detailed(&signals));
+    result.selection_correct = selection_verdict.as_ref().map(|v| v.passed);
+    result.selection_check_failures = selection_verdict.map(|v| v.failures).unwrap_or_default();
     result.signals = signals;
     result.receipt_source = receipt_source;
     result.seed_commit = Some(seed_commit);
@@ -748,6 +795,7 @@ impl OracleRunner for SubprocessOracleRunner {
         &self,
         workdir: &Path,
         argv: &[String],
+        envs: &[(String, String)],
         timeout: Duration,
         log_path: &Path,
     ) -> Result<Option<i32>> {
@@ -761,6 +809,9 @@ impl OracleRunner for SubprocessOracleRunner {
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err);
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
         let mut child = cmd
             .spawn()
             .with_context(|| format!("spawning oracle `{program}`"))?;
@@ -881,6 +932,7 @@ mod tests {
             &self,
             workdir: &Path,
             _a: &[String],
+            _envs: &[(String, String)],
             _t: Duration,
             _l: &Path,
         ) -> Result<Option<i32>> {
@@ -906,7 +958,14 @@ mod tests {
 
     struct NeverOracle;
     impl OracleRunner for NeverOracle {
-        fn run(&self, _w: &Path, _a: &[String], _t: Duration, _l: &Path) -> Result<Option<i32>> {
+        fn run(
+            &self,
+            _w: &Path,
+            _a: &[String],
+            _envs: &[(String, String)],
+            _t: Duration,
+            _l: &Path,
+        ) -> Result<Option<i32>> {
             Ok(Some(0))
         }
     }
@@ -1721,6 +1780,96 @@ mod tests {
         );
     }
 
+    // --- Lane R18c (A17 Class 3): CARGO_TARGET_DIR pinned per run ---------
+
+    /// Both the harness child's invocation AND the oracle child's env must
+    /// carry a `CARGO_TARGET_DIR` scoped to THIS run's own scratch
+    /// directory (not the ambient process environment) — and both must
+    /// agree on the SAME path, since they build/test the same workspace.
+    #[test]
+    fn cargo_target_dir_reaches_both_the_harness_and_the_oracle_child() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_task(&tmp.path().join("demo"), &[], &[]);
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            arm_env: Vec::new(),
+            arm_unset: Vec::new(),
+        };
+
+        struct CaptureHarness(std::sync::Mutex<Option<Invocation>>);
+        impl HarnessRunner for CaptureHarness {
+            fn run(&self, inv: &Invocation, _t: Duration, _l: &Path) -> Result<HarnessRun> {
+                *self.0.lock().unwrap() = Some(inv.clone());
+                Ok(HarnessRun {
+                    exit: Some(0),
+                    timed_out: false,
+                    duration: Duration::from_secs(1),
+                })
+            }
+        }
+        struct CaptureOracle(std::sync::Mutex<Option<Vec<(String, String)>>>);
+        impl OracleRunner for CaptureOracle {
+            fn run(
+                &self,
+                _w: &Path,
+                _a: &[String],
+                envs: &[(String, String)],
+                _t: Duration,
+                _l: &Path,
+            ) -> Result<Option<i32>> {
+                *self.0.lock().unwrap() = Some(envs.to_vec());
+                Ok(Some(0))
+            }
+        }
+
+        let harness = CaptureHarness(std::sync::Mutex::new(None));
+        let oracle = CaptureOracle(std::sync::Mutex::new(None));
+        let deps = Deps {
+            harness: &harness,
+            oracle: &oracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
+
+        let inv = harness.0.lock().unwrap().clone().unwrap();
+        let harness_target_dir = inv
+            .env("CARGO_TARGET_DIR")
+            .expect("harness invocation must carry CARGO_TARGET_DIR")
+            .to_string();
+
+        let oracle_envs = oracle.0.lock().unwrap().clone().unwrap();
+        let oracle_target_dir = oracle_envs
+            .iter()
+            .find(|(k, _)| k == "CARGO_TARGET_DIR")
+            .map(|(_, v)| v.clone())
+            .expect("oracle envs must carry CARGO_TARGET_DIR");
+
+        assert_eq!(
+            harness_target_dir, oracle_target_dir,
+            "the harness and the oracle must build/test the SAME workspace \
+             into the SAME target dir"
+        );
+        // Scoped to THIS run — under `runs_root`, not the ambient
+        // environment or a fixed/shared path like the host repo's own
+        // `target/`.
+        assert!(
+            Path::new(&harness_target_dir).starts_with(&cfg.runs_root),
+            "{harness_target_dir} must be under {}",
+            cfg.runs_root.display()
+        );
+        assert!(harness_target_dir.ends_with("cargo-target"));
+    }
+
+    #[test]
+    fn cargo_target_dir_is_a_subdirectory_of_the_run_dir() {
+        let run_dir = Path::new("/tmp/runs/local-fizzbuzz-123");
+        assert_eq!(cargo_target_dir(run_dir), run_dir.join("cargo-target"));
+    }
+
     // --- Lane K3: headless auto-land turned on explicitly by the eval -----
 
     #[test]
@@ -1895,6 +2044,7 @@ mod tests {
         };
         let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
         assert_eq!(r.selection_correct, Some(true));
+        assert!(r.selection_check_failures.is_empty());
         assert_eq!(
             r.signals.tool_names,
             vec![
@@ -1928,6 +2078,7 @@ mod tests {
         };
         let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
         assert_eq!(r.selection_correct, Some(false));
+        assert!(!r.selection_check_failures.is_empty());
     }
 
     // ── Lane R17a: receipts survive a timeout via the sidecar fallback ────
@@ -2115,5 +2266,6 @@ mod tests {
         };
         let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
         assert_eq!(r.selection_correct, None);
+        assert!(r.selection_check_failures.is_empty());
     }
 }

@@ -79,27 +79,56 @@ impl SelectionCheck {
     /// hand-written [`LogSignals`] fixture, never only against a live
     /// harness run.
     pub fn evaluate(&self, signals: &LogSignals) -> bool {
-        let called = |name: &str| signals.tool_names.iter().any(|t| t == name);
+        self.evaluate_detailed(signals).passed
+    }
 
-        if self.must_call.iter().any(|t| !called(t)) {
-            return false;
-        }
-        if self.must_not_call.iter().any(|t| called(t)) {
-            return false;
-        }
-        for (before, after) in &self.before {
-            let Some(before_pos) = signals.tool_names.iter().position(|t| t == before) else {
-                return false;
-            };
-            let Some(after_pos) = signals.tool_names.iter().position(|t| t == after) else {
-                return false;
-            };
-            if before_pos >= after_pos {
-                return false;
+    /// Like [`Self::evaluate`], but keeps a human-readable reason for every
+    /// specific rule the run's tool-call sequence violated (Lane R18c, A17
+    /// Q6) — `must_call` first, then `must_not_call`, then `before`, in
+    /// declaration order within each — so a report/`.qual.json` reader can
+    /// see WHY a `select-*` fixture failed without re-deriving it from the
+    /// raw [`LogSignals`]. `passed` is exactly [`Self::evaluate`]'s result;
+    /// unlike it, this does not short-circuit at the first failing rule
+    /// category, so a run that violates more than one rule reports all of
+    /// them.
+    pub fn evaluate_detailed(&self, signals: &LogSignals) -> SelectionVerdict {
+        let called = |name: &str| signals.tool_names.iter().any(|t| t == name);
+        let mut failures = Vec::new();
+
+        for tool in &self.must_call {
+            if !called(tool) {
+                failures.push(format!("must_call: {tool} (never called)"));
             }
         }
-        true
+        for tool in &self.must_not_call {
+            if called(tool) {
+                failures.push(format!("must_not_call: {tool} (was called)"));
+            }
+        }
+        for (before, after) in &self.before {
+            let before_pos = signals.tool_names.iter().position(|t| t == before);
+            let after_pos = signals.tool_names.iter().position(|t| t == after);
+            match (before_pos, after_pos) {
+                (Some(b), Some(a)) if b < a => {}
+                (Some(_), Some(_)) => failures.push(format!(
+                    "before: {before} must precede {after} (order reversed)"
+                )),
+                _ => failures.push(format!(
+                    "before: {before} -> {after} (one or both never called)"
+                )),
+            }
+        }
+
+        let passed = failures.is_empty();
+        SelectionVerdict { passed, failures }
     }
+}
+
+/// [`SelectionCheck::evaluate_detailed`]'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SelectionVerdict {
+    pub passed: bool,
+    pub failures: Vec<String>,
 }
 
 #[cfg(test)]
@@ -234,6 +263,74 @@ mod tests {
         ])));
     }
 
+    // ── evaluate_detailed (Lane R18c, A17 Q6) ───────────────────────────────
+
+    #[test]
+    fn evaluate_detailed_passed_matches_evaluate_and_has_no_failures() {
+        let check = SelectionCheck {
+            must_call: vec!["verify".into()],
+            ..Default::default()
+        };
+        let verdict = check.evaluate_detailed(&signals(&["verify"]));
+        assert!(verdict.passed);
+        assert!(verdict.failures.is_empty());
+        assert_eq!(verdict.passed, check.evaluate(&signals(&["verify"])));
+    }
+
+    #[test]
+    fn evaluate_detailed_names_a_missing_must_call_tool() {
+        let check = SelectionCheck {
+            must_call: vec!["escalate".into()],
+            ..Default::default()
+        };
+        let verdict = check.evaluate_detailed(&signals(&["shell"]));
+        assert!(!verdict.passed);
+        assert_eq!(
+            verdict.failures,
+            vec!["must_call: escalate (never called)".to_string()]
+        );
+    }
+
+    #[test]
+    fn evaluate_detailed_names_a_forbidden_tool_that_was_called() {
+        let check = SelectionCheck {
+            must_not_call: vec!["decompose_roadmap".into()],
+            ..Default::default()
+        };
+        let verdict = check.evaluate_detailed(&signals(&["decompose_roadmap"]));
+        assert_eq!(
+            verdict.failures,
+            vec!["must_not_call: decompose_roadmap (was called)".to_string()]
+        );
+    }
+
+    #[test]
+    fn evaluate_detailed_names_a_reversed_order() {
+        let check = SelectionCheck {
+            before: vec![("decompose_roadmap".into(), "create_roadmap".into())],
+            ..Default::default()
+        };
+        let verdict = check.evaluate_detailed(&signals(&["create_roadmap", "decompose_roadmap"]));
+        assert_eq!(
+            verdict.failures,
+            vec![
+                "before: decompose_roadmap must precede create_roadmap (order reversed)"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn evaluate_detailed_reports_every_violated_rule_not_just_the_first() {
+        let check = SelectionCheck {
+            must_call: vec!["escalate".into()],
+            must_not_call: vec!["decompose_roadmap".into()],
+            ..Default::default()
+        };
+        let verdict = check.evaluate_detailed(&signals(&["decompose_roadmap"]));
+        assert_eq!(verdict.failures.len(), 2, "{:?}", verdict.failures);
+    }
+
     // ── deserialization ──────────────────────────────────────────────────
 
     #[test]
@@ -299,10 +396,14 @@ mod tests {
 
     #[test]
     fn select_trivial_typo_fix_skips_roadmap() {
+        // Lane R18c: corrected per Jesse's redirect — a tiny fix is still a
+        // valid ONE-NODE roadmap (recipe.yaml NON-NEGOTIABLE rule 1); what
+        // is wrong is the coordinator hand-editing instead of dispatching.
         let check = load_selection_check("select-trivial-typo-fix-skips-roadmap");
-        assert!(check.evaluate(&signals(&["text_editor"])));
-        // Wrong decision: spins up a roadmap for a one-line typo.
-        assert!(!check.evaluate(&signals(&["decompose_roadmap", "create_roadmap"])));
+        assert!(check.evaluate(&signals(&["decompose_roadmap", "create_roadmap"])));
+        // Wrong decision: the coordinator edits the file itself instead of
+        // dispatching through the roadmap.
+        assert!(!check.evaluate(&signals(&["text_editor"])));
     }
 
     #[test]
@@ -368,10 +469,13 @@ mod tests {
 
     #[test]
     fn select_mechanical_rename_skips_roadmap() {
+        // Lane R18c: corrected per Jesse's redirect — same reasoning as
+        // `select_trivial_typo_fix_skips_roadmap` above.
         let check = load_selection_check("select-mechanical-rename-skips-roadmap");
-        assert!(check.evaluate(&signals(&["text_editor"])));
-        // Wrong decision: over-decomposes a two-file mechanical rename.
-        assert!(!check.evaluate(&signals(&["decompose_roadmap", "create_roadmap"])));
+        assert!(check.evaluate(&signals(&["decompose_roadmap", "create_roadmap"])));
+        // Wrong decision: the coordinator edits the files itself instead of
+        // dispatching through the roadmap.
+        assert!(!check.evaluate(&signals(&["text_editor"])));
     }
 
     /// Every bundled `category: selection` fixture round-trips: its

@@ -289,6 +289,12 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                         "harness_timed_out": r.harness_timed_out,
                         "note": r.note,
                         "seed_commit": r.seed_commit,
+                        // Lane R18c (A17 Q6): the G3 tool/DAG-selection
+                        // verdict was computed per task (runner.rs) but
+                        // never reached the report — `null` for every
+                        // non-selection fixture, never fabricated.
+                        "selection_correct": r.selection_correct,
+                        "selection_check_failures": r.selection_check_failures,
                         "signals": {
                             "tool_calls": r.signals.tool_calls,
                             "tool_names": r.signals.tool_names,
@@ -687,5 +693,36 @@ mod tests {
     #[test]
     fn overall_dag_selection_pct_is_none_when_nothing_attempted_a_selection_fixture() {
         assert_eq!(overall_dag_selection_pct(&[sample()]), None);
+    }
+
+    /// Lane R18c (A17 Q6): `selection_correct` was computed per task
+    /// (`runner.rs`) but never reached the JSON report before this lane —
+    /// a reader had only the tier-wide `dag_selection_pct` and no way to
+    /// see WHICH select-* task(s) failed. Both the bool and its failure
+    /// detail must round-trip into each task's JSON row.
+    #[test]
+    fn json_report_carries_selection_correct_and_failures_per_task() {
+        let mut tr = selection_report("sonnet5", &[Some(true), Some(false)]);
+        tr.results[1].selection_check_failures =
+            vec!["must_call: escalate (never called)".to_string()];
+        let v = render_json(&[tr]);
+        let tasks = &v["tiers"][0]["tasks"];
+        assert_eq!(tasks[0]["selection_correct"], true);
+        assert!(tasks[0]["selection_check_failures"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(tasks[1]["selection_correct"], false);
+        assert_eq!(
+            tasks[1]["selection_check_failures"][0],
+            "must_call: escalate (never called)"
+        );
+    }
+
+    /// A non-selection task's row carries `null`, never a fabricated verdict.
+    #[test]
+    fn json_report_selection_correct_is_null_for_a_non_selection_task() {
+        let v = render_json(&[sample()]);
+        assert!(v["tiers"][0]["tasks"][0]["selection_correct"].is_null());
     }
 }
