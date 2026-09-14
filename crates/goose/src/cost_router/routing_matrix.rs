@@ -784,7 +784,8 @@ mod goal_routing_tests {
             est_cost_per_call: nominal_call_cost("zai", "glm-4.7").unwrap(),
         };
         let dispatched = "dschat";
-        let cheapest = cheapest_capable_worker(&["code_edit".into()], &[pinned]);
+        let candidates = [pinned];
+        let cheapest = cheapest_capable_worker(&["code_edit".into()], &candidates);
         assert_eq!(cheapest, Some(dispatched));
     }
 
@@ -810,10 +811,8 @@ mod goal_routing_tests {
         };
         assert!(cheaper_available.est_cost_per_call < pricier_dispatched.est_cost_per_call);
         let dispatched = "pricier_dispatched";
-        let cheapest = cheapest_capable_worker(
-            &["code_edit".into()],
-            &[cheaper_available, pricier_dispatched],
-        );
+        let candidates = [cheaper_available, pricier_dispatched];
+        let cheapest = cheapest_capable_worker(&["code_edit".into()], &candidates);
         assert_eq!(cheapest, Some("cheap_alt"));
         assert_ne!(
             cheapest,

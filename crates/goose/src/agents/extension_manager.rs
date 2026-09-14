@@ -3611,10 +3611,14 @@ mod tests {
     async fn tool_router_missing_tool_still_returns_resource_not_found() {
         let temp_dir = tempfile::tempdir().unwrap();
         let manager = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        // `Result::expect_err` needs `T: Debug`, and the Ok side (`ResolvedTool`)
+        // holds an `McpClientBox` that cannot derive it. `Option::expect` carries
+        // no such bound and asserts exactly the same thing.
         let err = manager
             .resolve_tool("session-1", "decompose_roadmap")
             .await
-            .expect_err("no extensions registered — decompose_roadmap cannot resolve");
+            .err()
+            .expect("no extensions registered — decompose_roadmap cannot resolve");
         assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
         assert!(err.message.contains("decompose_roadmap"), "{}", err.message);
     }

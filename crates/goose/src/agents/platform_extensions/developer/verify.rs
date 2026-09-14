@@ -3184,7 +3184,8 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         assert!(missing_import_dependency(output).is_some());
         let check = Check::direct("pytest", &[]);
         let env_result = environment_dependency_result(&check, Some(1), output, "pytest");
-        let fail_result_text = text_of(&fail_result(&check, Some(1), output));
+        let generic_fail = fail_result(&check, Some(1), output);
+        let fail_result_text = text_of(&generic_fail);
         let env_result_text = text_of(&env_result);
         assert_ne!(
             env_result_text, fail_result_text,
