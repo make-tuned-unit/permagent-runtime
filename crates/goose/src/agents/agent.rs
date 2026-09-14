@@ -390,6 +390,91 @@ pub(crate) fn coalesce_turn_messages(messages: Vec<Message>) -> (Vec<Message>, u
     (folded, issues.len())
 }
 
+/// Lane R19a (harness loop 2026-09-14, M19 DeepSeek forensics). Should a
+/// pre-first-byte provider stall be retried, or has this turn already spent
+/// its one retry?
+///
+/// `stream_committed` guards against retrying a stream that already
+/// delivered content: once part of an answer has reached the user there is
+/// no longer a "same request" that is safe to resend silently underneath it.
+/// `already_retried` bounds the retry to exactly one attempt per turn — a
+/// second stall falls through to the ordinary give-up path instead of
+/// retrying forever.
+///
+/// A pure, free function on purpose: the decision is exercised directly by
+/// tests below without needing to drive the whole streaming reply generator.
+fn should_retry_first_byte_stall(
+    provider_err: &ProviderError,
+    stream_committed: bool,
+    already_retried: bool,
+) -> bool {
+    provider_err.is_first_byte_provider_stall() && !stream_committed && !already_retried
+}
+
+/// Lane R19c (G24 HIGH-1 + HIGH-2). Retry a first-byte-stalled provider
+/// stream exactly once, honestly against the cost reservation and bounded
+/// against the turn's own first-byte ceiling.
+///
+/// **HIGH-1 (double-spend).** The pre-R19c retry called
+/// `with_reservation_attempts(manager, invocation_id, attempts_reserved,
+/// retry)` — a FRESH `AttemptAuthorization` scope that re-grants the
+/// invocation's WHOLE `attempts_reserved` budget again, on top of whatever
+/// the first stream already spent, without ever calling
+/// `extend_reservation`. This instead extends the SAME reservation by
+/// exactly one physical attempt (`extend_reservation(invocation_id, 1)`,
+/// the real ledger call `authorized_attempts::authorize_attempt` itself uses
+/// to extend — see that module's doc) and authorizes only that one attempt
+/// locally (`with_authorized_attempts(1, …)`, no further extension capability
+/// installed): if the retry's OWN internal transport-level retry logic wants
+/// more than the one attempt just paid for, it is correctly refused rather
+/// than silently re-granted a full fresh batch. `attempts_reserved: None`
+/// (no paid hold on this call at all) skips the ledger entirely and retries
+/// directly, matching how the ORIGINAL call ran when it took no hold.
+///
+/// **HIGH-2 (worst-case wall clock).** The retry is scoped under
+/// `stream_budget::FIRST_BYTE_WINDOW_OVERRIDE` with whatever remains of
+/// `DEFAULT_FIRST_BYTE_SECS` since `first_byte_wait_started` — NOT a fresh
+/// window — so one coordinator turn spends at most
+/// `DEFAULT_FIRST_BYTE_SECS` (~180s) of silent pre-first-byte waiting in
+/// total across both attempts, not ~2x that. A stall that consumed the
+/// whole ceiling on the first attempt leaves the retry almost no additional
+/// silent wait — if the provider answers essentially immediately this time,
+/// the retry still succeeds; if not, it fails fast instead of burning
+/// another full window.
+async fn retry_first_byte_stall(
+    session_manager: &Arc<crate::session::SessionManager>,
+    invocation: &crate::agents::reply_parts::ProviderInvocationContext,
+    first_byte_wait_started: std::time::Instant,
+    retry: impl std::future::Future<Output = Result<crate::providers::base::MessageStream, ProviderError>>
+        + Send,
+) -> Result<crate::providers::base::MessageStream, ProviderError> {
+    let remaining =
+        std::time::Duration::from_secs(crate::providers::stream_budget::DEFAULT_FIRST_BYTE_SECS)
+            .saturating_sub(first_byte_wait_started.elapsed());
+    let scoped_retry =
+        crate::providers::stream_budget::FIRST_BYTE_WINDOW_OVERRIDE.scope(Some(remaining), retry);
+
+    if invocation.attempts_reserved.is_none() {
+        // No paid hold governs this call at all — retry with no reservation
+        // scope, exactly like the original call.
+        return scoped_retry.await;
+    }
+    match session_manager
+        .extend_reservation(&invocation.invocation_id, 1)
+        .await
+    {
+        Ok(crate::session::CostReservationOutcome::Granted { .. }) => {
+            crate::cost_router::authorized_attempts::with_authorized_attempts(1, scoped_retry).await
+        }
+        Ok(other) => Err(ProviderError::ExecutionError(format!(
+            "the cost reservation for this call would not authorize a retry attempt: {other:?}"
+        ))),
+        Err(extend_err) => Err(ProviderError::ExecutionError(format!(
+            "could not extend the reservation for a retry attempt: {extend_err}"
+        ))),
+    }
+}
+
 async fn persist_turn_ending_message(
     session_manager: &Arc<crate::session::SessionManager>,
     session_id: &str,
@@ -2160,6 +2245,12 @@ impl Agent {
                 };
 
                 turn_timing.start_model();
+                // Lane R19c (G24 HIGH-2): marks when THIS turn started
+                // waiting for a first byte, so a first-byte-stall retry can
+                // be given the REMAINING part of `DEFAULT_FIRST_BYTE_SECS`
+                // instead of a fresh window — see the retry arm below and
+                // `stream_budget::FIRST_BYTE_WINDOW_OVERRIDE`'s doc comment.
+                let first_byte_wait_started = std::time::Instant::now();
                 // Carry the hold's count and extension authorizer into physical
                 // retries. Exhausting the count requires a new one-attempt grant.
                 // Unpaid work keeps the provider's retry policy unchanged.
@@ -2239,6 +2330,10 @@ impl Agent {
                 // saw a partial answer). Billing/auth still announce.
                 let mut stream_committed = false;
                 let mut exit_chat = false;
+                // Lane R19a: a pre-first-byte provider stall gets exactly one
+                // retry of the identical request. This bounds it to one per
+                // turn attempt — see `should_retry_first_byte_stall`.
+                let mut first_byte_stall_retried = false;
 
                 // Track whether this provider turn has already emitted visible
                 // thinking so a later tool-call chunk can suppress replayed
@@ -2994,6 +3089,156 @@ impl Agent {
                             // actually change the request.
                             let message = Message::assistant().with_text(
                                 format!("Ran into this error: {provider_err}.\n\nThe provider rejected this request as invalid, so sending it again unchanged will fail the same way. Switch the model (Settings → Models), or start a new session, then resend your message.")
+                            );
+                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            yield AgentEvent::Message(message);
+                            state_guard.mark_error();
+                            break;
+                        }
+                        // Lane R19a (harness loop 2026-09-14, M19 DeepSeek
+                        // forensics): a stall before the provider sent even
+                        // one byte is not the same failure as a mid-stream
+                        // stall or a repeating model (Y8a) — it is commonly
+                        // provider-side queueing/prefill on a large context,
+                        // and the M17-vs-M19 comparison showed an
+                        // equivalent-sized request to a different provider,
+                        // same binary, same moment, answering in seconds.
+                        // Retry the identical request exactly once —
+                        // `stream_committed` confirms nothing from THIS
+                        // stream has reached the user yet, so there is no
+                        // partial answer a second attempt could contradict.
+                        //
+                        // Lane R19c (G24 MED-1 correction): what actually
+                        // keeps THIS arm from tripping Lane R18f's rule5
+                        // guard is that it never ends the turn at all — it
+                        // `continue`s the stream loop on a successful retry.
+                        // Recording the stall as a `tracing::warn!`
+                        // observability signal here, rather than an
+                        // assistant message, is about not narrating an
+                        // internal retry to the model/user as if it were the
+                        // model's own text — it is not what saves this
+                        // iteration from rule5; not ending the turn is.
+                        Err(ref provider_err)
+                            if should_retry_first_byte_stall(
+                                provider_err,
+                                stream_committed,
+                                first_byte_stall_retried,
+                            ) =>
+                        {
+                            #[cfg(feature = "telemetry")]
+                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                            first_byte_stall_retried = true;
+                            // Lane R19c (G24 MED-2): `crate::receipts::record`
+                            // is a NO-OP for any (area, key) pair not already
+                            // in `receipts::FIELDS` — a fixed-size const array
+                            // `permagent-eval`'s regex parses by exact key
+                            // set (see `safety_and_trust`'s own comment on
+                            // why an unknown key there breaks the whole
+                            // line). "provider"/"first_byte_stall_retry" is
+                            // not one of the 14 existing pairs, and adding it
+                            // changes that contract for every other
+                            // consumer — out of scope for this lane to
+                            // decide. `tracing::warn!` below is the
+                            // observability signal instead; a scorecard-
+                            // visible counter is a receipts-contract change,
+                            // not a stream-budget one.
+                            tracing::warn!(
+                                target: "permagent::provider_stall",
+                                session_id = %session_config.id,
+                                provider = %turn_provider.get_name(),
+                                model = %turn_model_name,
+                                error = %provider_err,
+                                "provider_stall: first-byte stall, retrying the identical request once (Lane R19a)"
+                            );
+                            match retry_first_byte_stall(
+                                &session_manager,
+                                &invocation,
+                                first_byte_wait_started,
+                                Self::stream_response_from_provider(
+                                    turn_provider.clone(),
+                                    &session_config.id,
+                                    &system_prompt,
+                                    conversation_with_moim.messages(),
+                                    &tools,
+                                    &toolshim_tools,
+                                ),
+                            )
+                            .await
+                            {
+                                Ok(fresh) => {
+                                    stream = fresh;
+                                    continue;
+                                }
+                                Err(retry_error) => {
+                                    tracing::warn!(
+                                        target: "permagent::provider_stall",
+                                        session_id = %session_config.id,
+                                        provider = %turn_provider.get_name(),
+                                        error = %retry_error,
+                                        "provider_stall: the retry attempt itself could not start a new stream"
+                                    );
+                                    let message = Message::assistant().with_system_notification(
+                                        SystemNotificationType::InlineMessage,
+                                        format!(
+                                            "{} did not respond in time — this was retried once and still did not \
+                                             respond. Your message was not sent; send it again once the provider \
+                                             recovers.",
+                                            turn_provider.get_name(),
+                                        ),
+                                    );
+                                    persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                                    yield AgentEvent::Message(message);
+                                    state_guard.mark_error();
+                                    break;
+                                }
+                            }
+                        }
+                        // The retry above was already spent (or did not apply —
+                        // content had already streamed) and this turn stalled
+                        // before the first byte again. Give up the same way
+                        // the rate-limit arm above does: a system
+                        // notification in the assistant's own voice, never
+                        // "Ran into this error… do not retry" advice text.
+                        //
+                        // Lane R19c (G24 MED-1 correction): this does NOT
+                        // prevent Lane R18f's rule5 guard from firing.
+                        // `Rule5HonestFailureGuard` (after_turn.rs) checks
+                        // only for a tool call / `escalate` on the turn's
+                        // final message (`final_message_has_tool_call` /
+                        // `turn_called_escalate`) — Text vs
+                        // SystemNotification content is irrelevant to it, and
+                        // this arm calls neither a tool nor `escalate`. Rule5
+                        // firing here is the CORRECT, intended outcome: the
+                        // provider genuinely did not answer twice in a row,
+                        // the coordinator has nothing left to do this turn,
+                        // and an honest "this run could not make progress"
+                        // is what the guard exists to produce — not a defect
+                        // to be engineered around. What this lane actually
+                        // fixes is upstream of rule5: the turn now reaches
+                        // this give-up only after one real retry, with the
+                        // reason recorded as a `provider_stall`
+                        // observability signal, instead of every attempt
+                        // burning the model's own turn on "do not retry the
+                        // same request" free text it had no way to act on.
+                        Err(ref provider_err) if provider_err.is_first_byte_provider_stall() => {
+                            #[cfg(feature = "telemetry")]
+                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                            tracing::warn!(
+                                target: "permagent::provider_stall",
+                                session_id = %session_config.id,
+                                provider = %turn_provider.get_name(),
+                                model = %turn_model_name,
+                                error = %provider_err,
+                                retried = first_byte_stall_retried,
+                                "provider_stall: first-byte stall persisted; ending the turn without a retry left"
+                            );
+                            let message = Message::assistant().with_system_notification(
+                                SystemNotificationType::InlineMessage,
+                                format!(
+                                    "{} — {}. Your message was not sent; send it again once the provider recovers.",
+                                    turn_provider.get_name(),
+                                    provider_err.user_facing_summary(),
+                                ),
                             );
                             persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
                             yield AgentEvent::Message(message);
@@ -4013,6 +4258,212 @@ mod tests {
         let direct_call = [".", "complete("].concat();
         assert!(source.contains("complete_accounted"));
         assert!(!source.contains(&direct_call));
+    }
+
+    // --- Lane R19a: retry-once decision for a first-byte provider stall --
+
+    /// The first first-byte stall on a turn that has not streamed anything
+    /// yet is retried; a second one (after the retry is spent) is not.
+    #[test]
+    fn a_first_byte_stall_is_retried_exactly_once() {
+        let err = crate::providers::errors::ProviderError::first_byte_stall(
+            "the provider sent nothing at all for 300 s",
+        );
+        assert!(
+            should_retry_first_byte_stall(&err, false, false),
+            "first occurrence, nothing streamed yet: retry"
+        );
+        assert!(
+            !should_retry_first_byte_stall(&err, false, true),
+            "the one retry is already spent: do not retry again"
+        );
+    }
+
+    /// A first-byte stall is never retried once part of an answer has
+    /// already reached the user on this stream — there is no longer a "same
+    /// request" that is safe to resend silently underneath a partial reply.
+    #[test]
+    fn a_first_byte_stall_is_not_retried_once_the_stream_is_committed() {
+        let err = crate::providers::errors::ProviderError::first_byte_stall("0 chars in 300 s");
+        assert!(
+            !should_retry_first_byte_stall(&err, true, false),
+            "content already streamed: do not resend the request"
+        );
+    }
+
+    /// A genuine mid-stream stall (or repetition, or wall-clock) — anything
+    /// that is `is_stream_budget_exceeded()` but NOT specifically a
+    /// first-byte stall — must never take this retry path. Y8a's "never
+    /// retry a runaway" verdict for that class is unchanged.
+    #[test]
+    fn an_ordinary_mid_stream_stall_is_never_retried_by_this_path() {
+        let err = crate::providers::errors::ProviderError::stream_budget_exceeded(
+            "the provider sent nothing for longer than 120s allows",
+        );
+        assert!(err.is_stream_budget_exceeded());
+        assert!(!should_retry_first_byte_stall(&err, false, false));
+    }
+
+    /// A wholly unrelated error (never a stream-budget failure at all) is
+    /// also never retried by this path.
+    #[test]
+    fn an_unrelated_error_is_never_retried_by_this_path() {
+        let err = crate::providers::errors::ProviderError::ServerError("502".to_string());
+        assert!(!should_retry_first_byte_stall(&err, false, false));
+    }
+
+    /// Lane R19c (G24 HIGH-1): a first-byte retry must authorize exactly ONE
+    /// more physical attempt against the SAME invocation's reservation —
+    /// never re-grant the invocation's whole `attempts_reserved` budget
+    /// again (the double-spend G24 flagged in the pre-R19c
+    /// `with_reservation_attempts(..., attempts_reserved, ...)` call).
+    /// Reserves 3 attempts up front, then proves the retry sees exactly
+    /// `authorized_attempts() == Some(1)` from INSIDE the retried future —
+    /// not `Some(3)`.
+    #[tokio::test]
+    async fn a_first_byte_retry_authorizes_exactly_one_more_attempt_not_the_whole_reservation() {
+        use crate::config::GooseMode;
+        use crate::cost_router::budget::{BudgetCeilings, BudgetConfig};
+        use crate::session::{CostReservationOutcome, CostTier, SessionType};
+
+        let temp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "r19c retry".into(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task = manager.begin_budget_task(&session.id).await.unwrap();
+        let model = crate::model::ModelConfig::new("glm-4.7")
+            .unwrap()
+            .with_context_limit(Some(204_800))
+            .with_max_tokens(Some(131_072));
+        // Reserve 3 physical attempts up front — the ORIGINAL invocation's
+        // hold. A naive retry that re-authorized `attempts_reserved` would
+        // see `Some(3)`, not `Some(1)`.
+        let reserved: u32 = 3;
+        let bound = crate::cost_router::plan_reservation_bound(
+            "zai",
+            "glm-4.7",
+            CostTier::PaidApi,
+            &model,
+            reserved,
+        )
+        .unwrap()
+        .unwrap();
+        // A generous ceiling: the extension must succeed so the test
+        // observes what gets AUTHORIZED, not a budget refusal.
+        let limits = BudgetCeilings {
+            soft: 0.0,
+            gate: 1000.0,
+            hard: 1000.0,
+        };
+        let config = BudgetConfig {
+            task: limits,
+            session: limits,
+        };
+        let outcome = manager
+            .reserve_bounded_provider_invocation(
+                "r19c-invocation",
+                &session.id,
+                Some(&task),
+                bound,
+                "2099-01-01T00:00:00Z",
+                &config,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, CostReservationOutcome::Granted { .. }));
+
+        let invocation = crate::agents::reply_parts::ProviderInvocationContext {
+            invocation_id: "r19c-invocation".to_string(),
+            provider: "zai".to_string(),
+            model: "glm-4.7".to_string(),
+            cost_tier: CostTier::PaidApi,
+            reservation_id: Some("r19c-invocation".to_string()),
+            attempts_reserved: Some(reserved),
+        };
+
+        let seen_authorized: Arc<std::sync::Mutex<Option<Option<u32>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let seen = Arc::clone(&seen_authorized);
+        let retry_future = async move {
+            *seen.lock().unwrap() =
+                Some(crate::cost_router::authorized_attempts::authorized_attempts());
+            Ok::<crate::providers::base::MessageStream, ProviderError>(Box::pin(
+                futures::stream::empty(),
+            ))
+        };
+
+        let result = retry_first_byte_stall(
+            &manager,
+            &invocation,
+            std::time::Instant::now(),
+            retry_future,
+        )
+        .await;
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            *seen_authorized.lock().unwrap(),
+            Some(Some(1)),
+            "a first-byte retry must authorize exactly ONE more attempt, not the \
+             invocation's whole {reserved}-attempt reservation again"
+        );
+    }
+
+    /// Lane R19c (G24 HIGH-1): when no reservation governs the call at all
+    /// (`attempts_reserved: None` — a free/unpaid dispatch), the retry must
+    /// skip the ledger entirely and run with no authorization scope, exactly
+    /// like the ORIGINAL call did.
+    #[tokio::test]
+    async fn a_first_byte_retry_with_no_reservation_skips_the_ledger_entirely() {
+        use crate::session::CostTier;
+
+        let temp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let invocation = crate::agents::reply_parts::ProviderInvocationContext {
+            invocation_id: "unpaid-invocation".to_string(),
+            provider: "local".to_string(),
+            model: "local-model".to_string(),
+            cost_tier: CostTier::PaidApi,
+            reservation_id: None,
+            attempts_reserved: None,
+        };
+
+        let seen_authorized: Arc<std::sync::Mutex<Option<Option<u32>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let seen = Arc::clone(&seen_authorized);
+        let retry_future = async move {
+            *seen.lock().unwrap() =
+                Some(crate::cost_router::authorized_attempts::authorized_attempts());
+            Ok::<crate::providers::base::MessageStream, ProviderError>(Box::pin(
+                futures::stream::empty(),
+            ))
+        };
+
+        let result = retry_first_byte_stall(
+            &manager,
+            &invocation,
+            std::time::Instant::now(),
+            retry_future,
+        )
+        .await;
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            *seen_authorized.lock().unwrap(),
+            Some(None),
+            "no reservation governs this call: no authorization scope should be installed"
+        );
     }
 
     /// The text `handle_denied_tools` actually put on the wire for `id`.

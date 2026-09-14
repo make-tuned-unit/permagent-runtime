@@ -49,6 +49,11 @@ pub enum ProviderError {
 /// retry policy, every `match` over `ProviderError`) keeps working unchanged.
 pub(crate) const STREAM_BUDGET_PREFIX: &str = "Provider stream budget exceeded: ";
 
+/// Sub-marker nested inside [`STREAM_BUDGET_PREFIX`], for the specific case
+/// of a stall before the provider sent even the first byte of a response
+/// (Lane R19a). See [`ProviderError::first_byte_stall`].
+pub(crate) const FIRST_BYTE_STALL_MARKER: &str = "first byte: ";
+
 impl ProviderError {
     pub fn telemetry_type(&self) -> &'static str {
         match self {
@@ -98,7 +103,21 @@ impl ProviderError {
             // The bytes we would resend are identical, and the failure mode is
             // the model repeating itself — a retry re-enters the same runaway
             // and burns the same wall-clock and the same unmetered tokens.
-            ProviderError::ExecutionError(msg) => msg.starts_with(STREAM_BUDGET_PREFIX),
+            //
+            // Lane R19c (G24 LOW): EXCEPT a first-byte stall, which is
+            // retryable by definition (Lane R19a/R19b) — a pre-first-byte
+            // stall's bytes-we-would-resend are identical too, but the
+            // failure mode is a provider that has not answered YET, not one
+            // caught repeating itself; `agents::agent` retries it once for
+            // exactly that reason. Leaving this `true` for first-byte stalls
+            // contradicted that retry premise for every OTHER caller that
+            // reads `is_permanent()` (`cost_router::fallback`, the
+            // orchestrator, `goal_a2a`) even though it happened not to
+            // matter for R19a's own agent.rs arms (inserted ahead of the
+            // generic catch-all that reads this).
+            ProviderError::ExecutionError(msg) => {
+                msg.starts_with(STREAM_BUDGET_PREFIX) && !self.is_first_byte_provider_stall()
+            }
             _ => false,
         }
     }
@@ -149,10 +168,50 @@ impl ProviderError {
         matches!(self, ProviderError::ExecutionError(msg) if msg.starts_with(STREAM_BUDGET_PREFIX))
     }
 
+    /// A stream that never delivered even one byte — not a real delta, not a
+    /// usage-only chunk, nothing — within
+    /// `PERMAGENT_PROVIDER_STREAM_FIRST_BYTE_SECS` (Lane R19a, harness loop
+    /// 2026-09-14).
+    ///
+    /// Distinct from the general [`stream_budget_exceeded`] on purpose: a
+    /// pre-first-byte stall is commonly the provider still queueing or
+    /// prefilling a large context (M19 DeepSeek forensics: a ~39 KB
+    /// coordinator system prompt during a ~20 load-average window stalled at
+    /// 0 chars for exactly the 120 s stall window, three times in a row, on a
+    /// request whose z.ai twin — same binary, same moment, same payload
+    /// shape — answered in seconds). That is not "the model is repeating
+    /// itself" (the general case this module exists to catch); it is worth
+    /// one retry of the identical request before the turn is forced to end.
+    ///
+    /// Nested inside [`STREAM_BUDGET_PREFIX`] rather than a new top-level
+    /// variant, so [`is_stream_budget_exceeded`](Self::is_stream_budget_exceeded)
+    /// keeps matching every stream-budget failure exactly as before;
+    /// [`is_first_byte_provider_stall`](Self::is_first_byte_provider_stall)
+    /// narrows it to this one.
+    pub fn first_byte_stall(detail: impl std::fmt::Display) -> Self {
+        ProviderError::ExecutionError(format!(
+            "{STREAM_BUDGET_PREFIX}{FIRST_BYTE_STALL_MARKER}{detail}"
+        ))
+    }
+
+    pub fn is_first_byte_provider_stall(&self) -> bool {
+        matches!(self, ProviderError::ExecutionError(msg) if msg
+            .strip_prefix(STREAM_BUDGET_PREFIX)
+            .is_some_and(|rest| rest.starts_with(FIRST_BYTE_STALL_MARKER)))
+    }
+
     /// A short, human sentence safe to show a user or read aloud — never the
     /// raw provider payload. `raw` bodies carry request ids, model ids, JSON
     /// braces and support URLs; session 20260823_4 read one of those out loud.
     pub fn user_facing_summary(&self) -> String {
+        if self.is_first_byte_provider_stall() {
+            // Deliberately silent on whether a retry happened: this summary
+            // is shared by every consumer of a streaming response, and only
+            // the coding-harness coordinator turn (`agents::agent`) retries
+            // a first-byte stall once before giving up (Lane R19a).
+            return "the provider did not send anything back in time, so the request was stopped"
+                .to_string();
+        }
         if self.is_stream_budget_exceeded() {
             return "the model kept generating past its safety budget, so the reply was stopped"
                 .to_string();
@@ -405,5 +464,60 @@ mod tests {
             err.user_facing_summary(),
             "the model stream dropped before the reply finished"
         );
+    }
+
+    /// Lane R19a. A first-byte stall is a NARROWER case of a stream-budget
+    /// failure: both predicates must see it, so nothing that already matches
+    /// on `is_stream_budget_exceeded` (telemetry, `is_permanent`) loses this
+    /// error by accident.
+    #[test]
+    fn a_first_byte_stall_is_also_a_stream_budget_exceeded_error() {
+        let err = ProviderError::first_byte_stall("0 chars in 120 s");
+        assert!(err.is_first_byte_provider_stall(), "{err}");
+        assert!(err.is_stream_budget_exceeded(), "{err}");
+        assert!(err.to_string().contains("0 chars in 120 s"), "{err}");
+    }
+
+    /// The general (mid-stream / repetition / wall-clock) stream-budget error
+    /// must NOT be mistaken for a first-byte stall — that would make Y8a's
+    /// "never retry a runaway" case eligible for the R19a retry-once path.
+    #[test]
+    fn an_ordinary_stream_budget_error_is_not_a_first_byte_stall() {
+        let err = ProviderError::stream_budget_exceeded("the model repeated itself");
+        assert!(err.is_stream_budget_exceeded(), "{err}");
+        assert!(!err.is_first_byte_provider_stall(), "{err}");
+    }
+
+    /// The user-facing text for a first-byte stall must describe what
+    /// actually happened — the provider sent nothing, so "the model kept
+    /// generating" (the general stream-budget summary) would be a lie.
+    #[test]
+    fn a_first_byte_stall_gets_its_own_user_facing_summary() {
+        let err = ProviderError::first_byte_stall("0 chars in 300 s");
+        let summary = err.user_facing_summary();
+        assert!(summary.contains("did not send anything back"), "{summary}");
+        assert!(!summary.contains("kept generating"), "{summary}");
+    }
+
+    /// Lane R19c (G24 LOW). A first-byte stall is retryable by definition —
+    /// `agents::agent` retries it once (Lane R19a/R19b) — so it must not
+    /// report itself as permanent the way a genuine mid-stream stall or a
+    /// repeating model correctly does. Every OTHER caller of `is_permanent()`
+    /// (`cost_router::fallback`, the orchestrator, `goal_a2a`) reads this
+    /// flag to decide whether a retry/failover is worth trying at all.
+    #[test]
+    fn a_first_byte_stall_is_not_permanent() {
+        let err = ProviderError::first_byte_stall("0 chars in 180 s");
+        assert!(!err.is_permanent(), "{err}");
+    }
+
+    /// The general (mid-stream / repetition / wall-clock) stream-budget
+    /// error is UNCHANGED by the R19c carve-out above: it must stay
+    /// permanent, or a caller elsewhere could walk straight back into the
+    /// exact runaway Y8a exists to stop.
+    #[test]
+    fn an_ordinary_stream_budget_error_is_still_permanent() {
+        let err = ProviderError::stream_budget_exceeded("the model repeated itself");
+        assert!(err.is_permanent(), "{err}");
     }
 }

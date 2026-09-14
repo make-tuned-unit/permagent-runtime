@@ -26,6 +26,23 @@
 //!    provider may go without saying anything at all. This is the bound that
 //!    catches a socket that stops delivering, and it is the one a healthy
 //!    response never touches however long that response runs.
+//!
+//!    **Lane R19a (harness loop 2026-09-14).** The window ABOVE — applied
+//!    once a stream has already produced at least one item (even a
+//!    usage-only chunk) — is not the same problem as the window BEFORE it
+//!    has produced anything at all. M19 DeepSeek forensics: three m1-round
+//!    tasks each sent an identical
+//!    ~39 KB-system-prompt coordinator request that received **0 chars in
+//!    120 s**, three times in a row, while a z.ai request on the same binary,
+//!    at the same moment, under the same ~20 load average, with an
+//!    equivalent-sized payload, answered in seconds — a provider-side
+//!    prefill/queueing delay, not a dead socket. `PERMAGENT_PROVIDER_STREAM_-
+//!    FIRST_BYTE_SECS` (default 300) now governs `next()` only until the
+//!    first item arrives; every `next()` after that keeps using the ordinary
+//!    120 s inactivity window above, unchanged. The caller (`agents::agent`)
+//!    retries a first-byte stall once, since nothing has streamed yet to
+//!    contradict a second attempt; Y8a's "never retry a genuine mid-stream
+//!    stall or a repeating model" is untouched.
 //! 2. **Total wall clock** — `PERMAGENT_PROVIDER_STREAM_MAX_SECS` (default
 //!    1200, `0` = unlimited). Checked per delta, as a backstop on a stream that
 //!    is *productive* forever. It is deliberately generous: a slow local model,
@@ -64,8 +81,18 @@ use crate::conversation::message::{Message, MessageContent};
 /// [`STALL_SECS_ENV`].
 pub const MAX_SECS_ENV: &str = "PERMAGENT_PROVIDER_STREAM_MAX_SECS";
 /// Inactivity window for a single provider response, in seconds: how long one
-/// `next()` may block without delivering anything. `0` disables.
+/// `next()` may block without delivering anything ONCE THE STREAM HAS ALREADY
+/// DELIVERED at least one item. `0` disables. See [`FIRST_BYTE_SECS_ENV`] for
+/// the window before that.
 pub const STALL_SECS_ENV: &str = "PERMAGENT_PROVIDER_STREAM_STALL_SECS";
+/// Lane R19a. Inactivity window for the FIRST `next()` of a response, in
+/// seconds: how long we wait for the provider to say anything at all before
+/// it has said anything. `0` disables (falls back to [`STALL_SECS_ENV`]'s
+/// window, i.e. the pre-R19a behavior). Deliberately more generous than the
+/// mid-stream window — a large context's prefill and a busy provider's queue
+/// both look, from here, identical to a dead socket, and only one of them is
+/// actually a problem.
+pub const FIRST_BYTE_SECS_ENV: &str = "PERMAGENT_PROVIDER_STREAM_FIRST_BYTE_SECS";
 /// Cumulative streamed-output ceiling for a single response, in characters.
 /// `0` disables.
 pub const MAX_OUTPUT_CHARS_ENV: &str = "PERMAGENT_PROVIDER_STREAM_MAX_OUTPUT_CHARS";
@@ -73,10 +100,37 @@ pub const MAX_OUTPUT_CHARS_ENV: &str = "PERMAGENT_PROVIDER_STREAM_MAX_OUTPUT_CHA
 /// 20 minutes. A response that is still *producing* after this is pathological;
 /// one that is merely long is not, which is why this is not 300 (G13 H2).
 pub const DEFAULT_MAX_SECS: u64 = 1200;
-/// Two minutes of complete silence from the provider. Prefill on a large
-/// context plus a first-token wait fits well inside this; a dead socket does
-/// not.
+/// Two minutes of complete silence from the provider, ONCE it has already
+/// delivered at least one item. Prefill on a large context plus a first-token
+/// wait belongs to [`DEFAULT_FIRST_BYTE_SECS`] now (Lane R19a); a dead socket
+/// mid-stream does not get that much rope.
 pub const DEFAULT_STALL_SECS: u64 = 120;
+/// Three minutes of complete silence before the FIRST item arrives (Lane
+/// R19a; lowered from 300s to 180s by Lane R19c/G24 HIGH-2). Wider than
+/// [`DEFAULT_STALL_SECS`] on purpose: the M19 DeepSeek forensics this
+/// constant comes from measured a ~39 KB system prompt stalling at 0 chars
+/// for the full prior 120 s bound, three times in a row, while an
+/// equivalent-sized request to a different provider on the same binary at
+/// the same moment answered in seconds — plausibly provider-side
+/// queueing/prefill, not a dead connection.
+///
+/// **Worst case, Lane R19c.** The caller (`agents::agent`) retries this
+/// specific timeout once before giving up, but the retry does NOT get a
+/// fresh 180 s — it gets whatever remains of this same 180 s ceiling for the
+/// WHOLE turn (`FIRST_BYTE_WINDOW_OVERRIDE` below), computed from how long
+/// the turn has already spent waiting for a first byte. So one coordinator
+/// turn spends **at most ~180 s of silent pre-first-byte waiting in total**
+/// across both attempts, plus whatever the content stream itself legitimately
+/// takes once bytes start arriving (bounded separately by
+/// [`DEFAULT_STALL_SECS`] per gap and [`DEFAULT_MAX_SECS`] overall) — not the
+/// ~600 s two independent fresh windows would have allowed (G24 HIGH-2: that
+/// reliably exceeds a 600 s eval timeout and turns an honest give-up into an
+/// ambiguous hard-kill with no receipt). With Lane R19b's keep-alive
+/// liveness now live, a DeepSeek hold that sends ANY keep-alive resets the
+/// raw-line clock and never reaches this timeout at all; 180 s total is
+/// sized for the connection that is genuinely, fully silent — no bytes, no
+/// keep-alives, nothing.
+pub const DEFAULT_FIRST_BYTE_SECS: u64 = 180;
 pub const DEFAULT_MAX_OUTPUT_CHARS: usize = 400_000;
 
 /// A delta shorter than this is never counted as a repetition: single tokens,
@@ -127,13 +181,50 @@ fn env_u64(key: &str, default: u64) -> u64 {
     }
 }
 
+tokio::task_local! {
+    /// Lane R19c (G24 HIGH-2). Scoped override for the first-byte window
+    /// `StreamBudget::from_env` would otherwise read from
+    /// `PERMAGENT_PROVIDER_STREAM_FIRST_BYTE_SECS`/[`DEFAULT_FIRST_BYTE_SECS`].
+    ///
+    /// Exists so a first-byte-stall retry (`agents::agent`) can be given the
+    /// REMAINING part of the turn's ~180s first-byte ceiling instead of a
+    /// fresh window — the worst case this bounds is "one coordinator turn
+    /// spends at most ~180s of silent pre-first-byte waiting in total,
+    /// across both attempts" rather than ~2x180s. A `tokio::task_local!`
+    /// rather than a process env var on purpose: setting an env var would be
+    /// racy across the concurrently-running turns/providers this harness
+    /// runs (exactly the `AUTHORIZED_ATTEMPTS` pattern in
+    /// `cost_router::authorized_attempts` uses for the same reason — scoped
+    /// to one async call tree, invisible to every other one).
+    ///
+    /// `Some(d)` sets the window to exactly `d` (including `Duration::ZERO`,
+    /// which is a real "no time left", not "unlimited" — see
+    /// [`StreamBudget::from_env`]). `None` explicitly disables the
+    /// first-byte window for calls inside the scope (falls back to the
+    /// ordinary stall window throughout, like `with_first_byte(None)`).
+    /// Outside any scope — the ordinary, non-retry case — `from_env` reads
+    /// the env var/default exactly as before this lane.
+    pub static FIRST_BYTE_WINDOW_OVERRIDE: Option<Duration>;
+}
+
 #[derive(Debug)]
 pub struct StreamBudget {
     started: Instant,
     /// Total wall clock. `None` means unlimited.
     max_wall: Option<Duration>,
-    /// Inactivity window applied to each `next()`. `None` means unlimited.
+    /// Inactivity window applied to each `next()` AFTER the first item has
+    /// arrived. `None` means unlimited.
     max_stall: Option<Duration>,
+    /// Lane R19a. Inactivity window applied to `next()` calls BEFORE the
+    /// first item has arrived. `None` falls back to `max_stall` — the
+    /// pre-R19a behavior of one uniform window for the whole stream.
+    max_first_byte: Option<Duration>,
+    /// Lane R19a. Has this stream delivered anything at all yet — a real
+    /// delta or a usage-only chunk? Flips permanently on the first
+    /// [`record`](Self::record)/[`record_text`](Self::record_text) call,
+    /// which only ever happens after a `next()` has actually returned
+    /// something (see `stream_openai_compat`'s loop).
+    first_byte_received: bool,
     /// `None` means unlimited.
     max_output_chars: Option<usize>,
     chars: usize,
@@ -147,11 +238,28 @@ impl StreamBudget {
         let secs = env_u64(MAX_SECS_ENV, DEFAULT_MAX_SECS);
         let stall = env_u64(STALL_SECS_ENV, DEFAULT_STALL_SECS);
         let chars = env_u64(MAX_OUTPUT_CHARS_ENV, DEFAULT_MAX_OUTPUT_CHARS as u64) as usize;
+        // Lane R19c (G24 HIGH-2): a `FIRST_BYTE_WINDOW_OVERRIDE` scope wins
+        // over the env var/default — this is how a first-byte-stall retry
+        // gets the REMAINING part of the turn's ceiling instead of a fresh
+        // window. Passed through exactly as given: `Some(Duration::ZERO)`
+        // stays zero (real "no time left"), never reinterpreted as
+        // "unlimited" the way a `0` from the env var is. No scope installed
+        // (the ordinary, non-retry case) falls through to the env var/default
+        // unchanged from before this lane.
+        let first_byte =
+            match FIRST_BYTE_WINDOW_OVERRIDE.try_with(|override_window| *override_window) {
+                Ok(overridden) => overridden,
+                Err(_) => {
+                    let first_byte_secs = env_u64(FIRST_BYTE_SECS_ENV, DEFAULT_FIRST_BYTE_SECS);
+                    (first_byte_secs > 0).then(|| Duration::from_secs(first_byte_secs))
+                }
+            };
         Self::new(
             (secs > 0).then(|| Duration::from_secs(secs)),
             (chars > 0).then_some(chars),
         )
         .with_stall((stall > 0).then(|| Duration::from_secs(stall)))
+        .with_first_byte(first_byte)
     }
 
     pub fn new(max_wall: Option<Duration>, max_output_chars: Option<usize>) -> Self {
@@ -159,6 +267,8 @@ impl StreamBudget {
             started: Instant::now(),
             max_wall,
             max_stall: None,
+            max_first_byte: None,
+            first_byte_received: false,
             max_output_chars,
             chars: 0,
             last_delta: String::new(),
@@ -166,11 +276,37 @@ impl StreamBudget {
         }
     }
 
-    /// Set the inactivity window. `None` = unlimited, in which case the
+    /// Set the inactivity window applied once the stream has already
+    /// delivered at least one item. `None` = unlimited, in which case the
     /// remaining total (if any) is what bounds a `next()`.
     pub fn with_stall(mut self, max_stall: Option<Duration>) -> Self {
         self.max_stall = max_stall;
         self
+    }
+
+    /// Lane R19a. Set the inactivity window applied before the stream has
+    /// delivered anything at all. `None` = fall back to the ordinary stall
+    /// window for the whole stream, matching the pre-R19a behavior.
+    pub fn with_first_byte(mut self, max_first_byte: Option<Duration>) -> Self {
+        self.max_first_byte = max_first_byte;
+        self
+    }
+
+    /// Lane R19b. The window that should bound the wait for the very FIRST
+    /// raw byte/line of the response — for a caller (`with_raw_line_liveness`
+    /// in `openai_compatible.rs`) that enforces liveness at the raw-wire
+    /// level rather than at this budget's own semantic-item `next_timeout`.
+    /// Mirrors `next_timeout`'s own pre-first-byte fallback: `max_first_byte`,
+    /// or `max_stall` when no dedicated first-byte window is configured.
+    pub fn first_byte_window(&self) -> Option<Duration> {
+        self.max_first_byte.or(self.max_stall)
+    }
+
+    /// Lane R19b. The window that should bound the wait between raw
+    /// bytes/lines once at least one has already arrived. Same caller as
+    /// [`first_byte_window`](Self::first_byte_window).
+    pub fn stall_window(&self) -> Option<Duration> {
+        self.max_stall
     }
 
     /// How much of the TOTAL wall clock is left. `None` = unlimited;
@@ -181,13 +317,19 @@ impl StreamBudget {
             .map(|max| max.saturating_sub(self.started.elapsed()))
     }
 
-    /// How long the next `next()` may block: the fixed inactivity window, or
-    /// the remaining total when that is tighter (or when there is no stall
-    /// window at all). `None` = no timeout wrapper.
+    /// How long the next `next()` may block: the fixed inactivity window for
+    /// the stream's current phase (pre- or post-first-byte, Lane R19a), or
+    /// the remaining total when that is tighter (or when there is no
+    /// inactivity window at all). `None` = no timeout wrapper.
     pub fn next_timeout(&self) -> Option<Duration> {
-        match (self.max_stall, self.remaining()) {
-            (Some(stall), Some(remaining)) => Some(stall.min(remaining)),
-            (Some(stall), None) => Some(stall),
+        let window = if self.first_byte_received {
+            self.max_stall
+        } else {
+            self.max_first_byte.or(self.max_stall)
+        };
+        match (window, self.remaining()) {
+            (Some(window), Some(remaining)) => Some(window.min(remaining)),
+            (Some(window), None) => Some(window),
             (None, remaining) => remaining,
         }
     }
@@ -198,11 +340,23 @@ impl StreamBudget {
         if self.remaining().is_some_and(|left| left.is_zero()) {
             return self.wall_clock_error();
         }
+        if !self.first_byte_received && self.max_first_byte.is_some() {
+            return self.first_byte_error();
+        }
         if self.max_stall.is_some() {
             self.stall_error()
         } else {
             self.wall_clock_error()
         }
+    }
+
+    /// Lane R19b. The cumulative CONTENT char count recorded so far — the
+    /// same number `observed_rate` reports, exposed for a caller that needs
+    /// to quote it alongside a different count (raw lines/bytes received at
+    /// the wire level, which can be nonzero while this stays at 0 during a
+    /// keep-alived-but-content-free hold).
+    pub fn chars_so_far(&self) -> u64 {
+        self.chars as u64
     }
 
     fn observed_rate(&self) -> String {
@@ -229,6 +383,23 @@ impl StreamBudget {
             self.max_stall.map(|d| d.as_secs()).unwrap_or(0),
             self.observed_rate(),
             STALL_SECS_ENV,
+        ))
+    }
+
+    /// Lane R19a. The error for a stream that sent nothing at all — not one
+    /// item, real or usage-only — within the first-byte window. Distinct
+    /// from [`stall_error`](Self::stall_error): the caller (`agents::agent`)
+    /// retries this specific failure once, because nothing has streamed yet
+    /// to contradict a second attempt.
+    pub fn first_byte_error(&self) -> ProviderError {
+        ProviderError::first_byte_stall(format!(
+            "the provider sent nothing at all for longer than {} allows ({}s); {} were received \
+             before the stream was stopped. Raise or disable {} (0 = unlimited) if this model or \
+             provider legitimately needs longer to start responding.",
+            FIRST_BYTE_SECS_ENV,
+            self.max_first_byte.map(|d| d.as_secs()).unwrap_or(0),
+            self.observed_rate(),
+            FIRST_BYTE_SECS_ENV,
         ))
     }
 
@@ -279,6 +450,14 @@ impl StreamBudget {
 
     /// The half of [`record`](Self::record) that does not need a `Message`.
     pub fn record_text(&mut self, delta: &str) -> Result<(), ProviderError> {
+        // Lane R19a: `record`/`record_text` only ever runs after a `next()`
+        // has actually returned an item (see `stream_openai_compat`'s loop),
+        // so reaching this line at all — even for an empty/usage-only delta —
+        // means the provider is no longer silent. Every `next()` after this
+        // one uses the ordinary mid-stream stall window, not the first-byte
+        // one, regardless of how short or empty this particular delta was.
+        self.first_byte_received = true;
+
         let len = delta.chars().count();
         self.chars = self.chars.saturating_add(len);
 
@@ -552,5 +731,173 @@ mod tests {
         let err = budget.wall_clock_error();
         assert!(err.is_stream_budget_exceeded(), "{err}");
         assert!(err.to_string().contains(MAX_SECS_ENV), "{err}");
+    }
+
+    // --- Lane R19a: first-byte phase vs. mid-stream stall ---------------
+
+    /// Before anything has arrived, `next_timeout` uses the first-byte
+    /// window — not the (usually much tighter) mid-stream stall window. A
+    /// large context's prefill and a busy provider's queue legitimately take
+    /// longer than an ordinary pause between deltas.
+    #[test]
+    fn the_first_byte_window_applies_before_anything_is_received() {
+        let budget = StreamBudget::new(None, None)
+            .with_stall(Some(Duration::from_secs(120)))
+            .with_first_byte(Some(Duration::from_secs(300)));
+        assert_eq!(
+            budget.next_timeout(),
+            Some(Duration::from_secs(300)),
+            "nothing received yet: the first-byte window applies, not the 120s stall window"
+        );
+    }
+
+    /// Once the first item has arrived — even an empty/usage-only chunk with
+    /// no text — `next_timeout` switches to the ordinary mid-stream stall
+    /// window. Y8a's protection for a genuinely dead mid-stream socket must
+    /// fire exactly as before, at 120s, not at the wider first-byte window.
+    #[test]
+    fn the_stall_window_applies_once_the_first_byte_has_arrived() {
+        let mut budget = StreamBudget::new(None, None)
+            .with_stall(Some(Duration::from_secs(120)))
+            .with_first_byte(Some(Duration::from_secs(300)));
+        budget
+            .record(None)
+            .expect("a usage-only chunk is not itself a failure");
+        assert_eq!(
+            budget.next_timeout(),
+            Some(Duration::from_secs(120)),
+            "the first item (even an empty one) arrived: fall back to the mid-stream window"
+        );
+    }
+
+    /// A timeout before the first byte reports the first-byte bound by name,
+    /// and is classified as a first-byte stall distinct from an ordinary
+    /// mid-stream one — the caller uses this to decide whether to retry.
+    #[test]
+    fn a_pre_first_byte_timeout_reports_the_first_byte_bound() {
+        let budget = StreamBudget::new(None, None)
+            .with_stall(Some(Duration::from_secs(120)))
+            .with_first_byte(Some(Duration::from_secs(300)));
+        let err = budget.timeout_error();
+        assert!(err.to_string().contains(FIRST_BYTE_SECS_ENV), "{err}");
+        assert!(err.is_stream_budget_exceeded(), "{err}");
+        assert!(err.is_first_byte_provider_stall(), "{err}");
+    }
+
+    /// A mid-stream timeout — after at least one item has arrived — still
+    /// trips the ordinary 120s stall bound, names it, and is NOT classified
+    /// as a first-byte stall, so it keeps Y8a's "do not retry" handling
+    /// exactly as before this lane.
+    #[test]
+    fn a_mid_stream_timeout_still_trips_the_ordinary_stall_bound() {
+        let mut budget = StreamBudget::new(None, None)
+            .with_stall(Some(Duration::from_secs(120)))
+            .with_first_byte(Some(Duration::from_secs(300)));
+        budget
+            .record_text("hello ")
+            .expect("the first delta arrives fine");
+        let err = budget.timeout_error();
+        assert!(err.to_string().contains(STALL_SECS_ENV), "{err}");
+        assert!(err.is_stream_budget_exceeded(), "{err}");
+        assert!(!err.is_first_byte_provider_stall(), "{err}");
+    }
+
+    /// With no first-byte window configured, `next_timeout` falls back to
+    /// the ordinary stall window for the whole stream — the pre-R19a
+    /// behavior — so a caller that never opts in (or sets
+    /// `PERMAGENT_PROVIDER_STREAM_FIRST_BYTE_SECS=0`) is unaffected.
+    #[test]
+    fn no_first_byte_window_falls_back_to_the_stall_window_throughout() {
+        let stall = Duration::from_secs(120);
+        let budget = StreamBudget::new(None, None).with_stall(Some(stall));
+        assert_eq!(budget.next_timeout(), Some(stall));
+        let err = budget.timeout_error();
+        assert!(err.to_string().contains(STALL_SECS_ENV), "{err}");
+        assert!(!err.is_first_byte_provider_stall(), "{err}");
+    }
+
+    /// The spent-total wall-clock bound still wins over the first-byte
+    /// window when it is the tighter of the two, exactly as it already did
+    /// over the stall window.
+    #[test]
+    fn a_spent_total_wins_over_the_first_byte_window() {
+        let budget = StreamBudget::new(Some(Duration::ZERO), None)
+            .with_stall(Some(Duration::from_secs(120)))
+            .with_first_byte(Some(Duration::from_secs(300)));
+        let err = budget.timeout_error();
+        assert!(err.to_string().contains(MAX_SECS_ENV), "{err}");
+        assert!(!err.is_first_byte_provider_stall(), "{err}");
+    }
+
+    /// Lane R19c (G24 HIGH-2): lowered from 300s to 180s so one coordinator
+    /// turn's worst-case silent pre-first-byte wait (original attempt +
+    /// retry, `FIRST_BYTE_WINDOW_OVERRIDE` bounding the retry to the
+    /// REMAINING part of this same ceiling) stays near 180s total instead of
+    /// ~2x300s=600s.
+    #[test]
+    fn the_first_byte_default_is_180s() {
+        assert_eq!(DEFAULT_FIRST_BYTE_SECS, 180);
+    }
+
+    // --- Lane R19c: retry gets the REMAINING first-byte budget, not a fresh window (G24 HIGH-2) ---
+
+    /// With no override task-local in scope, `from_env` behaves exactly as
+    /// before (falls through to the env var / default) — the override is
+    /// opt-in per call tree, never ambient.
+    #[tokio::test]
+    async fn with_no_override_in_scope_from_env_reads_the_ordinary_default() {
+        // Guards (and serializes with) FIRST_BYTE_SECS_ENV so this assertion
+        // is not racing some other test's env_lock-guarded override of the
+        // same process-wide env var.
+        let _guard = env_lock::lock_env([(FIRST_BYTE_SECS_ENV, None)]);
+        let budget = StreamBudget::from_env();
+        assert_eq!(
+            budget.first_byte_window(),
+            Some(Duration::from_secs(DEFAULT_FIRST_BYTE_SECS)),
+            "no override installed: the ordinary default applies"
+        );
+    }
+
+    /// Inside `FIRST_BYTE_WINDOW_OVERRIDE`'s scope, `from_env` uses the
+    /// override instead of the env var/default — this is how the retry gets
+    /// the REMAINING budget rather than a fresh 180s window.
+    #[tokio::test]
+    async fn an_override_in_scope_replaces_the_first_byte_window() {
+        let remaining = Duration::from_secs(7);
+        let observed = FIRST_BYTE_WINDOW_OVERRIDE
+            .scope(Some(remaining), async {
+                StreamBudget::from_env().first_byte_window()
+            })
+            .await;
+        assert_eq!(observed, Some(remaining));
+    }
+
+    /// `Some(Duration::ZERO)` is a valid, meaningful override — the first
+    /// attempt already spent the whole 180s ceiling, so the retry gets
+    /// (deliberately) almost no additional silent wait: if the provider
+    /// answers essentially immediately this time, the retry still succeeds;
+    /// if not, it fails fast instead of burning another 180s.
+    #[tokio::test]
+    async fn a_zero_remaining_override_is_not_treated_as_unlimited() {
+        let observed = FIRST_BYTE_WINDOW_OVERRIDE
+            .scope(Some(Duration::ZERO), async {
+                StreamBudget::from_env().first_byte_window()
+            })
+            .await;
+        assert_eq!(
+            observed,
+            Some(Duration::ZERO),
+            "zero remaining must stay zero, not silently become unlimited"
+        );
+    }
+
+    /// `None` inside the scope means "no first-byte window at all" — an
+    /// explicit unlimited, distinct from "no override installed".
+    #[tokio::test]
+    async fn a_none_override_means_explicitly_unlimited() {
+        let observed = FIRST_BYTE_WINDOW_OVERRIDE
+            .scope(None, async { StreamBudget::from_env().first_byte_window() })
+            .await;
+        assert_eq!(observed, None);
     }
 }
