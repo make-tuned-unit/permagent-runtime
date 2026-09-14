@@ -21,13 +21,68 @@ const FIELDS: [(&str, &str, bool); 14] = [
     ("verification_integrity", "reviewer_mutations", true),
     ("verification_integrity", "reviewer_not_independent", true),
     ("safety_and_trust", "jail_denials", true),
-    // Landing sees dirty trunk state, but cannot attribute it to a worker.
-    ("safety_and_trust", "jail_bypasses", false),
-    // No independent source checks skill executions against durable approvals.
-    // S3 commits an answered decision before execution; its runs are approved.
-    ("safety_and_trust", "unapproved_skill_runs", false),
-    // Tool execution does not carry answered-decision provenance.
-    ("safety_and_trust", "approval_bypasses", false),
+    // Lane R18a: real, not a permanent placeholder. `write_jail.rs::jail_verdict`
+    // resolves every write/edit-tool target by its ACTUAL resolved path (not a
+    // text pattern), so for a REFUSING role (`JailRole::GoalWorker` /
+    // `HeadlessSubAgent`) an `Outside` verdict is unconditionally denied —
+    // `JailRole::denial_reason` returns `Some` for both variants by
+    // construction of that match, so a write-tool escape can never reach this
+    // counter as a silent pass. Shell escapes go through the same structural
+    // analysis (`shell_escape`), which recognizes the escape shapes that
+    // matter (`cd`/`pushd`, `git -C`/`--git-dir`/`--work-tree` with a mutating
+    // subcommand, an outside output redirection, a mutating file command with
+    // an outside target) — a truly undetected shell escape is, by
+    // definition, invisible to the detector that failed to detect it, so it
+    // cannot be counted without inventing a number (see this module's own
+    // "not an assertion that detectors cover every attack" above). What CAN
+    // be counted honestly is the two places this jail loses observability
+    // entirely: the WARN-logged break-glass switch
+    // (`SECURITY_WRITE_JAIL_ENABLED=false`, `tool_inspection::inspect_tools`)
+    // and a session-row lookup failure (`WriteJailInspector::inspect`'s own
+    // fail-open). Both call `mark_unknown` for this field — the same pattern
+    // `dag_enforcement`'s `bypass_passes`/`coordinator_mutations` already use
+    // in `extension_manager.rs`. Zero means the jail ran and its structural
+    // analysis denied every escape shape it is built to recognize.
+    ("safety_and_trust", "jail_bypasses", true),
+    // Lane R18a: real, not a permanent placeholder.
+    // `skill_run::run_command_skill` is FAIL-CLOSED, not fail-open: every
+    // command execution goes through `verification_approval::decide` first,
+    // and a `Parked` decision returns BEFORE `execute_command` — the only
+    // process-spawning seam — is ever called; the S3 unattended path only
+    // reaches `execute_command` after `decisions::auto_approve_skill_run`
+    // itself returns `Ok`, gated on `headless_skill_run_enabled()` +
+    // `GooseMode::Auto` + a non-`User` tier. The old bypass-capable runner
+    // (`executable_skills::run_named`/`run_skill`, no registry, no
+    // `decide()` call anywhere) was deleted by the X-skill DAG specifically
+    // to close this gap — see that module's doc comment. A prior pass at
+    // this field ("Lane Q-receipts review fix: no counter may be a vacuous
+    // zero") tried re-checking `ladder.audit_row.decision` for
+    // `Parked`/`Denied` INSIDE `execute_command` itself and was correctly
+    // reverted as vacuous: that branch can never run, because the caller
+    // already returned on `Parked` before `execute_command` is constructed.
+    // There is also no fail-open path to mark unknown: a `decide()`/`load()`
+    // failure errors the whole `skill_run` call rather than letting it fall
+    // through to execution. Zero means no command ever reached the
+    // process-spawning seam without first earning one of `decide()`'s
+    // approving outcomes (`Auto`, `UserAuthored`, `AgentApproved`,
+    // `ApprovedOnce`).
+    ("safety_and_trust", "unapproved_skill_runs", true),
+    // Lane R18a: real, not a permanent placeholder.
+    // `Agent::handle_provider_authorization_failure` (`reply_parts.rs`) is
+    // FAIL-CLOSED the same way: the turn loop (`agents/agent.rs`) only ever
+    // streams from a provider after a successful `reserve_provider_invocation`
+    // — on failure it retries EXACTLY ONCE, and only
+    // `if outcome.gate_grant_minted` (a real `granted_via_gate=1` reservation
+    // row, not an in-memory flag); that retry calls
+    // `reserve_provider_invocation` again and must itself succeed, or the
+    // turn ends (`break`) without ever calling the provider. No branch
+    // streams a response on a `None`/failed authorization, and a lookup
+    // failure inside the reservation path itself becomes
+    // `ProviderAuthorizationFailure::Unknown`, which routes through the same
+    // fail-closed handling — never a silent allow. Zero means every provider
+    // call this run made was preceded by its own successful reservation,
+    // never a retried call riding an earlier call's authorization.
+    ("safety_and_trust", "approval_bypasses", true),
     ("safety_and_trust", "adversary_blocks", true),
 ];
 
@@ -317,10 +372,18 @@ mod tests {
         ]);
     }
 
+    /// Lane R18a: `jail_bypasses`, `unapproved_skill_runs` and
+    /// `approval_bypasses` used to be permanently `unknown` — never wired to
+    /// any producer, so the whole `safety_and_trust` line failed
+    /// `SAFETY_AND_TRUST_RE` (every key must be an unsigned integer) on
+    /// every run. They are now real counters, known from a fresh registry
+    /// (and again after `reset`), exactly like `jail_denials` and
+    /// `adversary_blocks` — see the `FIELDS` doc comments for why each one
+    /// is honestly zero absent an observed event.
     #[test]
-    fn receipts_unwired_counters_are_unknown_even_if_recorded_or_reset() {
+    fn safety_and_trust_bypass_counters_are_real_not_permanently_unknown() {
         let registry = Registry::default();
-        let expected = "receipt safety_and_trust jail_denials=0 jail_bypasses=unknown unapproved_skill_runs=unknown approval_bypasses=unknown adversary_blocks=0";
+        let expected = "receipt safety_and_trust jail_denials=0 jail_bypasses=0 unapproved_skill_runs=0 approval_bypasses=0 adversary_blocks=0";
         assert_eq!(registry.snapshot().lines()[2], expected);
         for key in [
             "jail_bypasses",
@@ -329,9 +392,52 @@ mod tests {
         ] {
             registry.record("safety_and_trust", key, 1, None);
         }
-        assert_eq!(registry.snapshot().lines()[2], expected);
+        assert_eq!(
+            registry.snapshot().lines()[2],
+            "receipt safety_and_trust jail_denials=0 jail_bypasses=1 unapproved_skill_runs=1 \
+             approval_bypasses=1 adversary_blocks=0"
+        );
         registry.reset();
         assert_eq!(registry.snapshot().lines()[2], expected);
+    }
+
+    /// Lane R18a: the exact regex `permagent-eval`'s `harness_log.rs` uses
+    /// to parse this line (`SAFETY_AND_TRUST_RE`), copied verbatim so a
+    /// future edit to either side is caught here rather than only in a
+    /// downstream eval run. Every key must parse as `[0-9]+` — the defect
+    /// this lane fixes is exactly that `unknown` (a valid value this
+    /// module prints) fails this regex and drops the WHOLE line, not just
+    /// the one field.
+    #[test]
+    fn safety_and_trust_line_matches_the_driver_regex_when_every_field_is_known() {
+        let re = regex::Regex::new(
+            r"^\s*receipt\s+safety_and_trust\s+jail_denials=([0-9]+)\s+jail_bypasses=([0-9]+)\s+unapproved_skill_runs=([0-9]+)\s+approval_bypasses=([0-9]+)\s+adversary_blocks=([0-9]+)\s*$",
+        )
+        .unwrap();
+        let registry = Registry::default();
+        let line = registry.snapshot().lines()[2].clone();
+        assert!(
+            re.is_match(&line),
+            "a freshly-initialized registry's safety_and_trust line must already parse: {line}"
+        );
+    }
+
+    /// Lane R18a: `mark_unknown` is the real producer for `jail_bypasses`
+    /// going unknown — wired at the two places the write jail loses
+    /// observability entirely (`WriteJailInspector::inspect`'s fail-open,
+    /// and the `SECURITY_WRITE_JAIL_ENABLED=false` break-glass switch in
+    /// `tool_inspection::inspect_tools`; see those modules' own tests for
+    /// the end-to-end wiring). This test exercises the primitive both call:
+    /// a real zero flips to unknown, and the NEXT run starts real again
+    /// (this run's loss of observability must not leak into the next one).
+    #[test]
+    fn jail_bypasses_mark_unknown_overrides_a_real_zero_for_this_run_only() {
+        let registry = Registry::default();
+        assert_eq!(registry.snapshot().counts[10], Some(0));
+        registry.known[10].store(false, Ordering::Relaxed);
+        assert_eq!(registry.snapshot().counts[10], None);
+        registry.reset();
+        assert_eq!(registry.snapshot().counts[10], Some(0));
     }
 
     /// Lane R17a: the sidecar mechanism itself, exercised through the real
@@ -346,7 +452,14 @@ mod tests {
     /// `routing_receipt_format_contract` test, since a zeroed run's lines are
     /// deterministic). `end_run` at the end returns the process to its
     /// pre-test (inactive) state.
+    ///
+    /// Lane R18a: `#[serial]` because it drives the process-wide
+    /// `REGISTRY`/`ACTIVE` statics through the real `begin_run`/`end_run`
+    /// API — same shared key as every other test in this binary that does
+    /// the same (`write_jail.rs`, `tool_inspection.rs`), so none of them can
+    /// interleave and observe a half-reset registry.
     #[test]
+    #[serial_test::serial(receipts_global_registry)]
     fn sidecar_receives_all_four_contract_lines_on_a_counter_change() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sidecar = dir.path().join("harness-receipts.txt");
@@ -364,7 +477,7 @@ mod tests {
                 "receipt cost_routing dispatches=0 cheapest_capable=0 pack_honored=0 planner=unknown/unknown",
                 "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0",
                 "receipt verification_integrity goals=0 review_reached=0 vacuous_passes=0 reviewer_mutations=0 reviewer_not_independent=0",
-                "receipt safety_and_trust jail_denials=0 jail_bypasses=unknown unapproved_skill_runs=unknown approval_bypasses=unknown adversary_blocks=0",
+                "receipt safety_and_trust jail_denials=0 jail_bypasses=0 unapproved_skill_runs=0 approval_bypasses=0 adversary_blocks=0",
             ]
         );
     }
@@ -373,7 +486,10 @@ mod tests {
     /// one via [`set_harness_overhead_line`] — the sidecar must not fabricate
     /// it, but once set it is written on the very next receipt change too
     /// (not only when the overhead line itself changes).
+    /// Lane R18a: `#[serial]` — see
+    /// `sidecar_receives_all_four_contract_lines_on_a_counter_change`.
     #[test]
+    #[serial_test::serial(receipts_global_registry)]
     fn sidecar_includes_harness_overhead_once_set() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sidecar = dir.path().join("harness-receipts.txt");

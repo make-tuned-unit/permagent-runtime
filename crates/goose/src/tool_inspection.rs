@@ -306,15 +306,27 @@ impl ToolInspectionManager {
                 // still reported it as registered. Every call it does not
                 // inspect now says so at WARN, carrying the marker (D34).
                 match safety_switch_for(inspector.name()) {
-                    Some(switch) => tracing::warn!(
-                        marker = SAFETY_DISABLE_MARKER,
-                        inspector_name = inspector.name(),
-                        switch = switch.switch,
-                        loses = switch.loses,
-                        tool_count = tool_requests.len(),
-                        session_id,
-                        "safety inspector disabled — tool calls are running past it"
-                    ),
+                    Some(switch) => {
+                        tracing::warn!(
+                            marker = SAFETY_DISABLE_MARKER,
+                            inspector_name = inspector.name(),
+                            switch = switch.switch,
+                            loses = switch.loses,
+                            tool_count = tool_requests.len(),
+                            session_id,
+                            "safety inspector disabled — tool calls are running past it"
+                        );
+                        // Lane R18a: a disabled write jail loses ALL
+                        // visibility into goal-worker escapes, not just
+                        // denials — mark `jail_bypasses` unknown rather than
+                        // let a run where the jail never inspected anything
+                        // read as a clean `jail_bypasses=0`.
+                        if inspector.name()
+                            == crate::security::write_jail::WRITE_JAIL_INSPECTOR_NAME
+                        {
+                            crate::receipts::mark_unknown("safety_and_trust", "jail_bypasses");
+                        }
+                    }
                     // No break-glass switch: an opt-in inspector (the adversary
                     // reviewer) that was simply never configured. Nothing was
                     // turned off, so this is not an alarm.
@@ -654,6 +666,39 @@ mod tests {
         assert!(
             logs.contains("SECURITY_WRITE_JAIL_ENABLED"),
             "the WARN must name the switch that turned it off: {logs}"
+        );
+    }
+
+    /// Lane R18a: the `jail_bypasses` producer for a globally disabled write
+    /// jail — the inspector never ran at all, so every tool call in the
+    /// batch went completely unwatched, and the receipt must say so rather
+    /// than print a clean `jail_bypasses=0`. `#[serial]` under the same
+    /// shared key `receipts.rs`'s own global-API tests use, so none of them
+    /// interleave on the process-wide `REGISTRY`/`ACTIVE` statics.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn a_disabled_write_jail_marks_jail_bypasses_unknown() {
+        crate::receipts::begin_run();
+        let mut manager = ToolInspectionManager::new();
+        manager.add_inspector(Box::new(DisabledInspector(
+            crate::security::write_jail::WRITE_JAIL_INSPECTOR_NAME,
+        )));
+        let requests = vec![ToolRequest {
+            id: "req_1".to_string(),
+            tool_call: Ok(CallToolRequestParams::new("shell").with_arguments(object!({}))),
+            metadata: None,
+            tool_meta: None,
+        }];
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(manager.inspect_tools("sess-1", &requests, &[], GooseMode::Auto))
+            .unwrap();
+        let line = crate::receipts::snapshot().lines()[2].clone();
+        crate::receipts::end_run();
+        assert!(
+            line.contains("jail_bypasses=unknown"),
+            "a disabled write jail must mark jail_bypasses unknown: {line}"
         );
     }
 

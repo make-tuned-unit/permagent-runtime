@@ -1064,7 +1064,15 @@ impl ToolInspector for WriteJailInspector {
             return Ok(Vec::new());
         }
         let Some(session) = self.session_row(session_id).await else {
-            // Fail open: no boundary to enforce (see module docs).
+            // Fail open: no boundary to enforce (see module docs). Lane R18a:
+            // this is also real lost observability for the `jail_bypasses`
+            // receipt — without the session row this jail cannot tell a goal
+            // worker from an ordinary session, so a write/shell command that
+            // would have been judged `Outside` for a REFUSING role goes
+            // completely unwatched. `has_write || has_shell` is already
+            // guaranteed true here (the check above returned early
+            // otherwise), so there was something this jail could not judge.
+            crate::receipts::mark_unknown("safety_and_trust", "jail_bypasses");
             return Ok(Vec::new());
         };
         let working_dir = session.working_dir.clone();
@@ -1433,6 +1441,30 @@ mod tests {
         assert!(
             results.is_empty(),
             "a jail without a boundary must fail open, not strand the agent"
+        );
+    }
+
+    /// Lane R18a: the `jail_bypasses` producer for exactly the fail-open
+    /// path above — a session lookup failure means this jail could not tell
+    /// a goal worker from an ordinary session, so it cannot honestly report
+    /// a clean `jail_bypasses=0`. `#[serial]` under the same shared key
+    /// `receipts.rs`'s own global-API tests use, so none of them interleave
+    /// on the process-wide `REGISTRY`/`ACTIVE` statics.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
+    async fn unknown_session_marks_jail_bypasses_unknown() {
+        crate::receipts::begin_run();
+        let tmp = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(SessionManager::new(tmp.path().join("sessions")));
+        let jail = WriteJailInspector::new(Some(session_manager));
+
+        let requests = vec![write_request("x", "write", "/definitely/not/allowed/y.txt")];
+        let _ = verdicts(&jail, "no-such-session", &requests).await;
+        let line = crate::receipts::snapshot().lines()[2].clone();
+        crate::receipts::end_run();
+        assert!(
+            line.contains("jail_bypasses=unknown"),
+            "a session lookup failure must mark jail_bypasses unknown: {line}"
         );
     }
 
