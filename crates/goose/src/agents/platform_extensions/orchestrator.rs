@@ -4456,6 +4456,17 @@ pub(crate) async fn dispatch_goal_fn(
     // token ties all post-spawn bookkeeping and cleanup to this exact attempt.
     // Concurrent dispatchers may have selected/built an engine, but only the
     // transaction winner below is authorized to call `spawn`.
+    // Lane R21d (A23 Q2 #2): `attempt_count` is stamped optimistically HERE,
+    // at dispatch time, rather than at completion — existing tests read it
+    // immediately after a dispatch call, before any worker has run, so
+    // moving the stamp to completion would change that contract everywhere.
+    // A zero-progress completion (no commit, no file change, no verify —
+    // see `goal_transition::attempt_made_zero_progress`) is instead
+    // forgiven by DECREMENTING this same stamp after the fact, once, per
+    // goal: `goal_transition::maybe_forgive_zero_progress_attempt`, called
+    // by the completion tracker below right after this attempt's
+    // `dispatch_evidence` is persisted and before the completion handler
+    // (and its `check_budget`) ever reads the card.
     let attempt_count = card
         .metadata_json
         .get("attempt_count")
@@ -4584,6 +4595,11 @@ pub(crate) async fn dispatch_goal_fn(
     let tracker_card_id = card_id.to_string();
     let tracker_project_id = card.project_id.clone();
     let tracker_pool = pool.clone();
+    // Lane R21d (A23 Q2 #2): an owned copy of this attempt's own session id
+    // — used to check whether it ran a successful verify, one of the three
+    // signals `maybe_forgive_zero_progress_attempt` needs to decide whether
+    // this attempt made any progress at all.
+    let tracker_session_id = session_id.clone();
     // Harness loop, Lane V (V1) / V2: an owned copy of "was this dispatch
     // reached through a headless Auto policy with landing switched on" — not
     // the policy's own borrowed lifetime, which cannot cross into this
@@ -4660,6 +4676,12 @@ pub(crate) async fn dispatch_goal_fn(
                 // Evidence panel + Discuss-with-Henry can read it. Best-effort
                 // — a metadata-write failure must not block completion.
                 if let Some(ev) = evidence {
+                    // `!ev.diff_errored`: a failed git diff/diffstat must
+                    // never read as "zero progress" — `files_changed == 0`
+                    // is not trustworthy when the collection itself errored
+                    // (see `GoalEvidence::diff_errored`'s own doc comment).
+                    let zero_progress_signal =
+                        ev.commits.is_empty() && ev.files_changed == 0 && !ev.diff_errored;
                     match serde_json::to_value(&ev) {
                         Ok(v) => {
                             if let Err(e) = cards::set_goal_dispatch_evidence(
@@ -4683,6 +4705,49 @@ pub(crate) async fn dispatch_goal_fn(
                             tracker_card_id,
                             e
                         ),
+                    }
+                    // Lane R21d (A23 Q2 #2): decide, BEFORE the completion
+                    // handler below (`handle_goal_completion` →
+                    // `maybe_hold_review` → `check_budget`) ever reads this
+                    // attempt's `attempt_count`, whether this attempt made
+                    // any progress at all — a commit, a file change, or a
+                    // successful verify call beyond its own dispatch
+                    // baseline. This is the only point at which forgiving a
+                    // zero-progress attempt can still stop THIS SAME
+                    // attempt's own Hold/Park decision from spending it, not
+                    // just the next one — A23 found both DeepSeek m1/m3
+                    // misses parked on exactly such an attempt
+                    // (`commits: []`, `files_changed: 0`, no verify).
+                    let verify_ran = if zero_progress_signal {
+                        session_had_successful_verify(
+                            &tracker_pool,
+                            Some(tracker_session_id.as_str()),
+                        )
+                        .await
+                    } else {
+                        // A commit or file change already disqualifies this
+                        // attempt from "zero progress" — skip the extra
+                        // session-transcript query.
+                        true
+                    };
+                    let zero_progress = goal_transition::attempt_made_zero_progress(
+                        !ev.commits.is_empty(),
+                        ev.files_changed != 0,
+                        verify_ran,
+                    );
+                    if let Err(e) = goal_transition::maybe_forgive_zero_progress_attempt(
+                        &tracker_pool,
+                        &tracker_card_id,
+                        zero_progress,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            target: "permagentd::brain",
+                            "could not evaluate zero-progress forgiveness for card {}: {}",
+                            tracker_card_id,
+                            e
+                        );
                     }
                 }
                 handle_goal_completion(
@@ -14649,11 +14714,19 @@ async fn maybe_headless_unblock_verify_gap(
         record_headless_unblock_refusal(pool, card, "wall_budget_exhausted").await;
         return Ok(None);
     }
-    if goal_transition::check_budget(pool, &card.metadata_json)
-        .await?
-        .is_some()
-    {
-        record_headless_unblock_refusal(pool, card, "cost_budget_exhausted").await;
+    if let Some(exhaustion) = goal_transition::check_budget(pool, &card.metadata_json).await? {
+        // Lane R21d (A23 Q2 #2): name the actual `BudgetExhaustion` variant
+        // and its spent/cap numbers, not a generic "cost_budget_exhausted" —
+        // A23 traced a real `AttemptCap { spent: 3, cap: 3 }` refusal logged
+        // under that one string, which read as a dollar cap that was never
+        // close.
+        let (spent, cap) = exhaustion.spent_and_cap();
+        record_headless_unblock_refusal(
+            pool,
+            card,
+            &format!("{}:spent={spent},cap={cap}", exhaustion.gate_label()),
+        )
+        .await;
         return Ok(None);
     }
 
@@ -19988,9 +20061,11 @@ mod tests {
         )
         .await
         .unwrap();
+        // Lane R21d: the gate label now names the actual `BudgetExhaustion`
+        // variant plus spent/cap, not the generic "cost_budget_exhausted".
         assert_eq!(
             refused_gate_names(&pool, &capped.id).await,
-            vec!["cost_budget_exhausted".to_string()]
+            vec!["attempt_cap_exhausted:spent=1,cap=1".to_string()]
         );
     }
 
