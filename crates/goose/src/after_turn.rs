@@ -1964,6 +1964,26 @@ const RULE5_PARK_REASON: &str =
      hold budget for retrying was exhausted. Call decompose_roadmap or escalate; a free-text \
      answer is not a valid way to end this turn unattended.";
 
+/// Lane R20c: the mid-session sibling of [`RULE5_INJECT_TEXT`] — a roadmap
+/// already exists, at least one goal is still not Done, and the turn ended
+/// on a free-text question instead of a tool call.
+const RULE5_MIDSESSION_INJECT_TEXT: &str =
+    "Your turn is ending in free text that reads as a question or a request for a decision, \
+     with an existing roadmap and at least one goal not yet Done. Per rule 5: any question to \
+     the user is an escalate call, never prose — call escalate with the exact question, or, if \
+     no decision is actually needed, call check_worker, goal_advance, or resume_roadmap to keep \
+     the roadmap moving. A closing summary is fine once every goal is Done; this is not that.";
+
+/// Lane R20c: the mid-session sibling of [`RULE5_PARK_REASON`]. The marker
+/// `rule5_free_text_question` (distinct from `rule5_free_text_turn`) is the
+/// receipt-visible name for this shape — see
+/// [`Rule5HonestFailureGuard::after_turn`]'s `harness_error` field.
+const RULE5_MIDSESSION_PARK_REASON: &str =
+    "rule5_free_text_question: the coding coordinator's turn ended on a free-text question or \
+     decision request — an existing roadmap has a goal that is not yet Done, no escalate was \
+     called, and no tool call at all appeared in the final message — after the hold budget for \
+     retrying was exhausted. A question to the user must be an escalate call, never prose.";
+
 /// Headless-only backstop: a coding-harness coordinator turn that ends with
 /// no roadmap, no dispatched goal, no `escalate`, and NO TOOL CALL AT ALL in
 /// its final assistant message is a free-text ending — the exact shape
@@ -1982,11 +2002,79 @@ const RULE5_PARK_REASON: &str =
 /// `build_session::wants_headless_goal_dispatch` reads) — an interactive
 /// operator sees the same free-text answer directly and can reply, so
 /// nothing here changes [`NoRoadmapGuard`]'s existing interactive behaviour.
+///
+/// Lane R20c (A20 analysis Q3, HARNESS_LOOP_LOG.md, fixture
+/// `select-missing-credential-escalates-not-guesses`): the original guard
+/// above only fires on a BARE session — no roadmap cards yet at all. A
+/// zai glm-4.7 round showed the same rule-5 violation reached MID-session
+/// instead: roadmap/dispatch calls already existed, then the coordinator hit
+/// a missing credential and asked the question in free text (`send_message`)
+/// rather than calling `escalate`. Outside the original guard's scope by
+/// construction (`has_roadmap_cards` was true, so it returned `Allow`). This
+/// extends the same guard: once a roadmap already exists, a turn that ends
+/// with no tool call AND reads as a question/decision request (see
+/// [`final_message_reads_as_question`]) AND still has a goal that is not
+/// Done is the identical dishonest-exit shape, just reached from a
+/// different starting state. A legitimate closing summary — every goal
+/// already Done/Cancelled — never fires, and an explicit `escalate` call
+/// anywhere in the turn (the cheapest gate below) still releases both
+/// shapes identically.
 pub struct Rule5HonestFailureGuard;
 
 impl Rule5HonestFailureGuard {
     pub fn new() -> Self {
         Self
+    }
+
+    /// The whole policy as one pure fold, mirroring [`NoRoadmapGuard::decide`]'s
+    /// shape so both the original bare-session shape and Lane R20c's
+    /// mid-session extension are unit-testable without a session store or a
+    /// database. `final_message_has_tool_call`/`turn_called_escalate` stay
+    /// OUTSIDE this function (transcript-only, cheapest, checked first in the
+    /// live path) so they need no DB round trip at all — a call reaching this
+    /// function has already established neither is true for the turn.
+    fn decide(
+        is_headless_coding_coordinator: bool,
+        roadmap_tool_succeeded_this_turn: bool,
+        has_roadmap_cards: bool,
+        has_active_roadmap: bool,
+        final_message_reads_as_question: bool,
+        prior_holds: u8,
+    ) -> AfterTurnAction {
+        if !is_headless_coding_coordinator || roadmap_tool_succeeded_this_turn {
+            return AfterTurnAction::Allow;
+        }
+
+        // Two distinct shapes fire, sharing everything past this point:
+        //   - bare session: no roadmap ever requested (R18f's original).
+        //   - mid session: a roadmap exists, at least one goal is not yet
+        //     Done, and the final message reads as a question (R20c).
+        let bare_session = !has_roadmap_cards;
+        let mid_session_question =
+            has_roadmap_cards && has_active_roadmap && final_message_reads_as_question;
+        if !bare_session && !mid_session_question {
+            return AfterTurnAction::Allow;
+        }
+
+        if prior_holds < crate::cost_router::MAX_HOLDS {
+            AfterTurnAction::Continue {
+                inject: if mid_session_question {
+                    RULE5_MIDSESSION_INJECT_TEXT
+                } else {
+                    RULE5_INJECT_TEXT
+                }
+                .to_string(),
+            }
+        } else {
+            AfterTurnAction::Park {
+                reason: if mid_session_question {
+                    RULE5_MIDSESSION_PARK_REASON
+                } else {
+                    RULE5_PARK_REASON
+                }
+                .to_string(),
+            }
+        }
     }
 }
 
@@ -1994,6 +2082,77 @@ impl Default for Rule5HonestFailureGuard {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Lane R20c: small, DOCUMENTED phrase list distinguishing a free-text
+/// question/decision-request from a legitimate closing summary. Deliberately
+/// short: a false negative here only lets a genuine rule-5 violation through
+/// (the same fail-open bias every other check in this guard already makes),
+/// while a false positive would wrongly park an innocent status update — so
+/// the list stays small and specific rather than broad and sensitive.
+const RULE5_QUESTION_PHRASES: [&str; 5] = [
+    "please provide",
+    "which",
+    "should i",
+    "let me know",
+    "confirm",
+];
+
+/// Whether `needle` appears in `haystack` as a whole word or phrase, not
+/// merely as a substring of a larger word — so `"which"` matches "which file
+/// should I edit?" but not "sandwich". Both arguments are expected already
+/// lowercased by the caller.
+fn contains_word_or_phrase(haystack: &str, needle: &str) -> bool {
+    let mut start = 0usize;
+    while let Some(rel) = haystack[start..].find(needle) {
+        let pos = start + rel;
+        let before_ok = haystack[..pos]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        let after = pos + needle.len();
+        let after_ok = haystack[after..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        if before_ok && after_ok {
+            return true;
+        }
+        start = pos + 1;
+    }
+    false
+}
+
+/// Lane R20c: whether the turn's FINAL message reads as a question or a
+/// request for information/a decision, per [`RULE5_QUESTION_PHRASES`] plus a
+/// trailing `?`. Scoped to the TEXT content of the last message only — by
+/// the time the live path calls this, [`final_message_has_tool_call`] has
+/// already established that message has no tool call.
+fn final_message_reads_as_question(messages: &[Message]) -> bool {
+    use crate::conversation::message::MessageContent;
+    let Some(last) = messages.last() else {
+        return false;
+    };
+    let text: String = last
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            MessageContent::Text(t) => Some(t.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.ends_with('?') {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    RULE5_QUESTION_PHRASES
+        .iter()
+        .any(|phrase| contains_word_or_phrase(&lower, phrase))
 }
 
 #[async_trait]
@@ -2034,30 +2193,48 @@ impl AfterTurn for Rule5HonestFailureGuard {
         let Ok(pool) = manager.pool_clone().await else {
             return AfterTurnAction::Allow;
         };
-        let Ok(has_roadmap_cards) = NoRoadmapGuard::has_roadmap_cards(&pool, ctx.session_id).await
+        // R20c: fetch the cards themselves, not just the bare "has any"
+        // boolean `NoRoadmapGuard::has_roadmap_cards` returns — the
+        // mid-session extension needs each card's own state to answer
+        // "is any goal still not Done" via `session_has_an_active_roadmap`.
+        let Ok(cards) = crate::cards::goal_cards_created_by_session(&pool, ctx.session_id).await
         else {
             return AfterTurnAction::Allow;
         };
-        if has_roadmap_cards {
-            return AfterTurnAction::Allow;
-        }
+        let has_roadmap_cards = !cards.is_empty();
+        let has_active_roadmap = crate::cards::session_has_an_active_roadmap(&cards);
+        let reads_as_question = final_message_reads_as_question(ctx.messages);
 
-        if ctx.prior_holds < crate::cost_router::MAX_HOLDS {
-            AfterTurnAction::Continue {
-                inject: RULE5_INJECT_TEXT.to_string(),
-            }
-        } else {
+        let action = Self::decide(
+            true,  // is_top_level_coding_harness already confirmed above
+            false, // turn_tool_call_succeeded already checked false above
+            has_roadmap_cards,
+            has_active_roadmap,
+            reads_as_question,
+            ctx.prior_holds,
+        );
+
+        if let AfterTurnAction::Park { .. } = &action {
+            // R18f's original marker for the bare-session shape; R20c's new
+            // marker for the mid-session question shape — same mechanism
+            // R18f used to make this a receipt-visible, greppable failure
+            // rather than a silent hold.
+            let mid_session_question = has_roadmap_cards && has_active_roadmap && reads_as_question;
+            let harness_error = if mid_session_question {
+                "rule5_free_text_question"
+            } else {
+                "rule5_free_text_turn"
+            };
             tracing::error!(
                 session_id = %ctx.session_id,
-                harness_error = "rule5_free_text_turn",
-                "Lane R18f: headless coding-harness coordinator ended a turn in free text with \
-                 no roadmap, no escalate, and no tool call — honest failure, not a clean exit"
+                harness_error = harness_error,
+                "Lane R18f/R20c: headless coding-harness coordinator ended a turn in free text — \
+                 honest failure, not a clean exit"
             );
             RULE5_FREE_TEXT_TURN.store(true, std::sync::atomic::Ordering::SeqCst);
-            AfterTurnAction::Park {
-                reason: RULE5_PARK_REASON.to_string(),
-            }
         }
+
+        action
     }
 }
 
@@ -4466,6 +4643,237 @@ mod tests {
                 })
                 .await,
             AfterTurnAction::Allow
+        );
+    }
+
+    // ── Rule5HonestFailureGuard mid-session extension (Lane R20c, A20 Q3) ──
+    //
+    // `Rule5HonestFailureGuard::decide` takes every DB-derived answer as a
+    // parameter, the same seam `NoRoadmapGuard::decide` established, so each
+    // branch below — including R20c's new mid-session shape — is a pure,
+    // isolated test with no session store or database.
+
+    /// `final_message_reads_as_question`'s trailing-`?` path.
+    #[test]
+    fn final_message_reads_as_question_detects_a_trailing_question_mark() {
+        let messages = vec![Message::assistant()
+            .with_text("The deploy provider isn't configured anywhere in this workspace.")];
+        assert!(!final_message_reads_as_question(&messages));
+
+        let messages =
+            vec![Message::assistant().with_text("Which cloud provider should I target?")];
+        assert!(final_message_reads_as_question(&messages));
+    }
+
+    /// Each documented phrase fires on its own, not only the trailing `?`.
+    #[test]
+    fn final_message_reads_as_question_detects_each_documented_phrase() {
+        for text in [
+            "Please provide the API key before I continue.",
+            "I'm not sure which approach you'd prefer here.",
+            "Should I use the cache or pagination approach.",
+            "Let me know how you would like to proceed.",
+            "I need you to confirm the target environment.",
+        ] {
+            let messages = vec![Message::assistant().with_text(text)];
+            assert!(
+                final_message_reads_as_question(&messages),
+                "{text:?} should read as a question"
+            );
+        }
+
+        // A negative control: none of the five phrases, and no trailing `?`.
+        let closing = vec![Message::assistant()
+            .with_text("There are two valid approaches here and I picked the cache.")];
+        assert!(!final_message_reads_as_question(&closing));
+    }
+
+    /// `contains_word_or_phrase`'s whole-word guard: `"confirm"` must not
+    /// match inside a larger word like "confirmed"/"confirmation" — the
+    /// realistic false-positive risk for a bare `.contains()` check.
+    #[test]
+    fn contains_word_or_phrase_does_not_match_inside_a_larger_word() {
+        assert!(!contains_word_or_phrase(
+            "the deploy step confirmed all checks passed",
+            "confirm"
+        ));
+        assert!(!contains_word_or_phrase(
+            "reconfirmation is not required here",
+            "confirm"
+        ));
+        assert!(contains_word_or_phrase(
+            "please confirm the target environment",
+            "confirm"
+        ));
+        assert!(contains_word_or_phrase("which file should i edit", "which"));
+    }
+
+    /// A legitimate closing summary — plain prose, no question, all goals
+    /// already Done — is not a phrase match and must not fire.
+    #[test]
+    fn final_message_reads_as_question_is_false_for_an_ordinary_closing_summary() {
+        let messages = vec![Message::assistant().with_text(
+            "All three goals are Done and the diff has passed review. Nothing further to do.",
+        )];
+        assert!(!final_message_reads_as_question(&messages));
+    }
+
+    /// R20c's headline case: an existing roadmap, at least one goal not yet
+    /// Done, and a free-text question — the exact
+    /// `select-missing-credential-escalates-not-guesses` shape from the A20
+    /// analysis (worker used free-text `send_message` instead of `escalate`
+    /// mid-session). Fires, and injects the mid-session nudge while budget
+    /// remains.
+    #[test]
+    fn rule5_decide_fires_for_a_mid_session_question_with_open_goals() {
+        match Rule5HonestFailureGuard::decide(
+            true,  // headless coding coordinator
+            false, // no roadmap tool succeeded this turn
+            true,  // has_roadmap_cards
+            true,  // has_active_roadmap: a goal is not yet Done
+            true,  // final message reads as a question
+            0,
+        ) {
+            AfterTurnAction::Continue { inject } => {
+                assert_eq!(inject, RULE5_MIDSESSION_INJECT_TEXT);
+                assert!(inject.contains("escalate"));
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    /// Once the shared hold budget is exhausted, the mid-session shape parks
+    /// with the `rule5_free_text_question` marker — distinct from the
+    /// bare-session `rule5_free_text_turn` marker, per the task's own
+    /// requirement that this be receipt-visible and greppable.
+    #[test]
+    fn rule5_decide_parks_the_mid_session_question_with_its_own_marker_once_budget_is_exhausted() {
+        match Rule5HonestFailureGuard::decide(
+            true,
+            false,
+            true,
+            true,
+            true,
+            crate::cost_router::MAX_HOLDS,
+        ) {
+            AfterTurnAction::Park { reason } => {
+                assert_eq!(reason, RULE5_MIDSESSION_PARK_REASON);
+                assert!(reason.starts_with("rule5_free_text_question"));
+            }
+            other => panic!("expected Park, got {other:?}"),
+        }
+    }
+
+    /// A closing summary reached after every goal is already Done/Cancelled
+    /// must never fire, even if `has_roadmap_cards` is true — the exception
+    /// the task explicitly calls out.
+    #[test]
+    fn rule5_decide_allows_a_closing_summary_after_all_goals_are_done() {
+        assert_eq!(
+            Rule5HonestFailureGuard::decide(
+                true,  // headless coding coordinator
+                false, // no roadmap tool succeeded this turn
+                true,  // has_roadmap_cards
+                false, // has_active_roadmap: every card is complete/cancelled
+                true,  // even a question-shaped closing message
+                0,
+            ),
+            AfterTurnAction::Allow,
+            "every goal already Done is a legitimate closing summary, not a rule-5 failure"
+        );
+    }
+
+    /// The bare-session shape (R18f, no cards at all) is untouched by the
+    /// R20c extension: `has_active_roadmap`/`reads_as_question` are both
+    /// irrelevant when there are no cards yet.
+    #[test]
+    fn rule5_decide_still_fires_for_the_original_bare_session_shape() {
+        match Rule5HonestFailureGuard::decide(true, false, false, false, false, 0) {
+            AfterTurnAction::Continue { inject } => assert_eq!(inject, RULE5_INJECT_TEXT),
+            other => panic!("expected Continue, got {other:?}"),
+        }
+        match Rule5HonestFailureGuard::decide(
+            true,
+            false,
+            false,
+            false,
+            false,
+            crate::cost_router::MAX_HOLDS,
+        ) {
+            AfterTurnAction::Park { reason } => {
+                assert_eq!(reason, RULE5_PARK_REASON);
+                assert!(reason.starts_with("rule5_free_text_turn"));
+            }
+            other => panic!("expected Park, got {other:?}"),
+        }
+    }
+
+    /// A roadmap that exists but has no goal that is still open (mirrors the
+    /// closing-summary case above from the other input) plus a NON-question
+    /// free-text ending must not fire either — only a question-shaped ending
+    /// with an open goal does.
+    #[test]
+    fn rule5_decide_allows_mid_session_free_text_that_does_not_read_as_a_question() {
+        assert_eq!(
+            Rule5HonestFailureGuard::decide(true, false, true, true, false, 0),
+            AfterTurnAction::Allow,
+            "an open goal alone is not enough — the final message must also read as a question"
+        );
+    }
+
+    /// Interactive sessions (non-headless) never fire, for either shape —
+    /// `is_headless_coding_coordinator` gates the whole function before any
+    /// card/question state is even consulted.
+    #[test]
+    fn rule5_decide_never_fires_for_an_interactive_non_headless_session() {
+        assert_eq!(
+            Rule5HonestFailureGuard::decide(false, false, false, false, false, 0),
+            AfterTurnAction::Allow,
+            "bare-session shape, interactive"
+        );
+        assert_eq!(
+            Rule5HonestFailureGuard::decide(false, false, true, true, true, 0),
+            AfterTurnAction::Allow,
+            "mid-session question shape, interactive"
+        );
+    }
+
+    /// A roadmap tool call that SUCCEEDED this turn releases both shapes —
+    /// the coordinator just re-decomposed/resumed, which is never a rule-5
+    /// failure regardless of card/question state.
+    #[test]
+    fn rule5_decide_allows_when_a_roadmap_tool_succeeded_this_turn() {
+        assert_eq!(
+            Rule5HonestFailureGuard::decide(true, true, true, true, true, 0),
+            AfterTurnAction::Allow
+        );
+    }
+
+    /// Trait-impl level, mirroring `rule5_guard_allows_a_turn_that_escalated_
+    /// even_with_no_other_tool_call` above but for the mid-session shape
+    /// specifically: an `escalate` call anywhere in the turn releases a
+    /// question-shaped free-text ending exactly like the bare-session one —
+    /// checked before any session/DB lookup, so an unconfirmable session id
+    /// is sufficient to prove it without standing up a real roadmap.
+    #[tokio::test]
+    async fn rule5_guard_allows_a_mid_session_question_when_escalate_was_called_this_turn() {
+        let guard = Rule5HonestFailureGuard::new();
+        let escalated_question = vec![
+            tool_exchange("decompose_roadmap", "call-1", true),
+            tool_exchange("escalate", "call-2", true),
+            Message::assistant()
+                .with_text("Which credential should I use — the staging or prod key?"),
+        ];
+        assert_eq!(
+            guard
+                .after_turn(&AfterTurnContext {
+                    session_id: "rule5-midsession-escalated",
+                    messages: &escalated_question,
+                    prior_holds: 0,
+                })
+                .await,
+            AfterTurnAction::Allow,
+            "an escalate call anywhere in the turn is the honest exit for both shapes"
         );
     }
 }
