@@ -33,6 +33,70 @@ pub enum HoldOutcome {
     Park { reason: String },
 }
 
+/// Lane R20b: which broad family a `Park` (or any other free-text `unblock`
+/// decision's own detail) reason belongs to. `decide_goal_hold` itself only
+/// ever produces [`ParkReason::VerifyGap`]/[`ParkReason::UncommittedWork`]
+/// (the two [`PARK_REASON_NO_VERIFY`]/[`PARK_REASON_UNCOMMITTED`] constants
+/// above) — the other variants exist so ANY reason text, including one
+/// raised by a wholly different producer, can be classified the same honest
+/// way instead of an ad hoc byte comparison. A20's Q1 analysis
+/// (HARNESS_LOOP_LOG.md "## A20 analysis — M19 zai z2") found a SECOND
+/// producer this module never sees at all: a coordinator's own free-text
+/// `unblock` decision whose detail described the runaway-loop guard
+/// blocking a repeated `goal_status` poll — [`ParkReason::PollLoop`] names
+/// that shape so any future caller that classifies an arbitrary park/unblock
+/// reason (not just the two literals this module raises) has one honest
+/// place to do it. `orchestrator::maybe_headless_unblock_verify_gap` is the
+/// one caller today: it auto-answers `VerifyGap`/`UncommittedWork` only —
+/// every other variant, `PollLoop` included, always stays parked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParkReason {
+    /// [`PARK_REASON_NO_VERIFY`] — held twice with no successful verify.
+    VerifyGap,
+    /// [`PARK_REASON_UNCOMMITTED`] — verified but never committed.
+    UncommittedWork,
+    /// A wall/wallclock-budget refusal
+    /// (`orchestrator::wall_budget_exhausted_refusal`'s own reason text —
+    /// "wall budget exhausted: …", "wallclock cap exhausted …").
+    WallBudget,
+    /// A20's second producer: a coordinator's own free-text `unblock` about
+    /// the runaway-loop guard blocking a repeated status poll.
+    PollLoop,
+    /// A jail, approval, credential, or other safety refusal.
+    Safety,
+    /// Anything else — an unrecognized reason is never auto-answered.
+    Other,
+}
+
+/// Pure classifier for [`ParkReason`]. Exact-matches the two constants this
+/// module produces first (the only two `decide_goal_hold` can ever raise),
+/// then falls back to keyword heuristics for reasons raised by OTHER
+/// producers — never silently drops back to a byte comparison a caller has
+/// to duplicate.
+pub fn classify_park_reason(reason: &str) -> ParkReason {
+    if reason == PARK_REASON_NO_VERIFY {
+        return ParkReason::VerifyGap;
+    }
+    if reason == PARK_REASON_UNCOMMITTED {
+        return ParkReason::UncommittedWork;
+    }
+    let lower = reason.to_ascii_lowercase();
+    if lower.contains("wall budget") || lower.contains("wallclock") {
+        return ParkReason::WallBudget;
+    }
+    if lower.contains("runaway-loop") || lower.contains("goal_status") {
+        return ParkReason::PollLoop;
+    }
+    if lower.contains("jail")
+        || lower.contains("approval")
+        || lower.contains("credential")
+        || lower.contains("safety")
+    {
+        return ParkReason::Safety;
+    }
+    ParkReason::Other
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct HoldState {
     pub count: u8,
@@ -248,5 +312,73 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    // ── Lane R20b: ParkReason classification ────────────────────────────
+
+    #[test]
+    fn classify_park_reason_recognizes_verify_gap() {
+        assert_eq!(
+            classify_park_reason(PARK_REASON_NO_VERIFY),
+            ParkReason::VerifyGap
+        );
+    }
+
+    #[test]
+    fn classify_park_reason_recognizes_uncommitted_work() {
+        assert_eq!(
+            classify_park_reason(PARK_REASON_UNCOMMITTED),
+            ParkReason::UncommittedWork
+        );
+    }
+
+    #[test]
+    fn classify_park_reason_recognizes_wall_budget() {
+        assert_eq!(
+            classify_park_reason(
+                "wall budget exhausted: 12s remaining, the last attempt took 100s"
+            ),
+            ParkReason::WallBudget
+        );
+        assert_eq!(
+            classify_park_reason("wallclock cap exhausted (900s elapsed of 900s)"),
+            ParkReason::WallBudget
+        );
+    }
+
+    /// A20's second producer: the coordinator's own free-text unblock about
+    /// the runaway-loop guard blocking a repeated `goal_status` poll.
+    #[test]
+    fn classify_park_reason_recognizes_poll_loop() {
+        assert_eq!(
+            classify_park_reason(
+                "I cannot poll goal_status again without triggering the runaway-loop guard"
+            ),
+            ParkReason::PollLoop
+        );
+    }
+
+    #[test]
+    fn classify_park_reason_recognizes_safety() {
+        assert_eq!(
+            classify_park_reason("blocked by the write jail: path escapes the sandbox"),
+            ParkReason::Safety
+        );
+        assert_eq!(
+            classify_park_reason("needs verification_approval before this command may run"),
+            ParkReason::Safety
+        );
+        assert_eq!(
+            classify_park_reason("refused: a credential assignment was detected"),
+            ParkReason::Safety
+        );
+    }
+
+    #[test]
+    fn classify_park_reason_falls_back_to_other() {
+        assert_eq!(
+            classify_park_reason("some brand new reason no producer has used before"),
+            ParkReason::Other
+        );
     }
 }

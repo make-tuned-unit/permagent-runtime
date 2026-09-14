@@ -9411,6 +9411,39 @@ struct WallBudgetRefusal {
     cap_secs: u64,
 }
 
+/// Lane R20b: `cap_secs - elapsed_secs`, or `None` when the cap is already
+/// fully spent (or `elapsed_secs` is a clock anomaly) — factored out of
+/// [`wall_budget_exhausted_refusal`] so [`remaining_wall_budget_secs`] can
+/// ask the same "how much runway is left" question independent of whether
+/// that runway is enough for a FULL retry attempt (the question
+/// `wall_budget_exhausted_refusal` itself answers).
+fn remaining_wall_budget_secs_from(cap_secs: u64, elapsed_secs: i64) -> Option<u64> {
+    if elapsed_secs < 0 || elapsed_secs as u64 >= cap_secs {
+        return None;
+    }
+    Some(cap_secs - elapsed_secs as u64)
+}
+
+/// Lane R20b: how many seconds of a goal's configured wall-clock budget are
+/// left right now, if one is configured and its first dispatch is known.
+/// `None` when no wallclock cap is configured (a goal with no wall budget at
+/// all — the caller should treat this as "no configured ceiling", not "zero
+/// budget"), `first_dispatched_at` is missing/unparseable, or the cap is
+/// already fully spent. Used by [`maybe_salvage_committed_work`]'s time box,
+/// independent of `handle_goal_completion`'s own [`WallBudgetRefusal`] (that
+/// struct is only ever built when a refusal is already being decided; this
+/// helper answers the plain "how much is left" question from any call site).
+fn remaining_wall_budget_secs(metadata: &serde_json::Value) -> Option<u64> {
+    let cap_secs = goal_transition::goal_budget(metadata).wallclock_cap_secs?;
+    let first_dispatched_at = metadata
+        .get("first_dispatched_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())?
+        .with_timezone(&chrono::Utc);
+    let elapsed_secs = (chrono::Utc::now() - first_dispatched_at).num_seconds();
+    remaining_wall_budget_secs_from(cap_secs, elapsed_secs)
+}
+
 /// I1 (harness loop, 2026-09-10): wires E2b's pure
 /// `wall_budget_permits_another_attempt` primitive into the live retry
 /// decision `handle_goal_completion`'s `Err(error)` arm makes. Returns
@@ -9439,13 +9472,7 @@ fn wall_budget_exhausted_refusal(metadata: &serde_json::Value) -> Option<WallBud
     let now = chrono::Utc::now();
 
     let elapsed_secs = (now - first_dispatched_at).num_seconds();
-    if elapsed_secs < 0 || elapsed_secs as u64 >= cap_secs {
-        // Fully exhausted (or a clock anomaly) — `check_budget`'s own
-        // Wallclock arm, evaluated just above this call, already owns that
-        // case; never double-refuse it here.
-        return None;
-    }
-    let remaining_secs = cap_secs - elapsed_secs as u64;
+    let remaining_secs = remaining_wall_budget_secs_from(cap_secs, elapsed_secs)?;
 
     let last_attempt_secs = (now - dispatched_at).num_seconds();
     if last_attempt_secs <= 0 {
@@ -9726,6 +9753,26 @@ pub async fn handle_goal_completion(
                 // attempt's own duration) — refuse the requeue and park with
                 // an honest receipt rather than requeue into a near-certain
                 // silent timeout with no structured signal of why.
+                //
+                // Lane R20b (A20 Q1, Mechanism A — `cli-argparse`): before
+                // parking, give any work the FAILED attempt already
+                // committed one honest chance to verify, review and land —
+                // see `maybe_salvage_committed_work`'s own doc comment. A
+                // goal with nothing committed, or with real committed work
+                // plus uncommitted changes on top, falls straight through to
+                // the ordinary park below, unchanged.
+                if let SalvageOutcome::Salvaged { note } =
+                    maybe_salvage_committed_work(pool, &card).await
+                {
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        goal_id = %card_id,
+                        "Goal '{}' wall budget too small for another attempt, but its committed \
+                         work was salvaged instead of parked: {note}",
+                        card.title
+                    );
+                    return Ok(());
+                }
                 if let Err(e) = cards::merge_card_metadata(
                     pool,
                     card_id,
@@ -10198,6 +10245,24 @@ pub async fn handle_goal_timeout(
             target: "permagentd::brain",
             "Goal '{}' timeout handler: card no longer in_progress — skipping",
             card.title
+        );
+        return Ok(());
+    }
+
+    // Lane R20b (A20 Q1, Mechanism B — `loc-refund`/`refactor-shipping`,
+    // both killed by the eval's outer per-task timeout / a shutdown signal
+    // racing the drain): this is the ONE park path both `drain_dispatched_
+    // goals`' own cap-expiry loop and `park_dispatched_goals_now`'s
+    // shutdown-signal sweep funnel through, so instrumenting it here covers
+    // both. Give any work already committed one honest chance to verify,
+    // review and land before parking — see `maybe_salvage_committed_work`.
+    if let SalvageOutcome::Salvaged { note } = maybe_salvage_committed_work(pool, &card).await {
+        tracing::info!(
+            target: "permagentd::brain",
+            "Goal '{}' worker timed out after {}s, but its committed work was salvaged instead \
+             of parked: {note}",
+            card.title,
+            secs
         );
         return Ok(());
     }
@@ -12334,22 +12399,51 @@ async fn maybe_credit_and_bypass_hold(
     Ok(Some(None))
 }
 
-/// Inspect live git state, not the evidence snapshot collected at worker exit.
-/// No-write and legacy non-git goals have no commit requirement.
-async fn goal_has_uncommitted_work(
+/// Bounded `git -C <worktree> <args>`, shared by every live git-state
+/// inspection below (Lane R20b: factored out of `worktree_has_uncommitted_work`,
+/// which used to nest an identical closure, so `commits_ahead_of_baseline`
+/// does not have to duplicate it).
+async fn git_in_worktree(worktree: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    let mut command = tokio::process::Command::new("git");
+    command
+        .arg("-C")
+        .arg(worktree)
+        .args(args)
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(20), command.output())
+        .await
+        .map_err(|_| "git inspection timed out after 20 s".to_string())?
+        .map_err(|e| format!("cannot inspect goal branch: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cannot inspect goal branch in {}: {}",
+            worktree.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// The `(baseline_commit, worktree_path)` a goal card's own metadata names,
+/// if any — the SAME resolution `goal_has_uncommitted_work` already did
+/// inline (Lane R20b: factored out so `maybe_salvage_committed_work` can
+/// reuse it without duplicating the `dispatch_evidence`/`sessions.working_dir`
+/// fallback). `Ok(None)` for a no-write/legacy goal with no commit
+/// requirement, or one with no recorded baseline at all — never an error;
+/// those are simply not eligible for a live git inspection.
+async fn resolve_goal_baseline_and_worktree(
     pool: &sqlx::Pool<sqlx::Sqlite>,
-    card: &cards::Card,
-) -> Result<(bool, String), String> {
-    let meta = &card.metadata_json;
+    meta: &serde_json::Value,
+) -> Result<Option<(String, String)>, String> {
     if meta.pointer("/program/delivery").and_then(|v| v.as_str()) == Some("no_write") {
-        return Ok((false, String::new()));
+        return Ok(None);
     }
     let Some(baseline) = meta
         .get("baseline_commit")
         .or_else(|| meta.pointer("/dispatch_evidence/baseline_commit"))
         .and_then(|v| v.as_str())
     else {
-        return Ok((false, String::new()));
+        return Ok(None);
     };
     let worktree = match meta
         .pointer("/dispatch_evidence/worktree_path")
@@ -12358,50 +12452,436 @@ async fn goal_has_uncommitted_work(
         Some(path) => path.to_string(),
         None => {
             let session_id = meta.get("worker_session_id").and_then(|v| v.as_str());
-            sqlx::query_scalar::<_, String>("SELECT working_dir FROM sessions WHERE id = ?")
-                .bind(session_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| {
-                    "cannot inspect goal branch: worker worktree is missing".to_string()
-                })?
+            let Some(working_dir) =
+                sqlx::query_scalar::<_, String>("SELECT working_dir FROM sessions WHERE id = ?")
+                    .bind(session_id)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| e.to_string())?
+            else {
+                return Ok(None);
+            };
+            working_dir
         }
     };
-    worktree_has_uncommitted_work(std::path::Path::new(&worktree), baseline).await
+    Ok(Some((baseline.to_string(), worktree)))
+}
+
+/// Inspect live git state, not the evidence snapshot collected at worker exit.
+/// No-write and legacy non-git goals have no commit requirement.
+async fn goal_has_uncommitted_work(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+) -> Result<(bool, String), String> {
+    let Some((baseline, worktree)) =
+        resolve_goal_baseline_and_worktree(pool, &card.metadata_json).await?
+    else {
+        return Ok((false, String::new()));
+    };
+    worktree_has_uncommitted_work(std::path::Path::new(&worktree), &baseline).await
 }
 
 async fn worktree_has_uncommitted_work(
     worktree: &std::path::Path,
     baseline: &str,
 ) -> Result<(bool, String), String> {
-    async fn git(worktree: &std::path::Path, args: &[&str]) -> Result<String, String> {
-        let mut command = tokio::process::Command::new("git");
-        command
-            .arg("-C")
-            .arg(worktree)
-            .args(args)
-            .kill_on_drop(true);
-        let output = tokio::time::timeout(std::time::Duration::from_secs(20), command.output())
-            .await
-            .map_err(|_| "git inspection timed out after 20 s".to_string())?
-            .map_err(|e| format!("cannot inspect goal branch: {e}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "cannot inspect goal branch in {}: {}",
-                worktree.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    }
-
     let range = format!("{baseline}..HEAD");
-    let no_commits = git(worktree, &["rev-list", "--max-count=1", &range])
+    let no_commits = git_in_worktree(worktree, &["rev-list", "--max-count=1", &range])
         .await?
         .is_empty();
-    let tracked_status = git(worktree, &["status", "--porcelain", "--untracked-files=no"]).await?;
+    let tracked_status =
+        git_in_worktree(worktree, &["status", "--porcelain", "--untracked-files=no"]).await?;
     Ok((no_commits, tracked_status))
+}
+
+/// Lane R20b: `git rev-list --count baseline..HEAD` in `worktree` — how many
+/// commits the goal's branch tip carries past its dispatch baseline. `Ok(0)`
+/// for a worktree still sitting at (or, if the baseline is stale, somehow
+/// behind — `rev-list --count` never goes negative) the baseline: nothing
+/// committed, nothing to salvage. A git failure (missing worktree, unknown
+/// baseline sha) is surfaced as `Err` rather than folded into `Ok(0)`, so a
+/// caller can log-and-skip instead of silently treating "cannot tell" as
+/// "nothing to salvage".
+async fn commits_ahead_of_baseline(
+    worktree: &std::path::Path,
+    baseline: &str,
+) -> Result<u32, String> {
+    let range = format!("{baseline}..HEAD");
+    let out = git_in_worktree(worktree, &["rev-list", "--count", &range]).await?;
+    out.trim()
+        .parse::<u32>()
+        .map_err(|e| format!("unexpected `git rev-list --count` output {out:?}: {e}"))
+}
+
+// ── Lane R20b: salvage committed goal work before a budget/wall park ────────
+//
+// A20's Q1 forensics (HARNESS_LOOP_LOG.md "## A20 analysis — M19 zai z2")
+// found FOUR of six `review_reached=0` goals had real, committed work
+// stranded in `.permagent-goal-worktrees/` at the moment they were parked:
+// `editapply` landed a correct fix (`git commit`) and then ran out of turns
+// with no verify/land step (Mechanism A — the Y16a wall-budget-exhausted
+// refusal, below); `loc-refund`/`refactor-shipping` were killed by the
+// eval's own outer per-task timeout mid-flight, either via
+// `drain_dispatched_goals`'s own cap or a shutdown signal racing the drain
+// (Mechanism B — both routed through `handle_goal_timeout`). In every case
+// nothing was wrong with the COMMITTED state, only with how much runway was
+// left to prove it.
+
+/// The time box a salvage verify attempt may run before giving up and
+/// letting the caller park as usual — the task's own 90s cap, further
+/// bounded by whatever wall budget the goal has left (see
+/// [`maybe_salvage_committed_work`]).
+const SALVAGE_TIME_BOX: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// Outcome of [`maybe_salvage_committed_work`]. Every call site only cares
+/// about one distinction: did the goal already move out of `in_progress`
+/// (`Salvaged`, in which case the caller must NOT also park it), or is it
+/// still exactly where the caller found it (`NotSalvaged`, park as today).
+/// The `note` — always logged and, on `NotSalvaged`, folded into the park
+/// reason the caller already builds — carries the "why" for a human without
+/// forcing every call site to pattern-match a wider enum.
+enum SalvageOutcome {
+    NotSalvaged { note: String },
+    Salvaged { note: String },
+}
+
+/// Lane R20b: before a goal is parked for a budget/wall reason, check
+/// whether its branch tip already carries committed work past the dispatch
+/// baseline and, if so, give that committed state one honest chance to be
+/// proven through the SAME verify → Review → land pipeline a normal `done`
+/// claim already goes through, instead of leaving it stranded in the goal
+/// worktree.
+///
+/// This never writes a second reviewer. It runs the project's real `verify`
+/// checks directly against the worktree
+/// ([`developer::verify::VerifyTool`], the exact tool a live worker turn
+/// would have called — Lane Y11's fork-point fallback already makes its
+/// `Auto` scope see a clean, fully-committed worktree's real diff), and on a
+/// genuine, non-vacuous pass records the SAME shape of tool-request/
+/// tool-response pair a live verify call would have left in the worker's
+/// own session (mirrors the test-only `stamp_verify_exchange` fixture, now
+/// with a production analogue: [`record_synthetic_verify_evidence`]). It
+/// then calls [`handle_goal_completion`] again with `Ok(())` — the
+/// UNCHANGED success path an ordinary `done` claim already goes through:
+/// `maybe_hold_review` re-evaluates with this genuine evidence in hand and,
+/// so long as the worktree carries no OTHER uncommitted changes on top of
+/// the real commits, Allows outright; the card moves InProgress → Review,
+/// `approve_review` is minted, the post-Review verification hook (Lane L2)
+/// runs, and — subject to `PERMAGENT_HEADLESS_AUTOLAND` exactly as today —
+/// `auto_land_headless_goal` lands it.
+///
+/// Deliberately conservative: any uncommitted change on top of the real
+/// commits (`worktree_has_uncommitted_work`'s tracked-status half) refuses
+/// to even attempt salvage — uncommitted work is out of scope for this
+/// lane (log it, never commit on the worker's behalf) and, just as
+/// importantly, guarantees this function can never re-enter itself: a
+/// clean worktree plus the verify evidence this function is about to record
+/// makes `decide_goal_hold` Allow outright on the very next evaluation, so
+/// the recursive `handle_goal_completion` call below can never loop back
+/// into this same salvage arm.
+///
+/// Bounded to `min(90s, remaining wall budget)`; no configured wallclock cap
+/// leaves the plain 90s box; a cap with NOTHING left skips salvage entirely
+/// (`salvage_skipped_no_budget`) rather than spend the last sliver of a
+/// goal's wall-clock on a doomed verify run.
+async fn maybe_salvage_committed_work(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+) -> SalvageOutcome {
+    // Same derivation `handle_goal_completion`'s own callers already use
+    // (`dispatch_goal_fn` passes `policy.is_some_and(|p| p.auto_land)`) —
+    // computed here so every salvage call site gets it for free instead of
+    // threading it through call sites (like `handle_goal_timeout`) that
+    // otherwise have no reason to know about headless dispatch at all.
+    let headless_auto_land = HEADLESS_DISPATCH_POLICY_CONFIG
+        .get()
+        .is_some_and(|c| c.auto_land);
+    let not_salvaged = |note: String| SalvageOutcome::NotSalvaged { note };
+
+    let baseline_and_worktree =
+        match resolve_goal_baseline_and_worktree(pool, &card.metadata_json).await {
+            Ok(v) => v,
+            Err(e) => {
+                return not_salvaged(format!("could not resolve the goal's worktree: {e}"));
+            }
+        };
+    let Some((baseline, worktree)) = baseline_and_worktree else {
+        return not_salvaged("no dispatch baseline recorded — nothing to salvage".to_string());
+    };
+    let worktree_path = std::path::Path::new(&worktree);
+
+    let ahead = match commits_ahead_of_baseline(worktree_path, &baseline).await {
+        Ok(n) => n,
+        Err(e) => {
+            return not_salvaged(format!("could not inspect the goal branch: {e}"));
+        }
+    };
+    if ahead == 0 {
+        return not_salvaged("no commits past the dispatch baseline — nothing to salvage".into());
+    }
+
+    match worktree_has_uncommitted_work(worktree_path, &baseline).await {
+        Ok((_, tracked_status)) if !tracked_status.is_empty() => {
+            record_salvage_receipt(
+                pool,
+                &card.id,
+                "salvage_skipped_uncommitted_extra",
+                &format!(
+                    "{ahead} commit(s) past baseline, but the worktree also carries uncommitted \
+                 changes on top — left for a human, nothing committed on the worker's behalf"
+                ),
+            )
+            .await;
+            return not_salvaged(
+                "committed work exists but the worktree also has uncommitted changes on top — \
+                 left for a human"
+                    .to_string(),
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return not_salvaged(format!("could not confirm the worktree was clean: {e}"));
+        }
+    }
+
+    let time_box = match remaining_wall_budget_secs(&card.metadata_json) {
+        Some(0) => {
+            record_salvage_receipt(
+                pool,
+                &card.id,
+                "salvage_skipped_no_budget",
+                &format!("{ahead} commit(s) past baseline, but no wall budget remains"),
+            )
+            .await;
+            return not_salvaged("no wall budget remains to verify the committed work".into());
+        }
+        Some(secs) => std::time::Duration::from_secs(secs.min(SALVAGE_TIME_BOX.as_secs())),
+        None => SALVAGE_TIME_BOX,
+    };
+
+    tracing::info!(
+        target: "permagentd::brain",
+        goal_id = %card.id,
+        commits_ahead = ahead,
+        time_box_secs = time_box.as_secs(),
+        "salvage: goal has {ahead} commit(s) past its dispatch baseline — running verify \
+         before parking"
+    );
+
+    let verify_params = crate::agents::platform_extensions::developer::verify::VerifyParams {
+        command: None,
+        path: None,
+        timeout_secs: Some(time_box.as_secs()),
+        scope: None,
+        risk: None,
+        changed_paths: None,
+    };
+    let verify_run = tokio::time::timeout(
+        time_box,
+        crate::agents::platform_extensions::developer::verify::VerifyTool::new()
+            .verify_with_cwd(verify_params, Some(worktree_path)),
+    )
+    .await;
+    let Ok(result) = verify_run else {
+        record_salvage_receipt(
+            pool,
+            &card.id,
+            "salvage_verify_timed_out",
+            &format!("verify did not finish within {}s", time_box.as_secs()),
+        )
+        .await;
+        return not_salvaged(format!(
+            "salvage verify did not finish within {}s",
+            time_box.as_secs()
+        ));
+    };
+
+    if !crate::agents::platform_extensions::developer::verify::is_genuine_pass(&result) {
+        let note = "salvage verify did not report a genuine, non-vacuous pass".to_string();
+        record_salvage_receipt(pool, &card.id, "salvage_verify_failed", &note).await;
+        return not_salvaged(note);
+    }
+
+    let Some(worker_session_id) = card
+        .metadata_json
+        .get("worker_session_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    else {
+        let note =
+            "salvage verify passed but the goal has no worker session to attribute it to".into();
+        record_salvage_receipt(pool, &card.id, "salvage_evidence_write_failed", &note).await;
+        return not_salvaged(note);
+    };
+    if let Err(e) = record_synthetic_verify_evidence(pool, &worker_session_id, &result).await {
+        let note = format!("salvage verify passed but its evidence could not be recorded: {e}");
+        record_salvage_receipt(pool, &card.id, "salvage_evidence_write_failed", &note).await;
+        return not_salvaged(note);
+    }
+
+    // The UNCHANGED success path an ordinary `done` claim already goes
+    // through — re-reads the card fresh, so the genuine verify evidence
+    // just recorded above is what `maybe_hold_review` sees this time.
+    // `Box::pin`: this function is itself called from inside
+    // `handle_goal_completion`'s own body (its Err arm, and transitively via
+    // `maybe_hold_review`'s Hold arm), so an unboxed recursive call here
+    // would make `handle_goal_completion`'s generated future type embed
+    // itself — an infinite-sized type the compiler refuses. Boxing breaks
+    // the cycle; it does not change behavior.
+    if let Err(e) = Box::pin(handle_goal_completion(
+        pool,
+        &card.id,
+        &card.project_id,
+        Ok(()),
+        headless_auto_land,
+    ))
+    .await
+    {
+        let note = format!("salvage verify passed but completion handling failed: {e}");
+        record_salvage_receipt(pool, &card.id, "salvage_completion_failed", &note).await;
+        return not_salvaged(note);
+    }
+
+    let after_state = cards::get_card(pool, &card.id).await.ok().flatten();
+    let still_in_progress = match &after_state {
+        Some(c) => {
+            cards::get_column(pool, &c.column_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|col| col.state_binding)
+                .as_deref()
+                == Some("in_progress")
+        }
+        None => false,
+    };
+    if still_in_progress {
+        // The reused pipeline re-decided Hold/Park on its own (e.g. a
+        // hands-on role still spinning) and requeued or parked the goal
+        // itself — nothing left for THIS caller to do; it must not also
+        // park a card that already moved.
+        return SalvageOutcome::Salvaged {
+            note: format!(
+                "salvaged {ahead} commit(s): verify passed and the goal was handed back to the \
+                 ordinary Hold/Park pipeline instead of being stranded unparked"
+            ),
+        };
+    }
+
+    let landed = after_state.as_ref().is_some_and(|c| {
+        c.metadata_json
+            .pointer("/dispatch_evidence/landing/outcome")
+            .and_then(|v| v.as_str())
+            == Some("landed")
+    });
+    let note = if landed {
+        format!(
+            "salvaged {ahead} commit(s) already on the branch before this park would have \
+             stranded them — verified, reviewed and landed"
+        )
+    } else {
+        format!(
+            "salvaged {ahead} commit(s): verify passed and the goal moved to Review for \
+             approval instead of being stranded unparked"
+        )
+    };
+    if let Err(e) = persist_card_meta(pool, &card.id, |m| {
+        m.insert(
+            "salvaged_on_park".to_string(),
+            serde_json::json!({
+                "note": note,
+                "commits_ahead": ahead,
+                "landed": landed,
+                "recorded_at": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+    })
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "could not record the salvaged_on_park receipt: {e}"
+        );
+    }
+    record_salvage_receipt(pool, &card.id, "salvaged_on_park", &note).await;
+    SalvageOutcome::Salvaged { note }
+}
+
+/// Best-effort breadcrumb for a salvage attempt that did NOT land the goal
+/// (skipped, failed, timed out) — logged and, best-effort, folded onto the
+/// card's `salvage_receipt` metadata key so a human (or the next A-series
+/// analysis) can see why a park went the ordinary route instead of being
+/// salvaged. Never fails the caller: a write error here only warns.
+async fn record_salvage_receipt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    outcome: &str,
+    note: &str,
+) {
+    tracing::info!(
+        target: "permagentd::brain",
+        goal_id = %card_id,
+        outcome,
+        "salvage-before-park: {outcome}: {note}"
+    );
+    if let Err(e) = persist_card_meta(pool, card_id, |m| {
+        m.insert(
+            "salvage_receipt".to_string(),
+            serde_json::json!({
+                "outcome": outcome,
+                "note": note,
+                "recorded_at": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+    })
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card_id,
+            "could not record the salvage receipt ({outcome}): {e}"
+        );
+    }
+}
+
+/// Append the SAME shape of tool-request/tool-response message pair a live
+/// worker turn's `verify` tool call would have left in its own session
+/// (mirrors the test-only `stamp_verify_exchange` fixture's production
+/// analogue), so `session_verify_evidence`/`session_had_successful_verify`
+/// — the sole readers of a session's verify evidence, used by both
+/// `maybe_hold_review` and `auto_land_headless_goal` — see this salvage
+/// verify exactly as they would a real one. Carries `result`'s REAL
+/// structured content (genuine evidence, never fabricated) — this function
+/// only decides where to file it, never what it says.
+async fn record_synthetic_verify_evidence(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    worker_session_id: &str,
+    result: &rmcp::model::CallToolResult,
+) -> Result<(), String> {
+    use crate::conversation::message::MessageContent;
+    let call_id = format!("salvage-verify-{}", uuid::Uuid::new_v4());
+    let request = MessageContent::tool_request(
+        &call_id,
+        Ok(rmcp::model::CallToolRequestParams::new("developer__verify")),
+    );
+    let response = MessageContent::tool_response(&call_id, Ok(result.clone()));
+    for (role, content) in [("assistant", request), ("user", response)] {
+        let content_json = serde_json::to_string(&vec![content]).map_err(|e| e.to_string())?;
+        sqlx::query(
+            "INSERT INTO messages (message_id, session_id, role, content_json, \
+             created_timestamp) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(worker_session_id)
+        .bind(role)
+        .bind(content_json)
+        .bind(chrono::Utc::now().timestamp())
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Hold a premature InProgress → Review. `None` means allow the transition.
@@ -12515,6 +12995,26 @@ async fn maybe_hold_review(
             // more conservative of the two. See the sweep's own comment for
             // the mirror of this note.
             if let Some(refusal) = wall_budget_exhausted_refusal(&card.metadata_json) {
+                // Lane R20b (A20 Q1, Mechanism A — `editapply`: a correct
+                // fix committed via `git commit`, then the session ended
+                // with no turns left for a post-commit verify or land):
+                // before parking, give the committed state one honest
+                // chance through the SAME verify → Review → land pipeline a
+                // normal `done` claim goes through — see
+                // `maybe_salvage_committed_work`'s own doc comment for why
+                // this can never recurse back into this same arm.
+                if let SalvageOutcome::Salvaged { note } =
+                    maybe_salvage_committed_work(pool, card).await
+                {
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        goal_id = %card.id,
+                        "Goal '{}' held with wall budget too small for another attempt, but its \
+                         committed work was salvaged instead of parked: {note}",
+                        card.title
+                    );
+                    return Ok(Some(note));
+                }
                 if let Err(e) = cards::merge_card_metadata(
                     pool,
                     &card.id,
@@ -12703,6 +13203,70 @@ async fn maybe_hold_review(
     }
 }
 
+/// Lane R20b: `maybe_headless_unblock_verify_gap` had four silent
+/// `return Ok(None)` gates — A20 Q1 found the gate fired ZERO times across
+/// 19 tasks with no way, from receipts or logs, to tell WHICH gate refused.
+/// Logs a `tracing::info!` and appends a `decision_audit` row
+/// (`outcome = "headless_unblock_refused"`, `evidence_digest = gate`) at
+/// every refusal. `decision_audit.decision_id` is `NOT NULL` but carries no
+/// real foreign key (see `spectral_schema.rs`'s own "FK-safe" note) — no
+/// decision exists yet at most of these gates (the reason-mismatch gate, in
+/// particular, fires before any decision would ever be minted), so this
+/// writes a stable synthetic id scoped to the goal rather than a real
+/// `decisions.id`. A write failure here only warns: it must never fail the
+/// caller's own park/hold decision.
+async fn record_headless_unblock_refusal(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    gate: &str,
+) {
+    tracing::info!(
+        target: "permagentd::brain",
+        goal_id = %card.id,
+        gate,
+        "headless_unblock refused for goal '{}': {gate}",
+        card.title
+    );
+    let synthetic_decision_id = format!("headless-unblock-gate:{}", card.id);
+    let mut tx = match pool.begin_with("BEGIN IMMEDIATE").await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                "could not open a transaction to record the headless_unblock_refused audit row \
+                 ({gate}): {e}"
+            );
+            return;
+        }
+    };
+    if let Err(e) = decisions::append_audit_tx(
+        &mut tx,
+        &synthetic_decision_id,
+        Some(card.id.as_str()),
+        decisions::ACTOR_HEADLESS_POLICY,
+        1,
+        "headless_unblock_refused",
+        Some(gate),
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "could not record the headless_unblock_refused audit row ({gate}): {e}"
+        );
+        return;
+    }
+    if let Err(e) = tx.commit().await {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "could not commit the headless_unblock_refused audit row ({gate}): {e}"
+        );
+    }
+}
+
 /// Lane R18g: card metadata key counting how many times a headless run has
 /// auto-answered this goal's tier-1 `unblock` decision and resumed it
 /// without a human — see [`maybe_headless_unblock_verify_gap`]. Listed in
@@ -12759,15 +13323,30 @@ async fn maybe_headless_unblock_verify_gap(
     if !headless {
         return Ok(None);
     }
-    // Belt-and-braces on top of call-site scoping: only the exact two
-    // verify/commit-gap reasons `decide_goal_hold` ever raises are eligible.
-    // A jail, approval, or safety refusal never produces this text (they are
-    // raised by other code entirely), so an unrecognized reason — now or
-    // from any future Park reason added to `hold_done.rs` — falls through to
-    // the ordinary park-and-wait path rather than being auto-answered.
-    if reason != crate::cost_router::hold_done::PARK_REASON_NO_VERIFY
-        && reason != crate::cost_router::hold_done::PARK_REASON_UNCOMMITTED
-    {
+    // Lane R18g: belt-and-braces on top of call-site scoping — only the
+    // exact two verify/commit-gap reasons `decide_goal_hold` ever raises are
+    // eligible. A jail, approval, or safety refusal never produces this text
+    // (they are raised by other code entirely), so an unrecognized reason —
+    // now or from any future Park reason added to `hold_done.rs` — falls
+    // through to the ordinary park-and-wait path rather than being
+    // auto-answered.
+    //
+    // Lane R20b: A20 Q1 found this gate fired ZERO times across 19 tasks
+    // with no way to tell WHY from receipts or logs — this function was
+    // opaque by construction. Classify the reason through
+    // `hold_done::ParkReason` (structured, not a byte compare — also
+    // correctly names A20's second producer, a coordinator's own free-text
+    // `unblock` about the runaway-loop guard blocking repeated `goal_status`
+    // polls, as `PollLoop` if it is ever routed through this gate) and audit
+    // every refusal, not just the two this module itself can raise.
+    let park_reason = crate::cost_router::hold_done::classify_park_reason(reason);
+    if !matches!(
+        park_reason,
+        crate::cost_router::hold_done::ParkReason::VerifyGap
+            | crate::cost_router::hold_done::ParkReason::UncommittedWork
+    ) {
+        record_headless_unblock_refusal(pool, card, &format!("reason_mismatch:{park_reason:?}"))
+            .await;
         return Ok(None);
     }
     let prior_unblocks = card
@@ -12776,15 +13355,18 @@ async fn maybe_headless_unblock_verify_gap(
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     if prior_unblocks >= 1 {
+        record_headless_unblock_refusal(pool, card, "once_per_goal_spent").await;
         return Ok(None);
     }
     if wall_budget_exhausted_refusal(&card.metadata_json).is_some() {
+        record_headless_unblock_refusal(pool, card, "wall_budget_exhausted").await;
         return Ok(None);
     }
     if goal_transition::check_budget(pool, &card.metadata_json)
         .await?
         .is_some()
     {
+        record_headless_unblock_refusal(pool, card, "cost_budget_exhausted").await;
         return Ok(None);
     }
 
@@ -17446,6 +18028,402 @@ mod tests {
         assert_eq!(
             unblock.payload.get("reason").and_then(|v| v.as_str()),
             Some("wallclock_cap")
+        );
+    }
+
+    // ── Lane R20b: salvage committed goal work before a budget/wall park ────
+
+    fn r20b_git(root: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .expect("git must be on PATH for this test");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A goal worktree shaped like `editapply` (A20 Q1, Mechanism A): a base
+    /// commit on `main`, then a `goal/<run_id>` branch — checked out and left
+    /// checked out, mirroring a real goal worktree — with ONE further commit
+    /// carrying a genuine, passing Rust test (so `developer::verify`'s Auto
+    /// scope, via Lane Y11's fork-point widening for an otherwise-clean
+    /// working tree, finds real work to verify — not a vacuous pass).
+    /// Returns `(worktree dir, baseline sha, head sha)`.
+    fn r20b_worktree_with_committed_fix(run_id: &str) -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        r20b_git(root, &["init", "-q", "-b", "main"]);
+        r20b_git(root, &["config", "user.email", "test@example.com"]);
+        r20b_git(root, &["config", "user.name", "Test"]);
+        r20b_git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"r20b-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        )
+        .unwrap();
+        r20b_git(root, &["add", "-A"]);
+        r20b_git(root, &["commit", "-q", "-m", "base"]);
+        let baseline = r20b_git(root, &["rev-parse", "HEAD"]);
+
+        let branch = format!("goal/{run_id}");
+        r20b_git(root, &["checkout", "-q", "-b", &branch]);
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n\n#[test]\nfn it_adds() { assert_eq!(add(2, 2), 4); }\n",
+        )
+        .unwrap();
+        r20b_git(root, &["commit", "-q", "-am", "fix: the salvageable work"]);
+        let head = r20b_git(root, &["rev-parse", "HEAD"]);
+        (dir, baseline, head)
+    }
+
+    /// A goal card `in_progress` with `dispatch_evidence.{baseline_commit,
+    /// worktree_path}` pointing at [`r20b_worktree_with_committed_fix`] and a
+    /// wall budget shaped by `remaining_secs`/`last_attempt_secs` (same
+    /// convention as `setup_hold_with_wall_budget`; pass `None` for no
+    /// configured cap at all).
+    async fn r20b_setup_goal_with_committed_work(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        run_id: &str,
+        budget: Option<(i64, i64)>,
+    ) -> (cards::Card, tempfile::TempDir, String) {
+        let (dir, _baseline, head) = r20b_worktree_with_committed_fix(run_id);
+        let card = setup_goal_in_state(pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": dir.path().to_string_lossy(),
+                "head_commit": head,
+                "commits": ["fix: the salvageable work"],
+                "baseline_commit": _baseline,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        let session_id = format!("r20b-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(dir.path().to_string_lossy().as_ref())
+            .execute(pool)
+            .await
+            .unwrap();
+        persist_card_meta(pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+        })
+        .await
+        .unwrap();
+        if let Some((remaining_secs, last_attempt_secs)) = budget {
+            let now = chrono::Utc::now();
+            sqlx::query(
+                "UPDATE cards SET metadata_json = json_set(metadata_json, '$.budget', \
+                 json('{\"wallclock_cap_secs\": 400}')) WHERE id = ?",
+            )
+            .bind(&card.id)
+            .execute(pool)
+            .await
+            .unwrap();
+            cards::merge_card_metadata(
+                pool,
+                &card.id,
+                serde_json::json!({
+                    "first_dispatched_at":
+                        (now - chrono::Duration::seconds(400 - remaining_secs)).to_rfc3339(),
+                    "dispatched_at":
+                        (now - chrono::Duration::seconds(last_attempt_secs)).to_rfc3339(),
+                }),
+                false,
+            )
+            .await
+            .unwrap();
+        }
+        let card = cards::get_card(pool, &card.id).await.unwrap().unwrap();
+        (card, dir, head)
+    }
+
+    /// A20 Q1 Mechanism A (`editapply`): a goal held with too little wall
+    /// budget for another attempt, but its branch already carries a real,
+    /// committed, verifiable fix — must be salvaged (verified, reviewed, and
+    /// — subject to `PERMAGENT_HEADLESS_AUTOLAND`, off by default here —
+    /// moved to Review/landed) instead of stranded behind an unblock nobody
+    /// answers. UNVERIFIED beyond desk-checking: depends on
+    /// `developer::verify`'s real Rust/`cargo test` detection, which this
+    /// EDIT-ONLY lane cannot compile or run.
+    #[tokio::test]
+    async fn salvage_lands_a_committed_goal_on_a_wall_budget_park() {
+        let pool = test_pool().await;
+        let (card, _dir, _head) =
+            r20b_setup_goal_with_committed_work(&pool, "r20b-salvage-lands", Some((60, 100))).await;
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "a salvaged goal must never be left in_progress"
+        );
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "a salvaged goal must not be parked — its committed work was proven, not stranded"
+        );
+        let receipt = updated
+            .metadata_json
+            .get("salvaged_on_park")
+            .expect("a landed salvage must record the salvaged_on_park receipt");
+        assert_eq!(
+            receipt.get("commits_ahead").and_then(|v| v.as_u64()),
+            Some(1)
+        );
+
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .is_none(),
+            "a salvaged goal must never also raise an unblock decision"
+        );
+
+        let session_id = updated
+            .metadata_json
+            .get("worker_session_id")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
+        assert!(
+            session_had_successful_verify(&pool, Some(&session_id)).await,
+            "the synthetic verify evidence must be genuine, readable by the SAME predicate a \
+             live worker's own verify call would satisfy"
+        );
+    }
+
+    /// A committed fix exists, but the goal's wall budget is fully spent
+    /// (`remaining_wall_budget_secs` reads `Some(0)`) — salvage must skip
+    /// the verify attempt entirely rather than spend the last sliver of
+    /// budget on a doomed run, and the goal parks exactly as it would have
+    /// before this lane.
+    #[tokio::test]
+    async fn salvage_skipped_with_no_budget() {
+        let pool = test_pool().await;
+        // cap=400s, elapsed=400s → 0s remaining.
+        let (card, _dir, _head) =
+            r20b_setup_goal_with_committed_work(&pool, "r20b-salvage-no-budget", Some((0, 100)))
+                .await;
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "no wall budget left must still park the goal, exactly as before this lane"
+        );
+        let receipt = updated
+            .metadata_json
+            .get("salvage_receipt")
+            .expect("a skipped salvage must still leave a breadcrumb");
+        assert_eq!(
+            receipt.get("outcome").and_then(|v| v.as_str()),
+            Some("salvage_skipped_no_budget")
+        );
+        assert!(
+            updated.metadata_json.get("salvaged_on_park").is_none(),
+            "a skipped salvage must never claim the goal was landed"
+        );
+    }
+
+    /// A20 Q1 Mechanism B (`loc-refund`/`refactor-shipping`): the drain's own
+    /// cap-expiry loop AND `park_dispatched_goals_now`'s shutdown-signal
+    /// sweep both funnel through `handle_goal_timeout` — a committed fix
+    /// must be salvaged there too, not just on the Y16a Hold-arm path.
+    #[tokio::test]
+    async fn drain_shutdown_salvages_a_committed_goal() {
+        let pool = test_pool().await;
+        // No `budget` configured at all: `remaining_wall_budget_secs` reads
+        // `None` (no configured ceiling — never "zero budget"), so salvage
+        // gets the plain 90s time box.
+        let (card, _dir, _head) =
+            r20b_setup_goal_with_committed_work(&pool, "r20b-drain-shutdown", None).await;
+
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 0)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "a salvaged goal must never be left in_progress"
+        );
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "handle_goal_timeout (the drain cap AND the shutdown-signal sweep) must salvage \
+             committed work instead of stranding it behind a park"
+        );
+        assert!(updated.metadata_json.get("salvaged_on_park").is_some());
+    }
+
+    /// A goal with real uncommitted work (never committed at all) has no
+    /// dispatch baseline recorded — `maybe_salvage_committed_work` refuses
+    /// at its very first check and the goal parks EXACTLY as it did before
+    /// this lane (the pre-existing `tight` case in
+    /// `hold_gates_requeue_on_remaining_wall_budget`, named explicitly here).
+    #[tokio::test]
+    async fn uncommitted_only_goal_parks_unchanged() {
+        let pool = test_pool().await;
+        // No `dispatch_evidence`/`baseline_commit` at all — nothing for
+        // salvage to even inspect.
+        let card = setup_hold_with_wall_budget(&pool, 60, 100).await;
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "a goal with nothing committed must park exactly as it did before this lane"
+        );
+        assert!(updated.metadata_json.get("salvaged_on_park").is_none());
+    }
+
+    /// R18g's `maybe_headless_unblock_verify_gap` had four silent
+    /// `return Ok(None)` gates. Each refusal must now write a
+    /// `decision_audit` row (`outcome = 'headless_unblock_refused'`) naming
+    /// which gate fired.
+    #[tokio::test]
+    async fn headless_unblock_refusal_gates_write_audit_rows() {
+        let pool = test_pool().await;
+
+        async fn refused_gate_names(pool: &sqlx::Pool<sqlx::Sqlite>, goal_id: &str) -> Vec<String> {
+            sqlx::query_scalar(
+                "SELECT evidence_digest FROM decision_audit WHERE goal_id = ? \
+                 AND outcome = 'headless_unblock_refused' ORDER BY seq ASC",
+            )
+            .bind(goal_id)
+            .fetch_all(pool)
+            .await
+            .unwrap()
+        }
+
+        // Gate 1: reason mismatch (never one of the two byte-for-byte
+        // literals `decide_goal_hold` raises).
+        let jailed = create_roadmap_goal(&pool, "in_progress", "Jailed goal", "r20b-a", &[]).await;
+        let card = cards::get_card(&pool, &jailed.id).await.unwrap().unwrap();
+        maybe_headless_unblock_verify_gap(
+            &pool,
+            &card,
+            "blocked by the write jail: path escapes the sandbox",
+            true,
+        )
+        .await
+        .unwrap();
+        let gates = refused_gate_names(&pool, &jailed.id).await;
+        assert_eq!(gates.len(), 1);
+        assert!(gates[0].starts_with("reason_mismatch:"));
+
+        // Gate 2: once-per-goal already spent.
+        let spent = create_roadmap_goal(&pool, "in_progress", "Spent goal", "r20b-b", &[]).await;
+        persist_card_meta(&pool, &spent.id, |m| {
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(&pool, &spent.id).await.unwrap().unwrap();
+        maybe_headless_unblock_verify_gap(
+            &pool,
+            &card,
+            crate::cost_router::hold_done::PARK_REASON_NO_VERIFY,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            refused_gate_names(&pool, &spent.id).await,
+            vec!["once_per_goal_spent".to_string()]
+        );
+
+        // Gate 3: wall budget exhausted.
+        let tight = setup_hold_with_wall_budget(&pool, 60, 100).await;
+        maybe_headless_unblock_verify_gap(
+            &pool,
+            &tight,
+            crate::cost_router::hold_done::PARK_REASON_NO_VERIFY,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            refused_gate_names(&pool, &tight.id).await,
+            vec!["wall_budget_exhausted".to_string()]
+        );
+
+        // Gate 4: reservation/cost (attempt-cap) budget exhausted.
+        let capped = create_roadmap_goal(&pool, "in_progress", "Capped goal", "r20b-d", &[]).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.budget', \
+             json('{\"attempt_cap\": 1}'), '$.attempt_count', 1) WHERE id = ?",
+        )
+        .bind(&capped.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let card = cards::get_card(&pool, &capped.id).await.unwrap().unwrap();
+        maybe_headless_unblock_verify_gap(
+            &pool,
+            &card,
+            crate::cost_router::hold_done::PARK_REASON_UNCOMMITTED,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            refused_gate_names(&pool, &capped.id).await,
+            vec!["cost_budget_exhausted".to_string()]
         );
     }
 
