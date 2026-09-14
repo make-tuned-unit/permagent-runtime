@@ -1,1 +1,1 @@
-export const FORUM_ASSET_REVISION = "b82584a4d36dc10c";
+export const FORUM_ASSET_REVISION = "bf06eb363adbe7d7";

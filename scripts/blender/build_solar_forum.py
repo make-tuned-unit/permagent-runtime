@@ -348,13 +348,13 @@ bpy.ops.object.camera_add(location=(33,-42,29)); cam=bpy.context.object; cam.rot
 scene.render.engine='CYCLES'; scene.cycles.samples=64; scene.cycles.use_denoising=True
 scene.render.resolution_x=1500; scene.render.resolution_y=1100; scene.render.resolution_percentage=100
 scene.render.filepath=str(OUT/'forum-preview.png')
-bpy.ops.wm.save_as_mainfile(filepath=str(OUT/'solar-forum.blend'))
 # Shared-mesh templates (tree variants, quay segments, props) live at the origin
 # only so linked copies can reuse their datablocks; they are never exported or
 # rendered. Everything else keeps the forum_architecture tag it was given.
 for _o in list(scene.objects):
     if _o.type=='MESH' and 'template' in _o.name.lower():
         _o['forum_architecture']=False; _o.hide_render=True; _o.hide_viewport=True
+bpy.ops.wm.save_as_mainfile(filepath=str(OUT/'solar-forum.blend'))
 exports=[]
 for m in materials:
     bpy.ops.object.select_all(action='DESELECT')
