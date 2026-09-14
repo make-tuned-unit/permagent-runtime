@@ -116,6 +116,20 @@ pub struct RunConfig {
     /// Variable NAMES the arm removes from the child's inherited environment,
     /// merged into [`Invocation::unset_envs`].
     pub arm_unset: Vec<String>,
+    /// Lane K6 / K6-b: `--harness-timeout-secs <N>` — a per-INVOCATION
+    /// override of the harness wall-clock ceiling that beats every other
+    /// source (a task's own `harness_timeout_secs:` in `task.yaml` AND the
+    /// tier's own floor; see
+    /// [`crate::task::TaskSpec::resolved_harness_timeout_secs`]). `None`
+    /// (the default) leaves the task-cap/tier-floor/default resolution
+    /// alone. This is a deliberate measurement knob for pinning an EXACT
+    /// ceiling on one invocation — the tier floor already scales a slow
+    /// provider's ceiling automatically without it — and the resolved
+    /// value it produces is retained on
+    /// [`crate::metrics::TaskResult::harness_timeout_secs`] and from there on
+    /// [`crate::qualification::TaskQualificationEvidence::harness_timeout_secs`]
+    /// so latency evidence stays honest about which ceiling was actually used.
+    pub harness_timeout_secs: Option<u64>,
 }
 
 /// Removes a run's scratch directory when dropped — on success AND on every
@@ -211,6 +225,22 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         &cfg.permagent_bin,
         cfg.use_keyring,
     );
+    // Lane K6 / K6-b: resolve the harness wall-clock ceiling this run
+    // actually uses — `--harness-timeout-secs` (this invocation's `cfg`)
+    // overrides everything; otherwise the tier's own floor (e.g. the zai
+    // tiers' 900s) is taken as `max(task cap or DEFAULT_HARNESS_TIMEOUT_SECS,
+    // tier value)`, never shortening a task's own cap. See
+    // `TaskSpec::resolved_harness_timeout_secs` for the full precedence and
+    // why: zai (glm47/glm53) rounds z2/z3 on M19 hit the driver's flat 600s
+    // per-task ceiling on two fixtures whose task.yaml caps them tighter
+    // than zai needs, while zai's own solved-task walls run 150-440s and it
+    // solved one of the two in 526s under isolation — the tier floor now
+    // raises those two fixtures' effective ceiling to `max(600, 900) = 900`
+    // automatically, and the CLI override still exists to pin an exact
+    // ceiling for one invocation when that isn't enough.
+    let effective_harness_timeout_secs = task
+        .spec
+        .resolved_harness_timeout_secs(tier, cfg.harness_timeout_secs);
     // Jesse's ruling (option 3, HARNESS_LOOP_LOG.md "### JESSE RULING"
     // 2026-09-08): headless auto-land stays a policy switch, DEFAULT OFF —
     // ordinary headless runs keep landing human-gated. The eval is exactly
@@ -220,7 +250,7 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     // it is derived from it (minus a minute of margin) rather than fixed —
     // never less than 60s, so a short per-task override can't collapse it to
     // (or below) zero.
-    let drain_secs = headless_drain_secs(task.spec.harness_timeout_secs());
+    let drain_secs = headless_drain_secs(effective_harness_timeout_secs);
     inv.envs
         .push(("PERMAGENT_HEADLESS_AUTOLAND".to_string(), "1".to_string()));
     inv.envs.push((
@@ -257,7 +287,7 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     let harness_log_path = logs.join("harness.log");
     let harness_run = deps.harness.run(
         &inv,
-        Duration::from_secs(task.spec.harness_timeout_secs()),
+        Duration::from_secs(effective_harness_timeout_secs),
         &harness_log_path,
     )?;
     // Best-effort: a missing/unreadable log just yields zeroed signals rather
@@ -316,6 +346,12 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     result.oracle_exit = oracle_run.exit;
     result.oracle_timed_out = oracle_run.timed_out;
     result.oracle_secs = oracle_run.duration.as_secs_f64();
+    // Lane K6: retain the resolved ceiling THIS run actually used, so
+    // latency evidence in the qualification record stays honest — a
+    // duration near a task's own default alone can't say whether it was
+    // measured against 600s, a tier's 900s, or a `--harness-timeout-secs`
+    // override.
+    result.harness_timeout_secs = Some(effective_harness_timeout_secs);
     // G3: a `category: "selection"` fixture is graded on the tool/DAG
     // decision, not (only) the oracle's verdict — evaluate its declared
     // `selection_check` against THIS run's own signals, independent of
@@ -2007,6 +2043,7 @@ mod tests {
                 ("PERMAGENT_BUDGET_X".to_string(), "1".to_string()),
             ],
             arm_unset: vec!["SOME_AMBIENT_VAR".to_string()],
+            harness_timeout_secs: None,
         };
         // Capture the invocation the runner hands to the harness.
         struct Capture(std::sync::Mutex<Option<Invocation>>);
@@ -2075,6 +2112,7 @@ mod tests {
             use_keyring: false,
             arm_env: Vec::new(),
             arm_unset: Vec::new(),
+            harness_timeout_secs: None,
         };
 
         struct CaptureHarness(std::sync::Mutex<Option<Invocation>>);
@@ -2210,6 +2248,182 @@ mod tests {
         // …and the report row records exactly what the child received.
         assert_eq!(result.headless_autoland.as_deref(), Some("1"));
         assert_eq!(result.headless_drain_secs.as_deref(), Some("840"));
+        // Lane K6: the resolved ceiling that produced these numbers is
+        // retained on the result too.
+        assert_eq!(result.harness_timeout_secs, Some(900));
+    }
+
+    // --- Lane K6 / K6-b: per-tier harness timeout floor, retained in the
+    // record -----------------------------------------------------------
+
+    /// A harness stand-in that records the `timeout` it was invoked with, so
+    /// a test can assert `run_task` actually handed the RESOLVED ceiling to
+    /// the subprocess wait — not just derived the drain-secs env from it.
+    struct CaptureTimeout(std::sync::Mutex<Option<Duration>>);
+    impl HarnessRunner for CaptureTimeout {
+        fn run(&self, _inv: &Invocation, t: Duration, _l: &Path) -> Result<HarnessRun> {
+            *self.0.lock().unwrap() = Some(t);
+            Ok(HarnessRun {
+                exit: Some(0),
+                timed_out: false,
+                duration: Duration::from_secs(1),
+            })
+        }
+    }
+
+    /// A task with no `harness_timeout_secs:` of its own, run under the
+    /// `glm47` tier (900s floor — see `Tier::builtin`), must resolve to the
+    /// TIER's floor rather than `DEFAULT_HARNESS_TIMEOUT_SECS` (also 900s
+    /// here, so this alone would not distinguish the two — the precedence
+    /// tests below do that; this one just pins the wiring: the resolved
+    /// value reaches the subprocess timeout, the derived drain-secs env,
+    /// AND the retained record).
+    #[test]
+    fn run_task_applies_the_tier_default_harness_timeout_when_task_has_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_task(&tmp.path().join("demo"), &[], &[]);
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            ..Default::default()
+        };
+        let harness = CaptureTimeout(std::sync::Mutex::new(None));
+        let deps = Deps {
+            harness: &harness,
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        let result = run_task(&task, &Tier::builtin("glm47").unwrap(), &cfg, &deps).unwrap();
+        assert_eq!(harness.0.lock().unwrap().unwrap(), Duration::from_secs(900));
+        assert_eq!(result.harness_timeout_secs, Some(900));
+        assert_eq!(result.headless_drain_secs.as_deref(), Some("840"));
+    }
+
+    /// Lane K6-b: the tier's own floor (glm47's 900s) beats a TIGHTER
+    /// task-level cap (600s here) — `max(600, 900) = 900`. This is exactly
+    /// the case Lane K6's evidence found (zai's z2/z3 rounds on M19 hit the
+    /// driver's flat 600s ceiling on two fixtures whose task.yaml caps them
+    /// tighter than zai needs) — under the K6-b floor it now runs with room
+    /// to spare, with no `--harness-timeout-secs` override required.
+    #[test]
+    fn run_task_tier_floor_beats_a_tighter_task_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("demo");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("task.yaml"),
+            "id: demo\ntitle: Demo\ncategory: classic\nprompt: do it\ntest: [true]\n\
+             harness_timeout_secs: 600\n",
+        )
+        .unwrap();
+        let task = Task {
+            spec: TaskSpec::from_yaml(&fs::read_to_string(dir.join("task.yaml")).unwrap()).unwrap(),
+            dir,
+        };
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            ..Default::default()
+        };
+        let harness = CaptureTimeout(std::sync::Mutex::new(None));
+        let deps = Deps {
+            harness: &harness,
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        let result = run_task(&task, &Tier::builtin("glm47").unwrap(), &cfg, &deps).unwrap();
+        assert_eq!(harness.0.lock().unwrap().unwrap(), Duration::from_secs(900));
+        assert_eq!(result.harness_timeout_secs, Some(900));
+        assert_eq!(result.headless_drain_secs.as_deref(), Some("840"));
+    }
+
+    /// Lane K6-b: a task-level cap LOOSER than the tier's floor (1200s here
+    /// vs glm47's 900s) is left alone — `max(1200, 900) = 1200`. The tier
+    /// value is a floor, never a shortening override.
+    #[test]
+    fn run_task_a_looser_task_cap_beats_the_tier_floor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("demo");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("task.yaml"),
+            "id: demo\ntitle: Demo\ncategory: classic\nprompt: do it\ntest: [true]\n\
+             harness_timeout_secs: 1200\n",
+        )
+        .unwrap();
+        let task = Task {
+            spec: TaskSpec::from_yaml(&fs::read_to_string(dir.join("task.yaml")).unwrap()).unwrap(),
+            dir,
+        };
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            ..Default::default()
+        };
+        let harness = CaptureTimeout(std::sync::Mutex::new(None));
+        let deps = Deps {
+            harness: &harness,
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        let result = run_task(&task, &Tier::builtin("glm47").unwrap(), &cfg, &deps).unwrap();
+        assert_eq!(
+            harness.0.lock().unwrap().unwrap(),
+            Duration::from_secs(1200)
+        );
+        assert_eq!(result.harness_timeout_secs, Some(1200));
+        assert_eq!(result.headless_drain_secs.as_deref(), Some("1140"));
+    }
+
+    /// Precedence: `RunConfig::harness_timeout_secs` (the `--harness-
+    /// timeout-secs` CLI flag) beats BOTH the task's own cap (600s) AND the
+    /// tier's floor (glm47's 900s) — 700s here is below the tier floor, so
+    /// this also proves the CLI override is not itself floored by the tier;
+    /// it is the knob Lane K6/K6-b adds so one invocation can pin an EXACT
+    /// ceiling regardless of task/tier.
+    #[test]
+    fn run_task_cli_override_beats_both_task_cap_and_tier_floor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("demo");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("task.yaml"),
+            "id: demo\ntitle: Demo\ncategory: classic\nprompt: do it\ntest: [true]\n\
+             harness_timeout_secs: 600\n",
+        )
+        .unwrap();
+        let task = Task {
+            spec: TaskSpec::from_yaml(&fs::read_to_string(dir.join("task.yaml")).unwrap()).unwrap(),
+            dir,
+        };
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            harness_timeout_secs: Some(700),
+            ..Default::default()
+        };
+        let harness = CaptureTimeout(std::sync::Mutex::new(None));
+        let deps = Deps {
+            harness: &harness,
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        let result = run_task(&task, &Tier::builtin("glm47").unwrap(), &cfg, &deps).unwrap();
+        assert_eq!(harness.0.lock().unwrap().unwrap(), Duration::from_secs(700));
+        assert_eq!(result.harness_timeout_secs, Some(700));
+        assert_eq!(result.headless_drain_secs.as_deref(), Some("640"));
     }
 
     /// An A/B arm must be able to override either headless-autoland default —
@@ -2232,6 +2446,7 @@ mod tests {
                 ),
             ],
             arm_unset: Vec::new(),
+            harness_timeout_secs: None,
         };
         let deps = Deps {
             harness: &FakeHarness {
@@ -2314,6 +2529,7 @@ mod tests {
             use_keyring: false,
             arm_env: Vec::new(),
             arm_unset: Vec::new(),
+            harness_timeout_secs: None,
         };
         let deps = Deps {
             harness: &HarnessWithLog {
@@ -2347,6 +2563,7 @@ mod tests {
             use_keyring: false,
             arm_env: Vec::new(),
             arm_unset: Vec::new(),
+            harness_timeout_secs: None,
         };
         let deps = Deps {
             // Wrong order: create_roadmap before decompose_roadmap.
@@ -2381,6 +2598,7 @@ mod tests {
             use_keyring: false,
             arm_env: Vec::new(),
             arm_unset: Vec::new(),
+            harness_timeout_secs: None,
         };
         let deps = Deps {
             harness: &HarnessWithSidecarAndLog {
@@ -2423,6 +2641,7 @@ mod tests {
             use_keyring: false,
             arm_env: Vec::new(),
             arm_unset: Vec::new(),
+            harness_timeout_secs: None,
         };
         let deps = Deps {
             harness: &HarnessWithSidecarAndLog {
@@ -2547,6 +2766,7 @@ mod tests {
             use_keyring: false,
             arm_env: Vec::new(),
             arm_unset: Vec::new(),
+            harness_timeout_secs: None,
         };
         let deps = Deps {
             harness: &HarnessWithLog {

@@ -92,6 +92,18 @@ pub struct TaskResult {
     /// keep treating the merged [`Self::signals`] as the one source of
     /// truth regardless of where each field came from.
     pub receipt_source: Option<String>,
+    /// Lane K6 / K6-b: the resolved harness wall-clock ceiling THIS run
+    /// actually used, seconds — a `--harness-timeout-secs` CLI override if
+    /// given, else `max(the task's own `harness_timeout_secs:` in
+    /// `task.yaml` (or [`crate::task::DEFAULT_HARNESS_TIMEOUT_SECS`]), the
+    /// tier's own floor)` (see
+    /// [`crate::task::TaskSpec::resolved_harness_timeout_secs`]). `None`
+    /// only if the task never reached the point where the runner resolves
+    /// it (i.e. it was never launched). Retained so latency evidence
+    /// (`duration_secs`, `harness_timed_out`) can be read against the
+    /// ceiling that actually produced it, rather than assumed from the
+    /// task's static default.
+    pub harness_timeout_secs: Option<u64>,
 }
 
 impl TaskResult {
@@ -122,6 +134,7 @@ impl TaskResult {
             headless_autoland: None,
             headless_drain_secs: None,
             receipt_source: None,
+            harness_timeout_secs: None,
         }
     }
 }

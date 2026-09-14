@@ -490,6 +490,19 @@ struct RunArgs {
         default_value = "replay"
     )]
     cassette_mode: String,
+
+    /// Lane K6 / K6-b: override the harness wall-clock ceiling (seconds) for
+    /// EVERY task in this invocation, beating both a task's own
+    /// `harness_timeout_secs:` in `task.yaml` AND the tier's own floor (see
+    /// `Tier::harness_timeout_secs`) — the tier floor already raises the
+    /// ceiling automatically for a slow provider (zai's glm47/glm53 default
+    /// to a 900s floor), so this flag is for pinning an EXACT ceiling on
+    /// one invocation, not the routine way to give a slow tier more room.
+    /// The resolved value is retained on every task's
+    /// `harness_timeout_secs` in the report/`.qual.json` record, so latency
+    /// evidence stays honest about which ceiling this run actually used.
+    #[arg(long, value_name = "N")]
+    harness_timeout_secs: Option<u64>,
 }
 
 /// `ab` — the paired comparison.
@@ -585,6 +598,12 @@ struct AbArgs {
     /// A/B is a failed measurement rather than a result.
     #[arg(long)]
     require_conclusive: bool,
+
+    /// Lane K6 / K6-b: override the harness wall-clock ceiling (seconds) for
+    /// EVERY task in both arms of this comparison. See `run --help`'s
+    /// `--harness-timeout-secs` for the full resolution and why it exists.
+    #[arg(long, value_name = "N")]
+    harness_timeout_secs: Option<u64>,
 }
 
 /// `tier0` — the $0 loop metrics.
@@ -1420,6 +1439,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         keep: args.keep,
         use_keyring: args.use_keyring,
         arm_env,
+        harness_timeout_secs: args.harness_timeout_secs,
         ..Default::default()
     };
     let harness = SubprocessHarnessRunner;
@@ -1824,6 +1844,7 @@ fn ab_run_config(args: &AbArgs) -> RunConfig {
         runs_root: ab_runs_root(args),
         keep: args.keep,
         use_keyring: args.use_keyring,
+        harness_timeout_secs: args.harness_timeout_secs,
         ..Default::default()
     }
 }

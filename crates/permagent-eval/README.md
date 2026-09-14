@@ -58,6 +58,35 @@ Built-in tiers:
 
 Or define an ad-hoc tier with `--provider <id> --model <name>`.
 
+### Harness wall-clock ceiling (Lane K6 / K6-b)
+
+Each task run is bounded by a wall-clock ceiling (`harness_timeout_secs`,
+default 900s) — exceed it and the harness is killed and the task counts as
+timed out. The ceiling is resolved per run:
+
+1. `--harness-timeout-secs <N>` on `run`/`ab` — a deliberate measurement
+   knob for ONE invocation, overriding everything below (even a tier's
+   floor).
+2. Otherwise, if the **tier** declares its own `harness_timeout_secs`
+   (most tiers have none; `glm47`/`glm53` — the zai tiers — default to
+   900s), the ceiling is `max(task cap or 900s default, tier value)` — the
+   tier value is a FLOOR, never a shortening override, so it raises the
+   ceiling for a slow provider without ever cutting a task's own cap short.
+3. Otherwise, the task's own `harness_timeout_secs:` in its `task.yaml`, or
+   the driver's default (900s) if it has none.
+
+Lane K6-b's rationale: a fixture's `harness_timeout_secs:` encodes "a
+competent harness finishes within N s on a fast model" — it's a
+per-fixture budget, not a claim about every provider's speed. zai's own
+solved-task walls on this suite run 150-440s (3-5x DeepSeek's 40-200s),
+so two fixtures whose task-level cap was tuned to 600s for faster tiers
+now resolve to `max(600, 900) = 900` under the zai tiers' floor, with no
+CLI override needed.
+
+The resolved value is retained per task as `harness_timeout_secs` in the
+report/`.qual.json` record, so latency evidence can always be read against
+the ceiling that actually produced it.
+
 ## Running it (on the mac mini)
 
 The eval must run where the app, the models, and the provider keys live — the mac

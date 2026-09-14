@@ -300,6 +300,14 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                         "oracle_exit": r.oracle_exit,
                         "oracle_timed_out": r.oracle_timed_out,
                         "oracle_secs": r.oracle_secs,
+                        // Lane K6 / K6-b: the resolved wall-clock ceiling
+                        // THIS task actually ran under (a `--harness-
+                        // timeout-secs` CLI override if given, else
+                        // `max(task cap or driver default, tier floor)`) —
+                        // so `duration_secs`/`harness_timed_out` above can
+                        // be read against the ceiling that produced them,
+                        // not assumed from the task's static default.
+                        "harness_timeout_secs": r.harness_timeout_secs,
                         "note": r.note,
                         "seed_commit": r.seed_commit,
                         // Lane R18c (A17 Q6): the G3 tool/DAG-selection
