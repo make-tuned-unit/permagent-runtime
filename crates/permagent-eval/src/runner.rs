@@ -2024,6 +2024,72 @@ mod tests {
         assert_eq!(r.signals.harness_overhead.unwrap().p50_ms, 99);
     }
 
+    // ── Lane R17b (G20 review MED-2): SIGTERM-before-SIGKILL escalation ───
+    //
+    // Both tests use the `sleep N & wait` shell idiom rather than a bare
+    // foreground `sleep N`. Verified by hand against this machine's `/bin/sh`
+    // before writing these: a bare foreground `sleep 30` defers a TERM trap
+    // until the `sleep` itself finishes (~29.5s observed) — POSIX shells only
+    // check for pending traps between commands / at syscall-interrupt points
+    // that `wait` provides but a foreground child's own blocking wait4() does
+    // not. Backgrounding `sleep` and blocking the shell in its OWN `wait`
+    // builtin makes the trap fire within milliseconds of the signal, which is
+    // what these tests need to tell "SIGTERM path" apart from "grace timeout
+    // path" reliably rather than by accident of a fast machine.
+
+    /// A child that traps SIGTERM and exits cleanly must be reaped during the
+    /// grace window — `wait_with_timeout` must return promptly, nowhere near
+    /// waiting out the full `SIGTERM_GRACE`, let alone the child's own
+    /// (deliberately much longer) sleep.
+    #[test]
+    fn wait_with_timeout_reaps_a_child_that_traps_sigterm_within_the_grace() {
+        let mut child = Command::new("sh")
+            .args(["-c", "trap 'exit 0' TERM; sleep 30 & wait"])
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        let (exit, timed_out) = wait_with_timeout(&mut child, Duration::from_millis(300)).unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(exit, Some(0));
+        assert!(timed_out);
+        assert!(
+            elapsed < SIGTERM_GRACE,
+            "took {elapsed:?}; a trapping child should be reaped well before \
+             the {SIGTERM_GRACE:?} grace elapses, not right at its edge"
+        );
+    }
+
+    /// A child that ignores SIGTERM must still be dead by the time this
+    /// returns, via the existing hard SIGKILL fallback — but only AFTER
+    /// waiting out the full grace window first, never sooner.
+    #[test]
+    fn wait_with_timeout_sigkills_a_child_that_ignores_sigterm_after_the_grace() {
+        let mut child = Command::new("sh")
+            .args(["-c", "trap '' TERM; sleep 30 & wait"])
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        let (exit, timed_out) = wait_with_timeout(&mut child, Duration::from_millis(300)).unwrap();
+        let elapsed = start.elapsed();
+
+        // SIGKILL cannot be trapped or reported: no exit code survives it.
+        assert_eq!(exit, None);
+        assert!(timed_out);
+        assert!(
+            elapsed >= SIGTERM_GRACE,
+            "took {elapsed:?}; must not escalate to SIGKILL before the full \
+             {SIGTERM_GRACE:?} grace has elapsed"
+        );
+        // ...but nowhere near the child's own 30s sleep — proves SIGKILL
+        // actually fired rather than this falling through to waiting the
+        // child out directly.
+        assert!(
+            elapsed < Duration::from_secs(15),
+            "took {elapsed:?}; expected well under the child's own 30s sleep"
+        );
+    }
+
     /// An ordinary (non-selection) fixture must never carry a
     /// `selection_correct` verdict, regardless of what the log contains.
     #[test]

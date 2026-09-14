@@ -1697,12 +1697,13 @@ impl CliSession {
                         "goal worker {worker_session_id}: {}",
                         state.binding()
                     ));
-                    // Lane R17a: refresh the receipts sidecar on every drain
-                    // poll too (not only on a counter change), so a run
-                    // SIGKILLed mid-drain still leaves an up-to-date file —
-                    // a no-op unless `PERMAGENT_RECEIPTS_SIDECAR` is set for
-                    // this run.
-                    permagent::receipts::write_sidecar();
+                    // Lane R17a had a `permagent::receipts::write_sidecar()`
+                    // call here, but this closure (`on_status`) only fires on
+                    // a goal STATE TRANSITION, not on every poll tick — see
+                    // G20 review MED-1. Lane R17b moved the unconditional,
+                    // once-per-poll-iteration refresh into the actual poll
+                    // loop instead: `drain_dispatched_goals_with` in
+                    // `crates/goose/src/agents/platform_extensions/orchestrator.rs`.
                 },
             ) => result,
             _ = crate::signal::shutdown_signal() => {

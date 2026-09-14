@@ -95,6 +95,19 @@ static SIDECAR_PATH: LazyLock<Mutex<Option<PathBuf>>> = LazyLock::new(|| Mutex::
 static LAST_OVERHEAD_LINE: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Begin a fresh CLI run, before starting the coordinator or any workers.
+///
+/// Lane R17b (G20 review, LOW-1): deliberately does NOT call
+/// [`write_sidecar`] itself — the file appears only once the first counter
+/// mutation, turn boundary, or drain-poll tick calls it. A task killed
+/// before any of those simply leaves no sidecar file at all, so the eval
+/// driver's `receipt_source` reads `None` → the record stays `Unrated` for
+/// those areas, which is the CORRECT reading of "no evidence was ever
+/// produced". An eager all-zero write here would instead put real-looking
+/// zeros on disk (`dispatches=0`, `roadmap_dispatched=0`, …) for a run that
+/// never got far enough to observe anything — the qualification gate's
+/// `>= 1` per-record thresholds would then read those fabricated zeros as a
+/// genuine (and failing) observation instead of correctly reporting
+/// `Unrated`. Absence must stay absence.
 pub fn begin_run() {
     ACTIVE.store(false, Ordering::Relaxed);
     REGISTRY.reset();
