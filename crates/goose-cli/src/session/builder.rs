@@ -271,13 +271,19 @@ async fn offer_extension_debugging_help(
     Ok(())
 }
 
+/// Lane R18f: extensions that failed to register, by label (`cfg.name()`).
+/// Previously `load_extensions` only ever printed a warning and pressed on —
+/// fine for an interactive session where the operator can see the banner and
+/// decide, fatal-by-omission for a headless coding-harness run whose
+/// `orchestrator` extension is the ONLY route to `decompose_roadmap` (see
+/// `build_session`'s `headless_coding_dispatch` block).
 async fn load_extensions(
     agent: Agent,
     extensions_to_load: Vec<(String, ExtensionConfig)>,
     provider_for_debug: Arc<dyn permagent::providers::base::Provider>,
     interactive: bool,
     session_id: &str,
-) -> Arc<Agent> {
+) -> (Arc<Agent>, Vec<String>) {
     let mut set = JoinSet::new();
     let agent_ptr = Arc::new(agent);
 
@@ -323,6 +329,16 @@ async fn load_extensions(
 
     spinner.clear();
 
+    let failed_labels: Vec<String> = offer_debug
+        .iter()
+        .map(|(id, _)| {
+            extensions_to_load
+                .get(*id)
+                .map(|e| e.0.clone())
+                .unwrap_or_default()
+        })
+        .collect();
+
     for (id, err) in offer_debug {
         let label = extensions_to_load
             .get(id)
@@ -349,7 +365,7 @@ async fn load_extensions(
         }
     }
 
-    agent_ptr
+    (agent_ptr, failed_labels)
 }
 
 struct ResolvedProviderConfig {
@@ -392,6 +408,43 @@ fn first_configured(sources: [Option<String>; 5]) -> Option<String> {
 /// spawning real worker subagents the operator never asked to auto-dispatch.
 fn wants_headless_goal_dispatch(coding_harness: bool, goose_mode: GooseMode) -> bool {
     coding_harness && goose_mode == GooseMode::Auto
+}
+
+/// Lane R18f: does `tools` expose a tool named `base_name`, prefixed or not?
+/// Same base-name match `permagent::after_turn`'s guards use for tool-request
+/// matching (strip everything up to and including the last `__`), so "is
+/// `decompose_roadmap` resolvable" reads identically here and in the guard
+/// that watches for its absence downstream.
+fn tool_list_exposes(tools: &[rmcp::model::Tool], base_name: &str) -> bool {
+    tools
+        .iter()
+        .any(|tool| tool.name.rsplit("__").next().unwrap_or(tool.name.as_ref()) == base_name)
+}
+
+/// Lane R18f: pure retry core of `build_session`'s orchestrator-tool-registration
+/// wait. `probe` is called up to `max_attempts` times, sleeping `retry_delay`
+/// between misses, and returns as soon as one call answers `true`. Extracted
+/// so a test can simulate "found on the Nth attempt" or "never found" with a
+/// synthetic counter instead of a live `Agent`/session — see
+/// `wait_for_tool_*` in this module's test suite.
+async fn wait_for_tool<F, Fut>(
+    max_attempts: u32,
+    retry_delay: std::time::Duration,
+    mut probe: F,
+) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for attempt in 0..max_attempts {
+        if probe().await {
+            return true;
+        }
+        if attempt + 1 < max_attempts {
+            tokio::time::sleep(retry_delay).await;
+        }
+    }
+    false
 }
 
 /// The coding harness's own model route, or `None` when the operator's session
@@ -868,7 +921,7 @@ async fn resolve_and_load_extensions(
     provider_for_debug: Arc<dyn permagent::providers::base::Provider>,
     interactive: bool,
     session_id: &str,
-) -> Arc<Agent> {
+) -> (Arc<Agent>, Vec<String>) {
     for warning in permagent::config::get_warnings() {
         eprintln!("{}", style(format!("Warning: {}", warning)).yellow());
     }
@@ -1260,7 +1313,13 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // anywhere else in this process is a harmless no-op) so the coordinator's
     // own `create_roadmap` call can actually dispatch. See
     // `wants_headless_goal_dispatch`'s doc comment for the scoping rationale.
-    if wants_headless_goal_dispatch(coding_harness, agent.config.goose_mode) {
+    //
+    // Lane R18f: captured once here (before `agent` moves into
+    // `resolve_and_load_extensions` below) and reused after extension
+    // loading to gate the orchestrator-tool-registration check.
+    let headless_coding_dispatch =
+        wants_headless_goal_dispatch(coding_harness, agent.config.goose_mode);
+    if headless_coding_dispatch {
         // R1(b) (harness loop, Lane D1, from Lane F8 forensics): seed the
         // project this coordinator's own `create_roadmap` will resolve onto
         // with a real `root_path` before any goal can dispatch, so
@@ -1321,7 +1380,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     }
 
     // Extensions are loaded after session creation because we may change directory when resuming
-    let agent_ptr = resolve_and_load_extensions(
+    let (agent_ptr, failed_extensions) = resolve_and_load_extensions(
         agent,
         extensions_for_provider,
         Arc::clone(&provider_for_debug),
@@ -1329,6 +1388,82 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         &session_id,
     )
     .await;
+
+    // Harness loop, Lane R18f (A17 analysis Class 4, HARNESS_LOOP_LOG.md): a
+    // DeepSeek coding-harness round's first `decompose_roadmap` call came
+    // back `-32002: Tool 'decompose_roadmap' not found` even though the
+    // orchestrator extension itself had already finished registering
+    // (`search_available_extensions` reported it loaded) — the tool list a
+    // turn's first dispatch resolves against was not verified before the
+    // turn started. `resolve_and_load_extensions` above already AWAITS every
+    // extension's `add_extension` call, so this is not a missing `.await`;
+    // it is a missing VERIFICATION that the awaited registration actually
+    // produced a resolvable tool set. Scoped to exactly the launch shape
+    // that cannot recover from this the way an interactive session can (ask
+    // the human, retry next message): the headless coding-harness coordinator,
+    // whose NON-NEGOTIABLE first tool call is `decompose_roadmap`.
+    if headless_coding_dispatch {
+        let orchestrator_name =
+            permagent::agents::platform_extensions::orchestrator::EXTENSION_NAME;
+        if failed_extensions
+            .iter()
+            .any(|name| name == orchestrator_name)
+        {
+            // The load genuinely FAILED (not raced) — `load_extensions`
+            // already printed the underlying error to stderr; this is fatal
+            // for a coding-harness run specifically, because there is no
+            // honest way to run the recipe's NON-NEGOTIABLE protocol without
+            // decompose_roadmap/create_roadmap/escalate.
+            tracing::error!(
+                extension = orchestrator_name,
+                "Lane R18f: orchestrator extension failed to load for a headless coding-harness \
+                 session; aborting rather than running a turn that cannot dispatch or escalate"
+            );
+            output::render_error(&format!(
+                "The '{orchestrator_name}' extension failed to load for this headless \
+                 coding-harness session (see the warning above for why). decompose_roadmap, \
+                 create_roadmap and escalate are unavailable, so this run cannot honestly \
+                 follow the coding recipe's protocol. Aborting instead of starting a turn that \
+                 can only end in a -32002 (Lane R18f)."
+            ));
+            process::exit(1);
+        }
+
+        // Bounded wait: `add_extension` completing does not, by itself, prove
+        // the tool this session will dispatch is resolvable — verify it
+        // directly against the same `list_tools` path a turn's first
+        // dispatch uses, retrying briefly in case the registration that
+        // *did* succeed above needs one more tick to be visible.
+        const MAX_ATTEMPTS: u32 = 10;
+        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+        let decompose_roadmap_ready = wait_for_tool(MAX_ATTEMPTS, RETRY_DELAY, || {
+            let agent_ptr = &agent_ptr;
+            let session_id = &session_id;
+            async move {
+                let tools = agent_ptr.list_tools(session_id, None).await;
+                tool_list_exposes(&tools, "decompose_roadmap")
+            }
+        })
+        .await;
+        if !decompose_roadmap_ready {
+            tracing::error!(
+                tool = "decompose_roadmap",
+                extension = orchestrator_name,
+                attempts = MAX_ATTEMPTS,
+                "Lane R18f: decompose_roadmap never became resolvable for a headless \
+                 coding-harness session; aborting rather than starting a turn that would hit \
+                 -32002 on its NON-NEGOTIABLE first tool call"
+            );
+            output::render_error(
+                "decompose_roadmap did not become available for this headless coding-harness \
+                 session after waiting for extension registration to settle. The coordinator's \
+                 first tool call is required to be decompose_roadmap; starting the turn anyway \
+                 would only reproduce the -32002 'tool not found' failure (Lane R18f, A17 \
+                 analysis Class 4).",
+            );
+            process::exit(1);
+        }
+    }
 
     let edit_mode = config
         .get_param::<String>("EDIT_MODE")
@@ -1406,6 +1541,84 @@ mod tests {
     fn headless_goal_dispatch_skips_the_coding_harness_outside_auto_mode() {
         assert!(!wants_headless_goal_dispatch(true, GooseMode::Approve));
         assert!(!wants_headless_goal_dispatch(true, GooseMode::Chat));
+    }
+
+    // ── orchestrator tool-registration wait (Lane R18f, A17 analysis Class 4) ──
+
+    fn tool_named(name: &str) -> rmcp::model::Tool {
+        rmcp::model::Tool::new(
+            name.to_string(),
+            "test tool".to_string(),
+            rmcp::object!({"type": "object"}),
+        )
+    }
+
+    #[test]
+    fn tool_list_exposes_matches_the_unprefixed_name() {
+        let tools = vec![tool_named("decompose_roadmap")];
+        assert!(tool_list_exposes(&tools, "decompose_roadmap"));
+    }
+
+    #[test]
+    fn tool_list_exposes_matches_the_prefixed_name() {
+        let tools = vec![tool_named("orchestrator__decompose_roadmap")];
+        assert!(tool_list_exposes(&tools, "decompose_roadmap"));
+    }
+
+    #[test]
+    fn tool_list_exposes_is_false_when_the_tool_is_absent() {
+        let tools = vec![
+            tool_named("developer__shell"),
+            tool_named("analyze__search"),
+        ];
+        assert!(!tool_list_exposes(&tools, "decompose_roadmap"));
+    }
+
+    /// The exact Class-4 repair: an extension whose registration is still in
+    /// flight when the first probe runs (as `search_available_extensions`
+    /// showed "loaded" while the tool list was still stale) must not fail the
+    /// session outright — a later probe within the bounded window finds it.
+    #[tokio::test]
+    async fn wait_for_tool_returns_true_once_a_late_probe_finds_it() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let calls_probe = calls.clone();
+        let found = wait_for_tool(5, std::time::Duration::from_millis(0), move || {
+            let calls_probe = calls_probe.clone();
+            async move {
+                let n = calls_probe.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                n >= 3
+            }
+        })
+        .await;
+        assert!(found, "a probe that eventually succeeds must be found");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "must stop retrying as soon as the tool is found, not run all attempts"
+        );
+    }
+
+    /// A permanently missing tool (the extension genuinely failed, or the
+    /// tool was never going to register) must give up after `max_attempts`
+    /// rather than retry forever — this is the branch `build_session` turns
+    /// into the named hard error and `process::exit(1)`.
+    #[tokio::test]
+    async fn wait_for_tool_gives_up_after_max_attempts() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let calls_probe = calls.clone();
+        let found = wait_for_tool(4, std::time::Duration::from_millis(0), move || {
+            let calls_probe = calls_probe.clone();
+            async move {
+                calls_probe.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                false
+            }
+        })
+        .await;
+        assert!(
+            !found,
+            "a permanently missing tool must never be reported found"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
     }
 
     /// REPLACES a source-text grep.

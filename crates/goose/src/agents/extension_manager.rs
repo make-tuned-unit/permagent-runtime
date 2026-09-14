@@ -293,6 +293,19 @@ pub fn is_hidden_extension(name: &str) -> bool {
         .is_some_and(|def| def.hidden)
 }
 
+/// Lane R18f (A17 analysis Class 4): is `tool_name`'s BASE name (after
+/// stripping any `extension__` prefix) one of the orchestrator tools a
+/// coding-harness coordinator's protocol (rule 1 / rule 5) cannot honestly
+/// proceed without? Used by [`ExtensionManager::resolve_tool`] to decide
+/// whether a `-32002` is worth a loud, harness-level log line rather than
+/// just an error string handed back to the model.
+fn is_rule5_critical_tool(tool_name: &str) -> bool {
+    const RULE5_CRITICAL_TOOL_NAMES: [&str; 3] =
+        ["decompose_roadmap", "create_roadmap", "escalate"];
+    let base = tool_name.rsplit("__").next().unwrap_or(tool_name);
+    RULE5_CRITICAL_TOOL_NAMES.contains(&base)
+}
+
 /// Result of resolving a tool call to its owning extension
 struct ResolvedTool {
     extension_name: String,
@@ -2130,6 +2143,36 @@ impl ExtensionManager {
             });
         }
 
+        // Lane R18f (A17 analysis Class 4, HARNESS_LOOP_LOG.md): a live run
+        // showed the orchestrator extension fully registered
+        // (`search_available_extensions` reported it loaded) while its own
+        // `decompose_roadmap` still resolved to this exact -32002 — "loaded
+        // but unreachable", not "never registered". That shape is
+        // indistinguishable from an ordinary unknown-tool typo once this
+        // error string reaches the model, which has no way to see server
+        // logs and cannot tell "you misspelled a tool" from "the harness's
+        // own tool router is broken". Log it loudly here — a harness-level
+        // signal, not something left to be silently returned to the model —
+        // for exactly the tools a coding-harness coordinator's protocol
+        // (rule 1 / rule 5) cannot honestly proceed without.
+        if is_rule5_critical_tool(tool_name) {
+            let orchestrator_key =
+                name_to_key(crate::agents::platform_extensions::orchestrator::EXTENSION_NAME);
+            if self.extensions.lock().await.contains_key(&orchestrator_key) {
+                let base_name = tool_name.rsplit("__").next().unwrap_or(tool_name);
+                tracing::error!(
+                    tool = tool_name,
+                    base_tool = base_name,
+                    session_id = %session_id,
+                    harness_error = "rule5_orchestrator_tool_unreachable",
+                    "orchestrator extension is registered but '{}' resolved to -32002 'tool not \
+                     found' — a coding-harness turn cannot honestly satisfy the roadmap/escalate \
+                     protocol without it",
+                    base_name
+                );
+            }
+        }
+
         Err(ErrorData::new(
             ErrorCode::RESOURCE_NOT_FOUND,
             format!("Tool '{}' not found", tool_name),
@@ -3533,5 +3576,46 @@ mod tests {
             ),
         );
         assert!(should_attempt_oauth_fallback(&Err(err)));
+    }
+
+    // ── tool_router: -32002 observability for a missing orchestrator tool
+    // (Lane R18f, A17 analysis Class 4) ────────────────────────────────────
+
+    #[test]
+    fn tool_router_rule5_critical_tool_matches_unprefixed_decompose_roadmap() {
+        assert!(is_rule5_critical_tool("decompose_roadmap"));
+    }
+
+    #[test]
+    fn tool_router_rule5_critical_tool_matches_prefixed_create_roadmap() {
+        assert!(is_rule5_critical_tool("orchestrator__create_roadmap"));
+    }
+
+    #[test]
+    fn tool_router_rule5_critical_tool_matches_escalate() {
+        assert!(is_rule5_critical_tool("escalate"));
+        assert!(is_rule5_critical_tool("orchestrator__escalate"));
+    }
+
+    #[test]
+    fn tool_router_rule5_critical_tool_is_false_for_an_unrelated_tool() {
+        assert!(!is_rule5_critical_tool("developer__shell"));
+        assert!(!is_rule5_critical_tool("goal_status"));
+    }
+
+    /// The resolve_tool path itself: an unknown tool name still returns the
+    /// same `-32002` `Tool not found` error regardless of whether it is
+    /// rule-5-critical — `is_rule5_critical_tool` only gates the EXTRA log
+    /// line, it must never change what the model sees or the error code.
+    #[tokio::test]
+    async fn tool_router_missing_tool_still_returns_resource_not_found() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let err = manager
+            .resolve_tool("session-1", "decompose_roadmap")
+            .await
+            .expect_err("no extensions registered — decompose_roadmap cannot resolve");
+        assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
+        assert!(err.message.contains("decompose_roadmap"), "{}", err.message);
     }
 }
