@@ -1383,6 +1383,467 @@ pub(crate) fn ground_roadmap_goals(
     (goals, receipts)
 }
 
+// ── R21b: create_roadmap-time acceptance-criteria validation ────────────
+//
+// `ground_roadmap_goals` above only ever runs inside `decompose_roadmap`,
+// against the planner's own raw proposal. `create_roadmap` re-parses
+// whatever `goals_json` the caller hands back and, until this lane, checked
+// only that its hash matched the pending proof -- never that the
+// acceptance criteria still named something this repo can actually check.
+// A21 Q1 (harness loop, fixture `select-failing-test-decompose-before-
+// create`): a worker held, held, then parked on an acceptance criterion no
+// check in this repo could ever satisfy, even though the fixture's real
+// intent was already met on disk. The functions below re-run the same
+// "does this criterion name a check/file we can substantiate" question one
+// more time, right before `create_roadmap` materializes cards -- but,
+// unlike `ground_acceptance_criteria` (which rewrites EVERY non-grounded
+// criterion unconditionally at decompose time), only a criterion that
+// actually NAMES something specific (a command, a Rust test path, a file)
+// is ever treated as "ungrounded" here: free-text, human-judged prose with
+// no named target is left alone, since not every criterion is a command.
+
+/// Z1's own honest "I could not ground this, a human must judge it" marker
+/// (`ground_acceptance_criteria`'s `UNVERIFIED (...)` prefix). A criterion
+/// already wearing this marker has already been through decompose-time
+/// grounding and flagged for human review -- re-flagging it here as a fresh
+/// R21b violation would just second-guess Z1's own, already-honest output.
+const UNVERIFIED_CRITERION_PREFIX: &str = "UNVERIFIED";
+
+/// R21b: does `criterion` assert something mechanically specific enough to
+/// check against this repo -- a known test/build command (`cargo test`,
+/// `pytest`, `npm test`, `make ...`), a Rust test path (`mod::test_name`),
+/// or a file path (`src/lib.rs`) -- as opposed to free-text prose a human
+/// reviewer judges by hand ("the error message is friendly")? Only a
+/// criterion this returns `true` for is ever a candidate for
+/// [`ungrounded_named_criteria_in_goals`]; anything else passes through
+/// untouched, whether or not it happens to be independently checkable.
+fn criterion_names_a_check_or_file(criterion: &str) -> bool {
+    if criterion
+        .trim_start()
+        .starts_with(UNVERIFIED_CRITERION_PREFIX)
+    {
+        return false;
+    }
+    if criterion.contains('`') {
+        return true;
+    }
+    let lower = criterion.to_lowercase();
+    const NAMED_COMMAND_KEYWORDS: &[&str] = &[
+        "cargo test",
+        "cargo build",
+        "cargo clippy",
+        "cargo fmt",
+        "pytest",
+        "npm test",
+        "npm run",
+        "yarn test",
+        "pnpm test",
+        "go test",
+        "go build",
+        "make ",
+    ];
+    if NAMED_COMMAND_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+        return true;
+    }
+    // A Rust test path (`module::test_name`) or a file path with a dotted
+    // extension (`src/lib.rs`, `docs/guide.md`, `.cache_path.txt`).
+    regex::Regex::new(r"[A-Za-z0-9_.\-/]+::[A-Za-z0-9_:]+|[A-Za-z0-9_.\-/]*\.[A-Za-z0-9]{1,6}\b")
+        .map(|re| re.is_match(criterion))
+        .unwrap_or(false)
+}
+
+/// One acceptance criterion `create_roadmap` cannot substantiate against
+/// this repo: which goal it belongs to, and the criterion text itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UngroundedCriterion {
+    goal_index: usize,
+    goal_title: String,
+    criterion: String,
+}
+
+/// R21b: every acceptance criterion across `goals` that names a specific
+/// check/file (per [`criterion_names_a_check_or_file`]) `facts` cannot
+/// substantiate -- the `create_roadmap`-time counterpart of
+/// `ground_acceptance_criteria`'s decompose-time pass, run again here
+/// because `create_roadmap` accepts a caller-supplied `goals_json` that
+/// need not have come from a grounded `decompose_roadmap` proposal at all.
+fn ungrounded_named_criteria_in_goals(
+    goals: &[goal_state::ProposedGoal],
+    facts: &RepoFacts,
+) -> Vec<UngroundedCriterion> {
+    let mut out = Vec::new();
+    for (goal_index, goal) in goals.iter().enumerate() {
+        for criterion in &goal.acceptance_criteria {
+            if criterion_names_a_check_or_file(criterion)
+                && !is_grounded_criterion(criterion, facts)
+            {
+                out.push(UngroundedCriterion {
+                    goal_index,
+                    goal_title: goal.title.clone(),
+                    criterion: criterion.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The structured error `create_roadmap` returns the FIRST time a given
+/// proposal fails R21b validation: lists every ungrounded criterion plus
+/// the checks this repo actually has, so the coordinator can re-plan (a
+/// fresh `decompose_roadmap` pass, or a hand-corrected `goals_json`) in one
+/// turn rather than dispatching a worker onto an unsatisfiable target.
+fn ac_validation_error(ungrounded: &[UngroundedCriterion], facts: &RepoFacts) -> String {
+    let items = ungrounded
+        .iter()
+        .map(|u| {
+            format!(
+                "  - Goal #{} '{}': \"{}\"",
+                u.goal_index + 1,
+                u.goal_title,
+                u.criterion
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let checks = if facts.check_commands.is_empty() {
+        "(none detected in this repo -- name an existing file instead, or leave the criterion \
+         as free text a human reviewer can judge by hand)"
+            .to_string()
+    } else {
+        facts.check_commands.join("; ")
+    };
+    format!(
+        "create_roadmap rejected: {} acceptance criterion(s) name a check or file this repo \
+         does not have -- never invented, always grounded in what this repo can actually run. \
+         Re-plan and call create_roadmap again (a fresh decompose_roadmap pass, or a corrected \
+         goals_json) naming only a detected check command or a file that actually exists here:\n\
+         {}\n\n\
+         Detected check command(s) you may use verbatim: {}\n\n\
+         (One-retry gate: a second create_roadmap call for this exact proposal that is still \
+         ungrounded will be accepted, with each ungrounded criterion rewritten to the closest \
+         detected check and recorded as `ac_rewritten` on the card metadata for human review -- \
+         never silently dropped.)",
+        ungrounded.len(),
+        items,
+        checks
+    )
+}
+
+// ── R21b/R21c shared grammar: probe-check markers ────────────────────────
+//
+// R21c teaches `verify` (`developer/verify.rs`, `select_checks`/detected
+// checks) to turn a mechanically checkable acceptance criterion into a real
+// probe check it can run: does a file exist, is a symbol defined in a file,
+// does a command exit zero. When R21b's rewrite below (the second-failure
+// repair) cannot find a detected repo-wide check command for an ungrounded
+// criterion, but the criterion's OWN text reads as one of those three
+// shapes, it is rewritten to this exact `<PREFIX> key=value ...` marker --
+// never plain prose -- so `verify` can parse it deterministically. This is
+// the one place that grammar is produced; R21c's detection should import
+// these three `PROBE_*_PREFIX` constants rather than re-deriving the
+// strings, so the two lanes can never drift apart. A criterion that fits
+// none of the three shapes still falls through to the honest, unstructured
+// `UNVERIFIED (...)` marker below -- nothing is ever invented either way.
+
+/// `probe:file_exists path=<path>` -- the criterion claims a specific file
+/// exists.
+pub(crate) const PROBE_FILE_EXISTS_PREFIX: &str = "probe:file_exists";
+/// `probe:symbol_defined path=<path> symbol=<name> kind=<function|method|class>`
+/// -- the criterion claims a named function/method/class is defined in a
+/// specific file.
+pub(crate) const PROBE_SYMBOL_DEFINED_PREFIX: &str = "probe:symbol_defined";
+/// `probe:command cmd="<command>"` -- the criterion names a literal,
+/// quoted command whose exit code is the check.
+pub(crate) const PROBE_COMMAND_PREFIX: &str = "probe:command";
+
+/// Program names [`extract_quoted_command`] treats as evidence that a
+/// quoted span is a real command, not just quoted prose.
+const PROBE_COMMAND_PROGRAMS: &[&str] = &[
+    "cargo", "pytest", "npm", "yarn", "pnpm", "python3", "node", "go", "make",
+];
+
+/// One of the three R21c probe-check shapes a rewritten criterion can
+/// resolve to -- see the `PROBE_*_PREFIX` constants above for the grammar
+/// [`ProbeShape::render`] produces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProbeShape {
+    FileExists {
+        path: String,
+    },
+    SymbolDefined {
+        path: String,
+        symbol: String,
+        kind: String,
+    },
+    Command {
+        cmd: String,
+    },
+}
+
+impl ProbeShape {
+    /// Render as the exact `<PREFIX> key=value ...` text `verify`'s R21c
+    /// detection is expected to parse. The caller appends the ORIGINAL
+    /// criterion text after this, unmodified, for the human reader.
+    fn render(&self) -> String {
+        match self {
+            ProbeShape::FileExists { path } => format!("{PROBE_FILE_EXISTS_PREFIX} path={path}"),
+            ProbeShape::SymbolDefined { path, symbol, kind } => {
+                format!("{PROBE_SYMBOL_DEFINED_PREFIX} path={path} symbol={symbol} kind={kind}")
+            }
+            ProbeShape::Command { cmd } => format!("{PROBE_COMMAND_PREFIX} cmd=\"{cmd}\""),
+        }
+    }
+}
+
+/// Best-effort classification of `criterion` into one of the three R21c
+/// probe shapes -- narrow and conservative by design: `None` (falling
+/// through to the plain `UNVERIFIED (...)` marker) is always the safe
+/// default, so every extractor below only fires on a clear, unambiguous
+/// match rather than guessing. Checked most-specific-first: a quoted
+/// command outranks a symbol claim, which outranks a bare file-existence
+/// claim (e.g. "class Foo exists in src/bar.py" names a symbol, not just a
+/// file).
+fn classify_probe_shape(criterion: &str) -> Option<ProbeShape> {
+    if let Some(cmd) = extract_quoted_command(criterion) {
+        return Some(ProbeShape::Command { cmd });
+    }
+    if let Some((path, symbol, kind)) = extract_symbol_definition(criterion) {
+        return Some(ProbeShape::SymbolDefined { path, symbol, kind });
+    }
+    if let Some(path) = extract_file_existence(criterion) {
+        return Some(ProbeShape::FileExists { path });
+    }
+    None
+}
+
+/// A backtick- or quote-wrapped span whose first word is a recognized
+/// program name (`PROBE_COMMAND_PROGRAMS`) -- e.g. "run `python3 -c
+/// 'import fizzbuzz'`". Only fires on an actual quoted span, so a command
+/// name mentioned in unquoted prose is never mistaken for a literal
+/// command to run.
+fn extract_quoted_command(criterion: &str) -> Option<String> {
+    for (open, close) in [('`', '`'), ('"', '"')] {
+        let mut rest = criterion;
+        while let Some(start) = rest.find(open) {
+            let after = &rest[start + open.len_utf8()..];
+            let Some(end) = after.find(close) else {
+                break;
+            };
+            let span = &after[..end];
+            let first_word = span.split_whitespace().next().unwrap_or("");
+            if PROBE_COMMAND_PROGRAMS.contains(&first_word) {
+                return Some(span.to_string());
+            }
+            rest = &after[end + close.len_utf8()..];
+        }
+    }
+    None
+}
+
+/// A `function`/`method`/`class`/`def`/`fn` keyword next to an identifier,
+/// AND a file path elsewhere in the same criterion -- e.g. "the fizzbuzz
+/// function is defined in fizzbuzz.py" or "class Foo exists in
+/// src/bar.py". `kind` is normalized to `function`/`method`/`class`.
+fn extract_symbol_definition(criterion: &str) -> Option<(String, String, String)> {
+    let path = extract_file_path(criterion)?;
+    // NOTE: `concat!`, not a `\`-continued raw string -- a raw string
+    // literal has no escape processing at all, so a `\` before a newline
+    // would be captured as a literal backslash-then-whitespace in the
+    // pattern instead of being elided, silently breaking the regex.
+    let re = regex::Regex::new(concat!(
+        r"(?i)\b(function|method|class|def|fn)\b\s+`?([A-Za-z_][A-Za-z0-9_]*)`?",
+        r"|`?([A-Za-z_][A-Za-z0-9_]*)`?\s+\b(function|method|class)\b",
+    ))
+    .ok()?;
+    let caps = re.captures(criterion)?;
+    let (kind_raw, symbol) = if let Some(k) = caps.get(1) {
+        (k.as_str(), caps.get(2)?.as_str())
+    } else {
+        (caps.get(4)?.as_str(), caps.get(3)?.as_str())
+    };
+    let kind = match kind_raw.to_ascii_lowercase().as_str() {
+        "def" | "fn" | "function" => "function",
+        "method" => "method",
+        _ => "class",
+    }
+    .to_string();
+    Some((path, symbol.to_string(), kind))
+}
+
+/// A file path AND the standalone word "exist"/"exists" elsewhere in the
+/// criterion -- e.g. "fizzbuzz.py exists" or "docs/guide.md exists in the
+/// repo". Word-boundary matched so a filename that merely CONTAINS "exist"
+/// as a substring (`does_not_exist.rs`) is never mistaken for the claim.
+fn extract_file_existence(criterion: &str) -> Option<String> {
+    let re = regex::Regex::new(r"(?i)\bexists?\b").ok()?;
+    if !re.is_match(criterion) {
+        return None;
+    }
+    extract_file_path(criterion)
+}
+
+/// The first file-path-shaped token in `criterion` (a dotted extension
+/// with at least one leading path/name character) -- the same shape
+/// [`criterion_names_a_check_or_file`] already treats as naming a file.
+fn extract_file_path(criterion: &str) -> Option<String> {
+    regex::Regex::new(r"[A-Za-z0-9_.\-/]*[A-Za-z0-9_\-/]\.[A-Za-z0-9]{1,6}\b")
+        .ok()
+        .and_then(|re| re.find(criterion))
+        .map(|m| m.as_str().to_string())
+}
+
+/// R21b's second-failure repair: rewrite ONLY the named-but-ungrounded
+/// criteria in `criteria` to the closest detected check; when this repo
+/// has no detected check at all but the criterion itself reads as one of
+/// R21c's probe shapes (file exists / symbol defined / command), rewrite
+/// to that structured marker instead; otherwise fall through to an honest
+/// `UNVERIFIED` marker. Every other criterion, including free text that
+/// never claimed to be a check, is returned byte-for-byte unchanged.
+/// Never invents a check that doesn't exist. Returns (rewritten criteria,
+/// one human-readable note per rewrite).
+fn rewrite_ungrounded_named_criteria(
+    criteria: &[String],
+    facts: &RepoFacts,
+) -> (Vec<String>, Vec<String>) {
+    let mut rewritten = Vec::with_capacity(criteria.len());
+    let mut notes = Vec::new();
+    let mut seen_replacement = HashSet::new();
+    for criterion in criteria {
+        if !criterion_names_a_check_or_file(criterion) || is_grounded_criterion(criterion, facts) {
+            rewritten.push(criterion.clone());
+            continue;
+        }
+        let replacement = if let Some(check) = facts.check_commands.first() {
+            format!("run `{check}`")
+        } else if let Some(shape) = classify_probe_shape(criterion) {
+            format!("{} — {}", shape.render(), criterion)
+        } else {
+            format!(
+                "UNVERIFIED (no detected check command in this repo) — kept for human review: {criterion}"
+            )
+        };
+        notes.push(format!(
+            "acceptance criterion named a check/file this repo does not have, rewritten on \
+             retry (R21b): \"{criterion}\" -> \"{replacement}\""
+        ));
+        if seen_replacement.insert(replacement.clone()) {
+            rewritten.push(replacement);
+        }
+    }
+    (rewritten, notes)
+}
+
+/// Project metadata key recording the last `create_roadmap` proposal hash
+/// that failed R21b AC validation, so a second call for the SAME exact
+/// proposal is recognized as a retry (rewrite-and-accept) while a brand new
+/// proposal (a different hash, e.g. from a fresh `decompose_roadmap` pass)
+/// always gets one full chance to be correct on its own, never inheriting
+/// a different objective's prior failure.
+const ROADMAP_AC_VALIDATION_METADATA_KEY: &str = "roadmap_ac_validation_attempt";
+
+/// True when `proposal_hash` is the exact same proposal that already
+/// failed R21b validation once for this project.
+fn roadmap_ac_validation_previously_failed(
+    project: &crate::projects::Project,
+    proposal_hash: &str,
+) -> bool {
+    project
+        .metadata_json
+        .get(ROADMAP_AC_VALIDATION_METADATA_KEY)
+        .and_then(|v| v.get("hash"))
+        .and_then(|v| v.as_str())
+        == Some(proposal_hash)
+}
+
+/// Best-effort CAS write recording that `proposal_hash` just failed R21b AC
+/// validation for `project`. A lost race (another writer changed
+/// `updated_at` first) just means the next call re-derives the same
+/// decision from a fresh read -- this bookkeeping only decides "reject" vs
+/// "rewrite", never "pass" vs "fail" (the AC check itself is the sole
+/// pass/fail authority), so losing an update is never a correctness gap,
+/// only ever a harmless extra reject-then-retry round.
+async fn record_roadmap_ac_validation_failure(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project: &crate::projects::Project,
+    proposal_hash: &str,
+) {
+    let _ = sqlx::query(
+        "UPDATE projects SET metadata_json = json_set(metadata_json, '$.roadmap_ac_validation_attempt', json(?)) \
+         WHERE id = ? AND updated_at = ?",
+    )
+    .bind(serde_json::json!({ "hash": proposal_hash }).to_string())
+    .bind(&project.id)
+    .bind(&project.updated_at)
+    .execute(pool)
+    .await;
+}
+
+/// Best-effort clear of the R21b retry marker -- called once a
+/// `create_roadmap` call either passes validation cleanly or has just been
+/// accepted-with-rewrite, so a later, unrelated proposal never inherits a
+/// stale failure record.
+async fn clear_roadmap_ac_validation_state(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project: &crate::projects::Project,
+) {
+    let _ = sqlx::query(
+        "UPDATE projects SET metadata_json = json_remove(metadata_json, '$.roadmap_ac_validation_attempt') \
+         WHERE id = ? AND updated_at = ?",
+    )
+    .bind(&project.id)
+    .bind(&project.updated_at)
+    .execute(pool)
+    .await;
+}
+
+/// `handle_create_roadmap`'s own R21b entry point: validates `goals`'
+/// acceptance criteria against `facts`, mutating `goals` in place ONLY when
+/// this is an accepted retry-with-rewrite (a prior call for this exact
+/// `proposal_hash` already failed once). Returns the per-goal-index rewrite
+/// receipts to record on each card (empty when nothing needed correcting)
+/// on `Ok`, or the structured, first-failure rejection `create_roadmap`
+/// should return to the caller unchanged. Pulled out of the handler body so
+/// the three-way branch (clean / reject / rewrite) reads as one policy in
+/// one place, directly unit-testable against a real pool without the rest
+/// of `handle_create_roadmap`'s plumbing.
+async fn validate_roadmap_ac_or_rewrite(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project: &crate::projects::Project,
+    proposal_hash: &str,
+    facts: &RepoFacts,
+    goals: &mut [goal_state::ProposedGoal],
+) -> Result<std::collections::BTreeMap<usize, Vec<String>>, String> {
+    let ungrounded = ungrounded_named_criteria_in_goals(goals, facts);
+    let mut ac_rewrite_notes = std::collections::BTreeMap::new();
+    if ungrounded.is_empty() {
+        // Clear any stale retry marker left by a DIFFERENT, earlier
+        // proposal for this project that failed and was never retried.
+        clear_roadmap_ac_validation_state(pool, project).await;
+        return Ok(ac_rewrite_notes);
+    }
+    if !roadmap_ac_validation_previously_failed(project, proposal_hash) {
+        record_roadmap_ac_validation_failure(pool, project, proposal_hash).await;
+        return Err(ac_validation_error(&ungrounded, facts));
+    }
+    // Bounded to one retry (R21b): this exact proposal already failed AC
+    // validation once. Never invent a check — rewrite each ungrounded
+    // criterion to the closest detected check (or mark it UNVERIFIED when
+    // nothing was detected), leave every other criterion untouched, and
+    // make the correction auditable on the card itself so a human can see
+    // exactly what changed and why.
+    for (idx, goal) in goals.iter_mut().enumerate() {
+        let (rewritten, notes) =
+            rewrite_ungrounded_named_criteria(&goal.acceptance_criteria, facts);
+        if !notes.is_empty() {
+            goal.acceptance_criteria = rewritten;
+            ac_rewrite_notes.insert(idx, notes);
+        }
+    }
+    clear_roadmap_ac_validation_state(pool, project).await;
+    Ok(ac_rewrite_notes)
+}
+
 #[derive(Debug)]
 struct RoadmapMaterialization {
     project_name: String,
@@ -1417,6 +1878,7 @@ async fn materialize_roadmap_transaction(
         None,
         session_mode,
         calling_session_id,
+        &std::collections::BTreeMap::new(),
     )
     .await
 }
@@ -1455,6 +1917,12 @@ async fn materialize_roadmap_transaction_with_budget(
     budget_task_id: Option<&str>,
     session_mode: GooseMode,
     calling_session_id: Option<&str>,
+    // R21b: goal-index -> human-readable rewrite receipt(s), for goals whose
+    // acceptance criteria `handle_create_roadmap` rewrote under the AC
+    // validation retry gate above. Empty for every caller that never hits
+    // that path (both `#[cfg(test)]` callers, and a `create_roadmap` call
+    // whose AC was already grounded).
+    ac_rewrite_notes: &std::collections::BTreeMap<usize, Vec<String>>,
 ) -> Result<RoadmapMaterialization, String> {
     validate_roadmap_goals(goals)?;
     let mut tx = pool
@@ -1647,6 +2115,15 @@ async fn materialize_roadmap_transaction_with_budget(
                 &g.description,
             )),
         );
+        // R21b: this goal's acceptance criteria were rewritten by the
+        // create_roadmap-time AC validation retry gate -- surface it on the
+        // card itself (not just the call's own text response) so the
+        // correction stays visible to a human reviewer for as long as the
+        // card exists.
+        if let Some(notes) = ac_rewrite_notes.get(&idx) {
+            meta.insert("ac_rewritten".to_string(), serde_json::json!(true));
+            meta.insert("ac_rewritten_notes".to_string(), serde_json::json!(notes));
+        }
         let card_id = cards::create_goal_card_in_tx(
             &mut tx,
             project_id,
@@ -6630,7 +7107,7 @@ impl OrchestratorClient {
         let proposal_hash = extract_string(&args, "proposal_hash")?;
         let approval_decision_id = extract_string(&args, "approval_decision_id")?;
 
-        let goals: Vec<goal_state::ProposedGoal> =
+        let mut goals: Vec<goal_state::ProposedGoal> =
             serde_json::from_str(&goals_json).map_err(|e| format!("Invalid goals JSON: {}", e))?;
 
         validate_roadmap_goals(&goals)?;
@@ -6654,6 +7131,30 @@ impl OrchestratorClient {
         let project = crate::projects::get_project_by_id_or_slug(&pool, &id_or_slug)
             .await?
             .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?;
+
+        // R21b (harness loop, A21 Q1): `decompose_roadmap` grounds its own
+        // LLM proposal against this repo (Z1 above), but `create_roadmap`
+        // accepts whatever `goals_json` the caller hands back verbatim —
+        // the hash check above only proves the goals text matches the hash
+        // the coordinator itself computed, never that the acceptance
+        // criteria still name something this repo can actually check.
+        // Re-run the same "does this criterion name a check/file we can
+        // substantiate" question one more time, right before
+        // materialization.
+        let facts_dir = project
+            .root_path
+            .as_deref()
+            .map(std::path::Path::new)
+            .or_else(|| {
+                self.context
+                    .session
+                    .as_ref()
+                    .map(|s| s.working_dir.as_path())
+            });
+        let facts = facts_dir.map(RepoFacts::gather).unwrap_or_default();
+        let ac_rewrite_notes =
+            validate_roadmap_ac_or_rewrite(&pool, &project, &proposal_hash, &facts, &mut goals)
+                .await?;
 
         // Harness loop, Lane V (V3): `resolve_internal_isolation` (goal_engine.rs)
         // fatally refuses to dispatch into a project with no git baseline —
@@ -6730,6 +7231,7 @@ impl OrchestratorClient {
             budget_task_id.as_deref(),
             session_mode,
             calling_session_id,
+            &ac_rewrite_notes,
         )
         .await?;
 
@@ -6789,11 +7291,30 @@ impl OrchestratorClient {
             ""
         };
 
+        // R21b: this exact proposal already failed AC validation once, so
+        // the ungrounded criteria above were rewritten rather than rejected
+        // a second time — say so plainly, in addition to the per-card
+        // `ac_rewritten` metadata, so the coordinator's own turn shows the
+        // correction instead of it only being discoverable later.
+        let ac_rewrite_notice = if ac_rewrite_notes.is_empty() {
+            String::new()
+        } else {
+            let mut notice = "\n\nAcceptance criteria corrected on this retry (R21b — never \
+                 invented, always grounded in this repo's own detected checks):\n"
+                .to_string();
+            for notes in ac_rewrite_notes.values() {
+                for note in notes {
+                    notice.push_str(&format!("  - {}\n", note));
+                }
+            }
+            notice
+        };
+
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Roadmap created: {} goal cards in project '{}'. \
              {} root goal(s) dispatched to workers. \
              Remaining goals will dispatch automatically as dependencies complete.\n\n\
-             {}{}{}{}\n\n\
+             {}{}{}{}{}\n\n\
              Use pause_roadmap to stop auto-dispatch. Use resume_roadmap to continue.",
             materialized.created_ids.len(),
             materialized.project_name,
@@ -6801,7 +7322,8 @@ impl OrchestratorClient {
             goal_id_listing,
             wait_notice,
             baseline_receipt,
-            auto_land_notice.unwrap_or_default()
+            auto_land_notice.unwrap_or_default(),
+            ac_rewrite_notice
         ))]))
     }
 
@@ -24963,6 +25485,7 @@ mod tests {
             Some("approving-task"),
             GooseMode::Approve,
             None,
+            &std::collections::BTreeMap::new(),
         )
         .await
         .unwrap();
@@ -25382,6 +25905,282 @@ mod tests {
         assert!(receipts
             .iter()
             .any(|r| r.contains("database") || r.contains("frontend")));
+    }
+
+    // ── R21b: create_roadmap-time AC validation (harness loop, A21 Q1) ────
+
+    /// R21b Tests bullet 1: an AC naming a detected check command that
+    /// exists in this repo passes cleanly — not ungrounded, no error, no
+    /// rewrite.
+    #[test]
+    fn ungrounded_named_criteria_is_empty_when_ac_names_an_existing_check() {
+        let facts = RepoFacts {
+            check_commands: vec!["cargo test".to_string()],
+            ..Default::default()
+        };
+        let goals = vec![goal("Fix it", "fix the bug", &["`cargo test` passes"], &[])];
+        assert!(ungrounded_named_criteria_in_goals(&goals, &facts).is_empty());
+    }
+
+    /// R21b Tests bullet 2: an AC naming a file that does not exist in this
+    /// repo is flagged ungrounded, and the structured error names both the
+    /// offending criterion and the checks this repo actually has, so the
+    /// coordinator can re-plan in one turn.
+    #[test]
+    fn ungrounded_named_criteria_flags_a_missing_file() {
+        let facts = RepoFacts {
+            check_commands: vec!["cargo test".to_string()],
+            files: vec!["src/lib.rs".to_string()],
+            file_count: 1,
+            ..Default::default()
+        };
+        let goals = vec![goal(
+            "Fix it",
+            "fix the bug",
+            &["src/does_not_exist.rs contains the fix"],
+            &[],
+        )];
+        let ungrounded = ungrounded_named_criteria_in_goals(&goals, &facts);
+        assert_eq!(ungrounded.len(), 1);
+        assert_eq!(
+            ungrounded[0].criterion,
+            "src/does_not_exist.rs contains the fix"
+        );
+        let err = ac_validation_error(&ungrounded, &facts);
+        assert!(err.contains("src/does_not_exist.rs"));
+        assert!(err.contains("cargo test"));
+    }
+
+    /// R21b Tests bullet 3: the retry-rewrite pass only touches the named-
+    /// but-ungrounded criterion — it never invents a check, and free text
+    /// in the SAME goal is returned byte-for-byte unchanged.
+    #[test]
+    fn rewrite_ungrounded_named_criteria_rewrites_only_the_named_offender() {
+        let facts = RepoFacts {
+            check_commands: vec!["cargo test".to_string()],
+            files: vec!["src/lib.rs".to_string()],
+            file_count: 1,
+            ..Default::default()
+        };
+        let criteria = vec![
+            "src/does_not_exist.rs contains the fix".to_string(),
+            "the error message reads clearly".to_string(),
+        ];
+        let (rewritten, notes) = rewrite_ungrounded_named_criteria(&criteria, &facts);
+        assert_eq!(rewritten[0], "run `cargo test`");
+        assert_eq!(
+            rewritten[1], "the error message reads clearly",
+            "free text with no named claim must be untouched"
+        );
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("src/does_not_exist.rs"));
+    }
+
+    /// R21b Tests bullet 3 (no-detected-check case): with nothing detected
+    /// in this repo, the rewrite is an honest `UNVERIFIED` marker — never
+    /// an invented check command.
+    #[test]
+    fn rewrite_ungrounded_named_criteria_never_invents_a_check() {
+        let facts = RepoFacts::default();
+        let criteria = vec!["src/does_not_exist.rs contains the fix".to_string()];
+        let (rewritten, notes) = rewrite_ungrounded_named_criteria(&criteria, &facts);
+        assert!(
+            rewritten[0].starts_with("UNVERIFIED"),
+            "no check was detected, so the rewrite must honestly say so, not invent one: {}",
+            rewritten[0]
+        );
+        assert_eq!(notes.len(), 1);
+    }
+
+    // ── R21b/R21c: probe-check marker grammar ──────────────────────────
+
+    /// A plain file-existence claim, with no detected check, is rewritten
+    /// to R21c's `probe:file_exists` marker rather than a bare `UNVERIFIED`
+    /// -- the FizzBuzz-shaped example from the R21c addendum.
+    #[test]
+    fn rewrite_ungrounded_named_criteria_emits_probe_file_exists() {
+        let facts = RepoFacts::default();
+        let criteria = vec!["fizzbuzz.py exists".to_string()];
+        let (rewritten, notes) = rewrite_ungrounded_named_criteria(&criteria, &facts);
+        assert_eq!(
+            rewritten[0],
+            "probe:file_exists path=fizzbuzz.py — fizzbuzz.py exists"
+        );
+        assert_eq!(notes.len(), 1);
+    }
+
+    /// A symbol-definition claim is rewritten to R21c's `probe:symbol_defined`
+    /// marker, with `kind` normalized to `function`.
+    #[test]
+    fn rewrite_ungrounded_named_criteria_emits_probe_symbol_defined() {
+        let facts = RepoFacts::default();
+        let criteria = vec!["the fizzbuzz function is defined in fizzbuzz.py".to_string()];
+        let (rewritten, notes) = rewrite_ungrounded_named_criteria(&criteria, &facts);
+        assert_eq!(
+            rewritten[0],
+            "probe:symbol_defined path=fizzbuzz.py symbol=fizzbuzz kind=function — \
+             the fizzbuzz function is defined in fizzbuzz.py"
+        );
+        assert_eq!(notes.len(), 1);
+    }
+
+    /// A criterion naming a literal, quoted command is rewritten to R21c's
+    /// `probe:command` marker, preserving the command text verbatim.
+    #[test]
+    fn rewrite_ungrounded_named_criteria_emits_probe_command() {
+        let facts = RepoFacts::default();
+        let criteria = vec!["run `python3 -c 'import fizzbuzz'`".to_string()];
+        let (rewritten, notes) = rewrite_ungrounded_named_criteria(&criteria, &facts);
+        assert_eq!(
+            rewritten[0],
+            "probe:command cmd=\"python3 -c 'import fizzbuzz'\" — \
+             run `python3 -c 'import fizzbuzz'`"
+        );
+        assert_eq!(notes.len(), 1);
+    }
+
+    /// Priority ordering: a criterion that reads as BOTH a symbol claim and
+    /// a bare file-existence claim ("class Foo exists in src/bar.py")
+    /// resolves to the more specific `symbol_defined` shape, not
+    /// `file_exists`.
+    #[test]
+    fn classify_probe_shape_prefers_symbol_defined_over_file_exists() {
+        let shape = classify_probe_shape("class Foo exists in src/bar.py").unwrap();
+        assert_eq!(
+            shape,
+            ProbeShape::SymbolDefined {
+                path: "src/bar.py".to_string(),
+                symbol: "Foo".to_string(),
+                kind: "class".to_string(),
+            }
+        );
+    }
+
+    /// A criterion that fits none of the three probe shapes (a file
+    /// reference with no exist/symbol/command claim) still yields no probe
+    /// classification -- confirming the fallback to plain `UNVERIFIED`
+    /// above is reached honestly, not because the classifier over-fires.
+    #[test]
+    fn classify_probe_shape_is_none_for_a_plain_content_claim() {
+        assert_eq!(
+            classify_probe_shape("src/does_not_exist.rs contains the fix"),
+            None
+        );
+    }
+
+    /// R21b Tests bullet 4: free text naming no specific check or file is
+    /// left alone — not everything is a command, and a criterion with no
+    /// named claim can never be "ungrounded" in the R21b sense.
+    #[test]
+    fn ungrounded_named_criteria_leaves_free_text_alone() {
+        let facts = RepoFacts::default();
+        let goals = vec![goal(
+            "Polish copy",
+            "improve the error text",
+            &["the error message is friendly and non-technical"],
+            &[],
+        )];
+        assert!(ungrounded_named_criteria_in_goals(&goals, &facts).is_empty());
+    }
+
+    /// An AC already wearing Z1's own `UNVERIFIED (...)` marker (decompose-
+    /// time grounding already gave up honestly and asked for human review)
+    /// must never be re-flagged here — that would just second-guess Z1's
+    /// own, already-honest output.
+    #[test]
+    fn ungrounded_named_criteria_exempts_z1s_own_unverified_marker() {
+        let facts = RepoFacts::default();
+        let goals = vec![goal(
+            "Polish copy",
+            "improve the error text",
+            &[
+                "UNVERIFIED (no detected check command in this repo) — kept for human review: \
+               grep -q 'class Foo' src/bar.py",
+            ],
+            &[],
+        )];
+        assert!(ungrounded_named_criteria_in_goals(&goals, &facts).is_empty());
+    }
+
+    /// End-to-end (A21 Q1 repair, direct): `create_roadmap` must
+    /// independently validate acceptance criteria against what this repo
+    /// can actually check, not just trust that `decompose_roadmap` already
+    /// ran — a caller-supplied `goals_json` need not have gone through Z1's
+    /// decompose-time grounding at all. First call: an AC naming a file
+    /// this repo does not have is rejected with a structured error and no
+    /// card is created. Second call for the SAME exact proposal: accepted,
+    /// with the ungrounded criterion rewritten (never invented) and
+    /// `ac_rewritten` recorded on the card for human review.
+    #[tokio::test]
+    async fn create_roadmap_rejects_then_rewrites_an_ac_naming_a_file_this_repo_lacks() {
+        let (_tmp, sm, _session, _em, client) =
+            roadmap_handler_fixture(GooseMode::Approve, true).await;
+        let pool = sm.pool_clone().await.unwrap();
+
+        let goals = vec![goal_state::ProposedGoal {
+            title: "Fix pricing".to_string(),
+            description: "fix the pricing bug".to_string(),
+            acceptance_criteria: vec![
+                "src/pricing_missing_file.rs contains the rounding fix".to_string()
+            ],
+            tags: vec![],
+            depends_on: vec![],
+        }];
+        let (hash, decision_id) =
+            install_answered_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
+                .await;
+        let goals_json = serde_json::to_string(&goals).unwrap();
+
+        // First attempt: rejected, structured error, nothing materialized.
+        let err = client
+            .handle_create_roadmap(Some(create_roadmap_args(&goals_json, &hash, &decision_id)))
+            .await
+            .expect_err(
+                "an AC naming a file this repo does not have must be rejected on the first \
+                 attempt",
+            );
+        assert!(err.contains("rejected"));
+        assert!(err.contains("src/pricing_missing_file.rs"));
+        let cards: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cards WHERE project_id = ? AND card_type = 'goal'",
+        )
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            cards, 0,
+            "a rejected proposal must not materialize any card"
+        );
+
+        // Second attempt for the SAME exact proposal: accepted with a
+        // rewrite, never a second rejection.
+        let result = client
+            .handle_create_roadmap(Some(create_roadmap_args(&goals_json, &hash, &decision_id)))
+            .await
+            .expect("the second attempt for the same proposal must be accepted with a rewrite");
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(text.contains("ac_rewritten") || text.contains("corrected"));
+
+        let metadata: String = sqlx::query_scalar(
+            "SELECT metadata_json FROM cards WHERE project_id = ? AND card_type = 'goal'",
+        )
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(metadata["ac_rewritten"], true);
+        assert!(metadata["ac_rewritten_notes"][0]
+            .as_str()
+            .unwrap()
+            .contains("src/pricing_missing_file.rs"));
+        let rewritten_ac = metadata["acceptance_criteria"][0].as_str().unwrap();
+        assert!(
+            rewritten_ac.starts_with("UNVERIFIED"),
+            "no check was detected in this tempdir repo, so the rewrite must be an honest \
+             UNVERIFIED marker, never an invented check: {rewritten_ac}"
+        );
     }
 
     #[tokio::test]
