@@ -60,6 +60,17 @@ pub struct TaskResult {
     /// received, likewise read back post-arm-override. See
     /// [`Self::headless_autoland`].
     pub headless_drain_secs: Option<String>,
+    /// Lane R17a (M17 readiness audit §6.1, gaps 1 & 4): which source
+    /// supplied this task's RECEIPT CONTRACT v1 evidence in
+    /// [`Self::signals`] — `"stdout"` when the captured log's own clean-exit
+    /// print already had it, `"sidecar"` when at least one field had to be
+    /// filled in from `PERMAGENT_RECEIPTS_SIDECAR` after a timeout/SIGKILL
+    /// (see [`crate::harness_log::fill_receipts_from_sidecar`]), or `None`
+    /// when neither source had any receipt evidence. Purely informational —
+    /// deliberately NOT read by [`crate::qualification`]'s gate, which must
+    /// keep treating the merged [`Self::signals`] as the one source of
+    /// truth regardless of where each field came from.
+    pub receipt_source: Option<String>,
 }
 
 impl TaskResult {
@@ -85,6 +96,7 @@ impl TaskResult {
             seed_commit: None,
             headless_autoland: None,
             headless_drain_secs: None,
+            receipt_source: None,
         }
     }
 }

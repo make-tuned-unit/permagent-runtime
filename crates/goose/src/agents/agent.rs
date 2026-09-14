@@ -3351,6 +3351,25 @@ impl Agent {
                     );
                 }
 
+                // Lane R17a (M17 readiness audit §6.1, gaps 1 & 4): refresh
+                // the receipts sidecar's `harness_overhead` line at this turn
+                // boundary too, not only at the session's clean exit — a
+                // harness SIGKILLed for exceeding the eval's wall-clock
+                // ceiling still leaves a recent-enough reading on disk for
+                // `permagent-eval`'s timeout fallback
+                // (`PERMAGENT_RECEIPTS_SIDECAR`) to read. `is_active` gates
+                // this before any rollup query, so an ordinary run without a
+                // sidecar configured pays no extra cost.
+                if crate::receipts::is_active() {
+                    if let Ok(rollup) =
+                        session_manager.session_timing_rollup(&session_config.id).await
+                    {
+                        crate::receipts::set_harness_overhead_line(
+                            crate::session::format_harness_overhead_line(&rollup),
+                        );
+                    }
+                }
+
                 if exit_chat {
                     break;
                 }

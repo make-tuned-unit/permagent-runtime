@@ -1697,6 +1697,12 @@ impl CliSession {
                         "goal worker {worker_session_id}: {}",
                         state.binding()
                     ));
+                    // Lane R17a: refresh the receipts sidecar on every drain
+                    // poll too (not only on a counter change), so a run
+                    // SIGKILLed mid-drain still leaves an up-to-date file —
+                    // a no-op unless `PERMAGENT_RECEIPTS_SIDECAR` is set for
+                    // this run.
+                    permagent::receipts::write_sidecar();
                 },
             ) => result,
             _ = crate::signal::shutdown_signal() => {

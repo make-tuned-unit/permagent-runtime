@@ -6,6 +6,7 @@
 //! detector counts, not an assertion that the detectors cover every attack.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 
@@ -82,10 +83,24 @@ impl Registry {
 static REGISTRY: LazyLock<Registry> = LazyLock::new(Registry::default);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Lane R17a (M17 readiness audit §6.1, gap 1 & 4): sidecar file path for
+/// this run, read from `PERMAGENT_RECEIPTS_SIDECAR` by [`begin_run`]. `None`
+/// when unset, which makes [`write_sidecar`] a no-op — an ordinary run (no
+/// eval driver watching) pays no extra I/O.
+static SIDECAR_PATH: LazyLock<Mutex<Option<PathBuf>>> = LazyLock::new(|| Mutex::new(None));
+
+/// Lane R17a: the most recently formatted `harness_overhead ...` line (see
+/// [`set_harness_overhead_line`]), mirrored into the sidecar file alongside
+/// the four receipt lines. `None` until at least one has been computed.
+static LAST_OVERHEAD_LINE: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
+
 /// Begin a fresh CLI run, before starting the coordinator or any workers.
 pub fn begin_run() {
     ACTIVE.store(false, Ordering::Relaxed);
     REGISTRY.reset();
+    *SIDECAR_PATH.lock().unwrap_or_else(|e| e.into_inner()) =
+        std::env::var_os("PERMAGENT_RECEIPTS_SIDECAR").map(PathBuf::from);
+    *LAST_OVERHEAD_LINE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     ACTIVE.store(true, Ordering::Relaxed);
 }
 
@@ -103,6 +118,7 @@ pub fn mark_unknown(area: &str, key: &str) {
     if is_active() {
         if let Some(i) = FIELDS.iter().position(|&(a, k, _)| a == area && k == key) {
             REGISTRY.known[i].store(false, Ordering::Relaxed);
+            write_sidecar();
         }
     }
 }
@@ -114,6 +130,7 @@ pub fn record(area: &str, key: &str) {
 pub fn record_count(area: &str, key: &str, count: u64) {
     if ACTIVE.load(Ordering::Relaxed) {
         REGISTRY.record(area, key, count, None);
+        write_sidecar();
     }
 }
 
@@ -121,11 +138,82 @@ pub fn record_count(area: &str, key: &str, count: u64) {
 pub fn record_once(area: &str, key: &str, identity: &str) {
     if ACTIVE.load(Ordering::Relaxed) {
         REGISTRY.record(area, key, 1, Some(identity));
+        write_sidecar();
     }
 }
 
 pub fn snapshot() -> Snapshot {
     REGISTRY.snapshot()
+}
+
+/// Lane R17a (M17 readiness audit §6.1, gaps 1 & 4): when
+/// `PERMAGENT_RECEIPTS_SIDECAR` names a path, keep it holding the exact same
+/// four RECEIPT CONTRACT v1 lines the CLI's headless exit sink prints at a
+/// clean exit, plus the latest known `harness_overhead` line (see
+/// [`set_harness_overhead_line`]) — written atomically (temp file + rename)
+/// so a concurrent reader never observes a half-written file. The
+/// `permagent-eval` driver reads this file with the SAME line parser it
+/// already uses on captured stdout when a harness SIGKILLed for exceeding
+/// its timeout never got to print these lines itself. Reuses the exact
+/// formatters the stdout sink prints from —
+/// [`crate::cost_router::routing_receipt::format_line`] and
+/// [`Snapshot::lines`] — so the two sinks can never format differently.
+/// Best-effort throughout: any I/O failure is swallowed rather than
+/// surfaced as a run failure over an observability write. A no-op (no I/O
+/// at all) when the sidecar is not configured, or this run is not active.
+pub fn write_sidecar() {
+    if !is_active() {
+        return;
+    }
+    let Some(path) = SIDECAR_PATH
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    else {
+        return;
+    };
+    let mut text = String::new();
+    text.push_str(&crate::cost_router::routing_receipt::format_line());
+    text.push('\n');
+    for line in REGISTRY.snapshot().lines() {
+        text.push_str(&line);
+        text.push('\n');
+    }
+    if let Some(overhead) = LAST_OVERHEAD_LINE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
+        text.push_str(&overhead);
+        text.push('\n');
+    }
+    let _ = write_atomic(&path, &text);
+}
+
+/// Lane R17a: record the harness's latest formatted `harness_overhead ...`
+/// line (`session::format_harness_overhead_line`/`_with_attempts`) so the
+/// sidecar carries a recent reading even when the run is killed before its
+/// own clean-exit print ever runs. Called from the per-turn boundary in
+/// `agents::agent`'s reply loop. A no-op (no rollup ever computed) unless
+/// this run is active — see [`write_sidecar`] for the sink this feeds.
+pub fn set_harness_overhead_line(line: String) {
+    if is_active() {
+        *LAST_OVERHEAD_LINE.lock().unwrap_or_else(|e| e.into_inner()) = Some(line);
+        write_sidecar();
+    }
+}
+
+/// Atomic write: write `text` to a per-call unique temp file beside `path`,
+/// then rename over it. Rename is atomic on the same filesystem, so a
+/// concurrent reader always sees either the previous complete file or the
+/// new one, never a partial write; the per-call counter keeps concurrent
+/// writer threads in this process from colliding on the same temp name.
+fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp{n}"));
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -231,5 +319,65 @@ mod tests {
         assert_eq!(registry.snapshot().lines()[2], expected);
         registry.reset();
         assert_eq!(registry.snapshot().lines()[2], expected);
+    }
+
+    /// Lane R17a: the sidecar mechanism itself, exercised through the real
+    /// global API (`begin_run`/`record`/`write_sidecar` all operate on the
+    /// process-wide `REGISTRY`/`ACTIVE` statics — there is no local-instance
+    /// escape hatch for this seam, unlike the `Registry::default()` tests
+    /// above). Sets `PERMAGENT_RECEIPTS_SIDECAR` to a fresh temp path, begins
+    /// a run, bumps one counter, and asserts the sidecar file holds all four
+    /// RECEIPT CONTRACT v1 lines — parseable by the exact same regexes
+    /// `permagent-eval`'s `harness_log.rs` uses on captured stdout (copied
+    /// verbatim from `receipts_contract_byte_exact` / `routing_receipt`'s own
+    /// `routing_receipt_format_contract` test, since a zeroed run's lines are
+    /// deterministic). `end_run` at the end returns the process to its
+    /// pre-test (inactive) state.
+    #[test]
+    fn sidecar_receives_all_four_contract_lines_on_a_counter_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sidecar = dir.path().join("harness-receipts.txt");
+        std::env::set_var("PERMAGENT_RECEIPTS_SIDECAR", &sidecar);
+        begin_run();
+        record("dag_enforcement", "roadmap_dispatched");
+        end_run();
+        std::env::remove_var("PERMAGENT_RECEIPTS_SIDECAR");
+
+        let text = std::fs::read_to_string(&sidecar).expect("sidecar file was written");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "receipt cost_routing dispatches=0 cheapest_capable=0 pack_honored=0 planner=unknown/unknown",
+                "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0",
+                "receipt verification_integrity goals=0 review_reached=0 vacuous_passes=0 reviewer_mutations=0 reviewer_not_independent=0",
+                "receipt safety_and_trust jail_denials=0 jail_bypasses=unknown unapproved_skill_runs=unknown approval_bypasses=unknown adversary_blocks=0",
+            ]
+        );
+    }
+
+    /// The `harness_overhead` line only appears once the CLI has computed
+    /// one via [`set_harness_overhead_line`] — the sidecar must not fabricate
+    /// it, but once set it is written on the very next receipt change too
+    /// (not only when the overhead line itself changes).
+    #[test]
+    fn sidecar_includes_harness_overhead_once_set() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sidecar = dir.path().join("harness-receipts.txt");
+        std::env::set_var("PERMAGENT_RECEIPTS_SIDECAR", &sidecar);
+        begin_run();
+        set_harness_overhead_line(
+            "harness_overhead p50=1 p95=2 model=3 tools=4 wall=5".to_string(),
+        );
+        record("safety_and_trust", "jail_denials");
+        end_run();
+        std::env::remove_var("PERMAGENT_RECEIPTS_SIDECAR");
+
+        let text = std::fs::read_to_string(&sidecar).expect("sidecar file was written");
+        assert!(
+            text.lines()
+                .any(|l| l == "harness_overhead p50=1 p95=2 model=3 tools=4 wall=5"),
+            "sidecar missing harness_overhead line:\n{text}"
+        );
     }
 }
