@@ -12884,8 +12884,8 @@ async fn maybe_salvage_committed_work(
         .and_then(|v| v.as_str())
         .map(str::to_string)
     else {
-        let note =
-            "salvage verify passed but the goal has no worker session to attribute it to".into();
+        let note = "salvage verify passed but the goal has no worker session to attribute it to"
+            .to_string();
         record_salvage_receipt(pool, &card.id, "salvage_evidence_write_failed", &note).await;
         return not_salvaged(note);
     };
