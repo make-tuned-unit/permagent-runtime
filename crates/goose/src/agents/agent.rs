@@ -451,8 +451,13 @@ async fn retry_first_byte_stall(
     let remaining =
         std::time::Duration::from_secs(crate::providers::stream_budget::DEFAULT_FIRST_BYTE_SECS)
             .saturating_sub(first_byte_wait_started.elapsed());
-    let scoped_retry =
-        crate::providers::stream_budget::FIRST_BYTE_WINDOW_OVERRIDE.scope(Some(remaining), retry);
+    // Lane R19d: `Secs(remaining)`, never `Unlimited` — the retry's own
+    // ceiling is always a concrete (possibly zero) duration, not "no
+    // first-byte timer at all".
+    let scoped_retry = crate::providers::stream_budget::FIRST_BYTE_WINDOW_OVERRIDE.scope(
+        crate::providers::stream_budget::FirstByteWindow::Secs(remaining),
+        retry,
+    );
 
     if invocation.attempts_reserved.is_none() {
         // No paid hold governs this call at all — retry with no reservation
