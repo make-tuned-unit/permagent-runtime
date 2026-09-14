@@ -369,8 +369,14 @@ impl CandidateVerifier for VerifyToolVerifier {
                     scope: None,
                     risk: None,
                     changed_paths: None,
+                    acceptance_criteria: None,
                 },
                 Some(candidate.worktree.as_path()),
+                // R21c-b: a best-of-N candidate is not a registered goal
+                // worker session (`GOAL_WORKERS` is keyed by dispatched
+                // goal cards), so there is no bound-goal criteria to load —
+                // unchanged behavior either way.
+                None,
             )
             .await;
         result.is_error != Some(true)
