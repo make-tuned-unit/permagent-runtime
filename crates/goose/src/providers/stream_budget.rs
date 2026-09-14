@@ -105,15 +105,32 @@ pub const DEFAULT_MAX_SECS: u64 = 1200;
 /// wait belongs to [`DEFAULT_FIRST_BYTE_SECS`] now (Lane R19a); a dead socket
 /// mid-stream does not get that much rope.
 pub const DEFAULT_STALL_SECS: u64 = 120;
-/// Five minutes of complete silence before the FIRST item arrives (Lane
-/// R19a). Wider than [`DEFAULT_STALL_SECS`] on purpose: the M19 DeepSeek
-/// forensics this constant comes from measured a ~39 KB system prompt
-/// stalling at 0 chars for the full prior 120 s bound, three times in a row,
-/// while an equivalent-sized request to a different provider on the same
-/// binary at the same moment answered in seconds — plausibly provider-side
-/// queueing/prefill, not a dead connection. The caller retries this specific
-/// timeout once before giving up.
-pub const DEFAULT_FIRST_BYTE_SECS: u64 = 300;
+/// Three minutes of complete silence before the FIRST item arrives (Lane
+/// R19a; lowered from 300s to 180s by Lane R19c/G24 HIGH-2). Wider than
+/// [`DEFAULT_STALL_SECS`] on purpose: the M19 DeepSeek forensics this
+/// constant comes from measured a ~39 KB system prompt stalling at 0 chars
+/// for the full prior 120 s bound, three times in a row, while an
+/// equivalent-sized request to a different provider on the same binary at
+/// the same moment answered in seconds — plausibly provider-side
+/// queueing/prefill, not a dead connection.
+///
+/// **Worst case, Lane R19c.** The caller (`agents::agent`) retries this
+/// specific timeout once before giving up, but the retry does NOT get a
+/// fresh 180 s — it gets whatever remains of this same 180 s ceiling for the
+/// WHOLE turn (`FIRST_BYTE_WINDOW_OVERRIDE` below), computed from how long
+/// the turn has already spent waiting for a first byte. So one coordinator
+/// turn spends **at most ~180 s of silent pre-first-byte waiting in total**
+/// across both attempts, plus whatever the content stream itself legitimately
+/// takes once bytes start arriving (bounded separately by
+/// [`DEFAULT_STALL_SECS`] per gap and [`DEFAULT_MAX_SECS`] overall) — not the
+/// ~600 s two independent fresh windows would have allowed (G24 HIGH-2: that
+/// reliably exceeds a 600 s eval timeout and turns an honest give-up into an
+/// ambiguous hard-kill with no receipt). With Lane R19b's keep-alive
+/// liveness now live, a DeepSeek hold that sends ANY keep-alive resets the
+/// raw-line clock and never reaches this timeout at all; 180 s total is
+/// sized for the connection that is genuinely, fully silent — no bytes, no
+/// keep-alives, nothing.
+pub const DEFAULT_FIRST_BYTE_SECS: u64 = 180;
 pub const DEFAULT_MAX_OUTPUT_CHARS: usize = 400_000;
 
 /// A delta shorter than this is never counted as a repetition: single tokens,
@@ -164,6 +181,32 @@ fn env_u64(key: &str, default: u64) -> u64 {
     }
 }
 
+tokio::task_local! {
+    /// Lane R19c (G24 HIGH-2). Scoped override for the first-byte window
+    /// `StreamBudget::from_env` would otherwise read from
+    /// `PERMAGENT_PROVIDER_STREAM_FIRST_BYTE_SECS`/[`DEFAULT_FIRST_BYTE_SECS`].
+    ///
+    /// Exists so a first-byte-stall retry (`agents::agent`) can be given the
+    /// REMAINING part of the turn's ~180s first-byte ceiling instead of a
+    /// fresh window — the worst case this bounds is "one coordinator turn
+    /// spends at most ~180s of silent pre-first-byte waiting in total,
+    /// across both attempts" rather than ~2x180s. A `tokio::task_local!`
+    /// rather than a process env var on purpose: setting an env var would be
+    /// racy across the concurrently-running turns/providers this harness
+    /// runs (exactly the `AUTHORIZED_ATTEMPTS` pattern in
+    /// `cost_router::authorized_attempts` uses for the same reason — scoped
+    /// to one async call tree, invisible to every other one).
+    ///
+    /// `Some(d)` sets the window to exactly `d` (including `Duration::ZERO`,
+    /// which is a real "no time left", not "unlimited" — see
+    /// [`StreamBudget::from_env`]). `None` explicitly disables the
+    /// first-byte window for calls inside the scope (falls back to the
+    /// ordinary stall window throughout, like `with_first_byte(None)`).
+    /// Outside any scope — the ordinary, non-retry case — `from_env` reads
+    /// the env var/default exactly as before this lane.
+    pub static FIRST_BYTE_WINDOW_OVERRIDE: Option<Duration>;
+}
+
 #[derive(Debug)]
 pub struct StreamBudget {
     started: Instant,
@@ -194,14 +237,29 @@ impl StreamBudget {
     pub fn from_env() -> Self {
         let secs = env_u64(MAX_SECS_ENV, DEFAULT_MAX_SECS);
         let stall = env_u64(STALL_SECS_ENV, DEFAULT_STALL_SECS);
-        let first_byte = env_u64(FIRST_BYTE_SECS_ENV, DEFAULT_FIRST_BYTE_SECS);
         let chars = env_u64(MAX_OUTPUT_CHARS_ENV, DEFAULT_MAX_OUTPUT_CHARS as u64) as usize;
+        // Lane R19c (G24 HIGH-2): a `FIRST_BYTE_WINDOW_OVERRIDE` scope wins
+        // over the env var/default — this is how a first-byte-stall retry
+        // gets the REMAINING part of the turn's ceiling instead of a fresh
+        // window. Passed through exactly as given: `Some(Duration::ZERO)`
+        // stays zero (real "no time left"), never reinterpreted as
+        // "unlimited" the way a `0` from the env var is. No scope installed
+        // (the ordinary, non-retry case) falls through to the env var/default
+        // unchanged from before this lane.
+        let first_byte =
+            match FIRST_BYTE_WINDOW_OVERRIDE.try_with(|override_window| *override_window) {
+                Ok(overridden) => overridden,
+                Err(_) => {
+                    let first_byte_secs = env_u64(FIRST_BYTE_SECS_ENV, DEFAULT_FIRST_BYTE_SECS);
+                    (first_byte_secs > 0).then(|| Duration::from_secs(first_byte_secs))
+                }
+            };
         Self::new(
             (secs > 0).then(|| Duration::from_secs(secs)),
             (chars > 0).then_some(chars),
         )
         .with_stall((stall > 0).then(|| Duration::from_secs(stall)))
-        .with_first_byte((first_byte > 0).then(|| Duration::from_secs(first_byte)))
+        .with_first_byte(first_byte)
     }
 
     pub fn new(max_wall: Option<Duration>, max_output_chars: Option<usize>) -> Self {
@@ -771,8 +829,75 @@ mod tests {
         assert!(!err.is_first_byte_provider_stall(), "{err}");
     }
 
+    /// Lane R19c (G24 HIGH-2): lowered from 300s to 180s so one coordinator
+    /// turn's worst-case silent pre-first-byte wait (original attempt +
+    /// retry, `FIRST_BYTE_WINDOW_OVERRIDE` bounding the retry to the
+    /// REMAINING part of this same ceiling) stays near 180s total instead of
+    /// ~2x300s=600s.
     #[test]
-    fn the_first_byte_default_is_300s() {
-        assert_eq!(DEFAULT_FIRST_BYTE_SECS, 300);
+    fn the_first_byte_default_is_180s() {
+        assert_eq!(DEFAULT_FIRST_BYTE_SECS, 180);
+    }
+
+    // --- Lane R19c: retry gets the REMAINING first-byte budget, not a fresh window (G24 HIGH-2) ---
+
+    /// With no override task-local in scope, `from_env` behaves exactly as
+    /// before (falls through to the env var / default) — the override is
+    /// opt-in per call tree, never ambient.
+    #[tokio::test]
+    async fn with_no_override_in_scope_from_env_reads_the_ordinary_default() {
+        // Guards (and serializes with) FIRST_BYTE_SECS_ENV so this assertion
+        // is not racing some other test's env_lock-guarded override of the
+        // same process-wide env var.
+        let _guard = env_lock::lock_env([(FIRST_BYTE_SECS_ENV, None)]);
+        let budget = StreamBudget::from_env();
+        assert_eq!(
+            budget.first_byte_window(),
+            Some(Duration::from_secs(DEFAULT_FIRST_BYTE_SECS)),
+            "no override installed: the ordinary default applies"
+        );
+    }
+
+    /// Inside `FIRST_BYTE_WINDOW_OVERRIDE`'s scope, `from_env` uses the
+    /// override instead of the env var/default — this is how the retry gets
+    /// the REMAINING budget rather than a fresh 180s window.
+    #[tokio::test]
+    async fn an_override_in_scope_replaces_the_first_byte_window() {
+        let remaining = Duration::from_secs(7);
+        let observed = FIRST_BYTE_WINDOW_OVERRIDE
+            .scope(Some(remaining), async {
+                StreamBudget::from_env().first_byte_window()
+            })
+            .await;
+        assert_eq!(observed, Some(remaining));
+    }
+
+    /// `Some(Duration::ZERO)` is a valid, meaningful override — the first
+    /// attempt already spent the whole 180s ceiling, so the retry gets
+    /// (deliberately) almost no additional silent wait: if the provider
+    /// answers essentially immediately this time, the retry still succeeds;
+    /// if not, it fails fast instead of burning another 180s.
+    #[tokio::test]
+    async fn a_zero_remaining_override_is_not_treated_as_unlimited() {
+        let observed = FIRST_BYTE_WINDOW_OVERRIDE
+            .scope(Some(Duration::ZERO), async {
+                StreamBudget::from_env().first_byte_window()
+            })
+            .await;
+        assert_eq!(
+            observed,
+            Some(Duration::ZERO),
+            "zero remaining must stay zero, not silently become unlimited"
+        );
+    }
+
+    /// `None` inside the scope means "no first-byte window at all" — an
+    /// explicit unlimited, distinct from "no override installed".
+    #[tokio::test]
+    async fn a_none_override_means_explicitly_unlimited() {
+        let observed = FIRST_BYTE_WINDOW_OVERRIDE
+            .scope(None, async { StreamBudget::from_env().first_byte_window() })
+            .await;
+        assert_eq!(observed, None);
     }
 }

@@ -103,7 +103,21 @@ impl ProviderError {
             // The bytes we would resend are identical, and the failure mode is
             // the model repeating itself — a retry re-enters the same runaway
             // and burns the same wall-clock and the same unmetered tokens.
-            ProviderError::ExecutionError(msg) => msg.starts_with(STREAM_BUDGET_PREFIX),
+            //
+            // Lane R19c (G24 LOW): EXCEPT a first-byte stall, which is
+            // retryable by definition (Lane R19a/R19b) — a pre-first-byte
+            // stall's bytes-we-would-resend are identical too, but the
+            // failure mode is a provider that has not answered YET, not one
+            // caught repeating itself; `agents::agent` retries it once for
+            // exactly that reason. Leaving this `true` for first-byte stalls
+            // contradicted that retry premise for every OTHER caller that
+            // reads `is_permanent()` (`cost_router::fallback`, the
+            // orchestrator, `goal_a2a`) even though it happened not to
+            // matter for R19a's own agent.rs arms (inserted ahead of the
+            // generic catch-all that reads this).
+            ProviderError::ExecutionError(msg) => {
+                msg.starts_with(STREAM_BUDGET_PREFIX) && !self.is_first_byte_provider_stall()
+            }
             _ => false,
         }
     }
@@ -483,5 +497,27 @@ mod tests {
         let summary = err.user_facing_summary();
         assert!(summary.contains("did not send anything back"), "{summary}");
         assert!(!summary.contains("kept generating"), "{summary}");
+    }
+
+    /// Lane R19c (G24 LOW). A first-byte stall is retryable by definition —
+    /// `agents::agent` retries it once (Lane R19a/R19b) — so it must not
+    /// report itself as permanent the way a genuine mid-stream stall or a
+    /// repeating model correctly does. Every OTHER caller of `is_permanent()`
+    /// (`cost_router::fallback`, the orchestrator, `goal_a2a`) reads this
+    /// flag to decide whether a retry/failover is worth trying at all.
+    #[test]
+    fn a_first_byte_stall_is_not_permanent() {
+        let err = ProviderError::first_byte_stall("0 chars in 180 s");
+        assert!(!err.is_permanent(), "{err}");
+    }
+
+    /// The general (mid-stream / repetition / wall-clock) stream-budget
+    /// error is UNCHANGED by the R19c carve-out above: it must stay
+    /// permanent, or a caller elsewhere could walk straight back into the
+    /// exact runaway Y8a exists to stop.
+    #[test]
+    fn an_ordinary_stream_budget_error_is_still_permanent() {
+        let err = ProviderError::stream_budget_exceeded("the model repeated itself");
+        assert!(err.is_permanent(), "{err}");
     }
 }
