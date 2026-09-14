@@ -4,8 +4,26 @@ category: selection
 max_turns: 15
 # G3: this project's roadmap was already proposed, approved, and paused —
 # `roadmap-state.json` records the approval. Continuing the work means
-# resuming dispatch, not re-running decompose_roadmap and generating a
-# second, competing proposal for goals that already exist.
+# resuming dispatch (`resume_roadmap`), not generating a second, competing
+# proposal for goals that already exist.
+#
+# Lane R18c-b (G23 HIGH-1): the original `must_not_call: [decompose_roadmap]`
+# below directly contradicted recipe.yaml's NON-NEGOTIABLE rule 1 (the first
+# execution tool call is always `decompose_roadmap`), and both M17 rounds
+# confirmed it: the coordinator correctly starts with `decompose_roadmap`
+# per rule 1 (r1 log:85, r2 log:54), so the fixture was unsatisfiable
+# regardless of whether the coordinator went on to do the right thing. The
+# recipe has no text anywhere about resuming a paused roadmap (grepped
+# "resume|paused|redecompos" — nothing outside this fixture's own comment),
+# so `resume_roadmap` (the tool the orchestrator extension actually exposes
+# for exactly this — "Users can pause_roadmap to stop auto-dispatch and
+# resume_roadmap to continue") remains the real, falsifiable signal. What
+# actually distinguishes "resumed" from "re-planned" on the coordinator's
+# own tool-call sequence is `create_roadmap`: THAT is what materializes a
+# second, competing roadmap (confirmed the exact M17 failure mode: r1/r2 both
+# call decompose_roadmap -> create_roadmap and never call resume_roadmap at
+# all — r1 log:85,90). Calling `decompose_roadmap` once, as rule 1 demands,
+# is not itself the defect.
 #
 # NOTE: this file lives at the workspace root, not under `.permagent/` —
 # `.gitignore:93` has `**/.permagent/`, which would silently drop a fixture
@@ -17,4 +35,4 @@ prompt: |
   a new roadmap.
 selection_check:
   must_call: [resume_roadmap]
-  must_not_call: [decompose_roadmap]
+  must_not_call: [create_roadmap]
