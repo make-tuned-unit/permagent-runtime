@@ -26,6 +26,22 @@ pub struct TaskResult {
     pub harness_timed_out: bool,
     /// The oracle verdict.
     pub oracle: OracleOutcome,
+    /// The oracle process exit code (`None` = killed / timed out / spawn
+    /// error). Mirrors [`Self::harness_exit`].
+    pub oracle_exit: Option<i32>,
+    /// Whether the oracle run hit its wall-clock ceiling
+    /// (`task.oracle_timeout_secs()`). Lane K7: when true, [`Self::oracle`]
+    /// is always [`OracleOutcome::Errored`] regardless of
+    /// [`Self::oracle_exit`] — a killed/SIGTERM'd oracle process did not
+    /// produce a trustworthy verdict, even if it happened to exit with a
+    /// pass- or fail-looking code during its grace window. See
+    /// [`crate::oracle::outcome_from_run`].
+    pub oracle_timed_out: bool,
+    /// Wall-clock seconds the oracle process ran, regardless of outcome —
+    /// distinguishes a slow-but-real grade from an instant spawn failure,
+    /// and (paired with `oracle_timed_out`) shows how close a passing run
+    /// came to its ceiling.
+    pub oracle_secs: f64,
     /// Optional human note (e.g. an error explanation, or why a task was
     /// skipped for [`OracleOutcome::NotRun`]).
     pub note: Option<String>,
@@ -95,6 +111,9 @@ impl TaskResult {
             harness_exit: None,
             harness_timed_out: false,
             oracle,
+            oracle_exit: None,
+            oracle_timed_out: false,
+            oracle_secs: 0.0,
             note: None,
             signals: LogSignals::default(),
             selection_correct: None,

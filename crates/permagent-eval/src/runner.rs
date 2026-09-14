@@ -21,7 +21,7 @@ use crate::cost::{CostReader, CostReading};
 use crate::harness_log;
 use crate::invocation::{build_invocation, is_scrubbed_env, recipe_with_prompt, Invocation};
 use crate::metrics::TaskResult;
-use crate::oracle::{outcome_from_exit, OracleOutcome};
+use crate::oracle::{outcome_from_run, OracleOutcome};
 use crate::task::Task;
 use crate::tier::Tier;
 
@@ -41,9 +41,24 @@ pub trait HarnessRunner {
     fn run(&self, inv: &Invocation, timeout: Duration, log_path: &Path) -> Result<HarnessRun>;
 }
 
+/// The result of running a task's test oracle process. Mirrors
+/// [`HarnessRun`]'s shape — Lane K7: a bare exit code alone could not tell
+/// [`run_task`] whether a wall-clock-ceiling breach happened, since a
+/// SIGTERM'd process can still exit with a real-looking code during its
+/// grace window (see [`crate::oracle::outcome_from_run`]).
+#[derive(Debug, Clone)]
+pub struct OracleRun {
+    /// Process exit code (`None` = killed / signalled / timed out).
+    pub exit: Option<i32>,
+    /// Whether the oracle was killed for exceeding its wall-clock ceiling
+    /// (`task.oracle_timeout_secs()`).
+    pub timed_out: bool,
+    /// Wall-clock duration the oracle process ran, regardless of outcome.
+    pub duration: Duration,
+}
+
 /// Runs a task's test oracle in the finished workspace.
 pub trait OracleRunner {
-    /// Returns the oracle process exit code (`None` = killed / timed out).
     /// `envs` are SET on top of the child's otherwise-inherited environment
     /// — Lane R18c (A17 Class 3): the caller uses this to pin
     /// `CARGO_TARGET_DIR` to a run-scoped directory (see
@@ -57,7 +72,7 @@ pub trait OracleRunner {
         envs: &[(String, String)],
         timeout: Duration,
         log_path: &Path,
-    ) -> Result<Option<i32>>;
+    ) -> Result<OracleRun>;
 }
 
 /// Resolves the BASE recipe YAML text for a task — before the per-run
@@ -271,14 +286,18 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         "CARGO_TARGET_DIR".to_string(),
         cargo_target_dir_path.to_string_lossy().into_owned(),
     )];
-    let oracle_code = deps.oracle.run(
+    let oracle_run = deps.oracle.run(
         &workdir,
         &task.spec.test,
         &oracle_envs,
         Duration::from_secs(task.spec.oracle_timeout_secs()),
         &logs.join("oracle.log"),
     )?;
-    let outcome = outcome_from_exit(oracle_code);
+    // Lane K7: `timed_out` always wins over the raw exit code — see
+    // `outcome_from_run`'s doc for why a SIGTERM'd process's own exit code
+    // cannot be trusted as a graded verdict, and why an oracle timeout must
+    // be reported `errored`, never `fail`.
+    let outcome = outcome_from_run(oracle_run.exit, oracle_run.timed_out);
 
     let reading = deps
         .cost
@@ -294,6 +313,9 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     result.duration_secs = harness_run.duration.as_secs_f64();
     result.harness_exit = harness_run.exit;
     result.harness_timed_out = harness_run.timed_out;
+    result.oracle_exit = oracle_run.exit;
+    result.oracle_timed_out = oracle_run.timed_out;
+    result.oracle_secs = oracle_run.duration.as_secs_f64();
     // G3: a `category: "selection"` fixture is graded on the tool/DAG
     // decision, not (only) the oracle's verdict — evaluate its declared
     // `selection_check` against THIS run's own signals, independent of
@@ -860,7 +882,7 @@ impl OracleRunner for SubprocessOracleRunner {
         envs: &[(String, String)],
         timeout: Duration,
         log_path: &Path,
-    ) -> Result<Option<i32>> {
+    ) -> Result<OracleRun> {
         let (program, args) = argv
             .split_first()
             .context("oracle argv must not be empty")?;
@@ -877,8 +899,16 @@ impl OracleRunner for SubprocessOracleRunner {
         let mut child = cmd
             .spawn()
             .with_context(|| format!("spawning oracle `{program}`"))?;
-        let (exit, _timed_out) = wait_with_timeout(&mut child, timeout, SIGTERM_GRACE)?;
-        Ok(exit)
+        let start = Instant::now();
+        // Lane K7: keep `timed_out` — a SIGTERM'd process can still exit
+        // with a real-looking code during its grace window, and that must
+        // not be mistaken for a graded verdict (see `OracleRun`'s doc).
+        let (exit, timed_out) = wait_with_timeout(&mut child, timeout, SIGTERM_GRACE)?;
+        Ok(OracleRun {
+            exit,
+            timed_out,
+            duration: start.elapsed(),
+        })
     }
 }
 
@@ -997,9 +1027,13 @@ mod tests {
             _envs: &[(String, String)],
             _t: Duration,
             _l: &Path,
-        ) -> Result<Option<i32>> {
+        ) -> Result<OracleRun> {
             let got = fs::read_to_string(workdir.join(&self.file)).unwrap_or_default();
-            Ok(Some(if got == self.expect { 0 } else { 1 }))
+            Ok(OracleRun {
+                exit: Some(if got == self.expect { 0 } else { 1 }),
+                timed_out: false,
+                duration: Duration::ZERO,
+            })
         }
     }
 
@@ -1018,6 +1052,32 @@ mod tests {
         }
     }
 
+    /// Lane K7 regression fixture: an oracle that hit its wall-clock ceiling
+    /// but still reports a passing-looking exit code — the A17/M20 shape
+    /// (a SIGTERM'd/alarm-truncated build step's own wrapper script folds
+    /// the truncation into a plain nonzero `exit`, indistinguishable from a
+    /// real failure by exit code alone). `run_task` must trust `timed_out`
+    /// over `exit` either way.
+    struct TimedOutOracle {
+        exit: Option<i32>,
+    }
+    impl OracleRunner for TimedOutOracle {
+        fn run(
+            &self,
+            _w: &Path,
+            _a: &[String],
+            _envs: &[(String, String)],
+            _t: Duration,
+            _l: &Path,
+        ) -> Result<OracleRun> {
+            Ok(OracleRun {
+                exit: self.exit,
+                timed_out: true,
+                duration: Duration::from_secs(7),
+            })
+        }
+    }
+
     struct NeverOracle;
     impl OracleRunner for NeverOracle {
         fn run(
@@ -1027,8 +1087,12 @@ mod tests {
             _envs: &[(String, String)],
             _t: Duration,
             _l: &Path,
-        ) -> Result<Option<i32>> {
-            Ok(Some(0))
+        ) -> Result<OracleRun> {
+            Ok(OracleRun {
+                exit: Some(0),
+                timed_out: false,
+                duration: Duration::ZERO,
+            })
         }
     }
 
@@ -1408,6 +1472,69 @@ mod tests {
         assert!(results[0].note.as_deref().unwrap().contains("boom"));
         // The errored-run conversion must not leak the scratch dir either.
         assert_no_leftover_run_dirs(&cfg.runs_root);
+    }
+
+    /// Lane K7 (A17/M20 shape): an oracle wrapper script's own internal
+    /// alarm truncates a build step and folds that into a plain nonzero
+    /// exit — a naive exit-code read would call this `fail`, dragging down
+    /// pass-rate for what is actually a grading failure, not a wrong
+    /// solution. `timed_out` must force `errored` regardless of what exit
+    /// code (if any) came back, and the run's diagnostics must say so.
+    #[test]
+    fn oracle_timeout_is_errored_not_fail_even_with_a_failing_exit_code() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_task(&tmp.path().join("demo"), &[], &[]);
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            ..Default::default()
+        };
+        let deps = Deps {
+            harness: &FakeHarness {
+                drop_file: ("noop.txt".to_string(), "x".to_string()),
+                exit: Some(0),
+            },
+            oracle: &TimedOutOracle { exit: Some(142) },
+            cost: &FixedCost(CostReading::unknown()),
+            recipe: &FakeRecipe,
+        };
+        let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
+        assert_eq!(r.oracle, OracleOutcome::Errored);
+        assert!(!r.solved);
+        assert!(r.oracle_timed_out);
+        assert_eq!(r.oracle_exit, Some(142));
+        assert_eq!(r.oracle_secs, 7.0);
+    }
+
+    /// Same shape, but the truncated step happened to exit 0 (e.g. a
+    /// SIGTERM'd process that caught the signal cleanly right as it
+    /// finished) — still not a trustworthy `pass`.
+    #[test]
+    fn oracle_timeout_is_errored_not_pass_even_with_a_zero_exit_code() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_task(&tmp.path().join("demo"), &[], &[]);
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            ..Default::default()
+        };
+        let deps = Deps {
+            harness: &FakeHarness {
+                drop_file: ("noop.txt".to_string(), "x".to_string()),
+                exit: Some(0),
+            },
+            oracle: &TimedOutOracle { exit: Some(0) },
+            cost: &FixedCost(CostReading::unknown()),
+            recipe: &FakeRecipe,
+        };
+        let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
+        assert_eq!(r.oracle, OracleOutcome::Errored);
+        assert!(!r.solved);
+        assert!(r.oracle_timed_out);
     }
 
     /// Lane K5 regression: the zai z1 round (2026-09-14) hit a `run error`
@@ -1970,9 +2097,13 @@ mod tests {
                 envs: &[(String, String)],
                 _t: Duration,
                 _l: &Path,
-            ) -> Result<Option<i32>> {
+            ) -> Result<OracleRun> {
                 *self.0.lock().unwrap() = Some(envs.to_vec());
-                Ok(Some(0))
+                Ok(OracleRun {
+                    exit: Some(0),
+                    timed_out: false,
+                    duration: Duration::ZERO,
+                })
             }
         }
 

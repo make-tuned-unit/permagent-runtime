@@ -47,6 +47,29 @@ pub fn outcome_from_exit(code: Option<i32>) -> OracleOutcome {
     }
 }
 
+/// Map an oracle process's outcome to [`OracleOutcome`], the same as
+/// [`outcome_from_exit`] EXCEPT that `timed_out` always wins.
+///
+/// Lane K7: [`crate::runner::wait_with_timeout`] sends `SIGTERM` on a
+/// wall-clock-ceiling breach and then polls for a grace period before the
+/// hard `SIGKILL` fallback — a process that exits during that grace window
+/// (having caught the signal, or having simply finished at almost the same
+/// instant) still reports a real exit code, e.g. `Some(0)` or `Some(1)`,
+/// even though the run objectively hit its ceiling and had to be killed. An
+/// oracle whose wall-clock ceiling tripped could not produce a trustworthy
+/// verdict either way — grading a build/test process AS it is being torn
+/// down is not a graded run — so `timed_out` must force
+/// [`OracleOutcome::Errored`] regardless of what exit code (if any) came
+/// back, never fall through to [`outcome_from_exit`]'s naive 0/nonzero
+/// reading.
+pub fn outcome_from_run(code: Option<i32>, timed_out: bool) -> OracleOutcome {
+    if timed_out {
+        OracleOutcome::Errored
+    } else {
+        outcome_from_exit(code)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,5 +103,30 @@ mod tests {
         assert!(!o.solved());
         assert_eq!(o.label(), "not_run");
         assert_ne!(OracleOutcome::NotRun, OracleOutcome::Fail);
+    }
+
+    #[test]
+    fn timed_out_is_errored_even_with_a_passing_exit_code() {
+        // A process that caught SIGTERM during the grace window and exited
+        // 0 right as it was being killed did not produce a trustworthy
+        // verdict — the ceiling breach must win.
+        assert_eq!(outcome_from_run(Some(0), true), OracleOutcome::Errored);
+    }
+
+    #[test]
+    fn timed_out_is_errored_not_fail_even_with_a_failing_exit_code() {
+        // This is the A17/M20 shape: a wrapper script's own internal alarm
+        // truncates a build step (SIGALRM -> exit 142), the script folds
+        // that into its own nonzero exit, and a naive exit-code read would
+        // call it a real `Fail` rather than the grading failure it is.
+        assert_eq!(outcome_from_run(Some(142), true), OracleOutcome::Errored);
+        assert_eq!(outcome_from_run(Some(1), true), OracleOutcome::Errored);
+    }
+
+    #[test]
+    fn not_timed_out_falls_through_to_outcome_from_exit() {
+        assert_eq!(outcome_from_run(Some(0), false), OracleOutcome::Pass);
+        assert_eq!(outcome_from_run(Some(1), false), OracleOutcome::Fail);
+        assert_eq!(outcome_from_run(None, false), OracleOutcome::Errored);
     }
 }

@@ -93,6 +93,12 @@ pub fn render_text(reports: &[TierReport]) -> String {
                 r.duration_secs,
                 if r.harness_timed_out {
                     " (timed out)"
+                } else if r.oracle_timed_out {
+                    // Lane K7: distinct from the harness timing out — the
+                    // harness finished; the oracle's own grading run hit
+                    // its wall-clock ceiling and could not produce a
+                    // trustworthy verdict (reported `errored`, not `fail`).
+                    " (oracle timed out)"
                 } else {
                     ""
                 },
@@ -287,6 +293,13 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                         "duration_secs": r.duration_secs,
                         "harness_exit": r.harness_exit,
                         "harness_timed_out": r.harness_timed_out,
+                        // Lane K7: distinguishes an oracle that could not
+                        // grade (wall-clock ceiling hit, forced `errored`)
+                        // from a real fail/pass — see
+                        // `crate::oracle::outcome_from_run`.
+                        "oracle_exit": r.oracle_exit,
+                        "oracle_timed_out": r.oracle_timed_out,
+                        "oracle_secs": r.oracle_secs,
                         "note": r.note,
                         "seed_commit": r.seed_commit,
                         // Lane R18c (A17 Q6): the G3 tool/DAG-selection
@@ -582,6 +595,33 @@ mod tests {
         // pass-rate is over the 2 attempted tasks (1 solved of 2), not 3.
         assert!(text.contains("1/2 solved"), "{text}");
         assert!(text.contains("1 task(s) skipped"), "{text}");
+    }
+
+    /// Lane K7: an oracle-side timeout gets its own marker, distinct from
+    /// `(timed out)` (the harness's own wall-clock ceiling) — a reader
+    /// scanning the per-task lines must be able to tell "the agent's run
+    /// hung" from "the grading run hung" without opening the JSON report.
+    #[test]
+    fn text_report_marks_an_oracle_timeout_distinctly_from_a_harness_timeout() {
+        let mut oracle_timed_out = TaskResult::new(
+            "delta",
+            "classic",
+            OracleOutcome::Errored,
+            CostReading::unknown(),
+        );
+        oracle_timed_out.duration_secs = 5.0;
+        oracle_timed_out.oracle_timed_out = true;
+
+        let tr = TierReport {
+            tier: "sonnet5".to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-5".to_string(),
+            pinned_packs: true,
+            results: vec![oracle_timed_out],
+        };
+        let text = render_text(&[tr]);
+        assert!(text.contains("(oracle timed out)"), "{text}");
+        assert!(!text.contains("  (timed out)"), "{text}");
     }
 
     #[test]
