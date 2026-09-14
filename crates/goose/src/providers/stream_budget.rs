@@ -181,10 +181,85 @@ fn env_u64(key: &str, default: u64) -> u64 {
     }
 }
 
+/// Lane R19d (M20 gate: `tests::a_none_override_means_explicitly_unlimited`
+/// failed). `Option<Duration>` cannot say what R19c's own doc comment
+/// promised: "explicitly unlimited" is a DIFFERENT state from "nothing
+/// configured, fall back to the stall window" — both collapsed to the same
+/// `None`, and every `.or(self.max_stall)` in this file (`next_timeout`,
+/// [`first_byte_window`](StreamBudget::first_byte_window)) silently turned
+/// "no first-byte timer at all" into "use the 120s stall window", which is
+/// exactly backwards from what an explicit `Unlimited` is supposed to mean.
+///
+/// Tri-state instead of `Option<Option<Duration>>` for a named, readable
+/// call site (`FirstByteWindow::Unlimited` beats `Some(None)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FirstByteWindow {
+    /// No dedicated first-byte window configured: fall back to the ordinary
+    /// mid-stream stall window for the whole stream — the pre-R19a shape,
+    /// and what a `StreamBudget` gets when nothing calls
+    /// [`with_first_byte`](StreamBudget::with_first_byte)/
+    /// [`with_first_byte_window`](StreamBudget::with_first_byte_window) at
+    /// all.
+    #[default]
+    Default,
+    /// Explicitly no first-byte timer: `next()` may block indefinitely
+    /// before the first item arrives, bounded ONLY by the total wall clock
+    /// (`PERMAGENT_PROVIDER_STREAM_MAX_SECS`) if that is itself finite —
+    /// never by the stall window, unlike `Default`.
+    Unlimited,
+    /// A specific first-byte window.
+    Secs(Duration),
+}
+
+impl FirstByteWindow {
+    /// The window `next_timeout`/`timeout_error` should actually apply
+    /// before the first item has arrived, given the stream's configured
+    /// stall window: `Default` falls back to it, `Unlimited` is `None` (no
+    /// timeout), `Secs(d)` is `Some(d)`.
+    fn resolve(self, stall: Option<Duration>) -> Option<Duration> {
+        match self {
+            FirstByteWindow::Default => stall,
+            FirstByteWindow::Unlimited => None,
+            FirstByteWindow::Secs(duration) => Some(duration),
+        }
+    }
+}
+
+/// Lane R19d. Parse `PERMAGENT_PROVIDER_STREAM_FIRST_BYTE_SECS` into a
+/// tri-state window. Unset → the compiled default (`Secs(DEFAULT_FIRST_
+/// BYTE_SECS)`). `0` or the literal `unlimited` (case-insensitive) →
+/// `Unlimited` — matching every sibling env var in this module's own
+/// "`0` = unlimited" convention (`MAX_SECS_ENV`, `STALL_SECS_ENV`,
+/// `MAX_OUTPUT_CHARS_ENV`); pre-R19d, `0` here instead meant "no DEDICATED
+/// window, fall back to the stall window" (`Default`, NOT `Unlimited`) —
+/// inconsistent with the rest of this file, and part of the same defect
+/// this lane fixes, not just the task-local override half of it. Any other
+/// positive integer → `Secs(n)`. Anything unparseable → the compiled
+/// default, the same fallback [`env_u64`] itself uses for a malformed
+/// value.
+fn first_byte_window_from_env() -> FirstByteWindow {
+    match std::env::var(FIRST_BYTE_SECS_ENV) {
+        Err(_) => FirstByteWindow::Secs(Duration::from_secs(DEFAULT_FIRST_BYTE_SECS)),
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.eq_ignore_ascii_case("unlimited") {
+                return FirstByteWindow::Unlimited;
+            }
+            match trimmed.parse::<u64>() {
+                Ok(0) => FirstByteWindow::Unlimited,
+                Ok(secs) => FirstByteWindow::Secs(Duration::from_secs(secs)),
+                Err(_) => FirstByteWindow::Secs(Duration::from_secs(DEFAULT_FIRST_BYTE_SECS)),
+            }
+        }
+    }
+}
+
 tokio::task_local! {
-    /// Lane R19c (G24 HIGH-2). Scoped override for the first-byte window
-    /// `StreamBudget::from_env` would otherwise read from
-    /// `PERMAGENT_PROVIDER_STREAM_FIRST_BYTE_SECS`/[`DEFAULT_FIRST_BYTE_SECS`].
+    /// Lane R19c (G24 HIGH-2); retyped tri-state by Lane R19d. Scoped
+    /// override for the first-byte window `StreamBudget::from_env` would
+    /// otherwise read from
+    /// `PERMAGENT_PROVIDER_STREAM_FIRST_BYTE_SECS`/[`DEFAULT_FIRST_BYTE_SECS`]
+    /// (via [`first_byte_window_from_env`]).
     ///
     /// Exists so a first-byte-stall retry (`agents::agent`) can be given the
     /// REMAINING part of the turn's ~180s first-byte ceiling instead of a
@@ -197,14 +272,14 @@ tokio::task_local! {
     /// `cost_router::authorized_attempts` uses for the same reason — scoped
     /// to one async call tree, invisible to every other one).
     ///
-    /// `Some(d)` sets the window to exactly `d` (including `Duration::ZERO`,
-    /// which is a real "no time left", not "unlimited" — see
-    /// [`StreamBudget::from_env`]). `None` explicitly disables the
-    /// first-byte window for calls inside the scope (falls back to the
-    /// ordinary stall window throughout, like `with_first_byte(None)`).
-    /// Outside any scope — the ordinary, non-retry case — `from_env` reads
-    /// the env var/default exactly as before this lane.
-    pub static FIRST_BYTE_WINDOW_OVERRIDE: Option<Duration>;
+    /// `FirstByteWindow::Secs(d)` sets the window to exactly `d` (including
+    /// `Duration::ZERO`, which is a real "no time left", not "unlimited").
+    /// `FirstByteWindow::Unlimited` explicitly disables the first-byte
+    /// window for calls inside the scope — genuinely distinct from no
+    /// override being installed at all, which falls through to
+    /// [`first_byte_window_from_env`] (Lane R19d: this is the exact
+    /// distinction the pre-R19d `Option<Duration>` typing could not make).
+    pub static FIRST_BYTE_WINDOW_OVERRIDE: FirstByteWindow;
 }
 
 #[derive(Debug)]
@@ -215,10 +290,10 @@ pub struct StreamBudget {
     /// Inactivity window applied to each `next()` AFTER the first item has
     /// arrived. `None` means unlimited.
     max_stall: Option<Duration>,
-    /// Lane R19a. Inactivity window applied to `next()` calls BEFORE the
-    /// first item has arrived. `None` falls back to `max_stall` — the
-    /// pre-R19a behavior of one uniform window for the whole stream.
-    max_first_byte: Option<Duration>,
+    /// Lane R19a; retyped tri-state by Lane R19d. Inactivity window applied
+    /// to `next()` calls BEFORE the first item has arrived. See
+    /// [`FirstByteWindow`].
+    max_first_byte: FirstByteWindow,
     /// Lane R19a. Has this stream delivered anything at all yet — a real
     /// delta or a usage-only chunk? Flips permanently on the first
     /// [`record`](Self::record)/[`record_text`](Self::record_text) call,
@@ -241,25 +316,21 @@ impl StreamBudget {
         // Lane R19c (G24 HIGH-2): a `FIRST_BYTE_WINDOW_OVERRIDE` scope wins
         // over the env var/default — this is how a first-byte-stall retry
         // gets the REMAINING part of the turn's ceiling instead of a fresh
-        // window. Passed through exactly as given: `Some(Duration::ZERO)`
+        // window. Passed through exactly as given: `Secs(Duration::ZERO)`
         // stays zero (real "no time left"), never reinterpreted as
-        // "unlimited" the way a `0` from the env var is. No scope installed
-        // (the ordinary, non-retry case) falls through to the env var/default
-        // unchanged from before this lane.
+        // `Unlimited` (Lane R19d). No scope installed (the ordinary,
+        // non-retry case) falls through to `first_byte_window_from_env`.
         let first_byte =
             match FIRST_BYTE_WINDOW_OVERRIDE.try_with(|override_window| *override_window) {
                 Ok(overridden) => overridden,
-                Err(_) => {
-                    let first_byte_secs = env_u64(FIRST_BYTE_SECS_ENV, DEFAULT_FIRST_BYTE_SECS);
-                    (first_byte_secs > 0).then(|| Duration::from_secs(first_byte_secs))
-                }
+                Err(_) => first_byte_window_from_env(),
             };
         Self::new(
             (secs > 0).then(|| Duration::from_secs(secs)),
             (chars > 0).then_some(chars),
         )
         .with_stall((stall > 0).then(|| Duration::from_secs(stall)))
-        .with_first_byte(first_byte)
+        .with_first_byte_window(first_byte)
     }
 
     pub fn new(max_wall: Option<Duration>, max_output_chars: Option<usize>) -> Self {
@@ -267,7 +338,7 @@ impl StreamBudget {
             started: Instant::now(),
             max_wall,
             max_stall: None,
-            max_first_byte: None,
+            max_first_byte: FirstByteWindow::Default,
             first_byte_received: false,
             max_output_chars,
             chars: 0,
@@ -286,9 +357,24 @@ impl StreamBudget {
 
     /// Lane R19a. Set the inactivity window applied before the stream has
     /// delivered anything at all. `None` = fall back to the ordinary stall
-    /// window for the whole stream, matching the pre-R19a behavior.
-    pub fn with_first_byte(mut self, max_first_byte: Option<Duration>) -> Self {
-        self.max_first_byte = max_first_byte;
+    /// window for the whole stream (`FirstByteWindow::Default`), matching
+    /// the pre-R19a behavior. `Some(d)` = exactly `d`
+    /// (`FirstByteWindow::Secs(d)`). This two-state convenience cannot
+    /// express the third state — explicitly no first-byte timer at all —
+    /// see [`with_first_byte_window`](Self::with_first_byte_window) (Lane
+    /// R19d).
+    pub fn with_first_byte(self, max_first_byte: Option<Duration>) -> Self {
+        self.with_first_byte_window(match max_first_byte {
+            Some(duration) => FirstByteWindow::Secs(duration),
+            None => FirstByteWindow::Default,
+        })
+    }
+
+    /// Lane R19d. The tri-state setter: `Default` falls back to the stall
+    /// window, `Unlimited` explicitly disables the first-byte timer,
+    /// `Secs(d)` sets it to exactly `d`.
+    pub fn with_first_byte_window(mut self, window: FirstByteWindow) -> Self {
+        self.max_first_byte = window;
         self
     }
 
@@ -296,10 +382,10 @@ impl StreamBudget {
     /// raw byte/line of the response — for a caller (`with_raw_line_liveness`
     /// in `openai_compatible.rs`) that enforces liveness at the raw-wire
     /// level rather than at this budget's own semantic-item `next_timeout`.
-    /// Mirrors `next_timeout`'s own pre-first-byte fallback: `max_first_byte`,
-    /// or `max_stall` when no dedicated first-byte window is configured.
+    /// Resolves `max_first_byte` against `max_stall` — see
+    /// [`FirstByteWindow::resolve`].
     pub fn first_byte_window(&self) -> Option<Duration> {
-        self.max_first_byte.or(self.max_stall)
+        self.max_first_byte.resolve(self.max_stall)
     }
 
     /// Lane R19b. The window that should bound the wait between raw
@@ -325,7 +411,7 @@ impl StreamBudget {
         let window = if self.first_byte_received {
             self.max_stall
         } else {
-            self.max_first_byte.or(self.max_stall)
+            self.max_first_byte.resolve(self.max_stall)
         };
         match (window, self.remaining()) {
             (Some(window), Some(remaining)) => Some(window.min(remaining)),
@@ -340,7 +426,13 @@ impl StreamBudget {
         if self.remaining().is_some_and(|left| left.is_zero()) {
             return self.wall_clock_error();
         }
-        if !self.first_byte_received && self.max_first_byte.is_some() {
+        // Lane R19d: a resolved `None` here means either `Unlimited`
+        // (explicitly no first-byte bound) or `Default` falling back to an
+        // ALSO-unlimited stall window — either way, THIS branch cannot be
+        // what fired (nothing here would have wrapped `next()` with a
+        // timeout at all pre-first-byte), so it correctly falls through
+        // instead of misreporting a first-byte stall that didn't happen.
+        if !self.first_byte_received && self.max_first_byte.resolve(self.max_stall).is_some() {
             return self.first_byte_error();
         }
         if self.max_stall.is_some() {
@@ -397,7 +489,10 @@ impl StreamBudget {
              before the stream was stopped. Raise or disable {} (0 = unlimited) if this model or \
              provider legitimately needs longer to start responding.",
             FIRST_BYTE_SECS_ENV,
-            self.max_first_byte.map(|d| d.as_secs()).unwrap_or(0),
+            self.max_first_byte
+                .resolve(self.max_stall)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
             self.observed_rate(),
             FIRST_BYTE_SECS_ENV,
         ))
@@ -839,11 +934,11 @@ mod tests {
         assert_eq!(DEFAULT_FIRST_BYTE_SECS, 180);
     }
 
-    // --- Lane R19c: retry gets the REMAINING first-byte budget, not a fresh window (G24 HIGH-2) ---
+    // --- Lane R19c/R19d: retry gets the REMAINING first-byte budget via a tri-state override, not a fresh window (G24 HIGH-2) ---
 
     /// With no override task-local in scope, `from_env` behaves exactly as
-    /// before (falls through to the env var / default) — the override is
-    /// opt-in per call tree, never ambient.
+    /// before (falls through to `first_byte_window_from_env`) — the override
+    /// is opt-in per call tree, never ambient.
     #[tokio::test]
     async fn with_no_override_in_scope_from_env_reads_the_ordinary_default() {
         // Guards (and serializes with) FIRST_BYTE_SECS_ENV so this assertion
@@ -858,21 +953,21 @@ mod tests {
         );
     }
 
-    /// Inside `FIRST_BYTE_WINDOW_OVERRIDE`'s scope, `from_env` uses the
-    /// override instead of the env var/default — this is how the retry gets
-    /// the REMAINING budget rather than a fresh 180s window.
+    /// `FirstByteWindow::Secs(d)` inside the scope replaces the first-byte
+    /// window with exactly `d` — this is how the retry gets the REMAINING
+    /// budget rather than a fresh 180s window.
     #[tokio::test]
-    async fn an_override_in_scope_replaces_the_first_byte_window() {
+    async fn a_secs_override_in_scope_replaces_the_first_byte_window() {
         let remaining = Duration::from_secs(7);
         let observed = FIRST_BYTE_WINDOW_OVERRIDE
-            .scope(Some(remaining), async {
+            .scope(FirstByteWindow::Secs(remaining), async {
                 StreamBudget::from_env().first_byte_window()
             })
             .await;
         assert_eq!(observed, Some(remaining));
     }
 
-    /// `Some(Duration::ZERO)` is a valid, meaningful override — the first
+    /// `Secs(Duration::ZERO)` is a valid, meaningful override — the first
     /// attempt already spent the whole 180s ceiling, so the retry gets
     /// (deliberately) almost no additional silent wait: if the provider
     /// answers essentially immediately this time, the retry still succeeds;
@@ -880,7 +975,7 @@ mod tests {
     #[tokio::test]
     async fn a_zero_remaining_override_is_not_treated_as_unlimited() {
         let observed = FIRST_BYTE_WINDOW_OVERRIDE
-            .scope(Some(Duration::ZERO), async {
+            .scope(FirstByteWindow::Secs(Duration::ZERO), async {
                 StreamBudget::from_env().first_byte_window()
             })
             .await;
@@ -891,13 +986,116 @@ mod tests {
         );
     }
 
-    /// `None` inside the scope means "no first-byte window at all" — an
-    /// explicit unlimited, distinct from "no override installed".
+    /// Lane R19d (the M20 gate failure this lane exists to fix).
+    /// `FirstByteWindow::Unlimited` inside the scope means "no first-byte
+    /// window at all" — GENUINELY distinct from "no override installed"
+    /// (which falls through to the env var/default) and from `Default`
+    /// (which falls back to the stall window). Pre-R19d, both `Unlimited`
+    /// and `Default` collapsed to the same `None` via `.or(self.max_stall)`,
+    /// so this assertion observed the STALL window instead of "no window at
+    /// all" — the exact defect this lane fixes.
     #[tokio::test]
-    async fn a_none_override_means_explicitly_unlimited() {
+    async fn an_unlimited_override_means_explicitly_no_first_byte_window() {
         let observed = FIRST_BYTE_WINDOW_OVERRIDE
-            .scope(None, async { StreamBudget::from_env().first_byte_window() })
+            .scope(FirstByteWindow::Unlimited, async {
+                StreamBudget::from_env().first_byte_window()
+            })
             .await;
-        assert_eq!(observed, None);
+        assert_eq!(
+            observed, None,
+            "Unlimited must mean no timeout at all, not a fallback to the stall window"
+        );
+    }
+
+    /// The third variant, `FirstByteWindow::Default`, scoped explicitly:
+    /// falls back to whatever the stall window resolves to — distinct from
+    /// both `Unlimited` (always `None`) and `Secs` (always that exact
+    /// duration).
+    #[tokio::test]
+    async fn a_default_override_falls_back_to_the_stall_window() {
+        let _guard = env_lock::lock_env([(STALL_SECS_ENV, Some("45"))]);
+        let observed = FIRST_BYTE_WINDOW_OVERRIDE
+            .scope(FirstByteWindow::Default, async {
+                StreamBudget::from_env().first_byte_window()
+            })
+            .await;
+        assert_eq!(
+            observed,
+            Some(Duration::from_secs(45)),
+            "Default must fall back to the configured stall window"
+        );
+    }
+
+    /// `FirstByteWindow::resolve` directly, for all three variants, isolated
+    /// from `from_env`/the task-local entirely — the pure function the M20
+    /// gate failure traces back to.
+    #[test]
+    fn first_byte_window_resolve_covers_all_three_variants() {
+        let stall = Some(Duration::from_secs(120));
+        assert_eq!(
+            FirstByteWindow::Default.resolve(stall),
+            stall,
+            "Default resolves to the stall window"
+        );
+        assert_eq!(
+            FirstByteWindow::Unlimited.resolve(stall),
+            None,
+            "Unlimited resolves to None regardless of the stall window"
+        );
+        assert_eq!(
+            FirstByteWindow::Secs(Duration::from_secs(7)).resolve(stall),
+            Some(Duration::from_secs(7)),
+            "Secs resolves to exactly that duration, ignoring the stall window"
+        );
+        // Also with an unlimited stall window, to prove Default really does
+        // forward it rather than substituting some other fallback.
+        assert_eq!(FirstByteWindow::Default.resolve(None), None);
+    }
+
+    /// Lane R19d: `PERMAGENT_PROVIDER_STREAM_FIRST_BYTE_SECS` now supports
+    /// the `0`/`unlimited` sentinel, matching every sibling env var's own
+    /// "0 = unlimited" convention (pre-R19d, `0` here meant `Default`
+    /// instead — inconsistent with the rest of this module).
+    #[test]
+    fn from_env_parses_the_first_byte_sentinel_values() {
+        {
+            let _guard = env_lock::lock_env([(FIRST_BYTE_SECS_ENV, Some("0"))]);
+            assert_eq!(first_byte_window_from_env(), FirstByteWindow::Unlimited);
+        }
+        {
+            let _guard = env_lock::lock_env([(FIRST_BYTE_SECS_ENV, Some("unlimited"))]);
+            assert_eq!(first_byte_window_from_env(), FirstByteWindow::Unlimited);
+        }
+        {
+            let _guard = env_lock::lock_env([(FIRST_BYTE_SECS_ENV, Some("UnLiMiTeD"))]);
+            assert_eq!(
+                first_byte_window_from_env(),
+                FirstByteWindow::Unlimited,
+                "the sentinel is case-insensitive"
+            );
+        }
+        {
+            let _guard = env_lock::lock_env([(FIRST_BYTE_SECS_ENV, Some("42"))]);
+            assert_eq!(
+                first_byte_window_from_env(),
+                FirstByteWindow::Secs(Duration::from_secs(42))
+            );
+        }
+        {
+            let _guard = env_lock::lock_env([(FIRST_BYTE_SECS_ENV, Some("not a number"))]);
+            assert_eq!(
+                first_byte_window_from_env(),
+                FirstByteWindow::Secs(Duration::from_secs(DEFAULT_FIRST_BYTE_SECS)),
+                "an unparseable value falls back to the compiled default, like env_u64 does"
+            );
+        }
+        {
+            let _guard = env_lock::lock_env([(FIRST_BYTE_SECS_ENV, None::<&str>)]);
+            assert_eq!(
+                first_byte_window_from_env(),
+                FirstByteWindow::Secs(Duration::from_secs(DEFAULT_FIRST_BYTE_SECS)),
+                "unset falls back to the compiled default"
+            );
+        }
     }
 }
