@@ -1622,6 +1622,11 @@ fn classify_probe_shape(criterion: &str) -> Option<ProbeShape> {
 /// 'import fizzbuzz'`". Only fires on an actual quoted span, so a command
 /// name mentioned in unquoted prose is never mistaken for a literal
 /// command to run.
+// Every index here is a char boundary by construction: `start`/`end` come from
+// `str::find`, and the offsets added to them are the matched delimiter's own
+// `len_utf8()`, i.e. that char's end boundary. So these slices cannot split a
+// UTF-8 character. (Same reasoning as R20c's `contains_word_or_phrase`.)
+#[allow(clippy::string_slice)]
 fn extract_quoted_command(criterion: &str) -> Option<String> {
     for (open, close) in [('`', '`'), ('"', '"')] {
         let mut rest = criterion;
