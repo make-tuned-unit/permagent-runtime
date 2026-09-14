@@ -4409,7 +4409,9 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok(), "{result:?}");
+        // The Ok side is a boxed `dyn Stream`, which has no Debug; print the
+        // error instead, which is the half that matters when this fails.
+        assert!(result.is_ok(), "{:?}", result.as_ref().err());
         assert_eq!(
             *seen_authorized.lock().unwrap(),
             Some(Some(1)),
@@ -4458,7 +4460,9 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok(), "{result:?}");
+        // The Ok side is a boxed `dyn Stream`, which has no Debug; print the
+        // error instead, which is the half that matters when this fails.
+        assert!(result.is_ok(), "{:?}", result.as_ref().err());
         assert_eq!(
             *seen_authorized.lock().unwrap(),
             Some(None),

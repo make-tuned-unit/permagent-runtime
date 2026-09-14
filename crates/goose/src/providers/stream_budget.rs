@@ -849,7 +849,7 @@ mod tests {
         // Guards (and serializes with) FIRST_BYTE_SECS_ENV so this assertion
         // is not racing some other test's env_lock-guarded override of the
         // same process-wide env var.
-        let _guard = env_lock::lock_env([(FIRST_BYTE_SECS_ENV, None)]);
+        let _guard = env_lock::lock_env([(FIRST_BYTE_SECS_ENV, None::<&str>)]);
         let budget = StreamBudget::from_env();
         assert_eq!(
             budget.first_byte_window(),
