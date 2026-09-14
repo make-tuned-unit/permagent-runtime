@@ -426,13 +426,27 @@ impl StreamBudget {
         if self.remaining().is_some_and(|left| left.is_zero()) {
             return self.wall_clock_error();
         }
-        // Lane R19d: a resolved `None` here means either `Unlimited`
-        // (explicitly no first-byte bound) or `Default` falling back to an
-        // ALSO-unlimited stall window — either way, THIS branch cannot be
-        // what fired (nothing here would have wrapped `next()` with a
-        // timeout at all pre-first-byte), so it correctly falls through
-        // instead of misreporting a first-byte stall that didn't happen.
-        if !self.first_byte_received && self.max_first_byte.resolve(self.max_stall).is_some() {
+        // Lane R19e (M21 gate: `no_first_byte_window_falls_back_to_the_
+        // stall_window_throughout` and `a_timeout_names_the_bound_it_
+        // actually_broke` both failed on the merged tip). The R19d check
+        // here — `self.max_first_byte.resolve(self.max_stall).is_some()` —
+        // was WRONG, not merely stale: `resolve()` was already being called
+        // (every pre-first-byte window value in this file, `next_timeout`
+        // included, already went through it), but `Default` falling back to
+        // an ordinary, CONFIGURED stall window also resolves to `Some`, so
+        // any caller that never opted into a dedicated first-byte window at
+        // all (`StreamBudget::new(..).with_stall(..)` alone — the pre-R19a
+        // shape both failing tests construct) had its plain mid-stream
+        // stall misclassified as a first-byte stall. `Default` means "no
+        // DEDICATED first-byte window; behave exactly like the plain stall
+        // window always did" — a timeout it causes must be reported as an
+        // ordinary stall, never as `is_first_byte_provider_stall()`. Only
+        // `Secs(_)` — an EXPLICITLY configured window distinct from the
+        // stall window — should ever produce `first_byte_error()`.
+        // `Unlimited` resolves to `None` and can never reach this branch
+        // pre-first-byte at all (nothing would have wrapped `next()` with a
+        // timeout), so it needs no explicit exclusion here.
+        if !self.first_byte_received && matches!(self.max_first_byte, FirstByteWindow::Secs(_)) {
             return self.first_byte_error();
         }
         if self.max_stall.is_some() {
@@ -897,10 +911,40 @@ mod tests {
         assert!(!err.is_first_byte_provider_stall(), "{err}");
     }
 
-    /// With no first-byte window configured, `next_timeout` falls back to
-    /// the ordinary stall window for the whole stream — the pre-R19a
-    /// behavior — so a caller that never opts in (or sets
-    /// `PERMAGENT_PROVIDER_STREAM_FIRST_BYTE_SECS=0`) is unaffected.
+    /// Lane R19e (M21 gate). `FirstByteWindow::Default` — no dedicated
+    /// first-byte window configured, just the ordinary stall window doing
+    /// double duty — must classify a PRE-first-byte timeout as an ordinary
+    /// stall, never as `is_first_byte_provider_stall()`. This is the exact
+    /// distinction `timeout_error`'s R19d-era check got wrong: it treated
+    /// any resolved-`Some` window (which `Default` produces whenever a
+    /// stall window is configured at all) as first-byte-worthy, when only
+    /// an explicit `Secs(_)` should be. Companion to `a_pre_first_byte_
+    /// timeout_reports_the_first_byte_bound` (same shape, `Secs` instead of
+    /// `Default`) and `a_mid_stream_timeout_still_trips_the_ordinary_stall_
+    /// bound` (same `Default` vs `Secs` distinction, but post-first-byte).
+    #[test]
+    fn a_pre_first_byte_timeout_under_default_is_classified_as_an_ordinary_stall() {
+        let budget = StreamBudget::new(None, None).with_stall(Some(Duration::from_secs(120)));
+        // Explicit, even though it's already `new`'s starting state — this
+        // test exists to pin the classification, not the state itself.
+        let budget = budget.with_first_byte_window(FirstByteWindow::Default);
+        let err = budget.timeout_error();
+        assert!(err.to_string().contains(STALL_SECS_ENV), "{err}");
+        assert!(err.is_stream_budget_exceeded(), "{err}");
+        assert!(!err.is_first_byte_provider_stall(), "{err}");
+    }
+
+    /// With no first-byte window configured at all (`FirstByteWindow::
+    /// Default` — `StreamBudget::new`'s own starting state, never produced
+    /// by `from_env` in production), `next_timeout` falls back to the
+    /// ordinary stall window for the whole stream, and — Lane R19e (M21
+    /// gate) — a timeout it causes is classified as a plain stall, never as
+    /// `is_first_byte_provider_stall()`: this is the pre-R19a behavior,
+    /// unchanged for a caller that never opts in. Distinct from Lane R19d's
+    /// `PERMAGENT_PROVIDER_STREAM_FIRST_BYTE_SECS=0`/`unlimited`, which is
+    /// `FirstByteWindow::Unlimited` — genuinely no first-byte timeout at
+    /// all, not a fallback to the stall window; see
+    /// `an_unlimited_override_means_explicitly_no_first_byte_window` below.
     #[test]
     fn no_first_byte_window_falls_back_to_the_stall_window_throughout() {
         let stall = Duration::from_secs(120);
