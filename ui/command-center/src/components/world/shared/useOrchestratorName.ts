@@ -17,21 +17,23 @@ export function useOrchestratorName(): string | null {
   const identityRev = useCommandCenter(s => s.identityRev);
   const [name, setName] = useState<string | null>(cached);
   useEffect(() => {
-    if (cached && cachedRev === identityRev) return;
+    if (cached && cachedRev === identityRev) { setName(cached); return; }
     let cancelled = false;
-    api
-      .getIdentity()
-      .then((id) => {
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    async function refresh() {
+      try {
+        const id = await api.getIdentity();
+        if (cancelled) return;
         cached = id.first_name;
         cachedRev = identityRev;
-        if (!cancelled) setName(id.first_name);
-      })
-      .catch(() => {
-        // Identity unavailable — callers fall back to their own default.
-      });
-    return () => {
-      cancelled = true;
-    };
+        setName(id.first_name);
+      } catch {
+        // The local daemon may still be starting after a restart.
+        if (!cancelled) retry = setTimeout(refresh, 5000);
+      }
+    }
+    void refresh();
+    return () => { cancelled = true; clearTimeout(retry); };
   }, [identityRev]);
   return name;
 }

@@ -1,0 +1,86 @@
+{
+  "status": "complete",
+  "appearance": "day",
+  "map": "/Game/SolarForum/Maps/ForumCinematic",
+  "scannedAssets": {
+    "jacaranda_tree": {
+      "heightCm": 1946.8874893188477,
+      "slots": [
+        "jacaranda_tree_branches",
+        "jacaranda_tree_trunk",
+        "jacaranda_tree_leaves"
+      ]
+    },
+    "fern_02": {
+      "heightCm": 42.769469022750854,
+      "slots": [
+        "fern_02"
+      ]
+    },
+    "rock_09": {
+      "heightCm": 3.294884890317917,
+      "slots": [
+        "rock_09"
+      ]
+    }
+  },
+  "environmentActors": 249,
+  "materialAssignments": {
+    "burnished bronze": [
+      "Aged bronze"
+    ],
+    "scannedstone": [
+      "Limestone",
+      "Travertine",
+      "Forum White Sandstone Masonry"
+    ],
+    "basalt": [
+      "Permagent dark stone"
+    ],
+    "living water": [
+      "Water",
+      "Celestial waterfall mist"
+    ],
+    "architectural glass": [
+      "Conservatory glass",
+      "Forum Architectural Glass"
+    ],
+    "original warm timber tone": [
+      "Oiled structural timber",
+      "Forum Oiled Timber Grain"
+    ],
+    "scannedrock": [
+      "Weathered coastal rock",
+      "Forum Basalt stratum 0",
+      "Forum Basalt stratum 1",
+      "Forum Basalt stratum 2",
+      "Forum Basalt stratum 3",
+      "Forum Mossy Coastal Rock"
+    ]
+  },
+  "resetImportedMaterialSlots": [
+    "Coastal meadow",
+    "Conservatory glass",
+    "Oiled structural timber",
+    "Weathered coastal rock",
+    "Celestial waterfall mist",
+    "Coastal canopy",
+    "Forum Architectural Glass",
+    "Forum Basalt stratum 0",
+    "Forum Basalt stratum 1",
+    "Forum Basalt stratum 2",
+    "Forum Basalt stratum 3",
+    "Forum Mossy Coastal Rock",
+    "Forum Oiled Timber Grain",
+    "Forum White Sandstone Masonry"
+  ],
+  "obsoleteProxySlotsHidden": [],
+  "renderVerified": true,
+  "renderFiles": [
+    "unreal-forum-day.webp",
+    "unreal-walk-day.webp",
+    "unreal-campus-day.webp",
+    "unreal-sovereign-day.webp",
+    "unreal-conservatory-day.webp"
+  ]
+}

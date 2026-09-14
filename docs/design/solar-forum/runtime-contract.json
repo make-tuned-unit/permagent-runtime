@@ -1,0 +1,42 @@
+{
+  "scope": "Authenticated read-only endpoint contracts; no task execution or native telemetry bridge claimed",
+  "complete": true,
+  "endpoints": [
+    {
+      "path": "/api/agent/identity",
+      "status": 200,
+      "schemaMatches": true,
+      "elapsedSeconds": 0.022
+    },
+    {
+      "path": "/api/henry/status",
+      "status": 200,
+      "schemaMatches": true,
+      "elapsedSeconds": 1.971
+    },
+    {
+      "path": "/api/agents",
+      "status": 200,
+      "schemaMatches": true,
+      "elapsedSeconds": 0.02
+    },
+    {
+      "path": "/api/goals/active",
+      "status": 200,
+      "schemaMatches": true,
+      "elapsedSeconds": 0.053
+    },
+    {
+      "path": "/permagent/skills",
+      "status": 200,
+      "schemaMatches": true,
+      "elapsedSeconds": 0.048
+    },
+    {
+      "path": "/permagent/skills/proposals",
+      "status": 200,
+      "schemaMatches": true,
+      "elapsedSeconds": 0.007
+    }
+  ]
+}

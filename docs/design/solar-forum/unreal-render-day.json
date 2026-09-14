@@ -1,0 +1,14 @@
+{
+  "status": "complete",
+  "renderer": "Unreal Engine / Metal",
+  "views": [
+    "unreal-forum-day.webp",
+    "unreal-walk-day.webp",
+    "unreal-campus-day.webp",
+    "unreal-sovereign-day.webp",
+    "unreal-conservatory-day.webp"
+  ],
+  "elapsedSeconds": 248.79245470800015,
+  "appearance": "day",
+  "captureFramesPerView": 64
+}

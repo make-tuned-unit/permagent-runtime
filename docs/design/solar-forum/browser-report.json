@@ -1,0 +1,1271 @@
+{
+  "url": "http://127.0.0.1:5285/ui/forum.html",
+  "viewport": {
+    "width": 1440,
+    "height": 1000
+  },
+  "startedAt": "2026-09-11T04:13:49.527Z",
+  "notes": [
+    "No daemon state was mocked and no task/job/capability request was sent."
+  ],
+  "themes": [
+    {
+      "theme": "day",
+      "colorScheme": "light",
+      "screenshot": "assets/world/forum/browser/solar-forum-day.webp",
+      "errors": [
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.Clock: This module has been deprecated. Please use THREE.Timer instead."
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead."
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x134004c9600]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x134004c9600]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x134004c9600]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x134004c9600]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead."
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead."
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        }
+      ],
+      "shaderErrors": [],
+      "daemonFailures": [
+        {
+          "url": "http://127.0.0.1:5285/api/goals/active",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills/proposals",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agents",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agents",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills/proposals",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agents",
+          "status": 401
+        }
+      ],
+      "assetFailures": [],
+      "phase": "interactions-and-screenshot",
+      "assetLoaded": true,
+      "appearance": "Day / follows system appearance",
+      "canvas": {
+        "present": true,
+        "visible": true,
+        "width": 1070,
+        "height": 1000,
+        "drawingBuffer": [
+          1070,
+          1000
+        ],
+        "webgl": true,
+        "rgbVariance": 0,
+        "framebufferSampling": "rgb-distributed-current-frame",
+        "glError": 0
+      },
+      "screenshotSampling": {
+        "supported": true,
+        "width": 1070,
+        "height": 1000,
+        "rgbVariance": 8504.570203993053,
+        "alphaIgnored": true
+      },
+      "district": "GALLERY",
+      "sovereign": {
+        "button": "Find your orchestrator",
+        "selected": "henry"
+      },
+      "screenshotCaptured": true,
+      "feed": "Job feed unavailable / connectingArchitecture preview · existing World agent feeds",
+      "disconnectedFeed": true
+    },
+    {
+      "theme": "night",
+      "colorScheme": "dark",
+      "screenshot": "assets/world/forum/browser/solar-forum-night.webp",
+      "errors": [
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.Clock: This module has been deprecated. Please use THREE.Timer instead."
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead."
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x13400511200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x13400511200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x13400511200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x13400511200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead."
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead."
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        }
+      ],
+      "shaderErrors": [],
+      "daemonFailures": [
+        {
+          "url": "http://127.0.0.1:5285/api/goals/active",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agents",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills/proposals",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agents",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agents",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills/proposals",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        }
+      ],
+      "assetFailures": [],
+      "phase": "interactions-and-screenshot",
+      "assetLoaded": true,
+      "appearance": "Night / follows system appearance",
+      "canvas": {
+        "present": true,
+        "visible": true,
+        "width": 1070,
+        "height": 1000,
+        "drawingBuffer": [
+          1070,
+          1000
+        ],
+        "webgl": true,
+        "rgbVariance": 0,
+        "framebufferSampling": "rgb-distributed-current-frame",
+        "glError": 0
+      },
+      "screenshotSampling": {
+        "supported": true,
+        "width": 1070,
+        "height": 1000,
+        "rgbVariance": 3233.3734537760415,
+        "alphaIgnored": true
+      },
+      "district": "GALLERY",
+      "sovereign": {
+        "button": "Find your orchestrator",
+        "selected": "henry"
+      },
+      "screenshotCaptured": true,
+      "feed": "Job feed unavailable / connectingArchitecture preview · existing World agent feeds",
+      "disconnectedFeed": true
+    }
+  ],
+  "phase": "night:complete",
+  "updatedAt": "2026-09-11T04:15:17.424Z",
+  "finishedAt": "2026-09-11T04:15:17.424Z",
+  "renderFailures": [],
+  "daemonUnavailable": [
+    {
+      "theme": "day",
+      "colorScheme": "light",
+      "screenshot": "assets/world/forum/browser/solar-forum-day.webp",
+      "errors": [
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.Clock: This module has been deprecated. Please use THREE.Timer instead."
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead."
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x134004c9600]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x134004c9600]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x134004c9600]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x134004c9600]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead."
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead."
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        }
+      ],
+      "shaderErrors": [],
+      "daemonFailures": [
+        {
+          "url": "http://127.0.0.1:5285/api/goals/active",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills/proposals",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agents",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agents",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills/proposals",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agents",
+          "status": 401
+        }
+      ],
+      "assetFailures": [],
+      "phase": "interactions-and-screenshot",
+      "assetLoaded": true,
+      "appearance": "Day / follows system appearance",
+      "canvas": {
+        "present": true,
+        "visible": true,
+        "width": 1070,
+        "height": 1000,
+        "drawingBuffer": [
+          1070,
+          1000
+        ],
+        "webgl": true,
+        "rgbVariance": 0,
+        "framebufferSampling": "rgb-distributed-current-frame",
+        "glError": 0
+      },
+      "screenshotSampling": {
+        "supported": true,
+        "width": 1070,
+        "height": 1000,
+        "rgbVariance": 8504.570203993053,
+        "alphaIgnored": true
+      },
+      "district": "GALLERY",
+      "sovereign": {
+        "button": "Find your orchestrator",
+        "selected": "henry"
+      },
+      "screenshotCaptured": true,
+      "feed": "Job feed unavailable / connectingArchitecture preview · existing World agent feeds",
+      "disconnectedFeed": true
+    },
+    {
+      "theme": "night",
+      "colorScheme": "dark",
+      "screenshot": "assets/world/forum/browser/solar-forum-night.webp",
+      "errors": [
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.Clock: This module has been deprecated. Please use THREE.Timer instead."
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead."
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x13400511200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x13400511200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x13400511200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        },
+        {
+          "kind": "console-warning",
+          "message": "[.WebGL-0x13400511200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead."
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-warning",
+          "message": "THREE.WebGLShadowMap: PCFSoftShadowMap has been deprecated. Using PCFShadowMap instead."
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "WebSocket connection to 'ws://127.0.0.1:5285/events' failed: HTTP Authentication failed; no valid credentials available"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        },
+        {
+          "kind": "console-error",
+          "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        }
+      ],
+      "shaderErrors": [],
+      "daemonFailures": [
+        {
+          "url": "http://127.0.0.1:5285/api/goals/active",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agents",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills/proposals",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agents",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agents",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/permagent/skills/proposals",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/agent/identity",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        },
+        {
+          "url": "http://127.0.0.1:5285/api/henry/status",
+          "status": 401
+        }
+      ],
+      "assetFailures": [],
+      "phase": "interactions-and-screenshot",
+      "assetLoaded": true,
+      "appearance": "Night / follows system appearance",
+      "canvas": {
+        "present": true,
+        "visible": true,
+        "width": 1070,
+        "height": 1000,
+        "drawingBuffer": [
+          1070,
+          1000
+        ],
+        "webgl": true,
+        "rgbVariance": 0,
+        "framebufferSampling": "rgb-distributed-current-frame",
+        "glError": 0
+      },
+      "screenshotSampling": {
+        "supported": true,
+        "width": 1070,
+        "height": 1000,
+        "rgbVariance": 3233.3734537760415,
+        "alphaIgnored": true
+      },
+      "district": "GALLERY",
+      "sovereign": {
+        "button": "Find your orchestrator",
+        "selected": "henry"
+      },
+      "screenshotCaptured": true,
+      "feed": "Job feed unavailable / connectingArchitecture preview · existing World agent feeds",
+      "disconnectedFeed": true
+    }
+  ]
+}

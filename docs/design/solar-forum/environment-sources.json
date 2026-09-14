@@ -1,0 +1,163 @@
+{
+  "license": "CC0-1.0",
+  "licenseUrl": "https://polyhaven.com/license",
+  "provider": "Poly Haven",
+  "files": [
+    {
+      "path": "assets/world/forum/third-party/white_sandstone_blocks_02/white_sandstone_blocks_02_diff_2k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/white_sandstone_blocks_02/white_sandstone_blocks_02_diff_2k.jpg",
+      "md5": "141a8964984195586d2d6fac4ee34fef",
+      "size": 3780151
+    },
+    {
+      "path": "assets/world/forum/third-party/white_sandstone_blocks_02/white_sandstone_blocks_02_nor_dx_2k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/white_sandstone_blocks_02/white_sandstone_blocks_02_nor_dx_2k.jpg",
+      "md5": "71688b39940e6670185a230c2ead74af",
+      "size": 3129253
+    },
+    {
+      "path": "assets/world/forum/third-party/white_sandstone_blocks_02/white_sandstone_blocks_02_rough_2k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/white_sandstone_blocks_02/white_sandstone_blocks_02_rough_2k.jpg",
+      "md5": "8ab4fe8a2e489ea63f835a0d6bc5ecdf",
+      "size": 2545799
+    },
+    {
+      "path": "assets/world/forum/third-party/mossy_rock/mossy_rock_diff_2k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/mossy_rock/mossy_rock_diff_2k.jpg",
+      "md5": "8e55bbeeef1db0d2d0cae85515812c46",
+      "size": 4535360
+    },
+    {
+      "path": "assets/world/forum/third-party/mossy_rock/mossy_rock_nor_dx_2k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/mossy_rock/mossy_rock_nor_dx_2k.jpg",
+      "md5": "81add85cd2c93ee7dd4c33c522f0b5be",
+      "size": 4030316
+    },
+    {
+      "path": "assets/world/forum/third-party/mossy_rock/mossy_rock_rough_2k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/mossy_rock/mossy_rock_rough_2k.jpg",
+      "md5": "0b4bbecd6af36e343d05ed11914bb18f",
+      "size": 3205806
+    },
+    {
+      "path": "assets/world/forum/third-party/jacaranda_tree/jacaranda_tree_2k.fbx",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/fbx/2k/jacaranda_tree/jacaranda_tree_2k.fbx",
+      "md5": "9a51fd6cb3881c3486b9b1499d3e036e",
+      "size": 132437628
+    },
+    {
+      "path": "assets/world/forum/third-party/jacaranda_tree/textures/jacaranda_tree_branches_diff_2k.png",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/png/2k/jacaranda_tree/jacaranda_tree_branches_diff_2k.png",
+      "md5": "53819fe367b7ebc67cc51fbf2a235a69",
+      "size": 19551560
+    },
+    {
+      "path": "assets/world/forum/third-party/jacaranda_tree/textures/jacaranda_tree_branches_nor_gl_2k.png",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/png/2k/jacaranda_tree/jacaranda_tree_branches_nor_gl_2k.png",
+      "md5": "98af2803beca2055fde16a4ca8f2151a",
+      "size": 20594936
+    },
+    {
+      "path": "assets/world/forum/third-party/jacaranda_tree/textures/jacaranda_tree_branches_rough_2k.png",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/png/2k/jacaranda_tree/jacaranda_tree_branches_rough_2k.png",
+      "md5": "f2c70d75834aa97f7ef173c119f92f8d",
+      "size": 4730461
+    },
+    {
+      "path": "assets/world/forum/third-party/jacaranda_tree/textures/jacaranda_tree_leaves_alpha_2k.png",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/png/2k/jacaranda_tree/jacaranda_tree_leaves_alpha_2k.png",
+      "md5": "9f8afd60299fd936ef95a4c3235102cf",
+      "size": 1252539
+    },
+    {
+      "path": "assets/world/forum/third-party/jacaranda_tree/textures/jacaranda_tree_leaves_diff_2k.png",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/png/2k/jacaranda_tree/jacaranda_tree_leaves_diff_2k.png",
+      "md5": "b1afbff2fe1f085547dedd19eff1c842",
+      "size": 8173693
+    },
+    {
+      "path": "assets/world/forum/third-party/jacaranda_tree/textures/jacaranda_tree_leaves_nor_gl_2k.png",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/png/2k/jacaranda_tree/jacaranda_tree_leaves_nor_gl_2k.png",
+      "md5": "0774f9d98b568b50371f00c69c5e0a7d",
+      "size": 14968102
+    },
+    {
+      "path": "assets/world/forum/third-party/jacaranda_tree/textures/jacaranda_tree_leaves_rough_2k.png",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/png/2k/jacaranda_tree/jacaranda_tree_leaves_rough_2k.png",
+      "md5": "724d23832f99eeb6b2447f0a404e28aa",
+      "size": 3221437
+    },
+    {
+      "path": "assets/world/forum/third-party/jacaranda_tree/textures/jacaranda_tree_trunk_diff_2k.png",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/png/2k/jacaranda_tree/jacaranda_tree_trunk_diff_2k.png",
+      "md5": "54c203d836580c841bb5ac2e5cc6caba",
+      "size": 20442412
+    },
+    {
+      "path": "assets/world/forum/third-party/jacaranda_tree/textures/jacaranda_tree_trunk_nor_gl_2k.png",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/png/2k/jacaranda_tree/jacaranda_tree_trunk_nor_gl_2k.png",
+      "md5": "d594c65dc554b88081689346d00ea751",
+      "size": 20503957
+    },
+    {
+      "path": "assets/world/forum/third-party/jacaranda_tree/textures/jacaranda_tree_trunk_rough_2k.png",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/png/2k/jacaranda_tree/jacaranda_tree_trunk_rough_2k.png",
+      "md5": "df7d8846780826e8686f2b1b7a36f0c9",
+      "size": 6375484
+    },
+    {
+      "path": "assets/world/forum/third-party/fern_02/fern_02_2k.fbx",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/fbx/2k/fern_02/fern_02_2k.fbx",
+      "md5": "b0faf5c26baf61032ac5abea4f4ce568",
+      "size": 223596
+    },
+    {
+      "path": "assets/world/forum/third-party/fern_02/textures/fern_02_diff_2k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/2k/fern_02/fern_02_diff_2k.jpg",
+      "md5": "ba8bbb9dc9ff55bdc081565cd926d776",
+      "size": 993703
+    },
+    {
+      "path": "assets/world/forum/third-party/fern_02/textures/fern_02_nor_gl_2k.exr",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/exr/2k/fern_02/fern_02_nor_gl_2k.exr",
+      "md5": "4e1fa9220f53965604b406ba28e223b3",
+      "size": 2895843
+    },
+    {
+      "path": "assets/world/forum/third-party/fern_02/textures/fern_02_rough_2k.exr",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/exr/2k/fern_02/fern_02_rough_2k.exr",
+      "md5": "beb315edeb84760a46dcc3d223b609fd",
+      "size": 901394
+    },
+    {
+      "path": "assets/world/forum/third-party/fern_02/textures/fern_02_alpha_2k.png",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/png/2k/fern_02/fern_02_alpha_2k.png",
+      "md5": "ff18f7e8e869c58eac8f9c7d7c519f4a",
+      "size": 230089
+    },
+    {
+      "path": "assets/world/forum/third-party/rock_09/rock_09_2k.fbx",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/fbx/2k/rock_09/rock_09_2k.fbx",
+      "md5": "f779090f18fee85e2a1af805fc037776",
+      "size": 890732
+    },
+    {
+      "path": "assets/world/forum/third-party/rock_09/textures/rock_09_diff_2k.jpg",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/2k/rock_09/rock_09_diff_2k.jpg",
+      "md5": "7e40809bf4257cc23795d18b349fbfe9",
+      "size": 2102702
+    },
+    {
+      "path": "assets/world/forum/third-party/rock_09/textures/rock_09_nor_gl_2k.exr",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/exr/2k/rock_09/rock_09_nor_gl_2k.exr",
+      "md5": "9d6ffae6336beb81d567f1ec29961a44",
+      "size": 5329104
+    },
+    {
+      "path": "assets/world/forum/third-party/rock_09/textures/rock_09_rough_2k.exr",
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/exr/2k/rock_09/rock_09_rough_2k.exr",
+      "md5": "7e8682d1a7b8afbae8ff779ad57d3053",
+      "size": 1657991
+    }
+  ]
+}

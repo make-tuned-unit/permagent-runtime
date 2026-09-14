@@ -1,0 +1,9 @@
+{
+  "status": "complete",
+  "appearance": "night",
+  "map": "/Game/SolarForum/Maps/ForumNight",
+  "lanterns": 25,
+  "stars": true,
+  "sunLux": 8.0,
+  "exposureEV100": 1.5
+}

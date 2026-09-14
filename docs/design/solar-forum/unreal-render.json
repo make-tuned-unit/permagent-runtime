@@ -1,0 +1,22 @@
+{
+  "status": "complete",
+  "renderer": "Unreal Engine / Metal",
+  "views": [
+    "unreal-forum-day.webp",
+    "unreal-walk-day.webp",
+    "unreal-campus-day.webp"
+  ],
+  "elapsedSeconds": 131.71378412500053,
+  "visualReview": {
+    "inspected": true,
+    "viewsReadable": true,
+    "qualityStage": "environment prototype",
+    "nativePlayTested": false,
+    "remaining": [
+      "lighting balance in shaded areas",
+      "terrain and shore transitions",
+      "architectural variation",
+      "native player-input and frame-time validation"
+    ]
+  }
+}

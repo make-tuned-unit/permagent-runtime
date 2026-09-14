@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "world:compress": "node scripts/compress-world-glb.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^9.122.0",
@@ -34,10 +35,12 @@
     "remark-gfm": "^4.0.1",
     "shiki": "^4.0.2",
     "three": "^0.184.0",
+    "three-mesh-bvh": "0.7.8",
     "viem": "^2.49.2",
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@gltf-transform/cli": "^4.5.0",
     "@tauri-apps/cli": "^2.10.1",
     "@types/node": "^25.3.0",
     "@types/react": "^18.2.43",
@@ -49,6 +52,7 @@
     "jsdom": "^24.1.3",
     "playwright": "^1.62.1",
     "postcss": "^8.4.32",
+    "sharp": "^0.35.4",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.2.2",
     "vite": "^5.0.8",

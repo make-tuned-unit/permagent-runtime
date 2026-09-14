@@ -1,0 +1,168 @@
+{
+  "status": "complete",
+  "appearance": "night",
+  "inhabitants": [
+    {
+      "id": "henry",
+      "route": "commons",
+      "mesh": "/Game/SolarForum/AgentsV2/henry/henry.henry",
+      "animations": [
+        "henry_Anim_ForumSkeleton_Idle",
+        "henry_Anim_ForumSkeleton_Walk"
+      ],
+      "durationFrames": 1656,
+      "travelSegments": 48
+    },
+    {
+      "id": "librarian",
+      "route": "gallery",
+      "mesh": "/Game/SolarForum/AgentsV2/librarian/librarian.librarian",
+      "animations": [
+        "librarian_Anim_ForumSkeleton_Idle",
+        "librarian_Anim_ForumSkeleton_Walk"
+      ],
+      "durationFrames": 1172,
+      "travelSegments": 32
+    },
+    {
+      "id": "reader",
+      "route": "gallery",
+      "mesh": "/Game/SolarForum/AgentsV2/reader/reader.reader",
+      "animations": [
+        "reader_Anim_ForumSkeleton_Idle",
+        "reader_Anim_ForumSkeleton_Walk"
+      ],
+      "durationFrames": 1137,
+      "travelSegments": 32
+    },
+    {
+      "id": "forecaster",
+      "route": "west_gallery",
+      "mesh": "/Game/SolarForum/AgentsV2/forecaster/forecaster.forecaster",
+      "animations": [
+        "forecaster_Anim_ForumSkeleton_Idle",
+        "forecaster_Anim_ForumSkeleton_Walk"
+      ],
+      "durationFrames": 490,
+      "travelSegments": 16
+    },
+    {
+      "id": "steward",
+      "route": "maker_hall",
+      "mesh": "/Game/SolarForum/AgentsV2/steward/steward.steward",
+      "animations": [
+        "steward_Anim_ForumSkeleton_Idle",
+        "steward_Anim_ForumSkeleton_Walk"
+      ],
+      "durationFrames": 5317,
+      "travelSegments": 14
+    },
+    {
+      "id": "watcher",
+      "route": "promenade",
+      "mesh": "/Game/SolarForum/AgentsV2/watcher/watcher.watcher",
+      "animations": [
+        "watcher_Anim_ForumSkeleton_Idle",
+        "watcher_Anim_ForumSkeleton_Walk"
+      ],
+      "durationFrames": 8784,
+      "travelSegments": 96
+    },
+    {
+      "id": "strix",
+      "route": "harbor",
+      "mesh": "/Game/SolarForum/AgentsV2/strix/strix.strix",
+      "animations": [
+        "strix_Anim_ForumSkeleton_Idle",
+        "strix_Anim_ForumSkeleton_Walk"
+      ],
+      "durationFrames": 6952,
+      "travelSegments": 14
+    },
+    {
+      "id": "financier",
+      "route": "commons",
+      "mesh": "/Game/SolarForum/AgentsV2/financier/financier.financier",
+      "animations": [
+        "financier_Anim_ForumSkeleton_Idle",
+        "financier_Anim_ForumSkeleton_Walk"
+      ],
+      "durationFrames": 1656,
+      "travelSegments": 48
+    },
+    {
+      "id": "polybot",
+      "route": "commons",
+      "mesh": "/Game/SolarForum/AgentsV2/polybot/polybot.polybot",
+      "animations": [
+        "polybot_Anim_ForumSkeleton_Idle",
+        "polybot_Anim_ForumSkeleton_Walk"
+      ],
+      "durationFrames": 1656,
+      "travelSegments": 48
+    },
+    {
+      "id": "picker",
+      "route": "promenade",
+      "mesh": "/Game/SolarForum/AgentsV2/picker/picker.picker",
+      "animations": [
+        "picker_Anim_ForumSkeleton_Idle",
+        "picker_Anim_ForumSkeleton_Walk"
+      ],
+      "durationFrames": 8784,
+      "travelSegments": 96
+    },
+    {
+      "id": "growth_measurement",
+      "route": "conservatory",
+      "mesh": "/Game/SolarForum/AgentsV2/growth_measurement/growth_measurement.growth_measurement",
+      "animations": [
+        "growth_measurement_Anim_ForumSkeleton_Idle",
+        "growth_measurement_Anim_ForumSkeleton_Walk"
+      ],
+      "durationFrames": 6260,
+      "travelSegments": 16
+    },
+    {
+      "id": "council",
+      "route": "theatre",
+      "mesh": "/Game/SolarForum/AgentsV2/council/council.council",
+      "animations": [
+        "council_Anim_ForumSkeleton_Idle",
+        "council_Anim_ForumSkeleton_Walk"
+      ],
+      "durationFrames": 4210,
+      "travelSegments": 14
+    }
+  ],
+  "evaluatedMovementCm": [
+    862.230774144478,
+    151.88290691860797,
+    430.91399611420934,
+    192.63774626633995,
+    1340.2020202020194,
+    1330.2586848632347,
+    1339.1684901531735,
+    862.2293527420661,
+    862.2314271937048,
+    1330.2517198050589,
+    998.0170690162716,
+    1261.27537631123
+  ],
+  "sampleFramesAt30FPS": [
+    552,
+    390,
+    379,
+    163,
+    600,
+    600,
+    600,
+    552,
+    552,
+    600,
+    600,
+    600
+  ],
+  "identitySource": "configured identity snapshot",
+  "scope": "Ambient authored routes; no native job dispatch or live daemon activity binding"
+}
