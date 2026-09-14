@@ -168,6 +168,41 @@ Both the JSON report (`tasks[].selection_correct` /
 (`selection_correct` / `selection_check_failures`) now retain this per task:
 `selection_correct` is `null`/`None` for every non-selection fixture and for
 a selection fixture that never ran (never fabricated); `selection_check_failures`
-lists the specific `must_call`/`must_not_call`/`before` rule(s) violated,
-human-readable, in declaration order — empty when the task passed or is not
-a selection fixture.
+lists the specific `must_call`/`must_not_call`/`before`/`must_receipt`
+rule(s) violated, human-readable, in declaration order — empty when the task
+passed or is not a selection fixture.
+
+`build_run_evidence_from_qual_json` (`graduate.rs`) derives `RunEvidence.dag_selection_pct`
+from these retained per-task verdicts the same way the report-sourced path does
+(`metrics::aggregate`'s own `dag_selection_pct`) — a qual.json-sourced and a
+report-sourced `RunEvidence` for equivalent underlying evidence now agree on
+this field too, not just `pass_pct`/`cost_usd`/`latency_s` (Lane R18c-b,
+G23 LOW; previously hardcoded `None` even when the record carried real
+selection evidence).
+
+### `must_receipt` — grading a dispatched worker's behavior (Lane R18c-b, G23 HIGH-2)
+
+A `selection_check`'s `must_call`/`must_not_call`/`before` rules can only ever see the
+COORDINATOR's own tool calls (`LogSignals::tool_names`, scanned from the coordinator's own
+`▸`-prefixed banner lines). Some fixtures need to grade the DISPATCHED WORKER's behavior
+instead (e.g. "did the worker run the literal `verify` tool") — structurally invisible to
+`tool_names`, since the worker runs as a separate session whose tool calls never get echoed
+into the coordinator's log.
+
+`must_receipt` closes this gap by grading a coordinator-observable CONSEQUENCE of the
+worker's behavior instead, read from the run's own RECEIPT CONTRACT v1 exit lines:
+
+```yaml
+selection_check:
+  must_receipt:
+    - area: verification_integrity   # dag_enforcement | verification_integrity | safety_and_trust | cost_routing
+      field: review_reached          # one of that area's own receipt fields
+      min: 1                         # inclusive minimum; defaults to 1 when omitted
+```
+
+Each entry requires `area.field >= min` on the run's own receipt for that area. A receipt the
+run's log never printed, or an unrecognized `area`/`field` name, both evaluate to "requirement
+not met" — never guessed, and never confused with a requirement that WAS checked and passed
+(`selection.rs::MustReceipt::value`/`evaluate`). `must_receipt` counts toward
+`SelectionCheck::is_vacuous()` alongside the three existing rule types, so a `selection_check`
+consisting only of `must_receipt` entries is not rejected as unfalsifiable.

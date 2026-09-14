@@ -743,9 +743,14 @@ pub fn resolve_identity_from_qual_record(
 /// Build one [`RunEvidence`] from a selected, identity-resolved qualification
 /// record. Unlike [`build_run_evidence`], a qual.json record carries no
 /// `generated_at` of its own, so `--snapshot-date` is REQUIRED here (never
-/// guessed) — and `dag_selection_pct` is always `None`, since
-/// [`RunQualificationRecord`]'s schema has no such field yet (see the module
-/// doc's "What counts as the record" section).
+/// guessed). `dag_selection_pct` IS derivable since Lane R18c
+/// (`TaskQualificationEvidence::selection_correct` now round-trips through
+/// [`task_result_from_qual_evidence`] into the reconstructed
+/// [`TaskResult`]s this function aggregates below) — computed the exact same
+/// way [`build_run_evidence`]'s report-sourced path derives it
+/// (`metrics::aggregate`'s own `dag_selection_pct`), so a qual.json-sourced
+/// and a report-sourced `RunEvidence` for equivalent underlying evidence
+/// agree on this field too, not just `pass_pct`/`cost_usd`/`latency_s`.
 pub fn build_run_evidence_from_qual_json(
     record: &RunQualificationRecord,
     path: &Path,
@@ -787,7 +792,7 @@ pub fn build_run_evidence_from_qual_json(
         cost_usd: agg.total_cost_usd,
         latency_s: agg.median_duration_secs,
         smoke_passed_this_run,
-        dag_selection_pct: None,
+        dag_selection_pct: agg.dag_selection_pct,
         source: EvidenceSource::QualJson,
     })
 }
@@ -2018,6 +2023,54 @@ mod tests {
             report_evidence.smoke_passed_this_run
         );
         assert_eq!(qual_evidence.snapshot_date, report_evidence.snapshot_date);
+    }
+
+    /// Lane R18c-b (G23 LOW): `dag_selection_pct` used to be hardcoded
+    /// `None` for every qual.json-sourced run, even when the record's own
+    /// tasks carried a real `selection_correct` verdict (round-tripped
+    /// since Lane R18c) — a real, computable value silently discarded.
+    /// Must now derive it the SAME way the report-sourced path does.
+    #[test]
+    fn qual_json_evidence_derives_a_real_dag_selection_pct() {
+        let mut record = qual_record("run-qual-2", "anthropic", "claude-sonnet-5", 0.05);
+        let mut correct = qual_task("select-a", "pass", 0.01, 5.0);
+        correct.selection_correct = Some(true);
+        let mut wrong = qual_task("select-b", "pass", 0.01, 5.0);
+        wrong.selection_correct = Some(false);
+        wrong.selection_check_failures = vec!["must_call: escalate (never called)".to_string()];
+        record.tasks.push(correct);
+        record.tasks.push(wrong);
+
+        let evidence = build_run_evidence_from_qual_json(
+            &record,
+            Path::new("run.json.qual.json"),
+            Some("2026-09-03"),
+            None,
+        )
+        .expect("qual.json evidence must build");
+
+        // 1 of 2 selection tasks correct; the non-selection `fizzbuzz` task
+        // from `qual_record`'s baseline does not count toward this metric.
+        assert!(
+            (evidence.dag_selection_pct.unwrap() - 0.5).abs() < 1e-12,
+            "{:?}",
+            evidence.dag_selection_pct
+        );
+    }
+
+    /// A record with no `category: selection` tasks at all must keep
+    /// `dag_selection_pct` `None` — never fabricated as `0.0` or `1.0`.
+    #[test]
+    fn qual_json_evidence_dag_selection_pct_is_none_with_no_selection_tasks() {
+        let record = qual_record("run-qual-3", "anthropic", "claude-sonnet-5", 0.05);
+        let evidence = build_run_evidence_from_qual_json(
+            &record,
+            Path::new("run.json.qual.json"),
+            Some("2026-09-03"),
+            None,
+        )
+        .expect("qual.json evidence must build");
+        assert_eq!(evidence.dag_selection_pct, None);
     }
 
     /// When `<FILE>.qual.json` exists next to `FILE`, [`select_evidence_source`]

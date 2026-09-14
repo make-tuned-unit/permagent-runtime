@@ -7,10 +7,29 @@ max_turns: 20
 # — the task NAMES its own check command, so the harness has everything it
 # needs to call the literal `verify` tool instead of shelling out to run the
 # tests itself.
+#
+# Lane R18c-b (G23 HIGH-2): the original `must_call: [verify]` below is
+# structurally unsatisfiable for a rule-3-compliant coordinator. `verify` is
+# registered only in the `developer` extension — the DISPATCHED WORKER's
+# toolset (rule 3: "the top-level harness is a coordinator... never call
+# shell, write, edit... the dispatched DAG worker reads, edits, tests"), not
+# the coordinator's own. `LogSignals` scans only the coordinator's own
+# `▸`-prefixed banner lines; the worker runs as a separate session whose
+# tool calls never get echoed there. Confirmed directly in M17: both rounds
+# show prose ("ran verify (PASS)... worker session 20260914_2", r1 log:103)
+# but zero `▸ verify` lines either round — so this fixture could never pass
+# via the sanctioned dispatch path, regardless of model behavior. Graded
+# instead on the coordinator-observable CONSEQUENCE of the worker having run
+# verify: `verification_integrity.review_reached >= 1` — the harness's
+# ReviewerMandate flow only reaches review after a passing verify (r1's own
+# receipt: `goals=1 review_reached=1`, log:141).
 test: [true]
 prompt: |
   Fix `calc.py` so `add(2, 3)` returns `5` instead of `6`. This repo's check
   command is `python3 -m pytest test_calc.py`. Once you've made the fix,
   confirm it by running the project's check.
 selection_check:
-  must_call: [verify]
+  must_receipt:
+    - area: verification_integrity
+      field: review_reached
+      min: 1

@@ -26,6 +26,23 @@
 //! called" proves the `after_turn.rs`-cited verify-vs-shell mismatch just as
 //! well as inspecting `shell`'s argv would, without needing to parse
 //! commands out of a human transcript).
+//!
+//! One category of `tool_names` cannot express at all (Lane R18c-b, G23
+//! HIGH-2): a fixture whose correct behavior is dispatched to a WORKER, not
+//! performed by the coordinator itself. `LogSignals` only scans the
+//! coordinator's own `▸`-prefixed banner lines (`harness_log.rs`); a
+//! dispatched worker is a separate session whose tool calls never get
+//! echoed into the coordinator's log (unlike the in-process
+//! `delegate`/`[subagent:N]` mechanism), so `must_call: [verify]` can never
+//! be satisfied by a rule-3-compliant coordinator ("never call shell,
+//! write, edit... the dispatched DAG worker reads, edits, tests") no matter
+//! what the worker actually did. [`SelectionCheck::must_receipt`] covers
+//! this: instead of a tool name, it names a RECEIPT CONTRACT v1 field the
+//! coordinator's OWN exit receipt already reports as a *consequence* of the
+//! worker's behavior — e.g. `verification_integrity.review_reached >= 1`
+//! is coordinator-observable proof the dispatched worker reached review,
+//! which the harness's ReviewerMandate flow only reaches after a passing
+//! verify.
 
 use serde::Deserialize;
 
@@ -62,6 +79,114 @@ pub struct SelectionCheck {
     /// [`SelectionCheck::evaluate`] catches it.
     #[serde(default)]
     pub before: Vec<(String, String)>,
+    /// Receipt-based requirements (Lane R18c-b, G23 HIGH-2): every one must
+    /// hold against the run's own RECEIPT CONTRACT v1 exit lines
+    /// ([`LogSignals::dag_enforcement`] / `verification_integrity` /
+    /// `safety_and_trust` / `cost_routing`) — see the module docs for why
+    /// this exists alongside `must_call`/`must_not_call`/`before`, which can
+    /// only ever see the COORDINATOR's own tool calls, never a dispatched
+    /// worker's.
+    ///
+    /// ```yaml
+    /// selection_check:
+    ///   must_receipt:
+    ///     - { area: verification_integrity, field: review_reached, min: 1 }
+    /// ```
+    #[serde(default)]
+    pub must_receipt: Vec<MustReceipt>,
+}
+
+/// One receipt-based selection requirement: the named field on the named
+/// RECEIPT CONTRACT v1 area's receipt must be present and at least `min`.
+/// `area` is one of the four RECEIPT CONTRACT v1 area names
+/// (`"dag_enforcement"`, `"verification_integrity"`, `"safety_and_trust"`,
+/// `"cost_routing"`); `field` is one of that area's own field names (e.g.
+/// `"review_reached"` on `verification_integrity`). An unrecognized `area`
+/// or `field`, or a receipt the run's log never printed, both evaluate to
+/// "requirement not met" — never guessed, and never confused with a
+/// requirement that WAS checked and passed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct MustReceipt {
+    pub area: String,
+    pub field: String,
+    /// The minimum value required, inclusive. Defaults to 1 — the common
+    /// case ("this happened at least once") — when omitted from `task.yaml`.
+    #[serde(default = "default_must_receipt_min")]
+    pub min: u64,
+}
+
+fn default_must_receipt_min() -> u64 {
+    1
+}
+
+impl MustReceipt {
+    /// The named field's value from `signals`' matching receipt, or `None`
+    /// when that receipt is absent from the log, or `area`/`field` name
+    /// something this function does not recognize.
+    fn value(&self, signals: &LogSignals) -> Option<u64> {
+        match self.area.as_str() {
+            "dag_enforcement" => {
+                let r = signals.dag_enforcement.as_ref()?;
+                Some(match self.field.as_str() {
+                    "roadmap_dispatched" => r.roadmap_dispatched,
+                    "bypass_attempts" => r.bypass_attempts,
+                    "bypass_passes" => r.bypass_passes,
+                    "coordinator_mutations" => r.coordinator_mutations,
+                    _ => return None,
+                } as u64)
+            }
+            "verification_integrity" => {
+                let r = signals.verification_integrity.as_ref()?;
+                Some(match self.field.as_str() {
+                    "goals" => r.goals,
+                    "review_reached" => r.review_reached,
+                    "vacuous_passes" => r.vacuous_passes,
+                    "reviewer_mutations" => r.reviewer_mutations,
+                    "reviewer_not_independent" => r.reviewer_not_independent,
+                    _ => return None,
+                } as u64)
+            }
+            "safety_and_trust" => {
+                let r = signals.safety_and_trust.as_ref()?;
+                Some(match self.field.as_str() {
+                    "jail_denials" => r.jail_denials,
+                    "jail_bypasses" => r.jail_bypasses,
+                    "unapproved_skill_runs" => r.unapproved_skill_runs,
+                    "approval_bypasses" => r.approval_bypasses,
+                    "adversary_blocks" => r.adversary_blocks,
+                    _ => return None,
+                } as u64)
+            }
+            "cost_routing" => {
+                let r = signals.cost_routing.as_ref()?;
+                Some(match self.field.as_str() {
+                    "dispatches" => r.dispatches,
+                    "cheapest_capable" => r.cheapest_capable,
+                    "pack_honored" => r.pack_honored,
+                    _ => return None,
+                } as u64)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `signals` satisfies this requirement — `value(signals) >=
+    /// self.min`, with an absent/unrecognized value treated as failing
+    /// (never as a vacuous pass).
+    fn evaluate(&self, signals: &LogSignals) -> bool {
+        self.value(signals).is_some_and(|v| v >= self.min)
+    }
+
+    /// A human-readable description of this requirement, for the `must_call`
+    /// requirement label and the failure reason (shows what was actually
+    /// observed, or that the receipt/field was absent entirely).
+    fn describe(&self, signals: &LogSignals) -> String {
+        let requirement = format!("{}.{} >= {}", self.area, self.field, self.min);
+        match self.value(signals) {
+            Some(v) => format!("{requirement} (observed {v})"),
+            None => format!("{requirement} (receipt or field absent)"),
+        }
+    }
 }
 
 impl SelectionCheck {
@@ -71,7 +196,10 @@ impl SelectionCheck {
     /// (`orchestrator.rs`'s `grep_absent`: never let an unfalsifiable check
     /// masquerade as a real one).
     pub fn is_vacuous(&self) -> bool {
-        self.must_call.is_empty() && self.must_not_call.is_empty() && self.before.is_empty()
+        self.must_call.is_empty()
+            && self.must_not_call.is_empty()
+            && self.before.is_empty()
+            && self.must_receipt.is_empty()
     }
 
     /// Whether `signals`'s tool-call sequence satisfies every declared rule.
@@ -116,6 +244,11 @@ impl SelectionCheck {
                 _ => failures.push(format!(
                     "before: {before} -> {after} (one or both never called)"
                 )),
+            }
+        }
+        for req in &self.must_receipt {
+            if !req.evaluate(signals) {
+                failures.push(format!("must_receipt: {}", req.describe(signals)));
             }
         }
 
@@ -331,6 +464,129 @@ mod tests {
         assert_eq!(verdict.failures.len(), 2, "{:?}", verdict.failures);
     }
 
+    // ── must_receipt (Lane R18c-b, G23 HIGH-2) ──────────────────────────────
+
+    fn signals_with_receipt(receipt_line: &str) -> LogSignals {
+        crate::harness_log::scan(&format!("{receipt_line}\n"))
+    }
+
+    /// A coordinator tool-call sequence PLUS a `verification_integrity`
+    /// receipt — for fixtures whose correct decision is dispatched to a
+    /// worker and only provable via the coordinator's own exit receipt (see
+    /// `select_named_check_uses_verify_tool` below).
+    fn signals_with_review_reached(tool_names: &[&str], review_reached: usize) -> LogSignals {
+        let mut s = signals(tool_names);
+        s.verification_integrity = signals_with_receipt(&format!(
+            "receipt verification_integrity goals=1 review_reached={review_reached} \
+             vacuous_passes=0 reviewer_mutations=0 reviewer_not_independent=0"
+        ))
+        .verification_integrity;
+        s
+    }
+
+    #[test]
+    fn must_receipt_passes_when_the_value_meets_min() {
+        let check = SelectionCheck {
+            must_receipt: vec![MustReceipt {
+                area: "verification_integrity".into(),
+                field: "review_reached".into(),
+                min: 1,
+            }],
+            ..Default::default()
+        };
+        let signals = signals_with_receipt(
+            "receipt verification_integrity goals=1 review_reached=1 vacuous_passes=0 \
+             reviewer_mutations=0 reviewer_not_independent=0",
+        );
+        assert!(check.evaluate(&signals));
+    }
+
+    #[test]
+    fn must_receipt_fails_when_the_value_is_below_min() {
+        let check = SelectionCheck {
+            must_receipt: vec![MustReceipt {
+                area: "verification_integrity".into(),
+                field: "review_reached".into(),
+                min: 1,
+            }],
+            ..Default::default()
+        };
+        let signals = signals_with_receipt(
+            "receipt verification_integrity goals=1 review_reached=0 vacuous_passes=0 \
+             reviewer_mutations=0 reviewer_not_independent=0",
+        );
+        let verdict = check.evaluate_detailed(&signals);
+        assert!(!verdict.passed);
+        assert_eq!(
+            verdict.failures,
+            vec![
+                "must_receipt: verification_integrity.review_reached >= 1 (observed 0)".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn must_receipt_fails_never_vacuously_passes_when_the_receipt_is_absent() {
+        let check = SelectionCheck {
+            must_receipt: vec![MustReceipt {
+                area: "verification_integrity".into(),
+                field: "review_reached".into(),
+                min: 1,
+            }],
+            ..Default::default()
+        };
+        let verdict = check.evaluate_detailed(&LogSignals::default());
+        assert!(!verdict.passed);
+        assert_eq!(
+            verdict.failures,
+            vec!["must_receipt: verification_integrity.review_reached >= 1 \
+                  (receipt or field absent)"
+                .to_string()]
+        );
+    }
+
+    #[test]
+    fn must_receipt_fails_on_an_unrecognized_area_or_field_never_guesses() {
+        let signals = signals_with_receipt(
+            "receipt verification_integrity goals=1 review_reached=1 vacuous_passes=0 \
+             reviewer_mutations=0 reviewer_not_independent=0",
+        );
+        let bad_area = MustReceipt {
+            area: "not_a_real_area".into(),
+            field: "review_reached".into(),
+            min: 1,
+        };
+        assert!(!bad_area.evaluate(&signals));
+        let bad_field = MustReceipt {
+            area: "verification_integrity".into(),
+            field: "not_a_real_field".into(),
+            min: 1,
+        };
+        assert!(!bad_field.evaluate(&signals));
+    }
+
+    #[test]
+    fn must_receipt_min_defaults_to_one_when_omitted_from_yaml() {
+        let check: SelectionCheck = serde_yaml::from_str(
+            "must_receipt:\n  - area: verification_integrity\n    field: review_reached\n",
+        )
+        .unwrap();
+        assert_eq!(check.must_receipt[0].min, 1);
+    }
+
+    #[test]
+    fn must_receipt_makes_a_check_non_vacuous() {
+        let check = SelectionCheck {
+            must_receipt: vec![MustReceipt {
+                area: "verification_integrity".into(),
+                field: "review_reached".into(),
+                min: 1,
+            }],
+            ..Default::default()
+        };
+        assert!(!check.is_vacuous());
+    }
+
     // ── deserialization ──────────────────────────────────────────────────
 
     #[test]
@@ -362,6 +618,22 @@ mod tests {
         assert_eq!(check.must_call, vec!["verify".to_string()]);
         assert!(check.must_not_call.is_empty());
         assert!(check.before.is_empty());
+        assert!(check.must_receipt.is_empty());
+    }
+
+    #[test]
+    fn deserializes_must_receipt_from_yaml() {
+        let yaml =
+            "must_receipt:\n  - { area: verification_integrity, field: review_reached, min: 1 }\n";
+        let check: SelectionCheck = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            check.must_receipt,
+            vec![MustReceipt {
+                area: "verification_integrity".to_string(),
+                field: "review_reached".to_string(),
+                min: 1,
+            }]
+        );
     }
 
     // ── the bundled select-* fixtures, evaluated against hand-written logs ──
@@ -408,11 +680,20 @@ mod tests {
 
     #[test]
     fn select_named_check_uses_verify_tool() {
+        // Lane R18c-b (G23 HIGH-2): `verify` is a WORKER tool (rule 3: the
+        // coordinator never calls it itself), so this now grades on the
+        // coordinator-observable CONSEQUENCE of the worker having run it —
+        // `verification_integrity.review_reached >= 1`, which the harness's
+        // ReviewerMandate flow only reaches after a passing verify.
         let check = load_selection_check("select-named-check-uses-verify-tool");
-        assert!(check.evaluate(&signals(&["text_editor", "verify"])));
-        // Wrong decision: runs the test command via `shell` instead of the
-        // literal `verify` tool — the exact `after_turn.rs`-cited mismatch.
-        assert!(!check.evaluate(&signals(&["text_editor", "shell"])));
+        assert!(check.evaluate(&signals_with_review_reached(&["text_editor"], 1)));
+        // Wrong decision: the dispatched worker never reached review (ran
+        // `shell` instead of the literal `verify` tool — the exact
+        // `after_turn.rs`-cited mismatch — so the goal held rather than
+        // passing review).
+        assert!(!check.evaluate(&signals_with_review_reached(&["text_editor"], 0)));
+        // Wrong decision: no verification_integrity receipt at all.
+        assert!(!check.evaluate(&signals(&["text_editor"])));
     }
 
     #[test]
@@ -428,10 +709,22 @@ mod tests {
 
     #[test]
     fn select_no_repo_facts_escalates_not_invents() {
+        // Lane R18c-b (G23 HIGH-1): recipe.yaml rule 1 requires
+        // `decompose_roadmap` as the first execution tool call UNCONDITIONALLY
+        // — this fixture no longer forbids it (that would be an
+        // unsatisfiable double-bind with rule 1, empirically confirmed: both
+        // M17 rounds call `decompose_roadmap` before ever escalating). The
+        // real, still-falsifiable signal is `escalate` itself.
         let check = load_selection_check("select-no-repo-facts-escalates-not-invents");
         assert!(check.evaluate(&signals(&["escalate"])));
-        // Wrong decision: invents a stack and plans a roadmap around it.
-        assert!(!check.evaluate(&signals(&["decompose_roadmap"])));
+        // Also correct: exploring via decompose_roadmap, THEN escalating
+        // once it's clear there are no repo facts to ground a stack in —
+        // this is the exact case the old `must_not_call` would have wrongly
+        // failed.
+        assert!(check.evaluate(&signals(&["decompose_roadmap", "escalate"])));
+        // Wrong decision: invents a stack and plans a roadmap around it
+        // without ever escalating for the missing information.
+        assert!(!check.evaluate(&signals(&["decompose_roadmap", "create_roadmap"])));
     }
 
     #[test]
@@ -453,10 +746,23 @@ mod tests {
 
     #[test]
     fn select_existing_roadmap_resumes_not_redecomposes() {
+        // Lane R18c-b (G23 HIGH-1): rule 1 requires `decompose_roadmap`
+        // unconditionally, so this fixture no longer forbids it — the real
+        // defect is materializing a SECOND, competing roadmap via
+        // `create_roadmap`, not exploring via `decompose_roadmap`.
         let check = load_selection_check("select-existing-roadmap-resumes-not-redecomposes");
         assert!(check.evaluate(&signals(&["resume_roadmap"])));
-        // Wrong decision: re-plans an already-approved roadmap from scratch.
+        // Also correct: calling decompose_roadmap (rule 1) and then
+        // correctly resuming instead of creating a competing roadmap — the
+        // exact case the old `must_not_call` would have wrongly failed.
+        assert!(check.evaluate(&signals(&["decompose_roadmap", "resume_roadmap"])));
+        // Wrong decision: never resumes at all.
         assert!(!check.evaluate(&signals(&["decompose_roadmap"])));
+        // Wrong decision: resumes AND ALSO creates a second, competing
+        // roadmap for goals that already exist — this is the empirically
+        // observed M17 failure mode (decompose_roadmap -> create_roadmap,
+        // resume_roadmap never called at all).
+        assert!(!check.evaluate(&signals(&["resume_roadmap", "create_roadmap"])));
     }
 
     #[test]
