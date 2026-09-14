@@ -2068,7 +2068,17 @@ impl Agent {
                     )
                     .await
                 {
-                    Ok(invocation) => invocation,
+                    Ok(invocation) => {
+                        // Lane R18a-b (G21 HIGH-1): a per-run observation, not
+                        // a compile-time literal — see
+                        // `reply_parts::record_provider_call_authorized`'s doc
+                        // comment. This arm never went through the
+                        // gate/failure path at all: the reservation itself
+                        // authorized the call, so it plainly proceeds WITH
+                        // authorization.
+                        crate::agents::reply_parts::record_provider_call_authorized(true);
+                        invocation
+                    }
                     Err(failure) => {
                         let outcome = self
                             .handle_provider_authorization_failure(
@@ -2120,7 +2130,15 @@ impl Agent {
                             None
                         };
                         match retried {
-                            Some(invocation) => invocation,
+                            Some(invocation) => {
+                                // Lane R18a-b (G21 HIGH-1): reached only when
+                                // `outcome.gate_grant_minted` was true AND the
+                                // retried reservation itself succeeded — a
+                                // real `ProviderAuthorizationOutcome` grant
+                                // backs this call, never an assumption.
+                                crate::agents::reply_parts::record_provider_call_authorized(true);
+                                invocation
+                            }
                             None => {
                                 let reason = outcome.detail;
                                 let message = Message::assistant().with_text(format!(

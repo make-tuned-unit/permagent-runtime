@@ -178,6 +178,29 @@ impl ProviderAuthorizationOutcome {
     }
 }
 
+/// Lane R18a-b (G21 HIGH-1): call once per provider call `agents::agent`'s
+/// turn loop is about to let proceed, at the exact point `invocation` is
+/// finalized (either the direct `reserve_provider_invocation` success, or
+/// the retried call after a real `gate_grant_minted` grant) — a per-run
+/// observation of `safety_and_trust`'s `approval_bypasses`, not a
+/// compile-time literal. `authorized` is always `true` at both of the
+/// turn loop's call sites today, because both are only reachable after a
+/// real `ProviderAuthorizationOutcome`/reservation success (see the
+/// `FIELDS` doc comment in `receipts.rs` for the full argument); this
+/// function exists so a future call site that proceeds WITHOUT one shows
+/// up as a non-zero receipt instead of nothing. Factored out as a pure,
+/// directly-testable function because the turn loop itself (`agents::
+/// agent`'s big streaming `reply`) has no lightweight test harness — see
+/// `record_provider_call_authorized_increments_only_when_not_authorized`
+/// below.
+pub(crate) fn record_provider_call_authorized(authorized: bool) {
+    if authorized {
+        crate::receipts::record_count("safety_and_trust", "approval_bypasses", 0);
+    } else {
+        crate::receipts::record("safety_and_trust", "approval_bypasses");
+    }
+}
+
 /// The gate-decision-resolved half of
 /// [`Agent::handle_provider_authorization_failure`]'s success path, factored
 /// out as a free function taking `headless` as an explicit parameter
@@ -2301,6 +2324,39 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    // ── R18a-b (G21 HIGH-1): the approval_bypasses producer ──────────────
+
+    /// `record_provider_call_authorized` is the pure function both of
+    /// `agents::agent`'s turn-loop call sites use — tested directly because
+    /// the turn loop itself (`Agent::reply`'s big streaming state machine)
+    /// has no lightweight harness to drive end to end. `#[serial]` because
+    /// it drives the process-wide `REGISTRY`/`ACTIVE` statics, same shared
+    /// key as `receipts.rs`'s own global-API tests.
+    #[test]
+    #[serial_test::serial(receipts_global_registry)]
+    fn record_provider_call_authorized_increments_only_when_not_authorized() {
+        crate::receipts::begin_run();
+
+        // Present grant (`authorized = true`, both call sites' shape today):
+        // must NOT increment.
+        record_provider_call_authorized(true);
+        let line = crate::receipts::snapshot().lines()[2].clone();
+        assert!(
+            line.contains("approval_bypasses=0"),
+            "an authorized call must not count as a bypass: {line}"
+        );
+
+        // Absent grant: a future call site that proceeds without one must
+        // increment.
+        record_provider_call_authorized(false);
+        let line = crate::receipts::snapshot().lines()[2].clone();
+        crate::receipts::end_run();
+        assert!(
+            line.contains("approval_bypasses=1"),
+            "a call that proceeds without authorization must count as one bypass: {line}"
+        );
+    }
 
     #[derive(Clone)]
     struct MockProvider {

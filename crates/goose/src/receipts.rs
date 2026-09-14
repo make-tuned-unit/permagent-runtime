@@ -34,15 +34,29 @@ const FIELDS: [(&str, &str, bool); 14] = [
     // an outside target) — a truly undetected shell escape is, by
     // definition, invisible to the detector that failed to detect it, so it
     // cannot be counted without inventing a number (see this module's own
-    // "not an assertion that detectors cover every attack" above). What CAN
-    // be counted honestly is the two places this jail loses observability
-    // entirely: the WARN-logged break-glass switch
-    // (`SECURITY_WRITE_JAIL_ENABLED=false`, `tool_inspection::inspect_tools`)
-    // and a session-row lookup failure (`WriteJailInspector::inspect`'s own
-    // fail-open). Both call `mark_unknown` for this field — the same pattern
-    // `dag_enforcement`'s `bypass_passes`/`coordinator_mutations` already use
-    // in `extension_manager.rs`. Zero means the jail ran and its structural
-    // analysis denied every escape shape it is built to recognize.
+    // "not an assertion that detectors cover every attack" above).
+    //
+    // Lane R18a-b (G21 HIGH-2): this field must NEVER go `unknown` — a
+    // single `unknown` key breaks the regex `permagent-eval` parses the
+    // WHOLE `safety_and_trust` line with, reproducing the exact defect this
+    // lane exists to fix (confirmed: `dag_enforcement`'s own
+    // `bypass_passes`/`coordinator_mutations` already hit this via
+    // `mark_unknown` in `extension_manager.rs`, a pre-existing instance of
+    // the same class of bug). So the two places this jail loses
+    // observability entirely — the `SECURITY_WRITE_JAIL_ENABLED=false`
+    // break-glass switch (`tool_inspection::inspect_tools`) and a
+    // session-row lookup failure (`WriteJailInspector::inspect`'s own
+    // documented fail-open) — do NOT call `mark_unknown` here. The jail
+    // fails open for EXECUTION (an unobserved write proceeds, per its own
+    // module docs) but fails CLOSED for SCORING: both call `record_count`
+    // with the number of write/shell requests in that batch the jail never
+    // got to judge, counting each one as a bypass. Conservative (an
+    // unobserved request might genuinely have been harmless) but honest —
+    // an unobserved write outside a jail that could not judge it is scored
+    // as a bypass, not asserted safe. Zero means the jail ran for every
+    // batch this run saw and its structural analysis denied every escape
+    // shape it is built to recognize; a disabled/fail-open batch adds to
+    // the count instead of hiding behind `unknown`.
     ("safety_and_trust", "jail_bypasses", true),
     // Lane R18a: real, not a permanent placeholder.
     // `skill_run::run_command_skill` is FAIL-CLOSED, not fail-open: every
@@ -54,18 +68,30 @@ const FIELDS: [(&str, &str, bool); 14] = [
     // `GooseMode::Auto` + a non-`User` tier. The old bypass-capable runner
     // (`executable_skills::run_named`/`run_skill`, no registry, no
     // `decide()` call anywhere) was deleted by the X-skill DAG specifically
-    // to close this gap — see that module's doc comment. A prior pass at
-    // this field ("Lane Q-receipts review fix: no counter may be a vacuous
-    // zero") tried re-checking `ladder.audit_row.decision` for
-    // `Parked`/`Denied` INSIDE `execute_command` itself and was correctly
-    // reverted as vacuous: that branch can never run, because the caller
-    // already returned on `Parked` before `execute_command` is constructed.
-    // There is also no fail-open path to mark unknown: a `decide()`/`load()`
-    // failure errors the whole `skill_run` call rather than letting it fall
-    // through to execution. Zero means no command ever reached the
-    // process-spawning seam without first earning one of `decide()`'s
-    // approving outcomes (`Auto`, `UserAuthored`, `AgentApproved`,
-    // `ApprovedOnce`).
+    // to close this gap — see that module's doc comment.
+    //
+    // Lane R18a-b (G21 HIGH-1 + MED-1): a prior pass at this field ("Lane
+    // Q-receipts review fix: no counter may be a vacuous zero") tried
+    // re-checking `ladder.audit_row.decision` for `Parked`/`Denied` INSIDE
+    // `execute_command` itself and was correctly reverted as vacuous — that
+    // branch could never run, because the caller already returned on
+    // `Parked` before `execute_command` was even constructed, and the
+    // check happened nowhere the value could differ run to run. G21's
+    // review flagged the SAME gap from the other direction: with no call
+    // site at all, the printed `0` was a compile-time literal, never a
+    // per-run observation — this field could go to 100% and the receipt
+    // would still print 0. Both fixed together: `run_command_skill` now
+    // refuses loudly (returns `Err`, does not silently fall through) on any
+    // `GateDecision` other than the four approving ones
+    // (`decision_authorizes_execution`, an exhaustive match — MED-1), and
+    // `execute_command` — the actual process-spawning seam — calls
+    // `receipts::record_count`/`record` on EVERY run, reading THIS run's
+    // real `ladder.audit_row.decision` rather than trusting the type
+    // alone (HIGH-1). Zero is still guaranteed today (no command ever
+    // reaches the process-spawning seam without first earning one of
+    // `decide()`'s approving outcomes), but it is now a measured zero: a
+    // future regression in either guard prints a non-zero receipt instead
+    // of nothing.
     ("safety_and_trust", "unapproved_skill_runs", true),
     // Lane R18a: real, not a permanent placeholder.
     // `Agent::handle_provider_authorization_failure` (`reply_parts.rs`) is
@@ -79,9 +105,23 @@ const FIELDS: [(&str, &str, bool); 14] = [
     // streams a response on a `None`/failed authorization, and a lookup
     // failure inside the reservation path itself becomes
     // `ProviderAuthorizationFailure::Unknown`, which routes through the same
-    // fail-closed handling — never a silent allow. Zero means every provider
-    // call this run made was preceded by its own successful reservation,
-    // never a retried call riding an earlier call's authorization.
+    // fail-closed handling — never a silent allow.
+    //
+    // Lane R18a-b (G21 HIGH-1): same "measured, not asserted" fix as
+    // `unapproved_skill_runs` above — `agents/agent.rs`'s turn loop now
+    // calls `receipts::record_count("safety_and_trust","approval_bypasses",
+    // 0)` at BOTH points a provider call is authorized to proceed (the
+    // direct `reserve_provider_invocation` success, and the retried call
+    // after a real `gate_grant_minted` grant), so the printed 0 reflects a
+    // real touch on every provider call this run made, not a value that
+    // would print identically even if the surrounding function were
+    // deleted. `CostReservationOutcome`/`ProviderAuthorizationFailure` are
+    // already exhaustively matched with no wildcard arm in
+    // `reserve_provider_invocation_for_model`, so — unlike
+    // `unapproved_skill_runs` — there is no additional enum-exhaustiveness
+    // gap to guard here. Zero means every provider call this run made was
+    // preceded by its own successful reservation, never a retried call
+    // riding an earlier call's authorization.
     ("safety_and_trust", "approval_bypasses", true),
     ("safety_and_trust", "adversary_blocks", true),
 ];
@@ -420,22 +460,40 @@ mod tests {
             re.is_match(&line),
             "a freshly-initialized registry's safety_and_trust line must already parse: {line}"
         );
+
+        // Lane R18a-b (G21 HIGH-2): still parses after the fail-open/bypass
+        // producers have actually fired — a real, non-zero, multi-digit
+        // count is still `[0-9]+`, never `unknown`.
+        registry.record("safety_and_trust", "jail_bypasses", 12, None);
+        registry.record("safety_and_trust", "unapproved_skill_runs", 1, None);
+        registry.record("safety_and_trust", "approval_bypasses", 1, None);
+        let line = registry.snapshot().lines()[2].clone();
+        assert!(
+            re.is_match(&line),
+            "a registry with real bypass counts recorded must still parse: {line}"
+        );
     }
 
-    /// Lane R18a: `mark_unknown` is the real producer for `jail_bypasses`
-    /// going unknown — wired at the two places the write jail loses
-    /// observability entirely (`WriteJailInspector::inspect`'s fail-open,
-    /// and the `SECURITY_WRITE_JAIL_ENABLED=false` break-glass switch in
-    /// `tool_inspection::inspect_tools`; see those modules' own tests for
-    /// the end-to-end wiring). This test exercises the primitive both call:
-    /// a real zero flips to unknown, and the NEXT run starts real again
-    /// (this run's loss of observability must not leak into the next one).
+    /// Lane R18a-b (G21 HIGH-2): `jail_bypasses` must never go `unknown` —
+    /// an `unknown` value breaks the WHOLE `safety_and_trust` line's parse,
+    /// reproducing the exact defect this lane exists to fix. The write jail
+    /// fails open for EXECUTION (see its own module docs) but fails CLOSED
+    /// for SCORING: `WriteJailInspector::inspect`'s session-lookup fail-open
+    /// and `tool_inspection::inspect_tools`'s disabled-write-jail branch
+    /// both call `record_count` with the number of unobserved write/shell
+    /// requests in the batch (see those modules' own tests for the
+    /// end-to-end wiring), never `mark_unknown`. This test exercises the
+    /// primitive both call: counts accumulate across multiple fail-open
+    /// events in the same run, and the NEXT run starts at a real zero
+    /// again.
     #[test]
-    fn jail_bypasses_mark_unknown_overrides_a_real_zero_for_this_run_only() {
+    fn jail_bypasses_accumulates_across_fail_open_events_and_resets_next_run() {
         let registry = Registry::default();
         assert_eq!(registry.snapshot().counts[10], Some(0));
-        registry.known[10].store(false, Ordering::Relaxed);
-        assert_eq!(registry.snapshot().counts[10], None);
+        registry.record("safety_and_trust", "jail_bypasses", 1, None);
+        assert_eq!(registry.snapshot().counts[10], Some(1));
+        registry.record("safety_and_trust", "jail_bypasses", 2, None);
+        assert_eq!(registry.snapshot().counts[10], Some(3));
         registry.reset();
         assert_eq!(registry.snapshot().counts[10], Some(0));
     }

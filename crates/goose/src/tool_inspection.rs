@@ -316,15 +316,34 @@ impl ToolInspectionManager {
                             session_id,
                             "safety inspector disabled — tool calls are running past it"
                         );
-                        // Lane R18a: a disabled write jail loses ALL
-                        // visibility into goal-worker escapes, not just
-                        // denials — mark `jail_bypasses` unknown rather than
-                        // let a run where the jail never inspected anything
-                        // read as a clean `jail_bypasses=0`.
+                        // Lane R18a-b (G21 HIGH-2): a disabled write jail
+                        // loses ALL visibility into goal-worker escapes, not
+                        // just denials. An `unknown` receipt would break the
+                        // whole `safety_and_trust` line's parse, so — fail
+                        // CLOSED for scoring — count every write/shell
+                        // request in this batch that the jail never got to
+                        // judge as a `jail_bypasses` bypass instead.
                         if inspector.name()
                             == crate::security::write_jail::WRITE_JAIL_INSPECTOR_NAME
                         {
-                            crate::receipts::mark_unknown("safety_and_trust", "jail_bypasses");
+                            let bypassed =
+                                crate::security::write_jail::count_jail_relevant_requests(
+                                    tool_requests,
+                                );
+                            if bypassed > 0 {
+                                tracing::warn!(
+                                    session_id,
+                                    bypassed,
+                                    "write jail disabled — counting {bypassed} unobserved \
+                                     write/shell request(s) in this batch as jail_bypasses \
+                                     (fail-open)"
+                                );
+                                crate::receipts::record_count(
+                                    "safety_and_trust",
+                                    "jail_bypasses",
+                                    bypassed as u64,
+                                );
+                            }
                         }
                     }
                     // No break-glass switch: an opt-in inspector (the adversary
@@ -669,36 +688,63 @@ mod tests {
         );
     }
 
-    /// Lane R18a: the `jail_bypasses` producer for a globally disabled write
-    /// jail — the inspector never ran at all, so every tool call in the
-    /// batch went completely unwatched, and the receipt must say so rather
-    /// than print a clean `jail_bypasses=0`. `#[serial]` under the same
-    /// shared key `receipts.rs`'s own global-API tests use, so none of them
-    /// interleave on the process-wide `REGISTRY`/`ACTIVE` statics.
+    /// Lane R18a-b (G21 HIGH-2): the `jail_bypasses` producer for a globally
+    /// disabled write jail — the inspector never ran at all, so the one
+    /// shell request in this batch went completely unwatched. Fails CLOSED
+    /// for scoring: the receipt must count it as a bypass (`jail_bypasses=1`
+    /// after one shell request, `=2` after a second disabled call with two
+    /// requests), never print a clean `jail_bypasses=0` and never `unknown`
+    /// (that would break the whole line's parse — the exact defect this
+    /// lane exists to fix). `#[serial]` under the same shared key
+    /// `receipts.rs`'s own global-API tests use, so none of them interleave
+    /// on the process-wide `REGISTRY`/`ACTIVE` statics.
     #[test]
     #[serial_test::serial(receipts_global_registry)]
-    fn a_disabled_write_jail_marks_jail_bypasses_unknown() {
+    fn a_disabled_write_jail_counts_unobserved_requests_as_jail_bypasses() {
         crate::receipts::begin_run();
         let mut manager = ToolInspectionManager::new();
         manager.add_inspector(Box::new(DisabledInspector(
             crate::security::write_jail::WRITE_JAIL_INSPECTOR_NAME,
         )));
-        let requests = vec![ToolRequest {
-            id: "req_1".to_string(),
-            tool_call: Ok(CallToolRequestParams::new("shell").with_arguments(object!({}))),
+        let shell_request = |id: &str| ToolRequest {
+            id: id.to_string(),
+            tool_call: Ok(
+                CallToolRequestParams::new("shell").with_arguments(object!({"command": "ls"}))
+            ),
             metadata: None,
             tool_meta: None,
-        }];
+        };
+
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
-        rt.block_on(manager.inspect_tools("sess-1", &requests, &[], GooseMode::Auto))
-            .unwrap();
+        rt.block_on(manager.inspect_tools(
+            "sess-1",
+            &[shell_request("req_1")],
+            &[],
+            GooseMode::Auto,
+        ))
+        .unwrap();
+        let line = crate::receipts::snapshot().lines()[2].clone();
+        assert!(
+            line.contains("jail_bypasses=1"),
+            "one unobserved shell request while the jail is disabled must count as one bypass: {line}"
+        );
+
+        // A second disabled call with TWO requests must ADD 2, not reset or
+        // overwrite — `jail_bypasses` is a running per-run total.
+        rt.block_on(manager.inspect_tools(
+            "sess-1",
+            &[shell_request("req_2"), shell_request("req_3")],
+            &[],
+            GooseMode::Auto,
+        ))
+        .unwrap();
         let line = crate::receipts::snapshot().lines()[2].clone();
         crate::receipts::end_run();
         assert!(
-            line.contains("jail_bypasses=unknown"),
-            "a disabled write jail must mark jail_bypasses unknown: {line}"
+            line.contains("jail_bypasses=3"),
+            "jail_bypasses must accumulate across calls in the same run: {line}"
         );
     }
 
