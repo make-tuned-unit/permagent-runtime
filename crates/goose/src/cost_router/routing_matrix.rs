@@ -26,8 +26,15 @@
 //! creep the lane briefs ask to avoid ("wire it to real selection only if a
 //! clean seam exists"). This stays a pure decision function over
 //! caller-supplied candidates, now buildable from real cards. The separate
-//! [`cheapest_capable_worker`] core below audits live goal dispatches using
-//! their enforced tool kinds and role graduation evidence.
+//! [`cheapest_capable_worker`] core below audits live goal dispatches by
+//! their enforced tool kinds and nominal per-call cost, over the roster the
+//! run could actually use — its sole caller, `orchestrator::
+//! audit_cost_routing`, stopped additionally gating that roster on
+//! capability-directory graduation evidence (Lane R18b): graduation is a
+//! track record production dispatch itself never checks before choosing a
+//! worker, so gating the cost-routing *receipt* on it made every dispatch in
+//! a freshly measured or single-model-pinned eval tier "not cheapest" (the
+//! only capable worker had no graduation evidence yet).
 
 /// A goal-dispatch candidate. Callers supply the existing tie-break order and
 /// remove unavailable engines and unsatisfied adapter requirements first.
@@ -746,5 +753,72 @@ mod goal_routing_tests {
                 Some("pinned-worker")
             );
         }
+    }
+
+    // ── Lane R18b: cost_routing `cheapest_capable` receipt ──────────────────
+    //
+    // Root cause (M17 round 1, `dschat`, every task `cheapest_capable=0` no
+    // matter how many dispatches ran): `orchestrator::audit_cost_routing`
+    // built each `WorkerCandidate.graduated` from capability-directory
+    // graduation evidence before this lane, and `cheapest_capable_worker`
+    // below refuses to consider an ungraduated candidate at all — so a
+    // freshly measured or single-model-pinned tier, whose only capable
+    // worker had no graduation evidence yet, could never be "cheapest",
+    // even with exactly one candidate on the whole roster. The fix (this
+    // lane) stopped feeding graduation evidence into that roster at all:
+    // every candidate `cost_routing_candidates` already filtered to
+    // dispatchable/capable/available for this run is eligible for the cost
+    // comparison, matching how `orchestrator.rs` now always sets
+    // `graduated: true` on that already-filtered roster. These two tests
+    // model that same contract directly against `cheapest_capable_worker`.
+
+    /// A pinned single-model eval tier's whole roster is one worker. It is
+    /// trivially the cheapest (and only) capable option, regardless of
+    /// graduation evidence — this must count as `cheapest_capable`.
+    #[test]
+    fn pinned_single_capable_worker_is_cheapest_capable() {
+        let pinned = WorkerCandidate {
+            name: "dschat".into(),
+            kinds: vec!["code_edit".into()],
+            graduated: true,
+            est_cost_per_call: nominal_call_cost("zai", "glm-4.7").unwrap(),
+        };
+        let dispatched = "dschat";
+        let cheapest = cheapest_capable_worker(&["code_edit".into()], &[pinned]);
+        assert_eq!(cheapest, Some(dispatched));
+    }
+
+    /// The counter must NOT degrade into one that always equals dispatches:
+    /// when a cheaper capable worker was available but the pricier one was
+    /// actually dispatched, `cheapest_capable_worker` must name the cheaper
+    /// worker, not the dispatched one — so the caller's `cheapest ==
+    /// Some(worker_key)` check comes back false and the receipt does not
+    /// increment.
+    #[test]
+    fn pricier_worker_dispatched_despite_a_cheaper_capable_alternative_is_not_cheapest_capable() {
+        let cheaper_available = WorkerCandidate {
+            name: "cheap_alt".into(),
+            kinds: vec!["code_edit".into()],
+            graduated: true,
+            est_cost_per_call: nominal_call_cost("zai", "glm-4.7-flash").unwrap(),
+        };
+        let pricier_dispatched = WorkerCandidate {
+            name: "pricier_dispatched".into(),
+            kinds: vec!["code_edit".into()],
+            graduated: true,
+            est_cost_per_call: nominal_call_cost("zai", "glm-4.7").unwrap(),
+        };
+        assert!(cheaper_available.est_cost_per_call < pricier_dispatched.est_cost_per_call);
+        let dispatched = "pricier_dispatched";
+        let cheapest = cheapest_capable_worker(
+            &["code_edit".into()],
+            &[cheaper_available, pricier_dispatched],
+        );
+        assert_eq!(cheapest, Some("cheap_alt"));
+        assert_ne!(
+            cheapest,
+            Some(dispatched),
+            "a pricier dispatch with a cheaper capable alternative available must not count as cheapest_capable"
+        );
     }
 }
