@@ -10,11 +10,26 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 
-const FIELDS: [(&str, &str, bool); 14] = [
+const FIELDS: [(&str, &str, bool); 16] = [
     ("dag_enforcement", "roadmap_dispatched", true),
     ("dag_enforcement", "bypass_attempts", true),
     ("dag_enforcement", "bypass_passes", true),
     ("dag_enforcement", "coordinator_mutations", true),
+    // Lane R20a (RECEIPT CONTRACT v1.1): the qualification gate's
+    // `roadmap_dispatched >= 1` requirement over-penalized two honest,
+    // held-out coordinator shapes that correctly finish a coding-harness
+    // task without ever dispatching a NEW roadmap: resuming an existing
+    // paused roadmap (`orchestrator::handle_resume_roadmap`) and recording
+    // an honest `escalate` decision when the task cannot proceed
+    // (`orchestrator::record_escalation`). These two counters give the
+    // qualification gate (`permagent-eval::qualification`) real, observed
+    // evidence for those shapes instead of forcing every attempted task
+    // through the roadmap-dispatch machinery. Appended after the existing
+    // v1 dag_enforcement keys so a legacy v1 receipt line (no trailing
+    // keys) still parses — see `permagent-eval::harness_log`'s
+    // `DAG_ENFORCEMENT_RE` for the backward-compatible regex.
+    ("dag_enforcement", "roadmap_resumed", true),
+    ("dag_enforcement", "escalated", true),
     ("verification_integrity", "goals", true),
     ("verification_integrity", "review_reached", true),
     ("verification_integrity", "vacuous_passes", true),
@@ -333,9 +348,9 @@ impl Snapshot {
     /// Plain text, stable key order, no ANSI escapes or logging prefix.
     pub fn lines(&self) -> [String; 3] {
         [
-            ("dag_enforcement", 0..4),
-            ("verification_integrity", 4..9),
-            ("safety_and_trust", 9..14),
+            ("dag_enforcement", 0..6),
+            ("verification_integrity", 6..11),
+            ("safety_and_trust", 11..16),
         ]
         .map(|(area, range)| {
             let mut line = format!("receipt {area}");
@@ -363,7 +378,10 @@ mod tests {
         registry.record("verification_integrity", "review_reached", 1, Some("card"));
         let first = registry.snapshot();
         assert_eq!(first.counts[0], Some(3));
-        assert_eq!(first.counts[5], Some(1));
+        // Lane R20a: verification_integrity's `review_reached` shifted from
+        // index 5 to 7 when `roadmap_resumed`/`escalated` were appended to
+        // dag_enforcement.
+        assert_eq!(first.counts[7], Some(1));
         assert_eq!(first.counts[2], Some(0));
         registry.record("dag_enforcement", "roadmap_dispatched", 1, None);
         assert_eq!(first.counts[0], Some(3));
@@ -392,12 +410,14 @@ mod tests {
         for worker in workers {
             worker.join().unwrap();
         }
-        assert_eq!(registry.snapshot().counts[9], Some(400));
-        assert_eq!(registry.snapshot().counts[5], Some(1));
+        // Lane R20a: safety_and_trust's `jail_denials` shifted from index 9
+        // to 11, and verification_integrity's `review_reached` from 5 to 7.
+        assert_eq!(registry.snapshot().counts[11], Some(400));
+        assert_eq!(registry.snapshot().counts[7], Some(1));
         registry.reset();
-        assert_eq!(registry.snapshot().counts[9], Some(0));
+        assert_eq!(registry.snapshot().counts[11], Some(0));
         registry.record("verification_integrity", "review_reached", 1, Some("card"));
-        assert_eq!(registry.snapshot().counts[5], Some(1));
+        assert_eq!(registry.snapshot().counts[7], Some(1));
     }
 
     #[test]
@@ -405,10 +425,13 @@ mod tests {
         let snapshot = Snapshot {
             counts: std::array::from_fn(|i| Some(i as u64 + 1)),
         };
+        // Lane R20a: dag_enforcement grew from 4 to 6 keys
+        // (`roadmap_resumed`, `escalated` appended), shifting every
+        // subsequent area's values by 2.
         assert_eq!(snapshot.lines(), [
-            "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=2 bypass_passes=3 coordinator_mutations=4",
-            "receipt verification_integrity goals=5 review_reached=6 vacuous_passes=7 reviewer_mutations=8 reviewer_not_independent=9",
-            "receipt safety_and_trust jail_denials=10 jail_bypasses=11 unapproved_skill_runs=12 approval_bypasses=13 adversary_blocks=14",
+            "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=2 bypass_passes=3 coordinator_mutations=4 roadmap_resumed=5 escalated=6",
+            "receipt verification_integrity goals=7 review_reached=8 vacuous_passes=9 reviewer_mutations=10 reviewer_not_independent=11",
+            "receipt safety_and_trust jail_denials=12 jail_bypasses=13 unapproved_skill_runs=14 approval_bypasses=15 adversary_blocks=16",
         ]);
     }
 
@@ -488,14 +511,17 @@ mod tests {
     /// again.
     #[test]
     fn jail_bypasses_accumulates_across_fail_open_events_and_resets_next_run() {
+        // Lane R20a: safety_and_trust's `jail_bypasses` shifted from index
+        // 10 to 12 when `roadmap_resumed`/`escalated` were appended to
+        // dag_enforcement.
         let registry = Registry::default();
-        assert_eq!(registry.snapshot().counts[10], Some(0));
+        assert_eq!(registry.snapshot().counts[12], Some(0));
         registry.record("safety_and_trust", "jail_bypasses", 1, None);
-        assert_eq!(registry.snapshot().counts[10], Some(1));
+        assert_eq!(registry.snapshot().counts[12], Some(1));
         registry.record("safety_and_trust", "jail_bypasses", 2, None);
-        assert_eq!(registry.snapshot().counts[10], Some(3));
+        assert_eq!(registry.snapshot().counts[12], Some(3));
         registry.reset();
-        assert_eq!(registry.snapshot().counts[10], Some(0));
+        assert_eq!(registry.snapshot().counts[12], Some(0));
     }
 
     /// Lane R17a: the sidecar mechanism itself, exercised through the real
@@ -544,7 +570,7 @@ mod tests {
             lines,
             [
                 "receipt cost_routing dispatches=0 cheapest_capable=0 pack_honored=0 planner=unknown/unknown",
-                "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0",
+                "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0 roadmap_resumed=0 escalated=0",
                 "receipt verification_integrity goals=0 review_reached=0 vacuous_passes=0 reviewer_mutations=0 reviewer_not_independent=0",
                 "receipt safety_and_trust jail_denials=0 jail_bypasses=0 unapproved_skill_runs=0 approval_bypasses=0 adversary_blocks=0",
             ]

@@ -115,13 +115,33 @@ pub struct LandedGoal {
     pub sha: String,
 }
 
-/// Atomic RECEIPT CONTRACT v1 evidence for `dag_enforcement`.
+/// Atomic RECEIPT CONTRACT evidence for `dag_enforcement`.
+///
+/// Lane R20a (v1.1): `roadmap_resumed` and `escalated` are `Option` because
+/// a legacy v1 harness line (four keys, no trailing pair) never observed
+/// them — parsed as `None`, never defaulted to `Some(0)`, so
+/// `qualification.rs`'s gate can tell "this run's harness never emitted
+/// the counter" apart from "the counter was observed and is honestly
+/// zero". `#[serde(default)]` keeps pre-R20a retained JSON (`.qual.json`
+/// records, sidecar files) loading as `None` rather than failing to
+/// deserialize.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DagEnforcementReceipt {
     pub roadmap_dispatched: usize,
     pub bypass_attempts: usize,
     pub bypass_passes: usize,
     pub coordinator_mutations: usize,
+    /// v1.1: goal-card count as of the coordinator's `resume_roadmap` call
+    /// that resumed a paused roadmap instead of decomposing a new one.
+    /// `None` on a v1 line; `Some(0)` means the mechanism ran this run and
+    /// never resumed anything.
+    #[serde(default)]
+    pub roadmap_resumed: Option<usize>,
+    /// v1.1: count of coordinator `escalate` decisions minted in a
+    /// coding-harness session. `None` on a v1 line; `Some(0)` means the
+    /// mechanism ran this run and no escalation was minted.
+    #[serde(default)]
+    pub escalated: Option<usize>,
 }
 
 /// Atomic RECEIPT CONTRACT v1 evidence for `verification_integrity`.
@@ -337,9 +357,18 @@ static VACUOUS_PASS_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
 
 // Receipt regexes are anchored: prose, partial fields, signed counts and
 // trailing junk cannot masquerade as a complete exit receipt.
+//
+// Lane R20a (RECEIPT CONTRACT v1.1): the trailing `roadmap_resumed=<n>
+// escalated=<n>` pair is optional (`(?:...)?`) so this ONE regex accepts
+// both a legacy v1 line (four keys — an older harness build, or a v1.1
+// build's own line captured before this lane) and a v1.1 line (six keys).
+// Captures 5 and 6 are simply absent (`None`) on a v1 line — `parse_dag_
+// enforcement` below reads that as "never observed", never as "observed
+// zero". Do not make the trailing pair required: that would silently
+// reject every legacy line this crate must keep reading.
 static DAG_ENFORCEMENT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(
-        r"^\s*receipt\s+dag_enforcement\s+roadmap_dispatched=([0-9]+)\s+bypass_attempts=([0-9]+)\s+bypass_passes=([0-9]+)\s+coordinator_mutations=([0-9]+)\s*$",
+        r"^\s*receipt\s+dag_enforcement\s+roadmap_dispatched=([0-9]+)\s+bypass_attempts=([0-9]+)\s+bypass_passes=([0-9]+)\s+coordinator_mutations=([0-9]+)(?:\s+roadmap_resumed=([0-9]+)\s+escalated=([0-9]+))?\s*$",
     )
     .expect("DAG_ENFORCEMENT_RE is a valid regex")
 });
@@ -351,6 +380,8 @@ fn parse_dag_enforcement(line: &str) -> Option<DagEnforcementReceipt> {
         bypass_attempts: caps[2].parse().ok()?,
         bypass_passes: caps[3].parse().ok()?,
         coordinator_mutations: caps[4].parse().ok()?,
+        roadmap_resumed: caps.get(5).map(|m| m.as_str().parse()).transpose().ok()?,
+        escalated: caps.get(6).map(|m| m.as_str().parse()).transpose().ok()?,
     })
 }
 
@@ -1014,11 +1045,43 @@ mod tests {
                 bypass_attempts: 2,
                 bypass_passes: 0,
                 coordinator_mutations: 0,
+                roadmap_resumed: None,
+                escalated: None,
             })
         );
         assert!(scan(&line.replace("bypass_passes=0", "bypass_passes=-1"))
             .dag_enforcement
             .is_none());
+    }
+
+    /// Lane R20a: the v1.1 trailing pair parses as `Some`, distinct from a
+    /// v1 line's `None` — an observed zero is not the same as "never
+    /// observed".
+    #[test]
+    fn contract_v1_1_dag_receipt_parses_resumed_and_escalated() {
+        let line = "receipt dag_enforcement roadmap_dispatched=0 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0 roadmap_resumed=1 escalated=2";
+        assert_eq!(
+            scan(line).dag_enforcement,
+            Some(DagEnforcementReceipt {
+                roadmap_dispatched: 0,
+                bypass_attempts: 0,
+                bypass_passes: 0,
+                coordinator_mutations: 0,
+                roadmap_resumed: Some(1),
+                escalated: Some(2),
+            })
+        );
+    }
+
+    /// A v1.1 line with a malformed trailing key (non-digit, or only one of
+    /// the pair present) must not partially match — the whole line is
+    /// rejected, same as any other malformed receipt line.
+    #[test]
+    fn contract_v1_1_dag_receipt_rejects_malformed_trailing_pair() {
+        let only_resumed = "receipt dag_enforcement roadmap_dispatched=0 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0 roadmap_resumed=1";
+        assert!(scan(only_resumed).dag_enforcement.is_none());
+        let non_digit = "receipt dag_enforcement roadmap_dispatched=0 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0 roadmap_resumed=x escalated=1";
+        assert!(scan(non_digit).dag_enforcement.is_none());
     }
 
     #[test]
@@ -1168,6 +1231,8 @@ mod tests {
                 bypass_attempts: 0,
                 bypass_passes: 0,
                 coordinator_mutations: 0,
+                roadmap_resumed: None,
+                escalated: None,
             })
         );
         assert_eq!(
