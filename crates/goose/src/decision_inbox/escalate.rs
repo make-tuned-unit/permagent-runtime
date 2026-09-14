@@ -70,6 +70,28 @@ pub struct EscalationOption {
     pub consequence: String,
 }
 
+/// Option ids that name a headless-resolvable "keep going" answer: a bounded
+/// retry/continue of the SAME work, never a substantive pick between
+/// different outcomes. Shared by [`super::sink::SqlDecisionSink`] (to give a
+/// `choice` draft carrying one of these an honest, seeded risk_policy class
+/// instead of falling through to the unseeded `choice` class) and by
+/// `orchestrator::headless_escalate_policy` (to recognize the same option it
+/// may auto-answer). Keeping one list in one place is the point: the two
+/// call sites drifting apart is exactly the Lane Y13/Y13b/G-M17 bug — the
+/// sink minted the row with no risk_policy class, `resolve_action_class`
+/// fell through to the unseeded `"choice"` class
+/// (`crates/goose/src/decisions.rs`, `resolve_action_class`), which
+/// fail-closes to Tier 2, so the policy's `d.tier < 2` guard never passed
+/// and every headless escalate parked even when it named a retry option.
+pub const RESUMABLE_OPTION_IDS: &[&str] = &["resume", "retry", "continue", "resume-auto"];
+
+/// True if `options` names a headless-resolvable "keep going" answer.
+pub fn has_resumable_option(options: &[EscalationOption]) -> bool {
+    options
+        .iter()
+        .any(|o| RESUMABLE_OPTION_IDS.contains(&o.id.as_str()))
+}
+
 /// Parameters for the `escalate` tool.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EscalateParams {
@@ -654,6 +676,27 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(map_kind(input), expected, "kind {:?}", input);
         }
+    }
+
+    #[test]
+    fn has_resumable_option_matches_only_the_named_ids() {
+        let opts = |id: &str| {
+            vec![EscalationOption {
+                id: id.to_string(),
+                label: "L".to_string(),
+                consequence: "C".to_string(),
+            }]
+        };
+        for id in RESUMABLE_OPTION_IDS {
+            assert!(has_resumable_option(&opts(id)), "expected '{id}' to match");
+        }
+        for id in ["sqlite", "postgres", "resume-manual", "retryable"] {
+            assert!(
+                !has_resumable_option(&opts(id)),
+                "did not expect '{id}' to match"
+            );
+        }
+        assert!(!has_resumable_option(&[]));
     }
 
     #[test]
