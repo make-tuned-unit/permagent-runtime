@@ -13630,6 +13630,36 @@ async fn maybe_hold_review(
             {
                 return Ok(Some(resumed));
             }
+            // Lane R20b-d (A21 Q1): hold-exhaustion was the ONE park path
+            // `maybe_salvage_committed_work` never reached — 0/19 tasks this
+            // round, including a genuinely correct committed fix
+            // (`pricing.py`, `3121ffe`) discarded for want of a satisfiable
+            // AC, and `select-checks-worker-before-dispatch` (same shape).
+            // Ordered AFTER R18g's headless unblock above (that resumes the
+            // SAME worker session from its prior branch tip — strictly
+            // better than salvaging a snapshot when it applies) and BEFORE
+            // the ordinary park below: R18g either wasn't eligible (not
+            // headless, its one-per-goal budget already spent, or the wall/
+            // cost budget is exhausted) or this reason isn't a verify/
+            // commit gap at all (a jail/approval/safety Park never reaches
+            // `decide_goal_hold` and so never reaches this arm), so give any
+            // work already committed one honest chance to verify, review and
+            // land before parking it unread — see
+            // `maybe_salvage_committed_work`'s own doc comment.
+            let salvage_note = match maybe_salvage_committed_work(pool, card, None).await {
+                SalvageOutcome::Salvaged { note } => {
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        goal_id = %card.id,
+                        "Goal '{}' held twice ({reason}), but its committed work was salvaged \
+                         instead of parked: {note}",
+                        card.title
+                    );
+                    return Ok(Some(note));
+                }
+                SalvageOutcome::NotSalvaged { note } => note,
+            };
+            let reason = format!("{reason}; salvage: {salvage_note}");
             persist_card_meta(pool, &card.id, |m| {
                 crate::cost_router::RoutingSnapshot::from_signals(&signals, Some(&reason))
                     .write_into(m);
@@ -18872,6 +18902,191 @@ mod tests {
         let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
         assert!(updated.metadata_json.get("salvage_receipt").is_none());
         assert!(updated.metadata_json.get("salvaged_on_park").is_none());
+    }
+
+    // ── Lane R20b-d (A21 Q1): salvage on the hold-exhaustion Park ───────────
+    //
+    // Every sub-test here pre-spends R18g's own `headless_unblock_count`
+    // (gate 2 of `maybe_headless_unblock_verify_gap`) so its outcome is
+    // deterministic regardless of whether some OTHER test already set the
+    // process-global `HEADLESS_DISPATCH_POLICY_CONFIG` `OnceLock` (it can
+    // only ever be set once per test binary, and Rust runs `#[tokio::test]`s
+    // in parallel by default) — R18g refuses on that gate either way, so
+    // these tests observe the salvage-vs-park ordering, not R18g's own
+    // eligibility math (already covered by the pre-existing R18g test
+    // suite above).
+
+    /// A20/A21's headline case: `pricing.py` (`3121ffe`) was a genuinely
+    /// correct, committed fix discarded because its literal AC never passed
+    /// and R18g's own one-shot budget was already spent — must now be
+    /// salvaged instead of parked unread.
+    #[tokio::test]
+    async fn hold_exhaustion_park_salvages_committed_work() {
+        let pool = test_pool().await;
+        let (card, _dir, _head) =
+            r20b_setup_goal_with_committed_work(&pool, "r20b-hold-salvage", None).await;
+        persist_card_meta(&pool, &card.id, |m| {
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "a salvaged goal must never be left in_progress"
+        );
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "a hold-exhaustion park with committed work must salvage it, not strand it \
+             unread behind an unblock"
+        );
+        let receipt = updated
+            .metadata_json
+            .get("salvaged_on_park")
+            .expect("the hold-exhaustion Park arm must attempt salvage before parking");
+        assert_eq!(
+            receipt.get("commits_ahead").and_then(|v| v.as_u64()),
+            Some(1)
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .is_none(),
+            "a salvaged goal must never also raise an unblock decision"
+        );
+    }
+
+    /// Ordering: R18g's headless unblock (it resumes the SAME worker session
+    /// from its prior branch tip) must be tried BEFORE salvage, and win when
+    /// eligible — even though this goal ALSO has real committed work salvage
+    /// could otherwise land, salvage must never fire once R18g resumes it.
+    #[tokio::test]
+    async fn hold_exhaustion_park_prefers_r18g_unblock_when_eligible() {
+        let pool = test_pool().await;
+        // Best-effort: `HEADLESS_DISPATCH_POLICY_CONFIG` is a process-global
+        // `OnceLock` that can only be set once per test binary — if another
+        // test already set it, `.get().is_some()` is already `true` and this
+        // call is a harmless no-op; either way `headless` reads `true` for
+        // the Park arm's own `HEADLESS_DISPATCH_POLICY_CONFIG.get().is_some()`
+        // check below, which is all this test needs.
+        let _ = HEADLESS_DISPATCH_POLICY_CONFIG.set(HeadlessDispatchPolicyConfig {
+            coordinator_session_id: "r20b-hold-headless".to_string(),
+            restrict_ranked_selection_to_internal_engine: false,
+            auto_land: false,
+        });
+        let (card, _dir, _head) =
+            r20b_setup_goal_with_committed_work(&pool, "r20b-hold-r18g", None).await;
+        persist_card_meta(&pool, &card.id, |m| {
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            // Deliberately NOT spent here — R18g must be eligible.
+        })
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "R18g's headless unblock resumes the goal to Ready, not Review/Complete"
+        );
+        assert_eq!(
+            updated
+                .metadata_json
+                .get(HEADLESS_UNBLOCK_METADATA_KEY)
+                .and_then(|v| v.as_u64()),
+            Some(1),
+            "R18g's own counter must show it fired"
+        );
+        assert!(
+            updated.metadata_json.get("salvaged_on_park").is_none(),
+            "salvage must never fire once R18g's headless unblock resumes the goal"
+        );
+        assert!(
+            updated.metadata_json.get("salvage_receipt").is_none(),
+            "salvage must not even be ATTEMPTED once R18g resumes the goal"
+        );
+    }
+
+    /// A hold-exhaustion park with nothing committed at all (no dispatch
+    /// baseline recorded) has nothing for salvage to find — falls straight
+    /// through to the ordinary park, exactly as it did before this lane.
+    #[tokio::test]
+    async fn hold_exhaustion_park_with_uncommitted_work_parks() {
+        let pool = test_pool().await;
+        let goal = create_roadmap_goal(
+            &pool,
+            "in_progress",
+            "Nothing committed",
+            "r20b-hold-c",
+            &[],
+        )
+        .await;
+        persist_card_meta(&pool, &goal.id, |m| {
+            crate::cost_router::HoldState {
+                count: crate::cost_router::MAX_HOLDS,
+                last_plan: None,
+            }
+            .write_into(m);
+            m.insert(
+                HEADLESS_UNBLOCK_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &goal.id, &goal.project_id, Ok(()), false)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &goal.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "nothing committed must still park the goal, exactly as before this lane"
+        );
+        assert!(updated.metadata_json.get("salvaged_on_park").is_none());
+        let unblock = decisions::find_open_decision_for_goal(&pool, &goal.id, "unblock")
+            .await
+            .unwrap()
+            .expect("an ordinary hold-exhaustion park must still raise an unblock decision");
+        assert!(unblock.detail.contains("salvage"));
     }
 
     /// A goal with real uncommitted work (never committed at all) has no
