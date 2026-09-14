@@ -7742,20 +7742,151 @@ pub type GoalDispatchFuture =
 /// tests inject their own through the `_with` entry points. When nothing is
 /// installed the nudge degrades to the pre-D10 behavior (goals wait for
 /// `resume_roadmap`) with a debug log — it never panics.
-pub type GoalDispatchHook = Box<dyn Fn(String) -> GoalDispatchFuture + Send + Sync>;
+///
+/// Unsized on purpose (not `Box<dyn Fn...>`): the process-global slot below
+/// stores an `Arc<GoalDispatchHook>` so a snapshot can be cloned out from
+/// behind a lock without holding that lock across an `.await`, while every
+/// existing `Option<&GoalDispatchHook>` call site (this file and
+/// `program_bridge.rs`) keeps working unchanged — `&Arc<T>` and `&Box<T>`
+/// both deref-coerce to `&T` the same way.
+pub type GoalDispatchHook = dyn Fn(String) -> GoalDispatchFuture + Send + Sync;
 
-/// Process-global dispatcher, installed once at daemon startup. Same shape and
-/// same contract as [`GOAL_REVIEW_HOOK`].
-pub static GOAL_DISPATCH_HOOK: std::sync::OnceLock<GoalDispatchHook> = std::sync::OnceLock::new();
+/// Owned handle to an installed hook, as stored in the process-global slot
+/// and returned by [`goal_dispatch_hook_snapshot`].
+pub(crate) type GoalDispatchHookHandle = std::sync::Arc<GoalDispatchHook>;
 
-/// Install the goal dispatcher used by the nudge. Idempotent (OnceLock) — a
-/// second call is a no-op. Call once at daemon startup.
+/// Lane T1 (harness loop, M21 bisect, 2026-09-14): the process-global
+/// dispatcher used to be a bare `OnceLock<GoalDispatchHook>`, "idempotent"
+/// via `let _ = ....set(..)` discarding the `Err` on a second call. That
+/// gave production exactly the contract it needs (first install wins, every
+/// later call a harmless no-op) but gave `cargo test --lib` a single
+/// process-wide cell every test in the binary shares with no way to unset —
+/// whichever of several hook-installing tests happened to run first won
+/// permanently, and every other one silently ran against the wrong closure:
+/// passing alone or with `--test-threads=1` (test order coincidentally put
+/// the "right" one first) and failing under parallel `-- roadmap` execution
+/// (`create_roadmap_dispatches_a_real_child_session_once_a_dispatch_hook_
+/// is_installed`'s Phase 1 "no hook yet" assumption broke whenever some
+/// other test's installer had already won the race).
+///
+/// The fix keeps a single process-global slot (a running process still
+/// wants exactly one real dispatcher) but behind an `RwLock` instead of a
+/// `OnceLock`, so a `#[cfg(test)]`-only seam
+/// ([`replace_goal_dispatch_hook_for_test`] / [`take_goal_dispatch_hook_for_test`])
+/// can swap in a test's own closure and restore whatever was there before on
+/// `Drop`, while [`install_goal_dispatch_hook`] preserves the exact
+/// production "first install wins" contract the old `OnceLock` gave for
+/// free.
+static GOAL_DISPATCH_HOOK_SLOT: std::sync::OnceLock<
+    std::sync::RwLock<Option<GoalDispatchHookHandle>>,
+> = std::sync::OnceLock::new();
+
+fn goal_dispatch_hook_slot() -> &'static std::sync::RwLock<Option<GoalDispatchHookHandle>> {
+    GOAL_DISPATCH_HOOK_SLOT.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// Install `hook` as the process-global dispatcher iff nothing is installed
+/// yet ("first install wins"), matching the previous `OnceLock::set`
+/// contract used by [`install_dispatch_hook`] (daemon),
+/// [`install_dispatch_hook_for_headless_session`] (headless CLI) and
+/// `test_dispatch_recorder::install`. A second call from another installer
+/// in the same process is a harmless no-op, logged at debug so an operator
+/// can see which of two installers a process actually kept without
+/// instrumenting each caller separately.
+///
+/// Synchronous and lock-scoped to this one statement — never held across an
+/// `.await` (see [`goal_dispatch_hook_snapshot`]'s own note; the same rule
+/// applies to every reader of [`goal_dispatch_hook_slot`]).
+pub(crate) fn install_goal_dispatch_hook(hook: GoalDispatchHookHandle) {
+    let slot = goal_dispatch_hook_slot();
+    let mut guard = slot.write().unwrap();
+    if guard.is_some() {
+        tracing::debug!(
+            target: "permagentd::brain",
+            "Goal dispatch hook already installed in this process; second install call is a no-op"
+        );
+        return;
+    }
+    *guard = Some(hook);
+}
+
+/// Clone the currently-installed hook out from behind the lock, if any.
+/// Every production call site takes this snapshot BEFORE the `.await` that
+/// actually calls the hook (`nudge_dispatch_ready_goals`,
+/// `promote_and_dispatch_dependents`, `drain_dispatched_goals`,
+/// `reconcile_in_progress_goals`, `recover_pending_registered_dispatches`,
+/// and `program_bridge.rs`'s `apply_handoff`/`handoff_registered_goal`) so
+/// the `RwLock` read guard never crosses an await point — only the returned
+/// `Arc` (which needs no lock at all) does.
+pub(crate) fn goal_dispatch_hook_snapshot() -> Option<GoalDispatchHookHandle> {
+    let guard = goal_dispatch_hook_slot().read().unwrap();
+    guard.clone()
+}
+
+/// RAII guard returned by [`replace_goal_dispatch_hook_for_test`] and
+/// [`take_goal_dispatch_hook_for_test`]: restores whatever hook (or absence
+/// of one) was installed before the guard was created, on `Drop`. A test
+/// that needs two phases (e.g. "no hook yet", then "hook installed") drops
+/// the first phase's guard — a nested scope does this automatically — before
+/// creating the second, so the two never fight over which one's `Drop`
+/// writes last.
+#[cfg(test)]
+#[must_use = "the previous hook is restored when this guard drops — binding it to `_` \
+              (instead of a named local) drops it immediately and undoes the override"]
+pub(crate) struct GoalDispatchHookTestGuard {
+    previous: Option<GoalDispatchHookHandle>,
+}
+
+#[cfg(test)]
+impl Drop for GoalDispatchHookTestGuard {
+    fn drop(&mut self) {
+        let slot = goal_dispatch_hook_slot();
+        let mut guard = slot.write().unwrap();
+        *guard = self.previous.take();
+    }
+}
+
+/// Test-only override seam (Lane T1): force-installs `hook` regardless of
+/// whatever is already there (unlike [`install_goal_dispatch_hook`], which
+/// is first-wins), remembering the prior value so the returned guard's
+/// `Drop` restores it. Pair with `#[serial_test::serial]` — the default,
+/// unnamed key every test in this binary that touches this seam already
+/// shares (see the R18a jail tests for this crate's other, NAMED use of
+/// `serial_test`) — so two such tests never interleave; the guard makes
+/// each test's own footprint on the slot fully reversible regardless of run
+/// order, but does not by itself stop two guarded tests from running
+/// concurrently.
+#[cfg(test)]
+pub(crate) fn replace_goal_dispatch_hook_for_test(
+    hook: GoalDispatchHookHandle,
+) -> GoalDispatchHookTestGuard {
+    let slot = goal_dispatch_hook_slot();
+    let mut guard = slot.write().unwrap();
+    let previous = guard.replace(hook);
+    GoalDispatchHookTestGuard { previous }
+}
+
+/// Test-only seam: clears the process-global slot for the guard's lifetime
+/// (restoring whatever was there on `Drop`), for a test whose own assertion
+/// depends on "no dispatcher installed" — the pre-D10 degrade path — rather
+/// than on installing one of its own.
+#[cfg(test)]
+pub(crate) fn take_goal_dispatch_hook_for_test() -> GoalDispatchHookTestGuard {
+    let slot = goal_dispatch_hook_slot();
+    let mut guard = slot.write().unwrap();
+    let previous = guard.take();
+    GoalDispatchHookTestGuard { previous }
+}
+
+/// Install the goal dispatcher used by the nudge. Idempotent — a second
+/// call (from either production installer) is a no-op. Call once at daemon
+/// startup.
 ///
 /// The installed closure resolves its own pool from `session_manager`, so it
 /// must only be installed in a process whose session manager owns the real
 /// database — never from a unit test holding an in-memory pool.
 pub fn install_dispatch_hook(session_manager: std::sync::Arc<crate::session::SessionManager>) {
-    let _ = GOAL_DISPATCH_HOOK.set(Box::new(move |card_id: String| {
+    install_goal_dispatch_hook(std::sync::Arc::new(move |card_id: String| {
         let session_manager = std::sync::Arc::clone(&session_manager);
         Box::pin(async move {
             // I1 (harness loop, 2026-09-10, gate fix): compiled out of every
@@ -7821,7 +7952,7 @@ fn headless_auto_land_from_env() -> bool {
 ///
 /// It bounds the RETRY loop only — it is not an attempt cap. Every dispatch it
 /// authorises still goes through `eligible_ready_goals` + the installed
-/// [`GOAL_DISPATCH_HOOK`], so `goal_budget`'s attempt/token/wallclock caps,
+/// dispatch hook (see [`goal_dispatch_hook_snapshot`]), so `goal_budget`'s attempt/token/wallclock caps,
 /// the atomic Ready→InProgress claim, and every guard on that rail apply
 /// unchanged.
 pub const PERMAGENT_HEADLESS_MAX_REDISPATCH_ENV: &str = "PERMAGENT_HEADLESS_MAX_REDISPATCH";
@@ -8019,9 +8150,10 @@ fn headless_completion_inflight_from_env() -> std::time::Duration {
 /// via `sessions.parent_session_id`, which the daemon's own `session: None`
 /// context has never provided.
 ///
-/// Idempotent per the same `GOAL_DISPATCH_HOOK` `OnceLock` as
-/// [`install_dispatch_hook`] — whichever installer runs first in a process
-/// wins. A daemon process must never call this one.
+/// Idempotent per the same process-global dispatch-hook slot as
+/// [`install_dispatch_hook`] (both route through [`install_goal_dispatch_hook`])
+/// — whichever installer runs first in a process wins. A daemon process
+/// must never call this one.
 ///
 /// Lane U / U1: also sets [`HEADLESS_DISPATCH_POLICY_CONFIG`], the durable
 /// config [`current_headless_dispatch_policy`] reads — so the SAME policy
@@ -8042,7 +8174,7 @@ pub fn install_dispatch_hook_for_headless_session(
         restrict_ranked_selection_to_internal_engine: restrict_to_internal_engine,
         auto_land,
     });
-    let _ = GOAL_DISPATCH_HOOK.set(Box::new(move |card_id: String| {
+    install_goal_dispatch_hook(std::sync::Arc::new(move |card_id: String| {
         let session_manager = std::sync::Arc::clone(&session_manager);
         Box::pin(async move {
             // I1 (harness loop, 2026-09-10, gate fix): see
@@ -8193,7 +8325,12 @@ pub async fn nudge_dispatch_ready_goals(
     project_id: &str,
     reason: &str,
 ) -> u32 {
-    dispatch_ready_goals_with(pool, project_id, GOAL_DISPATCH_HOOK.get(), reason).await
+    // Snapshot BEFORE the `.await` inside `dispatch_ready_goals_with` — the
+    // `RwLock` read guard from `goal_dispatch_hook_snapshot` is dropped the
+    // instant this statement finishes, well before any hook is actually
+    // called.
+    let dispatch_hook = goal_dispatch_hook_snapshot();
+    dispatch_ready_goals_with(pool, project_id, dispatch_hook.as_deref(), reason).await
 }
 
 /// Promote a completed goal's dependents Triage→Ready, then dispatch whatever
@@ -8208,11 +8345,12 @@ pub async fn promote_and_dispatch_dependents(
     project_id: &str,
     approved_goal_id: &str,
 ) -> Option<String> {
+    let dispatch_hook = goal_dispatch_hook_snapshot();
     promote_and_dispatch_dependents_report(
         pool,
         project_id,
         approved_goal_id,
-        GOAL_DISPATCH_HOOK.get(),
+        dispatch_hook.as_deref(),
     )
     .await
     .warning
@@ -8269,29 +8407,35 @@ pub(crate) async fn promote_and_dispatch_dependents_report(
 }
 
 /// A dispatcher that records card ids instead of starting workers, for tests
-/// that must exercise the PRODUCTION call path (which reads the process-global
-/// [`GOAL_DISPATCH_HOOK`]) rather than an injected `_with` parameter.
+/// that must exercise the PRODUCTION call path (which reads the
+/// process-global dispatch-hook slot) rather than an injected `_with`
+/// parameter.
 ///
-/// The seam is a `OnceLock`, so the whole lib-test binary shares one recorder;
-/// assertions are keyed by card id, which is unique per test.
+/// The seam is process-global, so the whole lib-test binary shares one
+/// recorder; assertions are keyed by card id, which is unique per test.
 ///
-/// I1 (harness loop, 2026-09-10, gate fix): `GOAL_DISPATCH_HOOK.set(...)` is
-/// itself a ONE-SHOT race — the FIRST of several tests to call it (this
-/// module's own `install()`, a test's own hand-rolled closure, or a test that
-/// calls a production installer directly) wins for the rest of the process,
-/// no matter how many later callers are individually well-behaved or
-/// `#[serial_test::serial]`-tagged against each other (serialization only
-/// prevents concurrent execution — it does nothing about an EARLIER test's
-/// `.set()` having already won permanently). [`record`] is the fix: every
-/// closure capable of winning that race — this module's own, PLUS
+/// I1 (harness loop, 2026-09-10, gate fix): the underlying slot is itself a
+/// ONE-SHOT race for any caller using [`install_goal_dispatch_hook`]'s
+/// first-wins contract (this module's own `install()`, or a test that calls
+/// a production installer directly) — the FIRST of several such callers
+/// wins for the rest of the process, no matter how many later callers are
+/// individually well-behaved or `#[serial_test::serial]`-tagged against each
+/// other (serialization only prevents concurrent execution — it does
+/// nothing about an EARLIER call having already won permanently).
+/// [`record`] is the fix for THIS module's own callers: every closure
+/// capable of winning that race — this module's own, PLUS
 /// `install_dispatch_hook`'s and `install_dispatch_hook_for_headless_
 /// session`'s production closures (via a `#[cfg(test)]`-gated call, compiled
 /// out of every non-test build) — pushes into this SAME shared list
 /// regardless of which one actually ends up installed, so [`saw`] stays a
-/// reliable signal no matter which of them won.
+/// reliable signal no matter which of them won. (Lane T1: a test that needs
+/// its OWN closure to be the one that wins — not just to be told SOME
+/// closure ran — wants [`replace_goal_dispatch_hook_for_test`] instead;
+/// see `create_roadmap_dispatches_a_real_child_session_once_a_dispatch_
+/// hook_is_installed` below.)
 #[cfg(test)]
 pub(crate) mod test_dispatch_recorder {
-    use super::{GoalDispatchFuture, GOAL_DISPATCH_HOOK};
+    use super::{install_goal_dispatch_hook, GoalDispatchFuture};
     use std::sync::{Mutex, OnceLock};
 
     static RECORDED: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
@@ -8300,10 +8444,10 @@ pub(crate) mod test_dispatch_recorder {
         RECORDED.get_or_init(|| Mutex::new(Vec::new()))
     }
 
-    /// Install the recording dispatcher (idempotent — the global seam is set
-    /// at most once per process).
+    /// Install the recording dispatcher (first-wins — same contract as
+    /// [`install_goal_dispatch_hook`], unchanged from before Lane T1).
     pub(crate) fn install() {
-        let _ = GOAL_DISPATCH_HOOK.set(Box::new(|card_id: String| {
+        install_goal_dispatch_hook(std::sync::Arc::new(|card_id: String| {
             Box::pin(async move {
                 record(card_id.clone());
                 Ok(format!("recorded-session-for-{card_id}"))
@@ -10658,6 +10802,10 @@ pub async fn drain_dispatched_goals(
     poll_interval: std::time::Duration,
     on_status: impl FnMut(&str, GoalState),
 ) -> Result<DrainSummary, String> {
+    // Snapshot before handing the reference into `drain_dispatched_goals_with`
+    // — kept alive as a local for the whole call, but the `RwLock` read guard
+    // behind `goal_dispatch_hook_snapshot` itself is released immediately.
+    let dispatch_hook = goal_dispatch_hook_snapshot();
     drain_dispatched_goals_with(
         pool,
         coordinator_session_id,
@@ -10666,7 +10814,7 @@ pub async fn drain_dispatched_goals(
         on_status,
         None,
         DrainRedispatch {
-            dispatch: GOAL_DISPATCH_HOOK.get(),
+            dispatch: dispatch_hook.as_deref(),
             max_redispatch: headless_max_redispatch_from_env(),
             sweep_headroom: headless_sweep_headroom_from_env(),
         },
@@ -10841,8 +10989,8 @@ pub(crate) fn run_scoped_ready_goals(
 ///
 /// Deliberately the SAME rail every other dispatch trigger uses —
 /// `eligible_ready_goals` (pause tag, column gate, Triage→Ready promotion of
-/// dependents whose parents are now Complete) then the
-/// [`GOAL_DISPATCH_HOOK`] closure, i.e. `dispatch_goal_fn` with the headless
+/// dependents whose parents are now Complete) then the installed dispatch
+/// hook (see [`goal_dispatch_hook_snapshot`]) closure, i.e. `dispatch_goal_fn` with the headless
 /// policy. Y6 adds a caller, never a second notion of eligibility and never a
 /// side door: the roadmap dispatch guard, the approval payload check, E3's
 /// requeue cross-check and Y4b's liveness all sit on that rail unchanged.
@@ -14395,7 +14543,8 @@ pub async fn reconcile_in_progress_goals(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     manager: &Option<Arc<AgentManager>>,
 ) -> ReconcileReport {
-    reconcile_in_progress_goals_with_dispatch(pool, manager, GOAL_DISPATCH_HOOK.get()).await
+    let dispatch_hook = goal_dispatch_hook_snapshot();
+    reconcile_in_progress_goals_with_dispatch(pool, manager, dispatch_hook.as_deref()).await
 }
 
 #[derive(Debug, Default)]
@@ -14415,7 +14564,8 @@ pub struct PendingDispatchRecovery {
 pub async fn recover_pending_registered_dispatches(
     pool: &sqlx::Pool<sqlx::Sqlite>,
 ) -> PendingDispatchRecovery {
-    reconcile_pending_registered_dispatches(pool, GOAL_DISPATCH_HOOK.get()).await
+    let dispatch_hook = goal_dispatch_hook_snapshot();
+    reconcile_pending_registered_dispatches(pool, dispatch_hook.as_deref()).await
 }
 
 /// Retry only durable registered-program claims that were left at
@@ -19805,6 +19955,16 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn dispatch_goal_to_and_resume_roadmap_consult_the_installed_headless_policy() {
+        // Lane T1: force a clean slot for the whole test, regardless of
+        // whatever another test in this binary already installed — the
+        // assertions below need `install_dispatch_hook_for_headless_session`
+        // (below) to actually be the one that wins the process-global
+        // dispatch-hook slot's first-install-wins race, which is only
+        // guaranteed if the slot starts empty. Held for the whole function
+        // so `Drop` restores the prior state once this test is done, rather
+        // than leaking this test's own hook into whatever runs next.
+        let _hook_guard = take_goal_dispatch_hook_for_test();
+
         std::env::set_var("PERMAGENT_ROLE_EDIT_PROVIDER", "ollama");
         std::env::set_var("PERMAGENT_ROLE_EDIT_MODEL", "qwen3");
 
@@ -20922,10 +21082,10 @@ mod tests {
     /// from the correct behaviour.
     fn drain_claiming_dispatcher(
         pool: sqlx::Pool<sqlx::Sqlite>,
-    ) -> (GoalDispatchHook, Arc<std::sync::Mutex<Vec<String>>>) {
+    ) -> (Box<GoalDispatchHook>, Arc<std::sync::Mutex<Vec<String>>>) {
         let log: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&log);
-        let hook: GoalDispatchHook = Box::new(move |card_id: String| {
+        let hook: Box<GoalDispatchHook> = Box::new(move |card_id: String| {
             let sink = Arc::clone(&sink);
             let pool = pool.clone();
             Box::pin(async move {
@@ -20937,10 +21097,10 @@ mod tests {
         (hook, log)
     }
 
-    fn drain_recording_dispatcher() -> (GoalDispatchHook, Arc<std::sync::Mutex<Vec<String>>>) {
+    fn drain_recording_dispatcher() -> (Box<GoalDispatchHook>, Arc<std::sync::Mutex<Vec<String>>>) {
         let log: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&log);
-        let hook: GoalDispatchHook = Box::new(move |card_id: String| {
+        let hook: Box<GoalDispatchHook> = Box::new(move |card_id: String| {
             let sink = Arc::clone(&sink);
             Box::pin(async move {
                 sink.lock().unwrap().push(card_id.clone());
@@ -25481,7 +25641,7 @@ mod tests {
     fn recording_dispatcher(
         seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
         pool: Option<sqlx::Pool<sqlx::Sqlite>>,
-    ) -> GoalDispatchHook {
+    ) -> Box<GoalDispatchHook> {
         Box::new(move |card_id: String| {
             let seen = std::sync::Arc::clone(&seen);
             let pool = pool.clone();
@@ -26607,79 +26767,95 @@ mod tests {
     /// worker selection/spawn, which is separately covered where those
     /// functions are tested directly.
     ///
-    /// `GOAL_DISPATCH_HOOK` is a process-global `OnceLock`: both the
-    /// "no hook" and "hook installed" states are exercised in ONE test
-    /// function, in order, so this can never race another test over which
-    /// value wins the `.set()` (mirrors `test_dispatch_recorder`'s own
-    /// documented single-binary caveat).
-    ///
-    /// I1 (harness loop, 2026-09-10, gate fix): that caveat covers a race
-    /// WITHIN this test's own two phases, not against every OTHER test that
-    /// also calls `GOAL_DISPATCH_HOOK.set(...)`
-    /// (`test_dispatch_recorder::install()`, elsewhere in this crate) —
-    /// under parallel execution, whichever test's `.set()` wins the
-    /// `OnceLock` race first silently starves every other one. Serialized
-    /// against every other such test for exactly that reason.
+    /// Lane T1 (harness loop, M21 bisect, 2026-09-14): both the "no hook"
+    /// and "hook installed" states are exercised in ONE test function, in
+    /// order — that part was always safe. What was NOT safe: the process-
+    /// global dispatch-hook slot used to be a bare `OnceLock`, so Phase 1's
+    /// "no hook yet" assumption only held when this test happened to be the
+    /// FIRST in the whole `cargo test --lib` binary to touch that slot —
+    /// true when run alone or with `--test-threads=1`, false whenever
+    /// another hook-installing test (this file's own
+    /// `dispatch_goal_to_and_resume_roadmap_consult_the_installed_headless_
+    /// policy`, or `test_dispatch_recorder::install()`'s callers elsewhere
+    /// in the crate) happened to run first under parallel `-- roadmap`
+    /// execution. This test now brackets EACH phase in its own
+    /// `goal_dispatch_hook`-slot guard (`take_goal_dispatch_hook_for_test`
+    /// for Phase 1's "definitely nothing installed",
+    /// `replace_goal_dispatch_hook_for_test` for Phase 2's "definitely THIS
+    /// closure") so its own two phases are correct regardless of what any
+    /// other test in the binary already left installed, and regardless of
+    /// run order. `#[serial_test::serial]` (the default, unnamed key) still
+    /// keeps this test from running CONCURRENTLY with another test that
+    /// touches the same slot — the guard fixes correctness of each test's
+    /// own phases; the attribute fixes mutual exclusion between tests.
     #[serial_test::serial]
     #[tokio::test]
     async fn create_roadmap_dispatches_a_real_child_session_once_a_dispatch_hook_is_installed() {
         let (_tmp, sm, session, _em, client) = roadmap_handler_fixture(GooseMode::Auto, true).await;
         let pool = sm.pool_clone().await.unwrap();
 
-        // Phase 1: no dispatch hook installed anywhere in this process yet —
-        // reproduces the exact headless-CLI defect Lane M3 measured live.
-        let (_decompose_result, approval_decision_id, goals_json, proposal_hash) =
-            decompose_then_read_proof(&client, &pool, &session.id).await;
-        let result = client
-            .handle_create_roadmap(Some(create_roadmap_args(
-                &goals_json,
-                &proposal_hash,
-                &approval_decision_id,
-            )))
-            .await
-            .expect("roadmap creation with no worker dispatched must still succeed");
-        let text = result.content[0].as_text().unwrap().text.clone();
-        assert!(
-            text.contains("0 root goal(s) dispatched to workers"),
-            "no dispatch hook is installed yet — root-goal dispatch must report zero, matching \
-             Lane M3's live defect: {text}"
-        );
-        // M3-1(b): even with nothing dispatched, the real ids must be listed
-        // so a coordinator that must dispatch manually never has to guess one.
-        assert!(
-            text.contains("Goal cards:") && text.contains("id="),
-            "create_roadmap's result text must list the real goal-card ids: {text}"
-        );
+        // Phase 1: no dispatch hook installed for the DURATION OF THIS BLOCK
+        // — forced via the test seam rather than assumed from run order —
+        // reproducing the exact headless-CLI defect Lane M3 measured live.
+        {
+            let _hook_guard = take_goal_dispatch_hook_for_test();
+            let (_decompose_result, approval_decision_id, goals_json, proposal_hash) =
+                decompose_then_read_proof(&client, &pool, &session.id).await;
+            let result = client
+                .handle_create_roadmap(Some(create_roadmap_args(
+                    &goals_json,
+                    &proposal_hash,
+                    &approval_decision_id,
+                )))
+                .await
+                .expect("roadmap creation with no worker dispatched must still succeed");
+            let text = result.content[0].as_text().unwrap().text.clone();
+            assert!(
+                text.contains("0 root goal(s) dispatched to workers"),
+                "no dispatch hook is installed yet — root-goal dispatch must report zero, \
+                 matching Lane M3's live defect: {text}"
+            );
+            // M3-1(b): even with nothing dispatched, the real ids must be
+            // listed so a coordinator that must dispatch manually never has
+            // to guess one.
+            assert!(
+                text.contains("Goal cards:") && text.contains("id="),
+                "create_roadmap's result text must list the real goal-card ids: {text}"
+            );
+        } // _hook_guard drops here, restoring whatever was installed before
+          // this test ran (if anything) — Phase 2 below installs its own.
 
         // Phase 2: install a hook using the SAME `create_session_with_parent`
         // seam `delegate` and the production dispatcher use, then create a
         // second roadmap through the identical Auto-mode, no-human-answer path.
+        // Held until the end of the function so it stays installed through
+        // every Phase-2 assertion, then restores whatever Phase 1's guard
+        // restored, on drop.
         let hook_sm = sm.clone();
         let parent_session_id = session.id.clone();
-        let _ = GOAL_DISPATCH_HOOK.set(Box::new(move |_card_id: String| {
-            let hook_sm = hook_sm.clone();
-            let parent_session_id = parent_session_id.clone();
-            Box::pin(async move {
-                // I1 (harness loop, 2026-09-10, gate fix): see
-                // `test_dispatch_recorder`'s own doc comment — this test's
-                // own custom closure may win the `GOAL_DISPATCH_HOOK` race
-                // for the rest of the process; recording here keeps
-                // `test_dispatch_recorder::saw(...)` reliable for whichever
-                // OTHER test asks about a card THIS closure ends up handling.
-                test_dispatch_recorder::record(_card_id.clone());
-                let child = hook_sm
-                    .create_session_with_parent(
-                        Some(&parent_session_id),
-                        std::env::temp_dir(),
-                        "Dispatched goal".to_string(),
-                        SessionType::SubAgent,
-                        GooseMode::Auto,
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                Ok(child.id)
-            }) as GoalDispatchFuture
-        }));
+        let _hook_guard =
+            replace_goal_dispatch_hook_for_test(std::sync::Arc::new(move |_card_id: String| {
+                let hook_sm = hook_sm.clone();
+                let parent_session_id = parent_session_id.clone();
+                Box::pin(async move {
+                    // Also feeds `test_dispatch_recorder` so any OTHER test
+                    // that only cares "was card X asked to dispatch"
+                    // (`saw(...)`) stays reliable regardless of which
+                    // closure a given process run happens to have installed.
+                    test_dispatch_recorder::record(_card_id.clone());
+                    let child = hook_sm
+                        .create_session_with_parent(
+                            Some(&parent_session_id),
+                            std::env::temp_dir(),
+                            "Dispatched goal".to_string(),
+                            SessionType::SubAgent,
+                            GooseMode::Auto,
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok(child.id)
+                }) as GoalDispatchFuture
+            }));
 
         let (_decompose_result2, approval_decision_id2, goals_json2, proposal_hash2) =
             decompose_then_read_proof(&client, &pool, &session.id).await;
@@ -26720,6 +26896,138 @@ mod tests {
             !children.is_empty(),
             "a worker session with parent_session_id set to the coordinator session must exist \
              after create_roadmap, with no further coordinator tool call"
+        );
+    }
+
+    // ── Lane T1 (harness loop, M21 bisect, 2026-09-14): dispatch-hook test
+    // seam regression proofs ────────────────────────────────────────────────
+
+    /// The core regression proof for the new test seam: TWO sequential
+    /// "installs" in the SAME process, each through its own
+    /// [`replace_goal_dispatch_hook_for_test`] guard, must each see its OWN
+    /// closure actually run — not whichever one happened to win a
+    /// process-global `OnceLock` first (the old defect this lane fixes).
+    /// `#[serial_test::serial]` only prevents this test from running
+    /// CONCURRENTLY with another test that touches the slot; the guard is
+    /// what makes each phase below correct regardless of what any other
+    /// test in the binary has already installed or when this test happens
+    /// to run.
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn goal_dispatch_hook_test_seam_two_sequential_installs_each_observe_their_own_hook() {
+        let first_calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        {
+            let seen = std::sync::Arc::clone(&first_calls);
+            let _guard =
+                replace_goal_dispatch_hook_for_test(std::sync::Arc::new(move |card_id: String| {
+                    let seen = std::sync::Arc::clone(&seen);
+                    Box::pin(async move {
+                        seen.lock().unwrap().push(card_id.clone());
+                        Ok(format!("first-hook-session-for-{card_id}"))
+                    }) as GoalDispatchFuture
+                }));
+
+            let hook =
+                goal_dispatch_hook_snapshot().expect("a hook is installed inside this scope");
+            let result = hook("card-a".to_string()).await.unwrap();
+            assert_eq!(result, "first-hook-session-for-card-a");
+        } // _guard drops here, restoring whatever was installed before this
+          // test ran (if anything).
+
+        assert_eq!(
+            first_calls.lock().unwrap().as_slice(),
+            &["card-a".to_string()],
+            "the first hook must have observed exactly the call routed to it"
+        );
+
+        // A SECOND install, in the same process, after the first guard has
+        // already dropped: under the old `OnceLock`, this `.set()` would be
+        // silently discarded and every subsequent dispatch would still run
+        // the FIRST closure (or whichever process-wide winner got there
+        // first) — the exact defect this lane fixes. With the guard-based
+        // seam, this phase's own closure must be the one that actually runs.
+        let second_calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen2 = std::sync::Arc::clone(&second_calls);
+        let _guard2 =
+            replace_goal_dispatch_hook_for_test(std::sync::Arc::new(move |card_id: String| {
+                let seen2 = std::sync::Arc::clone(&seen2);
+                Box::pin(async move {
+                    seen2.lock().unwrap().push(card_id.clone());
+                    Ok(format!("second-hook-session-for-{card_id}"))
+                }) as GoalDispatchFuture
+            }));
+
+        let hook2 = goal_dispatch_hook_snapshot().expect("the second hook is installed");
+        let result2 = hook2("card-b".to_string()).await.unwrap();
+        assert_eq!(result2, "second-hook-session-for-card-b");
+        assert_eq!(
+            second_calls.lock().unwrap().as_slice(),
+            &["card-b".to_string()],
+            "the second install must win its own scope — it is not silently discarded the way \
+             a bare OnceLock's second `.set()` used to be"
+        );
+        assert!(
+            first_calls.lock().unwrap().iter().all(|id| id != "card-b"),
+            "the FIRST hook (already restored/dropped by its own guard) must never observe \
+             the second phase's call — a leaked/stale hook would prove the guard failed to \
+             restore state between phases"
+        );
+    }
+
+    /// [`install_goal_dispatch_hook`] preserves the exact "first install
+    /// wins, second call is a harmless no-op" contract the old
+    /// `OnceLock::set` gave production for free — the semantics
+    /// [`install_dispatch_hook`] and [`install_dispatch_hook_for_headless_
+    /// session`] both depend on, and the one thing Lane T1 was NOT allowed
+    /// to change.
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn goal_dispatch_hook_production_install_is_idempotent() {
+        // Force a clean slot for this test regardless of what another test
+        // in the binary has already installed; restores the prior value on
+        // drop.
+        let _hook_guard = take_goal_dispatch_hook_for_test();
+
+        let first_won = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let second_won = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        {
+            let first_won = std::sync::Arc::clone(&first_won);
+            install_goal_dispatch_hook(std::sync::Arc::new(move |card_id: String| {
+                let first_won = std::sync::Arc::clone(&first_won);
+                Box::pin(async move {
+                    first_won.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(format!("first-install-session-for-{card_id}"))
+                }) as GoalDispatchFuture
+            }));
+        }
+        {
+            let second_won = std::sync::Arc::clone(&second_won);
+            // Second call: must be a silent no-op, exactly like the old
+            // `let _ = GOAL_DISPATCH_HOOK.set(..)` discarding its `Err`.
+            install_goal_dispatch_hook(std::sync::Arc::new(move |card_id: String| {
+                let second_won = std::sync::Arc::clone(&second_won);
+                Box::pin(async move {
+                    second_won.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(format!("second-install-session-for-{card_id}"))
+                }) as GoalDispatchFuture
+            }));
+        }
+
+        let hook = goal_dispatch_hook_snapshot().expect("the first install must have won the slot");
+        let result = hook("card-idempotent".to_string()).await.unwrap();
+        assert_eq!(
+            result, "first-install-session-for-card-idempotent",
+            "the FIRST install must be the one actually reachable through the slot"
+        );
+        assert!(
+            first_won.load(std::sync::atomic::Ordering::SeqCst),
+            "the first installed closure must have run"
+        );
+        assert!(
+            !second_won.load(std::sync::atomic::Ordering::SeqCst),
+            "the second installed closure must never run — install_goal_dispatch_hook is \
+             first-wins, matching the old OnceLock contract"
         );
     }
 
@@ -26788,13 +27096,17 @@ mod tests {
     /// `record_mode_still_constructs_and_guards_the_real_provider` and
     /// `no_cassette_constructs_the_real_provider_exactly_as_before`.
     ///
-    /// **Process globals:** this test claims `GOAL_DISPATCH_HOOK`, a
-    /// `OnceLock` several other tests in this binary also try to claim (see
-    /// the note above `goal_advance_on_an_unknown_id_names_the_known_goal_
-    /// card_ids`). It is `#[ignore]`d precisely so the documented run
-    /// command gives it a process where nothing else has claimed that seam;
-    /// a `--include-ignored` full-suite run can make its dispatch assertions
-    /// fail for that reason alone.
+    /// **Process globals:** this test claims the process-global dispatch-hook
+    /// slot (via [`replace_goal_dispatch_hook_for_test`], which restores the
+    /// prior value on `Drop` — Lane T1), a seam several other tests in this
+    /// binary also touch (see the note above `goal_advance_on_an_unknown_id_
+    /// names_the_known_goal_card_ids`). It is `#[ignore]`d precisely so the
+    /// documented run command gives it a process where nothing else is
+    /// concurrently claiming that seam; a `--include-ignored` full-suite run
+    /// can still make its dispatch assertions fail if another test's OWN use
+    /// of the slot overlaps its lifetime (the guard fixes correctness of
+    /// each test's own footprint, not mutual exclusion between tests run at
+    /// the same time).
     ///
     /// **What this deliberately does NOT prove (documented, not silently
     /// skipped):** the worker actually editing code, `verify`, `review`, or
@@ -26972,33 +27284,36 @@ mod tests {
             "the roadmap approval decision must be a real \"choice\" decision"
         );
 
-        // ── Dispatch leg: install the SAME `GOAL_DISPATCH_HOOK` test seam
+        // ── Dispatch leg: install the SAME dispatch-hook test seam
         // `create_roadmap_dispatches_a_real_child_session_once_a_dispatch_
         // hook_is_installed` above uses (no live worker roster, network, or
         // subprocess — see that test's own doc comment for why this is the
         // established boundary in this codebase), then create the roadmap
         // on the REPLAY client — proving dispatch is reachable through a
-        // cassette-replayed decomposition, not just a live one.
+        // cassette-replayed decomposition, not just a live one. Held until
+        // the end of the function so `Drop` restores whatever was installed
+        // before this test touched the slot.
         let hook_sm = sm2.clone();
         let parent_session_id = session2.id.clone();
-        let _ = GOAL_DISPATCH_HOOK.set(Box::new(move |_card_id: String| {
-            let hook_sm = hook_sm.clone();
-            let parent_session_id = parent_session_id.clone();
-            Box::pin(async move {
-                test_dispatch_recorder::record(_card_id.clone());
-                let child = hook_sm
-                    .create_session_with_parent(
-                        Some(&parent_session_id),
-                        std::env::temp_dir(),
-                        "Dispatched goal (replay slice smoke)".to_string(),
-                        SessionType::SubAgent,
-                        GooseMode::Auto,
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                Ok(child.id)
-            }) as GoalDispatchFuture
-        }));
+        let _hook_guard =
+            replace_goal_dispatch_hook_for_test(std::sync::Arc::new(move |_card_id: String| {
+                let hook_sm = hook_sm.clone();
+                let parent_session_id = parent_session_id.clone();
+                Box::pin(async move {
+                    test_dispatch_recorder::record(_card_id.clone());
+                    let child = hook_sm
+                        .create_session_with_parent(
+                            Some(&parent_session_id),
+                            std::env::temp_dir(),
+                            "Dispatched goal (replay slice smoke)".to_string(),
+                            SessionType::SubAgent,
+                            GooseMode::Auto,
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok(child.id)
+                }) as GoalDispatchFuture
+            }));
 
         let create_result = client2
             .handle_create_roadmap(Some(create_roadmap_args(
@@ -27064,6 +27379,18 @@ mod tests {
     // `HEADLESS_DISPATCH_POLICY_CONFIG`/`GOAL_DISPATCH_HOOK` a SHARED
     // `#[serial_test::serial("headless_policy_globals")]` key so they can
     // never interleave with a test that assumes a clean process.
+    //
+    // Lane T1 (harness loop, M21 bisect, 2026-09-14) update: the
+    // `GOAL_DISPATCH_HOOK` half of this note is fixed — it is now a
+    // `RwLock`-backed slot with a `#[cfg(test)]` override/restore seam
+    // (`replace_goal_dispatch_hook_for_test` / `take_goal_dispatch_hook_for_test`),
+    // used by both tests named above, so each one's own footprint on that
+    // slot is fully reversible regardless of run order; `#[serial_test::serial]`
+    // (the default key) still keeps them from running CONCURRENTLY.
+    // `HEADLESS_DISPATCH_POLICY_CONFIG` itself is untouched by this lane and
+    // remains a bare `OnceLock` with the same "stays set forever" hazard —
+    // still a reason to avoid a fourth installer-calling test without first
+    // giving it the same treatment.
 
     /// M3-1: `goal_advance`/`goal_status` on a fabricated or mistyped id used
     /// to silently no-op with a bare `"Card 'X' not found"` — no hint of a

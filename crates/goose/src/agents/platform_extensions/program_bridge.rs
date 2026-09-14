@@ -1355,7 +1355,11 @@ pub async fn apply_handoff(
     pool: &Pool<Sqlite>,
     request: ProgramHandoffRequest,
 ) -> Result<ProgramHandoffResponse, ProgramHandoffError> {
-    apply_handoff_with_dispatch(pool, request, orchestrator::GOAL_DISPATCH_HOOK.get()).await
+    // Lane T1: snapshot the Arc before the `.await` inside
+    // `apply_handoff_with_dispatch` so the dispatch-hook slot's `RwLock`
+    // read guard never crosses an await point.
+    let dispatch_hook = orchestrator::goal_dispatch_hook_snapshot();
+    apply_handoff_with_dispatch(pool, request, dispatch_hook.as_deref()).await
 }
 
 /// Persist the transitioned manifest back into the existing goal metadata for
@@ -1517,8 +1521,8 @@ pub async fn handoff_registered_goal(
     pool: &Pool<Sqlite>,
     goal_id: &str,
 ) -> Result<Option<ProgramHandoffResponse>, ProgramHandoffError> {
-    handoff_registered_goal_with_dispatch(pool, goal_id, orchestrator::GOAL_DISPATCH_HOOK.get())
-        .await
+    let dispatch_hook = orchestrator::goal_dispatch_hook_snapshot();
+    handoff_registered_goal_with_dispatch(pool, goal_id, dispatch_hook.as_deref()).await
 }
 
 /// Retry one durable `pending_dispatch` claim during boot reconciliation.
@@ -2333,7 +2337,13 @@ mod tests {
         );
     }
 
-    fn recorder(seen: Arc<Mutex<Vec<String>>>) -> orchestrator::GoalDispatchHook {
+    // Lane T1: `orchestrator::GoalDispatchHook` is now the unsized `dyn
+    // Fn(..)` alias (not `Box<dyn Fn(..)>`) so it can live behind an `Arc`
+    // in the process-global slot — returning it BY VALUE therefore needs an
+    // explicit `Box<...>` wrapper here (a `Box` still coerces fine to
+    // `&GoalDispatchHook` wherever these fixtures are passed as
+    // `Option<&orchestrator::GoalDispatchHook>`, unchanged below).
+    fn recorder(seen: Arc<Mutex<Vec<String>>>) -> Box<orchestrator::GoalDispatchHook> {
         Box::new(move |card_id| {
             seen.lock().unwrap().push(card_id);
             Box::pin(async { Ok("fixture-session".to_string()) })
@@ -2343,7 +2353,7 @@ mod tests {
     fn guarded_recorder(
         pool: Pool<Sqlite>,
         seen: Arc<Mutex<Vec<String>>>,
-    ) -> orchestrator::GoalDispatchHook {
+    ) -> Box<orchestrator::GoalDispatchHook> {
         Box::new(move |card_id| {
             let pool = pool.clone();
             let seen = Arc::clone(&seen);
