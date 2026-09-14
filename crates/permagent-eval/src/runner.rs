@@ -22,6 +22,7 @@ use crate::harness_log;
 use crate::invocation::{build_invocation, is_scrubbed_env, recipe_with_prompt, Invocation};
 use crate::metrics::TaskResult;
 use crate::oracle::{outcome_from_run, OracleOutcome};
+use crate::seed_state;
 use crate::task::Task;
 use crate::tier::Tier;
 
@@ -202,6 +203,25 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     // project to that check, so give it one.
     let seed_commit = seed_git_repo(&workdir, &task.spec.id).context("seeding git baseline")?;
 
+    // Lane K8: a fixture may ship `seed/harness_state.json` describing
+    // pre-existing projects/roadmaps/goal cards a `category: "selection"`
+    // fixture's prose depends on (a paused roadmap, a Ready goal card) that
+    // the bare `personal` project above can never satisfy. Applied AFTER the
+    // seeding above (the workspace + git baseline exist) and BEFORE the
+    // harness is invoked below, so the coordinator's very first turn already
+    // sees the state the prompt describes. See `seed_state` for why this
+    // shells out once rather than duplicating the harness's own schema.
+    let seeded_state = match task.seed_state_path() {
+        Some(seed_path) => {
+            let seed = seed_state::load(&seed_path)
+                .with_context(|| format!("loading seed state for task `{}`", task.spec.id))?;
+            seed_state::apply(&seed, &cfg.permagent_bin, &data_root, &workdir)
+                .with_context(|| format!("seeding harness state for task `{}`", task.spec.id))?;
+            true
+        }
+        None => false,
+    };
+
     // Write the per-run recipe file: `--recipe` and `-t`/`--text` are declared
     // mutually exclusive on `permagent-cli`'s `InputOptions`
     // (crates/goose-cli/src/cli.rs:188-220), so the task's prompt cannot be
@@ -368,6 +388,7 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     result.signals = signals;
     result.receipt_source = receipt_source;
     result.seed_commit = Some(seed_commit);
+    result.seeded_state = seeded_state;
     // Read back the FINAL, post-arm-override values so the report row shows
     // what the child actually received, not just the runner's own default.
     result.headless_autoland = inv.env("PERMAGENT_HEADLESS_AUTOLAND").map(str::to_string);
@@ -1363,6 +1384,13 @@ mod tests {
             seed_commit.len(),
             40,
             "expected a full git SHA: {seed_commit}"
+        );
+        // Lane K8: `make_task` ships no `seed/harness_state.json`, so
+        // fixture DB-state seeding must be a no-op — the overwhelming
+        // majority case, and unchanged behavior from before Lane K8.
+        assert!(
+            !r.seeded_state,
+            "a task without seed/harness_state.json must not report seeded_state"
         );
         // Without --keep, the successful run leaves no scratch dir behind.
         assert_no_leftover_run_dirs(&cfg.runs_root);

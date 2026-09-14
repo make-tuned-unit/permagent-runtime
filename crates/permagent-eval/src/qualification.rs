@@ -356,6 +356,13 @@ pub struct TaskQualificationEvidence {
     /// ceiling that actually produced them.
     #[serde(default)]
     pub harness_timeout_secs: Option<u64>,
+    /// Lane K8: mirrors [`crate::metrics::TaskResult::seeded_state`] — whether
+    /// this task's `seed/harness_state.json` was applied to the run's store
+    /// before the harness started. `#[serde(default)]` so a qual.json
+    /// written before this lane still parses, reading back `false` (never
+    /// fabricated as seeded when the record predates seeding entirely).
+    #[serde(default)]
+    pub seeded_state: bool,
 }
 
 /// This run's capability gate, using graduate's per-run qualification rules.
@@ -479,6 +486,7 @@ pub fn build_run_qualification_record(
             selection_correct: r.selection_correct,
             selection_check_failures: r.selection_check_failures.clone(),
             harness_timeout_secs: r.harness_timeout_secs,
+            seeded_state: r.seeded_state,
         })
         .collect();
 

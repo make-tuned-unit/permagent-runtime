@@ -672,6 +672,7 @@ fn task_result_from_qual_evidence(t: &TaskQualificationEvidence) -> Result<TaskR
         selection_correct: t.selection_correct,
         selection_check_failures: t.selection_check_failures.clone(),
         seed_commit: t.seed_commit.clone(),
+        seeded_state: t.seeded_state,
         headless_autoland: t.headless_autoland.clone(),
         headless_drain_secs: t.headless_drain_secs.clone(),
         // Lane R17a: a qualification record has no `receipt_source`
@@ -1952,6 +1953,7 @@ mod tests {
             selection_correct: None,
             selection_check_failures: Vec::new(),
             harness_timeout_secs: None,
+            seeded_state: false,
         }
     }
 

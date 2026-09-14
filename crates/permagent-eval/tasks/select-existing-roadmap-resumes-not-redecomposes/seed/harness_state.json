@@ -1,0 +1,13 @@
+{
+  "schema_version_expected": 14,
+  "project": {
+    "slug": "acme-api",
+    "name": "Acme API",
+    "description": "Fixture project for select-existing-roadmap-resumes-not-redecomposes (Lane K8)."
+  },
+  "roadmap_paused": true,
+  "goals": [
+    { "title": "Add rate limiting to the API", "state": "complete" },
+    { "title": "Add a retry policy to the client", "state": "ready" }
+  ]
+}

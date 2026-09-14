@@ -279,6 +279,19 @@ impl Task {
         self.oracle_dir().is_dir()
     }
 
+    /// Lane K8: the fixture's optional `seed/harness_state.json` — a
+    /// project (and optionally a paused roadmap + goal cards) to insert
+    /// into the run's isolated SQLite store after the driver's normal
+    /// seeding and before the harness starts, so a `category: "selection"`
+    /// fixture whose prose depends on pre-existing coordinator-visible
+    /// state (a paused roadmap, a Ready goal card) is actually
+    /// satisfiable — see [`crate::seed_state`]. `None` when the fixture
+    /// ships no such file (the common case, and unchanged behavior).
+    pub fn seed_state_path(&self) -> Option<PathBuf> {
+        let path = self.dir.join("seed").join("harness_state.json");
+        path.is_file().then_some(path)
+    }
+
     /// Enforce the oracle import discipline (see the module docs): every Python
     /// oracle file may import only `sys` + the declared
     /// [`deliverables`](TaskSpec::deliverables); every Node oracle file may use
@@ -731,6 +744,42 @@ mod tests {
         )
         .unwrap();
         assert!(load_task(&dir).is_err());
+    }
+
+    // ── Lane K8: seed_state_path ──────────────────────────────────────────
+
+    #[test]
+    fn seed_state_path_is_none_without_a_seed_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("task.yaml"),
+            "id: demo\ntitle: T\nprompt: p\ntest: [x]\n",
+        )
+        .unwrap();
+        let task = load_task(&dir).unwrap();
+        assert_eq!(task.seed_state_path(), None);
+    }
+
+    #[test]
+    fn seed_state_path_is_some_when_seed_harness_state_json_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("task.yaml"),
+            "id: demo\ntitle: T\nprompt: p\ntest: [x]\n",
+        )
+        .unwrap();
+        let seed_dir = dir.join("seed");
+        std::fs::create_dir_all(&seed_dir).unwrap();
+        std::fs::write(seed_dir.join("harness_state.json"), "{}").unwrap();
+        let task = load_task(&dir).unwrap();
+        assert_eq!(
+            task.seed_state_path(),
+            Some(seed_dir.join("harness_state.json"))
+        );
     }
 
     #[test]

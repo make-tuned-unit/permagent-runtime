@@ -69,6 +69,11 @@ pub struct TaskResult {
     /// before a commit could be made (reported as [`OracleOutcome::Errored`]
     /// instead).
     pub seed_commit: Option<String>,
+    /// Lane K8: whether this task shipped a `seed/harness_state.json`
+    /// (`crate::task::Task::seed_state_path`) that was applied to the run's
+    /// isolated store before the harness started — see [`crate::seed_state`].
+    /// `false` for the overwhelming majority of fixtures, which ship none.
+    pub seeded_state: bool,
     /// The effective `PERMAGENT_HEADLESS_AUTOLAND` value the child actually
     /// received (Lane K3: the eval turns headless auto-land on explicitly,
     /// default off everywhere else — see `HARNESS_LOOP_LOG.md` "JESSE RULING").
@@ -131,6 +136,7 @@ impl TaskResult {
             selection_correct: None,
             selection_check_failures: Vec::new(),
             seed_commit: None,
+            seeded_state: false,
             headless_autoland: None,
             headless_drain_secs: None,
             receipt_source: None,

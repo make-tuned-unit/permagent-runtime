@@ -1,0 +1,16 @@
+{
+  "schema_version_expected": 14,
+  "project": {
+    "slug": "widget-cli",
+    "name": "Widget CLI",
+    "description": "Fixture project for select-checks-worker-before-dispatch (Lane K8)."
+  },
+  "roadmap_paused": false,
+  "goals": [
+    {
+      "title": "Rename `old_id` to `new_id` across the repo",
+      "description": "A purely mechanical rename, safe for a roster worker to pick up once availability is confirmed.",
+      "state": "ready"
+    }
+  ]
+}
