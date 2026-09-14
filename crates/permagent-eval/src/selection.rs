@@ -94,6 +94,22 @@ pub struct SelectionCheck {
     /// ```
     #[serde(default)]
     pub must_receipt: Vec<MustReceipt>,
+    /// Lane K9: opt-in flag reverting `must_not_call`/`before` to the
+    /// pre-Lane-K9 behavior of counting every ATTEMPTED call (refused or
+    /// executed) — checking against
+    /// [`crate::harness_log::LogSignals::tool_names`] instead of
+    /// [`crate::harness_log::LogSignals::executed_tool_names`]. Declare this
+    /// only for a fixture whose correct decision is specifically "never even
+    /// ATTEMPT this tool" (e.g. a safety/adversarial fixture where the
+    /// attempt itself, denial or not, is the failure being graded) — the
+    /// default (`false`) is right for the far more common case this lane
+    /// exists for: "a denial is the protocol working," so a refused call
+    /// (e.g. the coordinator's `edit` attempt the write jail/
+    /// `CodingDagInspector` refuses before it can execute) must not count
+    /// against `must_not_call`. Does not affect `must_call` or
+    /// `must_receipt`, which are unchanged by this lane.
+    #[serde(default)]
+    pub count_refused: bool,
 }
 
 /// One receipt-based selection requirement: the named field on the named
@@ -220,11 +236,23 @@ impl SelectionCheck {
     /// category, so a run that violates more than one rule reports all of
     /// them.
     pub fn evaluate_detailed(&self, signals: &LogSignals) -> SelectionVerdict {
-        let called = |name: &str| signals.tool_names.iter().any(|t| t == name);
+        // Lane K9: `must_not_call`/`before` grade against EXECUTED calls by
+        // default — a call the write jail/`CodingDagInspector` refused never
+        // mutated anything, so it must not count against them ("a denial is
+        // the protocol working"). `count_refused: true` opts a fixture back
+        // into the pre-Lane-K9 behavior of counting every attempt. `must_call`
+        // is intentionally unchanged: an attempt is still evidence of intent
+        // even when it was refused.
+        let call_sequence: &[String] = if self.count_refused {
+            &signals.tool_names
+        } else {
+            &signals.executed_tool_names
+        };
+        let called = |name: &str| call_sequence.iter().any(|t| t == name);
         let mut failures = Vec::new();
 
         for tool in &self.must_call {
-            if !called(tool) {
+            if !signals.tool_names.iter().any(|t| t == tool) {
                 failures.push(format!("must_call: {tool} (never called)"));
             }
         }
@@ -234,8 +262,8 @@ impl SelectionCheck {
             }
         }
         for (before, after) in &self.before {
-            let before_pos = signals.tool_names.iter().position(|t| t == before);
-            let after_pos = signals.tool_names.iter().position(|t| t == after);
+            let before_pos = call_sequence.iter().position(|t| t == before);
+            let after_pos = call_sequence.iter().position(|t| t == after);
             match (before_pos, after_pos) {
                 (Some(b), Some(a)) if b < a => {}
                 (Some(_), Some(_)) => failures.push(format!(
@@ -253,7 +281,13 @@ impl SelectionCheck {
         }
 
         let passed = failures.is_empty();
-        SelectionVerdict { passed, failures }
+        SelectionVerdict {
+            passed,
+            failures,
+            // Lane K9: retained as evidence regardless of pass/fail — see
+            // this field's own doc comment.
+            refused_calls: signals.refused_tool_calls.clone(),
+        }
     }
 }
 
@@ -262,6 +296,12 @@ impl SelectionCheck {
 pub struct SelectionVerdict {
     pub passed: bool,
     pub failures: Vec<String>,
+    /// Lane K9: [`crate::harness_log::LogSignals::refused_tool_calls`]
+    /// verbatim — every tool call the run attempted but a guard refused
+    /// before it executed, kept as evidence even though (by default) it does
+    /// not count against `must_not_call`/`before`. Always populated from the
+    /// run's signals, independent of `passed`.
+    pub refused_calls: Vec<String>,
 }
 
 #[cfg(test)]
@@ -269,10 +309,17 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    /// Lane K9: every name here reads as EXECUTED (none refused) unless a
+    /// test specifically constructs refusal evidence itself (see the
+    /// "Lane K9" test section below) — `executed_tool_names` mirrors
+    /// `tool_names` verbatim, matching what [`scan`](crate::harness_log::scan)
+    /// itself produces for a log with no refusal evidence.
     fn signals(tool_names: &[&str]) -> LogSignals {
+        let names: Vec<String> = tool_names.iter().map(|s| s.to_string()).collect();
         LogSignals {
-            tool_calls: tool_names.len(),
-            tool_names: tool_names.iter().map(|s| s.to_string()).collect(),
+            tool_calls: names.len(),
+            tool_names: names.clone(),
+            executed_tool_names: names,
             ..LogSignals::default()
         }
     }
@@ -462,6 +509,144 @@ mod tests {
         };
         let verdict = check.evaluate_detailed(&signals(&["decompose_roadmap"]));
         assert_eq!(verdict.failures.len(), 2, "{:?}", verdict.failures);
+    }
+
+    // ── Lane K9: executed vs refused (must_not_call / before) ───────────────
+
+    /// A21 Q2c / M23 DeepSeek m1's real defect: the coordinator ATTEMPTED
+    /// `edit`, but a guard REFUSED it before it executed — `must_not_call:
+    /// [edit]` must pass, not fail, on a run whose signals reflect that.
+    #[test]
+    fn must_not_call_passes_when_the_only_attempt_was_refused() {
+        let check = SelectionCheck {
+            must_not_call: vec!["edit".into()],
+            ..Default::default()
+        };
+        let refused = LogSignals {
+            tool_names: vec!["edit".to_string(), "decompose_roadmap".to_string()],
+            executed_tool_names: vec!["decompose_roadmap".to_string()],
+            refused_tool_calls: vec!["edit".to_string()],
+            ..LogSignals::default()
+        };
+        let verdict = check.evaluate_detailed(&refused);
+        assert!(verdict.passed, "{:?}", verdict.failures);
+        assert_eq!(verdict.refused_calls, vec!["edit".to_string()]);
+    }
+
+    /// An EXECUTED `edit` still fails `must_not_call` — Lane K9 only exempts
+    /// refused attempts, never real mutations.
+    #[test]
+    fn must_not_call_still_fails_when_the_call_actually_executed() {
+        let check = SelectionCheck {
+            must_not_call: vec!["edit".into()],
+            ..Default::default()
+        };
+        // `signals()` marks every name executed (see its own doc comment).
+        let verdict = check.evaluate_detailed(&signals(&["edit"]));
+        assert!(!verdict.passed);
+        assert_eq!(
+            verdict.failures,
+            vec!["must_not_call: edit (was called)".to_string()]
+        );
+    }
+
+    /// `count_refused: true` opts a fixture back into the pre-Lane-K9
+    /// behavior: a refused ATTEMPT counts against `must_not_call` too.
+    #[test]
+    fn count_refused_restores_the_pre_lane_k9_behavior() {
+        let check = SelectionCheck {
+            must_not_call: vec!["edit".into()],
+            count_refused: true,
+            ..Default::default()
+        };
+        let refused = LogSignals {
+            tool_names: vec!["edit".to_string()],
+            executed_tool_names: Vec::new(),
+            refused_tool_calls: vec!["edit".to_string()],
+            ..LogSignals::default()
+        };
+        let verdict = check.evaluate_detailed(&refused);
+        assert!(!verdict.passed);
+        assert_eq!(
+            verdict.failures,
+            vec!["must_not_call: edit (was called)".to_string()]
+        );
+    }
+
+    /// `before` also grades against executed-only order by default: a
+    /// refused `create_roadmap` attempt that raced ahead of a later,
+    /// genuinely executed `decompose_roadmap` must not flip the verdict.
+    #[test]
+    fn before_uses_executed_order_by_default_not_attempted_order() {
+        let check = SelectionCheck {
+            before: vec![("decompose_roadmap".into(), "create_roadmap".into())],
+            ..Default::default()
+        };
+        let signals = LogSignals {
+            // Attempted order: create_roadmap first (but refused), THEN
+            // decompose_roadmap, THEN create_roadmap again (executed).
+            tool_names: vec![
+                "create_roadmap".to_string(),
+                "decompose_roadmap".to_string(),
+            ],
+            executed_tool_names: vec![
+                "decompose_roadmap".to_string(),
+                "create_roadmap".to_string(),
+            ],
+            refused_tool_calls: vec!["create_roadmap".to_string()],
+            ..LogSignals::default()
+        };
+        assert!(check.evaluate(&signals));
+    }
+
+    /// `must_call` is unchanged by Lane K9 — an attempt alone still counts,
+    /// refused or not (evidence of intent, unlike `must_not_call`).
+    #[test]
+    fn must_call_is_satisfied_by_a_refused_attempt_alone() {
+        let check = SelectionCheck {
+            must_call: vec!["edit".into()],
+            ..Default::default()
+        };
+        let refused = LogSignals {
+            tool_names: vec!["edit".to_string()],
+            executed_tool_names: Vec::new(),
+            refused_tool_calls: vec!["edit".to_string()],
+            ..LogSignals::default()
+        };
+        assert!(check.evaluate(&refused));
+    }
+
+    /// `refused_calls` is retained on the verdict even when the check passes
+    /// outright — "a denial is the protocol working," not something to
+    /// discard once it stops mattering to the verdict.
+    #[test]
+    fn refused_calls_is_retained_even_on_an_unrelated_passing_check() {
+        let check = SelectionCheck {
+            must_call: vec!["decompose_roadmap".into()],
+            ..Default::default()
+        };
+        let signals = LogSignals {
+            tool_names: vec!["edit".to_string(), "decompose_roadmap".to_string()],
+            executed_tool_names: vec!["decompose_roadmap".to_string()],
+            refused_tool_calls: vec!["edit".to_string()],
+            ..LogSignals::default()
+        };
+        let verdict = check.evaluate_detailed(&signals);
+        assert!(verdict.passed);
+        assert_eq!(verdict.refused_calls, vec!["edit".to_string()]);
+    }
+
+    #[test]
+    fn count_refused_defaults_to_false_when_omitted_from_yaml() {
+        let check: SelectionCheck = serde_yaml::from_str("must_call: [verify]\n").unwrap();
+        assert!(!check.count_refused);
+    }
+
+    #[test]
+    fn deserializes_count_refused_from_yaml() {
+        let check: SelectionCheck =
+            serde_yaml::from_str("must_not_call: [edit]\ncount_refused: true\n").unwrap();
+        assert!(check.count_refused);
     }
 
     // ── must_receipt (Lane R18c-b, G23 HIGH-2) ──────────────────────────────

@@ -64,6 +64,79 @@
 //!   kept verbatim in [`LogSignals::rate_limit_examples`] so a future reader
 //!   can verify the count without re-reading the whole log.
 //!
+//! ## Lane K9: executed vs refused tool calls
+//!
+//! A21 Q2c / M23 DeepSeek m1 (`select-trivial-typo-fix-skips-roadmap`, see
+//! `HARNESS_LOOP_LOG.md`'s "Lane K9" entry): the coordinator ATTEMPTED a
+//! direct `edit`, which `CodingDagInspector`
+//! (`crates/goose/src/tool_inspection.rs` — a different crate, `goose`, not
+//! `permagent-eval`, so referenced here as plain text rather than an
+//! intra-doc link) REFUSED — the harness's own
+//! `receipt dag_enforcement … bypass_attempts=1 bypass_passes=0 …` line
+//! proves it was denied, not executed — yet a naive `must_not_call: [edit]`
+//! selection rule still failed, because the `edit` banner is printed
+//! regardless of whether the call went on to execute. Under this project's
+//! protocol, "a denial is the protocol working": a refused call never
+//! mutated anything, so it must not count against `must_not_call`/`before`,
+//! but the ATTEMPT is still worth retaining as evidence (see
+//! [`crate::selection::SelectionVerdict::refused_calls`]).
+//!
+//! [`scan`] tries two mechanisms, in order, to tell an executed call from a
+//! refused one — both best-effort, both erring toward "assume executed"
+//! (the pre-Lane-K9 behavior) when neither finds positive evidence:
+//!
+//! - **Mechanism A — an explicit denial marker in the transcript.** A denied
+//!   tool call's `tool_response` is built by `Agent::handle_denied_tools`
+//!   (`crates/goose/src/agents/agent.rs`) as `Ok(CallToolResult::error(vec![
+//!   Content::text(reason)]))`, where `reason` is one of a handful of fixed
+//!   strings: `CodingDagInspector`'s own
+//!   `"Top-level coding harness sessions must create an approved
+//!   orchestrator DAG…"` (`crates/goose/src/tool_inspection.rs`), the
+//!   write jail's `"Refused by the goal-worker write jail…"` /
+//!   `"Refused by the write jail…"` (`crates/goose/src/security/
+//!   write_jail.rs`), or the generic `DECLINED_RESPONSE` /
+//!   `HEADLESS_SKIPPED_RESPONSE` text (`crates/goose/src/agents/
+//!   tool_execution.rs`). [`REFUSAL_MARKERS`] matches these verbatim.
+//!   **Known limitation, found while building this fixture's own log fixture
+//!   (worth stating plainly rather than silently under-matching forever):**
+//!   `Content::text(...)` carries no priority annotation, and
+//!   `render_tool_response` (`crates/goose-cli/src/session/
+//!   output.rs:550-583`) drops any tool-response content whose priority is
+//!   `None` unless the session ran with `--debug` — which the harness does
+//!   not pass. So on today's default (non-debug) capture, this marker text
+//!   is typically NOT present in `harness.log` at all (confirmed against the
+//!   real M23 log this lane fixes), and Mechanism A finds nothing. It is
+//!   kept anyway because it is exactly right for a `--debug` capture and
+//!   costs nothing when it does not match — and because it is what a future
+//!   fix to the CLI's priority annotation on denial responses would make
+//!   reliable.
+//! - **Mechanism B — the `dag_enforcement` receipt as a corroborated
+//!   fallback**, used only when Mechanism A found nothing. `bypass_attempts`
+//!   is incremented EXCLUSIVELY inside `CodingDagInspector::inspect`'s
+//!   deny path (one per denied request), and that inspector only ever
+//!   fires for the run's own top-level coordinator session — the only
+//!   session [`LogSignals`] ever sees banners from (a dispatched worker's
+//!   own tool calls never reach this log; see the top of this module). So
+//!   within ONE run, every coordinator banner naming a tool in
+//!   [`CODING_DAG_FORBIDDEN_TOOLS`] (mirroring `requires_dispatched_coding_
+//!   worker`'s mutating/shell-family list — duplicated here because this
+//!   crate does not depend on `goose`; keep in sync by hand) is a candidate
+//!   refusal. If — and only if — the candidate COUNT exactly equals
+//!   `bypass_attempts`, every candidate is marked refused: a verified match,
+//!   not a guess. Any mismatch (some candidates legitimately executed under
+//!   a different recipe/topology, or the count is simply off) makes
+//!   Mechanism B decline entirely rather than mis-attribute — never fabricate
+//!   a specific refusal from an ambiguous count.
+//!
+//! [`LogSignals::executed_tool_names`] is what
+//! [`crate::selection::SelectionCheck`]'s `must_not_call`/`before` rules read
+//! by default post-Lane-K9 (opt back into the old, attempt-counts-too
+//! behavior with `count_refused: true`); [`LogSignals::refused_tool_calls`]
+//! is the retained-as-evidence list. [`LogSignals::tool_names`] itself is
+//! UNCHANGED by this lane — it still records every ATTEMPT (refused or not),
+//! since other readers (`report.rs`, `tier0.rs`) use it as attempted-call
+//! telemetry, not a selection-correctness signal.
+//!
 //! ## X-obs-1: signals from lanes still landing
 //!
 //! The remaining [`LogSignals`] fields are best-effort parses of lines OTHER
@@ -189,8 +262,31 @@ pub struct LogSignals {
     pub rate_limit_examples: Vec<String>,
     /// Whether the harness exhausted its turn budget without finishing.
     pub max_turns_hit: bool,
-    /// Distinct tool names invoked, in first-seen order.
+    /// Distinct tool names invoked, in first-seen order. Includes REFUSED
+    /// attempts (see the module docs' "Lane K9" section) — this is
+    /// attempted-call telemetry, not a selection-correctness signal; use
+    /// [`Self::executed_tool_names`] for that.
     pub tool_names: Vec<String>,
+    /// Lane K9: [`Self::tool_names`] minus any occurrence [`scan`] could
+    /// positively determine was refused rather than executed (see the module
+    /// docs' "Lane K9" section for Mechanisms A/B and their honest limits).
+    /// Distinct tool names, ordered by each name's first EXECUTED occurrence
+    /// — so a tool refused on attempt 1 and executed on a later retry is
+    /// ordered by the retry, not the refused attempt. A name absent here can
+    /// still appear in [`Self::tool_names`] (attempted but never executed)
+    /// or in [`Self::refused_tool_calls`] (refused at least once).
+    pub executed_tool_names: Vec<String>,
+    /// Lane K9: distinct tool names [`scan`] positively determined were
+    /// refused (denied before executing) at least once, in first-refused
+    /// order — retained as evidence per this project's "a denial is the
+    /// protocol working" protocol, even though a refused call does not count
+    /// against `must_not_call`/`before` by default (see
+    /// [`crate::selection::SelectionCheck::count_refused`]). Empty does NOT
+    /// mean "nothing was refused" — it means [`scan`] found no positive
+    /// evidence either way (see the module docs' Mechanism A/B limits); a
+    /// nonzero `dag_enforcement.bypass_attempts` alongside an empty list here
+    /// is exactly that honest-unknown case, not a contradiction.
+    pub refused_tool_calls: Vec<String>,
     /// The FIRST `planner=<provider/model> reason=<...> workers=<...>`
     /// route-tracing line seen, if any (see [`parse_planner_line`] for the
     /// exact grammar this is best-effort matched against). `None` for a run
@@ -298,6 +394,56 @@ static RATE_LIMIT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::n
     )
     .expect("RATE_LIMIT_RE is a valid regex")
 });
+
+/// Lane K9, Mechanism A: substrings that appear verbatim in the handful of
+/// fixed reasons a guard/inspector denial's `tool_response` carries (see the
+/// module docs' "Lane K9" section for the exact call sites and why this
+/// currently matches nothing under a default, non-`--debug` capture — kept
+/// anyway for a `--debug` capture or a future fix to the CLI's priority
+/// annotation on denial content). Plain substring containment, not a regex:
+/// each denial reason is one continuous sentence with no embedded newline, so
+/// it survives as a single (long) line in the non-tty `print!("{}", text)`
+/// path `print_tool_output` takes when captured to a file.
+const REFUSAL_MARKERS: &[&str] = &[
+    // CodingDagInspector (crates/goose/src/tool_inspection.rs): the top-level
+    // coordinator tried a mutating/shell tool directly instead of dispatching
+    // a worker — the exact A21 Q2c / M23 defect this lane fixes.
+    "Top-level coding harness sessions must create an approved orchestrator DAG",
+    // write_jail.rs's two Y4c-shaped denials (dispatched goal worker vs a
+    // parentless-approver subagent).
+    "Refused by the goal-worker write jail",
+    "Refused by the write jail",
+    // Generic inspector-denial fallbacks (tool_execution.rs).
+    "The user has declined to run this tool",
+    "This tool call requires interactive approval, but this session runs headless",
+];
+
+fn is_refusal_marker_line(line: &str) -> bool {
+    REFUSAL_MARKERS.iter().any(|marker| line.contains(marker))
+}
+
+/// Lane K9, Mechanism B: the coordinator tool names `CodingDagInspector`'s
+/// `requires_dispatched_coding_worker` (`crates/goose/src/tool_inspection.rs`
+/// — a different crate, referenced here as plain text) denies
+/// unconditionally for a top-level coding-harness session — mirrors that
+/// function's mutating (`after_turn::is_mutating_tool_name`) and shell-family
+/// tool names. Duplicated here, not imported, because `permagent-eval` does
+/// not depend on `goose`; keep in sync by hand if that inspector's coverage
+/// changes. See the module docs' "Lane K9" section for how this is used
+/// (only as a fallback, only on an exact `bypass_attempts` count match).
+const CODING_DAG_FORBIDDEN_TOOLS: &[&str] = &[
+    "write",
+    "edit",
+    "text_editor",
+    "str_replace",
+    "create_file",
+    "apply_patch",
+    "shell",
+    "bash",
+    "execute_command",
+    "run_command",
+    "terminal",
+];
 
 /// `harness_overhead p50=<ms> p95=<ms> model=<ms> tools=<ms> wall=<ms>` — the
 /// exact key names Lane X-lat's spec gives, each value captured as digits
@@ -474,6 +620,14 @@ pub fn scan(log_text: &str) -> LogSignals {
     let mut signals = LogSignals::default();
     let mut seen_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+    // Lane K9: every banner's tool name, in call order (unlike `tool_names`,
+    // NOT deduplicated — Mechanism B needs an exact count), with a parallel
+    // refused flag `pending` (Mechanism A) can resolve before the next
+    // banner arrives.
+    let mut raw_calls: Vec<String> = Vec::new();
+    let mut refused_flags: Vec<bool> = Vec::new();
+    let mut pending: Option<usize> = None;
+
     for line in log_text.lines() {
         // Keep receipt fields separate from legacy diagnostic counters. In
         // particular, `vacuous_passes=0` is not a vacuous-pass event.
@@ -497,7 +651,19 @@ pub fn scan(log_text: &str) -> LogSignals {
         if let Some(tool) = tool_call_banner_tool(line) {
             signals.tool_calls += 1;
             if seen_tools.insert(tool.clone()) {
-                signals.tool_names.push(tool);
+                signals.tool_names.push(tool.clone());
+            }
+            raw_calls.push(tool);
+            refused_flags.push(false);
+            pending = Some(raw_calls.len() - 1);
+        } else if let Some(i) = pending {
+            // Lane K9, Mechanism A: the pending call's tool_response (or the
+            // model's own text after receiving it) named a guard refusal
+            // before the next banner arrived — resolve it as refused rather
+            // than leaving it to default to executed.
+            if is_refusal_marker_line(line) {
+                refused_flags[i] = true;
+                pending = None;
             }
         }
 
@@ -554,6 +720,42 @@ pub fn scan(log_text: &str) -> LogSignals {
         }
         if VACUOUS_PASS_RE.is_match(line) {
             *signals.vacuous_pass.get_or_insert(0) += 1;
+        }
+    }
+
+    // Lane K9, Mechanism B: only when Mechanism A found nothing at all — an
+    // explicit marker is stronger evidence than this inferred fallback, so
+    // prefer it outright rather than mixing the two. Fires only on an EXACT
+    // count match between the candidate calls and the run's own
+    // `bypass_attempts` receipt; any mismatch declines rather than guesses
+    // which candidates were the denied ones.
+    if !refused_flags.iter().any(|&r| r) {
+        if let Some(receipt) = signals.dag_enforcement.as_ref() {
+            if receipt.bypass_attempts > 0 {
+                let candidates: Vec<usize> = raw_calls
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, name)| CODING_DAG_FORBIDDEN_TOOLS.contains(&name.as_str()))
+                    .map(|(i, _)| i)
+                    .collect();
+                if candidates.len() == receipt.bypass_attempts {
+                    for i in candidates {
+                        refused_flags[i] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut seen_executed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_refused: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (name, &refused) in raw_calls.iter().zip(refused_flags.iter()) {
+        if refused {
+            if seen_refused.insert(name.clone()) {
+                signals.refused_tool_calls.push(name.clone());
+            }
+        } else if seen_executed.insert(name.clone()) {
+            signals.executed_tool_names.push(name.clone());
         }
     }
 
@@ -871,6 +1073,143 @@ mod tests {
         let signals = scan(log);
         assert_eq!(signals.tool_calls, 1);
         assert_eq!(signals.tool_names, vec!["shell"]);
+    }
+
+    // ── Lane K9: executed vs refused tool calls ─────────────────────────────
+
+    /// No refusal evidence at all (no marker, no `dag_enforcement` receipt)
+    /// — the pre-Lane-K9 default: every attempted call reads as executed.
+    #[test]
+    fn with_no_refusal_evidence_every_attempted_call_reads_as_executed() {
+        let signals = scan("  ▸ edit\n    path foo.py\n");
+        assert_eq!(signals.tool_names, vec!["edit".to_string()]);
+        assert_eq!(signals.executed_tool_names, vec!["edit".to_string()]);
+        assert!(signals.refused_tool_calls.is_empty());
+    }
+
+    /// Mechanism A: an explicit denial marker between the banner and the next
+    /// line resolves the call as refused, not executed.
+    #[test]
+    fn a_denial_marker_after_the_banner_marks_the_call_refused() {
+        let log = "  ▸ edit\n    path foo.py\n\
+                    Top-level coding harness sessions must create an approved \
+                    orchestrator DAG and dispatch its node.\n";
+        let signals = scan(log);
+        assert_eq!(signals.tool_names, vec!["edit".to_string()]);
+        assert!(
+            signals.executed_tool_names.is_empty(),
+            "{:?}",
+            signals.executed_tool_names
+        );
+        assert_eq!(signals.refused_tool_calls, vec!["edit".to_string()]);
+    }
+
+    /// The write-jail's two denial phrasings are both recognized.
+    #[test]
+    fn write_jail_denial_markers_mark_the_call_refused() {
+        for marker in [
+            "Refused by the goal-worker write jail. You are a dispatched goal worker...",
+            "Refused by the write jail. You are a dispatched subagent...",
+        ] {
+            let log = format!("  ▸ shell\n    command rm -rf /\n{marker}\n");
+            let signals = scan(&log);
+            assert_eq!(
+                signals.refused_tool_calls,
+                vec!["shell".to_string()],
+                "{marker}"
+            );
+        }
+    }
+
+    /// A call executed cleanly BEFORE a later refused call — the marker must
+    /// not retroactively taint the earlier, already-resolved banner.
+    #[test]
+    fn a_refusal_marker_only_resolves_the_immediately_pending_call() {
+        let log = "  ▸ search\n    pattern foo\n\nfound 1 match\n\n\
+                    ────────────────────────────────────────\n\
+                    ▸ edit\n    path foo.py\n\
+                    Refused by the write jail. You are a dispatched subagent...\n";
+        let signals = scan(log);
+        assert_eq!(
+            signals.executed_tool_names,
+            vec!["search".to_string()],
+            "{:?}",
+            signals.executed_tool_names
+        );
+        assert_eq!(signals.refused_tool_calls, vec!["edit".to_string()]);
+    }
+
+    /// A21 Q2c / M23 DeepSeek m1's real defect: NO marker text is visible
+    /// (the default, non-`--debug` capture — see the module docs), but the
+    /// `dag_enforcement` receipt's `bypass_attempts` exactly matches the
+    /// single forbidden-tool candidate (`edit`), so Mechanism B attributes
+    /// it as refused.
+    #[test]
+    fn mechanism_b_attributes_the_sole_candidate_when_the_count_matches_bypass_attempts() {
+        let log = "  ▸ edit\n    path README.md\n\n\
+                    The direct edit was refused — let me dispatch a worker instead.\n\
+                    ────────────────────────────────────────\n\
+                    ▸ decompose_roadmap orchestrator\n    objective: fix typo\n\
+                    ────────────────────────────────────────\n\
+                    ▸ create_roadmap orchestrator\n    goals_json: []\n\n\
+                    receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=1 \
+                    bypass_passes=0 coordinator_mutations=0\n";
+        let signals = scan(log);
+        assert_eq!(
+            signals.refused_tool_calls,
+            vec!["edit".to_string()],
+            "{signals:?}"
+        );
+        assert_eq!(
+            signals.executed_tool_names,
+            vec![
+                "decompose_roadmap".to_string(),
+                "create_roadmap".to_string()
+            ],
+            "{signals:?}"
+        );
+        // The forbidden-tool set itself must never be treated as evidence on
+        // its own — decompose_roadmap/create_roadmap are not in it, so they
+        // are correctly left executed even though no visible response text
+        // follows their banners either (see the module docs).
+        assert!(signals.tool_names.contains(&"edit".to_string()));
+    }
+
+    /// Mechanism B must DECLINE (attribute nothing) on a count mismatch —
+    /// never guess which candidate(s) were actually denied.
+    #[test]
+    fn mechanism_b_declines_on_a_bypass_attempts_count_mismatch() {
+        let log = "  ▸ edit\n    path foo.py\n\n\
+                    receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=2 \
+                    bypass_passes=0 coordinator_mutations=0\n";
+        let signals = scan(log);
+        assert!(signals.refused_tool_calls.is_empty(), "{signals:?}");
+        assert_eq!(signals.executed_tool_names, vec!["edit".to_string()]);
+    }
+
+    /// A `bypass_attempts=0` receipt must never trigger Mechanism B, even if
+    /// a forbidden-shaped tool name happens to appear.
+    #[test]
+    fn mechanism_b_never_fires_at_zero_bypass_attempts() {
+        let log = "  ▸ edit\n    path foo.py\n\n\
+                    receipt dag_enforcement roadmap_dispatched=0 bypass_attempts=0 \
+                    bypass_passes=0 coordinator_mutations=0\n";
+        let signals = scan(log);
+        assert!(signals.refused_tool_calls.is_empty());
+        assert_eq!(signals.executed_tool_names, vec!["edit".to_string()]);
+    }
+
+    /// A tool refused on its first attempt and executed on a later retry
+    /// appears in BOTH lists — `executed_tool_names` ordered by the retry.
+    #[test]
+    fn a_call_refused_then_retried_and_executed_appears_in_both_lists() {
+        let log = "  ▸ edit\n    path foo.py\n\
+                    Refused by the write jail. You are a dispatched subagent...\n\
+                    ────────────────────────────────────────\n\
+                    ▸ edit\n    path foo.py\n";
+        let signals = scan(log);
+        assert_eq!(signals.refused_tool_calls, vec!["edit".to_string()]);
+        assert_eq!(signals.executed_tool_names, vec!["edit".to_string()]);
     }
 
     // ── D2/D4: the `planner=` route-tracing line ──────────────────────────

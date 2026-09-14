@@ -217,3 +217,43 @@ not met" — never guessed, and never confused with a requirement that WAS check
 (`selection.rs::MustReceipt::value`/`evaluate`). `must_receipt` counts toward
 `SelectionCheck::is_vacuous()` alongside the three existing rule types, so a `selection_check`
 consisting only of `must_receipt` entries is not rejected as unfalsifiable.
+
+### Executed vs refused — a denial is the protocol working (Lane K9)
+
+A21 Q2c / M23 DeepSeek m1 (`select-trivial-typo-fix-skips-roadmap`): the coordinator
+ATTEMPTED a direct `edit`, which `CodingDagInspector` (`crates/goose/src/tool_inspection.rs`)
+REFUSED before it could execute — the run's own `receipt dag_enforcement … bypass_attempts=1
+bypass_passes=0 …` line proves it, since `bypass_attempts` increments exclusively inside that
+inspector's deny path. The coordinator then correctly decomposed a one-node roadmap and
+dispatched it, and the oracle passed — yet `must_not_call: [edit]` still failed, because until
+this lane, `LogSignals::tool_names` (and therefore `must_not_call`/`before`) counted every
+ATTEMPT, refused or not. Under this project's protocol, a REFUSAL is the protocol working: a
+denied call never mutated anything, so it must not count against `must_not_call`. The attempt
+itself is still worth retaining as evidence, not discarded.
+
+`crate::harness_log::scan` now tries to tell an executed call from a refused one, best-effort,
+via two mechanisms (see that module's own "Lane K9" docs for the exact call sites and their
+honest limits — in particular, the explicit denial-reason text is typically NOT visible in a
+default, non-`--debug` harness capture today, a real gap this lane documents rather than
+silently papers over): an explicit denial marker in the transcript, or — the fallback that
+actually resolves the cited fixture — an exact match between the run's own `dag_enforcement.
+bypass_attempts` count and the number of coordinator banner calls naming a tool
+`CodingDagInspector` denies unconditionally (`edit`, `write`, `shell`, and the rest of its
+mutating/shell-family list). A count MISMATCH declines to attribute anything rather than guess.
+
+Two new `LogSignals` fields carry the result: `executed_tool_names` (calls positively
+determined to have executed) and `refused_tool_calls` (calls positively determined to have
+been refused, retained as evidence). `SelectionCheck::must_not_call` and `SelectionCheck::before`
+now grade against `executed_tool_names` by DEFAULT — `must_call` and `must_receipt` are
+unchanged, since an attempt (refused or not) is still evidence of intent. A fixture whose
+correct behavior specifically forbids even ATTEMPTING a tool (not just executing it — e.g. a
+safety/adversarial fixture grading the attempt itself) opts back into the pre-Lane-K9 behavior
+with `selection_check: { count_refused: true, ... }`, which switches `must_not_call`/`before`
+back to `LogSignals::tool_names` (every attempt, refused or not).
+
+`SelectionVerdict::refused_calls` and `TaskQualificationEvidence::refused_calls`
+(`#[serde(default)]`, empty for a pre-Lane-K9 record) retain the refused-call list end to end —
+a `.qual.json` or JSON-report reader can see which calls a guard refused without re-deriving it
+from the raw harness log, and empty must be read as "no refused calls the scan could positively
+attribute," never as "definitely nothing was refused" (the same honest-absence rule as every
+other best-effort `LogSignals` field).

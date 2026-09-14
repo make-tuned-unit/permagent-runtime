@@ -658,6 +658,10 @@ fn task_result_from_qual_evidence(t: &TaskQualificationEvidence) -> Result<TaskR
             reviewer_not_independent: t.reviewer_not_independent,
             reviewer_mutated: t.reviewer_mutated,
             vacuous_pass: t.vacuous_pass,
+            // Lane K9: same "read it back rather than fabricate" rule as
+            // `selection_correct` above — `metrics::aggregate` does not read
+            // this field either, but carrying it costs nothing.
+            refused_tool_calls: t.refused_calls.clone(),
             ..LogSignals::default()
         },
         // Lane R18c (A17 Q6): `selection_correct` (and its failure detail)
@@ -1952,6 +1956,7 @@ mod tests {
             cost_routing: None,
             selection_correct: None,
             selection_check_failures: Vec::new(),
+            refused_calls: Vec::new(),
             harness_timeout_secs: None,
             seeded_state: false,
         }
