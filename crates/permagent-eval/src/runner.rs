@@ -334,9 +334,11 @@ pub struct BudgetTracker {
     cap_usd: Option<f64>,
     spent_usd: f64,
     attempted: usize,
-    /// Set when the cap is reached, an unpriced/invalid cost is observed, or
-    /// the cap configuration is invalid. The value is the attempted count at
-    /// that moment (zero for an invalid cap). Stays `Some` for the session.
+    /// Set when the cap is reached, an untrusted cost is observed (Lane K5:
+    /// the ledger recorded provider calls it could not price, or a priced
+    /// total is invalid), or the cap configuration is invalid. The value is
+    /// the attempted count at that moment (zero for an invalid cap). Stays
+    /// `Some` for the session.
     stopped_after: Option<usize>,
     /// Why the posthoc stop occurred. Kept separately so a stop caused by an
     /// unknown cost is not reported as though it were measured spend.
@@ -381,17 +383,30 @@ impl BudgetTracker {
         self.stopped_after.is_some()
     }
 
-    /// Record one attempted task's measured spend.
+    /// Record one attempted task's cost reading.
     ///
-    /// Unknown (`None`) and invalid (negative, NaN, or infinite) costs do not
-    /// change measured spend, but fail closed for capped runs: without a
-    /// trustworthy cost there is no safe basis for launching another task.
-    /// A finite, non-negative cost trips when cumulative spend reaches the
-    /// cap, so an exact-boundary run cannot launch one more task.
-    pub fn record(&mut self, cost_usd: Option<f64>) {
+    /// Lane K5: a task whose ledger has no rows (`ledger_rows == 0` —
+    /// the harness errored or failed to spawn before any provider call,
+    /// so `reading.usd` reads as [`CostReading::unknown`]) contributes $0 to
+    /// measured spend and does NOT fail closed. There is nothing untrustworthy
+    /// about zero calls; the guard exists to stop a run whose spend cannot be
+    /// trusted, which is only true when the ledger DID record provider calls
+    /// that it could not price (`ledger_rows > 0` but `usd` is `None`) or the
+    /// summed cost itself is invalid (negative, NaN, or infinite) — a real
+    /// accounting problem, not an absence of spend. Either of those still
+    /// fails closed for capped runs. A finite, non-negative cost trips when
+    /// cumulative spend reaches the cap, so an exact-boundary run cannot
+    /// launch one more task.
+    pub fn record(&mut self, reading: &CostReading) {
         self.attempted += 1;
-        let Some(cost) = cost_usd else {
-            self.stop_unpriced_if_capped();
+        let Some(cost) = reading.usd else {
+            if reading.ledger_rows > 0 {
+                // Provider calls happened but the ledger could not price
+                // them: the measured total is not trustworthy.
+                self.stop_unpriced_if_capped();
+            }
+            // Else: no provider call was ever made for this task (errored
+            // before the harness ran, or spawn failure) — $0 spend, no trip.
             return;
         };
         if !cost.is_finite() || cost < 0.0 {
@@ -452,17 +467,31 @@ impl BudgetTracker {
 }
 
 /// Build a [`TaskResult`] for a task that was never launched because the
-/// session's `--budget-usd` cap had already been exceeded. A distinct
+/// session's `--budget-usd` guard had already tripped. A distinct
 /// [`OracleOutcome::NotRun`] state — NOT a fail — so pass-rate (computed over
 /// attempted tasks only) is not dragged down by tasks that simply never ran.
-fn not_run_result(task: &Task) -> TaskResult {
+///
+/// Lane K5: the note distinguishes *why* the guard tripped — a plain cap hit
+/// vs. an earlier task's spend being untrusted — rather than always claiming
+/// the cap was reached, which was misleading when it was the unpriced-cost
+/// guard that actually stopped the run.
+fn not_run_result(task: &Task, reason: BudgetStopReason) -> TaskResult {
     let mut r = TaskResult::new(
         task.spec.id.as_str(),
         task.spec.category.as_str(),
         OracleOutcome::NotRun,
         CostReading::unknown(),
     );
-    r.note = Some("skipped: --budget-usd cap reached".to_string());
+    r.note = Some(
+        match reason {
+            BudgetStopReason::CapReached => "skipped: --budget-usd cap reached",
+            BudgetStopReason::UnknownCost => {
+                "skipped: measured spend untrusted (ledger had an unpriced provider cost)"
+            }
+            BudgetStopReason::InvalidCap => "skipped: --budget-usd cap is invalid",
+        }
+        .to_string(),
+    );
     r
 }
 
@@ -483,7 +512,8 @@ pub fn run_tier(
         .iter()
         .map(|task| {
             if budget.cap_exceeded() {
-                return not_run_result(task);
+                let reason = budget.stop_reason.unwrap_or(BudgetStopReason::CapReached);
+                return not_run_result(task, reason);
             }
             let result = run_task(task, tier, cfg, deps).unwrap_or_else(|e| {
                 let mut r = TaskResult::new(
@@ -495,7 +525,7 @@ pub fn run_tier(
                 r.note = Some(format!("run error: {e}"));
                 r
             });
-            budget.record(result.cost.usd);
+            budget.record(&result.cost);
             result
         })
         .collect()
@@ -1348,13 +1378,64 @@ mod tests {
         assert_no_leftover_run_dirs(&cfg.runs_root);
     }
 
+    /// Lane K5 regression: the zai z1 round (2026-09-14) hit a `run error`
+    /// before task 9 ever reached a provider — the harness binary's own
+    /// directory had been deleted, so `resolving base recipe` failed and
+    /// `run_task` returned `Err` with zero ledger rows. The driver then
+    /// printed `BUDGET STOP: unpriced or invalid cost` and skipped the
+    /// remaining 10 tasks, though measured spend was nowhere near the cap.
+    /// A task that never made a provider call must not be treated as
+    /// "spend that cannot be trusted": the run has to keep going.
+    #[test]
+    fn run_tier_keeps_running_after_a_task_errors_before_any_provider_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tasks: Vec<Task> = ["t1", "t2"]
+            .iter()
+            .map(|id| make_task(&tmp.path().join(id), &[], &[]))
+            .collect();
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            ..Default::default()
+        };
+        let deps = Deps {
+            harness: &BoomHarness,
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        let mut budget = BudgetTracker::with_cap(8.00);
+        let results = run_tier(
+            &tasks,
+            &Tier::builtin("local").unwrap(),
+            &cfg,
+            &deps,
+            &mut budget,
+        );
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].oracle, OracleOutcome::Errored);
+        assert_eq!(
+            results[1].oracle,
+            OracleOutcome::Errored,
+            "the second task must still be launched, not skipped as a budget stop"
+        );
+        assert!(
+            !budget.cap_exceeded(),
+            "zero-ledger-row errors must not trip the guard"
+        );
+        assert!(budget.take_stop_message().is_none());
+    }
+
     #[test]
     fn budget_tracker_trips_at_the_exact_boundary() {
         let mut b = BudgetTracker::with_cap(1.00);
         assert!(!b.cap_exceeded());
-        b.record(Some(0.50));
+        b.record(&CostReading::known(0.50, false, 1));
         assert!(!b.cap_exceeded());
-        b.record(Some(0.50)); // spent == cap: no further task may launch.
+        b.record(&CostReading::known(0.50, false, 1)); // spent == cap: no further task may launch.
         assert!(b.cap_exceeded());
         let message = b.take_stop_message().unwrap();
         assert!(message.contains("reached $1.0000 cap"), "{message}");
@@ -1364,38 +1445,73 @@ mod tests {
     fn budget_tracker_unlimited_never_trips() {
         let mut b = BudgetTracker::unlimited();
         for _ in 0..5 {
-            b.record(Some(1_000.0));
+            b.record(&CostReading::known(1_000.0, false, 1));
         }
         assert!(!b.cap_exceeded());
         assert!(b.take_stop_message().is_none());
     }
 
+    /// Lane K5: a ledger that DID record a provider call but could not price
+    /// it (`ledger_rows > 0`, `usd: None`) is a real accounting problem —
+    /// unlike a task that made no calls at all, this must still fail closed.
     #[test]
-    fn budget_tracker_unknown_cost_fails_closed_for_capped_runs() {
+    fn budget_tracker_unpriced_ledger_row_fails_closed_for_capped_runs() {
         let mut b = BudgetTracker::with_cap(1.0);
-        b.record(None);
+        b.record(&CostReading {
+            ledger_rows: 1,
+            ..CostReading::unknown()
+        });
         assert!(
             b.cap_exceeded(),
-            "an unpriced task cannot authorize another task"
+            "a provider call the ledger could not price cannot authorize another task"
         );
         let message = b.take_stop_message().unwrap();
         assert!(message.contains("unpriced or invalid cost"), "{message}");
         assert!(message.contains("after 1 tasks"), "{message}");
     }
 
+    /// Lane K5 (regression for the zai z1 round, 2026-09-14): a task that
+    /// never made a provider call at all — `ledger_rows == 0`, the shape
+    /// `CostReading::unknown()` takes when a harness errors or fails to spawn
+    /// before any call — contributes $0 and must NOT trip the guard. Zero
+    /// calls is not untrustworthy spend.
+    #[test]
+    fn budget_tracker_errored_task_with_no_ledger_rows_does_not_trip() {
+        let mut b = BudgetTracker::with_cap(8.0);
+        b.record(&CostReading::unknown());
+        assert!(
+            !b.cap_exceeded(),
+            "an errored task with zero ledger rows spent nothing and must not stop the run"
+        );
+        assert!(b.take_stop_message().is_none());
+    }
+
     #[test]
     fn budget_tracker_zero_cap_blocks_at_zero_spend() {
         let mut b = BudgetTracker::with_cap(0.0);
-        b.record(Some(0.0));
+        b.record(&CostReading::known(0.0, false, 1));
         assert!(b.cap_exceeded());
     }
 
     #[test]
     fn budget_tracker_invalid_costs_fail_closed_without_fabricating_spend() {
-        for cost in [Some(-1.0), Some(f64::NAN), Some(f64::INFINITY), None] {
+        let readings = [
+            CostReading::known(-1.0, false, 1),
+            CostReading::known(f64::NAN, false, 1),
+            CostReading::known(f64::INFINITY, false, 1),
+            // An unpriced row (not merely an absent ledger) is also untrusted.
+            CostReading {
+                ledger_rows: 1,
+                ..CostReading::unknown()
+            },
+        ];
+        for reading in readings {
             let mut b = BudgetTracker::with_cap(10.0);
-            b.record(cost);
-            assert!(b.cap_exceeded(), "cost {cost:?} must stop a capped run");
+            b.record(&reading);
+            assert!(
+                b.cap_exceeded(),
+                "reading {reading:?} must stop a capped run"
+            );
             let message = b.take_stop_message().unwrap();
             assert!(message.contains("unpriced or invalid cost"), "{message}");
             assert!(message.contains("$0.0000 of $10.0000 cap"), "{message}");
@@ -1412,7 +1528,7 @@ mod tests {
             assert!(message.contains("no tasks launched"), "{message}");
             // A later result cannot clear an invalid configuration or move its
             // stop point past zero.
-            b.record(Some(0.01));
+            b.record(&CostReading::known(0.01, false, 1));
             assert!(b.cap_exceeded());
             assert!(b.take_stop_message().is_none());
         }
@@ -1421,9 +1537,12 @@ mod tests {
     #[test]
     fn budget_tracker_repeated_attempts_preserve_first_stop_reason_and_point() {
         let mut b = BudgetTracker::with_cap(10.0);
-        b.record(None);
-        b.record(Some(1.0));
-        b.record(Some(f64::NAN));
+        b.record(&CostReading {
+            ledger_rows: 1,
+            ..CostReading::unknown()
+        }); // unpriced row: trips right here, at attempt 1.
+        b.record(&CostReading::known(1.0, false, 1));
+        b.record(&CostReading::known(f64::NAN, false, 1));
         assert!(b.cap_exceeded());
         let message = b.take_stop_message().unwrap();
         assert!(message.contains("after 1 tasks"), "{message}");
@@ -1433,9 +1552,9 @@ mod tests {
     #[test]
     fn budget_tracker_stop_message_is_handed_out_exactly_once() {
         let mut b = BudgetTracker::with_cap(1.00);
-        b.record(Some(0.40));
+        b.record(&CostReading::known(0.40, false, 1));
         assert!(b.take_stop_message().is_none(), "not tripped yet");
-        b.record(Some(2.00)); // spent 2.40 >= 1.00 cap, trips on attempt 2.
+        b.record(&CostReading::known(2.00, false, 1)); // spent 2.40 >= 1.00 cap, trips on attempt 2.
         let msg = b
             .take_stop_message()
             .expect("must produce a message the moment it trips");
