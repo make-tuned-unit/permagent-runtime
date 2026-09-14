@@ -4085,8 +4085,14 @@ pub(crate) async fn dispatch_goal_fn(
                 .await
             }
             goal_engine::GoalOutcome::TimedOut { secs } => {
-                handle_goal_timeout(&tracker_pool, &tracker_card_id, &tracker_project_id, secs)
-                    .await
+                handle_goal_timeout(
+                    &tracker_pool,
+                    &tracker_card_id,
+                    &tracker_project_id,
+                    secs,
+                    None,
+                )
+                .await
             }
             goal_engine::GoalOutcome::Blocked { reason } => {
                 handle_goal_blocked(
@@ -9424,24 +9430,51 @@ fn remaining_wall_budget_secs_from(cap_secs: u64, elapsed_secs: i64) -> Option<u
     Some(cap_secs - elapsed_secs as u64)
 }
 
+/// Lane R20b (G25 HIGH-1): [`remaining_wall_budget_secs`]'s answer, keeping
+/// "no ceiling configured at all" distinct from "a ceiling is configured and
+/// it reads zero" — [`remaining_wall_budget_secs_from`] collapses both into
+/// `None` (correct for [`wall_budget_exhausted_refusal`]'s own question, "is
+/// there enough left for a FULL retry attempt", which legitimately treats
+/// the two alike: either way it must not refuse here), but
+/// `maybe_salvage_committed_work`'s time-box question needs them told apart:
+/// no cap at all still gets the plain 90s default box, while a cap that has
+/// genuinely run out must skip salvage rather than spend the last sliver of
+/// budget (or none at all) on a doomed verify run.
+enum WallBudgetCeiling {
+    /// No `wallclock_cap_secs` configured, or its inputs
+    /// (`first_dispatched_at`) are missing/unparseable — unbounded from this
+    /// question's point of view.
+    Unbounded,
+    /// A cap is configured and this many seconds remain — `0` when it is
+    /// already fully spent (or `elapsed_secs` reads as a clock anomaly;
+    /// never treated as unbounded).
+    Remaining(u64),
+}
+
 /// Lane R20b: how many seconds of a goal's configured wall-clock budget are
-/// left right now, if one is configured and its first dispatch is known.
-/// `None` when no wallclock cap is configured (a goal with no wall budget at
-/// all — the caller should treat this as "no configured ceiling", not "zero
-/// budget"), `first_dispatched_at` is missing/unparseable, or the cap is
-/// already fully spent. Used by [`maybe_salvage_committed_work`]'s time box,
+/// left right now. Used by [`maybe_salvage_committed_work`]'s time box,
 /// independent of `handle_goal_completion`'s own [`WallBudgetRefusal`] (that
 /// struct is only ever built when a refusal is already being decided; this
 /// helper answers the plain "how much is left" question from any call site).
-fn remaining_wall_budget_secs(metadata: &serde_json::Value) -> Option<u64> {
-    let cap_secs = goal_transition::goal_budget(metadata).wallclock_cap_secs?;
-    let first_dispatched_at = metadata
+fn remaining_wall_budget_secs(metadata: &serde_json::Value) -> WallBudgetCeiling {
+    let Some(cap_secs) = goal_transition::goal_budget(metadata).wallclock_cap_secs else {
+        return WallBudgetCeiling::Unbounded;
+    };
+    let Some(first_dispatched_at) = metadata
         .get("first_dispatched_at")
         .and_then(|v| v.as_str())
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())?
-        .with_timezone(&chrono::Utc);
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&chrono::Utc))
+    else {
+        return WallBudgetCeiling::Unbounded;
+    };
     let elapsed_secs = (chrono::Utc::now() - first_dispatched_at).num_seconds();
-    remaining_wall_budget_secs_from(cap_secs, elapsed_secs)
+    match remaining_wall_budget_secs_from(cap_secs, elapsed_secs) {
+        Some(remaining) => WallBudgetCeiling::Remaining(remaining),
+        // A configured cap with nothing (or a negative/anomalous reading)
+        // left is EXHAUSTED, not unbounded — G25 HIGH-1's fix.
+        None => WallBudgetCeiling::Remaining(0),
+    }
 }
 
 /// I1 (harness loop, 2026-09-10): wires E2b's pure
@@ -9762,7 +9795,7 @@ pub async fn handle_goal_completion(
                 // plus uncommitted changes on top, falls straight through to
                 // the ordinary park below, unchanged.
                 if let SalvageOutcome::Salvaged { note } =
-                    maybe_salvage_committed_work(pool, &card).await
+                    maybe_salvage_committed_work(pool, &card, None).await
                 {
                     tracing::info!(
                         target: "permagentd::brain",
@@ -10228,6 +10261,7 @@ pub async fn handle_goal_timeout(
     card_id: &str,
     project_id: &str,
     secs: u64,
+    grace_deadline: Option<std::time::Instant>,
 ) -> Result<(), String> {
     let card = cards::get_card(pool, card_id)
         .await?
@@ -10256,7 +10290,9 @@ pub async fn handle_goal_timeout(
     // shutdown-signal sweep funnel through, so instrumenting it here covers
     // both. Give any work already committed one honest chance to verify,
     // review and land before parking — see `maybe_salvage_committed_work`.
-    if let SalvageOutcome::Salvaged { note } = maybe_salvage_committed_work(pool, &card).await {
+    if let SalvageOutcome::Salvaged { note } =
+        maybe_salvage_committed_work(pool, &card, grace_deadline).await
+    {
         tracing::info!(
             target: "permagentd::brain",
             "Goal '{}' worker timed out after {}s, but its committed work was salvaged instead \
@@ -10831,9 +10867,14 @@ async fn drain_dispatched_goals_with(
                     // Best-effort, same as the cap-expiry park below: a no-op
                     // if the card already left `in_progress`, so this never
                     // double-parks or fights a genuine retry.
-                    let _ =
-                        handle_goal_timeout(pool, &card_id, &project_id, start.elapsed().as_secs())
-                            .await;
+                    let _ = handle_goal_timeout(
+                        pool,
+                        &card_id,
+                        &project_id,
+                        start.elapsed().as_secs(),
+                        None,
+                    )
+                    .await;
                     stalled += 1;
                 }
                 DrainAction::Wait => {
@@ -10931,7 +10972,7 @@ async fn drain_dispatched_goals_with(
         // was never restarted is `ready`, so this is a no-op for it too — it
         // is counted, not silently dropped, which is what the summary line
         // and the eval's own post-run audit read.
-        let _ = handle_goal_timeout(pool, &card_id, &project_id, cap.as_secs()).await;
+        let _ = handle_goal_timeout(pool, &card_id, &project_id, cap.as_secs(), None).await;
     }
 
     Ok(DrainSummary {
@@ -10998,6 +11039,11 @@ pub async fn park_dispatched_goals_now(
     coordinator_session_id: &str,
 ) -> Result<DrainSummary, String> {
     const TERMINAL: [GoalState; 3] = [GoalState::Complete, GoalState::Cancelled, GoalState::Failed];
+    // G25 HIGH-2: this function IS the shutdown-signal response (its one
+    // caller selects it against `crate::signal::shutdown_signal()`), so
+    // "now" here is "when the shutdown signal arrived" for salvage's
+    // purposes — the deadline any salvage attempt below must respect.
+    let grace_deadline = Some(std::time::Instant::now() + ASSUMED_SIGTERM_GRACE);
     let mut finished = 0usize;
     let mut timed_out = 0usize;
     for session_id in descendant_session_ids(pool, coordinator_session_id).await? {
@@ -11009,7 +11055,7 @@ pub async fn park_dispatched_goals_now(
         if TERMINAL.contains(&state) {
             finished += 1;
         } else {
-            let _ = handle_goal_timeout(pool, &card_id, &project_id, 0).await;
+            let _ = handle_goal_timeout(pool, &card_id, &project_id, 0, grace_deadline).await;
             timed_out += 1;
         }
     }
@@ -12533,6 +12579,20 @@ async fn commits_ahead_of_baseline(
 /// [`maybe_salvage_committed_work`]).
 const SALVAGE_TIME_BOX: std::time::Duration = std::time::Duration::from_secs(90);
 
+/// G25 MED: card metadata key counting how many times
+/// [`maybe_salvage_committed_work`] has attempted a salvage for this goal.
+/// Listed in [`goal_transition::PROTECTED_GOAL_METADATA_KEYS`] so the
+/// agent-facing metadata PATCH tool cannot reset it.
+const SALVAGE_ATTEMPTED_METADATA_KEY: &str = "salvage_attempted";
+
+/// G25 HIGH-2: how much grace [`park_dispatched_goals_now`] assumes the
+/// process still has before the eval runner's own SIGTERM-then-SIGKILL
+/// escalation (`permagent-eval::runner::SIGTERM_GRACE`, 30s) forcibly kills
+/// it, measured from the moment the shutdown signal was observed (this
+/// crate does not depend on `permagent-eval`, so the figure is a documented
+/// constant, not a shared one — keep the two in step if either changes).
+const ASSUMED_SIGTERM_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Outcome of [`maybe_salvage_committed_work`]. Every call site only cares
 /// about one distinction: did the goal already move out of `in_progress`
 /// (`Salvaged`, in which case the caller must NOT also park it), or is it
@@ -12583,10 +12643,23 @@ enum SalvageOutcome {
 /// Bounded to `min(90s, remaining wall budget)`; no configured wallclock cap
 /// leaves the plain 90s box; a cap with NOTHING left skips salvage entirely
 /// (`salvage_skipped_no_budget`) rather than spend the last sliver of a
-/// goal's wall-clock on a doomed verify run.
+/// goal's wall-clock on a doomed verify run. `grace_deadline` (G25 HIGH-2):
+/// when the caller is racing an actual SIGTERM/SIGKILL clock (the drain's
+/// shutdown-signal sweep, `park_dispatched_goals_now`), the wall clock at
+/// which this process is expected to be forcibly killed — the time box is
+/// further bounded to `grace_remaining - 5s`, and salvage is skipped
+/// entirely (`salvage_skipped_no_grace`) with under 10s of grace left.
+/// `None` for every other caller (the ordinary Hold-arm and
+/// `handle_goal_completion` park sites are not racing a kill signal at all).
+///
+/// G25 MED: at most ONE salvage attempt per goal, ever — tracked by the
+/// protected metadata key `salvage_attempted` (mirrors R18g's
+/// `headless_unblock_count`). A second call for the same goal refuses
+/// outright before doing any git/verify work at all.
 async fn maybe_salvage_committed_work(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
+    grace_deadline: Option<std::time::Instant>,
 ) -> SalvageOutcome {
     // Same derivation `handle_goal_completion`'s own callers already use
     // (`dispatch_goal_fn` passes `policy.is_some_and(|p| p.auto_land)`) —
@@ -12620,6 +12693,38 @@ async fn maybe_salvage_committed_work(
         return not_salvaged("no commits past the dispatch baseline — nothing to salvage".into());
     }
 
+    // G25 MED: only past this point is there actually anything worth
+    // salvaging — a trivial "nothing committed" call (the common case for
+    // most parks) must never spend the one-per-goal budget. From here on,
+    // this goal gets AT MOST ONE salvage attempt, ever.
+    let already_attempted = card
+        .metadata_json
+        .get(SALVAGE_ATTEMPTED_METADATA_KEY)
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        >= 1;
+    if already_attempted {
+        return not_salvaged("salvage already attempted once for this goal".to_string());
+    }
+    if let Err(e) = persist_card_meta(pool, &card.id, |m| {
+        let count = m
+            .get(SALVAGE_ATTEMPTED_METADATA_KEY)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        m.insert(
+            SALVAGE_ATTEMPTED_METADATA_KEY.to_string(),
+            serde_json::json!(count + 1),
+        );
+    })
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "could not stamp the salvage_attempted receipt: {e}"
+        );
+    }
+
     match worktree_has_uncommitted_work(worktree_path, &baseline).await {
         Ok((_, tracked_status)) if !tracked_status.is_empty() => {
             record_salvage_receipt(
@@ -12644,8 +12749,8 @@ async fn maybe_salvage_committed_work(
         }
     }
 
-    let time_box = match remaining_wall_budget_secs(&card.metadata_json) {
-        Some(0) => {
+    let mut time_box = match remaining_wall_budget_secs(&card.metadata_json) {
+        WallBudgetCeiling::Remaining(0) => {
             record_salvage_receipt(
                 pool,
                 &card.id,
@@ -12655,9 +12760,36 @@ async fn maybe_salvage_committed_work(
             .await;
             return not_salvaged("no wall budget remains to verify the committed work".into());
         }
-        Some(secs) => std::time::Duration::from_secs(secs.min(SALVAGE_TIME_BOX.as_secs())),
-        None => SALVAGE_TIME_BOX,
+        WallBudgetCeiling::Remaining(secs) => {
+            std::time::Duration::from_secs(secs.min(SALVAGE_TIME_BOX.as_secs()))
+        }
+        WallBudgetCeiling::Unbounded => SALVAGE_TIME_BOX,
     };
+
+    // G25 HIGH-2: the drain-shutdown caller is racing a real SIGTERM/SIGKILL
+    // clock, not just the goal's own wall budget — bound the box further so
+    // a salvage attempt cannot itself get killed mid-flight, and skip
+    // entirely when there is too little grace left to be worth starting.
+    if let Some(deadline) = grace_deadline {
+        let grace_remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if grace_remaining < std::time::Duration::from_secs(10) {
+            record_salvage_receipt(
+                pool,
+                &card.id,
+                "salvage_skipped_no_grace",
+                &format!(
+                    "{ahead} commit(s) past baseline, but only {}s of shutdown grace remain",
+                    grace_remaining.as_secs()
+                ),
+            )
+            .await;
+            return not_salvaged(
+                "too little SIGTERM grace remains to verify the committed work".into(),
+            );
+        }
+        let safety_margin = std::time::Duration::from_secs(5);
+        time_box = time_box.min(grace_remaining.saturating_sub(safety_margin));
+    }
 
     tracing::info!(
         target: "permagentd::brain",
@@ -12866,22 +12998,35 @@ async fn record_synthetic_verify_evidence(
         Ok(rmcp::model::CallToolRequestParams::new("developer__verify")),
     );
     let response = MessageContent::tool_response(&call_id, Ok(result.clone()));
+    // G25 LOW: flagged in the message's own `metadata_json` column (not the
+    // conversation-level `MessageContent` shape, which has no generic flag
+    // field) so a transcript reader can tell this call was made post-hoc by
+    // the harness after the worker's own session ended, rather than by the
+    // worker itself.
+    let synthetic_flag = serde_json::json!({ "synthetic_salvage_verify": true }).to_string();
+    // G25 HIGH-2: one transaction for both rows — a kill between them used
+    // to leave a dangling, unpaired tool_request.
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
     for (role, content) in [("assistant", request), ("user", response)] {
         let content_json = serde_json::to_string(&vec![content]).map_err(|e| e.to_string())?;
         sqlx::query(
             "INSERT INTO messages (message_id, session_id, role, content_json, \
-             created_timestamp) VALUES (?, ?, ?, ?, ?)",
+             created_timestamp, metadata_json) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(worker_session_id)
         .bind(role)
         .bind(content_json)
         .bind(chrono::Utc::now().timestamp())
-        .execute(pool)
+        .bind(&synthetic_flag)
+        .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
     }
-    Ok(())
+    tx.commit().await.map_err(|e| e.to_string())
 }
 
 /// Hold a premature InProgress → Review. `None` means allow the transition.
@@ -13004,7 +13149,7 @@ async fn maybe_hold_review(
                 // `maybe_salvage_committed_work`'s own doc comment for why
                 // this can never recurse back into this same arm.
                 if let SalvageOutcome::Salvaged { note } =
-                    maybe_salvage_committed_work(pool, card).await
+                    maybe_salvage_committed_work(pool, card, None).await
                 {
                     tracing::info!(
                         target: "permagentd::brain",
@@ -18276,7 +18421,9 @@ mod tests {
         let (card, _dir, _head) =
             r20b_setup_goal_with_committed_work(&pool, "r20b-drain-shutdown", None).await;
 
-        handle_goal_timeout(&pool, &card.id, &card.project_id, 0)
+        // `None`: ample grace (or none of this drain's business — the
+        // ordinary cap-expiry loop never races a SIGTERM clock at all).
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 0, None)
             .await
             .unwrap();
 
@@ -18297,6 +18444,62 @@ mod tests {
              committed work instead of stranding it behind a park"
         );
         assert!(updated.metadata_json.get("salvaged_on_park").is_some());
+    }
+
+    /// G25 HIGH-2: the shutdown-signal sweep's grace clock. Under 10s of
+    /// assumed SIGTERM grace remaining, salvage must skip entirely rather
+    /// than start a verify run it cannot finish before SIGKILL.
+    #[tokio::test]
+    async fn drain_shutdown_salvage_skips_with_insufficient_grace() {
+        let pool = test_pool().await;
+        let (card, _dir, _head) =
+            r20b_setup_goal_with_committed_work(&pool, "r20b-drain-no-grace", None).await;
+
+        let almost_out_of_grace =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+        let outcome = maybe_salvage_committed_work(&pool, &card, almost_out_of_grace).await;
+        assert!(matches!(outcome, SalvageOutcome::NotSalvaged { .. }));
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let receipt = updated
+            .metadata_json
+            .get("salvage_receipt")
+            .expect("an insufficient-grace skip must still leave a breadcrumb");
+        assert_eq!(
+            receipt.get("outcome").and_then(|v| v.as_str()),
+            Some("salvage_skipped_no_grace")
+        );
+        assert!(updated.metadata_json.get("salvaged_on_park").is_none());
+    }
+
+    /// G25 MED: at most one salvage attempt per goal, ever.
+    #[tokio::test]
+    async fn salvage_refuses_a_second_attempt_for_the_same_goal() {
+        let pool = test_pool().await;
+        let (card, _dir, _head) =
+            r20b_setup_goal_with_committed_work(&pool, "r20b-salvage-once", None).await;
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                SALVAGE_ATTEMPTED_METADATA_KEY.to_string(),
+                serde_json::json!(1),
+            );
+        })
+        .await
+        .unwrap();
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        let outcome = maybe_salvage_committed_work(&pool, &card, None).await;
+        match outcome {
+            SalvageOutcome::NotSalvaged { note } => {
+                assert!(note.contains("already attempted"));
+            }
+            SalvageOutcome::Salvaged { .. } => panic!("a spent salvage attempt must not re-fire"),
+        }
+        // Confirms the guard refuses BEFORE doing any git/verify work: no
+        // `salvage_receipt`/`salvaged_on_park` write of any kind.
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert!(updated.metadata_json.get("salvage_receipt").is_none());
+        assert!(updated.metadata_json.get("salvaged_on_park").is_none());
     }
 
     /// A goal with real uncommitted work (never committed at all) has no
