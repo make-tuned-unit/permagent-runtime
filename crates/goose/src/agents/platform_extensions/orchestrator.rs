@@ -13143,6 +13143,11 @@ async fn maybe_salvage_committed_work(
         scope: None,
         risk: None,
         changed_paths: None,
+        // R21c: mechanical field addition only — this salvage call does not
+        // (yet) thread the card's acceptance criteria through; wiring that up
+        // belongs to whichever lane owns wiring `card.metadata_json`'s
+        // acceptance criteria into a dispatch-time caller of `verify`.
+        acceptance_criteria: None,
     };
     let verify_run = tokio::time::timeout(
         time_box,

@@ -369,6 +369,7 @@ impl CandidateVerifier for VerifyToolVerifier {
                     scope: None,
                     risk: None,
                     changed_paths: None,
+                    acceptance_criteria: None,
                 },
                 Some(candidate.worktree.as_path()),
             )
