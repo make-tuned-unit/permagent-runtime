@@ -491,6 +491,11 @@ impl Agent {
         manager.add_hook(Box::new(crate::after_turn::ReviewerMandate::new()));
         manager.add_hook(Box::new(crate::after_turn::RoadmapDispatchGuard::new()));
         manager.add_hook(Box::new(crate::after_turn::NoRoadmapGuard::new()));
+        // Lane R18f: headless-only backstop for the rule-5 free-text ending
+        // NoRoadmapGuard cannot see (a roadmap tool call that was ATTEMPTED
+        // but failed, e.g. -32002, reads to NoRoadmapGuard as "rule 1
+        // satisfied"). See Rule5HonestFailureGuard's doc comment.
+        manager.add_hook(Box::new(crate::after_turn::Rule5HonestFailureGuard::new()));
         manager
     }
 

@@ -1869,6 +1869,198 @@ impl AfterTurn for NoRoadmapGuard {
     }
 }
 
+// ── Fifth implementor: rule 5, an honest failure for a headless free-text turn ──
+
+/// Whether the turn's FINAL message contains at least one `ToolRequest` — the
+/// narrow signature [`Rule5HonestFailureGuard`] cares about. A turn that ends
+/// by calling literally anything (even a tool unrelated to the roadmap) is
+/// not the Class 4 shape; only a pure free-text ending is.
+fn final_message_has_tool_call(messages: &[Message]) -> bool {
+    use crate::conversation::message::MessageContent;
+    let Some(last) = messages.last() else {
+        return false;
+    };
+    last.content
+        .iter()
+        .any(|content| matches!(content, MessageContent::ToolRequest(_)))
+}
+
+/// Whether any tool call anywhere in `messages` with a base name in `names`
+/// actually SUCCEEDED — the complement of merely being attempted.
+///
+/// Lane R18f (A17 analysis Class 4, HARNESS_LOOP_LOG.md): [`turn_called_any_tool`]
+/// cannot distinguish a `decompose_roadmap` call that landed a roadmap from
+/// one that came back `-32002: Tool not found` — both are "a `ToolRequest`
+/// with this name exists". [`NoRoadmapGuard`] only needs that weaker "was it
+/// attempted" reading (a call denied by a DIFFERENT guard is still evidence
+/// rule 1 was followed); [`Rule5HonestFailureGuard`] needs the stricter one,
+/// because "tried `decompose_roadmap`, it errored, then asked a free-text
+/// question" is exactly the shape that left Class 4 with zero decisions
+/// recorded and no guard firing.
+fn turn_tool_call_succeeded(messages: &[Message], names: &[&str]) -> bool {
+    use crate::conversation::message::MessageContent;
+    use std::collections::HashSet;
+
+    let mut pending = HashSet::new();
+    for msg in messages {
+        for content in &msg.content {
+            match content {
+                MessageContent::ToolRequest(req) => {
+                    let Ok(call) = req.tool_call.as_ref() else {
+                        continue;
+                    };
+                    let base = call.name.rsplit("__").next().unwrap_or(call.name.as_ref());
+                    if names.contains(&base) {
+                        pending.insert(req.id.clone());
+                    }
+                }
+                MessageContent::ToolResponse(response) => {
+                    if !pending.remove(&response.id) {
+                        continue;
+                    }
+                    if let Ok(result) = response.tool_result.as_ref() {
+                        if result.is_error != Some(true) {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// Lane R18f: set the one time [`Rule5HonestFailureGuard`] actually parks a
+/// headless coding-harness turn on a rule-5 free-text ending.
+/// `AfterTurnAction::Park` on its own only ends the turn with a message in
+/// the transcript (see `agent.rs`'s reply loop) — nothing about it makes
+/// `permagent run`'s process exit non-zero, so this shape would otherwise
+/// still read as a clean exit to the eval harness the way Class 4 originally
+/// did. `handle_run_command` (`goose-cli/src/cli.rs`) checks
+/// [`take_rule5_free_text_turn`] after `session.headless()` returns and turns
+/// an otherwise-`Ok` result into an error so the eval marks the run errored
+/// instead of passing silently. Process-global by design, matching
+/// `crate::receipts`'s own convention: the CLI runs exactly one headless
+/// session per process.
+static RULE5_FREE_TEXT_TURN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Read-and-clear. `false` unless [`Rule5HonestFailureGuard`] parked a turn
+/// since the last call (or ever, in a process that never ran headless).
+pub fn take_rule5_free_text_turn() -> bool {
+    RULE5_FREE_TEXT_TURN.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
+const RULE5_INJECT_TEXT: &str =
+    "Your turn is ending in free text with no tool call and no roadmap. Per rule 5: call \
+     decompose_roadmap (or create_roadmap) now with concrete nodes, or — if the task is \
+     genuinely impossible with the tools available to you — call escalate. A question to the \
+     user or a prose plan is not a valid way to end this turn in unattended mode.";
+
+const RULE5_PARK_REASON: &str =
+    "rule5_free_text_turn: the coding coordinator's turn ended in free text — no roadmap, no \
+     dispatched goal, no escalate, and no tool call at all in the final message — after the \
+     hold budget for retrying was exhausted. Call decompose_roadmap or escalate; a free-text \
+     answer is not a valid way to end this turn unattended.";
+
+/// Headless-only backstop: a coding-harness coordinator turn that ends with
+/// no roadmap, no dispatched goal, no `escalate`, and NO TOOL CALL AT ALL in
+/// its final assistant message is a free-text ending — the exact shape
+/// `permagent-coding.yaml` rule 5 forbids ("Never end a turn without a
+/// roadmap … If the task is genuinely impossible, call escalate").
+///
+/// Lane R18f (A17 analysis Class 4, HARNESS_LOOP_LOG.md): a DeepSeek round's
+/// first `decompose_roadmap` call came back `-32002`; the model correctly
+/// declined to work around the missing tool, but then asked a free-text
+/// question instead of calling `escalate`. [`NoRoadmapGuard`] did not fire —
+/// its `called_roadmap_tool` check only asks whether a `ToolRequest` with
+/// that name exists, not whether it SUCCEEDED, so the failed attempt read as
+/// "rule 1 satisfied" and the turn ended with zero decisions recorded. This
+/// guard closes that gap with the stricter [`turn_tool_call_succeeded`]
+/// check, scoped to headless only (`GooseMode::Auto`, the same signal
+/// `build_session::wants_headless_goal_dispatch` reads) — an interactive
+/// operator sees the same free-text answer directly and can reply, so
+/// nothing here changes [`NoRoadmapGuard`]'s existing interactive behaviour.
+pub struct Rule5HonestFailureGuard;
+
+impl Rule5HonestFailureGuard {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for Rule5HonestFailureGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl AfterTurn for Rule5HonestFailureGuard {
+    fn name(&self) -> &'static str {
+        "rule5_honest_failure"
+    }
+
+    async fn after_turn(&self, ctx: &AfterTurnContext<'_>) -> AfterTurnAction {
+        // Cheapest gates first, transcript-only, so the overwhelmingly common
+        // case (a turn that ended with SOME tool call, or an escalate) costs
+        // no session read and no DB round trip.
+        if final_message_has_tool_call(ctx.messages) || turn_called_escalate(ctx.messages) {
+            return AfterTurnAction::Allow;
+        }
+
+        let manager = crate::session::SessionManager::instance();
+        // Fail open on a degraded session store, the same choice every other
+        // guard in this file makes for the identical lookup.
+        let Ok(session) = manager.get_session(ctx.session_id, false).await else {
+            return AfterTurnAction::Allow;
+        };
+        if session.goose_mode != crate::config::GooseMode::Auto {
+            return AfterTurnAction::Allow;
+        }
+        let title = session.recipe.as_ref().map(|recipe| recipe.title.as_str());
+        if !crate::tool_inspection::is_top_level_coding_harness(
+            title,
+            session.parent_session_id.as_deref(),
+        ) {
+            return AfterTurnAction::Allow;
+        }
+
+        if turn_tool_call_succeeded(ctx.messages, &ROADMAP_TOOL_NAMES) {
+            return AfterTurnAction::Allow;
+        }
+
+        let Ok(pool) = manager.pool_clone().await else {
+            return AfterTurnAction::Allow;
+        };
+        let Ok(has_roadmap_cards) = NoRoadmapGuard::has_roadmap_cards(&pool, ctx.session_id).await
+        else {
+            return AfterTurnAction::Allow;
+        };
+        if has_roadmap_cards {
+            return AfterTurnAction::Allow;
+        }
+
+        if ctx.prior_holds < crate::cost_router::MAX_HOLDS {
+            AfterTurnAction::Continue {
+                inject: RULE5_INJECT_TEXT.to_string(),
+            }
+        } else {
+            tracing::error!(
+                session_id = %ctx.session_id,
+                harness_error = "rule5_free_text_turn",
+                "Lane R18f: headless coding-harness coordinator ended a turn in free text with \
+                 no roadmap, no escalate, and no tool call — honest failure, not a clean exit"
+            );
+            RULE5_FREE_TEXT_TURN.store(true, std::sync::atomic::Ordering::SeqCst);
+            AfterTurnAction::Park {
+                reason: RULE5_PARK_REASON.to_string(),
+            }
+        }
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -4120,6 +4312,156 @@ mod tests {
                 .after_turn(&AfterTurnContext {
                     session_id: &session_id,
                     messages: &prose,
+                    prior_holds: 0,
+                })
+                .await,
+            AfterTurnAction::Allow
+        );
+    }
+
+    // ── Rule5HonestFailureGuard (Lane R18f, A17 analysis Class 4) ──────────
+    //
+    // The live `after_turn` needs a headless coding-harness session row
+    // (recipe title, `GooseMode::Auto`, no parent) to reach its interesting
+    // branches — the same DB dependency every other guard's live path has in
+    // this file, which is why their own tests exercise the PURE predicates
+    // directly rather than standing up that session shape. These tests do
+    // the same for the two predicates that make this guard's Class 4 fix
+    // correct: distinguishing an ATTEMPTED roadmap call from a SUCCESSFUL
+    // one, and a pure free-text ending from any other kind.
+
+    /// The exact Class 4 shape: `decompose_roadmap` was called and errored
+    /// (the `-32002` case), so it must NOT read as success — this is what
+    /// `turn_called_any_tool` (NoRoadmapGuard's weaker check) gets wrong and
+    /// `turn_tool_call_succeeded` exists to fix.
+    #[test]
+    fn turn_tool_call_succeeded_is_false_for_a_failed_decompose_roadmap_call() {
+        let failed = vec![tool_exchange("decompose_roadmap", "call-1", false)];
+        assert!(
+            turn_called_any_tool(&failed, &ROADMAP_TOOL_NAMES),
+            "a failed call is still an ATTEMPT — NoRoadmapGuard's weaker check must see it"
+        );
+        assert!(
+            !turn_tool_call_succeeded(&failed, &ROADMAP_TOOL_NAMES),
+            "a failed call must never read as a SUCCESSFUL roadmap request"
+        );
+    }
+
+    #[test]
+    fn turn_tool_call_succeeded_is_true_for_a_successful_create_roadmap_call() {
+        let ok = vec![tool_exchange("create_roadmap", "call-1", true)];
+        assert!(turn_tool_call_succeeded(&ok, &ROADMAP_TOOL_NAMES));
+    }
+
+    #[test]
+    fn turn_tool_call_succeeded_is_false_when_never_called() {
+        let plain = vec![Message::assistant().with_text("Here is a plan.")];
+        assert!(!turn_tool_call_succeeded(&plain, &ROADMAP_TOOL_NAMES));
+    }
+
+    /// A turn with SOME later successful call still counts, even if an
+    /// earlier attempt at the same tool failed — matches "decompose_roadmap
+    /// errored once, the model retried, and the retry landed".
+    #[test]
+    fn turn_tool_call_succeeded_true_when_a_later_retry_landed() {
+        let mut messages = vec![tool_exchange("decompose_roadmap", "call-1", false)];
+        messages.push(tool_exchange("decompose_roadmap", "call-2", true));
+        assert!(turn_tool_call_succeeded(&messages, &ROADMAP_TOOL_NAMES));
+    }
+
+    /// The Class 4 free-text signature itself: after a failed
+    /// `decompose_roadmap` and a `search_available_extensions` probe, the
+    /// FINAL message is pure text with no tool call at all.
+    #[test]
+    fn final_message_has_tool_call_is_false_after_a_free_text_ending() {
+        let messages =
+            vec![
+            tool_exchange("decompose_roadmap", "call-1", false),
+            tool_exchange("extensionmanager__search_available_extensions", "call-2", true),
+            Message::assistant().with_text(
+                "The decompose_roadmap tool isn't available in this session — I confirmed that \
+                 by probing the extension manager.",
+            ),
+        ];
+        assert!(!final_message_has_tool_call(&messages));
+    }
+
+    #[test]
+    fn final_message_has_tool_call_is_true_when_the_turn_ends_on_a_call() {
+        let messages = vec![
+            Message::assistant().with_text("Let me check."),
+            tool_exchange("decompose_roadmap", "call-1", true),
+        ];
+        assert!(final_message_has_tool_call(&messages));
+    }
+
+    #[test]
+    fn final_message_has_tool_call_is_false_for_an_empty_turn() {
+        let empty: Vec<Message> = vec![];
+        assert!(!final_message_has_tool_call(&empty));
+    }
+
+    /// An explicit `escalate` call anywhere in the turn is rule 5's own
+    /// honest exit — the guard's live `after_turn` must never fire on it.
+    /// Exercised at the trait-impl level (not just the predicate) because
+    /// this short-circuit runs before any session lookup, so it needs no DB.
+    #[tokio::test]
+    async fn rule5_guard_allows_a_turn_that_escalated_even_with_no_other_tool_call() {
+        let guard = Rule5HonestFailureGuard::new();
+        let escalated = vec![
+            tool_exchange("decompose_roadmap", "call-1", false),
+            tool_exchange("escalate", "call-2", true),
+        ];
+        assert_eq!(
+            guard
+                .after_turn(&AfterTurnContext {
+                    session_id: "rule5-escalated",
+                    messages: &escalated,
+                    prior_holds: 0,
+                })
+                .await,
+            AfterTurnAction::Allow,
+            "an explicit escalate call is rule 5's own honest exit"
+        );
+    }
+
+    /// A turn that ends by calling literally anything (not `escalate`, not a
+    /// roadmap tool) is not the Class 4 free-text shape and must not fire —
+    /// this is the guard's cheapest, DB-free gate.
+    #[tokio::test]
+    async fn rule5_guard_allows_a_turn_that_ends_on_any_tool_call() {
+        let guard = Rule5HonestFailureGuard::new();
+        let messages = vec![tool_exchange("decompose_roadmap", "call-1", false)];
+        assert_eq!(
+            guard
+                .after_turn(&AfterTurnContext {
+                    session_id: "rule5-other-tool",
+                    messages: &messages,
+                    prior_holds: 0,
+                })
+                .await,
+            AfterTurnAction::Allow,
+            "the final message here DOES have a tool call, so this is not a free-text ending"
+        );
+    }
+
+    /// An unknown/non-harness session id (the session store cannot confirm a
+    /// headless coding-harness coordinator) is let through untouched — same
+    /// fail-open contract every other guard's live path makes in this file.
+    #[tokio::test]
+    async fn rule5_guard_allows_a_session_it_cannot_confirm() {
+        let session_id = format!("rule5-unknown-{}", uuid::Uuid::now_v7());
+        let guard = Rule5HonestFailureGuard::new();
+        let free_text = vec![
+            tool_exchange("decompose_roadmap", "call-1", false),
+            Message::assistant()
+                .with_text("I can't find that tool — what would you like me to do?"),
+        ];
+        assert_eq!(
+            guard
+                .after_turn(&AfterTurnContext {
+                    session_id: &session_id,
+                    messages: &free_text,
                     prior_holds: 0,
                 })
                 .await,

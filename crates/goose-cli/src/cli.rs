@@ -1693,7 +1693,23 @@ async fn handle_run_command(
         );
 
         permagent::receipts::begin_run();
-        let result = session.headless(contents).await;
+        let mut result = session.headless(contents).await;
+
+        // Harness loop, Lane R18f (A17 analysis Class 4): `Rule5HonestFailureGuard`
+        // (crates/goose/src/after_turn.rs) parks a headless coding-harness
+        // turn that ends in free text with no roadmap and no escalate, but
+        // `AfterTurnAction::Park` only ends the turn with a message in the
+        // transcript — it cannot itself make `session.headless()` return
+        // `Err`. Without this check an otherwise-`Ok` result would still
+        // report a clean exit for exactly the "zero decisions, zero
+        // dispatches" shape this lane exists to stop silently passing.
+        if result.is_ok() && permagent::after_turn::take_rule5_free_text_turn() {
+            result = Err(anyhow::anyhow!(
+                "rule5_free_text_turn: the coding-harness coordinator ended a turn in free \
+                 text with no roadmap and no escalate (Lane R18f) — see the session transcript \
+                 for the parked reason"
+            ));
+        }
         let succeeded = result.is_ok();
 
         // Harness loop, Lane T / T3: wait (bounded) for any goals this run
