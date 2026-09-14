@@ -603,6 +603,117 @@ async fn resolve_decompose_project(
     }
 }
 
+/// Resolve the project a `resume_roadmap` call with no explicit
+/// `project_id_or_slug` should target (Lane R20d, harness loop
+/// HARNESS_LOOP_LOG.md "A20 analysis" Q2/Q3). Before this, the handler
+/// mandatorily required the argument with no fallback, while every sibling
+/// roadmap handler (`decompose_roadmap`, via [`resolve_decompose_project`])
+/// resolves a default project when one is omitted -- a headless coordinator
+/// that read a paused roadmap off its own workspace but had no way to
+/// discover a project id was left with no legal move but to escalate.
+///
+/// Precedence, mirroring `resolve_decompose_project`'s cwd-then-default
+/// shape but scoped to this tool's actual job (finding a PAUSED roadmap to
+/// resume, not just any project):
+///   1. The active project whose `root_path` contains the session's working
+///      directory (identical match to `resolve_decompose_project`) -- used
+///      whether or not it already carries the `roadmap_paused` tag, since
+///      an explicit workspace match is the strongest signal available.
+///   2. No cwd match: look across every active project tagged
+///      `roadmap_paused`. Exactly one -> use it (a far better guess than
+///      blindly defaulting to "personal", which essentially never carries a
+///      real roadmap). Zero -> fall through to the "personal" default
+///      project, exactly as `resolve_decompose_project` does when nothing
+///      else matches. More than one -> a structured error listing every
+///      candidate project (name + slug) so the caller can escalate with the
+///      actual choices instead of guessing which one the user meant.
+///
+/// Whichever project is chosen, it must actually carry a paused roadmap or
+/// the call returns a structured "no roadmap to resume" error naming the
+/// project that was checked -- silently "resuming" a project that was never
+/// paused would just be a `dispatch_eligible_goals` no-op dressed up as
+/// success.
+async fn resolve_resume_project(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    working_dir: Option<&std::path::Path>,
+) -> Result<crate::projects::Project, String> {
+    fn has_paused_roadmap(project: &crate::projects::Project) -> bool {
+        project.tags.iter().any(|t| t == "roadmap_paused")
+    }
+
+    fn no_roadmap_err(project: &crate::projects::Project) -> String {
+        format!(
+            "Project '{}' (slug '{}') has no paused roadmap to resume. Its roadmap is \
+             already dispatching, or none was ever created -- use decompose_roadmap to \
+             propose one instead.",
+            project.name, project.slug
+        )
+    }
+
+    if let Some(dir) = working_dir {
+        // Canonicalize before comparing, same as `resolve_decompose_project`.
+        let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        let dir_str = canonical_dir.to_string_lossy().into_owned();
+        let mut candidates: Vec<crate::projects::Project> =
+            crate::projects::list_projects(pool, Some("active"))
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| {
+                    p.root_path.as_deref().is_some_and(|root| {
+                        !root.is_empty()
+                            && (dir_str == root || dir_str.starts_with(&format!("{root}/")))
+                    })
+                })
+                .collect();
+        candidates
+            .sort_by_key(|p| std::cmp::Reverse(p.root_path.as_deref().map(str::len).unwrap_or(0)));
+        if let Some(best) = candidates.into_iter().next() {
+            return if has_paused_roadmap(&best) {
+                Ok(best)
+            } else {
+                Err(no_roadmap_err(&best))
+            };
+        }
+    }
+
+    let mut paused: Vec<crate::projects::Project> =
+        crate::projects::list_projects(pool, Some("active"))
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(has_paused_roadmap)
+            .collect();
+
+    match paused.len() {
+        0 => {
+            match crate::projects::get_project(pool, crate::projects::PERSONAL_PROJECT_ID).await? {
+                Some(project) if has_paused_roadmap(&project) => Ok(project),
+                Some(project) => Err(no_roadmap_err(&project)),
+                None => Err(
+                    "No project_id_or_slug was given, no project has a paused roadmap, and no \
+                 default project could be resolved."
+                        .to_string(),
+                ),
+            }
+        }
+        1 => Ok(paused.remove(0)),
+        _ => {
+            let list = paused
+                .iter()
+                .map(|p| format!("'{}' (slug '{}')", p.name, p.slug))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(format!(
+                "No project_id_or_slug was given and {} projects have a paused roadmap: {}. \
+                 Pass one explicitly to resume_roadmap.",
+                paused.len(),
+                list
+            ))
+        }
+    }
+}
+
 /// R1(b) (harness loop, Lane D1, from Lane F8 forensics): seed the
 /// `root_path` of whatever project a headless session's own `create_roadmap`
 /// would resolve onto (the SAME cwd-then-`personal` resolution
@@ -1573,6 +1684,21 @@ async fn materialize_roadmap_transaction_with_budget(
 struct PauseResumeRoadmapParams {
     /// Project ID (UUID) or slug.
     project_id_or_slug: String,
+}
+
+/// Lane R20d: unlike [`PauseResumeRoadmapParams`] (still required by
+/// `pause_roadmap` -- pausing without naming a target is never useful),
+/// `project_id_or_slug` here is optional. See [`resolve_resume_project`]
+/// for exactly how an omitted value is resolved.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ResumeRoadmapParams {
+    /// Project ID (UUID) or slug to resume. Optional: when omitted, resolves
+    /// to the project matching the session's working directory, or -- if
+    /// that project has no paused roadmap -- the sole project (if exactly
+    /// one) with a paused roadmap. Ambiguous or missing cases return a
+    /// structured error listing the choices instead of guessing.
+    #[serde(default)]
+    project_id_or_slug: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -6689,12 +6815,21 @@ impl OrchestratorClient {
         ))]))
     }
 
+    /// Lane R20d (harness loop, HARNESS_LOOP_LOG.md "A20 analysis" Q2/Q3):
+    /// `project_id_or_slug` used to be mandatory here with no fallback, the
+    /// only roadmap handler that worked that way -- `decompose_roadmap`
+    /// (via [`resolve_decompose_project`]) has always resolved a default
+    /// project when the argument is omitted. A headless coordinator that
+    /// discovers a paused roadmap has no way to look up its project id (no
+    /// project-discovery tool is exposed), so it was structurally unable to
+    /// call this tool at all and could only escalate. See
+    /// [`resolve_resume_project`] for the omitted-argument resolution.
     async fn handle_resume_roadmap(
         &self,
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResult, String> {
         let args = arguments.ok_or("Missing arguments")?;
-        let id_or_slug = extract_string(&args, "project_id_or_slug")?;
+        let requested_id_or_slug = args.get("project_id_or_slug").and_then(|v| v.as_str());
 
         let pool = self
             .context
@@ -6703,9 +6838,22 @@ impl OrchestratorClient {
             .await
             .map_err(|e| e.to_string())?;
 
-        let project = crate::projects::get_project_by_id_or_slug(&pool, &id_or_slug)
-            .await?
-            .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?;
+        let project = match requested_id_or_slug
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(id_or_slug) => crate::projects::get_project_by_id_or_slug(&pool, id_or_slug)
+                .await?
+                .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?,
+            None => {
+                let working_dir = self
+                    .context
+                    .session
+                    .as_ref()
+                    .map(|s| s.working_dir.as_path());
+                resolve_resume_project(&pool, working_dir).await?
+            }
+        };
 
         crate::projects::remove_tag(&pool, &project.id, "roadmap_paused").await?;
 
@@ -7221,9 +7369,13 @@ impl OrchestratorClient {
             Tool::new(
                 "resume_roadmap".to_string(),
                 "Resume auto-dispatch for a project's roadmap. Immediately dispatches any \
-                 goals that became eligible while paused."
+                 goals that became eligible while paused. project_id_or_slug is OPTIONAL: \
+                 omit it to resume the project matching your current working directory, or \
+                 the project (if there is exactly one) with a paused roadmap. If several \
+                 projects have a paused roadmap, or none does, you get back a structured \
+                 error naming the choices -- pass project_id_or_slug explicitly then."
                     .to_string(),
-                schema::<PauseResumeRoadmapParams>(),
+                schema::<ResumeRoadmapParams>(),
             ),
             Tool::new(
                 "escalate".to_string(),
@@ -23618,6 +23770,124 @@ mod tests {
         );
     }
 
+    // ── Lane R20d: resume_roadmap project discovery ──
+
+    #[tokio::test]
+    async fn resume_project_resolution_finds_the_sole_paused_project_when_no_cwd_match() {
+        let pool = test_pool().await;
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Paused Project".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::projects::add_tag(&pool, &project.id, "roadmap_paused")
+            .await
+            .unwrap();
+
+        let resolved = resolve_resume_project(&pool, None)
+            .await
+            .expect("a single paused project must resolve without an explicit id");
+        assert_eq!(resolved.id, project.id);
+    }
+
+    #[tokio::test]
+    async fn resume_project_resolution_two_paused_projects_lists_both_in_the_error() {
+        let pool = test_pool().await;
+        let a = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Paused A".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let b = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Paused B".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::projects::add_tag(&pool, &a.id, "roadmap_paused")
+            .await
+            .unwrap();
+        crate::projects::add_tag(&pool, &b.id, "roadmap_paused")
+            .await
+            .unwrap();
+
+        let err = resolve_resume_project(&pool, None)
+            .await
+            .expect_err("two ambiguous paused roadmaps must not silently pick one");
+        assert!(err.contains(&a.slug), "error must name '{}': {err}", a.slug);
+        assert!(err.contains(&b.slug), "error must name '{}': {err}", b.slug);
+    }
+
+    #[tokio::test]
+    async fn resume_project_resolution_no_paused_roadmap_anywhere_is_a_structured_error() {
+        let pool = test_pool().await;
+        // No project (including the seeded "personal") carries roadmap_paused.
+        let err = resolve_resume_project(&pool, None)
+            .await
+            .expect_err("resuming with nothing paused must be a structured error, not a no-op");
+        assert!(
+            err.contains("personal"),
+            "with no paused roadmap anywhere, the error must name the default project it \
+             checked: {err}"
+        );
+        assert!(err.contains("no paused roadmap"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn resume_project_resolution_prefers_the_cwd_project_even_without_the_tag() {
+        // Rule 1 (an explicit workspace match) outranks rule 2 (scanning for
+        // ANY paused project system-wide): if the cwd project exists but
+        // isn't paused, that is the honest error, not a silent fallback to
+        // some unrelated paused project elsewhere.
+        let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let cwd_project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Workspace Project".to_string(),
+                root_path: Some(root.to_str().unwrap().to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let elsewhere_paused = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Unrelated Paused Project".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::projects::add_tag(&pool, &elsewhere_paused.id, "roadmap_paused")
+            .await
+            .unwrap();
+
+        let working_dir = root.join("src");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        let err = resolve_resume_project(&pool, Some(working_dir.as_path()))
+            .await
+            .expect_err("the cwd project has no paused roadmap of its own");
+        assert!(
+            err.contains(&cwd_project.slug),
+            "error must name the cwd-matched project, not the unrelated one: {err}"
+        );
+    }
+
     // --- Cost-aware decomposition routing (#249) ---
 
     #[test]
@@ -23766,6 +24036,87 @@ mod tests {
             .await
             .unwrap();
         assert!(!tags.contains(&"roadmap_paused".to_string()));
+    }
+
+    /// Lane R20d: an explicit `project_id_or_slug` must keep working exactly
+    /// as before the default-resolution fallback was added.
+    #[tokio::test]
+    async fn handle_resume_roadmap_with_explicit_id_still_works() {
+        let (_tmp, sm, _session, _em, client) =
+            roadmap_handler_fixture(GooseMode::Approve, false).await;
+        let pool = sm.pool_clone().await.unwrap();
+
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Explicit Resume Target".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::projects::add_tag(&pool, &project.id, "roadmap_paused")
+            .await
+            .unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert(
+            "project_id_or_slug".to_string(),
+            serde_json::json!(project.slug),
+        );
+        let result = client
+            .handle_resume_roadmap(Some(args))
+            .await
+            .expect("an explicit, resolvable project id/slug must still resume directly");
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains(&project.name),
+            "response must name the resumed project: {text}"
+        );
+
+        let tags = crate::projects::list_tags(&pool, &project.id)
+            .await
+            .unwrap();
+        assert!(
+            !tags.contains(&"roadmap_paused".to_string()),
+            "resuming must clear the paused tag"
+        );
+    }
+
+    /// Lane R20d: the omitted-argument path, driven through the real
+    /// handler end to end -- the session's working directory matches the
+    /// project's `root_path`, so `resume_roadmap` with no arguments at all
+    /// must resolve and resume it, never demand an id the coordinator has
+    /// no way to discover (HARNESS_LOOP_LOG.md "A20 analysis" Q2/Q3).
+    #[tokio::test]
+    async fn handle_resume_roadmap_with_no_argument_resolves_the_cwd_project() {
+        let (_tmp, sm, session, _em, client) =
+            roadmap_handler_fixture(GooseMode::Approve, true).await;
+        let pool = sm.pool_clone().await.unwrap();
+
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Session Workspace Project".to_string(),
+                root_path: Some(session.working_dir.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::projects::add_tag(&pool, &project.id, "roadmap_paused")
+            .await
+            .unwrap();
+
+        let result = client
+            .handle_resume_roadmap(Some(JsonObject::new()))
+            .await
+            .expect("an omitted project_id_or_slug must resolve via the session's working dir");
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains(&project.name),
+            "response must name the auto-resolved project: {text}"
+        );
     }
 
     #[tokio::test]
