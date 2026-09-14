@@ -122,6 +122,16 @@ instructions: |
   - Make the smallest change that fully solves the task. Do not refactor
     surrounding code, add abstractions, or handle cases that cannot occur beyond
     what was asked.
+  - When you change an existing function's signature (add, remove, or retype a
+    parameter), grep every call site of that function across the whole repo
+    first and update each one in the same pass — a caller you only reach later
+    (or never) is how a refactor silently regresses code you already read. When
+    the new parameter represents a concept the codebase already models with its
+    own type (an existing enum/union/field on a type most callers already have
+    in hand), use that exact type rather than deriving a new, narrower one (e.g.
+    a derived boolean) — a caller that already carries the domain value can
+    then pass it straight through, and a caller that does not is a sign the
+    parameter belongs somewhere else.
   - Runaway-loop safety is active: if you repeat the same action without making
     progress, stop and choose a genuinely different approach instead of retrying.
   - Research current or uncertain facts before relying on them. Use

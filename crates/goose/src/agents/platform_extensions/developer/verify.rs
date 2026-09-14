@@ -428,6 +428,14 @@ impl VerifyTool {
                             check.label
                         ));
                     }
+                    // The program that ran (e.g. `python3`, `node`) was found and
+                    // started, but a package it tried to import/require is not
+                    // installed for THAT interpreter — a dependency-provisioning
+                    // gap, not a defect in the code under test. See
+                    // `missing_import_dependency`.
+                    if let Some(dep) = missing_import_dependency(&output) {
+                        return environment_dependency_result(check, exit_code, &output, &dep);
+                    }
                     return fail_result(check, exit_code, &output);
                 }
                 CheckOutcome::TimedOut => {
@@ -1295,6 +1303,46 @@ fn is_no_test_files_found(check: &Check, exit_code: Option<i32>, output: &str) -
     lower.contains("no tests found") || lower.contains("no test files found")
 }
 
+/// Matches a check's failure output against the handful of standard ways an
+/// interpreter/runtime reports "I started fine, but a package you asked me to
+/// import/require is not installed for me" — as opposed to a defect in the
+/// code under test. Two Python shapes both occur in the wild for the exact
+/// same underlying gap and must both be caught:
+/// - `python3 -m X` when `X` isn't importable prints
+///   `<interpreter path>: No module named X` (no exception, no quotes).
+/// - code that does `import X` prints a traceback ending
+///   `ModuleNotFoundError: No module named 'X'` (quoted).
+/// Node's `require`/`import` resolution failure and Ruby's `LoadError` follow
+/// the same "found the runtime, not the package" shape and are cheap to cover
+/// alongside Python since `verify` already special-cases pytest/jest/vitest
+/// elsewhere in this file. Captures the missing package name for the hint.
+static MISSING_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?m)No module named '?([\w][\w.\-]*)'?|Cannot find module '([^']+)'|cannot load such file -- (\S+)"#,
+    )
+    .unwrap()
+});
+
+/// Returns the missing package/module name when `output` looks like a check
+/// failed because the interpreter/runtime that ran it could not IMPORT a
+/// dependency — see [`MISSING_IMPORT_RE`] — distinct from
+/// [`CheckOutcome::ToolMissing`] (the executable itself was never found on
+/// PATH, e.g. no `pytest` binary at all: that case already gets its own clear
+/// "install it" message in `verify_with_cwd`). This is the sibling gap: the
+/// interpreter (e.g. `python3`) IS on PATH and DID run, but a package it
+/// tried to import is missing for that specific interpreter — often because a
+/// machine has more than one `python3` and only one of them has the package.
+/// A model that treats this as an ordinary test failure and starts editing
+/// application code to "fix" it is chasing an environment gap, not a bug.
+fn missing_import_dependency(output: &str) -> Option<String> {
+    let caps = MISSING_IMPORT_RE.captures(output)?;
+    caps.iter()
+        .skip(1)
+        .flatten()
+        .next()
+        .map(|m| m.as_str().to_string())
+}
+
 /// Package manager implied by the lockfile present (npm is the default).
 fn detect_node_package_manager(dir: &Path) -> &'static str {
     if dir.join("pnpm-lock.yaml").exists() {
@@ -1721,6 +1769,49 @@ fn fail_result(check: &Check, exit_code: Option<i32>, output: &str) -> CallToolR
         CallToolResult::error(vec![Content::text(message).with_priority(0.0)]),
         Some(&check.label),
         Some("fail"),
+        Some(&body),
+        None,
+    )
+}
+
+/// A check failed because the interpreter/runtime it ran under could not
+/// IMPORT a dependency (see [`missing_import_dependency`]) — reported as its
+/// own ENVIRONMENT class, distinct from [`fail_result`]'s generic "FAIL", so
+/// the model does not spend its bounded fix-and-reverify attempts editing
+/// application code for a gap that editing code cannot close. Still
+/// `CallToolResult::error` (so `is_error` is set and the existing runaway-loop
+/// guard still bounds a genuinely stuck run) — only the message and the
+/// `verdict` tag change.
+fn environment_dependency_result(
+    check: &Check,
+    exit_code: Option<i32>,
+    output: &str,
+    missing: &str,
+) -> CallToolResult {
+    let code = match exit_code {
+        Some(code) => code.to_string(),
+        None => "killed".to_string(),
+    };
+    let body = clamp_output(&normalize(output));
+    let message = format!(
+        "ENVIRONMENT - `{label}` failed (exit {code}), but not because of a defect in the \
+         code under test: the interpreter/runtime it ran under could not import `{missing}`.\n\n\
+         {body}\n\n\
+         This is a missing dependency for THIS interpreter/runtime, not a bug to fix by \
+         editing application code — a machine can have more than one interpreter (e.g. \
+         several `python3`s) where only some have `{missing}` installed. To resolve it: \
+         install `{missing}` for the interpreter this check actually used (e.g. \
+         `python3 -m pip install {missing}`, `npm install {missing}`, or the project's own \
+         package manager), point the project at its existing virtualenv/lockfile if it has \
+         one, or pass `verify` an explicit `command` that runs the check with an interpreter \
+         that already has `{missing}`. Do not add or change application code to work around \
+         a missing test dependency. Then run verify again.",
+        label = check.label,
+    );
+    observation(
+        CallToolResult::error(vec![Content::text(message).with_priority(0.0)]),
+        Some(&check.label),
+        Some("environment"),
         Some(&body),
         None,
     )
@@ -3001,6 +3092,103 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         assert!(text.contains("cargo test"), "the failing command is named");
         assert!(text.contains("exit 101"), "the exit code is shown");
         assert!(text.contains("E0425"), "the real compiler error survives");
+    }
+
+    // ── Missing-dependency environment classification (R18h) ──
+
+    #[test]
+    fn missing_import_dependency_catches_python_dash_m_style() {
+        // `python3 -m X` when X isn't importable: no exception, no quotes,
+        // just `<interpreter>: No module named X` — the shape actually seen
+        // reproducing harness-cli-argparse-log-filter's persistent failure.
+        let out = "/opt/homebrew/opt/python@3.14/bin/python3.14: No module named pytest";
+        assert_eq!(missing_import_dependency(out).as_deref(), Some("pytest"));
+    }
+
+    #[test]
+    fn missing_import_dependency_catches_python_traceback_style() {
+        let out = "Traceback (most recent call last):\n  File \"tests/test_x.py\", line 5, in <module>\n    import pytest\nModuleNotFoundError: No module named 'pytest'";
+        assert_eq!(missing_import_dependency(out).as_deref(), Some("pytest"));
+    }
+
+    #[test]
+    fn missing_import_dependency_catches_node_and_ruby() {
+        assert_eq!(
+            missing_import_dependency(
+                "Error: Cannot find module 'lodash'\nRequire stack:\n- /a/b.js"
+            )
+            .as_deref(),
+            Some("lodash")
+        );
+        assert_eq!(
+            missing_import_dependency(
+                "x.rb:1:in `require': cannot load such file -- nokogiri (LoadError)"
+            )
+            .as_deref(),
+            Some("nokogiri")
+        );
+    }
+
+    #[test]
+    fn missing_import_dependency_does_not_flag_an_ordinary_test_failure() {
+        assert_eq!(
+            missing_import_dependency("AssertionError: expected 2, got 3"),
+            None
+        );
+        assert_eq!(
+            missing_import_dependency("error[E0425]: cannot find value `x` in this scope"),
+            None
+        );
+    }
+
+    #[test]
+    fn environment_dependency_result_labels_the_gap_and_hints_a_fix_not_a_code_edit() {
+        let check = Check::direct("pytest", &[]);
+        let output = "/opt/homebrew/opt/python@3.14/bin/python3.14: No module named pytest";
+        let result = environment_dependency_result(&check, Some(1), output, "pytest");
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "still is_error for the loop guard"
+        );
+        let text = text_of(&result);
+        assert!(
+            text.starts_with("ENVIRONMENT"),
+            "labeled distinctly from FAIL: {text}"
+        );
+        assert!(
+            text.contains("pip install pytest"),
+            "gives a concrete remediation: {text}"
+        );
+        assert!(
+            text.contains("more than one interpreter"),
+            "explains the multi-interpreter trap: {text}"
+        );
+        assert!(
+            text.contains("Do not add or change application code"),
+            "tells the model not to chase this as a code bug: {text}"
+        );
+        let observation: VerificationObservation =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(observation.verdict.as_deref(), Some("environment"));
+    }
+
+    #[test]
+    fn a_check_failure_with_a_missing_import_routes_to_environment_not_fail() {
+        // Same failure shape as `fail_result_carries_the_real_errors` above,
+        // but with output indicating a missing dependency instead of a real
+        // code defect — the dispatch loop in `verify_with_cwd` must not
+        // report this as a generic FAIL.
+        let output = "/opt/homebrew/opt/python@3.14/bin/python3.14: No module named pytest";
+        assert!(missing_import_dependency(output).is_some());
+        let check = Check::direct("pytest", &[]);
+        let env_result = environment_dependency_result(&check, Some(1), output, "pytest");
+        let fail_result_text = text_of(&fail_result(&check, Some(1), output));
+        let env_result_text = text_of(&env_result);
+        assert_ne!(
+            env_result_text, fail_result_text,
+            "the environment-classified message must differ from the generic FAIL message"
+        );
     }
 
     #[test]
