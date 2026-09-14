@@ -1,8 +1,0 @@
-{
-  "status": "paused",
-  "approved": true,
-  "goals": [
-    { "id": "goal-1", "title": "Add rate limiting to the API", "state": "ready" },
-    { "id": "goal-2", "title": "Add a retry policy to the client", "state": "triage" }
-  ]
-}

@@ -41,6 +41,11 @@
 //! - [`runner`] — the thin orchestration glue that ties the above together
 //!   against real subprocesses (behind traits, so the decision logic is tested
 //!   with mocks).
+//! - [`seed_state`] — Lane K8: a fixture may ship `seed/harness_state.json`
+//!   describing pre-existing projects/roadmaps/goal cards to insert into a
+//!   run's isolated store before the harness starts, so a selection fixture
+//!   whose prose depends on pre-existing coordinator-visible state is
+//!   actually satisfiable.
 
 pub mod ab;
 pub mod cost;
@@ -56,6 +61,7 @@ pub mod program;
 pub mod qualification;
 pub mod report;
 pub mod runner;
+pub mod seed_state;
 pub mod selection;
 pub mod task;
 pub mod tier;
@@ -99,6 +105,7 @@ pub use qualification::{
     AreaRating, AreaScore, BinaryProvenance, QualificationInput, QualificationReport,
     QualificationRun, RunQualificationRecord, TaskQualificationEvidence, NINE_AREAS,
 };
+pub use seed_state::{HarnessStateSeed, SeedGoal, SeedProject};
 pub use selection::SelectionCheck;
 pub use task::{Task, TaskSpec};
 pub use tier::Tier;

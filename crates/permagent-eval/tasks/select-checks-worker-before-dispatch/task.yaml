@@ -6,6 +6,17 @@ max_turns: 15
 # available (or capable) risks a blind dispatch to a dead/misconfigured
 # worker. The correct selection checks first, dispatches second — never the
 # reverse, and never dispatching with no check at all.
+#
+# Lane K8 (HARNESS_LOOP_LOG.md Lane R20d report, A20 Q2/Q3): the "Ready goal
+# card" below used to be prose only — the driver seeded every run's store
+# with nothing but the bare `personal` project, so the coordinator had no
+# real card to look up and no honest way to confirm the prompt's claim. It
+# is now REAL, seeded straight into this run's own store before the harness
+# starts (`seed/harness_state.json`, see `crate::seed_state`): a project and
+# one goal card in the Ready column. `check_worker` + `goal_advance` is now
+# the genuine honest path (no `decompose_roadmap` needed, since nothing
+# needs planning) rather than a fixture the model could only satisfy by
+# fabricating a card id.
 test: [true]
 prompt: |
   There is a Ready goal card, "rename `old_id` to `new_id` across the repo",
