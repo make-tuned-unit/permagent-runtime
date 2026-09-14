@@ -336,6 +336,16 @@ pub struct TaskQualificationEvidence {
     /// them. Empty when `selection_correct` is `Some(true)` or `None`.
     #[serde(default)]
     pub selection_check_failures: Vec<String>,
+    /// Lane K6: the resolved harness wall-clock ceiling THIS run actually
+    /// used, seconds (`--harness-timeout-secs` CLI override > the task's own
+    /// `harness_timeout_secs:` > the tier's own default > the driver's
+    /// default — see [`crate::task::TaskSpec::resolved_harness_timeout_secs`]).
+    /// `#[serde(default)]` so a qual.json written before this lane still
+    /// parses, with `None` meaning "unknown ceiling", never "no ceiling was
+    /// applied". Retained so `seconds`/`t.result` can be read against the
+    /// ceiling that actually produced them.
+    #[serde(default)]
+    pub harness_timeout_secs: Option<u64>,
 }
 
 /// This run's capability gate, using graduate's per-run qualification rules.
@@ -456,6 +466,7 @@ pub fn build_run_qualification_record(
             cost_routing: r.signals.cost_routing.clone(),
             selection_correct: r.selection_correct,
             selection_check_failures: r.selection_check_failures.clone(),
+            harness_timeout_secs: r.harness_timeout_secs,
         })
         .collect();
 
@@ -1217,6 +1228,43 @@ mod tests {
         );
         assert_eq!(record.tasks[0].headless_autoland.as_deref(), Some("1"));
         assert_eq!(record.tasks[0].headless_drain_secs.as_deref(), Some("840"));
+    }
+
+    /// Lane K6: the resolved harness wall-clock ceiling a run actually used
+    /// (`TaskResult::harness_timeout_secs`) must round-trip onto the
+    /// retained `TaskQualificationEvidence`, so latency evidence in the
+    /// `.qual.json` record stays honest about which ceiling produced it.
+    #[test]
+    fn build_run_qualification_record_carries_the_resolved_harness_timeout() {
+        let mut solved = passing_task("t1");
+        solved.harness_timeout_secs = Some(900);
+        let mut not_run = crate::metrics::TaskResult::new(
+            "t2",
+            "classic",
+            crate::oracle::OracleOutcome::NotRun,
+            CostReading::unknown(),
+        );
+        // Never launched: stays `None`, never fabricated.
+        not_run.harness_timeout_secs = None;
+
+        let record = build_run_qualification_record(
+            "r0",
+            Some("deadbeef".to_string()),
+            complete_binary(),
+            "zai",
+            "glm-4.7",
+            true,
+            &[solved, not_run],
+        );
+        assert_eq!(record.tasks[0].harness_timeout_secs, Some(900));
+        assert_eq!(record.tasks[1].harness_timeout_secs, None);
+
+        // Serde default: a qual.json written before this lane (no field at
+        // all) must still parse, reading back as `None`.
+        let mut json = serde_json::to_value(&record.tasks[0]).unwrap();
+        json.as_object_mut().unwrap().remove("harness_timeout_secs");
+        let legacy: TaskQualificationEvidence = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.harness_timeout_secs, None);
     }
 
     /// The end-to-end bridge: N complete records, fed through

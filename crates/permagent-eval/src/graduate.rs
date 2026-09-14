@@ -669,6 +669,9 @@ fn task_result_from_qual_evidence(t: &TaskQualificationEvidence) -> Result<TaskR
         // counterpart (it is informational-only and deliberately excluded
         // from the gate) — never fabricated from absent data.
         receipt_source: None,
+        // Lane K6: the qual.json schema DOES carry this — read it back
+        // rather than fabricate it, same rule as `selection_correct` above.
+        harness_timeout_secs: t.harness_timeout_secs,
     })
 }
 
@@ -1937,6 +1940,7 @@ mod tests {
             cost_routing: None,
             selection_correct: None,
             selection_check_failures: Vec::new(),
+            harness_timeout_secs: None,
         }
     }
 

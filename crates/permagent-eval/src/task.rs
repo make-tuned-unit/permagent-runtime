@@ -182,9 +182,44 @@ impl TaskSpec {
         Ok(())
     }
 
-    /// The effective harness timeout, applying the default when unset.
+    /// The effective harness timeout, applying the default when unset. Does
+    /// NOT consider a [`crate::tier::Tier`]'s own default or a
+    /// `--harness-timeout-secs` CLI override — see
+    /// [`Self::resolved_harness_timeout_secs`] for the full Lane K6
+    /// precedence the runner actually uses.
     pub fn harness_timeout_secs(&self) -> u64 {
         self.harness_timeout_secs
+            .unwrap_or(DEFAULT_HARNESS_TIMEOUT_SECS)
+    }
+
+    /// Lane K6: resolve the harness wall-clock ceiling for one run of this
+    /// task under `tier`, applying (highest wins):
+    ///
+    /// 1. `cli_override` — `--harness-timeout-secs <N>`, a deliberate
+    ///    measurement knob for ONE invocation that beats everything else,
+    ///    including a task's own tighter `harness_timeout_secs:`.
+    /// 2. This task's own [`Self::harness_timeout_secs`] override from
+    ///    `task.yaml`.
+    /// 3. `tier`'s own [`crate::tier::Tier::harness_timeout_secs`] default
+    ///    (e.g. the zai tiers, `glm47`/`glm53`, default to 900s — see
+    ///    `Tier::builtin`).
+    /// 4. [`DEFAULT_HARNESS_TIMEOUT_SECS`].
+    ///
+    /// Evidence (Lane K6, `HARNESS_LOOP_LOG.md`): zai glm-4.7 rounds z2/z3 on
+    /// M19 failed `harness-loc-refund-cents-drift` and
+    /// `harness-refactor-shipping-quote-signature` by hitting the driver's
+    /// flat 600s per-task ceiling (`harness_timed_out=true` at 600.3s),
+    /// while zai's own solved-task walls on this suite run 150-440s and it
+    /// solved `loc-refund` in 526s under isolation — the per-task 600s cap
+    /// on those two fixtures was sized for faster tiers, not zai.
+    pub fn resolved_harness_timeout_secs(
+        &self,
+        tier: &crate::tier::Tier,
+        cli_override: Option<u64>,
+    ) -> u64 {
+        cli_override
+            .or(self.harness_timeout_secs)
+            .or(tier.harness_timeout_secs)
             .unwrap_or(DEFAULT_HARNESS_TIMEOUT_SECS)
     }
 
@@ -523,6 +558,58 @@ mod tests {
         assert_eq!(spec.harness_timeout_secs(), 60);
         assert_eq!(spec.oracle_timeout_secs(), 5);
         assert_eq!(spec.max_turns, Some(12));
+    }
+
+    // ── Lane K6: resolved_harness_timeout_secs precedence ────────────────
+    // CLI override > task override > tier override > default.
+
+    #[test]
+    fn resolved_timeout_falls_back_to_default_with_no_overrides_anywhere() {
+        let spec = TaskSpec::from_yaml(minimal_yaml()).unwrap();
+        let tier = crate::tier::Tier::custom("adhoc", "prov", "model");
+        assert_eq!(tier.harness_timeout_secs, None);
+        assert_eq!(
+            spec.resolved_harness_timeout_secs(&tier, None),
+            DEFAULT_HARNESS_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn resolved_timeout_applies_the_tier_default_when_the_task_has_none() {
+        let spec = TaskSpec::from_yaml(minimal_yaml()).unwrap();
+        let tier = crate::tier::Tier::builtin("glm47").unwrap();
+        assert_eq!(tier.harness_timeout_secs, Some(900));
+        assert_eq!(spec.resolved_harness_timeout_secs(&tier, None), 900);
+    }
+
+    #[test]
+    fn resolved_timeout_task_override_beats_the_tier_default() {
+        let yaml = "id: t1\ntitle: T\nprompt: p\ntest: [x]\nharness_timeout_secs: 600\n";
+        let spec = TaskSpec::from_yaml(yaml).unwrap();
+        let tier = crate::tier::Tier::builtin("glm47").unwrap();
+        // The task's own 600s wins over the tier's 900s default — this is
+        // exactly the case the CLI override exists to lift for one
+        // invocation without editing the fixture.
+        assert_eq!(spec.resolved_harness_timeout_secs(&tier, None), 600);
+    }
+
+    #[test]
+    fn resolved_timeout_cli_override_beats_both_task_and_tier() {
+        let yaml = "id: t1\ntitle: T\nprompt: p\ntest: [x]\nharness_timeout_secs: 600\n";
+        let spec = TaskSpec::from_yaml(yaml).unwrap();
+        let tier = crate::tier::Tier::builtin("glm47").unwrap();
+        assert_eq!(spec.resolved_harness_timeout_secs(&tier, Some(1200)), 1200);
+    }
+
+    #[test]
+    fn resolved_timeout_dschat_is_unaffected_by_the_zai_tier_default() {
+        let spec = TaskSpec::from_yaml(minimal_yaml()).unwrap();
+        let tier = crate::tier::Tier::builtin("dschat").unwrap();
+        assert_eq!(tier.harness_timeout_secs, None);
+        assert_eq!(
+            spec.resolved_harness_timeout_secs(&tier, None),
+            DEFAULT_HARNESS_TIMEOUT_SECS
+        );
     }
 
     #[test]

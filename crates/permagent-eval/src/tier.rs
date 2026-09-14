@@ -38,6 +38,17 @@ pub struct Tier {
     /// The API-key env var this provider needs, if any (`None` = keyless, e.g.
     /// local Ollama). Used only for a pre-flight check.
     pub required_key_env: Option<String>,
+    /// Lane K6: this tier's own default harness wall-clock ceiling (seconds),
+    /// used when a task's `task.yaml` carries no `harness_timeout_secs:`
+    /// override of its own. `None` (most tiers) falls through to
+    /// [`crate::task::DEFAULT_HARNESS_TIMEOUT_SECS`]. See
+    /// [`crate::task::TaskSpec::resolved_harness_timeout_secs`] for the full
+    /// precedence (a task override, or a `--harness-timeout-secs` CLI
+    /// override, still both outrank this). The zai tiers (`glm47`, `glm53`)
+    /// default to 900s here — evidence: zai glm-4.7 rounds z2/z3 on M19 hit
+    /// the driver's flat 600s per-task ceiling on two fixtures while its own
+    /// solved-task walls on this suite run 150-440s.
+    pub harness_timeout_secs: Option<u64>,
 }
 
 impl Tier {
@@ -49,6 +60,7 @@ impl Tier {
             model: model.to_string(),
             pin_packs: true,
             required_key_env: key.map(str::to_string),
+            harness_timeout_secs: None,
         };
         match name {
             "local" => Some(t("local", "ollama", "qwen3", None)),
@@ -87,8 +99,20 @@ impl Tier {
                 "claude-sonnet-5",
                 Some("ANTHROPIC_API_KEY"),
             )),
-            "glm53" => Some(t("glm53", "zai", "glm-5.3", Some("ZAI_API_KEY"))),
-            "glm47" => Some(t("glm47", "zai", "glm-4.7", Some("ZAI_API_KEY"))),
+            // Lane K6: the zai tiers default their own harness ceiling to
+            // 900s (see the field doc on `Tier::harness_timeout_secs` and
+            // the module-level evidence). "leave dschat at the default"
+            // (harness-improvement-loop directive) — DeepSeek's own walls on
+            // this suite run 40-200s, well inside the flat 900s default, so
+            // `dschat`/`dsreason` below get no override.
+            "glm53" => Some(Tier {
+                harness_timeout_secs: Some(900),
+                ..t("glm53", "zai", "glm-5.3", Some("ZAI_API_KEY"))
+            }),
+            "glm47" => Some(Tier {
+                harness_timeout_secs: Some(900),
+                ..t("glm47", "zai", "glm-4.7", Some("ZAI_API_KEY"))
+            }),
             "minimax27" => Some(t(
                 "minimax27",
                 "minimax",
@@ -155,6 +179,7 @@ impl Tier {
             model: model.into(),
             pin_packs: true,
             required_key_env: None,
+            harness_timeout_secs: None,
         }
     }
 
@@ -308,5 +333,27 @@ mod tests {
         assert_eq!(t.provider, "openrouter");
         assert_eq!(t.model, "moonshotai/kimi-k2");
         assert!(t.pin_packs);
+        assert_eq!(t.harness_timeout_secs, None);
+    }
+
+    /// Lane K6: the zai tiers (`glm47`/`glm53`) default to a 900s harness
+    /// ceiling; every other tier — `dschat` explicitly named, since
+    /// DeepSeek's own walls on this suite run comfortably under the flat
+    /// 900s default — carries no tier-level override (`None`, so
+    /// `TaskSpec::resolved_harness_timeout_secs` falls through to the task's
+    /// own override or `DEFAULT_HARNESS_TIMEOUT_SECS`).
+    #[test]
+    fn zai_tiers_default_harness_timeout_to_900_others_are_unset() {
+        for name in ["glm47", "glm53"] {
+            let t = Tier::builtin(name).unwrap();
+            assert_eq!(t.harness_timeout_secs, Some(900), "{name}");
+        }
+        for &name in Tier::builtin_names() {
+            if name == "glm47" || name == "glm53" {
+                continue;
+            }
+            let t = Tier::builtin(name).unwrap();
+            assert_eq!(t.harness_timeout_secs, None, "{name} must be unset");
+        }
     }
 }
