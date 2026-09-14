@@ -287,6 +287,15 @@ pub struct TaskQualificationEvidence {
     pub result: String,
     pub not_run: bool,
     pub errored: bool,
+    /// Lane K7: whether the oracle run hit its wall-clock ceiling — `None`
+    /// for a record retained before this field existed, never fabricated as
+    /// `Some(false)`. See [`crate::metrics::TaskResult::oracle_timed_out`].
+    #[serde(default)]
+    pub oracle_timed_out: Option<bool>,
+    /// Wall-clock seconds the oracle process ran. `None` for a
+    /// pre-Lane-K7 record.
+    #[serde(default)]
+    pub oracle_secs: Option<f64>,
     pub cost_usd: Option<f64>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
@@ -433,6 +442,8 @@ pub fn build_run_qualification_record(
             result: r.oracle.label().to_string(),
             not_run: r.oracle == crate::oracle::OracleOutcome::NotRun,
             errored: r.oracle == crate::oracle::OracleOutcome::Errored,
+            oracle_timed_out: Some(r.oracle_timed_out),
+            oracle_secs: Some(r.oracle_secs),
             cost_usd: r.cost.usd,
             input_tokens: r.cost.input_tokens,
             output_tokens: r.cost.output_tokens,

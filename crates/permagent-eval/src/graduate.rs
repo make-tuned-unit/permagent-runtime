@@ -639,6 +639,15 @@ fn task_result_from_qual_evidence(t: &TaskQualificationEvidence) -> Result<TaskR
         harness_exit: None,
         harness_timed_out: false,
         oracle,
+        // Lane K7: a qual.json record predates (or never retained) these
+        // two fields — `#[serde(default)]` on
+        // `TaskQualificationEvidence::oracle_timed_out` means an older
+        // record simply reads back `false`/`None` here, never fabricated;
+        // `metrics::aggregate` (the sole consumer of this reconstruction)
+        // does not read either field.
+        oracle_exit: None,
+        oracle_timed_out: t.oracle_timed_out.unwrap_or(false),
+        oracle_secs: t.oracle_secs.unwrap_or(0.0),
         note: None,
         signals: LogSignals {
             tool_calls: t.tool_calls,
@@ -1914,6 +1923,8 @@ mod tests {
             result: result.to_string(),
             not_run: result == "not_run",
             errored: result == "errored",
+            oracle_timed_out: None,
+            oracle_secs: None,
             cost_usd: Some(cost_usd),
             input_tokens: None,
             output_tokens: None,
