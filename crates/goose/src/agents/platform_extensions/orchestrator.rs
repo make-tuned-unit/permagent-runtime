@@ -2908,7 +2908,6 @@ async fn audit_cost_routing(
         .unwrap_or_default();
     let mut ranked =
         cost_routing_candidates(pool, probe_cache, &config, restricted, &required, snapshot).await;
-    let directory = crate::cost_router::cached_capability_directory().await;
     let derived = crate::cost_router::derived_role_map().await;
     let routing = &snapshot["model_routing"];
     let actual_role = WorkflowRole::all()
@@ -2964,14 +2963,6 @@ async fn audit_cost_routing(
         } else {
             persona.provider.as_deref().zip(persona.model.as_deref())
         };
-        let graduated = pair.zip(role).is_some_and(|((provider, model), role)| {
-            directory
-                .cards
-                .iter()
-                .find(|card| card.provider == provider && card.model == model)
-                .and_then(|card| card.role(role))
-                .is_some_and(|evidence| evidence.graduated())
-        });
         let cost =
             pair.and_then(|(provider, model)| routing_matrix::nominal_call_cost(provider, model));
         candidates.push(routing_matrix::WorkerCandidate {
@@ -2979,7 +2970,25 @@ async fn audit_cost_routing(
             // worker_satisfies above includes adapter requirements and wildcard
             // declarations. Materialize those enforced kinds for the pure core.
             kinds: required.clone(),
-            graduated,
+            // Lane R18b: `ranked` (built above by `cost_routing_candidates`)
+            // is already the eligible pool for THIS run — dispatchable,
+            // tool-kind-capable, and (when the snapshot says so)
+            // available/authorized. This used to also require
+            // capability-directory graduation evidence (`directory.cards
+            // ...evidence.graduated()`) before a candidate could even be
+            // compared on cost. That conflated two different questions: "can
+            // this run use this worker" (what `cheapest_capable` audits) and
+            // "has this worker earned graduation evidence yet" (a track
+            // record production dispatch itself never gates on —
+            // `resolve_dispatch_role_model` has no graduation check). In a
+            // freshly measured or single-model-pinned eval tier the only
+            // capable worker has no graduation evidence yet, so the old
+            // filter excluded it from its own cheapest comparison and
+            // `cheapest_capable` could never increment no matter how many
+            // dispatches ran (measured: M17 round 1 `dschat`, every task
+            // `cheapest_capable=0`). Every candidate in this already-filtered
+            // roster is eligible for the comparison on cost alone.
+            graduated: true,
             est_cost_per_call: cost.unwrap_or(f64::INFINITY),
         });
     }
