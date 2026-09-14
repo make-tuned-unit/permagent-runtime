@@ -407,13 +407,28 @@ static COST_ROUTING_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
 /// principle forbids (G16 MED-1).
 const PLANNER_UNSET_SENTINEL: &str = "unknown/unknown";
 
+/// Lane R18c: G16 MED-1's guard (below) is right for a run that actually
+/// dispatched something — an unresolved planner alongside `dispatches >= 1`
+/// means the coordinator's routing trace is broken, and the whole receipt
+/// must not be trusted. But a run that dispatched NOTHING never had a
+/// planner to resolve in the first place: `dispatches=0
+/// cheapest_capable=0 pack_honored=0 planner=unknown/unknown` is the
+/// harness's own honest zero, not a broken trace — e.g. a held-out fixture
+/// that correctly ESCALATES instead of dispatching a roadmap
+/// (`select-ambiguous-choice-escalates-decision`; confirmed printing
+/// exactly this line in the M17 round-2 logs) prints it. So the sentinel
+/// only discards the receipt when it accompanies real (`dispatches >= 1`)
+/// evidence; at zero dispatches the receipt is kept (with the sentinel
+/// recorded verbatim in `planner`) so `qualification.rs`'s `cost_routing`
+/// gate can see the explicit zero rather than reading a missing receipt.
 fn parse_cost_routing(line: &str) -> Option<CostRoutingReceipt> {
     let caps = COST_ROUTING_RE.captures(line)?;
-    if &caps[4] == PLANNER_UNSET_SENTINEL {
+    let dispatches: usize = caps[1].parse().ok()?;
+    if dispatches > 0 && &caps[4] == PLANNER_UNSET_SENTINEL {
         return None;
     }
     Some(CostRoutingReceipt {
-        dispatches: caps[1].parse().ok()?,
+        dispatches,
         cheapest_capable: caps[2].parse().ok()?,
         pack_honored: caps[3].parse().ok()?,
         planner: caps[4].to_string(),
@@ -1070,6 +1085,32 @@ mod tests {
         );
         // A terminal routing receipt must not overwrite the separate route trace.
         assert!(scan(line).planner.is_none());
+    }
+
+    /// Lane R18c: at `dispatches=0` the sentinel is not a broken trace — it
+    /// is the honest reading for a run that routed nothing at all (e.g. a
+    /// held-out fixture that correctly escalates instead of dispatching a
+    /// roadmap). The receipt must be KEPT, not discarded, so the driver can
+    /// see an explicit zero rather than a missing receipt.
+    #[test]
+    fn contract_v1_routing_receipt_keeps_the_unset_sentinel_at_zero_dispatches() {
+        let line =
+            "receipt cost_routing dispatches=0 cheapest_capable=0 pack_honored=0 planner=unknown/unknown";
+        assert_eq!(
+            scan(line).cost_routing,
+            Some(CostRoutingReceipt {
+                dispatches: 0,
+                cheapest_capable: 0,
+                pack_honored: 0,
+                planner: PLANNER_UNSET_SENTINEL.to_string(),
+            })
+        );
+        // The same sentinel at a NONZERO dispatch count is still discarded —
+        // G16 MED-1's original bug (a routed dispatch whose planner never
+        // got recorded) is untouched by this lane.
+        assert!(scan(&line.replace("dispatches=0", "dispatches=1"))
+            .cost_routing
+            .is_none());
     }
 
     #[test]

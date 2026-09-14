@@ -255,11 +255,15 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     // decision, not (only) the oracle's verdict — evaluate its declared
     // `selection_check` against THIS run's own signals, independent of
     // whether the oracle passed. `None` for every non-selection fixture.
-    result.selection_correct = task
+    // Lane R18c (A17 Q6): keep the specific rule(s) it violated too, so a
+    // report/`.qual.json` reader can see WHY without re-deriving it.
+    let selection_verdict = task
         .spec
         .selection_check
         .as_ref()
-        .map(|check| check.evaluate(&signals));
+        .map(|check| check.evaluate_detailed(&signals));
+    result.selection_correct = selection_verdict.as_ref().map(|v| v.passed);
+    result.selection_check_failures = selection_verdict.map(|v| v.failures).unwrap_or_default();
     result.signals = signals;
     result.receipt_source = receipt_source;
     result.seed_commit = Some(seed_commit);
@@ -1895,6 +1899,7 @@ mod tests {
         };
         let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
         assert_eq!(r.selection_correct, Some(true));
+        assert!(r.selection_check_failures.is_empty());
         assert_eq!(
             r.signals.tool_names,
             vec![
@@ -1928,6 +1933,7 @@ mod tests {
         };
         let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
         assert_eq!(r.selection_correct, Some(false));
+        assert!(!r.selection_check_failures.is_empty());
     }
 
     // ── Lane R17a: receipts survive a timeout via the sidecar fallback ────
@@ -2115,5 +2121,6 @@ mod tests {
         };
         let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
         assert_eq!(r.selection_correct, None);
+        assert!(r.selection_check_failures.is_empty());
     }
 }

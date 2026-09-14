@@ -41,6 +41,11 @@ pub struct TaskResult {
     /// harness never observed. See [`crate::selection`] and
     /// [`dag_selection_pct`].
     pub selection_correct: Option<bool>,
+    /// Lane R18c (A17 Q6): the specific [`crate::selection::SelectionCheck`]
+    /// rule(s) this run violated, human-readable
+    /// (`SelectionCheck::evaluate_detailed`'s failure list). Empty when
+    /// `selection_correct` is `Some(true)` or `None`.
+    pub selection_check_failures: Vec<String>,
     /// The SHA of the git commit the runner seeded the workspace with before
     /// invoking the harness (see [`crate::runner::seed_git_repo`]) — the
     /// baseline a dispatched worker's landing should fast-forward onto.
@@ -93,6 +98,7 @@ impl TaskResult {
             note: None,
             signals: LogSignals::default(),
             selection_correct: None,
+            selection_check_failures: Vec::new(),
             seed_commit: None,
             headless_autoland: None,
             headless_drain_secs: None,

@@ -651,10 +651,17 @@ fn task_result_from_qual_evidence(t: &TaskQualificationEvidence) -> Result<TaskR
             vacuous_pass: t.vacuous_pass,
             ..LogSignals::default()
         },
-        // G3's `selection_correct` has no qual.json-schema counterpart (see
-        // the module doc above and `build_run_evidence_from_qual_json`'s own
-        // `dag_selection_pct: None`) — never fabricated from absent data.
-        selection_correct: None,
+        // Lane R18c (A17 Q6): `selection_correct` (and its failure detail)
+        // now HAS a real qual.json-schema counterpart
+        // (`TaskQualificationEvidence::selection_correct`/
+        // `selection_check_failures`) — read it back rather than fabricate
+        // it. `metrics::aggregate`, the sole consumer of this
+        // reconstruction, does not read either field, but carrying the real
+        // value costs nothing and keeps this function's own rule ("never
+        // fabricated from absent data") literally true rather than merely
+        // harmless.
+        selection_correct: t.selection_correct,
+        selection_check_failures: t.selection_check_failures.clone(),
         seed_commit: t.seed_commit.clone(),
         headless_autoland: t.headless_autoland.clone(),
         headless_drain_secs: t.headless_drain_secs.clone(),
@@ -1923,6 +1930,8 @@ mod tests {
             verification_integrity: None,
             safety_and_trust: None,
             cost_routing: None,
+            selection_correct: None,
+            selection_check_failures: Vec::new(),
         }
     }
 
