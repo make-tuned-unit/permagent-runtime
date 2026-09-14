@@ -13136,6 +13136,13 @@ async fn maybe_salvage_committed_work(
          before parking"
     );
 
+    // R21c-b: `card` is already in scope here, so its acceptance criteria are
+    // passed directly rather than through the session-id lookup `verify`
+    // itself does for an ordinary worker call — this salvage path already
+    // knows exactly which card it is verifying, more precisely than a
+    // registry lookup could tell it.
+    let salvage_acceptance_criteria =
+        collect_acceptance_criteria(&card.metadata_json, &card.description);
     let verify_params = crate::agents::platform_extensions::developer::verify::VerifyParams {
         command: None,
         path: None,
@@ -13143,18 +13150,19 @@ async fn maybe_salvage_committed_work(
         scope: None,
         risk: None,
         changed_paths: None,
-        // R21c: mechanical field addition only — this salvage call does not
-        // (yet) thread the card's acceptance criteria through; wiring that up
-        // belongs to whichever lane owns wiring `card.metadata_json`'s
-        // acceptance criteria into a dispatch-time caller of `verify`.
-        acceptance_criteria: None,
+        acceptance_criteria: if salvage_acceptance_criteria.is_empty() {
+            None
+        } else {
+            Some(salvage_acceptance_criteria)
+        },
     };
-    let verify_run = tokio::time::timeout(
-        time_box,
-        crate::agents::platform_extensions::developer::verify::VerifyTool::new()
-            .verify_with_cwd(verify_params, Some(worktree_path)),
-    )
-    .await;
+    let verify_run =
+        tokio::time::timeout(
+            time_box,
+            crate::agents::platform_extensions::developer::verify::VerifyTool::new()
+                .verify_with_cwd(verify_params, Some(worktree_path), None),
+        )
+        .await;
     let Ok(result) = verify_run else {
         record_salvage_receipt(
             pool,
