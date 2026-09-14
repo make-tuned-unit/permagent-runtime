@@ -1312,6 +1312,7 @@ fn is_no_test_files_found(check: &Check, exit_code: Option<i32>, output: &str) -
 ///   `<interpreter path>: No module named X` (no exception, no quotes).
 /// - code that does `import X` prints a traceback ending
 ///   `ModuleNotFoundError: No module named 'X'` (quoted).
+///
 /// Node's `require`/`import` resolution failure and Ruby's `LoadError` follow
 /// the same "found the runtime, not the package" shape and are cheap to cover
 /// alongside Python since `verify` already special-cases pytest/jest/vitest
