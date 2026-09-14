@@ -681,6 +681,8 @@ fn task_result_from_qual_evidence(t: &TaskQualificationEvidence) -> Result<TaskR
         // Lane K6: the qual.json schema DOES carry this — read it back
         // rather than fabricate it, same rule as `selection_correct` above.
         harness_timeout_secs: t.harness_timeout_secs,
+        // Lane K10: same rule again — the qual.json schema carries this now.
+        provider_error: t.provider_error.clone(),
     })
 }
 
@@ -1952,6 +1954,7 @@ mod tests {
             selection_correct: None,
             selection_check_failures: Vec::new(),
             harness_timeout_secs: None,
+            provider_error: None,
         }
     }
 
@@ -1977,6 +1980,7 @@ mod tests {
             capability_verdict: None,
             input_tokens_per_solved_median: None,
             token_verdict: None,
+            provider_unavailable: false,
         }
     }
 

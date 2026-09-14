@@ -21,6 +21,10 @@
 //!   SQLite database, behind a [`cost::CostReader`] trait so it can be mocked.
 //! - [`harness_log`] — best-effort tool-call / rate-limit / turn-limit signal
 //!   extraction from the harness's captured stdout+stderr log.
+//! - [`provider_unavailable`] — Lane K10: detecting a provider
+//!   billing/auth/quota failure from a run's harness log and/or
+//!   `llm_request.*.jsonl` logs, and deciding when a round of tasks against
+//!   the same provider must stop launching more of them.
 //! - [`selection`] — G3 (`docs/orchestrator/CODING_HARNESS_ROLE_GRADUATION_DAG.md`):
 //!   the tool/DAG-selection micro-fixtures backing `dag_selection_pct` — whether
 //!   the harness made the correct high-level decision (which tool, which order),
@@ -53,6 +57,7 @@ pub mod metrics;
 pub mod oracle;
 pub mod paired;
 pub mod program;
+pub mod provider_unavailable;
 pub mod qualification;
 pub mod report;
 pub mod runner;

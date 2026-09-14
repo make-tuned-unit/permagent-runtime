@@ -104,6 +104,14 @@ pub struct TaskResult {
     /// ceiling that actually produced it, rather than assumed from the
     /// task's static default.
     pub harness_timeout_secs: Option<u64>,
+    /// Lane K10 (2026-09-14 M22 zai w1 defect): the matched
+    /// [`crate::provider_unavailable`] marker when this task's oracle
+    /// outcome was forced to [`OracleOutcome::Errored`] because the
+    /// provider itself was billing/auth/quota unavailable — the harness
+    /// never got a real chance to attempt the task. `None` for every
+    /// ordinary run, including an unrelated hard error or a genuine
+    /// oracle failure.
+    pub provider_error: Option<String>,
 }
 
 impl TaskResult {
@@ -135,6 +143,7 @@ impl TaskResult {
             headless_drain_secs: None,
             receipt_source: None,
             harness_timeout_secs: None,
+            provider_error: None,
         }
     }
 }
