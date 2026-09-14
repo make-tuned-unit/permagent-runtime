@@ -234,6 +234,23 @@ impl StreamBudget {
         self
     }
 
+    /// Lane R19b. The window that should bound the wait for the very FIRST
+    /// raw byte/line of the response — for a caller (`with_raw_line_liveness`
+    /// in `openai_compatible.rs`) that enforces liveness at the raw-wire
+    /// level rather than at this budget's own semantic-item `next_timeout`.
+    /// Mirrors `next_timeout`'s own pre-first-byte fallback: `max_first_byte`,
+    /// or `max_stall` when no dedicated first-byte window is configured.
+    pub fn first_byte_window(&self) -> Option<Duration> {
+        self.max_first_byte.or(self.max_stall)
+    }
+
+    /// Lane R19b. The window that should bound the wait between raw
+    /// bytes/lines once at least one has already arrived. Same caller as
+    /// [`first_byte_window`](Self::first_byte_window).
+    pub fn stall_window(&self) -> Option<Duration> {
+        self.max_stall
+    }
+
     /// How much of the TOTAL wall clock is left. `None` = unlimited;
     /// `Some(ZERO)` = the budget is already spent. Checked per delta, never
     /// used as the per-`next()` timeout — see [`next_timeout`](Self::next_timeout).
@@ -273,6 +290,15 @@ impl StreamBudget {
         } else {
             self.wall_clock_error()
         }
+    }
+
+    /// Lane R19b. The cumulative CONTENT char count recorded so far — the
+    /// same number `observed_rate` reports, exposed for a caller that needs
+    /// to quote it alongside a different count (raw lines/bytes received at
+    /// the wire level, which can be nonzero while this stays at 0 during a
+    /// keep-alived-but-content-free hold).
+    pub fn chars_so_far(&self) -> u64 {
+        self.chars as u64
     }
 
     fn observed_rate(&self) -> String {
