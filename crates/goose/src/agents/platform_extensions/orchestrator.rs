@@ -1635,6 +1635,18 @@ async fn materialize_roadmap_transaction_with_budget(
                 serde_json::json!(g.acceptance_criteria),
             );
         }
+        // Lane R21a (A21 Q1): the ONE place a goal's read-only intent is ever
+        // decided, from the planner's own acceptance criteria + description —
+        // never re-derived later, and never overridable by anything the
+        // worker itself says. See `hold_done::infer_expects_change`'s doc
+        // comment and `maybe_hold_review`'s use of `hold_done::goal_expects_change`.
+        meta.insert(
+            crate::cost_router::hold_done::EXPECTS_CHANGE_METADATA_KEY.to_string(),
+            serde_json::json!(crate::cost_router::hold_done::infer_expects_change(
+                &g.acceptance_criteria,
+                &g.description,
+            )),
+        );
         let card_id = cards::create_goal_card_in_tx(
             &mut tx,
             project_id,
@@ -9204,12 +9216,41 @@ fn review_detail_base(card_id: &str) -> String {
 
 /// Build the approve_review decision detail, citing deterministic proof-of-work
 /// when the tracker persisted `dispatch_evidence`.
-fn build_review_detail(card_id: &str, evidence: Option<&serde_json::Value>) -> String {
+///
+/// `read_only_review` is Lane R21a's (A21 Q1) read-only receipt
+/// (`maybe_hold_review`'s `"read_only_review"` card metadata, written only
+/// when a goal reached Review via the no-code-change rule) — when present it
+/// takes priority over `evidence`: the worker's review report is the
+/// diff-equivalent a human or cross-family reviewer reads here, not a
+/// generic "produced no commits" line that would otherwise read as a
+/// failure rather than the intended outcome.
+fn build_review_detail(
+    card_id: &str,
+    evidence: Option<&serde_json::Value>,
+    read_only_review: Option<&serde_json::Value>,
+) -> String {
     let base = review_detail_base(card_id);
+    if let Some(proof) = read_only_review.and_then(format_read_only_review_brief) {
+        return format!("{}\n\n{}", base, proof);
+    }
     match evidence.and_then(format_dispatch_evidence_brief) {
         Some(proof) => format!("{}\n\n{}", base, proof),
         None => base,
     }
+}
+
+/// One-line-plus-report proof-of-work for a Lane R21a read-only completion.
+/// `None` when the metadata isn't the recognizable `{"report": ..,
+/// "landed_notes": ..}` shape `maybe_hold_review` writes.
+fn format_read_only_review_brief(value: &serde_json::Value) -> Option<String> {
+    let report = value.get("report")?.as_str()?;
+    let notes = value
+        .get("landed_notes")
+        .and_then(|v| v.as_str())
+        .unwrap_or("no change (read-only review)");
+    Some(format!(
+        "Proof of work: {notes} — no code change was made. Worker's review report:\n\n{report}"
+    ))
 }
 
 /// One-line proof-of-work for the Decision Inbox detail. `None` when the value
@@ -9963,8 +10004,20 @@ pub async fn handle_goal_completion(
                     .await
                     .ok()
                     .flatten();
+                // Lane R21a: `maybe_hold_review` above may have just persisted
+                // a read-only review receipt straight to the DB — `card` here
+                // is a snapshot from before that call, so refresh it (falling
+                // back to the stale copy on a read failure, which only means
+                // the decision detail below omits the receipt, never a hard
+                // failure of the completion itself).
+                let card = cards::get_card(pool, card_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or(card);
                 let evidence = card.metadata_json.get("dispatch_evidence");
-                let mut detail = build_review_detail(card_id, evidence);
+                let read_only_review = card.metadata_json.get("read_only_review");
+                let mut detail = build_review_detail(card_id, evidence, read_only_review);
                 // Publish sequence (#457): when the project declares ordered
                 // post-push steps, the review decision must say push ≠ live —
                 // the daemon has not run the sequence, so approving does not
@@ -10267,6 +10320,50 @@ async fn auto_land_headless_goal(
     auto_land_allowed: bool,
     calling_session_id: Option<&str>,
 ) {
+    // Lane R21a (A21 Q1): a read-only goal (no code change expected) that
+    // reached Review through `maybe_hold_review`'s read-only rule left a
+    // `read_only_review` receipt in place of a verify pass — that receipt IS
+    // this goal's completion evidence, so land it the same way a genuine
+    // verify pass would (`status: "read_only"` rather than "pass"), instead
+    // of falling into the `VerifyEvidence::None` arm below and parking for a
+    // human who would find nothing to review beyond what the report already
+    // said. `land_approved_goal`'s own `LandOutcome::NoCommits` already
+    // handles a goal with nothing to merge honestly ("nothing to land: the
+    // worker produced no commits") — this only decides whether the approval
+    // is attempted at all; it never fabricates a merge.
+    if card.metadata_json.get("read_only_review").is_some() {
+        if let Err(e) = cards::set_goal_verdict_and_program_receipts(
+            pool,
+            &card.id,
+            serde_json::json!({
+                "status": "read_only",
+                "source": "headless_auto_read_only_review",
+                "recorded_at": chrono::Utc::now().to_rfc3339(),
+            }),
+            None,
+        )
+        .await
+        {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card.id,
+                "headless Auto: could not record the read-only auto-land receipt for goal '{}' \
+                 ({e}) — leaving the approve_review decision open",
+                card.title
+            );
+            return;
+        }
+        finish_headless_auto_land(
+            pool,
+            decision_id,
+            card,
+            auto_land_allowed,
+            calling_session_id,
+        )
+        .await;
+        return;
+    }
+
     let worker_session_id = card
         .metadata_json
         .get("worker_session_id")
@@ -10368,6 +10465,30 @@ async fn auto_land_headless_goal(
         return;
     }
 
+    finish_headless_auto_land(
+        pool,
+        decision_id,
+        card,
+        auto_land_allowed,
+        calling_session_id,
+    )
+    .await;
+}
+
+/// The shared tail of [`auto_land_headless_goal`]: auto-answer the
+/// `approve_review` decision and apply its landing effect. Split out (Lane
+/// R21a) so a read-only goal's `read_only_review` receipt can reach the same
+/// approve+land path a genuine verify pass does, without duplicating this
+/// bookkeeping. Callers are responsible for recording whatever verdict
+/// receipt justified reaching this point (a "pass" or "read_only" status)
+/// before calling this.
+async fn finish_headless_auto_land(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    decision_id: &str,
+    card: &cards::Card,
+    auto_land_allowed: bool,
+    calling_session_id: Option<&str>,
+) {
     let (answered, proof) =
         match decisions::auto_approve_headless_goal_review(pool, decision_id, &card.id).await {
             Ok(pair) => pair,
@@ -12232,6 +12353,49 @@ async fn session_had_successful_verify(
     session_verify_evidence(pool, session_id).await.is_genuine()
 }
 
+/// Lane R21a (A21 Q1): the worker's own last non-empty assistant text in its
+/// session — the review/analysis report a read-only goal (`expects_change:
+/// false`) is required to leave in place of a commit+verify. There is no
+/// dedicated `review_report` tool in this codebase yet; the worker's final
+/// prose IS the report, same as a normal worker's final "done" message is
+/// already the thing a human reads in the Decision Inbox. `None` when the
+/// session has no assistant text at all (a worker that made only tool calls
+/// and never wrote a word) — [`crate::cost_router::hold_done::looks_like_review_report`]
+/// is the one place that judges whether what came back is substantial enough
+/// to count.
+async fn session_final_review_report(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: Option<&str>,
+) -> Option<String> {
+    let sid = session_id?;
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT role, content_json FROM messages WHERE session_id = ? ORDER BY created_timestamp, id",
+    )
+    .bind(sid)
+    .fetch_all(pool)
+    .await
+    .ok()?;
+    let mut last_text: Option<String> = None;
+    for (role, json) in rows {
+        if role != "assistant" {
+            continue;
+        }
+        let Ok(content) =
+            serde_json::from_str::<Vec<crate::conversation::message::MessageContent>>(&json)
+        else {
+            continue;
+        };
+        for c in content {
+            if let Some(text) = c.as_text() {
+                if !text.trim().is_empty() {
+                    last_text = Some(text.to_string());
+                }
+            }
+        }
+    }
+    last_text
+}
+
 // ── Z2-1 (harness loop, coding-harness excellence iteration, Round C):
 // credit real work to the goal it actually satisfies ────────────────────────
 //
@@ -13399,7 +13563,15 @@ async fn maybe_hold_review(
     };
     let hold_state = crate::cost_router::HoldState::from_metadata(&meta);
     let prior = hold_state.count;
-    let inspection = if verify_ran {
+    // Lane R21a (A21 Q1): a goal whose acceptance is a report/review, with no
+    // code change expected — decided once by the planner at roadmap-creation
+    // time (`hold_done::infer_expects_change`), never by anything the worker
+    // itself says. For such a goal the worktree inspection below must run
+    // even when no verify was ever expected to happen, because "did this
+    // worker actually leave anything uncommitted" is exactly the question
+    // that decides whether it is still genuinely read-only.
+    let expects_change = crate::cost_router::hold_done::goal_expects_change(&meta);
+    let inspection = if verify_ran || !expects_change {
         goal_has_uncommitted_work(pool, card).await
     } else {
         Ok((false, String::new()))
@@ -13408,6 +13580,23 @@ async fn maybe_hold_review(
         Ok((no_commits, status)) => (no_commits, status, None),
         Err(error) => (true, String::new(), Some(error)),
     };
+    // A read-only goal is only still read-only when the worktree is
+    // genuinely clean: zero commits past baseline (`uncommitted_work` here
+    // really means "no commits exist" — see `goal_has_uncommitted_work`'s doc
+    // comment) AND no tracked modifications sitting dirty either. Any commit
+    // or any tracked change means the worker mutated something, so the
+    // ordinary commit-required rule takes back over.
+    let worktree_mutated = !uncommitted_work || !tracked_status.trim().is_empty();
+    // Only worth the query when the goal is actually a read-only candidate —
+    // an ordinary mutating goal never consults its worker's report text.
+    let review_report = if !expects_change && !worktree_mutated {
+        session_final_review_report(pool, session_id).await
+    } else {
+        None
+    };
+    let has_review_report = review_report
+        .as_deref()
+        .is_some_and(crate::cost_router::hold_done::looks_like_review_report);
     let outcome = if let Some(error) = &inspection_error {
         let plan =
             format!("could not inspect the goal worktree: {error}; commit and declare done again");
@@ -13429,17 +13618,52 @@ async fn maybe_hold_review(
             hold_count: prior.saturating_add(1),
         }
     } else {
-        crate::cost_router::hold_done::decide_goal_hold(
+        crate::cost_router::hold_done::decide_goal_done_hold(
             role,
+            expects_change,
+            worktree_mutated,
             verify_ran,
             uncommitted_work,
+            has_review_report,
             &signals,
             prior,
         )
     };
 
     match outcome {
-        crate::cost_router::HoldOutcome::Allow => Ok(None),
+        crate::cost_router::HoldOutcome::Allow => {
+            // Lane R21a: this Allow was reached via the read-only rule (no
+            // code change expected, worktree genuinely clean, a real review
+            // report on file) rather than a verified commit. Record the
+            // report as the reviewer's diff-equivalent — `build_review_detail`
+            // reads this back so the approve_review decision cites the
+            // worker's actual findings instead of a bare "no commits" line —
+            // and land honestly as a no-change outcome, never a merge.
+            if !expects_change && !worktree_mutated && has_review_report {
+                if let Some(report) = &review_report {
+                    let report = report.clone();
+                    if let Err(e) = persist_card_meta(pool, &card.id, |m| {
+                        m.insert(
+                            "read_only_review".to_string(),
+                            serde_json::json!({
+                                "report": report,
+                                "landed_notes": "no change (read-only review)",
+                                "recorded_at": chrono::Utc::now().to_rfc3339(),
+                            }),
+                        );
+                    })
+                    .await
+                    {
+                        tracing::warn!(
+                            target: "permagentd::brain",
+                            goal_id = %card.id,
+                            "could not record the read-only review receipt: {e}"
+                        );
+                    }
+                }
+            }
+            Ok(None)
+        }
         crate::cost_router::HoldOutcome::Hold {
             mut inject_plan,
             hold_count,
@@ -22650,7 +22874,7 @@ mod tests {
             "worker_summary": "Committed a719579 — README.md with all eight sections.",
         });
 
-        let detail = build_review_detail("card-1", Some(&evidence));
+        let detail = build_review_detail("card-1", Some(&evidence), None);
 
         assert!(
             detail.contains("README.md"),
@@ -22689,7 +22913,7 @@ mod tests {
             "worker_summary": "",
         });
 
-        let detail = build_review_detail("card-2", Some(&evidence));
+        let detail = build_review_detail("card-2", Some(&evidence), None);
         assert!(detail.contains("produced no commits"), "{detail}");
     }
 
