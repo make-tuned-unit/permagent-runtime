@@ -721,14 +721,31 @@ const SIGTERM_GRACE: Duration = Duration::from_secs(30);
 /// `(exit_code, timed_out)`.
 ///
 /// Lane R17a (M17 readiness audit §6.1, gap 1): on timeout, send SIGTERM
-/// first and give the process up to [`SIGTERM_GRACE`] to exit on its own
-/// before falling back to the existing hard SIGKILL (`child.kill()`) below.
-/// A well-behaved harness gets a chance to flush its receipts sidecar
+/// first and give the process up to `grace` to exit on its own before
+/// falling back to the existing hard SIGKILL (`child.kill()`) below. A
+/// well-behaved harness gets a chance to flush its receipts sidecar
 /// (`PERMAGENT_RECEIPTS_SIDECAR`) and any other pending I/O; a hung or
 /// unkillable one is still forced dead exactly as before — this only adds a
 /// grace window, it never weakens the guarantee that the child is gone by
 /// the time this returns.
-fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<(Option<i32>, bool)> {
+///
+/// M21 gate fix: `grace` is a parameter, not a hardcoded read of
+/// [`SIGTERM_GRACE`] — both production call sites pass that same constant
+/// (unchanged behavior), but
+/// `wait_with_timeout_sigkills_a_child_that_ignores_sigterm_after_the_grace`
+/// needs an independently short grace: with `SIGTERM_GRACE` now 30s, that
+/// test's own child (`sleep 30 & wait`, ignoring SIGTERM) finishes its
+/// natural sleep at almost the exact same instant the old hardcoded 30s
+/// grace would fire SIGKILL — a flaky race, observed as `Some(0)` (the
+/// child's own clean exit) instead of the intended `None` (SIGKILL, which
+/// reports no exit code). A real parameter — not an env var, which would
+/// leak across Rust's parallel test threads within one process — keeps that
+/// test's short grace from ever touching the two production call sites.
+fn wait_with_timeout(
+    child: &mut Child,
+    timeout: Duration,
+    grace: Duration,
+) -> Result<(Option<i32>, bool)> {
     let start = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {
@@ -736,7 +753,7 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<(Option<i32
         }
         if start.elapsed() >= timeout {
             send_sigterm(child.id());
-            let term_deadline = Instant::now() + SIGTERM_GRACE;
+            let term_deadline = Instant::now() + grace;
             while Instant::now() < term_deadline {
                 if let Some(status) = child.try_wait()? {
                     return Ok((status.code(), true));
@@ -822,7 +839,7 @@ impl HarnessRunner for SubprocessHarnessRunner {
         let mut child = cmd
             .spawn()
             .with_context(|| format!("spawning harness `{}`", inv.program))?;
-        let (exit, timed_out) = wait_with_timeout(&mut child, timeout)?;
+        let (exit, timed_out) = wait_with_timeout(&mut child, timeout, SIGTERM_GRACE)?;
         Ok(HarnessRun {
             exit,
             timed_out,
@@ -860,7 +877,7 @@ impl OracleRunner for SubprocessOracleRunner {
         let mut child = cmd
             .spawn()
             .with_context(|| format!("spawning oracle `{program}`"))?;
-        let (exit, _timed_out) = wait_with_timeout(&mut child, timeout)?;
+        let (exit, _timed_out) = wait_with_timeout(&mut child, timeout, SIGTERM_GRACE)?;
         Ok(exit)
     }
 }
@@ -2333,7 +2350,8 @@ mod tests {
             .spawn()
             .unwrap();
         let start = Instant::now();
-        let (exit, timed_out) = wait_with_timeout(&mut child, Duration::from_millis(300)).unwrap();
+        let (exit, timed_out) =
+            wait_with_timeout(&mut child, Duration::from_millis(300), SIGTERM_GRACE).unwrap();
         let elapsed = start.elapsed();
 
         assert_eq!(exit, Some(0));
@@ -2348,30 +2366,40 @@ mod tests {
     /// A child that ignores SIGTERM must still be dead by the time this
     /// returns, via the existing hard SIGKILL fallback — but only AFTER
     /// waiting out the full grace window first, never sooner.
+    ///
+    /// M21 gate fix: uses a short, test-local `grace` (2s) rather than the
+    /// production `SIGTERM_GRACE` (30s) — with the child's own `sleep 30`
+    /// and a 30s production grace, this test raced its own child's natural,
+    /// clean exit against the SIGKILL deadline (both ~30s), observed as a
+    /// flaky `Some(0)` instead of the intended `None`. The child's sleep
+    /// (10s) still comfortably outlasts the short grace, so the kill path
+    /// this test exists to exercise is still the one that fires.
     #[test]
     fn wait_with_timeout_sigkills_a_child_that_ignores_sigterm_after_the_grace() {
+        let grace = Duration::from_secs(2);
         let mut child = Command::new("sh")
-            .args(["-c", "trap '' TERM; sleep 30 & wait"])
+            .args(["-c", "trap '' TERM; sleep 10 & wait"])
             .spawn()
             .unwrap();
         let start = Instant::now();
-        let (exit, timed_out) = wait_with_timeout(&mut child, Duration::from_millis(300)).unwrap();
+        let (exit, timed_out) =
+            wait_with_timeout(&mut child, Duration::from_millis(300), grace).unwrap();
         let elapsed = start.elapsed();
 
         // SIGKILL cannot be trapped or reported: no exit code survives it.
         assert_eq!(exit, None);
         assert!(timed_out);
         assert!(
-            elapsed >= SIGTERM_GRACE,
-            "took {elapsed:?}; must not escalate to SIGKILL before the full \
-             {SIGTERM_GRACE:?} grace has elapsed"
+            elapsed >= grace,
+            "took {elapsed:?}; must not escalate to SIGKILL before the full {grace:?} grace \
+             has elapsed"
         );
-        // ...but nowhere near the child's own 30s sleep — proves SIGKILL
+        // ...but nowhere near the child's own 10s sleep — proves SIGKILL
         // actually fired rather than this falling through to waiting the
         // child out directly.
         assert!(
-            elapsed < Duration::from_secs(15),
-            "took {elapsed:?}; expected well under the child's own 30s sleep"
+            elapsed < Duration::from_secs(5),
+            "took {elapsed:?}; expected well under the child's own 10s sleep"
         );
     }
 
