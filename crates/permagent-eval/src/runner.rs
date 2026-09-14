@@ -184,6 +184,17 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         "PERMAGENT_HEADLESS_DRAIN_SECS".to_string(),
         drain_secs.to_string(),
     ));
+    // Lane R17a (M17 readiness audit §6.1, gaps 1 & 4): the harness mirrors
+    // its RECEIPT CONTRACT v1 lines plus `harness_overhead` into this file as
+    // it runs (atomically, on every counter change and turn boundary), so a
+    // SIGKILL for exceeding `harness_timeout_secs` below — which skips the
+    // clean-exit stdout print entirely — still leaves evidence on disk. See
+    // `signals` below, where it is read back and merged in as a fallback.
+    let receipts_sidecar_path = run_dir.join("harness-receipts.txt");
+    inv.envs.push((
+        "PERMAGENT_RECEIPTS_SIDECAR".to_string(),
+        receipts_sidecar_path.to_string_lossy().into_owned(),
+    ));
     // The arm's knobs go on LAST so they outrank the invocation's own defaults
     // — including the two headless-autoland defaults just set above — as well
     // as the inherited environment: an A/B arm that could be silently
@@ -198,9 +209,19 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     )?;
     // Best-effort: a missing/unreadable log just yields zeroed signals rather
     // than failing the whole task (the oracle's verdict is authoritative).
-    let signals = fs::read_to_string(&harness_log_path)
+    let mut signals = fs::read_to_string(&harness_log_path)
         .map(|text| harness_log::scan(&text))
         .unwrap_or_default();
+    // Lane R17a: fill in any of the five RECEIPT CONTRACT v1 fields the
+    // captured stdout log is missing from the sidecar file above — a no-op
+    // when the harness exited cleanly and already printed everything (see
+    // `fill_receipts_from_sidecar`'s "stdout wins" rule), and best-effort
+    // when the sidecar was never written at all (a harness build that
+    // predates this lane, or a run that died before its first receipt
+    // event).
+    let receipt_source = fs::read_to_string(&receipts_sidecar_path)
+        .ok()
+        .and_then(|text| harness_log::fill_receipts_from_sidecar(&mut signals, &text));
 
     // Tamper-proof grading: overlay the pristine oracle files onto the workspace
     // so the agent cannot have weakened or deleted its own grader.
@@ -240,6 +261,7 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         .as_ref()
         .map(|check| check.evaluate(&signals));
     result.signals = signals;
+    result.receipt_source = receipt_source;
     result.seed_commit = Some(seed_commit);
     // Read back the FINAL, post-arm-override values so the report row shows
     // what the child actually received, not just the runner's own default.
@@ -599,8 +621,21 @@ fn unique_stamp() -> String {
     format!("{nanos}-{n}")
 }
 
+/// How long [`wait_with_timeout`] gives a child to exit on its own after
+/// SIGTERM before escalating to SIGKILL (Lane R17a).
+const SIGTERM_GRACE: Duration = Duration::from_secs(5);
+
 /// Wait for a child, killing it if it outlives `timeout`. Returns
 /// `(exit_code, timed_out)`.
+///
+/// Lane R17a (M17 readiness audit §6.1, gap 1): on timeout, send SIGTERM
+/// first and give the process up to [`SIGTERM_GRACE`] to exit on its own
+/// before falling back to the existing hard SIGKILL (`child.kill()`) below.
+/// A well-behaved harness gets a chance to flush its receipts sidecar
+/// (`PERMAGENT_RECEIPTS_SIDECAR`) and any other pending I/O; a hung or
+/// unkillable one is still forced dead exactly as before — this only adds a
+/// grace window, it never weakens the guarantee that the child is gone by
+/// the time this returns.
 fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<(Option<i32>, bool)> {
     let start = Instant::now();
     loop {
@@ -608,12 +643,32 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<(Option<i32
             return Ok((status.code(), false));
         }
         if start.elapsed() >= timeout {
+            send_sigterm(child.id());
+            let term_deadline = Instant::now() + SIGTERM_GRACE;
+            while Instant::now() < term_deadline {
+                if let Some(status) = child.try_wait()? {
+                    return Ok((status.code(), true));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
             let _ = child.kill();
             let _ = child.wait();
             return Ok((None, true));
         }
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// Best-effort SIGTERM via the `kill` binary — this crate depends on neither
+/// `nix` nor `libc` (see Cargo.toml), and adding one just for a single
+/// signal send is not worth it. A failure here (the `kill` binary missing,
+/// the process already gone) is silently swallowed: the hard SIGKILL
+/// fallback in [`wait_with_timeout`] still guarantees the child is dead
+/// before that function returns.
+fn send_sigterm(pid: u32) {
+    let _ = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status();
 }
 
 /// Open a file and a clone for combined stdout+stderr capture.
@@ -780,6 +835,30 @@ mod tests {
     struct HarnessWithLog {
         log_lines: Vec<&'static str>,
         exit: Option<i32>,
+    }
+
+    /// Lane R17a: a harness stand-in that writes BOTH the captured stdout
+    /// log AND the receipts sidecar file — the sidecar path is read back
+    /// from `inv`'s own environment (`PERMAGENT_RECEIPTS_SIDECAR`) exactly
+    /// as a real harness process would receive it, proving `run_task` wires
+    /// the env var through to the child and reads the file back afterward.
+    struct HarnessWithSidecarAndLog {
+        log_lines: Vec<&'static str>,
+        sidecar_lines: Vec<&'static str>,
+        exit: Option<i32>,
+    }
+    impl HarnessRunner for HarnessWithSidecarAndLog {
+        fn run(&self, inv: &Invocation, _t: Duration, log_path: &Path) -> Result<HarnessRun> {
+            fs::write(log_path, self.log_lines.join("\n"))?;
+            if let Some(sidecar_path) = inv.env("PERMAGENT_RECEIPTS_SIDECAR") {
+                fs::write(sidecar_path, self.sidecar_lines.join("\n"))?;
+            }
+            Ok(HarnessRun {
+                exit: self.exit,
+                timed_out: false,
+                duration: Duration::from_secs_f64(0.5),
+            })
+        }
     }
     impl HarnessRunner for HarnessWithLog {
         fn run(&self, _inv: &Invocation, _t: Duration, log_path: &Path) -> Result<HarnessRun> {
@@ -1849,6 +1928,166 @@ mod tests {
         };
         let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
         assert_eq!(r.selection_correct, Some(false));
+    }
+
+    // ── Lane R17a: receipts survive a timeout via the sidecar fallback ────
+
+    /// A harness that gets SIGKILLed before its clean-exit print never gets
+    /// to write ANY `receipt ...`/`harness_overhead ...` line to stdout —
+    /// simulated here by a captured log with no such lines at all — but it
+    /// DID keep the sidecar file up to date throughout the run. `run_task`
+    /// must read that fallback and mark the source `"sidecar"`.
+    #[test]
+    fn run_task_fills_receipts_from_the_sidecar_when_stdout_has_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_task(&tmp.path().join("demo"), &[], &[]);
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            arm_env: Vec::new(),
+            arm_unset: Vec::new(),
+        };
+        let deps = Deps {
+            harness: &HarnessWithSidecarAndLog {
+                log_lines: vec!["  ▸ shell", "(killed before it could print receipts)"],
+                sidecar_lines: vec![
+                    "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0",
+                    "receipt verification_integrity goals=1 review_reached=1 vacuous_passes=0 reviewer_mutations=0 reviewer_not_independent=0",
+                    "receipt safety_and_trust jail_denials=0 jail_bypasses=0 unapproved_skill_runs=0 approval_bypasses=0 adversary_blocks=0",
+                    "receipt cost_routing dispatches=1 cheapest_capable=1 pack_honored=1 planner=openrouter/glm",
+                    "harness_overhead p50=10 p95=20 model=30 tools=40 wall=50",
+                ],
+                exit: None,
+            },
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
+
+        assert_eq!(r.receipt_source, Some("sidecar".to_string()));
+        assert_eq!(r.signals.dag_enforcement.unwrap().roadmap_dispatched, 1);
+        assert_eq!(r.signals.verification_integrity.unwrap().goals, 1);
+        assert_eq!(r.signals.safety_and_trust.unwrap().jail_denials, 0);
+        assert_eq!(r.signals.cost_routing.unwrap().dispatches, 1);
+        assert_eq!(r.signals.harness_overhead.unwrap().p50_ms, 10);
+    }
+
+    /// A clean exit that already printed its own receipts to stdout must
+    /// keep those values — the sidecar (deliberately carrying DIFFERENT
+    /// numbers here) must never override an authoritative stdout print, and
+    /// the recorded source must read `"stdout"`.
+    #[test]
+    fn run_task_prefers_stdout_receipts_over_the_sidecar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_task(&tmp.path().join("demo"), &[], &[]);
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+            use_keyring: false,
+            arm_env: Vec::new(),
+            arm_unset: Vec::new(),
+        };
+        let deps = Deps {
+            harness: &HarnessWithSidecarAndLog {
+                log_lines: vec![
+                    "receipt dag_enforcement roadmap_dispatched=9 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0",
+                    "receipt verification_integrity goals=9 review_reached=9 vacuous_passes=0 reviewer_mutations=0 reviewer_not_independent=0",
+                    "receipt safety_and_trust jail_denials=9 jail_bypasses=0 unapproved_skill_runs=0 approval_bypasses=0 adversary_blocks=0",
+                    "receipt cost_routing dispatches=9 cheapest_capable=9 pack_honored=9 planner=z.ai/glm",
+                    "harness_overhead p50=99 p95=99 model=99 tools=99 wall=99",
+                ],
+                // The sidecar was still written (it always is while a run is
+                // live) but with different numbers, from earlier in the same
+                // run — it must lose to the final stdout print.
+                sidecar_lines: vec![
+                    "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0",
+                    "harness_overhead p50=1 p95=1 model=1 tools=1 wall=1",
+                ],
+                exit: Some(0),
+            },
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
+
+        assert_eq!(r.receipt_source, Some("stdout".to_string()));
+        assert_eq!(
+            r.signals.dag_enforcement.unwrap().roadmap_dispatched,
+            9,
+            "stdout's own value must survive, not the sidecar's"
+        );
+        assert_eq!(r.signals.harness_overhead.unwrap().p50_ms, 99);
+    }
+
+    // ── Lane R17b (G20 review MED-2): SIGTERM-before-SIGKILL escalation ───
+    //
+    // Both tests use the `sleep N & wait` shell idiom rather than a bare
+    // foreground `sleep N`. Verified by hand against this machine's `/bin/sh`
+    // before writing these: a bare foreground `sleep 30` defers a TERM trap
+    // until the `sleep` itself finishes (~29.5s observed) — POSIX shells only
+    // check for pending traps between commands / at syscall-interrupt points
+    // that `wait` provides but a foreground child's own blocking wait4() does
+    // not. Backgrounding `sleep` and blocking the shell in its OWN `wait`
+    // builtin makes the trap fire within milliseconds of the signal, which is
+    // what these tests need to tell "SIGTERM path" apart from "grace timeout
+    // path" reliably rather than by accident of a fast machine.
+
+    /// A child that traps SIGTERM and exits cleanly must be reaped during the
+    /// grace window — `wait_with_timeout` must return promptly, nowhere near
+    /// waiting out the full `SIGTERM_GRACE`, let alone the child's own
+    /// (deliberately much longer) sleep.
+    #[test]
+    fn wait_with_timeout_reaps_a_child_that_traps_sigterm_within_the_grace() {
+        let mut child = Command::new("sh")
+            .args(["-c", "trap 'exit 0' TERM; sleep 30 & wait"])
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        let (exit, timed_out) = wait_with_timeout(&mut child, Duration::from_millis(300)).unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(exit, Some(0));
+        assert!(timed_out);
+        assert!(
+            elapsed < SIGTERM_GRACE,
+            "took {elapsed:?}; a trapping child should be reaped well before \
+             the {SIGTERM_GRACE:?} grace elapses, not right at its edge"
+        );
+    }
+
+    /// A child that ignores SIGTERM must still be dead by the time this
+    /// returns, via the existing hard SIGKILL fallback — but only AFTER
+    /// waiting out the full grace window first, never sooner.
+    #[test]
+    fn wait_with_timeout_sigkills_a_child_that_ignores_sigterm_after_the_grace() {
+        let mut child = Command::new("sh")
+            .args(["-c", "trap '' TERM; sleep 30 & wait"])
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        let (exit, timed_out) = wait_with_timeout(&mut child, Duration::from_millis(300)).unwrap();
+        let elapsed = start.elapsed();
+
+        // SIGKILL cannot be trapped or reported: no exit code survives it.
+        assert_eq!(exit, None);
+        assert!(timed_out);
+        assert!(
+            elapsed >= SIGTERM_GRACE,
+            "took {elapsed:?}; must not escalate to SIGKILL before the full \
+             {SIGTERM_GRACE:?} grace has elapsed"
+        );
+        // ...but nowhere near the child's own 30s sleep — proves SIGKILL
+        // actually fired rather than this falling through to waiting the
+        // child out directly.
+        assert!(
+            elapsed < Duration::from_secs(15),
+            "took {elapsed:?}; expected well under the child's own 30s sleep"
+        );
     }
 
     /// An ordinary (non-selection) fixture must never carry a

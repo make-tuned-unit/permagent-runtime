@@ -658,6 +658,10 @@ fn task_result_from_qual_evidence(t: &TaskQualificationEvidence) -> Result<TaskR
         seed_commit: t.seed_commit.clone(),
         headless_autoland: t.headless_autoland.clone(),
         headless_drain_secs: t.headless_drain_secs.clone(),
+        // Lane R17a: a qualification record has no `receipt_source`
+        // counterpart (it is informational-only and deliberately excluded
+        // from the gate) — never fabricated from absent data.
+        receipt_source: None,
     })
 }
 

@@ -18,11 +18,19 @@ pub fn record(area: &str, key: &str) {
         _ => return,
     };
     counter.fetch_add(1, Ordering::Relaxed);
+    // Lane R17a: cost_routing is one of the four RECEIPT CONTRACT v1 lines
+    // the receipts sidecar mirrors — refresh it on every counter change too,
+    // not just the other three areas (`crate::receipts::write_sidecar` is a
+    // no-op unless `PERMAGENT_RECEIPTS_SIDECAR` is set for this run).
+    crate::receipts::write_sidecar();
 }
 
 pub fn set_planner(provider: &str, model: &str) {
-    let mut planner = PLANNER.lock().unwrap_or_else(|e| e.into_inner());
-    *planner = format!("{provider}/{model}");
+    {
+        let mut planner = PLANNER.lock().unwrap_or_else(|e| e.into_inner());
+        *planner = format!("{provider}/{model}");
+    }
+    crate::receipts::write_sidecar();
 }
 
 #[derive(Debug, PartialEq, Eq)]

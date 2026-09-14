@@ -514,6 +514,75 @@ pub fn scan(log_text: &str) -> LogSignals {
     signals
 }
 
+/// Lane R17a (M17 readiness audit §6.1, gaps 1 & 4): a harness SIGKILLed for
+/// exceeding `harness_timeout_secs` never reaches its own clean-exit print,
+/// so the four RECEIPT CONTRACT v1 lines and the `harness_overhead` line are
+/// absent from the captured stdout+stderr log `scan` already read. The
+/// harness ALSO mirrors those same lines into a sidecar file (written
+/// atomically on every counter change and turn boundary) when
+/// `PERMAGENT_RECEIPTS_SIDECAR` is set — see `permagent::receipts::write_sidecar`.
+/// This fills any of `signals`' five receipt-area fields that are still
+/// `None` from that sidecar's text, parsed with the exact SAME [`scan`] this
+/// module already uses on stdout, so the sidecar can never be read by a
+/// different (and possibly drifted) grammar.
+///
+/// Returns which source ended up supplying evidence, for the caller to
+/// record on [`crate::metrics::TaskResult::receipt_source`] (informational
+/// only — never read by the qualification gate): `"stdout"` when every
+/// field the sidecar could have supplied was already present before this
+/// call (the sidecar's own values are never used to overwrite an existing
+/// stdout-sourced field — stdout wins), `"sidecar"` when at least one field
+/// was filled in from the sidecar, or `None` when neither source had any of
+/// these fields.
+pub fn fill_receipts_from_sidecar(signals: &mut LogSignals, sidecar_text: &str) -> Option<String> {
+    let sidecar = scan(sidecar_text);
+    let mut filled_any = false;
+
+    if signals.dag_enforcement.is_none() {
+        if let Some(v) = sidecar.dag_enforcement {
+            signals.dag_enforcement = Some(v);
+            filled_any = true;
+        }
+    }
+    if signals.verification_integrity.is_none() {
+        if let Some(v) = sidecar.verification_integrity {
+            signals.verification_integrity = Some(v);
+            filled_any = true;
+        }
+    }
+    if signals.safety_and_trust.is_none() {
+        if let Some(v) = sidecar.safety_and_trust {
+            signals.safety_and_trust = Some(v);
+            filled_any = true;
+        }
+    }
+    if signals.cost_routing.is_none() {
+        if let Some(v) = sidecar.cost_routing {
+            signals.cost_routing = Some(v);
+            filled_any = true;
+        }
+    }
+    if signals.harness_overhead.is_none() {
+        if let Some(v) = sidecar.harness_overhead {
+            signals.harness_overhead = Some(v);
+            filled_any = true;
+        }
+    }
+
+    if filled_any {
+        Some("sidecar".to_string())
+    } else if signals.dag_enforcement.is_some()
+        || signals.verification_integrity.is_some()
+        || signals.safety_and_trust.is_some()
+        || signals.cost_routing.is_some()
+        || signals.harness_overhead.is_some()
+    {
+        Some("stdout".to_string())
+    } else {
+        None
+    }
+}
+
 /// Best-effort parse of a `planner=<provider>/<model> reason=<...>
 /// workers=<provider>/<model>,...` line (see [`PlannerRoute`]'s doc for the
 /// grammar and why it exists). Matches the `planner=` token ANYWHERE on the
@@ -1025,5 +1094,130 @@ mod tests {
             line.replace("receipt ", "receipt\t")
         );
         assert!(scan(&decorated).dag_enforcement.is_some());
+    }
+
+    /// A sidecar file holding all five RECEIPT CONTRACT v1 lines, as
+    /// `permagent::receipts::write_sidecar` would write it.
+    fn full_sidecar_text() -> String {
+        [
+            "receipt dag_enforcement roadmap_dispatched=1 bypass_attempts=0 bypass_passes=0 coordinator_mutations=0",
+            "receipt verification_integrity goals=1 review_reached=1 vacuous_passes=0 reviewer_mutations=0 reviewer_not_independent=0",
+            "receipt safety_and_trust jail_denials=1 jail_bypasses=0 unapproved_skill_runs=0 approval_bypasses=0 adversary_blocks=0",
+            "receipt cost_routing dispatches=1 cheapest_capable=1 pack_honored=1 planner=openrouter/glm",
+            "harness_overhead p50=10 p95=20 model=30 tools=40 wall=50",
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn fill_receipts_from_sidecar_populates_an_empty_captured_log() {
+        // Lane R17a: a harness SIGKILLed before its clean-exit print leaves
+        // `scan` on the (empty) captured log with nothing; the sidecar must
+        // supply all five fields, and the source must read "sidecar".
+        let mut signals = scan("");
+        assert!(signals.dag_enforcement.is_none());
+
+        let source = fill_receipts_from_sidecar(&mut signals, &full_sidecar_text());
+
+        assert_eq!(source, Some("sidecar".to_string()));
+        assert_eq!(
+            signals.dag_enforcement,
+            Some(DagEnforcementReceipt {
+                roadmap_dispatched: 1,
+                bypass_attempts: 0,
+                bypass_passes: 0,
+                coordinator_mutations: 0,
+            })
+        );
+        assert_eq!(
+            signals.verification_integrity,
+            Some(VerificationIntegrityReceipt {
+                goals: 1,
+                review_reached: 1,
+                vacuous_passes: 0,
+                reviewer_mutations: 0,
+                reviewer_not_independent: 0,
+            })
+        );
+        assert_eq!(
+            signals.safety_and_trust,
+            Some(SafetyAndTrustReceipt {
+                jail_denials: 1,
+                jail_bypasses: 0,
+                unapproved_skill_runs: 0,
+                approval_bypasses: 0,
+                adversary_blocks: 0,
+            })
+        );
+        assert_eq!(
+            signals.cost_routing,
+            Some(CostRoutingReceipt {
+                dispatches: 1,
+                cheapest_capable: 1,
+                pack_honored: 1,
+                planner: "openrouter/glm".to_string(),
+            })
+        );
+        assert_eq!(
+            signals.harness_overhead,
+            Some(HarnessOverhead {
+                p50_ms: 10,
+                p95_ms: 20,
+                model_ms: 30,
+                tools_ms: 40,
+                wall_ms: 50,
+            })
+        );
+    }
+
+    #[test]
+    fn fill_receipts_from_sidecar_lets_stdout_win_when_both_exist() {
+        // The captured log printed its own (clean-exit) receipts with
+        // DIFFERENT values from the sidecar below; those stdout-sourced
+        // values must survive untouched, and the source must read "stdout"
+        // — a sidecar that merely CONFIRMS the same run must never override
+        // the authoritative stdout print.
+        let stdout_line = "receipt dag_enforcement roadmap_dispatched=9 bypass_attempts=9 bypass_passes=9 coordinator_mutations=9\n\
+             receipt verification_integrity goals=9 review_reached=9 vacuous_passes=9 reviewer_mutations=9 reviewer_not_independent=9\n\
+             receipt safety_and_trust jail_denials=9 jail_bypasses=9 unapproved_skill_runs=9 approval_bypasses=9 adversary_blocks=9\n\
+             receipt cost_routing dispatches=9 cheapest_capable=9 pack_honored=9 planner=z.ai/glm\n\
+             harness_overhead p50=99 p95=99 model=99 tools=99 wall=99";
+        let mut signals = scan(stdout_line);
+        assert!(signals.dag_enforcement.is_some());
+
+        let source = fill_receipts_from_sidecar(&mut signals, &full_sidecar_text());
+
+        assert_eq!(source, Some("stdout".to_string()));
+        assert_eq!(
+            signals.dag_enforcement.unwrap().roadmap_dispatched,
+            9,
+            "stdout's own value must not be overwritten by the sidecar"
+        );
+        assert_eq!(signals.harness_overhead.unwrap().p50_ms, 99);
+    }
+
+    #[test]
+    fn fill_receipts_from_sidecar_fills_only_the_missing_fields() {
+        // A partial stdout capture (only dag_enforcement printed before the
+        // kill) keeps its own dag_enforcement value and is topped off with
+        // everything else from the sidecar.
+        let mut signals = scan(
+            "receipt dag_enforcement roadmap_dispatched=9 bypass_attempts=9 bypass_passes=9 coordinator_mutations=9",
+        );
+
+        let source = fill_receipts_from_sidecar(&mut signals, &full_sidecar_text());
+
+        assert_eq!(source, Some("sidecar".to_string()));
+        assert_eq!(signals.dag_enforcement.unwrap().roadmap_dispatched, 9);
+        assert_eq!(signals.cost_routing.unwrap().dispatches, 1);
+        assert_eq!(signals.harness_overhead.unwrap().p50_ms, 10);
+    }
+
+    #[test]
+    fn fill_receipts_from_sidecar_reads_none_when_neither_side_has_evidence() {
+        let mut signals = scan("");
+        let source = fill_receipts_from_sidecar(&mut signals, "");
+        assert_eq!(source, None);
+        assert!(signals.dag_enforcement.is_none());
     }
 }

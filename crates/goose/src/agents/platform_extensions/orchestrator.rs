@@ -10508,6 +10508,17 @@ async fn drain_dispatched_goals_with(
             hook().await;
         }
 
+        // Lane R17b (G20 review, MED-1): refresh the receipts sidecar on
+        // EVERY poll iteration, not only when a goal's `GoalState` actually
+        // changes — `on_status` below is gated on `last_state != state` and
+        // a run stuck in one state for a long stretch (one slow worker, no
+        // counter/turn-boundary activity elsewhere) would otherwise get no
+        // drain-driven refresh during that whole stretch. `write_sidecar` is
+        // itself gated on `receipts::is_active()` (true only when
+        // `PERMAGENT_RECEIPTS_SIDECAR` was set for this run), so this is a
+        // no-op query, not a no-op call, for every other run.
+        crate::receipts::write_sidecar();
+
         // Re-query every iteration (G4 #2): a goal dispatched mid-drain must
         // join the wait set, not just whatever was already dispatched when
         // the loop started. Y6 makes this load-bearing a second time: a goal
