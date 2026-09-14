@@ -390,6 +390,27 @@ pub(crate) fn coalesce_turn_messages(messages: Vec<Message>) -> (Vec<Message>, u
     (folded, issues.len())
 }
 
+/// Lane R19a (harness loop 2026-09-14, M19 DeepSeek forensics). Should a
+/// pre-first-byte provider stall be retried, or has this turn already spent
+/// its one retry?
+///
+/// `stream_committed` guards against retrying a stream that already
+/// delivered content: once part of an answer has reached the user there is
+/// no longer a "same request" that is safe to resend silently underneath it.
+/// `already_retried` bounds the retry to exactly one attempt per turn — a
+/// second stall falls through to the ordinary give-up path instead of
+/// retrying forever.
+///
+/// A pure, free function on purpose: the decision is exercised directly by
+/// tests below without needing to drive the whole streaming reply generator.
+fn should_retry_first_byte_stall(
+    provider_err: &ProviderError,
+    stream_committed: bool,
+    already_retried: bool,
+) -> bool {
+    provider_err.is_first_byte_provider_stall() && !stream_committed && !already_retried
+}
+
 async fn persist_turn_ending_message(
     session_manager: &Arc<crate::session::SessionManager>,
     session_id: &str,
@@ -2239,6 +2260,10 @@ impl Agent {
                 // saw a partial answer). Billing/auth still announce.
                 let mut stream_committed = false;
                 let mut exit_chat = false;
+                // Lane R19a: a pre-first-byte provider stall gets exactly one
+                // retry of the identical request. This bounds it to one per
+                // turn attempt — see `should_retry_first_byte_stall`.
+                let mut first_byte_stall_retried = false;
 
                 // Track whether this provider turn has already emitted visible
                 // thinking so a later tool-call chunk can suppress replayed
@@ -2994,6 +3019,115 @@ impl Agent {
                             // actually change the request.
                             let message = Message::assistant().with_text(
                                 format!("Ran into this error: {provider_err}.\n\nThe provider rejected this request as invalid, so sending it again unchanged will fail the same way. Switch the model (Settings → Models), or start a new session, then resend your message.")
+                            );
+                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            yield AgentEvent::Message(message);
+                            state_guard.mark_error();
+                            break;
+                        }
+                        // Lane R19a (harness loop 2026-09-14, M19 DeepSeek
+                        // forensics): a stall before the provider sent even
+                        // one byte is not the same failure as a mid-stream
+                        // stall or a repeating model (Y8a) — it is commonly
+                        // provider-side queueing/prefill on a large context,
+                        // and the M17-vs-M19 comparison showed an
+                        // equivalent-sized request to a different provider,
+                        // same binary, same moment, answering in seconds.
+                        // Retry the identical request exactly once —
+                        // `stream_committed` confirms nothing from THIS
+                        // stream has reached the user yet, so there is no
+                        // partial answer a second attempt could contradict —
+                        // and record it as an observability signal, never as
+                        // assistant free text: free text with no tool call
+                        // and no roadmap is exactly what trips Lane R18f's
+                        // rule5 guard and ended the run this defect reports.
+                        Err(ref provider_err)
+                            if should_retry_first_byte_stall(
+                                provider_err,
+                                stream_committed,
+                                first_byte_stall_retried,
+                            ) =>
+                        {
+                            #[cfg(feature = "telemetry")]
+                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                            first_byte_stall_retried = true;
+                            tracing::warn!(
+                                target: "permagent::provider_stall",
+                                session_id = %session_config.id,
+                                provider = %turn_provider.get_name(),
+                                model = %turn_model_name,
+                                error = %provider_err,
+                                "provider_stall: first-byte stall, retrying the identical request once (Lane R19a)"
+                            );
+                            match crate::cost_router::authorized_attempts::with_reservation_attempts(
+                                Arc::clone(&session_manager),
+                                invocation.invocation_id.clone(),
+                                invocation.attempts_reserved,
+                                Self::stream_response_from_provider(
+                                    turn_provider.clone(),
+                                    &session_config.id,
+                                    &system_prompt,
+                                    conversation_with_moim.messages(),
+                                    &tools,
+                                    &toolshim_tools,
+                                ),
+                            )
+                            .await
+                            {
+                                Ok(fresh) => {
+                                    stream = fresh;
+                                    continue;
+                                }
+                                Err(retry_error) => {
+                                    tracing::warn!(
+                                        target: "permagent::provider_stall",
+                                        session_id = %session_config.id,
+                                        provider = %turn_provider.get_name(),
+                                        error = %retry_error,
+                                        "provider_stall: the retry attempt itself could not start a new stream"
+                                    );
+                                    let message = Message::assistant().with_system_notification(
+                                        SystemNotificationType::InlineMessage,
+                                        format!(
+                                            "{} did not respond in time — this was retried once and still did not \
+                                             respond. Your message was not sent; send it again once the provider \
+                                             recovers.",
+                                            turn_provider.get_name(),
+                                        ),
+                                    );
+                                    persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                                    yield AgentEvent::Message(message);
+                                    state_guard.mark_error();
+                                    break;
+                                }
+                            }
+                        }
+                        // The retry above was already spent (or did not apply —
+                        // content had already streamed) and this turn stalled
+                        // before the first byte again. Give up, but the same
+                        // way the rate-limit arm above does: a system
+                        // notification, never assistant free text, so a
+                        // second stall cannot itself trip Lane R18f's rule5
+                        // guard the way the pre-R19a generic text advice did.
+                        Err(ref provider_err) if provider_err.is_first_byte_provider_stall() => {
+                            #[cfg(feature = "telemetry")]
+                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                            tracing::warn!(
+                                target: "permagent::provider_stall",
+                                session_id = %session_config.id,
+                                provider = %turn_provider.get_name(),
+                                model = %turn_model_name,
+                                error = %provider_err,
+                                retried = first_byte_stall_retried,
+                                "provider_stall: first-byte stall persisted; ending the turn without a retry left"
+                            );
+                            let message = Message::assistant().with_system_notification(
+                                SystemNotificationType::InlineMessage,
+                                format!(
+                                    "{} — {}. Your message was not sent; send it again once the provider recovers.",
+                                    turn_provider.get_name(),
+                                    provider_err.user_facing_summary(),
+                                ),
                             );
                             persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
                             yield AgentEvent::Message(message);
@@ -4013,6 +4147,58 @@ mod tests {
         let direct_call = [".", "complete("].concat();
         assert!(source.contains("complete_accounted"));
         assert!(!source.contains(&direct_call));
+    }
+
+    // --- Lane R19a: retry-once decision for a first-byte provider stall --
+
+    /// The first first-byte stall on a turn that has not streamed anything
+    /// yet is retried; a second one (after the retry is spent) is not.
+    #[test]
+    fn a_first_byte_stall_is_retried_exactly_once() {
+        let err = crate::providers::errors::ProviderError::first_byte_stall(
+            "the provider sent nothing at all for 300 s",
+        );
+        assert!(
+            should_retry_first_byte_stall(&err, false, false),
+            "first occurrence, nothing streamed yet: retry"
+        );
+        assert!(
+            !should_retry_first_byte_stall(&err, false, true),
+            "the one retry is already spent: do not retry again"
+        );
+    }
+
+    /// A first-byte stall is never retried once part of an answer has
+    /// already reached the user on this stream — there is no longer a "same
+    /// request" that is safe to resend silently underneath a partial reply.
+    #[test]
+    fn a_first_byte_stall_is_not_retried_once_the_stream_is_committed() {
+        let err = crate::providers::errors::ProviderError::first_byte_stall("0 chars in 300 s");
+        assert!(
+            !should_retry_first_byte_stall(&err, true, false),
+            "content already streamed: do not resend the request"
+        );
+    }
+
+    /// A genuine mid-stream stall (or repetition, or wall-clock) — anything
+    /// that is `is_stream_budget_exceeded()` but NOT specifically a
+    /// first-byte stall — must never take this retry path. Y8a's "never
+    /// retry a runaway" verdict for that class is unchanged.
+    #[test]
+    fn an_ordinary_mid_stream_stall_is_never_retried_by_this_path() {
+        let err = crate::providers::errors::ProviderError::stream_budget_exceeded(
+            "the provider sent nothing for longer than 120s allows",
+        );
+        assert!(err.is_stream_budget_exceeded());
+        assert!(!should_retry_first_byte_stall(&err, false, false));
+    }
+
+    /// A wholly unrelated error (never a stream-budget failure at all) is
+    /// also never retried by this path.
+    #[test]
+    fn an_unrelated_error_is_never_retried_by_this_path() {
+        let err = crate::providers::errors::ProviderError::ServerError("502".to_string());
+        assert!(!should_retry_first_byte_stall(&err, false, false));
     }
 
     /// The text `handle_denied_tools` actually put on the wire for `id`.

@@ -767,9 +767,65 @@ mod tests {
                 .contains(crate::providers::stream_budget::STALL_SECS_ENV),
             "the error must name the budget it broke: {err}"
         );
+        // Lane R19a: this stream already delivered its one delta before
+        // going silent, so this must NOT be classified as a first-byte
+        // stall — it is the ordinary mid-stream case, unchanged by R19a.
+        assert!(!err.is_first_byte_provider_stall(), "{err}");
         assert!(
             elapsed < std::time::Duration::from_secs(20),
             "the 1s budget must bite promptly, took {elapsed:?}"
+        );
+    }
+
+    /// Lane R19a (M19 DeepSeek forensics, harness loop 2026-09-14): a body
+    /// that sends NOTHING at all — not even one delta — must be stopped by
+    /// the first-byte window, not the (here, disabled) mid-stream stall
+    /// window, and must be classified as a first-byte stall so the caller
+    /// (`agents::agent`) knows to retry it once.
+    #[tokio::test]
+    async fn a_body_that_never_sends_anything_is_stopped_by_the_first_byte_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap())),
+            (crate::providers::stream_budget::MAX_SECS_ENV, Some("0")),
+            // Disabled, so a mis-set phase (i.e. this test wrongly using the
+            // mid-stream window from the start) would hang instead of
+            // silently passing.
+            (crate::providers::stream_budget::STALL_SECS_ENV, Some("0")),
+            (
+                crate::providers::stream_budget::FIRST_BYTE_SECS_ENV,
+                Some("1"),
+            ),
+            (
+                crate::providers::stream_budget::MAX_OUTPUT_CHARS_ENV,
+                Some("0"),
+            ),
+        ]);
+
+        let body = reqwest::Body::wrap_stream(futures::stream::pending::<
+            Result<bytes::Bytes, std::io::Error>,
+        >());
+        let log = throwaway_log();
+        let mut stream = stream_openai_compat(fake_response(body), log).expect("stream starts");
+
+        let started = std::time::Instant::now();
+        let err = match StreamExt::next(&mut stream).await {
+            Some(Err(e)) => e,
+            Some(Ok(_)) => panic!("a body that never sends anything must never deliver an item"),
+            None => panic!("a body that never sends anything must not end cleanly"),
+        };
+        let elapsed = started.elapsed();
+
+        assert!(err.is_stream_budget_exceeded(), "{err}");
+        assert!(err.is_first_byte_provider_stall(), "{err}");
+        assert!(
+            err.to_string()
+                .contains(crate::providers::stream_budget::FIRST_BYTE_SECS_ENV),
+            "the error must name the budget it broke: {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "the 1s first-byte budget must bite promptly, took {elapsed:?}"
         );
     }
 }

@@ -26,6 +26,23 @@
 //!    provider may go without saying anything at all. This is the bound that
 //!    catches a socket that stops delivering, and it is the one a healthy
 //!    response never touches however long that response runs.
+//!
+//!    **Lane R19a (harness loop 2026-09-14).** The window ABOVE — applied
+//!    once a stream has already produced at least one item (even a
+//!    usage-only chunk) — is not the same problem as the window BEFORE it
+//!    has produced anything at all. M19 DeepSeek forensics: three m1-round
+//!    tasks each sent an identical
+//!    ~39 KB-system-prompt coordinator request that received **0 chars in
+//!    120 s**, three times in a row, while a z.ai request on the same binary,
+//!    at the same moment, under the same ~20 load average, with an
+//!    equivalent-sized payload, answered in seconds — a provider-side
+//!    prefill/queueing delay, not a dead socket. `PERMAGENT_PROVIDER_STREAM_-
+//!    FIRST_BYTE_SECS` (default 300) now governs `next()` only until the
+//!    first item arrives; every `next()` after that keeps using the ordinary
+//!    120 s inactivity window above, unchanged. The caller (`agents::agent`)
+//!    retries a first-byte stall once, since nothing has streamed yet to
+//!    contradict a second attempt; Y8a's "never retry a genuine mid-stream
+//!    stall or a repeating model" is untouched.
 //! 2. **Total wall clock** — `PERMAGENT_PROVIDER_STREAM_MAX_SECS` (default
 //!    1200, `0` = unlimited). Checked per delta, as a backstop on a stream that
 //!    is *productive* forever. It is deliberately generous: a slow local model,
@@ -64,8 +81,18 @@ use crate::conversation::message::{Message, MessageContent};
 /// [`STALL_SECS_ENV`].
 pub const MAX_SECS_ENV: &str = "PERMAGENT_PROVIDER_STREAM_MAX_SECS";
 /// Inactivity window for a single provider response, in seconds: how long one
-/// `next()` may block without delivering anything. `0` disables.
+/// `next()` may block without delivering anything ONCE THE STREAM HAS ALREADY
+/// DELIVERED at least one item. `0` disables. See [`FIRST_BYTE_SECS_ENV`] for
+/// the window before that.
 pub const STALL_SECS_ENV: &str = "PERMAGENT_PROVIDER_STREAM_STALL_SECS";
+/// Lane R19a. Inactivity window for the FIRST `next()` of a response, in
+/// seconds: how long we wait for the provider to say anything at all before
+/// it has said anything. `0` disables (falls back to [`STALL_SECS_ENV`]'s
+/// window, i.e. the pre-R19a behavior). Deliberately more generous than the
+/// mid-stream window — a large context's prefill and a busy provider's queue
+/// both look, from here, identical to a dead socket, and only one of them is
+/// actually a problem.
+pub const FIRST_BYTE_SECS_ENV: &str = "PERMAGENT_PROVIDER_STREAM_FIRST_BYTE_SECS";
 /// Cumulative streamed-output ceiling for a single response, in characters.
 /// `0` disables.
 pub const MAX_OUTPUT_CHARS_ENV: &str = "PERMAGENT_PROVIDER_STREAM_MAX_OUTPUT_CHARS";
@@ -73,10 +100,20 @@ pub const MAX_OUTPUT_CHARS_ENV: &str = "PERMAGENT_PROVIDER_STREAM_MAX_OUTPUT_CHA
 /// 20 minutes. A response that is still *producing* after this is pathological;
 /// one that is merely long is not, which is why this is not 300 (G13 H2).
 pub const DEFAULT_MAX_SECS: u64 = 1200;
-/// Two minutes of complete silence from the provider. Prefill on a large
-/// context plus a first-token wait fits well inside this; a dead socket does
-/// not.
+/// Two minutes of complete silence from the provider, ONCE it has already
+/// delivered at least one item. Prefill on a large context plus a first-token
+/// wait belongs to [`DEFAULT_FIRST_BYTE_SECS`] now (Lane R19a); a dead socket
+/// mid-stream does not get that much rope.
 pub const DEFAULT_STALL_SECS: u64 = 120;
+/// Five minutes of complete silence before the FIRST item arrives (Lane
+/// R19a). Wider than [`DEFAULT_STALL_SECS`] on purpose: the M19 DeepSeek
+/// forensics this constant comes from measured a ~39 KB system prompt
+/// stalling at 0 chars for the full prior 120 s bound, three times in a row,
+/// while an equivalent-sized request to a different provider on the same
+/// binary at the same moment answered in seconds — plausibly provider-side
+/// queueing/prefill, not a dead connection. The caller retries this specific
+/// timeout once before giving up.
+pub const DEFAULT_FIRST_BYTE_SECS: u64 = 300;
 pub const DEFAULT_MAX_OUTPUT_CHARS: usize = 400_000;
 
 /// A delta shorter than this is never counted as a repetition: single tokens,
@@ -132,8 +169,19 @@ pub struct StreamBudget {
     started: Instant,
     /// Total wall clock. `None` means unlimited.
     max_wall: Option<Duration>,
-    /// Inactivity window applied to each `next()`. `None` means unlimited.
+    /// Inactivity window applied to each `next()` AFTER the first item has
+    /// arrived. `None` means unlimited.
     max_stall: Option<Duration>,
+    /// Lane R19a. Inactivity window applied to `next()` calls BEFORE the
+    /// first item has arrived. `None` falls back to `max_stall` — the
+    /// pre-R19a behavior of one uniform window for the whole stream.
+    max_first_byte: Option<Duration>,
+    /// Lane R19a. Has this stream delivered anything at all yet — a real
+    /// delta or a usage-only chunk? Flips permanently on the first
+    /// [`record`](Self::record)/[`record_text`](Self::record_text) call,
+    /// which only ever happens after a `next()` has actually returned
+    /// something (see `stream_openai_compat`'s loop).
+    first_byte_received: bool,
     /// `None` means unlimited.
     max_output_chars: Option<usize>,
     chars: usize,
@@ -146,12 +194,14 @@ impl StreamBudget {
     pub fn from_env() -> Self {
         let secs = env_u64(MAX_SECS_ENV, DEFAULT_MAX_SECS);
         let stall = env_u64(STALL_SECS_ENV, DEFAULT_STALL_SECS);
+        let first_byte = env_u64(FIRST_BYTE_SECS_ENV, DEFAULT_FIRST_BYTE_SECS);
         let chars = env_u64(MAX_OUTPUT_CHARS_ENV, DEFAULT_MAX_OUTPUT_CHARS as u64) as usize;
         Self::new(
             (secs > 0).then(|| Duration::from_secs(secs)),
             (chars > 0).then_some(chars),
         )
         .with_stall((stall > 0).then(|| Duration::from_secs(stall)))
+        .with_first_byte((first_byte > 0).then(|| Duration::from_secs(first_byte)))
     }
 
     pub fn new(max_wall: Option<Duration>, max_output_chars: Option<usize>) -> Self {
@@ -159,6 +209,8 @@ impl StreamBudget {
             started: Instant::now(),
             max_wall,
             max_stall: None,
+            max_first_byte: None,
+            first_byte_received: false,
             max_output_chars,
             chars: 0,
             last_delta: String::new(),
@@ -166,10 +218,19 @@ impl StreamBudget {
         }
     }
 
-    /// Set the inactivity window. `None` = unlimited, in which case the
+    /// Set the inactivity window applied once the stream has already
+    /// delivered at least one item. `None` = unlimited, in which case the
     /// remaining total (if any) is what bounds a `next()`.
     pub fn with_stall(mut self, max_stall: Option<Duration>) -> Self {
         self.max_stall = max_stall;
+        self
+    }
+
+    /// Lane R19a. Set the inactivity window applied before the stream has
+    /// delivered anything at all. `None` = fall back to the ordinary stall
+    /// window for the whole stream, matching the pre-R19a behavior.
+    pub fn with_first_byte(mut self, max_first_byte: Option<Duration>) -> Self {
+        self.max_first_byte = max_first_byte;
         self
     }
 
@@ -181,13 +242,19 @@ impl StreamBudget {
             .map(|max| max.saturating_sub(self.started.elapsed()))
     }
 
-    /// How long the next `next()` may block: the fixed inactivity window, or
-    /// the remaining total when that is tighter (or when there is no stall
-    /// window at all). `None` = no timeout wrapper.
+    /// How long the next `next()` may block: the fixed inactivity window for
+    /// the stream's current phase (pre- or post-first-byte, Lane R19a), or
+    /// the remaining total when that is tighter (or when there is no
+    /// inactivity window at all). `None` = no timeout wrapper.
     pub fn next_timeout(&self) -> Option<Duration> {
-        match (self.max_stall, self.remaining()) {
-            (Some(stall), Some(remaining)) => Some(stall.min(remaining)),
-            (Some(stall), None) => Some(stall),
+        let window = if self.first_byte_received {
+            self.max_stall
+        } else {
+            self.max_first_byte.or(self.max_stall)
+        };
+        match (window, self.remaining()) {
+            (Some(window), Some(remaining)) => Some(window.min(remaining)),
+            (Some(window), None) => Some(window),
             (None, remaining) => remaining,
         }
     }
@@ -197,6 +264,9 @@ impl StreamBudget {
     pub fn timeout_error(&self) -> ProviderError {
         if self.remaining().is_some_and(|left| left.is_zero()) {
             return self.wall_clock_error();
+        }
+        if !self.first_byte_received && self.max_first_byte.is_some() {
+            return self.first_byte_error();
         }
         if self.max_stall.is_some() {
             self.stall_error()
@@ -229,6 +299,23 @@ impl StreamBudget {
             self.max_stall.map(|d| d.as_secs()).unwrap_or(0),
             self.observed_rate(),
             STALL_SECS_ENV,
+        ))
+    }
+
+    /// Lane R19a. The error for a stream that sent nothing at all — not one
+    /// item, real or usage-only — within the first-byte window. Distinct
+    /// from [`stall_error`](Self::stall_error): the caller (`agents::agent`)
+    /// retries this specific failure once, because nothing has streamed yet
+    /// to contradict a second attempt.
+    pub fn first_byte_error(&self) -> ProviderError {
+        ProviderError::first_byte_stall(format!(
+            "the provider sent nothing at all for longer than {} allows ({}s); {} were received \
+             before the stream was stopped. Raise or disable {} (0 = unlimited) if this model or \
+             provider legitimately needs longer to start responding.",
+            FIRST_BYTE_SECS_ENV,
+            self.max_first_byte.map(|d| d.as_secs()).unwrap_or(0),
+            self.observed_rate(),
+            FIRST_BYTE_SECS_ENV,
         ))
     }
 
@@ -279,6 +366,14 @@ impl StreamBudget {
 
     /// The half of [`record`](Self::record) that does not need a `Message`.
     pub fn record_text(&mut self, delta: &str) -> Result<(), ProviderError> {
+        // Lane R19a: `record`/`record_text` only ever runs after a `next()`
+        // has actually returned an item (see `stream_openai_compat`'s loop),
+        // so reaching this line at all — even for an empty/usage-only delta —
+        // means the provider is no longer silent. Every `next()` after this
+        // one uses the ordinary mid-stream stall window, not the first-byte
+        // one, regardless of how short or empty this particular delta was.
+        self.first_byte_received = true;
+
         let len = delta.chars().count();
         self.chars = self.chars.saturating_add(len);
 
@@ -552,5 +647,106 @@ mod tests {
         let err = budget.wall_clock_error();
         assert!(err.is_stream_budget_exceeded(), "{err}");
         assert!(err.to_string().contains(MAX_SECS_ENV), "{err}");
+    }
+
+    // --- Lane R19a: first-byte phase vs. mid-stream stall ---------------
+
+    /// Before anything has arrived, `next_timeout` uses the first-byte
+    /// window — not the (usually much tighter) mid-stream stall window. A
+    /// large context's prefill and a busy provider's queue legitimately take
+    /// longer than an ordinary pause between deltas.
+    #[test]
+    fn the_first_byte_window_applies_before_anything_is_received() {
+        let budget = StreamBudget::new(None, None)
+            .with_stall(Some(Duration::from_secs(120)))
+            .with_first_byte(Some(Duration::from_secs(300)));
+        assert_eq!(
+            budget.next_timeout(),
+            Some(Duration::from_secs(300)),
+            "nothing received yet: the first-byte window applies, not the 120s stall window"
+        );
+    }
+
+    /// Once the first item has arrived — even an empty/usage-only chunk with
+    /// no text — `next_timeout` switches to the ordinary mid-stream stall
+    /// window. Y8a's protection for a genuinely dead mid-stream socket must
+    /// fire exactly as before, at 120s, not at the wider first-byte window.
+    #[test]
+    fn the_stall_window_applies_once_the_first_byte_has_arrived() {
+        let mut budget = StreamBudget::new(None, None)
+            .with_stall(Some(Duration::from_secs(120)))
+            .with_first_byte(Some(Duration::from_secs(300)));
+        budget
+            .record(None)
+            .expect("a usage-only chunk is not itself a failure");
+        assert_eq!(
+            budget.next_timeout(),
+            Some(Duration::from_secs(120)),
+            "the first item (even an empty one) arrived: fall back to the mid-stream window"
+        );
+    }
+
+    /// A timeout before the first byte reports the first-byte bound by name,
+    /// and is classified as a first-byte stall distinct from an ordinary
+    /// mid-stream one — the caller uses this to decide whether to retry.
+    #[test]
+    fn a_pre_first_byte_timeout_reports_the_first_byte_bound() {
+        let budget = StreamBudget::new(None, None)
+            .with_stall(Some(Duration::from_secs(120)))
+            .with_first_byte(Some(Duration::from_secs(300)));
+        let err = budget.timeout_error();
+        assert!(err.to_string().contains(FIRST_BYTE_SECS_ENV), "{err}");
+        assert!(err.is_stream_budget_exceeded(), "{err}");
+        assert!(err.is_first_byte_provider_stall(), "{err}");
+    }
+
+    /// A mid-stream timeout — after at least one item has arrived — still
+    /// trips the ordinary 120s stall bound, names it, and is NOT classified
+    /// as a first-byte stall, so it keeps Y8a's "do not retry" handling
+    /// exactly as before this lane.
+    #[test]
+    fn a_mid_stream_timeout_still_trips_the_ordinary_stall_bound() {
+        let mut budget = StreamBudget::new(None, None)
+            .with_stall(Some(Duration::from_secs(120)))
+            .with_first_byte(Some(Duration::from_secs(300)));
+        budget
+            .record_text("hello ")
+            .expect("the first delta arrives fine");
+        let err = budget.timeout_error();
+        assert!(err.to_string().contains(STALL_SECS_ENV), "{err}");
+        assert!(err.is_stream_budget_exceeded(), "{err}");
+        assert!(!err.is_first_byte_provider_stall(), "{err}");
+    }
+
+    /// With no first-byte window configured, `next_timeout` falls back to
+    /// the ordinary stall window for the whole stream — the pre-R19a
+    /// behavior — so a caller that never opts in (or sets
+    /// `PERMAGENT_PROVIDER_STREAM_FIRST_BYTE_SECS=0`) is unaffected.
+    #[test]
+    fn no_first_byte_window_falls_back_to_the_stall_window_throughout() {
+        let stall = Duration::from_secs(120);
+        let budget = StreamBudget::new(None, None).with_stall(Some(stall));
+        assert_eq!(budget.next_timeout(), Some(stall));
+        let err = budget.timeout_error();
+        assert!(err.to_string().contains(STALL_SECS_ENV), "{err}");
+        assert!(!err.is_first_byte_provider_stall(), "{err}");
+    }
+
+    /// The spent-total wall-clock bound still wins over the first-byte
+    /// window when it is the tighter of the two, exactly as it already did
+    /// over the stall window.
+    #[test]
+    fn a_spent_total_wins_over_the_first_byte_window() {
+        let budget = StreamBudget::new(Some(Duration::ZERO), None)
+            .with_stall(Some(Duration::from_secs(120)))
+            .with_first_byte(Some(Duration::from_secs(300)));
+        let err = budget.timeout_error();
+        assert!(err.to_string().contains(MAX_SECS_ENV), "{err}");
+        assert!(!err.is_first_byte_provider_stall(), "{err}");
+    }
+
+    #[test]
+    fn the_first_byte_default_is_300s() {
+        assert_eq!(DEFAULT_FIRST_BYTE_SECS, 300);
     }
 }
