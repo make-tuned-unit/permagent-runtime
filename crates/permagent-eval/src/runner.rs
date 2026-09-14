@@ -700,7 +700,22 @@ fn unique_stamp() -> String {
 
 /// How long [`wait_with_timeout`] gives a child to exit on its own after
 /// SIGTERM before escalating to SIGKILL (Lane R17a).
-const SIGTERM_GRACE: Duration = Duration::from_secs(5);
+///
+/// Lane R20b (A20 Q1, Mechanism B): `loc-refund`/`refactor-shipping` were
+/// both killed by this SIGTERM path while a goal worker was still
+/// `in_progress`. The harness's own shutdown-signal handling
+/// (`crate::signal::shutdown_signal` in `goose-cli/src/session/mod.rs`,
+/// which calls `park_dispatched_goals_now` → `orchestrator::
+/// handle_goal_timeout`) now tries to salvage any already-committed goal
+/// work before it parks (see that function's own `maybe_salvage_committed_
+/// work` call) — a real `git`/verify round trip that needs more than the
+/// original 5s to even start, let alone finish, before SIGKILL lands.
+/// Widened to 30s so a well-behaved harness has a realistic window to run
+/// that salvage attempt and flush its receipts sidecar
+/// (`PERMAGENT_RECEIPTS_SIDECAR`) before being forced dead; a hung or
+/// unkillable process is still forced dead exactly as before, just up to
+/// 25s later.
+const SIGTERM_GRACE: Duration = Duration::from_secs(30);
 
 /// Wait for a child, killing it if it outlives `timeout`. Returns
 /// `(exit_code, timed_out)`.
