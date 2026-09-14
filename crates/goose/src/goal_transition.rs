@@ -73,6 +73,12 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     // human. Protected so a worker cannot reset its own bounded-resume
     // counter via the agent-facing metadata PATCH tool.
     "headless_unblock_count",
+    // Lane R20b (G25 MED): how many times `maybe_salvage_committed_work`
+    // has attempted to verify/review/land this goal's committed work before
+    // a budget/wall park. Protected so a worker cannot reset its own
+    // one-salvage-per-goal counter via the agent-facing metadata PATCH tool
+    // — same reasoning as `headless_unblock_count` above.
+    "salvage_attempted",
 ];
 
 // ── Errors ──────────────────────────────────────────────────────────────────
