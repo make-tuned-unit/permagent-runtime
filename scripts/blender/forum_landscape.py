@@ -381,3 +381,54 @@ try:
         scene['forum_route_points']=json.dumps(_route_points)
 except Exception as exc:
     scene['forum_route_points']='[]'
+
+# Job 16 harbour walk dressing.  Every repeated prop below shares one mesh
+# datablock and is filtered against the exact route polylines before placement.
+def _job16_linked(template, name, location, rotation=(0.0, 0.0, 0.0), scale=(1.0, 1.0, 1.0), material=None):
+    obj=bpy.data.objects.new(name, template.data);scene.collection.objects.link(obj)
+    obj.location=Vector(location);obj.rotation_euler=rotation;obj.scale=Vector(scale)
+    if material is not None:
+        obj.data.materials.clear();obj.data.materials.append(material)
+    obj['forum_architecture']=True
+    return obj
+
+_job16_amber=mat('Forum Harbour Amber',(.9,.28,.045),metal=.15,rough=.25)
+_job16_ash=mat('Forum Harbour Rope',(.32,.19,.09),rough=.9)
+_job16_crate=detailed_box('Job16 linked harbour crate template',(0,0,.35),(.9,.72,.7),timber,bevel=.08)
+_job16_bollard=cyl('Job16 linked harbour bollard template',(0,0,.42),.16,.84,bronze,verts=12)
+_job16_rope=ring('Job16 linked coiled rope template',(0,0,.08),.46,.09,_job16_ash)
+_job16_lantern=cyl('Job16 linked promenade lantern post template',(0,0,1.35),.09,2.7,bronze,verts=10)
+_job16_head=cyl('Job16 linked promenade amber head template',(0,0,2.78),.2,.18,_job16_amber,verts=16)
+for _index, _x in enumerate((-20,-10,10,20)):
+    _p=(_x,-146.0,0.0)
+    if _point_close_to_route(_p[:2],3.5): continue
+    _job16_linked(_job16_bollard,f'Job16 harbour quay bollard {_index}',(_x,-146,.42),material=bronze)
+    _job16_linked(_job16_rope,f'Job16 harbour coiled rope {_index}',(_x + 1.0,-146,.10),material=_job16_ash)
+    _job16_linked(_job16_crate,f'Job16 harbour crate {_index}',(_x + .2,-148,.35),rotation=(0,0,.2*_index),material=timber)
+for _index, _x in enumerate((-17,-5,7,19)):
+    _p=(_x,-137.2)
+    if _point_close_to_route(_p,3.5): continue
+    _job16_linked(_job16_lantern,f'Job16 harbour lantern post {_index}',(_x,-137.2,1.35),material=bronze)
+    _job16_linked(_job16_head,f'Job16 harbour amber lantern head {_index}',(_x,-137.2,2.78),material=_job16_amber)
+for _index, (_x,_y,_a) in enumerate(((-37,31,.2),(37,31,2.4),(-38,-30,1.1),(39,-38,2.9))):
+    if _point_close_to_route((_x,_y),3.5): continue
+    box(f'Job16 harbour boat {_index} hull',(_x,_y,-1.62),(4.0,1.18,.34),timber,_a)
+    _job16_linked(_job16_lantern,f'Job16 harbour boat mast {_index}',(_x,_y,-.25),rotation=(0,0,_a),scale=(.7,.7,1.25),material=timber)
+    box(f'Job16 harbour boat sail {_index}',(_x+math.cos(_a)*.3,_y+math.sin(_a)*.3,.75),(1.6,.04,1.9),glass,_a)
+for _index in range(16):
+    _a=math.tau*_index/16;_p=(112*math.cos(_a),112*math.sin(_a))
+    if _point_close_to_route(_p,3.5): continue
+    _job16_linked(_job16_lantern,f'Job16 promenade lantern post {_index}',(_p[0],_p[1],1.35),material=bronze)
+    _job16_linked(_job16_head,f'Job16 promenade amber lantern head {_index}',(_p[0],_p[1],2.78),material=_job16_amber)
+for _cx,_cy,_label in ((-88,0,'Maker'),(89,0,'Reading')):
+    _p=_point_close_to_route
+    # kiosks are set on the island interior, nine metres off the crossing axis
+    _d=math.hypot(_cx,_cy) or 1.0; _kx=_cx+(-_cy/_d)*9; _ky=_cy+(_cx/_d)*9
+    if not _p((_kx,_ky),3.5):
+        box(f'Job16 {_label} island market kiosk',(_kx,_ky,.8),(3.2,2.1,.22),timber)
+        box(f'Job16 {_label} island market fabric awning',(_kx,_ky,2.35),(3.5,2.4,.10),_job16_amber,.08)
+for _template in (_job16_crate,_job16_bollard,_job16_rope,_job16_lantern,_job16_head):
+    bpy.data.objects.remove(_template,do_unlink=True)
+forum_landscape_job16={'harbour_props':16,'boats':4,'promenade_lanterns':16,'market_kiosks':2,
+                       'triangle_delta_estimate':16*96+4*24+16*96+2*24}
+print('FORUM_LANDSCAPE_JOB16',forum_landscape_job16)

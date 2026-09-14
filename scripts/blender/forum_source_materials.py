@@ -323,4 +323,16 @@ forum_source_materials_manifest = {
         'architecturalGlass': {'name': architectural_glass.name, 'tileMeters': 2.4, 'objects': glass_assigned},
     },
 }
+# Job 16 material registry: the geometry modules create these before this
+# final surfacing pass; ensure standalone source-material inspection sees the
+# complete authored palette without replacing their tuned node values.
+job16_material_names = [
+    'Forum Harbour Amber', 'Forum Harbour Rope', 'Forum Plunge Pool Dark Water',
+    'Forum Island Quay Amber', 'Forum Warm Window Emission',
+    'Forum Info Display Line', 'Forum Brazier Amber Embers',
+    'Mesh gate cyan display glass', 'Celestial waterfall mist',
+]
+forum_source_materials_manifest['job16Materials'] = [
+    name for name in job16_material_names if bpy.data.materials.get(name) is not None
+]
 print('FORUM_SOURCE_MATERIALS', {key: len(value['objects']) for key,value in forum_source_materials_manifest['materials'].items()}, flush=True)

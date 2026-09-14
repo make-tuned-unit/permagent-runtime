@@ -488,3 +488,33 @@ for index, (x0, x1) in enumerate([(-10.5, -4.2), (4.2, 10.5)], 1):
 
 scene['terrace_hero_camera_blender'] = '[0.0, -9.0, 1.7] -> [0.0, 0.0, 1.4]'
 scene['terrace_route_clear_axes'] = 'north,east,south,west'
+
+# Job 16 tabletop and display dressing.  The table is inside the established
+# route ring; all freestanding additions are checked with the shared guard.
+def _job16_terrace_clear(point, radius=3.5):
+    return not ('_point_close_to_route' in globals() and _point_close_to_route(point, radius))
+
+_job16_book=detailed_box('Job16 linked closed book template',(0,0,.86),(.62,.42,.08),oiled_timber,bevel=.025) if 'detailed_box' in globals() else box('Job16 linked closed book template',(0,0,.86),(.62,.42,.08),oiled_timber)
+_job16_cup=cyl('Job16 linked cup template',(0,0,.91),.12,.22,bronze,verts=16)
+_job16_pot=cyl('Job16 linked seedling pot template',(0,0,.88),.16,.20,bronze,verts=16)
+_job16_tablet=detailed_box('Job16 linked bronze tablet template',(0,0,.91),(.52,.08,.30),bronze,bevel=.018) if 'detailed_box' in globals() else box('Job16 linked bronze tablet template',(0,0,.91),(.52,.08,.30),bronze)
+for _i,(_x,_y) in enumerate(((-1.25,-.35),(-.55,-.95),(.55,-.95))):
+    if _job16_terrace_clear((_x,_y)): _linked(_job16_book,f'Job16 council closed book {_i}',(_x,_y,.86),rotation=(0,0,.16*_i))
+for _i,(_x,_y) in enumerate(((1.15,-.45),(1.45,.25))):
+    if _job16_terrace_clear((_x,_y)): _linked(_job16_cup,f'Job16 council cup {_i}',(_x,_y,.91))
+if _job16_terrace_clear((0.2,.85)):
+    _linked(_job16_pot,'Job16 council potted seedling',(0.2,.85,.88))
+    _branch('Job16 council seedling stem',(.2,.85,.99),(.2,.85,1.35),.025,wood)
+if _job16_terrace_clear((-1.45,.55)): _linked(_job16_tablet,'Job16 council bronze tablet',(-1.45,.55,.91),rotation=(0,0,.2))
+_job16_blanket=detailed_box('Job16 linked sand folded blanket template',(0,0,.66),(1.45,.72,.16),fabric,bevel=.08) if 'detailed_box' in globals() else box('Job16 linked sand folded blanket template',(0,0,.66),(1.45,.72,.16),fabric)
+for _i,_loc in enumerate(((-3.1,-3.25,.66),(3.1,3.25,.66))):
+    if _job16_terrace_clear(_loc[:2]): _linked(_job16_blanket,f'Job16 sofa folded blanket {_i}',_loc,rotation=(0,0,.25*_i))
+_job16_display=_new_emissive_material('Forum Info Display Line',_hex_to_linear('#58D9E8'),.8,alpha=.22,roughness=.2)
+for _panel_x in (-5.6,5.6):
+    for _line in range(4):
+        box('Job16 info panel horizontal display line',(_panel_x,4.96,1.16+_line*.16),(.95,.018,.018),_job16_display)
+_job16_ember=_new_emissive_material('Forum Brazier Amber Embers',_hex_to_linear('#FF9E3D'),4.0,roughness=.28)
+cyl('Job16 north gap bronze brazier', (0,8.7,.28), .48, .56, bronze, verts=24)
+cyl('Job16 north gap amber embers', (0,8.7,.59), .28, .08, _job16_ember, verts=20)
+for _template in (_job16_book,_job16_cup,_job16_pot,_job16_tablet,_job16_blanket): bpy.data.objects.remove(_template,do_unlink=True)
+print('FORUM_TERRACE_JOB16', {'triangle_delta_estimate':5*12+2*32+2*12+2*12+2*12+48,'route_checked_props':True})

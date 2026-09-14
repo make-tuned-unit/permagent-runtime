@@ -325,6 +325,7 @@ def _add_ridge_and_waterfalls():
             spur = math.exp(-((math.degrees(a) - notch) / 3.8) ** 2)
             if r < 150.0: z += spur * max(0.0, (150.0 - r) / 32.0) * 10.0
         return max(-.15, z)
+    globals()['terrain_z'] = terrain_z  # shared with the Job 16 spray tufts placed at module level
     for j in range(nr):
         r = 128.0 + 52.0 * j / (nr - 1)
         for i in range(na):
@@ -533,3 +534,114 @@ forum_landform_manifest = {
     'routeAxisPads': ['maker', 'reading', 'council', 'arrival'],
 }
 print('FORUM_LANDFORM', forum_landform_manifest)
+
+# Job 16 close-range geology and waterfall dressing.  These small forms are
+# deliberately shared: the scene gets richer without multiplying mesh data.
+def _job16_linked(template, name, location, rotation=(0.0, 0.0, 0.0), scale=(1.0, 1.0, 1.0), material=None):
+    return _linked_object(template, name, location, rotation, scale, material)
+
+def _job16_displace(surface, salt, amplitude):
+    for vertex in surface.data.vertices:
+        p = vertex.co
+        n = noise.fractal(Vector((p.x * .075 + salt, p.y * .075, p.z * .035)), .55, 2.0, 2)
+        vertex.co.z += max(-amplitude, min(amplitude, n * amplitude))
+    surface.data.update()
+
+_job16_ridge_delta = 0
+for _job16_index, _job16_name in enumerate(('Basalt stratum 0 ridge', 'Basalt stratum 1 ridge',
+                                             'Basalt stratum 2 ridge', 'Basalt stratum 3 ridge',
+                                             'Ridge mossy ledge')):
+    _job16_obj = bpy.data.objects.get(_job16_name)
+    if _job16_obj:
+        _job16_displace(_job16_obj, _job16_index * 3.7, .4 + (_job16_index % 3) * .4)
+        _job16_ridge_delta += len(_job16_obj.data.polygons) * 2
+_job16_foothill = bpy.data.objects.get('P2 foothill rolling band')
+if _job16_foothill:
+    _job16_displace(_job16_foothill, 19.0, .65)
+    _job16_ridge_delta += len(_job16_foothill.data.polygons) * 2
+
+_job16_rock_template = box('Job16 linked fractured scree block template', (0, 0, .9), (1.0, .8, 1.8),
+                            rockmat, angle=.2)
+for _cluster, (_cx, _cy, _cz) in enumerate(((118, 92, 1.0), (72, 151, 6.0),
+                                             (106, 151, 8.0), (143, 146, 10.0),
+                                             (160, 126, 5.0))):
+    for _piece in range(16):
+        _a = math.tau * _piece / 16 + _cluster * .31
+        _r = 2.0 + (_piece % 5) * .45
+        _x, _y = _cx + math.cos(_a) * _r, _cy + math.sin(_a) * _r
+        if _point_close_to_route((_x, _y), 3.5):
+            continue
+        _job16_linked(_job16_rock_template, f'Job16 scree fan {_cluster} block {_piece}',
+                      (_x, _y, _cz + (_piece % 3) * .18), (0, .18 * (_piece % 2), _a),
+                      (.55 + (_piece % 4) * .12, .55, .45 + (_piece % 3) * .12), rockmat)
+bpy.data.objects.remove(_job16_rock_template, do_unlink=True)
+
+_job16_boulder_template = bpy.data.objects.new('Job16 foothill boulder template',
+                                                 bpy.data.meshes.new('Job16 foothill boulder mesh'))
+scene.collection.objects.link(_job16_boulder_template)
+_bm = bmesh.new(); bmesh.ops.create_icosphere(_bm, subdivisions=1, radius=1.0); _bm.to_mesh(_job16_boulder_template.data); _bm.free()
+finish(_job16_boulder_template, _job16_boulder_template.name, rockmat)
+for _index, (_x, _y, _z) in enumerate(((106, 126, 2), (125, 134, 3), (145, 139, 5),
+                                         (91, 151, 4), (157, 151, 7), (74, 139, 3), (135, 157, 8))):
+    if _point_close_to_route((_x, _y), 3.5):
+        continue
+    _job16_linked(_job16_boulder_template, f'Job16 half-buried fractured boulder {_index}',
+                  (_x, _y, _z), (.1 * _index, .2, .4 * _index),
+                  (1.4 + (_index % 3) * .55, 1.1 + (_index % 2) * .7, .8 + (_index % 4) * .22), rockmat)
+bpy.data.objects.remove(_job16_boulder_template, do_unlink=True)
+
+_job16_dark_pool = mat('Forum Plunge Pool Dark Water', (.018, .075, .085), metal=.12, rough=.16)
+_job16_mist = globals().get('celestial_mist', mat('Celestial waterfall mist', (.16, .42, .46), metal=.02, rough=.34))
+_job16_mist['job16_alpha'] = .27
+_job16_mist_shader = _job16_mist.node_tree.nodes.get('Principled BSDF')
+if _job16_mist_shader and _job16_mist_shader.inputs.get('Alpha'):
+    _job16_mist_shader.inputs['Alpha'].default_value = .27
+    if hasattr(_job16_mist, 'surface_render_method'):
+        _job16_mist.surface_render_method = 'DITHERED'
+for _index, (_angle, _radius) in enumerate(((math.radians(125), 164), (math.radians(185), 163))):
+    _radial = Vector((math.cos(_angle), math.sin(_angle), 0))
+    _tangent = Vector((-math.sin(_angle), math.cos(_angle), 0))
+    _base = _radial * 116.5
+    cyl(f'Job16 waterfall {_index} plunge pool', (_base.x, _base.y, -2.0), 8.0, .06, _job16_dark_pool, verts=48)
+    for _sheet in range(3):
+        _center = _base + _tangent * ((_sheet - 1) * 2.0) + Vector((0, 0, .12 + _sheet * .09))
+        _veil = box(f'Job16 waterfall {_index} layered mist sheet {_sheet}', tuple(_center),
+                    (6.0 - _sheet * .7, .08, 4.0 + _sheet * .8), _job16_mist,
+                    angle=_angle + (.12 if _sheet == 1 else -.08))
+        _veil.rotation_euler.x = .08 * (_sheet - 1)
+    for _tuft in range(7):
+        _p = _base + _tangent * ((_tuft - 3) * .65) + _radial * random.uniform(-1.5, 1.5)
+        cyl(f'Job16 waterfall {_index} notch lip spray tuft {_tuft}',
+            (_p.x, _p.y, terrain_z(_radius, _angle) + .3), .18 + .04 * (_tuft % 3),
+            .8 + .15 * (_tuft % 2), _job16_mist, verts=8)
+    for _bank in range(10):
+        _p = _base + _tangent * (-12.5 + _bank * 2.5)
+        cyl(f'Job16 waterfall {_index} shore mist bank {_bank}', (_p.x, _p.y, -1.88),
+            1.4, .04, _job16_mist, verts=16)
+
+forum_landform_manifest['job16_triangle_delta'] = _job16_ridge_delta + 5 * 16 * 12 + 7 * 20
+print('FORUM_LANDFORM_JOB16', {'triangle_delta_estimate': forum_landform_manifest['job16_triangle_delta'],
+                               'route_checked_props': True})
+
+# Destination quays receive the same small maritime vocabulary as the harbour.
+_job16_quay_rope=mat('Forum Quay Rope',(.30,.17,.075),rough=.92)
+_job16_quay_crate=box('Job16 linked island quay crate template',(0,0,.34),(.78,.62,.68),timber)
+_job16_quay_bollard=cyl('Job16 linked island quay bollard template',(0,0,.40),.14,.80,bronze,verts=12)
+_job16_quay_ring=ring('Job16 linked island quay rope ring template',(0,0,.08),.38,.075,_job16_quay_rope)
+_job16_quay_lamp=cyl('Job16 linked island quay lantern template',(0,0,1.35),.08,2.7,bronze,verts=10)
+_job16_quay_head=cyl('Job16 linked island quay amber lantern head template',(0,0,2.78),.18,.16,
+                     mat('Forum Island Quay Amber',(.9,.25,.04),metal=.1,rough=.24),verts=16)
+for _island_index,(_cx,_cy,_radius,_height) in enumerate(((-88,0,16,-.02),(89,0,18,-.02),(0,92,17,-.02))):
+    for _slot in range(4):
+        _a=math.tau*_slot/4+.25;_x=_cx+math.cos(_a)*(_radius*.82);_y=_cy+math.sin(_a)*(_radius*.82)
+        if _point_close_to_route((_x,_y),3.5): continue
+        _job16_linked(_job16_quay_bollard,f'Job16 island {_island_index} quay bollard {_slot}',(_x,_y,_height+.40),material=bronze)
+        _job16_linked(_job16_quay_ring,f'Job16 island {_island_index} coiled rope ring {_slot}',(_x+math.cos(_a)*.55,_y+math.sin(_a)*.55,_height+.08),material=_job16_quay_rope)
+        _job16_linked(_job16_quay_crate,f'Job16 island {_island_index} quay crate {_slot}',(_x-math.cos(_a)*.6,_y-math.sin(_a)*.6,_height+.34),rotation=(0,0,_a),material=timber)
+    _a=.25;_x=_cx+math.cos(_a)*(_radius*.70);_y=_cy+math.sin(_a)*(_radius*.70)
+    if not _point_close_to_route((_x,_y),3.5):
+        _job16_linked(_job16_quay_lamp,f'Job16 island {_island_index} quay lantern post',(_x,_y,_height+1.35),material=bronze)
+        _job16_linked(_job16_quay_head,f'Job16 island {_island_index} quay amber head',(_x,_y,_height+2.78),material=_job16_quay_head.data.materials[0])
+for _template in (_job16_quay_crate,_job16_quay_bollard,_job16_quay_ring,_job16_quay_lamp,_job16_quay_head):
+    bpy.data.objects.remove(_template,do_unlink=True)
+forum_landform_manifest['job16_quay_props']=True

@@ -376,3 +376,44 @@ scene['mesh_gate_walk_direction_blender'] = json.dumps([round(value, 6) for valu
 scene['mesh_gate_court_floor_bounds_blender'] = json.dumps(floor_bounds_blender)
 scene['mesh_gate_court_polar_angle_degrees'] = 135.0
 scene['mesh_gate_court_radius_m'] = 56.0
+
+# Job 16 gate polish: the chevrons get restrained blue insets, while the
+# antechamber receives the same human-readable display language as the terrace.
+_job16_gate_glass=mat('Mesh gate cyan display glass',(.06,.32,.38),metal=.08,rough=.18)
+_job16_gate_shader=_job16_gate_glass.node_tree.nodes.get('Principled BSDF')
+if _job16_gate_shader:
+    if _job16_gate_shader.inputs.get('Transmission Weight'): _job16_gate_shader.inputs['Transmission Weight'].default_value=.55
+    if _job16_gate_shader.inputs.get('Emission Color'): _job16_gate_shader.inputs['Emission Color'].default_value=(.04,.45,.72,1)
+    if _job16_gate_shader.inputs.get('Emission Strength'): _job16_gate_shader.inputs['Emission Strength'].default_value=.35
+for _index in range(9):
+    _theta=math.tau*_index/9
+    _chevron(f'Mesh gate chevron HorizonBlue inset {_index+1}',_theta,horizon_blue,-.795,-.787,width=.26,height=.12)
+ring('Mesh gate dais subtle blue floor inlay',(gate_center_xy.x,gate_center_xy.y,.755),2.55,.045,horizon_blue)
+for _index,_side in enumerate((-1,1),1):
+    _panel=plaque_center+t*(_side*4.5)+gate_normal*.18
+    box(f'Mesh gate cyan exedra display panel {_index}',(_panel.x,_panel.y,2.05),(1.45,.06,1.55),_job16_gate_glass,gate_angle)
+    for _line in range(4):
+        box(f'Mesh gate cyan exedra display line {_index}-{_line}',
+            (_panel.x-gate_normal.x*.045,_panel.y-gate_normal.y*.045,1.57+_line*.24),(.95,.018,.018),horizon_blue,gate_angle)
+_job16_brazier= cyl('Mesh gate dormant brazier template',(0,0,.30),.42,.60,bronze,verts=20)
+for _index,(_sx,_sy) in enumerate(((-6,-5.6),(6,-5.6),(-6,5.6),(6,5.6)),1):
+    _p=gate_center_xy+t*_sx+gate_normal*_sy
+    if '_point_close_to_route' not in globals() or not _point_close_to_route((_p.x,_p.y),3.5):
+        _linked=_job16_gate_linked if '_job16_gate_linked' in globals() else None
+        if _linked: _linked(_job16_brazier,f'Mesh gate dormant bronze brazier {_index}',(_p.x,_p.y,.30))
+        else:
+            _ob=bpy.data.objects.new(f'Mesh gate dormant bronze brazier {_index}',_job16_brazier.data);scene.collection.objects.link(_ob);_ob.location=(_p.x,_p.y,.30);_ob['forum_architecture']=True
+bpy.data.objects.remove(_job16_brazier,do_unlink=True)
+_job16_lantern_post=cyl('Mesh gate linked spur lantern post template',(0,0,1.35),.08,2.7,bronze,verts=10)
+_job16_lantern_head=cyl('Mesh gate linked spur horizonBlue lantern head template',(0,0,2.8),.18,.16,horizon_blue,verts=16)
+def _job16_gate_linked(template,name,location):
+    obj=bpy.data.objects.new(name,template.data);scene.collection.objects.link(obj);obj.location=location;obj['forum_architecture']=True;return obj
+for _index,_r in enumerate((40,52),1):
+    for _side in (-1,1):
+        _p=gate_normal*_r+t*(_side*4.7)
+        if '_point_close_to_route' in globals() and _point_close_to_route((_p.x,_p.y),3.5): continue
+        _job16_gate_linked(_job16_lantern_post,f'Mesh gate spur lantern post {_index}-{_side}',(_p.x,_p.y,1.35))
+        _job16_gate_linked(_job16_lantern_head,f'Mesh gate spur HorizonBlue lantern head {_index}-{_side}',(_p.x,_p.y,2.8))
+bpy.data.objects.remove(_job16_lantern_post,do_unlink=True);bpy.data.objects.remove(_job16_lantern_head,do_unlink=True)
+print('FORUM_MESHGATE_JOB16', {'triangle_delta_estimate':9*9*2+2*12+2*6*4+4*40+4*48,
+                               'route_checked_props':True,'dormant_braziers':4})

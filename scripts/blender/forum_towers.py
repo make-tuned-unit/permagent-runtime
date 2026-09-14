@@ -344,3 +344,37 @@ forum_towers_manifest = {
     'routeSafe': True,
 }
 print('FORUM_TOWERS', forum_towers_manifest)
+
+# Job 16 inhabited-night pass: one thin warm strip mesh is reused on every
+# lit floor, with alternating bays so the towers do not become solid beacons.
+_job16_window=mat('Forum Warm Window Emission',(.95,.27,.055),metal=.05,rough=.25)
+_job16_shader=_job16_window.node_tree.nodes.get('Principled BSDF')
+if _job16_shader:
+    if _job16_shader.inputs.get('Emission Color'): _job16_shader.inputs['Emission Color'].default_value=(.95,.27,.055,1)
+    if _job16_shader.inputs.get('Emission Strength'): _job16_shader.inputs['Emission Strength'].default_value=3.5
+_job16_strip=box('Job16 linked emissive window strip template',(0,0,.12),(.14,1.8,.24),_job16_window)
+def _job16_window_instance(name, point, angle=0.0, scale=(1,1,1)):
+    if '_point_close_to_route' in globals() and _point_close_to_route(point[:2],3.5): return
+    return _linked_object(_job16_strip,name,(point[0],point[1],point[2]),(0,0,angle),scale,_job16_window)
+for _name,(_cx,_cy),_height,_radius in _spires:
+    for _level in range(4,int(_height),6):
+        if _level % 12 == 0:
+            for _bay in range(3):
+                _a=math.tau*_bay/3;_job16_window_instance(f'Job16 {_name} warm window {_level}-{_bay}',
+                    (_cx+math.cos(_a)*(_radius+.12),_cy+math.sin(_a)*(_radius+.12),_level),_a,
+                    (.9,.65,1.0))
+for _label,(_ox,_oy),_footprint,_height in (('A',(-13.2,0),15.5,44),('B',(-4.5,1.3),14.2,38),
+                                             ('C',(4.2,-.8),13.4,34),('D',(12.6,.6),12.6,29)):
+    _cx,_cy=-100+_ox,-30+_oy
+    for _level in range(4,int(_height),6):
+        if _level % 12 == 0:
+            _job16_window_instance(f'Job16 habitat {_label} warm window {_level}',
+                                   (_cx+_footprint*.42,_cy-.05,_level),0,(1.0,1.0,1.0))
+for _bay in range(5):
+    _job16_window_instance(f'Job16 market hall warm window {_bay}',
+                           (-102.3 + (_bay - 2) * 1.65, -33.0, 7.2), 0,
+                           (1.0, .8, 1.0))
+bpy.data.objects.remove(_job16_strip,do_unlink=True)
+forum_towers_manifest['job16_triangle_delta_estimate']=len(_spires)*12*6*2 + 4*4*6
+print('FORUM_TOWERS_JOB16', {'triangle_delta_estimate':forum_towers_manifest['job16_triangle_delta_estimate'],
+                             'linked_window_mesh':True})
