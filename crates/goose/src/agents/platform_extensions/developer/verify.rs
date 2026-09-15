@@ -4124,6 +4124,9 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             is_error: true,
             is_mutating: is_mutating(name),
             is_guard_block: false,
+            // R52a: this fixture models a plain verify failure, not the
+            // AC-validation retry gate.
+            is_ac_validation_error: false,
         };
 
         // Two prior identical failures (same normalized output → same hash),
