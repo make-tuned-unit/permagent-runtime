@@ -579,6 +579,7 @@ mod tests {
     /// `dispatch` action explicitly, not just describe the DAG in the
     /// abstract.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn coding_dag_denial_names_goal_advance_dispatch_as_the_next_call() {
         let tmp = tempfile::tempdir().unwrap();
         let session_manager = std::sync::Arc::new(crate::session::SessionManager::new(
@@ -720,6 +721,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(receipts_global_registry)]
     fn a_skipped_safety_inspector_warns_with_the_marker_on_every_call() {
         let mut manager = ToolInspectionManager::new();
         manager.add_inspector(Box::new(DisabledInspector("write_jail")));

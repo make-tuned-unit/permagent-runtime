@@ -3747,8 +3747,8 @@ mod tests {
     /// No active roadmap (no cards ever attributed to this session) → no
     /// restriction, no note, extensions untouched — "unchanged" per the
     /// brief's own test spec.
-    #[serial_test::serial(receipts_global_registry)]
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn a_coordinator_delegate_with_no_active_roadmap_is_unchanged() {
         let tmp = TempDir::new().unwrap();
         let sm = crate::session::SessionManager::new(tmp.path().to_path_buf());
@@ -3787,6 +3787,7 @@ mod tests {
     /// worker holding `write`/`edit` just by delegating first. The identity
     /// itself now closes that window.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn a_coding_harness_coordinator_with_no_roadmap_yet_is_still_restricted() {
         let tmp = TempDir::new().unwrap();
         let sm = crate::session::SessionManager::new(tmp.path().to_path_buf());
@@ -3853,6 +3854,7 @@ mod tests {
     /// dispatched worker, the thing that MAY edit. Same boundary
     /// `CodingDagInspector`/`NoRoadmapGuard` draw.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn a_coding_harness_session_with_a_parent_is_not_restricted_by_identity() {
         let tmp = TempDir::new().unwrap();
         let sm = crate::session::SessionManager::new(tmp.path().to_path_buf());
@@ -3902,6 +3904,7 @@ mod tests {
     /// SubAgent callers outright, and this gate must not depend on staying
     /// downstream of that refusal to be correct.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn a_goal_worker_session_is_unaffected_by_the_active_roadmap_gate() {
         let (_tmp, sm, session, _card_id) = active_roadmap_fixture(SessionType::SubAgent).await;
         let pool = sm.pool_clone().await.unwrap();
@@ -3924,6 +3927,7 @@ mod tests {
     /// gate is a no-op (the persona is already read-only via
     /// `restrict_reviewer_tools`), even while a roadmap is active.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn an_explicit_reviewer_persona_is_unaffected_by_the_active_roadmap_gate() {
         let (_tmp, sm, session, _card_id) = active_roadmap_fixture(SessionType::User).await;
         let pool = sm.pool_clone().await.unwrap();
@@ -3985,6 +3989,7 @@ mod tests {
     /// `scoped_child_session_extensions_fn_narrows_to_the_lean_coding_
     /// profile_for_the_top_level_coordinator`.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn a_gated_delegate_narrows_the_extension_set_to_r30as_lean_worker_profile() {
         let (_tmp, sm, session, _card_id) = active_roadmap_fixture(SessionType::User).await;
         let pool = sm.pool_clone().await.unwrap();
@@ -4102,8 +4107,8 @@ mod tests {
     /// spec, the extension SET must stay completely unchanged, not just the
     /// mutating-tools strip: `extensionmanager`/`orchestrator`'s full tool
     /// surface must both survive untouched.
-    #[serial_test::serial(receipts_global_registry)]
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn an_ungated_delegate_leaves_the_extension_set_completely_unchanged() {
         let tmp = TempDir::new().unwrap();
         let sm = crate::session::SessionManager::new(tmp.path().to_path_buf());
@@ -4888,8 +4893,8 @@ You review code."#;
         dir
     }
 
-    #[serial_test::serial(receipts_global_registry)]
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn delegate_many_reviewer_mutation_is_detected_and_voids_via_the_shared_helper() {
         let repo = reviewer_git_repo();
         let before =
