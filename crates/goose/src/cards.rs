@@ -1535,6 +1535,14 @@ pub struct SessionGoalCard {
 ///     `delegate` call to non-mutating tools while its own roadmap is open.
 ///   - [`first_undispatched_goal`] — X-dag-2: refuse a false "dispatched"
 ///     completion claim.
+///
+/// Deliberately narrow to cards THIS session created — correct for both
+/// callers above, which specifically ask "did MY OWN dispatch attempt
+/// happen". A caller that instead needs "does ANY roadmap exist for the
+/// project this session is working in" (a RESUMED or pre-seeded roadmap
+/// this session never created) wants
+/// [`goal_cards_for_project_matching_cwd`] instead, or both unioned — see
+/// its own doc comment (Lane R20c-c).
 pub async fn goal_cards_created_by_session(
     pool: &Pool<Sqlite>,
     session_id: &str,
@@ -1550,37 +1558,107 @@ pub async fn goal_cards_created_by_session(
     .await
     .map_err(|e| e.to_string())?;
 
-    Ok(rows
-        .into_iter()
-        .map(|r| {
-            let card_id: String = r.get("id");
-            let state_binding: String = r
-                .get::<Option<String>, _>("state_binding")
-                .unwrap_or_default();
-            let meta_text: Option<String> = r.get("metadata_json");
-            let meta: serde_json::Value = meta_text
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or(serde_json::Value::Null);
-            let is_root = meta
-                .get("depends_on")
-                .and_then(|v| v.as_array())
-                .is_none_or(|a| a.is_empty());
-            let has_worker_session = meta
-                .get("worker_session_id")
-                .and_then(|v| v.as_str())
-                .is_some_and(|s| !s.is_empty())
-                || meta
-                    .get("worker_session_ids")
-                    .and_then(|v| v.as_array())
-                    .is_some_and(|a| !a.is_empty());
-            SessionGoalCard {
-                card_id,
-                state_binding,
-                is_root,
-                has_worker_session,
-            }
-        })
-        .collect())
+    Ok(rows.into_iter().map(session_goal_card_from_row).collect())
+}
+
+/// Shared row -> [`SessionGoalCard`] mapping for
+/// [`goal_cards_created_by_session`] and
+/// [`goal_cards_for_project_matching_cwd`] (Lane R20c-c) — the same three
+/// columns (`id`, `state_binding`, `metadata_json`), the same
+/// `depends_on`/`worker_session_id(s)` derivation, so the two queries can
+/// never quietly disagree on what a row means.
+fn session_goal_card_from_row(r: sqlx::sqlite::SqliteRow) -> SessionGoalCard {
+    let card_id: String = r.get("id");
+    let state_binding: String = r
+        .get::<Option<String>, _>("state_binding")
+        .unwrap_or_default();
+    let meta_text: Option<String> = r.get("metadata_json");
+    let meta: serde_json::Value = meta_text
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let is_root = meta
+        .get("depends_on")
+        .and_then(|v| v.as_array())
+        .is_none_or(|a| a.is_empty());
+    let has_worker_session = meta
+        .get("worker_session_id")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+        || meta
+            .get("worker_session_ids")
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| !a.is_empty());
+    SessionGoalCard {
+        card_id,
+        state_binding,
+        is_root,
+        has_worker_session,
+    }
+}
+
+/// Every non-archived goal card in the ACTIVE project whose `root_path`
+/// best matches `working_dir` — regardless of who created or dispatched
+/// them. Lane R20c-c: the project-scoped counterpart to
+/// [`goal_cards_created_by_session`].
+///
+/// That function is correct for the two decisions it backs (X-dag-1/
+/// X-dag-2: did THIS session's own roadmap creation/dispatch actually
+/// happen) but wrong for a RESUMED or otherwise pre-existing roadmap: a
+/// session that resumes a roadmap it never created stamped none of its
+/// cards' `created_by_session_id`, so `goal_cards_created_by_session` reads
+/// empty for it even while a real, active roadmap is running under it
+/// (harness loop, "Lane R20c-c": `select-existing-roadmap-resumes-not-
+/// redecomposes` — the coordinator correctly resumed a seeded roadmap,
+/// dispatched goals, closed with a summary, and both after-turn guards
+/// still read "no roadmap" and parked the run).
+///
+/// Uses the SAME cwd-match precedence
+/// `resolve_decompose_project`/`resolve_resume_project`
+/// (`agents/platform_extensions/orchestrator.rs`) already use to answer
+/// "which project is this session working in": canonicalize `working_dir`,
+/// then the ACTIVE project whose `root_path` is an exact match or a
+/// `root_path/`-prefix match, longest `root_path` wins on a tie. No match
+/// -> empty (never guesses a project, matching those two functions'
+/// documented fallback: a session with no cwd match backs off to
+/// `created_by_session_id` alone in its caller, never to "any project").
+pub async fn goal_cards_for_project_matching_cwd(
+    pool: &Pool<Sqlite>,
+    working_dir: &std::path::Path,
+) -> Result<Vec<SessionGoalCard>, String> {
+    let canonical_dir = working_dir
+        .canonicalize()
+        .unwrap_or_else(|_| working_dir.to_path_buf());
+    let dir_str = canonical_dir.to_string_lossy().into_owned();
+
+    let mut candidates: Vec<crate::projects::Project> =
+        crate::projects::list_projects(pool, Some("active"))
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| {
+                p.root_path.as_deref().is_some_and(|root| {
+                    !root.is_empty()
+                        && (dir_str == root || dir_str.starts_with(&format!("{root}/")))
+                })
+            })
+            .collect();
+    candidates
+        .sort_by_key(|p| std::cmp::Reverse(p.root_path.as_deref().map(str::len).unwrap_or(0)));
+    let Some(project) = candidates.into_iter().next() else {
+        return Ok(Vec::new());
+    };
+
+    let rows = sqlx::query(
+        "SELECT c.id, bc.state_binding, c.metadata_json \
+         FROM cards c JOIN board_columns bc ON c.column_id = bc.id \
+         WHERE c.card_type = 'goal' AND c.archived_at IS NULL AND c.project_id = ?",
+    )
+    .bind(&project.id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows.into_iter().map(session_goal_card_from_row).collect())
 }
 
 /// X-dag-1: is `session_id`'s own roadmap still active — any of its goal
@@ -3518,6 +3596,61 @@ mod tests {
             .await
             .unwrap();
         assert!(others.is_empty());
+    }
+
+    /// Lane R20c-c: `goal_cards_for_project_matching_cwd` finds a project's
+    /// goal cards purely by cwd match, regardless of `created_by_session_id`
+    /// — the exact shape a RESUMED roadmap's cards have (seeded/dispatched
+    /// by a session that is not the one now closing the turn).
+    #[tokio::test]
+    async fn goal_cards_for_project_matching_cwd_finds_cards_by_project_not_creator() {
+        let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "R20c-c cwd match".to_string(),
+                root_path: Some(tmp.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        seed_goal_columns(&pool, &project.id).await.unwrap();
+        let ready_column: String = sqlx::query_scalar(
+            "SELECT id FROM board_columns WHERE project_id = ? AND state_binding = 'ready'",
+        )
+        .bind(&project.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        // No `created_by_session_id` at all in this card's metadata — the
+        // fixture-seeded / resumed-roadmap shape.
+        sqlx::query(
+            "INSERT INTO cards (id, project_id, card_type, title, description, column_id, \
+                                 position, created_by, metadata_json) \
+             VALUES ('resumed-card-1', ?, 'goal', 'resumed goal', '', ?, 0, 'user', '{}')",
+        )
+        .bind(&project.id)
+        .bind(&ready_column)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let found = goal_cards_for_project_matching_cwd(&pool, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].card_id, "resumed-card-1");
+        assert_eq!(found[0].state_binding, "ready");
+
+        // A cwd that matches NO project's root_path finds nothing — never
+        // guesses a project.
+        let unrelated = tempfile::tempdir().unwrap();
+        let none_found = goal_cards_for_project_matching_cwd(&pool, unrelated.path())
+            .await
+            .unwrap();
+        assert!(none_found.is_empty());
     }
 }
 

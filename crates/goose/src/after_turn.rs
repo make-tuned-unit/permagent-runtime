@@ -1669,10 +1669,51 @@ impl AfterTurn for RoadmapDispatchGuard {
 
 // ── Fourth implementor: a coordinator turn cannot end without a roadmap ────
 
-/// The two orchestrator tools that turn a plan into durable goal cards. Either
-/// one having been called is proof the coordinator did the thing the recipe
-/// asks for; neither having been called is [`NoRoadmapGuard`]'s whole trigger.
-const ROADMAP_TOOL_NAMES: [&str; 2] = ["decompose_roadmap", "create_roadmap"];
+/// The orchestrator tools that satisfy rule 1 / exception (a) of
+/// `permagent-coding.yaml`'s NON-NEGOTIABLE protocol: `decompose_roadmap`/
+/// `create_roadmap` turn a plan into durable goal cards; `resume_roadmap`
+/// (Lane R20c-c) resumes dispatch of an EXISTING one — exception (a)'s own
+/// wording lists it alongside `check_worker`/`goal_advance` as the correct
+/// alternative to re-decomposing when "a roadmap/goal card already exists
+/// and is Ready or paused". Before R20c-c only the first two were
+/// recognised, so a coordinator that correctly resumed a pre-existing
+/// roadmap and then closed with a summary still read as "never satisfied
+/// rule 1" (harness loop, "Lane R20c-c":
+/// `select-existing-roadmap-resumes-not-redecomposes`, M24 evidence). Any
+/// ONE of the three having succeeded is proof the coordinator did the
+/// thing the recipe asks for; none having been called/succeeded is
+/// [`NoRoadmapGuard`]'s and [`Rule5HonestFailureGuard`]'s whole trigger.
+const ROADMAP_TOOL_NAMES: [&str; 3] = ["decompose_roadmap", "create_roadmap", "resume_roadmap"];
+
+/// Lane R20c-c: cards relevant to `session_id`'s OWN roadmap decision — the
+/// union of (a) cards this session itself created
+/// ([`crate::cards::goal_cards_created_by_session`], unchanged scope — its
+/// other callers, `RoadmapDispatchGuard`'s X-dag-1/X-dag-2 checks, keep
+/// using it directly and are untouched by this function) and (b) cards
+/// belonging to the ACTIVE project whose `root_path` matches `working_dir`
+/// ([`crate::cards::goal_cards_for_project_matching_cwd`]) — so a
+/// coordinator that RESUMED a pre-existing roadmap it never created still
+/// sees it. Deduplicated by `card_id` (the two scopes can overlap once a
+/// resumed goal's later dispatch gets attributed to this session). Shared
+/// by [`NoRoadmapGuard`] and [`Rule5HonestFailureGuard`] so the two guards'
+/// "does a roadmap exist" answer can never disagree.
+async fn goal_cards_relevant_to_session(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: &str,
+    working_dir: &std::path::Path,
+) -> Result<Vec<crate::cards::SessionGoalCard>, String> {
+    let mut cards = crate::cards::goal_cards_created_by_session(pool, session_id).await?;
+    let project_cards =
+        crate::cards::goal_cards_for_project_matching_cwd(pool, working_dir).await?;
+    let mut seen: std::collections::HashSet<String> =
+        cards.iter().map(|c| c.card_id.clone()).collect();
+    for card in project_cards {
+        if seen.insert(card.card_id.clone()) {
+            cards.push(card);
+        }
+    }
+    Ok(cards)
+}
 
 /// Opening sentence of the injected nudge. Written once, then recognised again
 /// on any later pass through [`NoRoadmapGuard::after_turn`], which is how this
@@ -1755,14 +1796,18 @@ impl NoRoadmapGuard {
 
     /// The pool-parameterised half, testable against an isolated in-memory
     /// database exactly like [`RoadmapDispatchGuard::undispatched_goal_for`] —
-    /// "does this session own any goal card at all", the complement of that
-    /// guard's "is one of this session's cards stuck".
+    /// "does this session own OR share a project with any goal card at
+    /// all", the complement of that guard's "is one of this session's
+    /// cards stuck". Lane R20c-c: widened from "does this session own any
+    /// goal card" to also see a RESUMED roadmap's cards via
+    /// [`goal_cards_relevant_to_session`] — see that function's doc comment.
     async fn has_roadmap_cards(
         pool: &sqlx::Pool<sqlx::Sqlite>,
         session_id: &str,
+        working_dir: &std::path::Path,
     ) -> Result<bool, String> {
         Ok(
-            !crate::cards::goal_cards_created_by_session(pool, session_id)
+            !goal_cards_relevant_to_session(pool, session_id, working_dir)
                 .await?
                 .is_empty(),
         )
@@ -1864,7 +1909,9 @@ impl AfterTurn for NoRoadmapGuard {
         let Ok(pool) = manager.pool_clone().await else {
             return AfterTurnAction::Allow;
         };
-        let Ok(has_roadmap_cards) = Self::has_roadmap_cards(&pool, ctx.session_id).await else {
+        let Ok(has_roadmap_cards) =
+            Self::has_roadmap_cards(&pool, ctx.session_id, &session.working_dir).await
+        else {
             return AfterTurnAction::Allow;
         };
 
@@ -2287,7 +2334,11 @@ impl AfterTurn for Rule5HonestFailureGuard {
         // boolean `NoRoadmapGuard::has_roadmap_cards` returns — the
         // mid-session extension needs each card's own state to answer
         // "is any goal still not Done" via `session_has_an_active_roadmap`.
-        let Ok(cards) = crate::cards::goal_cards_created_by_session(&pool, ctx.session_id).await
+        // R20c-c: `goal_cards_relevant_to_session` (not the narrower
+        // `crate::cards::goal_cards_created_by_session` this used before)
+        // so a RESUMED roadmap this session never created is seen too.
+        let Ok(cards) =
+            goal_cards_relevant_to_session(&pool, ctx.session_id, &session.working_dir).await
         else {
             return AfterTurnAction::Allow;
         };
@@ -4573,12 +4624,18 @@ mod tests {
 
     /// A session that already minted goal cards HAS a roadmap — the durable
     /// half of the applicability gate, against the isolated in-memory pool.
+    /// `working_dir` is an arbitrary nonexistent path here: the isolated
+    /// pool seeds no `projects` row at all, so the R20c-c project-scoped
+    /// half of `has_roadmap_cards` always reads empty regardless of what
+    /// path is passed — this test is exercising the session-scoped half
+    /// only, unchanged from before R20c-c.
     #[tokio::test]
     async fn no_roadmap_has_roadmap_cards_detects_this_sessions_cards() {
         let pool = roadmap_guard_test_pool().await;
         let session_id = format!("y5-cards-{}", uuid::Uuid::now_v7());
+        let working_dir = std::path::Path::new("/nonexistent/r20c-c-test-dir");
         assert!(
-            !NoRoadmapGuard::has_roadmap_cards(&pool, &session_id)
+            !NoRoadmapGuard::has_roadmap_cards(&pool, &session_id, working_dir)
                 .await
                 .unwrap(),
             "a session that never called create_roadmap owns no cards"
@@ -4593,9 +4650,11 @@ mod tests {
             None,
         )
         .await;
-        assert!(NoRoadmapGuard::has_roadmap_cards(&pool, &session_id)
-            .await
-            .unwrap());
+        assert!(
+            NoRoadmapGuard::has_roadmap_cards(&pool, &session_id, working_dir)
+                .await
+                .unwrap()
+        );
         assert_eq!(
             NoRoadmapGuard::decide(true, true, false, false, false, 0),
             AfterTurnAction::Allow,
@@ -4620,6 +4679,156 @@ mod tests {
                 })
                 .await,
             AfterTurnAction::Allow
+        );
+    }
+
+    // ── goal_cards_relevant_to_session (Lane R20c-c) ────────────────────────
+    //
+    // Against the process-global `SessionManager::instance()` pool — same
+    // pool `crate::projects::create_project` and the live `after_turn` path
+    // both use — because `goal_cards_for_project_matching_cwd`'s cwd match
+    // needs a REAL, on-disk `root_path` (`crate::projects::resolve_root_path`
+    // rejects a directory that does not exist), which the isolated
+    // `roadmap_guard_test_pool()` above has no reason to provide.
+
+    /// The union/dedup itself: a card THIS session created (found via the
+    /// unchanged `goal_cards_created_by_session` scope) and a SEPARATE card
+    /// in the same project created by a DIFFERENT session entirely (the
+    /// resumed-roadmap shape) both show up, exactly once each — proving
+    /// neither scope shadows the other and a card visible in both is not
+    /// double-counted.
+    #[tokio::test]
+    async fn goal_cards_relevant_to_session_unions_session_and_project_scoped_cards() {
+        let pool = crate::session::SessionManager::instance()
+            .pool_clone()
+            .await
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: format!("r20c-c-union-{}", uuid::Uuid::now_v7()),
+                root_path: Some(tmp.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+
+        let session_id = format!("r20c-c-union-{}", uuid::Uuid::now_v7());
+        let mine =
+            insert_session_goal_card(&pool, &project.id, &session_id, "ready", true, None).await;
+        let theirs = insert_session_goal_card(
+            &pool,
+            &project.id,
+            "some-earlier-session",
+            "in_progress",
+            false,
+            None,
+        )
+        .await;
+
+        let cards = goal_cards_relevant_to_session(&pool, &session_id, tmp.path())
+            .await
+            .unwrap();
+        let mut ids: Vec<&str> = cards.iter().map(|c| c.card_id.as_str()).collect();
+        ids.sort_unstable();
+        let mut expected = vec![mine.as_str(), theirs.as_str()];
+        expected.sort_unstable();
+        assert_eq!(
+            ids, expected,
+            "must union BOTH scopes and not double-count the session-created card"
+        );
+    }
+
+    /// R20c-c's headline requirement, composed from real DB state end to
+    /// end: the M24 `select-existing-roadmap-resumes-not-redecomposes`
+    /// shape — one goal already Complete, one InProgress, BOTH seeded by a
+    /// session that is not the coordinator now closing the turn — must
+    /// read as "has a roadmap" for both guards, so an ordinary closing
+    /// summary does not park. Composes the real DB-backed halves
+    /// (`goal_cards_relevant_to_session`, `session_has_an_active_roadmap`)
+    /// with the pure `decide` functions — the same seam every other
+    /// live-shaped scenario in this file's tests uses — rather than
+    /// standing up a full `SessionManager` session row with an explicit
+    /// recipe/`GooseMode`; matches this file's established limit (no
+    /// guard's live `after_turn` is exercised against a real coding-harness
+    /// session row anywhere in this test module, R18f's/R20c's own notes).
+    #[tokio::test]
+    async fn resumed_roadmap_with_cards_created_by_another_session_reads_as_having_a_roadmap() {
+        let pool = crate::session::SessionManager::instance()
+            .pool_clone()
+            .await
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: format!("r20c-c-resumed-{}", uuid::Uuid::now_v7()),
+                root_path: Some(tmp.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::cards::seed_goal_columns(&pool, &project.id)
+            .await
+            .unwrap();
+
+        insert_session_goal_card(
+            &pool,
+            &project.id,
+            "eval-seed-session",
+            "complete",
+            true,
+            None,
+        )
+        .await;
+        insert_session_goal_card(
+            &pool,
+            &project.id,
+            "eval-seed-session",
+            "in_progress",
+            false,
+            Some("worker-session-2"),
+        )
+        .await;
+
+        let coordinator_session_id = format!("r20c-c-coordinator-{}", uuid::Uuid::now_v7());
+        let cards = goal_cards_relevant_to_session(&pool, &coordinator_session_id, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            cards.len(),
+            2,
+            "both cards must be visible via the project-scoped union, though this \
+             session created neither"
+        );
+
+        let has_roadmap_cards = !cards.is_empty();
+        let has_active_roadmap = crate::cards::session_has_an_active_roadmap(&cards);
+        assert!(has_active_roadmap, "the InProgress goal is not yet Done");
+
+        assert_eq!(
+            NoRoadmapGuard::decide(true, has_roadmap_cards, false, false, false, 0),
+            AfterTurnAction::Allow,
+            "a resumed roadmap this session never created must still read as having one"
+        );
+        assert_eq!(
+            Rule5HonestFailureGuard::decide(
+                true,
+                false,
+                has_roadmap_cards,
+                has_active_roadmap,
+                false, // an ordinary closing summary, not a question
+                1,
+                0,
+            ),
+            AfterTurnAction::Allow,
+            "an ordinary closing summary after a resumed roadmap must not park"
         );
     }
 
