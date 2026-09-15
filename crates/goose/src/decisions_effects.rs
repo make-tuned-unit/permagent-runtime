@@ -601,7 +601,29 @@ async fn land_approved_goal(
     let Some((worktree_path, _head_commit)) =
         crate::goal_landing::evidence_head_and_worktree(&landing_metadata)
     else {
-        return (None, None);
+        // A41 audit (row #23): `landing_metadata` is built above to always
+        // carry a usable `head_commit`/non-empty `commits` pair once the
+        // trunk-relative override fired (`trunk_relative_head.is_some()`),
+        // so reaching here on that path would itself be a bug — but the
+        // NON-override path (`rolling_commits_empty == false`) still hands
+        // this the card's own raw metadata unmodified, and nothing enforces
+        // `head_commit` being present/non-empty whenever `commits` merely
+        // happens to be non-empty. Before this hardening that inconsistent
+        // shape made `land_approved_goal` return `(None, None)` — a SILENT
+        // no-op: no refusal note, no park, no persisted outcome, nothing
+        // for a human or the next A-series analysis to see. Report it
+        // exactly like every other landing refusal in this function.
+        let worktree = worktree_path_hint.unwrap_or("unknown worktree");
+        let note = format!(
+            "land_refused reason=no_evidence_head: goal {goal_id} has no usable head commit \
+             to land (worktree {worktree})"
+        );
+        tracing::warn!(goal_id, "{note}");
+        let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
+        persist_landing_outcome(pool, goal_id, &card, &outcome).await;
+        crate::agents::platform_extensions::orchestrator::park_refused_goal(pool, &card, &note)
+            .await;
+        return (Some((project_id, outcome)), Some(note));
     };
 
     // R1 (harness loop, Lane D1, from Lane F8 forensics 2026-09-10): a
@@ -695,7 +717,24 @@ async fn land_approved_goal(
 
     let Some(req) = crate::goal_landing::land_request_from_metadata(&landing_metadata, Some(&root))
     else {
-        return (None, None);
+        // A41 audit (row #23), same hardening as the `evidence_head_and_
+        // worktree` check above: `land_request_from_metadata` re-derives
+        // the same `(worktree, head_commit)` pair from `landing_metadata`
+        // (already proven resolvable a few lines up) and additionally
+        // needs the worktree path's own file name to derive a branch name
+        // — the only way to land here is a pathological worktree path
+        // (empty, `/`, or ending in `..`). Report it rather than silently
+        // returning `(None, None)`.
+        let note = format!(
+            "land_refused reason=no_evidence_head: goal {goal_id}'s worktree path \
+             ('{worktree_path}') could not be turned into a landing request"
+        );
+        tracing::warn!(goal_id, "{note}");
+        let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
+        persist_landing_outcome(pool, goal_id, &card, &outcome).await;
+        crate::agents::platform_extensions::orchestrator::park_refused_goal(pool, &card, &note)
+            .await;
+        return (Some((project_id, outcome)), Some(note));
     };
     let outcome = crate::goal_landing::land(&req).await;
 
@@ -2479,6 +2518,67 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        assert!(unblock.detail.contains(&note));
+    }
+
+    /// A41 audit (row #23): outside the trunk-relative override (rolling
+    /// `commits` is non-empty here, so `land_approved_goal`'s own empty-
+    /// commits gate never refuses), an inconsistent `dispatch_evidence`
+    /// shape — commits present, but no usable `head_commit` — used to make
+    /// `evidence_head_and_worktree` return `None` and this function
+    /// silently return `(None, None)`: no refusal note, no park, no
+    /// persisted `dispatch_evidence.landing`, nothing for a human or the
+    /// next A-series analysis to see. Pins the hardened, honest refusal.
+    #[tokio::test]
+    async fn land_approved_goal_reports_an_honest_refusal_when_evidence_has_no_usable_head_commit()
+    {
+        let pool = test_pool().await;
+        let card = goal_in_review(&pool).await;
+        crate::cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": "/tmp/.permagent-goal-worktrees/no-head-commit",
+                "baseline_commit": "seed",
+                "head_commit": "",
+                "commits": ["abc123 the work"],
+                "verdict": {"status": "pass"},
+            }),
+        )
+        .await
+        .unwrap();
+
+        let (landing, note) = land_approved_goal(&pool, &card.id, None).await;
+        assert!(
+            matches!(
+                landing,
+                Some((_, crate::goal_landing::LandOutcome::Skipped(_)))
+            ),
+            "the refusal must be reported, never a silent (None, None): {landing:?}"
+        );
+        let note = note.expect("a genuine refusal must report a note");
+        assert!(
+            note.contains("land_refused reason=no_evidence_head"),
+            "note: {note}"
+        );
+        assert_eq!(goal_state_of(&pool, &card.id).await, "failed");
+
+        let refreshed = crate::cards::get_card(&pool, &card.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let landing = refreshed
+            .metadata_json
+            .pointer("/dispatch_evidence/landing")
+            .expect("the refusal must still be persisted onto dispatch_evidence.landing");
+        assert_eq!(
+            landing.get("outcome").and_then(|v| v.as_str()),
+            Some("skipped")
+        );
+        let unblock = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .expect("a refused land must leave an answerable unblock decision");
         assert!(unblock.detail.contains(&note));
     }
 
