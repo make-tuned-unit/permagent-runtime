@@ -351,6 +351,50 @@ pub fn classify_unavailable(msg: &str) -> Option<&'static str> {
     None
 }
 
+/// Display-text prefix of [`ProviderError::ContextLengthExceeded`]'s own
+/// `#[error(...)]` (`"Context length exceeded: {0}"`, above). A caller that
+/// only holds the STRINGIFIED error — e.g. `Agent::take_context_length_
+/// failure`, which a headless `delegate`/`delegate_many` subagent's caller
+/// reads back to classify an otherwise-opaque `AgentRuntimeOutcome::Failed`
+/// (harness loop, "A43 analysis" lever 3) — can still recognise "this was
+/// specifically a context-length overflow" against this marker without
+/// re-parsing a typed `ProviderError`.
+pub const CONTEXT_LENGTH_EXCEEDED_MARKER: &str = "Context length exceeded";
+
+/// Best-effort extraction of a local-inference server's own token-budget
+/// numbers from a raw context-length-exceeded body. A llama.cpp-shaped 400
+/// (the exact shape "A43 analysis" observed: MiniCPM5-2B's `delegate` calls
+/// failed with `n_prompt_tokens: 34930` against `n_ctx: 32768`) embeds
+/// `"n_prompt_tokens":<N>` and `"n_ctx":<M>` directly in the error text this
+/// module's `map_http_error_with_retry_after` wraps verbatim into
+/// [`ProviderError::ContextLengthExceeded`]. Returns `None` when the body
+/// isn't in this shape (a different provider's 413/400, or free text) —
+/// callers must have a fallback message that reads fine without numbers.
+///
+/// Char-based scanning only (`chars()`/`split_once`), never a byte-index
+/// slice: the raw body is untrusted provider text, not guaranteed ASCII
+/// past the JSON key names this looks for.
+pub fn extract_context_length_token_counts(raw: &str) -> Option<(u64, u64)> {
+    let prompt_tokens = extract_json_number_field(raw, "n_prompt_tokens")?;
+    let limit = extract_json_number_field(raw, "n_ctx")?;
+    Some((prompt_tokens, limit))
+}
+
+fn extract_json_number_field(raw: &str, field: &str) -> Option<u64> {
+    let marker = format!("\"{field}\"");
+    let (_, after) = raw.split_once(marker.as_str())?;
+    let digits: String = after
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
+}
+
 /// Message-level classification for the `RequestFailed` catch-all, which is
 /// where 4xx bodies land once the status code has been discarded.
 fn is_permanent_client_message(msg: &str) -> bool {
@@ -606,5 +650,50 @@ mod tests {
             None
         );
         assert_eq!(classify_unavailable("model_not_found: no such model"), None);
+    }
+
+    /// R46a (harness loop, "A43 analysis" lever 3): a `ProviderError::
+    /// ContextLengthExceeded`'s own Display text (what `Agent::
+    /// take_context_length_failure` hands back, via `provider_err.
+    /// to_string()`) must be recognisable against `CONTEXT_LENGTH_EXCEEDED_
+    /// MARKER` and still yield the real numbers embedded in its wrapped
+    /// body — the exact regression MiniCPM5-2B's `delegate` calls hit.
+    #[test]
+    fn extract_context_length_token_counts_reads_a_provider_error_display_string() {
+        let err = ProviderError::ContextLengthExceeded(
+            r#"{"error":{"type":"exceed_context_size_error","n_prompt_tokens":34930,"n_ctx":32768}}"#
+                .to_string(),
+        );
+        let raw = err.to_string();
+        assert!(raw.starts_with(CONTEXT_LENGTH_EXCEEDED_MARKER), "{raw}");
+        assert_eq!(
+            extract_context_length_token_counts(&raw),
+            Some((34930, 32768))
+        );
+    }
+
+    /// The exact JSON-object shape the real 400 body embeds (quoted keys,
+    /// nested under an `"error"` object), matching the raw evidence in
+    /// "A43 analysis" (`n_prompt_tokens: 34933, n_ctx: 32768`).
+    #[test]
+    fn extract_context_length_token_counts_reads_the_real_json_shape() {
+        let raw = r#"Context length exceeded: {"error":{"type":"exceed_context_size_error","n_prompt_tokens":34933,"n_ctx":32768}}"#;
+        assert_eq!(
+            extract_context_length_token_counts(raw),
+            Some((34933, 32768))
+        );
+    }
+
+    /// A different provider's context-length rejection (free text, no
+    /// `n_prompt_tokens`/`n_ctx` fields) must not fabricate numbers — callers
+    /// need a text fallback for exactly this case.
+    #[test]
+    fn extract_context_length_token_counts_is_none_for_a_non_llama_cpp_body() {
+        assert_eq!(
+            extract_context_length_token_counts(
+                "This model's maximum context length is 128000 tokens."
+            ),
+            None
+        );
     }
 }

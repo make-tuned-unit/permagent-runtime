@@ -1,4 +1,4 @@
-use super::{parse_frontmatter, Source, SourceKind};
+use super::{orchestrator, parse_frontmatter, Source, SourceKind};
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::platform_extensions::fanout;
@@ -7,7 +7,7 @@ use crate::agents::subagent_task_config::{TaskConfig, DEFAULT_SUBAGENT_MAX_TURNS
 use crate::agents::tool_execution::ToolCallContext;
 use crate::agents::{AgentRunnerConfig, ExtensionConfig};
 use crate::config::paths::Paths;
-use crate::config::{Config, GooseMode};
+use crate::config::{narrow_extensions_for_agent, Config, GooseMode};
 use crate::providers;
 use crate::recipe::build_recipe::build_recipe_from_template;
 use crate::recipe::local_recipes::load_local_recipe_file;
@@ -1819,14 +1819,34 @@ impl SummonClient {
     /// Restricts `extensions` (see `restrict_to_non_mutating`) when
     /// `active_coding_roadmap_gate_reason` (above — the shared gate) fires
     /// for `session`; otherwise a no-op. The rationale for WHEN it fires
-    /// lives on that function now; this keeps the WHAT (strip mutating
-    /// developer tools, record the bypass-attempt receipt, return an
-    /// explanatory note) that is specific to `delegate`.
+    /// lives on that function now; this keeps the WHAT — strip mutating
+    /// developer tools AND (R46a) narrow the extension SET itself, record
+    /// the bypass-attempt receipt, return an explanatory note — that is
+    /// specific to `delegate`.
+    ///
+    /// R46a (harness loop, "A43 analysis" levers 1/3): before this lane,
+    /// the mutating-tools strip above was the ONLY narrowing a gated
+    /// `delegate`/`delegate_many` call got — the spawned sub-session still
+    /// inherited every OTHER extension whole (`analyze`/`summon`/
+    /// `deliberate`/`extensionmanager`, plus `orchestrator`'s full >20-tool
+    /// surface), a 145-tool/~150KB-schema/~34.9k-token-minimum session that
+    /// overflows any ≤32k-context tier before a single instruction token —
+    /// reproducing, on this code path, the exact defect R30a already fixed
+    /// for `goal_advance` dispatch. `extensions` is narrowed to
+    /// `orchestrator::GOAL_WORKER_EXTENSION_KEYS` (`developer` + a
+    /// per-tool-cut `orchestrator`, via `orchestrator::
+    /// narrow_goal_worker_orchestrator_tools`) — the SAME lean worker
+    /// profile R30a's dispatched goal worker gets, since a `delegate`
+    /// child under an active roadmap is doing the identical job (edit code,
+    /// report back), not planning or delegating further. Gated on the exact
+    /// same condition as the mutating-tools strip, so the two can never
+    /// disagree about WHEN to narrow — only a WIDER base list ever shrinks;
+    /// nothing is ever added.
     async fn restrict_delegate_for_active_roadmap(
         pool: &sqlx::Pool<sqlx::Sqlite>,
         session: &crate::session::Session,
         worker_persona: Option<&str>,
-        extensions: &mut [ExtensionConfig],
+        extensions: &mut Vec<ExtensionConfig>,
     ) -> Result<Option<String>, String> {
         let Some(why) =
             Self::active_coding_roadmap_gate_reason(pool, session, worker_persona).await?
@@ -1842,12 +1862,24 @@ impl SummonClient {
                         .iter()
                         .any(|name| crate::after_turn::is_mutating_tool_name(name)))
         });
+
+        let lean_worker_grants: Vec<String> = orchestrator::GOAL_WORKER_EXTENSION_KEYS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        *extensions = narrow_extensions_for_agent(
+            std::mem::take(extensions),
+            Some(lean_worker_grants.as_slice()),
+        );
+        orchestrator::narrow_goal_worker_orchestrator_tools(extensions);
+
         Self::restrict_to_non_mutating(extensions);
         if strips_mutating_tools {
             crate::receipts::record("dag_enforcement", "bypass_attempts");
         }
         Ok(Some(format!(
-            "Note: this delegate call was restricted to non-mutating tools because {why}."
+            "Note: this delegate call was restricted to a lean, non-mutating tool set because \
+             {why}."
         )))
     }
 
@@ -3854,6 +3886,142 @@ mod tests {
         assert!(
             note.is_none(),
             "the reviewer persona is handled by restrict_reviewer_tools, not this gate"
+        );
+    }
+
+    // ── R46a: delegate/delegate_many get R30a's lean worker profile ─────────
+
+    /// A fixture beyond `sample_extensions()`: adds `orchestrator` (with a
+    /// full multi-tool surface, standing in for its real >20-tool roster)
+    /// plus `extensionmanager`, mirroring the extras "A43 analysis" lever 1
+    /// named as still leaking through to a `delegate` child before this
+    /// lane — R27b's own `r27b_lean_profile_plus_unrelated_extras` fixture
+    /// does the analogous thing for `start_agent`/`send_message`.
+    fn sample_extensions_with_orchestrator_and_extras() -> Vec<ExtensionConfig> {
+        let mut extensions = sample_extensions();
+        extensions.push(ExtensionConfig::Platform {
+            name: orchestrator::EXTENSION_NAME.to_string(),
+            description: "".to_string(),
+            display_name: None,
+            bundled: None,
+            available_tools: vec![
+                "escalate".to_string(),
+                "message_goal".to_string(),
+                "start_agent".to_string(),
+                "create_roadmap".to_string(),
+            ],
+        });
+        extensions.push(ExtensionConfig::Platform {
+            name: "extensionmanager".to_string(),
+            description: "".to_string(),
+            display_name: None,
+            bundled: None,
+            available_tools: Vec::new(),
+        });
+        extensions
+    }
+
+    /// R46a headline case (implements "A43 analysis" lever 1): a `delegate`
+    /// call gated by an active roadmap must narrow the child's extension SET
+    /// down to exactly `orchestrator::GOAL_WORKER_EXTENSION_KEYS` — R30a's
+    /// lean worker profile — not just strip mutating tools out of whatever
+    /// full roster it started from. A drift guard against R30a's own
+    /// constants, mirroring R27b's own
+    /// `scoped_child_session_extensions_fn_narrows_to_the_lean_coding_
+    /// profile_for_the_top_level_coordinator`.
+    #[tokio::test]
+    async fn a_gated_delegate_narrows_the_extension_set_to_r30as_lean_worker_profile() {
+        let (_tmp, sm, session, _card_id) = active_roadmap_fixture(SessionType::User).await;
+        let pool = sm.pool_clone().await.unwrap();
+        let mut extensions = sample_extensions_with_orchestrator_and_extras();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+        assert!(note.is_some());
+
+        let names: HashSet<String> = extensions.iter().map(|ext| ext.name()).collect();
+        let expected: HashSet<String> = orchestrator::GOAL_WORKER_EXTENSION_KEYS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            names, expected,
+            "a gated delegate child must get exactly GOAL_WORKER_EXTENSION_KEYS (developer + \
+             orchestrator), no analyze/extensionmanager/etc, got: {names:?}"
+        );
+
+        let orchestrator_ext = extensions
+            .iter()
+            .find(|ext| ext.name() == orchestrator::EXTENSION_NAME)
+            .expect("orchestrator must survive in the lean worker profile");
+        let allowed_tools: HashSet<&str> = orchestrator_ext
+            .available_tools()
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let expected_tools: HashSet<&str> = orchestrator::GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(
+            allowed_tools, expected_tools,
+            "orchestrator's own tool surface must be cut to \
+             GOAL_WORKER_ORCHESTRATOR_TOOL_ALLOWLIST (escalate + message_goal), not the full \
+             roster it started with, got: {allowed_tools:?}"
+        );
+    }
+
+    /// Without an active roadmap the gate is a no-op — per the brief's own
+    /// spec, the extension SET must stay completely unchanged, not just the
+    /// mutating-tools strip: `extensionmanager`/`orchestrator`'s full tool
+    /// surface must both survive untouched.
+    #[tokio::test]
+    async fn an_ungated_delegate_leaves_the_extension_set_completely_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let sm = crate::session::SessionManager::new(tmp.path().to_path_buf());
+        let session = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "no-roadmap-fixture-r46a".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+        let before = sample_extensions_with_orchestrator_and_extras();
+        let mut extensions = before.clone();
+
+        let note = SummonClient::restrict_delegate_for_active_roadmap(
+            &pool,
+            &session,
+            None,
+            &mut extensions,
+        )
+        .await
+        .unwrap();
+
+        assert!(note.is_none());
+        let before_names: HashSet<String> = before.iter().map(|ext| ext.name()).collect();
+        let after_names: HashSet<String> = extensions.iter().map(|ext| ext.name()).collect();
+        assert_eq!(
+            before_names, after_names,
+            "no active roadmap must leave the extension SET untouched, got: {after_names:?}"
+        );
+        let orchestrator_ext = extensions
+            .iter()
+            .find(|ext| ext.name() == orchestrator::EXTENSION_NAME)
+            .expect("orchestrator must still be present, ungated");
+        assert_eq!(
+            orchestrator_ext.available_tools().len(),
+            4,
+            "orchestrator's own tool surface must be untouched when the gate never fires"
         );
     }
 
