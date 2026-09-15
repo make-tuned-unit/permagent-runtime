@@ -6,6 +6,17 @@ import { getReduceMotion } from '../../../styles/tokens';
 import { birdFlight, meteorAt, skyHash } from './skyMotion';
 import { extendForumLoader } from './forumGltf';
 
+// Sky draw order. three sorts by `renderOrder` BEFORE distance, and the sky
+// dome, the starfield and the celestial bodies all sit far outside the world,
+// so distance sorting alone decided which of them painted last: the radius-4800
+// dome is drawn after the radius-900 gas giant by a front-to-back opaque sort,
+// and because the dome writes no depth it simply overpainted both bodies
+// (job 18, bug 3). Pinning the three layers in order makes that deterministic —
+// dome, then stars, then the bodies, then the world itself at the default 0,
+// whose opaque geometry writes depth over them where the ridge or a tower
+// really does stand in front.
+export const SKY_RENDER_ORDER = { dome: -1000, stars: -900, bodies: -100 } as const;
+
 function NightSky() {
   const stars = useMemo(() => {
     const count = 14000, positions = new Float32Array(count * 3), phases = new Float32Array(count);
@@ -22,11 +33,15 @@ function NightSky() {
       vertexShader: `attribute float phase; varying float p; void main(){p=phase; gl_PointSize=1.2+pow(phase,8.)*2.4; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
       fragmentShader: `uniform float time; varying float p; void main(){float d=length(gl_PointCoord-.5); float a=(1.-smoothstep(.1,.5,d))*(.72+.28*sin(time*(.7+p)+p*93.)); gl_FragColor=vec4(mix(vec3(.72,.83,1.),vec3(1.,.9,.74),p),a);}`,
     });
-    return new THREE.Points(geometry,material);
+    const points=new THREE.Points(geometry,material);
+    points.renderOrder=SKY_RENDER_ORDER.stars;
+    return points;
   },[]);
   const meteor = useMemo(() => {
     const g = new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(6),3));
-    return new THREE.Line(g,new THREE.LineBasicMaterial({color:'#DAE8FF',transparent:true,depthWrite:false,toneMapped:false}));
+    const line=new THREE.Line(g,new THREE.LineBasicMaterial({color:'#DAE8FF',transparent:true,depthWrite:false,toneMapped:false}));
+    line.renderOrder=SKY_RENDER_ORDER.stars;
+    return line;
   },[]);
   useEffect(()=>()=>{stars.geometry.dispose();stars.material.dispose();meteor.geometry.dispose();meteor.material.dispose();},[stars,meteor]);
   useFrame(({clock}) => {
@@ -45,7 +60,7 @@ function NightSky() {
   return <><GalacticSky/><primitive object={stars}/><primitive object={meteor}/></>;
 }
 function GalacticSky() {
-  return <mesh>
+  return <mesh renderOrder={SKY_RENDER_ORDER.dome}>
     <sphereGeometry args={[4800,48,32]}/>
     <shaderMaterial side={THREE.BackSide} depthWrite={false} toneMapped={false}
       vertexShader={`varying vec3 direction;void main(){direction=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`}
@@ -95,14 +110,52 @@ void main(){vec2 p=vUv*8.+vec2(time*.002,0);float n=0.,a=.5;for(int i=0;i<5;i++)
   </mesh>;
 }
 // Celestial neighbours (north-star direction, job 12 P3/browser-side): a banded
-// gas giant low in the north-west beyond the orbital rings, and a smaller pale
+// gas giant well clear of the ridge over the harbour side, and a smaller pale
 // moon. Both are single spheres with their own shader — two draw calls between
 // them, no textures, no lights. They render in day and night alike, so the
 // system-appearance switch keeps its existing behaviour and night simply shows
 // them against the galactic sky.
+//
+// Job 18 (bug 3) measured both as *invisible*: darker than the sky they hang
+// in. Three causes, all fixed here.
+//  - Draw order. Both bodies wrote no depth, and neither did the radius-4800
+//    dome, so which shader survived was decided by three's opaque sort rather
+//    than by distance. They now sit at `SKY_RENDER_ORDER.bodies`, after the
+//    dome and the starfield, and they *do* write depth — which is also what
+//    stops the 14,000-point starfield (transparent, therefore drawn last)
+//    from speckling straight through the moon's disc.
+//  - Lighting. Both were lit from `SUNRISE_DIR`, a bearing they do not share,
+//    so the face turned to the viewer was the unlit one. They are self-lit
+//    now: `uLight` is a fixed bearing derived from each body's own position,
+//    so the visible face is always the modelled one, in day and in night
+//    alike, and the limb glow no longer depends on where the sun is.
+//  - Elevation. The gas giant sat ~14 degrees up on the ridge's bearing
+//    (Blender polar 100-215 degrees, crest 55-75 m, i.e. up to ~23 degrees as
+//    seen from the commons), so the ridge closed it off entirely.
 const SUNRISE_DIR = new THREE.Vector3(-0.95, 0.27, -0.16).normalize();
-const GAS_GIANT_POS = new THREE.Vector3(-1, 0.35, -1).normalize().multiplyScalar(900);
-const MOON_POS = new THREE.Vector3(0.6, 0.55, -1).normalize().multiplyScalar(1080);
+
+/** A sky bearing as a unit vector: `elevation` in degrees above the horizon,
+ *  `x`/`z` the horizontal direction (three.js axes, so -z is the Blender +y
+ *  north the landform script is authored in). */
+function bearing(x: number, z: number, elevationDeg: number) {
+  const horizontal = new THREE.Vector2(x, z).normalize().multiplyScalar(Math.cos(elevationDeg * Math.PI / 180));
+  return new THREE.Vector3(horizontal.x, Math.sin(elevationDeg * Math.PI / 180), horizontal.y);
+}
+/** A body's own lighting bearing: back towards the forum (so the face the
+ *  camera sees is the modelled one) and lifted, for a terminator across the
+ *  lower limb. Deliberately independent of the sun. */
+function selfLight(position: THREE.Vector3) {
+  return position.clone().negate().normalize().add(new THREE.Vector3(0, .55, 0)).normalize();
+}
+
+export const GAS_GIANT_RADIUS = 140;
+export const MOON_RADIUS = 46;
+// 28 degrees up on a south-westerly bearing over the lagoon and the harbour
+// approach: the ridge spans Blender polar 100-215 degrees (three.js x<0 from
+// z<0 round to z>0) and has no geometry at all past 215, so this clears it.
+export const GAS_GIANT_POS = bearing(-0.342, 0.940, 28).multiplyScalar(900);
+// Unchanged: the moon was never occluded, only overpainted and unlit.
+export const MOON_POS = new THREE.Vector3(0.6, 0.55, -1).normalize().multiplyScalar(1080);
 
 const BODY_VERT = `
 varying vec3 vLocal; varying vec3 vWorld;
@@ -110,7 +163,7 @@ void main(){ vLocal=normalize(position); vec4 w=modelMatrix*vec4(position,1.); v
   gl_Position=projectionMatrix*viewMatrix*w; }`;
 
 const GAS_GIANT_FRAG = `
-uniform vec3 uSun; uniform vec3 uWarm; uniform vec3 uCool; uniform vec3 uRim;
+uniform vec3 uLight; uniform vec3 uWarm; uniform vec3 uCool; uniform vec3 uRim;
 varying vec3 vLocal; varying vec3 vWorld;
 void main(){
   float lat=vLocal.y;
@@ -119,52 +172,78 @@ void main(){
   float belts=sin(lat*14.0+sin(lat*3.1)*1.6)*.5+.5;
   float lanes=sin(lat*41.0+sin(lat*7.3)*2.2)*.5+.5;
   vec3 base=mix(uCool,uWarm,clamp(belts*.68+lanes*.32,0.,1.));
-  base*=1.-smoothstep(.52,1.,abs(lat))*.42;                 // darker poles
-  // The planet shares the sunrise's bearing, so its face is turned away from
-  // the sun: a physically dark disc. Keep the terminator but hold a floor under
-  // it, the way a real gas giant is lifted by its own scattered light, or the
-  // belts are invisible and it reads as a hole in the sky.
-  float lit=clamp(dot(vLocal,uSun)*.55+.62,.34,1.);
+  base*=1.-smoothstep(.52,1.,abs(lat))*.34;                 // darker poles
+  // Self-lit. uLight is the body's own bearing, not the scene's sun, so the
+  // face turned to the forum is always the modelled one and the floor under
+  // the shading keeps the belts legible against both skies.
+  float shade=clamp(dot(vLocal,uLight)*.5+.5,0.,1.);
+  vec3 body=base*(.78+.46*shade);
   vec3 view=normalize(cameraPosition-vWorld);
-  float rim=pow(1.-max(dot(vLocal,view),0.),3.2);           // limb glow
-  // The limb glow is strongest on the sun's side, which is what sells a body
-  // this size as lit from behind rather than as flat paint.
-  float sunSide=clamp(dot(vLocal,uSun)*.5+.5,0.,1.);
-  gl_FragColor=vec4(base*lit+uRim*rim*(.35+sunSide*.85),1.);
+  float rim=pow(1.-max(dot(vLocal,view),0.),3.0);           // limb glow, all round
+  gl_FragColor=vec4(body+uRim*rim*.9,1.);
 }`;
 
 const MOON_FRAG = `
-uniform vec3 uSun; uniform vec3 uHigh; uniform vec3 uLow;
+uniform vec3 uLight; uniform vec3 uHigh; uniform vec3 uLow; uniform vec3 uGlow;
 varying vec3 vLocal; varying vec3 vWorld;
 float mhash(vec3 p){return fract(sin(dot(p,vec3(41.7,289.3,183.1)))*43758.5453);}
 void main(){
   float mare=smoothstep(.45,.75,mhash(floor(vLocal*7.))*.6+mhash(floor(vLocal*19.))*.4);
-  vec3 base=mix(uHigh,uLow,mare*.55);
-  float lit=clamp(dot(vLocal,uSun)*.85+.34,.12,1.);
-  gl_FragColor=vec4(base*lit,1.);
+  vec3 base=mix(uHigh,uLow,mare*.42);
+  float shade=clamp(dot(vLocal,uLight)*.5+.5,0.,1.);
+  vec3 view=normalize(cameraPosition-vWorld);
+  float rim=pow(1.-max(dot(vLocal,view),0.),2.4);           // its own faint halo
+  gl_FragColor=vec4(base*(.84+.3*shade)+uGlow*rim*.4,1.);
 }`;
 
+function body(name: string, position: THREE.Vector3, radius: number, segments: [number,number], fragmentShader: string, uniforms: Record<string, { value: THREE.Color | THREE.Vector3 }>) {
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, segments[0], segments[1]),
+    new THREE.ShaderMaterial({
+      uniforms: { uLight: { value: selfLight(position) }, ...uniforms },
+      vertexShader: BODY_VERT, fragmentShader,
+      // Opaque and depth-writing: the body is the nearest thing on its own
+      // line of sight until the world's own geometry gets in the way.
+      depthWrite: true, depthTest: true, toneMapped: false,
+    }),
+  );
+  mesh.name = name;
+  // The in-app harness finds meshes either by sphere radius (`__celestialProbe`)
+  // or by material name (`__namedMeshProbe`); naming both makes the bodies
+  // findable from the browser without another geometry heuristic.
+  mesh.material.name = name;
+  mesh.position.copy(position);
+  mesh.renderOrder = SKY_RENDER_ORDER.bodies;
+  mesh.visible = true;
+  return mesh;
+}
+
+/** The two bodies as plain three objects — built outside React so the draw
+ *  order, the positions and the self-lit materials can be asserted directly. */
+export const CELESTIAL_NAMES = { gasGiant: 'Forum gas giant', moon: 'Forum moon' } as const;
+
+export function createCelestialBodies() {
+  const gasGiant = body(CELESTIAL_NAMES.gasGiant, GAS_GIANT_POS, GAS_GIANT_RADIUS, [48,32], GAS_GIANT_FRAG, {
+    uWarm: { value: new THREE.Color('#E8B57A') },
+    uCool: { value: new THREE.Color('#7A6488') },
+    uRim: { value: new THREE.Color('#FFCE9B') },
+  });
+  const moon = body(CELESTIAL_NAMES.moon, MOON_POS, MOON_RADIUS, [32,24], MOON_FRAG, {
+    uHigh: { value: new THREE.Color('#E4E0D8') },
+    uLow: { value: new THREE.Color('#A6A29C') },
+    uGlow: { value: new THREE.Color('#C8D6F0') },
+  });
+  return { gasGiant, moon };
+}
+
 function CelestialBodies() {
-  const gasGiant=useMemo(()=>({
-    uSun:{value:SUNRISE_DIR.clone()},
-    uWarm:{value:new THREE.Color('#D9A46A')},
-    uCool:{value:new THREE.Color('#6E5B7A')},
-    uRim:{value:new THREE.Color('#FFCE9B')},
-  }),[]);
-  const moon=useMemo(()=>({
-    uSun:{value:SUNRISE_DIR.clone()},
-    uHigh:{value:new THREE.Color('#D8D4CC')},
-    uLow:{value:new THREE.Color('#8E8B87')},
-  }),[]);
+  const bodies = useMemo(createCelestialBodies, []);
+  useEffect(() => () => {
+    for (const mesh of [bodies.gasGiant, bodies.moon]) { mesh.geometry.dispose(); mesh.material.dispose(); }
+  }, [bodies]);
   return <>
-    <mesh position={GAS_GIANT_POS}>
-      <sphereGeometry args={[140,48,32]}/>
-      <shaderMaterial uniforms={gasGiant} vertexShader={BODY_VERT} fragmentShader={GAS_GIANT_FRAG} depthWrite={false} toneMapped={false}/>
-    </mesh>
-    <mesh position={MOON_POS}>
-      <sphereGeometry args={[46,32,24]}/>
-      <shaderMaterial uniforms={moon} vertexShader={BODY_VERT} fragmentShader={MOON_FRAG} depthWrite={false} toneMapped={false}/>
-    </mesh>
+    <primitive object={bodies.gasGiant} name={CELESTIAL_NAMES.gasGiant} dispose={null}/>
+    <primitive object={bodies.moon} name={CELESTIAL_NAMES.moon} dispose={null}/>
   </>;
 }
 

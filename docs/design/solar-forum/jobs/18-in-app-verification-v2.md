@@ -489,3 +489,128 @@ Still open:
 - everything job 11 left open that this pass did not touch: a job that persists a
   goal and an artifact, an approval, a skill proposal and promotion, a renamed
   sovereign, and a newly registered worker.
+
+## Fixes after v2 verification
+
+Date: 2026-09-15, same branch, in-app code only. Scope: `ui/command-center/`
+(`src/components/world/forum/`, `scripts/`) and this document. Nothing under
+`scripts/blender/` or `scripts/unreal/` was touched, so bug 4 stays open as
+written above.
+
+Gates run from `ui/command-center`, all green:
+
+```text
+npm run typecheck                      # tsc --noEmit, clean
+npx vitest run src/components/world    # 43 files, 278 tests passed
+npm run build                          # tsc + vite build, built in 6.5 s
+```
+
+### Bug 3 — the celestial bodies (`ForumSky.tsx`)
+
+Three separate causes, all addressed:
+
+- **Draw order.** New exported `SKY_RENDER_ORDER = { dome: -1000, stars: -900,
+  bodies: -100 }`. three sorts by `renderOrder` *before* distance, so the
+  radius-4800 dome and the 14,000-point starfield are now pinned behind the two
+  bodies, and the world's own geometry stays at the default `0` — which is what
+  still lets a tower or the ridge legitimately occlude a body. The bodies are
+  **opaque and depth-writing** now (they were `depthWrite={false}`, which is
+  what let the dome overpaint them); writing depth is also what stops the
+  transparent starfield — drawn after every opaque object — from speckling
+  through the moon's disc, the "flat disc with a 170-luma star in it" the
+  measurement above recorded.
+- **Self-lit materials.** `uSun` is gone from both shaders. Each body gets a
+  `uLight` derived from its own position (`selfLight()`: back towards the forum,
+  lifted 0.55 for a terminator across the lower limb), so the face turned to the
+  viewer is always the modelled one, in day and night alike. The gas giant keeps
+  its banding over a `0.78 + 0.46 * shade` floor with an all-round limb glow (the
+  old glow was scaled by a `sunSide` term); the moon keeps its maria, a higher
+  floor, and its own faint `uGlow` halo instead of borrowed sunlight.
+- **Elevation and bearing.** `GAS_GIANT_POS` moves to **28° elevation on
+  Blender polar 250°** (three.js `(-271.7, 422.5, 746.8)`, i.e. x<0/z>0 — the
+  south-westerly quarter over the lagoon and the harbour approach). The ridge
+  mesh spans Blender 100–215° only (`forum_landform.py:_add_ridge_and_waterfalls`,
+  crest 55–78 m at radius 128–180, ≈26° of elevation from the commons), so this
+  bearing has no ridge geometry on it at all. The moon is unchanged
+  (Blender 59.0°, 25.3° elevation): it was never occluded, only overpainted and
+  unlit.
+- Both meshes and their materials are now **named** (`Forum gas giant`,
+  `Forum moon`), so the harness can find them with `__namedMeshProbe` as well as
+  by sphere radius. The radii are unchanged (140 / 46), so `__celestialProbe`'s
+  existing radius heuristic still works.
+
+New test `ForumSky.test.tsx` (jsdom, 5 tests): draw order and depth state for
+both bodies; no `uSun` uniform and a `uLight` on the lit side of each body's
+viewer-facing point; the gas giant's elevation (26–30°) and bearing (off the
+ridge arc, x<0/z>0); the moon smaller, pale and off the ridge; and a mount test
+asserting both bodies are present in the **night** scene and in the day scene.
+
+### Bug 5 — shadow-map deprecation (`ForumView.tsx`)
+
+`shadows` → `shadows={{ type: PCFShadowMap }}`. r3f's boolean branch sets
+`PCFSoftShadowMap`, which three 0.184 warns about and downgrades to
+`PCFShadowMap` on every shadow render; asking for `PCFShadowMap` outright is the
+same shadows the scene was already getting, with no deprecation path left. The
+sun light's own shadow configuration (`ForumLighting.tsx:32-35`) is untouched.
+Covered by a new case in `ForumView.test.tsx`, which now captures the `Canvas`
+props. **Note for a future job, outside this scope:**
+`src/components/world/WorldView.tsx:499` still passes
+`{ type: THREE.PCFSoftShadowMap }`, so the legacy World route keeps the warning.
+
+### Bug 1 — token in the job-11 harness (`scripts/verify-world-in-app.mjs`)
+
+`scrubUrl` ported from `verify-world-in-app-v2.mjs` and applied to **every**
+recorded URL: `requestfailed` (the actual leak), `response`, the GLB record, and
+— beyond v2 — console text and page-error text via `scrubText`. `flush()` also
+runs a last-resort backstop over the whole serialised report (`split(token)` plus
+a `token=` query scrub), so no gate can write the credential by another route.
+
+### Bug 2 — the ask gate could not fail (same file)
+
+The `/PONG/i`-anywhere wait at the old `:448` is replaced by v2's logic: find the
+last echo of the prompt in the transcript and require `\bPONG\b` *after* it. The
+gate now records `agentRepliedPong`, `replyAfterPrompt` and
+`replyLooksLikeTransportError`, and records an explicit `failure` when no reply
+distinct from the echoed prompt contains PONG — so the run summary reports
+FAILURE instead of "recorded". The two reconnect-gate PING prompts only seed the
+stream and assert on connection status, so they needed no change.
+
+### Bug 7 — overview draw calls: left alone, and the attribution corrected
+
+Not changed, and on inspection the stated cause does not hold. drei's `<Html>`
+creates **no WebGL object** unless `occlude` is set (drei 9's `web/Html.js`),
+so the fourteen chips cannot account for draw calls at all;
+and their per-frame work is already epsilon-gated — with `transform` off (which
+is the case here) the DOM write is skipped entirely unless the projected
+position or the zoom actually moved, so "each writes `style.transform` every
+frame" is not what the current drei does either. The 274 → 246 delta is far more
+likely frustum culling: walk mode puts the camera at eye level inside the forum
+and drops ~100,000 triangles with those 28 calls, which is the shape of culling
+rather than of chip overhead. Consolidating or thinning the chips would change
+navigation behaviour for no measured gain, so nothing was changed. If overview
+cost is ever revisited, the experiment to run is toggling `OrbitControls` and the
+chips independently and reading `gl.info.render.calls`.
+
+### What still needs a browser re-check
+
+All of this is unit-tested and type-checked, but only a real GPU run can close
+these:
+
+- **Contrast.** Re-run `node scripts/verify-world-in-app-v2.mjs` (gates
+  `night`) and confirm the disc/surround contrast for both bodies is now
+  comfortably above 1, at night and in day, from the commons and the gate court.
+  The numbers to beat are moon 0.82 and gas giant 0.70 / 1.09.
+- **Occlusion.** Confirm the gas giant clears the ridge from the commons
+  overlook at its new bearing, and that the world still occludes both bodies
+  correctly where it should (walk behind the market hall and check the moon is
+  hidden, not painted over the roof) — the depth-write change is the part most
+  worth eyeballing.
+- **Starfield.** Confirm no stars punch through the moon's disc at night.
+- **Shadows.** Confirm the 39 `PCFSoftShadowMap has been deprecated` console
+  lines are gone and that shadows still render (the shadow pass is unchanged,
+  but the console count is the evidence).
+- **Frame cost.** Re-measure day/night FPS and draw calls; the bodies are now
+  opaque and depth-writing, which should be neutral-to-cheaper, but it is
+  unmeasured.
+- The job-11 harness changes were not executed (running it needs the dev server
+  and the live daemon); `node --check` passes on the file.

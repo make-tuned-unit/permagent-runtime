@@ -358,18 +358,20 @@ def _job16_window_instance(name, point, angle=0.0, scale=(1,1,1)):
     return _linked_object(_job16_strip,name,(point[0],point[1],point[2]),(0,0,angle),scale,_job16_window)
 for _name,(_cx,_cy),_height,_radius in _spires:
     for _level in range(4,int(_height),6):
-        if _level % 12 == 0:
-            for _bay in range(3):
-                _a=math.tau*_bay/3;_job16_window_instance(f'Job16 {_name} warm window {_level}-{_bay}',
+        for _bay in range(6):
+            # Alternating lit floors per bay so the spires read as inhabited at night.
+            if ((_level // 6) + _bay) % 2 == 0:
+                _a=math.tau*_bay/6;_job16_window_instance(f'Job16 {_name} warm window {_level}-{_bay}',
                     (_cx+math.cos(_a)*(_radius+.12),_cy+math.sin(_a)*(_radius+.12),_level),_a,
                     (.9,.65,1.0))
 for _label,(_ox,_oy),_footprint,_height in (('A',(-13.2,0),15.5,44),('B',(-4.5,1.3),14.2,38),
                                              ('C',(4.2,-.8),13.4,34),('D',(12.6,.6),12.6,29)):
     _cx,_cy=-100+_ox,-30+_oy
     for _level in range(4,int(_height),6):
-        if _level % 12 == 0:
-            _job16_window_instance(f'Job16 habitat {_label} warm window {_level}',
-                                   (_cx+_footprint*.42,_cy-.05,_level),0,(1.0,1.0,1.0))
+        for _side in (-1, 1):
+            if ((_level // 6) + (_side > 0)) % 2 == 0:
+                _job16_window_instance(f'Job16 habitat {_label} warm window {_level}{"+" if _side>0 else "-"}',
+                                       (_cx+_side*_footprint*.42,_cy-.05,_level),0,(1.0,1.0,1.0))
 for _bay in range(5):
     _job16_window_instance(f'Job16 market hall warm window {_bay}',
                            (-102.3 + (_bay - 2) * 1.65, -33.0, 7.2), 0,

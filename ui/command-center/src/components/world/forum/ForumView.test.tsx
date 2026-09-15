@@ -2,7 +2,8 @@
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { createRoot, Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
-vi.mock('@react-three/fiber', () => ({ Canvas: () => null }));
+const canvas = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
+vi.mock('@react-three/fiber', () => ({ Canvas: (props: Record<string, unknown>) => { canvas.props = props; return null; } }));
 const identityName = vi.hoisted(() => ({ value: 'Aster' }));
 vi.mock('../shared/useOrchestratorName', () => ({ useOrchestratorName: () => identityName.value }));
 vi.mock('./ForumConversation', () => ({ ForumConversation: () => null }));
@@ -10,6 +11,7 @@ vi.mock('./forumQuery', () => ({ askFromForum: vi.fn() }));
 vi.mock('./ForumCapabilities', () => ({ ForumCapabilities: () => null }));
 vi.mock('./ForumAgents', () => ({ ForumAgents: () => null }));
 vi.mock('../agents/goalActivity', () => ({ useActiveGoals: () => ({ goals: [], loaded: false }) }));
+import { PCFShadowMap, PCFSoftShadowMap } from 'three';
 import { ForumView } from './ForumView';
 let root: Root, host: HTMLDivElement;
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -83,4 +85,15 @@ it('identifies the user-named sovereign and finds it after selecting a specialis
   expect(host.querySelector('option[value="henry"]')?.textContent).toBe('Nova · Sovereign orchestrator');
   expect(host.querySelector('.forum-agent-portrait h3')?.textContent).toBe('Nova');
   identityName.value = 'Aster';
+});
+
+it('asks the renderer for a shadow map type three has not deprecated', () => {
+  // A bare `shadows` makes r3f select PCFSoftShadowMap, which three 0.184
+  // deprecates: it warns and downgrades to PCFShadowMap on every shadow render
+  // (39 warnings per load, job 18 bug 5). Ask for what we actually get.
+  expect(canvas.props?.shadows).toEqual({ type: PCFShadowMap });
+  expect(canvas.props?.shadows).not.toBe(true);
+  expect((canvas.props?.shadows as { type: number }).type).not.toBe(PCFSoftShadowMap);
+  // ...and the shadow-casting sun light itself is untouched.
+  expect(canvas.props?.frameloop).toBeTruthy();
 });

@@ -74,7 +74,10 @@ function gateResult(id, patch) {
 }
 async function flush() {
   report.updatedAt = new Date().toISOString();
-  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  // Backstop: whatever a gate happened to record, and however it was spelled,
+  // the live token never reaches the file.
+  const serialised = JSON.stringify(report, null, 2).split(token).join('REDACTED');
+  await writeFile(reportPath, `${serialised.replace(/([?&]token=)[^&\s"'\\]*/g, '$1REDACTED')}\n`);
 }
 
 /** Copied verbatim in behaviour from scripts/verify-forum-browser.mjs so the
@@ -160,19 +163,26 @@ const page = await context.newPage();
 // The forum chunk (three.js + a 2.2M-triangle GLB) takes well over 20s to
 // mount under software WebGL, so the default 30s is not a safe ceiling here.
 page.setDefaultTimeout(90000);
-page.on('pageerror', e => pageErrors.push({ message: e.message }));
+// Redaction, not decoration (job 18 bug 1). `getStreamToken()`
+// (`src/lib/streamToken.ts`) puts the master daemon token in the SSE query
+// string, and this harness used to redact it on the RESPONSE path only — a
+// failed or aborted EventSource (which happens on every reload) wrote the live
+// credential straight into the committed report. Ported from
+// `verify-world-in-app-v2.mjs`: every URL this file records, from any source,
+// goes through the same scrub, console and page-error text included, and
+// `flush()` holds a last-resort backstop over the whole serialised report.
+const scrubUrl = u => String(u).replace(origin, '').replace(/([?&]token=)[^&\s"']*/g, '$1REDACTED');
+const scrubText = t => String(t).replace(/([?&]token=)[^&\s"']*/g, '$1REDACTED');
+page.on('pageerror', e => pageErrors.push({ message: scrubText(e.message) }));
 page.on('console', m => {
   if (m.type() !== 'error' && m.type() !== 'warning') return;
-  console_.push({ type: m.type(), text: m.text().slice(0, 500) });
+  console_.push({ type: m.type(), text: scrubText(m.text()).slice(0, 500) });
 });
-page.on('requestfailed', r => requestFailures.push({ url: r.url(), error: r.failure()?.errorText || 'failed' }));
+page.on('requestfailed', r => requestFailures.push({ url: scrubUrl(r.url()), error: r.failure()?.errorText || 'failed' }));
 page.on('response', r => {
   const u = r.url();
   if (/\/(api|sessions|reply|agent|permagent|events|config|status)\b/.test(u) || /solar-forum\.glb/.test(u)) {
-    // Strip query strings: the SSE/WS URLs carry the stream credential
-    // (`?token=`), which must never land in a committed evidence file.
-    const clean = u.replace(origin, '').replace(/\?.*$/, m => (m.includes('token=') ? '?token=REDACTED' : m));
-    responses.push({ url: clean, status: r.status(), method: r.request().method() });
+    responses.push({ url: scrubUrl(u), status: r.status(), method: r.request().method() });
   }
 });
 
@@ -281,7 +291,7 @@ if (want('route')) {
       description: 'world tool renders ForumAppView inside the real app',
       workspace: workspaces.world.name,
       opened,
-      glb: glb ? { url: glb.url().replace(origin, ''), status: glb.status() } : null,
+      glb: glb ? { url: scrubUrl(glb.url()), status: glb.status() } : null,
       perf,
       renderer,
       sampling,
@@ -443,19 +453,46 @@ async function sendBrief(kind, text, criteria = '') {
 if (want('ask')) {
   try {
     const before = responses.length;
-    const label = await sendBrief('Query', `${TAG} reply with the single word PONG`, 'a one-word reply');
+    const PROMPT = `${TAG} reply with the single word PONG`;
+    const label = await sendBrief('Query', PROMPT, 'a one-word reply');
     await page.waitForFunction(() => Boolean(document.querySelector('.forum-transcript')), undefined, { timeout: 60000 });
-    await page.waitForFunction(() => /PONG/i.test(document.querySelector('.forum-transcript')?.innerText || ''), undefined, { timeout: 180000 });
+    // This gate used to wait for /PONG/i ANYWHERE in the transcript — which the
+    // echoed prompt ("reply with the single word PONG") satisfies on its own,
+    // so it could not fail and its PASS was never evidence that an agent
+    // answered (job 18 bug 2). Only what comes AFTER the last echo of the
+    // prompt counts, exactly as `verify-world-in-app-v2.mjs` does it.
+    const TAIL = 'reply with the single word PONG';
+    const afterPrompt = () => page.evaluate(marker => {
+      const text = document.querySelector('.forum-transcript')?.innerText || '';
+      const at = text.lastIndexOf(marker);
+      return at < 0 ? '' : text.slice(at + marker.length);
+    }, TAIL);
+    let replied = false;
+    try {
+      await page.waitForFunction(marker => {
+        const text = document.querySelector('.forum-transcript')?.innerText || '';
+        const at = text.lastIndexOf(marker);
+        return at >= 0 && /\bPONG\b/i.test(text.slice(at + marker.length));
+      }, TAIL, { timeout: 180000 });
+      replied = true;
+    } catch { replied = false; }
     await page.waitForFunction(() => !/reply in progress/.test(document.querySelector('.forum-conversation .eyebrow')?.textContent || ''), undefined, { timeout: 120000 }).catch(() => {});
     const transcript = await page.locator('.forum-transcript').innerText();
+    const reply = await afterPrompt();
     gateResult('ask', {
       description: 'forum ask control streams a real reply into the existing conversation',
+      agentRepliedPong: replied,
+      replyAfterPrompt: reply.trim().slice(0, 400),
+      replyLooksLikeTransportError: /network error|could not connect|ECONNREFUSED/i.test(reply),
       buttonLabel: label,
       hitTest: lastHitTest,
       connection: await page.locator('.forum-conversation .eyebrow').innerText(),
       transcriptTail: transcript.slice(-900),
       network: responses.slice(before).filter(r => /\/sessions|\/reply/.test(r.url)).slice(0, 12),
       screenshot: await shot('in-app-ask'),
+      // The gate passes only on a reply message distinct from the echoed
+      // prompt; anything else is recorded as the failure it is.
+      ...(replied ? {} : { failure: 'no agent reply containing PONG after the echoed prompt' }),
     });
   } catch (e) {
     gateResult('ask', { failure: String(e && e.message || e), transcriptTail: await page.locator('.forum-transcript').innerText().catch(() => null), screenshot: await shot('in-app-ask-failure').catch(() => null) });

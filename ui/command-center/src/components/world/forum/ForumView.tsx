@@ -2,7 +2,7 @@ import { applyForumSurfaceMaterials } from './ForumSurfaceMaterials';
 import { Suspense, useEffect, useMemo, useState, useCallback, useRef, type CSSProperties, type RefObject } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
-import { Mesh } from 'three';
+import { Mesh, PCFShadowMap } from 'three';
 import { ROSTER } from '../agents';
 import { ForumAgents } from './ForumAgents';
 import { ForumCapabilities } from './ForumCapabilities';
@@ -176,7 +176,13 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   }
   return <main className="forum-shell" style={style} data-appearance={appearance}>
     <section ref={worldRef} className="forum-world" aria-label="Interactive solarpunk forum">
-      <Canvas frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows dpr={[1, 1.5]} camera={{ position: [29, 29, 36], fov: 48, far: 10000 }} gl={{ antialias: true }}>
+      {/* Explicit shadow-map type. A bare `shadows` makes r3f set
+          `PCFSoftShadowMap`, which three 0.184 deprecated: it warns and
+          silently downgrades to `PCFShadowMap` on every shadow render — 39
+          warnings per load in job 18. Asking for `PCFShadowMap` outright is
+          the same shadows the scene has actually been getting, without the
+          deprecation path. */}
+      <Canvas frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [29, 29, 36], fov: 48, far: 10000 }} gl={{ antialias: true }}>
         {agoraOpen ? <MeshAgora walking={walking} /> : <ForumLighting appearance={appearance} />}
         {/* The forum is hidden rather than unmounted while the Agora is open:
             an invisible group costs no draw calls, and keeping it mounted means
