@@ -136,7 +136,7 @@ camera. Read-only: nothing in the page is mutated
   `ForumNavigation` — `OrbitControls` plus fourteen drei `<Html>` district chips
   (`ForumNavigation.tsx:39-40`) — is unmounted while walking.
 
-![World overview](../../../assets/world/forum/browser/v2-world-overview.webp)
+![World overview](../../../../assets/world/forum/browser/v2-world-overview.webp)
 
 ### 2. MESH walk-through against the real geometry
 
@@ -179,7 +179,7 @@ the app. `Escape` closed the Agora and put the walker back on the spur at
 
 | before | at | after |
 | --- | --- | --- |
-| ![Gate approach](../../../assets/world/forum/browser/v2-mesh-approach.webp) | ![Mesh Agora](../../../assets/world/forum/browser/v2-mesh-agora.webp) | ![Back at the approach](../../../assets/world/forum/browser/v2-mesh-return.webp) |
+| ![Gate approach](../../../../assets/world/forum/browser/v2-mesh-approach.webp) | ![Mesh Agora](../../../../assets/world/forum/browser/v2-mesh-agora.webp) | ![Back at the approach](../../../../assets/world/forum/browser/v2-mesh-return.webp) |
 
 ### 3. Night appearance
 
@@ -216,7 +216,7 @@ why for the gas giant: from the commons the crosshair sits on the new ridge, and
 from the gate court on the exedra. The moon is not occluded by anything visible
 and still reads *darker* than the starfield behind it. See bug 3.
 
-![Night sky from the commons](../../../assets/world/forum/browser/v2-world-night-sky.webp)
+![Night sky from the commons](../../../../assets/world/forum/browser/v2-world-night-sky.webp)
 
 **Emissives.** From the commons overlook (the default overview camera), 31 of
 the 49 emissive meshes project into the frame; 7,930 of their vertices were
@@ -244,7 +244,7 @@ Whole-frame, eye level at the commons: **4,390 pixels (0.71 %) are ≥ 25 luma
 brighter at night than in day**, mean delta +60.6, max +195.1 — the lanterns and
 strand lights visibly hold their radiance while everything else drops.
 
-![Commons at night, eye level](../../../assets/world/forum/browser/v2-commons-night-walk.webp)
+![Commons at night, eye level](../../../../assets/world/forum/browser/v2-commons-night-walk.webp)
 
 **Window strips — not where the brief assumes.** The material named
 `Forum Warm Window Emission` is on exactly **one mesh of 120 vertices**, world
@@ -326,7 +326,7 @@ render correctly at 862 × 972 with a dpr-1.5 buffer on `Apple GPU`.
 **WKWebView render and FPS for the new export remain unmeasured.** Producing
 them needs a session where the window can actually be foregrounded.
 
-![WKWebView](../../../assets/world/forum/browser/v2-world-webkit.webp)
+![WKWebView](../../../../assets/world/forum/browser/v2-world-webkit.webp)
 
 ## Console and network during the run
 

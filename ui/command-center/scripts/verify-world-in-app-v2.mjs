@@ -477,6 +477,10 @@ await context.addInitScript(() => {
       const radiusPx = Math.atan(r / dist) * pxPerRad;
       bodies.push({
         body: label, radiusM: r, distanceM: Math.round(dist),
+        // The body's LIVE world position, so the harness aims at where the
+        // scene actually puts it instead of a constant copied out of the
+        // source (job 19: GAS_GIANT_POS moved and the copy went stale).
+        world: { x: Math.round(world.x * 10) / 10, y: Math.round(world.y * 10) / 10, z: Math.round(world.z * 10) / 10 },
         screen: { x: Math.round(sx), y: Math.round(sy) }, radiusPx: Math.round(radiusPx * 10) / 10,
         inFrustum: v.z > -1 && v.z < 1 && sx > -radiusPx && sx < size.width + radiusPx && sy > -radiusPx && sy < size.height + radiusPx,
         ndcZ: Math.round(v.z * 1000) / 1000,
@@ -989,6 +993,11 @@ async function commonsWalkFrame(name) {
 
 /** Aim at a celestial body from wherever the walker is standing, then measure
  *  its disc against the sky immediately around it. */
+// Fallback only. The aim target is read from the live scene (`__celestialProbe`
+// now reports each body's world position); this copy of ForumSky's constants is
+// what the harness used to aim by, and it went stale the moment GAS_GIANT_POS
+// moved (job 18 fix -> job 19 re-check), which silently aimed the gas-giant
+// shot at the opposite side of the sky.
 const CELESTIAL_WORLD = (() => {
   const g = Math.hypot(1, 0.35, 1), m = Math.hypot(0.6, 0.55, 1);
   return {
@@ -997,10 +1006,16 @@ const CELESTIAL_WORLD = (() => {
   };
 })();
 
+async function bodyWorldPosition(body) {
+  const live = await celestial();
+  const found = live.ok ? live.bodies.find(b => b.body === body && b.world) : null;
+  return found ? { ...found.world, source: 'live-scene' } : { ...CELESTIAL_WORLD[body], source: 'harness-constant' };
+}
+
 async function skyShot(body, name) {
   const walker = await probe();
   if (!walker.ok) return { ok: false, reason: walker.reason };
-  const w = CELESTIAL_WORLD[body];
+  const w = await bodyWorldPosition(body);
   const dx = w.x - walker.camera.x, dy = w.y - walker.camera.y, dz = w.z - walker.camera.z;
   const aim = await aimTo(Math.atan2(-dx, -dz), Math.atan2(dy, Math.hypot(dx, dz)));
   await page.waitForTimeout(1200);
@@ -1012,7 +1027,7 @@ async function skyShot(body, name) {
     ? bodies.bodies.map(b => ({ body: b.body, screen: b.screen, radiusPx: b.radiusPx, inFrustum: b.inFrustum, luma: discLuma(buffer, b.screen.x, b.screen.y, b.radiusPx) }))
     : null;
   return {
-    ok: true, aimedAt: body, from: walker, aim, discs, file,
+    ok: true, aimedAt: body, aimTarget: w, from: walker, aim, discs, file,
     contrastRatio: discs?.find(d => d.body === body)?.luma?.contrastRatio ?? null,
     skyBand: buffer ? regionLuma(buffer, [0, 0, 1, .45]) : null,
   };
