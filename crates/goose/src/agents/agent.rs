@@ -2028,6 +2028,11 @@ impl Agent {
             // out of credit would ping-pong the turn forever — the same
             // unbounded-retry defect this PR removes from the retry layer.
             let mut permanent_failure_fallback_used = false;
+            // R28a (HARNESS_LOOP_LOG.md "A27 analysis" misses 1/2): fires at
+            // most once per reply, mirroring `monologue_nudged` above — see
+            // `after_turn::turn_budget_nudge_text`'s own doc comment for why
+            // this lives outside the `AfterTurn` chain.
+            let mut turn_budget_nudged = false;
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -3482,6 +3487,30 @@ impl Agent {
                                 }
                             }
                         }
+                    }
+                }
+
+                // R28a (HARNESS_LOOP_LOG.md "A27 analysis" misses 1/2): tell a
+                // dispatched goal worker plainly, once, when only a handful of
+                // turns remain before the hard `max_turns` cap below discards
+                // whatever it has not yet committed. Independent of whether
+                // THIS turn called a tool — the failure mode is a worker that
+                // keeps calling tools (manual shell re-tests) right up to the
+                // cap, never a monologuing one, so this cannot live inside the
+                // `no_tools_called` branch above. `has_explicit_cap` (`session_
+                // config.max_turns.is_some()`) is what keeps this off ordinary
+                // interactive chats — see `turn_budget_nudge_text`'s own doc
+                // comment.
+                if !turn_budget_nudged {
+                    if let Some(nudge_text) = crate::after_turn::turn_budget_nudge_text(
+                        turns_taken,
+                        max_turns,
+                        session_config.max_turns.is_some(),
+                    ) {
+                        turn_budget_nudged = true;
+                        let nudge = Message::user().with_text(nudge_text);
+                        messages_to_add.push(nudge.clone());
+                        yield AgentEvent::Message(nudge);
                     }
                 }
 

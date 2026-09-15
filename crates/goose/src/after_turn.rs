@@ -2633,6 +2633,127 @@ impl AfterTurn for Rule5HonestFailureGuard {
     }
 }
 
+// ── R28a: turn-budget nudge for dispatched goal workers ─────────────────────
+//
+// HARNESS_LOOP_LOG.md "## A27 analysis — zai z1 misses on M27 (16/19)", misses
+// 1/2: a dispatched worker writes a correct, on-spec fix in its own goal
+// worktree, then spends its whole remaining `max_turns` budget on ad-hoc
+// manual shell re-testing and never calls `git commit` — the session ends
+// with `agent.rs`'s literal "I've reached the maximum number of actions..."
+// message, `maybe_salvage_committed_work` correctly finds nothing to salvage,
+// and a substantively-complete fix is lost in full. This is a proactive
+// nudge, not an [`AfterTurn`] hook: the existing `AfterTurn` seam only fires
+// when the model already believes ITS OWN turn is over (`exit_chat`), which
+// never happens here — the model keeps calling tools right up to the hard
+// cap. `turn_budget_nudge_text` is instead consulted unconditionally, once
+// per session, from `agent.rs`'s own turn-counting loop, the same place the
+// S5 monologue nudge (`monologue_nudged`) already lives.
+
+/// How many turns before the hard `max_turns` cap the nudge fires. "≤3 turns
+/// left" per the lane brief.
+pub const TURN_BUDGET_NUDGE_THRESHOLD: u32 = 3;
+
+/// Whether a dispatched worker session's turn budget is low enough to warn
+/// about, and if so, the notice to inject into the next prompt.
+///
+/// `turns_taken` is the 1-based count `agent.rs` already tracks (incremented
+/// before this would be called, matching its own `turns_taken += 1` ordering
+/// relative to the `turns_taken > max_turns` cap check). `has_explicit_cap`
+/// is `session_config.max_turns.is_some()` — deliberately reused as the
+/// "is this a dispatched goal worker" signal instead of a second session-type
+/// lookup: `subagent_task_config::TaskConfig` always sets `max_turns` for a
+/// dispatched worker ("TaskConfig always sets max_turns"), while an ordinary
+/// interactive session leaves `SessionConfig::max_turns` `None` and falls
+/// back to the much larger `GOOSE_MAX_TURNS` default — so the two are already
+/// distinguishable for free, with no extra DB round trip inside the hot loop.
+///
+/// Returns `None` before the threshold (so a normal session mid-budget is
+/// untouched) and `None` when `has_explicit_cap` is false (an ordinary chat
+/// is never told to `git commit`, which would be nonsensical advice outside
+/// a goal worktree). The caller is expected to fire this at most once per
+/// session — bounding re-entry is the caller's job, the same shape as
+/// `monologue_nudged` bounds the S5 nudge in `agent.rs`, so this function
+/// stays a pure question of "turns_taken/max_turns," not "have I already
+/// said this."
+pub fn turn_budget_nudge_text(
+    turns_taken: u32,
+    max_turns: u32,
+    has_explicit_cap: bool,
+) -> Option<String> {
+    if !has_explicit_cap {
+        return None;
+    }
+    let remaining = max_turns.saturating_sub(turns_taken);
+    if remaining > TURN_BUDGET_NUDGE_THRESHOLD {
+        return None;
+    }
+    let (action_word, verb) = if remaining == 1 {
+        ("action", "remains")
+    } else {
+        ("actions", "remain")
+    };
+    Some(format!(
+        "{remaining} {action_word} {verb}. If your change is complete, run the tests once more \
+         only if needed and `git add -A && git commit -m '<summary>'` NOW; uncommitted work is \
+         discarded."
+    ))
+}
+
+#[cfg(test)]
+mod turn_budget_nudge_tests {
+    use super::*;
+
+    #[test]
+    fn no_nudge_without_an_explicit_cap() {
+        // An ordinary interactive session (`max_turns: None` in
+        // `SessionConfig`) must never be told to `git commit` — it is not
+        // running in a goal worktree at all.
+        assert_eq!(turn_budget_nudge_text(22, 25, false), None);
+        assert_eq!(turn_budget_nudge_text(25, 25, false), None);
+    }
+
+    #[test]
+    fn no_nudge_before_the_threshold() {
+        // 25 - 21 = 4 remaining: one MORE than the threshold, must not fire.
+        assert_eq!(turn_budget_nudge_text(21, 25, true), None);
+    }
+
+    #[test]
+    fn nudge_fires_exactly_at_the_threshold() {
+        // 25 - 22 = 3 remaining: exactly the threshold, must fire.
+        let text = turn_budget_nudge_text(22, 25, true).expect("must nudge at remaining == 3");
+        assert!(text.starts_with("3 actions remain."), "{text:?}");
+        assert!(text.contains("git add -A && git commit -m"), "{text:?}");
+        assert!(text.contains("uncommitted work is discarded"), "{text:?}");
+    }
+
+    #[test]
+    fn nudge_keeps_firing_as_the_count_falls_to_the_very_last_turn() {
+        assert!(turn_budget_nudge_text(23, 25, true)
+            .unwrap()
+            .starts_with("2 actions remain."));
+        assert!(turn_budget_nudge_text(24, 25, true)
+            .unwrap()
+            .starts_with("1 action remains"));
+        // turns_taken == max_turns: this is the LAST turn `agent.rs` will
+        // run (the very next increment trips `turns_taken > max_turns` and
+        // ends the session) — the most urgent case, must still fire, not be
+        // excluded as an edge case.
+        assert!(turn_budget_nudge_text(25, 25, true)
+            .unwrap()
+            .starts_with("0 actions remain."));
+    }
+
+    #[test]
+    fn singular_wording_at_exactly_one_remaining() {
+        let text = turn_budget_nudge_text(24, 25, true).unwrap();
+        assert!(
+            text.starts_with("1 action remains "),
+            "expected singular 'action'/'remains', got {text:?}"
+        );
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

@@ -4766,6 +4766,20 @@ pub(crate) async fn dispatch_goal_fn(
         // The worker has exited — drop its kill handle from the registry.
         // (A cancel may already have taken it; remove is then a no-op.)
         take_goal_worker(&tracker_card_id);
+        // R28a: the worker's session just ended, for whichever reason
+        // `outcome` names — the one place every dispatch attempt's teardown
+        // passes through, before `finalize_receipt`/`handle_goal_completion`
+        // or any later salvage git-inspection ever runs. If real work is
+        // still sitting uncommitted in the goal worktree, checkpoint-commit
+        // it now — see `checkpoint_uncommitted_worker_changes`'s own doc
+        // comment for why. Best-effort: never blocks the rest of this
+        // handler.
+        checkpoint_uncommitted_worker_changes(
+            &tracker_pool,
+            &tracker_card_id,
+            checkpoint_reason_for_outcome(&outcome),
+        )
+        .await;
         // #210: stamp the receipt's terminal state (best-effort) before running
         // the completion handler, so the attempt's outcome is recorded even if a
         // downstream handler step fails.
@@ -14611,6 +14625,344 @@ async fn worktree_has_uncommitted_work(
     let tracked_status =
         git_in_worktree(worktree, &["status", "--porcelain", "--untracked-files=no"]).await?;
     Ok((no_commits, tracked_status))
+}
+
+// ── R28a: teardown checkpoint for uncommitted worker changes ────────────────
+//
+// HARNESS_LOOP_LOG.md "## A27 analysis — zai z1 misses on M27 (16/19)", misses
+// 1/2: a dispatched worker writes a correct, on-spec fix and then exhausts its
+// turn budget on manual shell re-testing without ever calling `git commit`.
+// `maybe_salvage_committed_work` is deliberately conservative — any
+// uncommitted change on top of the real commits refuses salvage outright (see
+// that function's own doc comment) — so the fix is discarded in full. This
+// runs at the completion tracker's one universal teardown point (right after
+// a dispatched worker's `GoalOutcome` arrives, for every variant — a clean/
+// turn-cap finish, a retriable failure, a wall timeout, or a credential
+// block), so `maybe_salvage_committed_work`'s later, independent git
+// inspection always sees whatever this just committed.
+
+/// Result of a successful [`checkpoint_uncommitted_changes_in`] call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CheckpointCommit {
+    sha: String,
+    files: usize,
+}
+
+/// Commit-message prefix for a checkpoint commit, so a reader (or a future
+/// grep) can tell one apart from the worker's own commits at a glance.
+const CHECKPOINT_COMMIT_PREFIX: &str = "checkpoint: uncommitted worker changes at session end";
+
+/// Pure git mechanics: commit whatever is dirty in `worktree` right now, on
+/// whatever branch is already checked out there — this only ever runs `git -C
+/// <worktree>`, so it can never reach trunk or any other checkout.
+///
+/// `Ok(None)` on a clean tree (`git status --porcelain` empty): the common
+/// case, since most attempts already commit their own work, and this must
+/// never manufacture an empty commit. Otherwise stages everything with `git
+/// add -A` — which, like any `git add`, only ever picks up untracked files
+/// that are not `.gitignore`d, nothing invented beyond what git itself would
+/// already track — and commits with a message naming `reason`. No `--no-gpg-
+/// sign`/forced identity: this runs with the SAME ambient git config
+/// (`user.name`/`user.email`, signing) the worker's own commits in this same
+/// worktree already succeeded under, so if those work, this does too; tests
+/// set `commit.gpgsign=false` explicitly, the same convention the rest of
+/// this file's git fixtures already use.
+async fn checkpoint_uncommitted_changes_in(
+    worktree: &std::path::Path,
+    reason: &str,
+) -> Result<Option<CheckpointCommit>, String> {
+    let status = git_in_worktree(worktree, &["status", "--porcelain"]).await?;
+    if status.trim().is_empty() {
+        return Ok(None);
+    }
+    git_in_worktree(worktree, &["add", "-A"]).await?;
+    let staged = git_in_worktree(worktree, &["diff", "--cached", "--name-only"]).await?;
+    let files = staged
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    if files == 0 {
+        // Everything `status` saw was staged away to nothing (a change that
+        // reverted itself) — never call `git commit` with nothing staged,
+        // which fails rather than no-ops.
+        return Ok(None);
+    }
+    let message = format!("{CHECKPOINT_COMMIT_PREFIX} ({reason})");
+    git_in_worktree(worktree, &["commit", "-m", &message]).await?;
+    let sha = git_in_worktree(worktree, &["rev-parse", "HEAD"]).await?;
+    Ok(Some(CheckpointCommit { sha, files }))
+}
+
+/// The short machine tag folded into a checkpoint commit's message and its
+/// `worker_checkpoint_committed` audit line — one arm per [`goal_engine::
+/// GoalOutcome`] variant, so the tag always names the real reason the
+/// dispatch attempt's session ended. `GoalOutcome::Success` does not itself
+/// distinguish "the model called the final-output tool" from "the reply loop
+/// hit `agent.rs`'s hard `turns_taken > max_turns` cap" — both are an
+/// ordinary, non-error stream end from the engine's point of view — so
+/// `"worker_finished"` covers both; the turn-cap case specifically is what
+/// Lane R28a's turn-budget nudge (`after_turn::turn_budget_nudge_text`)
+/// targets from the other side, and this checkpoint is the backstop for
+/// whichever ones it did not catch in time.
+fn checkpoint_reason_for_outcome(outcome: &goal_engine::GoalOutcome) -> &'static str {
+    match outcome {
+        goal_engine::GoalOutcome::Success(_) => "worker_finished",
+        goal_engine::GoalOutcome::Failed(_) => "provider_error",
+        goal_engine::GoalOutcome::TimedOut { .. } => "wall_timeout",
+        goal_engine::GoalOutcome::Blocked { .. } => "credential_blocked",
+    }
+}
+
+/// DB-aware wrapper: resolve the goal's own worktree exactly the way
+/// [`goal_has_uncommitted_work`] does, delegate the git work to
+/// [`checkpoint_uncommitted_changes_in`], and — on an actual commit — record
+/// it as a `decision_audit` row (`worker_checkpoint_committed`,
+/// `reason=<reason> files=<n>`), the same [`decisions::append_audit_tx`]
+/// mechanism [`record_salvage_audit`] already uses for salvage decisions.
+///
+/// Not routed through [`receipts::record`]/[`receipts::record_count`]: none
+/// of `receipts.rs`'s fixed `FIELDS` (dag_enforcement / verification_
+/// integrity / safety_and_trust) name anything this event shape fits, and
+/// that module's own header says these are specific, audited counters, not a
+/// place to invent a new line for an unrelated event. `decision_audit` is
+/// the existing mechanism this event actually belongs to.
+///
+/// Best-effort and audit-only throughout: a resolution failure, a git
+/// failure, or an audit-write failure only warns and returns — this must
+/// never fail or block the completion tracker's own handling of `outcome`.
+/// A no-op, silently, when the card carries no resolvable worktree at all (a
+/// no-write goal, one never dispatched with a worktree, or a metadata lookup
+/// miss) — this runs unconditionally on every dispatch attempt's teardown,
+/// so most calls legitimately have nothing to do.
+async fn checkpoint_uncommitted_worker_changes(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    reason: &str,
+) {
+    let card = match cards::get_card(pool, card_id).await {
+        Ok(Some(card)) => card,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                "worker checkpoint: could not load card: {e}"
+            );
+            return;
+        }
+    };
+    let worktree = match resolve_goal_baseline_and_worktree(pool, &card.metadata_json).await {
+        Ok(Some((_baseline, worktree))) => worktree,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                "worker checkpoint: could not resolve the goal's worktree: {e}"
+            );
+            return;
+        }
+    };
+    let commit =
+        match checkpoint_uncommitted_changes_in(std::path::Path::new(&worktree), reason).await {
+            Ok(Some(commit)) => commit,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    goal_id = %card_id,
+                    "worker checkpoint: git commit failed: {e}"
+                );
+                return;
+            }
+        };
+    tracing::info!(
+        target: "permagentd::brain",
+        goal_id = %card_id,
+        reason,
+        sha = %commit.sha,
+        files = commit.files,
+        "worker checkpoint: committed {} uncommitted file(s) at session end ({reason}): {}",
+        commit.files,
+        commit.sha,
+    );
+    let evidence = format!("reason={reason} files={}", commit.files);
+    let synthetic_decision_id = format!("worker-checkpoint:{card_id}");
+    let mut tx = match pool.begin_with("BEGIN IMMEDIATE").await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                "worker checkpoint: could not open a transaction for the decision_audit row: {e}"
+            );
+            return;
+        }
+    };
+    if let Err(e) = decisions::append_audit_tx(
+        &mut tx,
+        &synthetic_decision_id,
+        Some(card_id),
+        decisions::ACTOR_SYSTEM,
+        1,
+        "worker_checkpoint_committed",
+        Some(&evidence),
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card_id,
+            "worker checkpoint: could not record the decision_audit row: {e}"
+        );
+        return;
+    }
+    if let Err(e) = tx.commit().await {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card_id,
+            "worker checkpoint: could not commit the decision_audit transaction: {e}"
+        );
+    }
+}
+
+/// Plain unit tests for [`checkpoint_uncommitted_changes_in`] — the pure git
+/// mechanics, deliberately isolated from the DB-aware
+/// [`checkpoint_uncommitted_worker_changes`] wrapper (which reuses
+/// `resolve_goal_baseline_and_worktree`/`cards::get_card`/`decisions::
+/// append_audit_tx`, each already covered by their own existing tests
+/// elsewhere in this file). No process-global/static state: every test gets
+/// its own `tempfile::tempdir()` git repo, initialised and torn down within
+/// the test itself.
+#[cfg(test)]
+mod r28a_checkpoint_tests {
+    use super::*;
+
+    fn r28a_git(root: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .expect("git must be on PATH for this test");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A fresh, one-commit repo with a local (not global) identity and
+    /// `commit.gpgsign=false` — same convention this file's other git
+    /// fixtures already use, so these tests never depend on the ambient
+    /// environment having a git identity or a working gpg-agent configured.
+    fn r28a_seeded_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        r28a_git(root, &["init", "-q", "-b", "main"]);
+        r28a_git(root, &["config", "user.email", "test@example.com"]);
+        r28a_git(root, &["config", "user.name", "Test"]);
+        r28a_git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        r28a_git(root, &["add", "-A"]);
+        r28a_git(root, &["commit", "-q", "-m", "seed"]);
+        dir
+    }
+
+    #[tokio::test]
+    async fn is_a_no_op_on_a_clean_tree() {
+        let dir = r28a_seeded_repo();
+        let root = dir.path();
+
+        let result = checkpoint_uncommitted_changes_in(root, "test_reason")
+            .await
+            .unwrap();
+        assert_eq!(result, None, "a clean tree must produce no commit");
+
+        let log_len = r28a_git(root, &["log", "--oneline"]).lines().count();
+        assert_eq!(log_len, 1, "no new commit should have been created");
+    }
+
+    #[tokio::test]
+    async fn commits_dirty_tracked_and_untracked_not_ignored_changes() {
+        let dir = r28a_seeded_repo();
+        let root = dir.path();
+
+        // Dirty the tracked file, add a new untracked one, and add an
+        // ignored one — only the first two should ever be staged.
+        std::fs::write(root.join("a.txt"), "one\nchanged\n").unwrap();
+        std::fs::write(root.join("b.txt"), "new\n").unwrap();
+        std::fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(root.join("ignored.txt"), "must never be staged\n").unwrap();
+
+        let commit = checkpoint_uncommitted_changes_in(root, "turn_cap")
+            .await
+            .unwrap()
+            .expect("a dirty tree must produce a checkpoint commit");
+        // a.txt (modified), b.txt (new), .gitignore (new) — never ignored.txt.
+        assert_eq!(commit.files, 3, "unexpected staged file count");
+
+        let status = r28a_git(root, &["status", "--porcelain"]);
+        assert!(
+            status.trim().is_empty(),
+            "worktree must be clean after the checkpoint: {status:?}"
+        );
+
+        let last_message = r28a_git(root, &["log", "-1", "--format=%s"]);
+        assert_eq!(
+            last_message,
+            "checkpoint: uncommitted worker changes at session end (turn_cap)"
+        );
+
+        let head = r28a_git(root, &["rev-parse", "HEAD"]);
+        assert_eq!(commit.sha, head, "returned sha must be the new commit");
+    }
+
+    #[tokio::test]
+    async fn commits_on_whatever_branch_is_checked_out_never_touches_main() {
+        let dir = r28a_seeded_repo();
+        let root = dir.path();
+        let main_head_before = r28a_git(root, &["rev-parse", "main"]);
+
+        r28a_git(root, &["checkout", "-q", "-b", "goal/test-branch"]);
+        std::fs::write(root.join("a.txt"), "one\nchanged on goal branch\n").unwrap();
+
+        checkpoint_uncommitted_changes_in(root, "provider_error")
+            .await
+            .unwrap()
+            .expect("a dirty tree must produce a checkpoint commit");
+
+        let branch = r28a_git(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        assert_eq!(branch, "goal/test-branch");
+        let main_head_after = r28a_git(root, &["rev-parse", "main"]);
+        assert_eq!(
+            main_head_before, main_head_after,
+            "checkpointing on the goal branch must never move main"
+        );
+    }
+
+    #[test]
+    fn checkpoint_reason_names_every_goal_outcome_variant() {
+        assert_eq!(
+            checkpoint_reason_for_outcome(&goal_engine::GoalOutcome::Success(None)),
+            "worker_finished"
+        );
+        assert_eq!(
+            checkpoint_reason_for_outcome(&goal_engine::GoalOutcome::Failed("x".into())),
+            "provider_error"
+        );
+        assert_eq!(
+            checkpoint_reason_for_outcome(&goal_engine::GoalOutcome::TimedOut { secs: 90 }),
+            "wall_timeout"
+        );
+        assert_eq!(
+            checkpoint_reason_for_outcome(&goal_engine::GoalOutcome::Blocked {
+                reason: "x".into()
+            }),
+            "credential_blocked"
+        );
+    }
 }
 
 /// Lane R20b: `git rev-list --count baseline..HEAD` in `worktree` — how many
