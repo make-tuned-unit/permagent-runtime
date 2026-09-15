@@ -169,7 +169,80 @@ pub fn assess_goal(title: &str, description: &str, metadata: &serde_json::Value)
 /// File extensions the on-device tier is expected to handle comfortably —
 /// small, well-trodden scripting languages, not the exhaustive set of
 /// "languages a local model can technically write."
-const LOCAL_LANGUAGE_EXTENSIONS: &[&str] = &["py", "js", "ts", "jsx", "tsx"];
+///
+/// R55b (HARNESS_LOOP_LOG.md "A52 analysis" point 2): narrowed to
+/// `{py, js, ts, sh}` — `jsx`/`tsx` dropped. A React component file is
+/// disproportionately likely to be one piece of a larger, cross-file UI
+/// change (the exact shape A52 found sweeping partial-local goals into a
+/// bigger decomposition), so it now falls through to the cheap-cloud
+/// `Mechanical` rung instead of `Local`.
+const LOCAL_LANGUAGE_EXTENSIONS: &[&str] = &["py", "js", "ts", "sh"];
+
+/// R55b: the file-count ceiling for the `Local` rung — above this, the
+/// default rule never routes local regardless of language or vocabulary.
+const LOCAL_MAX_FILES: usize = 2;
+
+/// R55b (`## A52 analysis` point 2, `harness-refactor-shipping-quote-
+/// signature`'s 3-of-6 Local split): free-text markers meaning a goal is
+/// part of a larger cross-file change even when its OWN `paths` list is
+/// short — a single call-site edit that names, in its own prose, that it
+/// is one caller among many of a changed signature. Matched against the
+/// goal's title, description AND acceptance criteria; per this module's
+/// existing DOWN-only asymmetry (see the module doc comment), these can
+/// only DENY the `Local` shortcut — never promote a goal to `Orchestrate`
+/// on their own; an untagged goal that merely happens to mention one of
+/// these words still lands on `Mechanical`, not `Orchestrate`.
+const LOCAL_INELIGIBLE_TEXT_SIGNALS: &[&str] = &[
+    // Build system.
+    "makefile",
+    "cmake",
+    "webpack",
+    "package.json",
+    "cargo.toml",
+    "tsconfig",
+    "pyproject.toml",
+    "setup.py",
+    "build system",
+    "build script",
+    // Refactor/rename across files.
+    "call site",
+    "call sites",
+    "every caller",
+    "all callers",
+    "each caller",
+    "update the callers",
+    "across the codebase",
+    "signature change",
+    "signature update",
+    "rename",
+    "refactor",
+];
+
+/// R55b: whether this goal's own free text (title, description, and
+/// acceptance criteria — never `tags`, already checked separately as the
+/// promotable vocabulary) names a build system or a cross-file refactor/
+/// rename, denying it the `Local` shortcut in [`default_worker_tier_for_
+/// goal`].
+fn goal_text_names_build_system_or_cross_file_change(
+    title: &str,
+    description: &str,
+    metadata: &serde_json::Value,
+) -> bool {
+    let criteria = metadata
+        .get("acceptance_criteria")
+        .and_then(serde_json::Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    let haystack = format!("{title} {description} {criteria}").to_lowercase();
+    LOCAL_INELIGIBLE_TEXT_SIGNALS
+        .iter()
+        .any(|s| haystack.contains(s))
+}
 
 /// R48d (HARNESS_LOOP_LOG.md "A45 design", Addendum (b)): the default
 /// `WorkflowRole` a dispatch routes to when `goal_advance{action: dispatch}`
@@ -179,22 +252,24 @@ const LOCAL_LANGUAGE_EXTENSIONS: &[&str] = &["py", "js", "ts", "jsx", "tsx"];
 /// replacing its signals. Reuses [`assess_goal`]'s breadth ([`MANY_FILES`])
 /// and vocabulary ([`HARD_SIGNALS`], tags-only — the same no-self-promotion
 /// rule: free text can only route DOWN, never up) checks verbatim, adding
-/// one new structural signal: file extension, read from `metadata.paths`
-/// when present. Never asks a model, for the same reason `assess_goal`
-/// never does (see this module's doc comment).
+/// structural signals: file extension and file count, read from
+/// `metadata.paths` when present, plus (R55b) a free-text DENY-only check
+/// ([`goal_text_names_build_system_or_cross_file_change`]) that keeps a
+/// goal off the `Local` rung even when its own `paths` list is short.
+/// Never asks a model, for the same reason `assess_goal` never does (see
+/// this module's doc comment).
 ///
 /// Precedence: breadth (many files) or tagged hard-signal vocabulary →
-/// `Orchestrate` (the multi-file/refactor/build-system rung); a small,
-/// single-file goal in a language the on-device tier handles well → `Local`;
-/// otherwise `Mechanical` — the same cheap-cloud-shaped rung an unsignalled
-/// goal starts on in [`assess_goal`]. Returns the resolved role together
-/// with a static reason string for the dispatch audit trail.
+/// `Orchestrate` (the multi-file/refactor/build-system rung); a small
+/// (`paths.len() <= LOCAL_MAX_FILES`) goal in a language the on-device
+/// tier handles well, whose own text names no build system or cross-file
+/// refactor → `Local`; otherwise `Mechanical` — the same cheap-cloud-shaped
+/// rung an unsignalled goal starts on in [`assess_goal`]. Returns the
+/// resolved role together with a static reason string for the dispatch
+/// audit trail.
 pub fn default_worker_tier_for_goal(
-    // Reserved: mirrors `assess_goal`'s free-text parameters for signature
-    // parity, but this rule reads no prose today — only structure (`paths`)
-    // and explicit `tags`, never title/description.
-    _title: &str,
-    _description: &str,
+    title: &str,
+    description: &str,
     metadata: &serde_json::Value,
 ) -> (WorkflowRole, &'static str) {
     let paths: Vec<&str> = metadata
@@ -228,8 +303,8 @@ pub fn default_worker_tier_for_goal(
         return (WorkflowRole::Orchestrate, "tagged as reasoning-heavy work");
     }
 
-    // Language: a small, single-file goal in a language the local tier
-    // handles well is the "give the free rung a fair shot" case.
+    // Language: a small goal in a language the local tier handles well is
+    // the "give the free rung a fair shot" case.
     let is_local_language = !paths.is_empty()
         && paths.iter().all(|p| {
             p.rsplit('.').next().is_some_and(|ext| {
@@ -237,10 +312,18 @@ pub fn default_worker_tier_for_goal(
                 LOCAL_LANGUAGE_EXTENSIONS.contains(&ext.as_str())
             })
         });
-    if paths.len() <= 1 && is_local_language {
+    // R55b: even a small, single/two-file, right-language goal is denied
+    // the Local shortcut when its own text names a build system or a
+    // cross-file refactor/rename — the A52 shape where a single call-site
+    // edit's own `paths` list stayed short while its prose named it as one
+    // caller among several being updated for a changed signature.
+    if paths.len() <= LOCAL_MAX_FILES
+        && is_local_language
+        && !goal_text_names_build_system_or_cross_file_change(title, description, metadata)
+    {
         return (
             WorkflowRole::Local,
-            "small, single-file goal in a language the local tier handles well",
+            "small goal, right language, no build-system or cross-file-refactor signal",
         );
     }
 
@@ -391,7 +474,7 @@ mod tests {
 
     #[test]
     fn a_one_file_js_or_ts_goal_also_defaults_to_local() {
-        for ext in ["app.js", "app.ts", "app.tsx", "app.jsx"] {
+        for ext in ["app.js", "app.ts"] {
             let (role, _) = default_worker_tier_for_goal(
                 "Small fix",
                 "",
@@ -399,6 +482,106 @@ mod tests {
             );
             assert_eq!(role, WorkflowRole::Local, "{ext}");
         }
+    }
+
+    #[test]
+    fn a_one_file_shell_script_goal_defaults_to_local() {
+        let (role, _) = default_worker_tier_for_goal(
+            "Fix the deploy script",
+            "",
+            &meta(serde_json::json!({ "paths": ["deploy.sh"] })),
+        );
+        assert_eq!(role, WorkflowRole::Local);
+    }
+
+    /// R55b: the local language allowlist narrowed to `{py, js, ts, sh}` —
+    /// `jsx`/`tsx` dropped, so a React component file now falls through to
+    /// the cheap-cloud `Mechanical` rung instead of `Local`.
+    #[test]
+    fn a_one_file_tsx_or_jsx_goal_no_longer_defaults_to_local() {
+        for ext in ["app.tsx", "app.jsx"] {
+            let (role, _) = default_worker_tier_for_goal(
+                "Small fix",
+                "",
+                &meta(serde_json::json!({ "paths": [ext] })),
+            );
+            assert_eq!(role, WorkflowRole::Mechanical, "{ext}");
+        }
+    }
+
+    #[test]
+    fn a_two_file_python_goal_with_no_build_or_refactor_signal_still_defaults_to_local() {
+        let (role, _) = default_worker_tier_for_goal(
+            "Fix the discount rounding bug",
+            "Correct the off-by-one in the discount calculation and its test.",
+            &meta(serde_json::json!({ "paths": ["discount.py", "test_discount.py"] })),
+        );
+        assert_eq!(role, WorkflowRole::Local);
+    }
+
+    /// R55b: file count above `LOCAL_MAX_FILES` alone (no vocabulary, no
+    /// tag) is enough to deny the Local shortcut — same "structure beats
+    /// wording" principle `assess_goal`'s own breadth check already uses.
+    #[test]
+    fn a_three_file_goal_with_no_other_signal_no_longer_defaults_to_local() {
+        let (role, _) = default_worker_tier_for_goal(
+            "Fix three related bugs",
+            "",
+            &meta(serde_json::json!({ "paths": ["a.py", "b.py", "c.py"] })),
+        );
+        assert_eq!(role, WorkflowRole::Mechanical);
+    }
+
+    /// R55b (`## A52 analysis` point 2): the exact `harness-refactor-
+    /// shipping-quote-signature` shape — one call-site edit's own `paths`
+    /// list stays short (a single file), but its prose names it as one
+    /// caller among several being updated for a changed signature. Must
+    /// not default to Local even though the file-count/language checks
+    /// alone would allow it.
+    #[test]
+    fn a_single_file_goal_naming_a_cross_file_refactor_in_prose_is_excluded_from_local() {
+        let (role, reason) = default_worker_tier_for_goal(
+            "Update the call site in manualQuote.ts",
+            "Part of a signature update — every caller of computeQuote must pass the discount \
+             rate.",
+            &meta(serde_json::json!({ "paths": ["manualQuote.ts"] })),
+        );
+        assert_ne!(role, WorkflowRole::Local, "{reason}");
+    }
+
+    #[test]
+    fn a_goal_mentioning_a_build_system_in_prose_is_excluded_from_local() {
+        let (role, _) = default_worker_tier_for_goal(
+            "Fix the requirements pin",
+            "Update pyproject.toml's version constraint for requests.",
+            &meta(serde_json::json!({ "paths": ["deps.py"] })),
+        );
+        assert_ne!(role, WorkflowRole::Local);
+    }
+
+    #[test]
+    fn a_goal_whose_acceptance_criteria_name_a_cross_file_refactor_is_excluded_from_local() {
+        let (role, _) = default_worker_tier_for_goal(
+            "Update the discount call site",
+            "",
+            &meta(serde_json::json!({
+                "paths": ["a.py"],
+                "acceptance_criteria": ["Every caller of compute_discount passes the new rate"]
+            })),
+        );
+        assert_ne!(role, WorkflowRole::Local);
+    }
+
+    /// R55b: the file-count ceiling AND the free-text refactor signal both
+    /// deny Local here — either alone already would.
+    #[test]
+    fn a_three_file_ts_refactor_defaults_to_cloud_not_local() {
+        let (role, reason) = default_worker_tier_for_goal(
+            "Refactor the shipping quote signature",
+            "Update every caller of computeQuote to pass the new discount parameter.",
+            &meta(serde_json::json!({ "paths": ["a.ts", "b.ts", "c.ts"] })),
+        );
+        assert_ne!(role, WorkflowRole::Local, "{reason}");
     }
 
     #[test]
