@@ -40,6 +40,7 @@ pub mod authorized_attempts;
 pub mod best_of_n;
 pub mod budget;
 pub mod cache;
+pub mod call_site_completeness;
 pub mod capability_directory;
 pub mod cheap;
 pub mod delegate;
@@ -140,13 +141,19 @@ pub use reservation::{
     DEFAULT_RESERVED_ATTEMPTS, RESERVE_ATTEMPTS_ENV,
 };
 pub use review_gate::{
-    build_review_prompt, classify_path, decide_review_route, gate_decision, parse_review,
+    build_review_prompt, build_review_prompt_with_call_sites, classify_path,
+    decide_review_route, gate_decision, gate_decision_with_call_sites, parse_review,
     resolve_actual_review_dispatch, review_required, reviewer_dispatch, reviewer_routing,
     FileClass, GateDecision, ReviewFinding, ReviewLens, ReviewOutcome, ReviewRoute, ReviewTrigger,
     ReviewerDispatch, ReviewerRouting, Verdict as ReviewVerdict, REVIEWER_DIVERSITY_WARNING,
     REVIEWER_EXTENSIONS, REVIEW_ESCALATE_AT, REVIEW_SYSTEM_PROMPT,
 };
 pub use review_gate::{build_rubric_prompt, REVIEW_RUBRIC_SYSTEM_PROMPT};
+pub use call_site_completeness::{
+    detect_signature_changes, enumerate_call_sites, missing_call_sites, parse_call_site_line,
+    render_call_site_section, CallSite, CallSiteEnumeration, CallSiteStatus, CallSiteVerdict,
+    SignatureChange,
+};
 pub use reviewer_pick::{
     family_of, model_is_retired, reviewer_spend_gate, select_reviewer, ReviewerPick,
     ReviewerSelection, ReviewerSource, SpendDecision, NO_REVIEWER_AVAILABLE,
