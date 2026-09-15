@@ -19787,7 +19787,16 @@ mod tests {
     /// pool — never the shared `GLOBAL_SINK`/`HEADLESS_DISPATCH_POLICY_CONFIG`
     /// statics `handle_escalate` itself reads, so this test cannot collide
     /// with any other test in the `orchestrator::` suite.
+    // Lane T2: `record_escalation` unconditionally bumps the process-global
+    // `dag_enforcement.escalated` receipt counter (see that function's own
+    // doc comment) whenever `receipts::is_active()` — this test doesn't
+    // read the registry itself, but running concurrently with a test that
+    // DOES (e.g. `headless_record_escalation_answers_information_and_
+    // counts_receipt`) would silently add an extra +1 to its count. Shares
+    // that test's `receipts_global_registry` key so the two can never
+    // interleave.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn headless_escalate_mints_an_open_decision_row_and_returns_a_visible_refusal() {
         let pool = test_pool().await;
         let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
@@ -19823,7 +19832,11 @@ mod tests {
     /// Outside headless mode, today's Decision Inbox behaviour is unchanged
     /// — the row is minted (root-cause fix) and left open for a human,
     /// exactly as before this lane.
+    // Lane T2: same reasoning as `headless_escalate_mints_an_open_decision_
+    // row_and_returns_a_visible_refusal` above — calls `record_escalation`,
+    // which bumps the shared receipts registry when active.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn daemon_style_escalate_row_exists_and_stays_unanswered() {
         let pool = test_pool().await;
         let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
@@ -20075,7 +20088,12 @@ mod tests {
 
     /// End-to-end through `record_escalation`: a credential escalation is
     /// never auto-answered and stays parked, same as before this lane.
+    // Lane T2: calls `record_escalation`, which bumps the shared receipts
+    // registry when active — see `headless_escalate_mints_an_open_decision_
+    // row_and_returns_a_visible_refusal` above for why this must share the
+    // `receipts_global_registry` key.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn headless_record_escalation_never_auto_answers_credential() {
         let pool = test_pool().await;
         let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
@@ -20166,6 +20184,11 @@ mod tests {
     /// A `kind` already in the supported set is untouched: no `requested_kind`
     /// note, and the pre-existing behavior for known kinds is unchanged.
     #[tokio::test]
+    // Lane T2: calls `record_escalation`, which bumps the shared receipts
+    // registry when active — see `headless_escalate_mints_an_open_decision_
+    // row_and_returns_a_visible_refusal` above for why this must share the
+    // `receipts_global_registry` key.
+    #[serial_test::serial(receipts_global_registry)]
     async fn known_kind_escalate_carries_no_requested_kind_note() {
         let pool = test_pool().await;
         let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
@@ -20191,7 +20214,12 @@ mod tests {
     /// a hard error that ends the turn. Unaffected by the kind-coercion fix
     /// above: `specific_ask`/`why_blocked` are the reason for rejection
     /// here, not `kind`.
+    // Lane T2: calls `record_escalation`, which bumps the shared receipts
+    // registry when active — see `headless_escalate_mints_an_open_decision_
+    // row_and_returns_a_visible_refusal` above for why this must share the
+    // `receipts_global_registry` key.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn missing_question_text_returns_structured_notice_not_a_turn_ending_error() {
         let pool = test_pool().await;
         let sink = crate::decision_inbox::sink::SqlDecisionSink::new(pool.clone());
@@ -20241,7 +20269,12 @@ mod tests {
         assert_eq!(parse_headless_escalate_cap(Some("3")), 3);
     }
 
+    // Lane T2: calls `record_escalation`, which bumps the shared receipts
+    // registry when active — see `headless_escalate_mints_an_open_decision_
+    // row_and_returns_a_visible_refusal` above for why this must share the
+    // `receipts_global_registry` key.
     #[tokio::test]
+    #[serial_test::serial(receipts_global_registry)]
     async fn headless_escalate_record_resumes_goal() {
         let pool = test_pool().await;
         let goal = create_roadmap_goal(&pool, "triage", "Retry goal", "y13b", &[]).await;
