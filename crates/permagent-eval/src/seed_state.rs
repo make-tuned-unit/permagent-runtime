@@ -738,7 +738,7 @@ mod tests {
         let canonical = workdir.path().to_path_buf();
         let err = resolve_seed_root_path(Some("relative/path"), &canonical).unwrap_err();
         assert!(
-            err.to_string().contains("not an absolute path"),
+            err.to_string().contains("nor an absolute path"),
             "unexpected error: {err}"
         );
     }
