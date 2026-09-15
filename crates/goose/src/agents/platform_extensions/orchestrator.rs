@@ -2569,7 +2569,17 @@ impl OrchestratorClient {
     /// precedence and rationale. `None` means the caller falls through to the
     /// session coordinator — always with a visible `tracing::info` reason,
     /// never a silent `warn`.
-    async fn resolve_decomposition_provider(&self) -> Option<Arc<dyn Provider>> {
+    ///
+    /// `session_id`: Lane R36a — when the resolved planner route's provider
+    /// already had its circuit opened THIS session (a prior billing/auth/
+    /// outage-class failure, `handle_decompose_roadmap`'s own escalation
+    /// arm below), skip straight to the session coordinator instead of
+    /// re-discovering the same dead provider. `None` disables the check
+    /// (no session to scope it to — e.g. a unit test with no live session).
+    async fn resolve_decomposition_provider(
+        &self,
+        session_id: Option<&str>,
+    ) -> Option<Arc<dyn Provider>> {
         let (route, reason) = self.resolve_planner_route().await;
 
         let Some(rm) = route else {
@@ -2580,6 +2590,20 @@ impl OrchestratorClient {
             );
             return None;
         };
+
+        if let Some(sid) = session_id {
+            if let Some(class) =
+                crate::cost_router::provider_circuit::reason_if_open(sid, &rm.provider)
+            {
+                tracing::info!(
+                    target: "permagentd::orchestrator",
+                    planner = %format!("{}/{}", rm.provider, rm.model),
+                    reason = %class,
+                    "roadmap decomposition: planner provider circuit open — using the session coordinator",
+                );
+                return None;
+            }
+        }
 
         tracing::info!(
             target: "permagentd::orchestrator",
@@ -7559,10 +7583,21 @@ impl OrchestratorClient {
         // Planner routing (#249, re-ruled 2026-09-09 — see the module comment
         // above): try the resolved planner first, escalate to the session's
         // default provider only if that pass fails.
-        let goals = match self.resolve_decomposition_provider().await {
+        //
+        // R36a: `actual_planner` tracks whichever provider PHYSICALLY
+        // produced `goals` — the resolved planner on a clean pass, or the
+        // escalated session default whenever the planner call failed —
+        // never the merely-intended route. The `cost_routing planner=`
+        // receipt below reads this, not `resolve_planner_route()` again, so
+        // it can never claim a provider ran when the escalation arm is the
+        // one that actually answered (A27 Miss 3 / A32's credits section).
+        let (goals, actual_planner) = match self
+            .resolve_decomposition_provider(Some(session_id))
+            .await
+        {
             Some(planner) => {
                 match run_decomposition(&planner, &manager, &session, system, &user_message).await {
-                    Ok(g) => DecompositionOutcome::Goals(g),
+                    Ok(g) => (DecompositionOutcome::Goals(g), planner),
                     Err(planner_err) => {
                         let reason = match &planner_err {
                             DecompositionError::Provider(e) => e.clone(),
@@ -7575,19 +7610,22 @@ impl OrchestratorClient {
                             "Planner decomposition failed ({}); escalating to default provider",
                             reason
                         );
+                        open_provider_circuit(Some(session_id), planner.get_name(), &reason);
                         let default = self.get_provider().await?;
-                        finalize_decomposition(
+                        let outcome = finalize_decomposition(
                             run_decomposition(&default, &manager, &session, system, &user_message)
                                 .await,
-                        )?
+                        )?;
+                        (outcome, default)
                     }
                 }
             }
             None => {
                 let default = self.get_provider().await?;
-                finalize_decomposition(
+                let outcome = finalize_decomposition(
                     run_decomposition(&default, &manager, &session, system, &user_message).await,
-                )?
+                )?;
+                (outcome, default)
             }
         };
 
@@ -7621,13 +7659,19 @@ impl OrchestratorClient {
             .as_ref()
             .map(|rm| format!("{}/{}", rm.provider, rm.model))
             .unwrap_or_else(|| "session".to_string());
-        if let Some(route) = planner_route.as_ref() {
-            crate::cost_router::routing_receipt::set_planner(&route.provider, &route.model);
-        } else if let Some(session) = self.context.session.as_ref() {
-            if let (Some(provider), Some(model)) = (&session.provider_name, &session.model_config) {
-                crate::cost_router::routing_receipt::set_planner(provider, &model.model_name);
-            }
-        }
+        // R36a (A32 analysis credits section): `set_planner` records the
+        // PHYSICAL provider that produced this roadmap's decomposition
+        // (`actual_planner`, tracked above through the escalation arm too),
+        // never the merely-intended route — `planner_label` above stays the
+        // intended route for the human-facing "roadmap created" note/
+        // Decision Inbox payload, which is a different, correct concern
+        // (explaining what was ASKED for and why), but the receipt other
+        // tooling reads to know who actually answered must not repeat that
+        // same intent when the intended provider's call failed.
+        crate::cost_router::routing_receipt::set_planner(
+            actual_planner.get_name(),
+            &actual_planner.get_model_config().model_name,
+        );
         let worker_map = crate::cost_router::derived_role_map().await;
         let workers_label = crate::cost_router::WorkflowRole::all()
             .iter()
@@ -16932,52 +16976,44 @@ fn count_diff_changed_lines(diff: &str) -> usize {
         .count()
 }
 
-/// Lane R28b (A27 Miss 3): markers for "this specific provider cannot be
-/// used right now" — billing/credits, an auth rejection, rate limiting, a
-/// provider-side server error, an unreachable network, or a call that timed
-/// out entirely. Reuses [`crate::providers::errors::is_billing_message`]
-/// (the exact function that already recognizes Anthropic's "credit balance
-/// is too low" 400, the failure A27 Miss 3 traced) plus the same
-/// auth/5xx/network/rate-limit set `ProviderError::is_permanent`
-/// (`crates/goose/src/providers/errors.rs`) documents as permanent-or-
-/// worth-trying-elsewhere. Deliberately narrow: a malformed request or an
-/// unknown model id would fail identically against a DIFFERENT provider
-/// too, so those are NOT included here — retrying them would just spend a
-/// second call proving nothing.
-const REVIEWER_PROVIDER_UNAVAILABLE_MARKERS: &[&str] = &[
-    "unauthorized",
-    "invalid api key",
-    "invalid x-api-key",
-    "authentication error",
-    "rate limit",
-    "rate-limit",
-    "too many requests",
-    "server error",
-    "internal server error",
-    "bad gateway",
-    "service unavailable",
-    "gateway timeout",
-    "could not be reached",
-    "connection refused",
-    "connection reset",
-    "network error",
-    "timed out",
-    "did not respond within",
-];
-
 /// True when `detail` (a failed reviewer-provider call's error text)
 /// describes the PROVIDER being unavailable right now, rather than a
-/// failure that would recur identically against any provider. See
-/// [`REVIEWER_PROVIDER_UNAVAILABLE_MARKERS`] for what is and is not
-/// included and why.
+/// failure that would recur identically against any provider. Lane R28b
+/// (A27 Miss 3) originally kept its own marker set here; Lane R36a promoted
+/// it to [`crate::providers::errors::classify_unavailable`] so the session-
+/// scoped provider circuit breaker's classification (which decides whether
+/// to open a circuit, not just whether to retry) can never disagree with
+/// what this reviewer path treats as retry-worthy — see that function's doc
+/// comment for what is and is not included and why.
 fn reviewer_provider_is_unavailable(detail: &str) -> bool {
-    if crate::providers::errors::is_billing_message(detail) {
-        return true;
+    crate::providers::errors::classify_unavailable(detail).is_some()
+}
+
+/// Lane R36a: open this session's circuit breaker for `provider` when
+/// `detail` classifies as billing/auth/outage-class
+/// ([`crate::providers::errors::classify_unavailable`]) — never for a
+/// request-shaped failure that would recur identically against any
+/// provider. Every later planner/reviewer/fast-path call in this session
+/// then skips straight to the tier fallback instead of re-discovering the
+/// same dead account. Logs the `provider_circuit_open` line exactly once
+/// per `(session_id, provider)` pair — a no-op without a session id.
+fn open_provider_circuit(session_id: Option<&str>, provider: &str, detail: &str) {
+    let Some(sid) = session_id else {
+        return;
+    };
+    let Some(class) = crate::providers::errors::classify_unavailable(detail) else {
+        return;
+    };
+    if crate::cost_router::provider_circuit::open(sid, provider, class) {
+        tracing::info!(
+            target: "permagentd::orchestrator",
+            provider = %provider,
+            reason = %class,
+            "provider_circuit_open provider={} reason={}",
+            provider,
+            class,
+        );
     }
-    let lower = detail.to_ascii_lowercase();
-    REVIEWER_PROVIDER_UNAVAILABLE_MARKERS
-        .iter()
-        .any(|marker| lower.contains(marker))
 }
 
 /// A single reviewer-provider call attempt's failure, classified for the
@@ -17060,6 +17096,42 @@ async fn call_reviewer_provider(
             REVIEWER_GATE_TIMEOUT.as_secs()
         ))),
     }
+}
+
+/// Lane R36a: [`call_reviewer_provider`], but consults this session's
+/// circuit breaker FIRST — when `(session_id, provider_id)` is already
+/// open (a prior billing/auth/outage-class failure elsewhere this same
+/// session), skip the doomed call entirely and report the SAME
+/// `ReviewerCallFailure::Unavailable` the real call would have produced, so
+/// every existing caller's fallback logic (the one same-session-tier-model
+/// retry, `resolve_session_tier_fallback`) runs unchanged.
+async fn call_reviewer_provider_checked(
+    session_id: Option<&str>,
+    provider_id: &str,
+    model_id: &str,
+    session: Session,
+    task_spec: &str,
+    diff_for_prompt: &str,
+    verify_note: &str,
+) -> Result<crate::conversation::message::Message, ReviewerCallFailure> {
+    if let Some(sid) = session_id {
+        if let Some(class) = crate::cost_router::provider_circuit::reason_if_open(sid, provider_id)
+        {
+            return Err(ReviewerCallFailure::Unavailable(format!(
+                "the reviewer provider {provider_id}/{model_id} is circuit-open this session \
+                 ({class}); skipping straight to the session's tier fallback"
+            )));
+        }
+    }
+    call_reviewer_provider(
+        provider_id,
+        model_id,
+        session,
+        task_spec,
+        diff_for_prompt,
+        verify_note,
+    )
+    .await
 }
 
 /// Lane R28b (A27 Miss 3): resolve the ONE fallback reviewer candidate for a
@@ -17247,7 +17319,8 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     // calling session's own tier provider/model before parking unlanded.
     // Any other failure (a bad model id, a malformed request) would recur
     // identically on a different provider too, so it is not retried.
-    let (response, reviewer_provider, reviewer_model) = match call_reviewer_provider(
+    let (response, reviewer_provider, reviewer_model) = match call_reviewer_provider_checked(
+        calling_session_id,
         &pick.provider,
         &pick.model,
         session.clone(),
@@ -17261,43 +17334,53 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         Err(ReviewerCallFailure::Other(reason)) => {
             return ReviewerGateOutcome::Unreachable { reason };
         }
-        Err(ReviewerCallFailure::Unavailable(first_reason)) => match resolve_session_tier_fallback(
-            calling_session_id,
-            &worker_session_id,
-            &pick.provider,
-            &pick.model,
-        )
-        .await
-        {
-            Some((fb_provider, fb_model)) => {
-                match call_reviewer_provider(
-                    &fb_provider,
-                    &fb_model,
-                    session.clone(),
-                    &task_spec,
-                    &diff_for_prompt,
-                    verify_note,
-                )
-                .await
-                {
-                    Ok(response) => (response, fb_provider, fb_model),
-                    Err(ReviewerCallFailure::Unavailable(second_reason))
-                    | Err(ReviewerCallFailure::Other(second_reason)) => {
-                        return ReviewerGateOutcome::Unreachable {
-                            reason: format!(
-                                "{first_reason}; retried on the session's own tier model \
+        Err(ReviewerCallFailure::Unavailable(first_reason)) => {
+            // R36a: this failure (or an already-open circuit
+            // `call_reviewer_provider_checked` just reported without
+            // calling anything) is billing/auth/outage-class by
+            // construction — record it so a LATER planner/reviewer call in
+            // this same session skips `pick.provider` too.
+            open_provider_circuit(calling_session_id, &pick.provider, &first_reason);
+            match resolve_session_tier_fallback(
+                calling_session_id,
+                &worker_session_id,
+                &pick.provider,
+                &pick.model,
+            )
+            .await
+            {
+                Some((fb_provider, fb_model)) => {
+                    match call_reviewer_provider_checked(
+                        calling_session_id,
+                        &fb_provider,
+                        &fb_model,
+                        session.clone(),
+                        &task_spec,
+                        &diff_for_prompt,
+                        verify_note,
+                    )
+                    .await
+                    {
+                        Ok(response) => (response, fb_provider, fb_model),
+                        Err(ReviewerCallFailure::Unavailable(second_reason))
+                        | Err(ReviewerCallFailure::Other(second_reason)) => {
+                            open_provider_circuit(calling_session_id, &fb_provider, &second_reason);
+                            return ReviewerGateOutcome::Unreachable {
+                                reason: format!(
+                                    "{first_reason}; retried on the session's own tier model \
                                      {fb_provider}/{fb_model}, which also failed: {second_reason}"
-                            ),
-                        };
+                                ),
+                            };
+                        }
                     }
                 }
+                None => {
+                    return ReviewerGateOutcome::Unreachable {
+                        reason: first_reason,
+                    };
+                }
             }
-            None => {
-                return ReviewerGateOutcome::Unreachable {
-                    reason: first_reason,
-                };
-            }
-        },
+        }
     };
 
     let outcome = crate::cost_router::parse_review(&response.as_concat_text());
@@ -24890,6 +24973,83 @@ mod tests {
         )
         .await
         .is_none());
+    }
+
+    /// Lane R36a: `open_provider_circuit` is the ONE place that turns a
+    /// failed provider call into a breaker entry — it must open on a
+    /// billing-class detail, record nothing for a request-shaped detail,
+    /// and no-op entirely without a session id (nothing to scope to).
+    #[test]
+    fn open_provider_circuit_only_opens_on_a_classifiable_failure_with_a_session() {
+        let session = format!("r36a-open-{}", uuid::Uuid::new_v4());
+
+        // No session id ⇒ never opens, even for an obviously billing detail.
+        open_provider_circuit(None, "anthropic", "credit balance is too low");
+        assert!(!crate::cost_router::provider_circuit::is_open(
+            &session,
+            "anthropic"
+        ));
+
+        // A request-shaped failure (would recur against ANY provider) must
+        // never open a circuit.
+        open_provider_circuit(
+            Some(&session),
+            "anthropic",
+            "400 invalid_request_error: bad field",
+        );
+        assert!(!crate::cost_router::provider_circuit::is_open(
+            &session,
+            "anthropic"
+        ));
+
+        // A genuine billing-class failure opens it, recorded with the right
+        // reason class.
+        open_provider_circuit(Some(&session), "anthropic", "credit balance is too low");
+        assert_eq!(
+            crate::cost_router::provider_circuit::reason_if_open(&session, "anthropic").as_deref(),
+            Some("billing")
+        );
+    }
+
+    /// Lane R36a: `resolve_decomposition_provider` must skip a planner
+    /// route whose provider already has an open circuit in this session —
+    /// returning `None` (fall through to the session coordinator) without
+    /// ever calling `providers::create_with_named_model` for it. Exercised
+    /// indirectly: with no `PERMAGENT_ROLE_ORCHESTRATE_PROVIDER`/pack pin
+    /// configured in the test env, `resolve_planner_route` itself may
+    /// already return `None` (no eligible planner) — this test only pins
+    /// down the PART of the contract that is independent of directory
+    /// state: opening this session's breaker for a provider must never
+    /// make `resolve_decomposition_provider` MORE likely to return
+    /// `Some` than it would unbreakered, i.e. the breaker check is a
+    /// pure narrowing, never a loosening, of what gets returned.
+    #[tokio::test]
+    async fn resolve_decomposition_provider_never_returns_a_circuit_open_provider() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm,
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+        let session = format!("r36a-decomp-{}", uuid::Uuid::new_v4());
+
+        let (route, _reason) = client.resolve_planner_route().await;
+        if let Some(rm) = route {
+            crate::cost_router::provider_circuit::open(&session, &rm.provider, "billing");
+            let resolved = client.resolve_decomposition_provider(Some(&session)).await;
+            assert!(
+                resolved.is_none(),
+                "a planner route whose provider's circuit is open this session must never \
+                 be resolved to a live provider"
+            );
+        }
+        // No eligible planner route in this test env: the breaker has
+        // nothing to narrow, and the function already returns `None` — the
+        // property above is vacuously satisfied.
     }
 
     /// Lane R22c-e (G26 MED-2): a diff over the reviewer's prompt window
