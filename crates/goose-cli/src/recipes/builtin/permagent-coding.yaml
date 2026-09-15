@@ -45,7 +45,9 @@ instructions: |
      launch is approval to call `create_roadmap` immediately with the exact
      proposed nodes; in interactive mode, wait for the one plan approval.
   3. The top-level harness is a coordinator. Never call shell, write, edit,
-     apply_patch, or another execution tool here. The dispatched DAG worker
+     apply_patch, delegate, or start_agent here for the task itself — once the
+     roadmap exists, the only way work gets done is `goal_advance` with
+     action `dispatch` (card_id may be omitted). The dispatched DAG worker
      reads, edits, tests, and reports evidence.
   4. Finish only after the roadmap's required checks and review evidence pass.
      Do not work around a denied direct tool call or tell the user to edit.
