@@ -1488,6 +1488,27 @@ pub(crate) fn ground_roadmap_goals(
         }
         goal.acceptance_criteria = grounded_criteria;
 
+        // R43b-c (A49): a criterion can read as PRESERVATION ("still works
+        // correctly") while the task text itself says that exact behavior is
+        // currently broken -- this runs per-criterion, BEFORE the
+        // all-existence-only gate below, since the cli-argparse m5 shape had
+        // six genuinely behavioural exit-code criteria alongside the one
+        // contradicted preservation claim, so the all-existence-only gate
+        // alone would never have looked at it.
+        let preservation_reclassified = reclassify_contradicted_preservation_criteria(
+            &mut goal.acceptance_criteria,
+            &goal.description,
+        );
+        if preservation_reclassified > 0 {
+            receipts.push(format!(
+                "goal '{}': {} acceptance criterion/criteria read as preserving a behavior the \
+                 task text itself says is currently broken — rewritten into must-fix \
+                 behavioural criteria quoting the task's own account \
+                 (ac_grounding preservation_reclassified={})",
+                goal.title, preservation_reclassified, preservation_reclassified
+            ));
+        }
+
         // R43b (A38 miss 1): grounding-against-this-repo above says nothing
         // about whether a criterion is BEHAVIOURAL -- run that check too, so
         // a goal whose every criterion merely claims code exists gets one
@@ -2032,6 +2053,136 @@ fn all_acceptance_criteria_existence_only(criteria: &[String]) -> bool {
             .all(|c| classify_acceptance_criterion(c) == AcKind::ExistenceOnly)
 }
 
+// R43b-c (A49 analysis, cli-argparse m5): a criterion phrased as
+// PRESERVATION ("Valid --level filtering (case-insensitive) still works
+// correctly on sample_logs/app.log") can classify as `Behavioural` on its
+// own merits (it names a flag, and R43b/R43b-b's classifier has no concept
+// of "preserved vs. broken") -- and because the *other* criteria on the same
+// goal were genuinely behavioural (real exit-code claims), `all_acceptance_
+// criteria_existence_only` never even ran on this one criterion, so it never
+// got a second look either. The task text itself, though, already says the
+// SAME behavior is currently broken ("--level only matches log lines with
+// the exact same case") -- so the criterion's own "still works" framing
+// directly contradicts the brief it is supposed to be checking. This runs
+// PER CRITERION, independent of whatever the goal's other criteria look
+// like, which is exactly what the all-existence-only gate above cannot do.
+
+/// R43b-c: does `lower` (an already-lowercased criterion) read as a claim
+/// that some behavior is being PRESERVED rather than fixed?
+fn criterion_reads_as_preservation_claim(lower: &str) -> bool {
+    const PRESERVATION_PHRASES: &[&str] = &[
+        "still works",
+        "continues to",
+        "remains",
+        "is preserved",
+        "unchanged",
+    ];
+    PRESERVATION_PHRASES.iter().any(|p| lower.contains(p))
+}
+
+/// R43b-c: candidate "subject" tokens a preservation claim might be about,
+/// most-specific first -- `--flag`s, then backtick-quoted spans -- so a
+/// rewrite prefers `` `--level` `` over a vaguer quoted phrase when both are
+/// present in the same criterion.
+fn preservation_subject_candidates(criterion: &str) -> Vec<String> {
+    let mut out: Vec<String> = regex::Regex::new(r"--[A-Za-z][\w-]*")
+        .map(|re| {
+            re.find_iter(criterion)
+                .map(|m| m.as_str().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    out.extend(
+        criterion
+            .split('`')
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 1) // odd segments are inside a backtick pair
+            .map(|(_, s)| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+    );
+    out
+}
+
+/// R43b-c: does some sentence of `task_text` (split the same `.`/`\n` way
+/// [`most_behavioural_sentence`] already splits task descriptions) name
+/// `subject` AND say it is currently broken/incorrect/needs fixing? Scoped
+/// to one sentence at a time so a broken-phrase in one sentence is never
+/// credited to an unrelated subject mentioned only in a different sentence.
+fn task_text_names_subject_as_broken(task_text: &str, subject: &str) -> Option<String> {
+    let broken_re = regex::Regex::new(
+        r"(?i)\bbroken\b|\bonly matches\b|\bincorrect\b|\bbug\b|\bfails\b|doesn't|does not|\bshould\b",
+    )
+    .ok()?;
+    let subject_lower = subject.to_lowercase();
+    task_text
+        .split(['.', '\n'])
+        .map(|s| s.trim())
+        .find(|s| {
+            !s.is_empty() && s.to_lowercase().contains(&subject_lower) && broken_re.is_match(s)
+        })
+        .map(|s| s.to_string())
+}
+
+/// R43b-c (A49): `criterion` reads as "this still works"/"is preserved" AND
+/// the task text itself names the same subject as currently broken --
+/// `Some((subject, task_sentence))` when both hold, `subject` the most
+/// specific candidate found, `task_sentence` the task's own account (quoted
+/// verbatim in the rewrite below, never invented).
+fn criterion_contradicts_task_text_as_broken(
+    criterion: &str,
+    task_text: &str,
+) -> Option<(String, String)> {
+    let lower = criterion.to_lowercase();
+    if !criterion_reads_as_preservation_claim(&lower) {
+        return None;
+    }
+    preservation_subject_candidates(criterion)
+        .into_iter()
+        .find_map(|subject| {
+            task_text_names_subject_as_broken(task_text, &subject)
+                .map(|sentence| (subject, sentence))
+        })
+}
+
+/// R43b-c: rewrite a preservation claim the task text itself contradicts
+/// into a must-fix behavioural criterion that quotes the task's own account
+/// of what is broken -- never inventing a new claim, same "quote the task's
+/// own words" discipline [`derive_behavioural_ac_from_task_text`] already
+/// uses. Names an exit-code/output check explicitly so the result stays a
+/// probe-able, R35b-shaped claim (an invocation plus an observable outcome),
+/// not just a restated description.
+fn rewrite_preservation_ac_as_fix(subject: &str, task_sentence: &str) -> String {
+    format!(
+        "`{subject}` matching is case-insensitive: {task_sentence} -- invoke the change with a \
+         case-differing example and check its real exit code/output, not merely that the \
+         behavior was assumed to already work (rewritten from a preservation claim that \
+         contradicted the task text, R43b-c)"
+    )
+}
+
+/// R43b-c entry point: reclassify every criterion in `criteria` whose
+/// "still works"/preserved framing contradicts what the task text itself
+/// says about the same subject -- run per-criterion so it fires even when
+/// the goal's OTHER criteria are already behavioural (the exact cli-argparse
+/// m5 shape: six real exit-code criteria plus one contradicted preservation
+/// claim). Returns how many criteria were rewritten, for the caller's
+/// `ac_grounding preservation_reclassified=<n>` receipt.
+fn reclassify_contradicted_preservation_criteria(
+    criteria: &mut [String],
+    task_text: &str,
+) -> usize {
+    let mut reclassified = 0;
+    for criterion in criteria.iter_mut() {
+        if let Some((subject, sentence)) =
+            criterion_contradicts_task_text_as_broken(criterion, task_text)
+        {
+            *criterion = rewrite_preservation_ac_as_fix(&subject, &sentence);
+            reclassified += 1;
+        }
+    }
+    reclassified
+}
+
 /// R43b-b (#G31 HIGH-2 / A39): does `criterion` name a concrete input or
 /// command that is NOT merely a file path? [`criterion_names_an_input_or_command`]
 /// treats ANY backtick span as a command, so a criterion whose only
@@ -2355,6 +2506,24 @@ fn apply_behavioural_ac_grounding(
     root: Option<&std::path::Path>,
 ) {
     for (idx, goal) in goals.iter_mut().enumerate() {
+        // R43b-c (A49): same per-criterion preservation-vs-broken check as
+        // `ground_roadmap_goals` above, run BEFORE the all-existence-only
+        // gate for the same reason (a goal can have several genuinely
+        // behavioural criteria alongside one contradicted preservation
+        // claim, which never trips the all-existence-only gate at all).
+        let preservation_reclassified = reclassify_contradicted_preservation_criteria(
+            &mut goal.acceptance_criteria,
+            &goal.description,
+        );
+        if preservation_reclassified > 0 {
+            ac_rewrite_notes.entry(idx).or_default().push(format!(
+                "{preservation_reclassified} acceptance criterion/criteria read as preserving a \
+                 behavior the task text itself says is currently broken — rewritten into \
+                 must-fix behavioural criteria quoting the task's own account \
+                 (ac_grounding preservation_reclassified={preservation_reclassified})"
+            ));
+        }
+
         let (behavioural_added, existence_only) = ground_acceptance_criteria_behaviourally(
             &mut goal.acceptance_criteria,
             &goal.description,
@@ -13517,6 +13686,37 @@ pub async fn handle_goal_completion(
 
 // ── Harness loop, Lane V: land headless Auto work with no human in the loop ─
 
+/// R43b-c (A49 finding 2): does `card` still carry an unresolved
+/// `UNVERIFIED (...) — kept for human review` (or equivalent "kept for human
+/// review") acceptance criterion, with NOTHING else on the goal both
+/// resolved (not itself carrying that marker) and behavioural
+/// ([`classify_acceptance_criterion`]) to stand as evidence a genuine verify
+/// pass actually exercised a real check rather than merely running against
+/// the repo's generic smoke/build step? A goal can have a genuine,
+/// non-vacuous [`VerifyEvidence::Genuine`] pass and still have this be true
+/// — that combination is exactly the A49 miss: a real check ran (the six
+/// exit-code criteria's OWN checks, in that case), but the specific
+/// criterion still marked `UNVERIFIED` was never independently confirmed by
+/// anything, and headless auto-land approved on diffstat alone regardless.
+fn goal_still_carries_an_unresolved_unverified_ac(
+    card_meta: &serde_json::Value,
+    description: &str,
+) -> bool {
+    let criteria = collect_acceptance_criteria(card_meta, description);
+    let has_unresolved_marker = criteria
+        .iter()
+        .any(|c| c.starts_with(UNVERIFIED_CRITERION_PREFIX) || c.contains("kept for human review"));
+    if !has_unresolved_marker {
+        return false;
+    }
+    let has_resolved_behavioural_backing = criteria.iter().any(|c| {
+        !c.starts_with(UNVERIFIED_CRITERION_PREFIX)
+            && !c.contains("kept for human review")
+            && classify_acceptance_criterion(c) == AcKind::Behavioural
+    });
+    !has_resolved_behavioural_backing
+}
+
 /// Attempt to land a headless Auto goal the instant its `approve_review`
 /// decision is filed — the smallest honest closer of the M4 defect: a
 /// headless `permagent run` dispatches real work (Lane S/T/U) but nothing
@@ -13566,6 +13766,18 @@ pub async fn handle_goal_completion(
 /// still only decides WHEN to attempt the auto-answer (the verifier-pass
 /// check above); it is the tier gate itself, two calls downstream, that
 /// decides whether the answer this function mints is actually honoured.
+///
+/// R43b-c (A49 finding 2): [`VerifyEvidence::Genuine`] only says a real,
+/// non-vacuous check ran and passed -- it says nothing about WHICH
+/// acceptance criteria it was checking. The cli-argparse m5 goal had a
+/// genuine, non-vacuous pass AND a still-unresolved `UNVERIFIED (...) —
+/// kept for human review` criterion at the same time, and headless auto-land
+/// approved it citing only the diffstat. [`goal_still_carries_an_unresolved_
+/// unverified_ac`] below catches that shape: an unresolved `UNVERIFIED`/
+/// "kept for human review" marker with no OTHER criterion on the goal that
+/// is both resolved (not itself `UNVERIFIED`) and behavioural
+/// ([`classify_acceptance_criterion`]) to stand as evidence the genuine pass
+/// actually exercised a real behavioural check.
 async fn auto_land_headless_goal(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     decision_id: &str,
@@ -13722,7 +13934,31 @@ async fn auto_land_headless_goal(
         .get("worker_session_id")
         .and_then(|v| v.as_str());
     match session_verify_evidence(pool, worker_session_id).await {
-        VerifyEvidence::Genuine => {}
+        VerifyEvidence::Genuine => {
+            // R43b-c (A49 finding 2): a genuine pass alone is not evidence
+            // that every still-`UNVERIFIED` criterion was ever checked.
+            // Refuse to auto-approve here — Hold, not park: leave the
+            // `approve_review` decision exactly where an interactive/daemon
+            // run would leave it for a human, rather than superseding it and
+            // failing the goal the way a real verify failure would.
+            if goal_still_carries_an_unresolved_unverified_ac(
+                &card.metadata_json,
+                &card.description,
+            ) {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    goal_id = %card.id,
+                    decision_id = %decision_id,
+                    "headless_approve_refused reason=unverified_ac: goal '{}' still carries an \
+                     unresolved UNVERIFIED/\"kept for human review\" acceptance criterion with \
+                     no resolved behavioural criterion backing this verify pass — leaving the \
+                     approve_review decision open for a human reviewer instead of auto-approving \
+                     on diffstat alone",
+                    card.title
+                );
+                return;
+            }
+        }
         VerifyEvidence::None => {
             tracing::info!(
                 target: "permagentd::brain",
@@ -24615,6 +24851,26 @@ mod tests {
         stamp_verify_exchange(pool, card_id, true).await;
     }
 
+    /// R43b-c: set a card's `metadata_json.acceptance_criteria` directly, so
+    /// a test can drive [`goal_still_carries_an_unresolved_unverified_ac`]
+    /// through the real `auto_land_headless_goal` entry point rather than
+    /// only unit-testing the predicate in isolation.
+    async fn stamp_acceptance_criteria(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        card_id: &str,
+        criteria: &[&str],
+    ) {
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, '$.acceptance_criteria', json(?)) \
+             WHERE id = ?",
+        )
+        .bind(serde_json::to_string(criteria).unwrap())
+        .bind(card_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     /// G5 finding 1: a worker session whose verify tool returned an
     /// authoritative PASS that is nonetheless vacuous (here: a real command
     /// that reported zero tests) — the case `is_authoritative_pass` alone
@@ -32776,6 +33032,123 @@ mod tests {
         );
     }
 
+    // ── R43b-c (A49 finding 2): a genuine, non-vacuous verify pass is not,
+    // by itself, evidence that a goal's own UNVERIFIED/"kept for human
+    // review" acceptance criterion was ever checked — refuse to auto-approve
+    // (Hold, not park) when one is still unresolved and nothing else on the
+    // goal is both resolved and behavioural.
+
+    #[tokio::test]
+    async fn headless_auto_land_holds_a_genuine_pass_when_an_unverified_ac_has_no_behavioural_backing(
+    ) {
+        let (repo, head) = v1_repo_with_finished_goal_branch("v1-unverified-ac-run");
+        let root = repo.path().to_string_lossy().into_owned();
+
+        let pool = test_pool().await;
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(&root)
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        v1_stamp_dispatch_evidence(&pool, &card.id, "v1-unverified-ac-run", &head).await;
+        stamp_successful_verify(&pool, &card.id).await;
+        stamp_acceptance_criteria(
+            &pool,
+            &card.id,
+            &[
+                "UNVERIFIED (no detected check command in this repo) — kept for human review: \
+               logfilter/cli.py rejects unknown --level values with exit code 2",
+            ],
+        )
+        .await;
+        let decision = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        auto_land_headless_goal(&pool, &decision.id, &card, true, Some("coord-session-1")).await;
+
+        assert_ne!(
+            git_v1(repo.path(), &["rev-parse", "HEAD"]),
+            head,
+            "a genuine pass alone must not land a goal whose UNVERIFIED acceptance criterion \
+             was never independently checked"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("review"),
+            "Hold, not park: the card must stay in Review for a human, never failed/parked"
+        );
+
+        let d = decisions::get_decision(&pool, &decision.id)
+            .await
+            .unwrap()
+            .expect("the approve_review decision still exists");
+        assert_eq!(
+            d.status, "open",
+            "Hold means the decision is left exactly as an interactive run would find it — \
+             never superseded/parked, never auto-approved"
+        );
+    }
+
+    #[tokio::test]
+    async fn headless_auto_land_lands_when_an_unverified_ac_has_a_resolved_behavioural_sibling() {
+        let (repo, head) = v1_repo_with_finished_goal_branch("v1-unverified-ac-backed-run");
+        let root = repo.path().to_string_lossy().into_owned();
+
+        let pool = test_pool().await;
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(&root)
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        v1_stamp_dispatch_evidence(&pool, &card.id, "v1-unverified-ac-backed-run", &head).await;
+        stamp_successful_verify(&pool, &card.id).await;
+        stamp_acceptance_criteria(
+            &pool,
+            &card.id,
+            &[
+                "UNVERIFIED (no detected check command in this repo) — kept for human review: \
+                 logfilter/cli.py rejects unknown --level values with exit code 2",
+                "`--level BOGUS` exits with code 2",
+            ],
+        )
+        .await;
+        let decision = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        auto_land_headless_goal(&pool, &decision.id, &card, true, Some("coord-session-1")).await;
+
+        assert_eq!(
+            git_v1(repo.path(), &["rev-parse", "HEAD"]),
+            head,
+            "a resolved, behavioural sibling criterion is enough to back the genuine pass — \
+             the goal must still auto-land"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("complete"),
+            "an UNVERIFIED criterion backed by a resolved, behavioural sibling must not block \
+             auto-land"
+        );
+    }
+
     // ── Lane R29b (A28 Miss 3): the read-only auto-land shortcut must ───────
     // refuse a goal whose branch still carries unlanded commits.
 
@@ -36796,6 +37169,144 @@ mod tests {
                 .iter()
                 .any(|r| r
                     .contains("ac_grounding behavioural_added=0 reason=no_behavioural_sentence")),
+            "receipts: {receipts:?}"
+        );
+    }
+
+    /// A49's literal cli-argparse m5 miss: the AC ("Valid --level filtering
+    /// (case-insensitive) still works correctly on sample_logs/app.log")
+    /// reads as PRESERVATION, and the task text itself says the same
+    /// `--level` subject is currently broken -- the contradiction must be
+    /// caught and the task's own account returned as evidence.
+    #[test]
+    fn criterion_contradicts_task_text_as_broken_flags_the_a49_cli_argparse_m5_shape() {
+        let criterion =
+            "Valid --level filtering (case-insensitive) still works correctly on sample_logs/app.log";
+        let task_text = "Fix logfilter: filtering is currently broken. --level only \
+                          matches log lines with the exact same case, so `--level ERROR` misses \
+                          lowercase 'error' lines. Exit codes and usage errors are already \
+                          correct.";
+        let (subject, sentence) = criterion_contradicts_task_text_as_broken(criterion, task_text)
+            .unwrap_or_else(|| {
+                panic!("expected the m5 preservation claim to be flagged as contradicted")
+            });
+        assert_eq!(subject, "--level");
+        assert!(
+            sentence.contains("only matches log lines with the exact same case"),
+            "the task's own account of the bug must be returned verbatim: {sentence:?}"
+        );
+    }
+
+    /// A genuine preservation claim -- the task text never says this
+    /// subject is broken -- must NOT be reclassified. Distinguishes "this
+    /// still works" (fine, when true) from "this still works" (a lie, when
+    /// the task text says otherwise).
+    #[test]
+    fn criterion_contradicts_task_text_as_broken_is_none_for_a_genuine_preservation_claim() {
+        let criterion = "Valid --format output still works correctly on sample_logs/app.log";
+        let task_text = "Fix logfilter: filtering is currently broken. --level only \
+                          matches log lines with the exact same case. --format is unrelated and \
+                          untouched by this change.";
+        assert!(
+            criterion_contradicts_task_text_as_broken(criterion, task_text).is_none(),
+            "a preservation claim the task text never contradicts must be left alone"
+        );
+    }
+
+    /// End to end on the exact A49 shape: six genuinely behavioural
+    /// exit-code criteria (which would make `all_acceptance_criteria_
+    /// existence_only` false, so the old all-or-nothing gate never even
+    /// looked at criterion 7) plus the one contradicted preservation claim.
+    /// Only criterion 7 is rewritten; the rest are untouched, and the
+    /// rewritten text itself classifies as `Behavioural`.
+    #[test]
+    fn reclassify_contradicted_preservation_criteria_rewrites_only_the_contradicted_one() {
+        let mut criteria = vec![
+            "`--level BOGUS` exits with code 2 and a usage-error message on stderr".to_string(),
+            "`--level error` exits with code 0".to_string(),
+            "`--level ERROR` exits with code 0".to_string(),
+            "`--level WaRn` exits with code 0".to_string(),
+            "`--level info --since 2024-01-01` exits with code 0".to_string(),
+            "unknown flags exit with code 2".to_string(),
+            "Valid --level filtering (case-insensitive) still works correctly on \
+             sample_logs/app.log"
+                .to_string(),
+        ];
+        let task_text = "Fix logfilter: filtering is currently broken. --level only \
+                          matches log lines with the exact same case, so `--level ERROR` misses \
+                          lowercase 'error' lines.";
+
+        let reclassified = reclassify_contradicted_preservation_criteria(&mut criteria, task_text);
+
+        assert_eq!(reclassified, 1, "only criterion 7 should be rewritten");
+        for c in &criteria[..6] {
+            assert!(
+                !c.contains("R43b-c"),
+                "the other six behavioural criteria must be left byte-for-byte alone: {c:?}"
+            );
+        }
+        assert!(
+            criteria[6].contains("--level"),
+            "the rewrite must still name the flag: {:?}",
+            criteria[6]
+        );
+        assert!(
+            !criteria[6].to_lowercase().contains("still works"),
+            "the preservation framing must be gone: {:?}",
+            criteria[6]
+        );
+        assert_eq!(
+            classify_acceptance_criterion(&criteria[6]),
+            AcKind::Behavioural,
+            "the rewritten criterion must itself classify as behavioural: {:?}",
+            criteria[6]
+        );
+    }
+
+    /// End-to-end at the `ground_roadmap_goals` entry point: the receipt
+    /// must literally contain `ac_grounding preservation_reclassified=1`.
+    #[test]
+    fn ground_roadmap_goals_records_preservation_reclassified_for_the_a49_m5_shape() {
+        let facts = RepoFacts {
+            manifests: vec!["setup.py".to_string()],
+            files: vec!["logfilter/cli.py".to_string()],
+            file_count: 2,
+            check_commands: vec![],
+            ..Default::default()
+        };
+        let goals = vec![goal_state::ProposedGoal {
+            title: "Fix --level case-insensitivity".to_string(),
+            description: "Fix logfilter: filtering is currently broken. --level only \
+                           matches log lines with the exact same case, so `--level ERROR` \
+                           misses lowercase 'error' lines."
+                .to_string(),
+            // Both criteria name `logfilter/cli.py` (a real file in `facts`)
+            // so R21b's own `ground_acceptance_criteria` pass, which runs
+            // BEFORE this lane's reclassification, leaves them untouched
+            // rather than rewriting them to an `UNVERIFIED` marker first.
+            acceptance_criteria: vec![
+                "logfilter/cli.py: `--level BOGUS` exits with code 2".to_string(),
+                "logfilter/cli.py: valid --level filtering (case-insensitive) still works \
+                 correctly on sample_logs/app.log"
+                    .to_string(),
+            ],
+            tags: vec![],
+            depends_on: vec![],
+        }];
+        let (grounded, receipts) =
+            ground_roadmap_goals(goals, &facts, &std::collections::BTreeSet::new(), None);
+        assert!(
+            !grounded[0]
+                .acceptance_criteria
+                .iter()
+                .any(|c| c.to_lowercase().contains("still works")),
+            "the preservation claim must have been rewritten: {:?}",
+            grounded[0].acceptance_criteria
+        );
+        assert!(
+            receipts
+                .iter()
+                .any(|r| r.contains("ac_grounding preservation_reclassified=1")),
             "receipts: {receipts:?}"
         );
     }
