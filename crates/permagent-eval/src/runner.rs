@@ -2287,6 +2287,66 @@ mod tests {
         );
     }
 
+    /// Lane R48a: a MIXED tier's split env (worker pair on `MECHANICAL`/
+    /// `LOCAL`, coordinator pair on `HARD`/`EDIT`) actually reaches the child
+    /// process `build_invocation`/`apply_env_policy` launch the harness
+    /// under — not just `Tier::pack_env()` in isolation.
+    #[test]
+    fn env_policy_mixed_tier_exports_the_split_pack_env_to_the_harness_process() {
+        let tier = Tier::builtin("dschat+minicpm").unwrap();
+        let inv = build_invocation(
+            &demo_spec(),
+            &tier,
+            Path::new("/w"),
+            Path::new("/d"),
+            &recipe_path(),
+            "permagent",
+            false,
+        );
+        let mut cmd = Command::new(&inv.program);
+        apply_env_policy(&mut cmd, &inv, Vec::<OsString>::new());
+
+        let envs = env_map(&cmd);
+        // The main loop (`--provider`/`--model`) stays on the coordinator…
+        assert!(inv.args.iter().any(|a| a == "custom_deepseek"));
+        assert!(inv.args.iter().any(|a| a == "deepseek-chat"));
+        // …the worker pack roles are exported as the LOCAL ollama pair…
+        for role in ["MECHANICAL", "LOCAL"] {
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new(&format!(
+                    "PERMAGENT_PACK_{role}_PROVIDER"
+                ))),
+                Some(&Some(OsString::from("ollama"))),
+                "{role} provider"
+            );
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new(&format!(
+                    "PERMAGENT_PACK_{role}_MODEL"
+                ))),
+                Some(&Some(OsString::from("minicpm5-2b-q8"))),
+                "{role} model"
+            );
+        }
+        // …and HARD/EDIT stay pinned to the coordinator, so the escalation
+        // ladder and the review role keep a real, independent frontier rung.
+        for role in ["HARD", "EDIT"] {
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new(&format!(
+                    "PERMAGENT_PACK_{role}_PROVIDER"
+                ))),
+                Some(&Some(OsString::from("custom_deepseek"))),
+                "{role} provider"
+            );
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new(&format!(
+                    "PERMAGENT_PACK_{role}_MODEL"
+                ))),
+                Some(&Some(OsString::from("deepseek-chat"))),
+                "{role} model"
+            );
+        }
+    }
+
     /// An A/B arm's knobs must actually reach the child, must survive the
     /// ambient scrub, and must OUTRANK the invocation's own settings — a knob
     /// that could be quietly overridden would make both arms identical while
