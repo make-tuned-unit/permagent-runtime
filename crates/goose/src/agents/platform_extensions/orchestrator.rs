@@ -16323,6 +16323,78 @@ async fn commits_unlanded_at_trunk(
 /// [`maybe_salvage_committed_work`]).
 const SALVAGE_TIME_BOX: std::time::Duration = std::time::Duration::from_secs(90);
 
+#[cfg(test)]
+tokio::task_local! {
+    /// R42a-b: test-only seam counting how many times
+    /// [`run_fresh_verify_for_hold`] was actually invoked while a test has
+    /// scoped it — lets a test prove the salvage-already-failed
+    /// short-circuit in `maybe_hold_review`'s override never pays for a
+    /// redundant verify. A `tokio::task_local!`, not a global/static, same
+    /// convention as `SALVAGE_CALLING_SESSION_CAPTURE` above: scoped to,
+    /// and dropped with, the future it wraps, so it cannot leak between
+    /// tests.
+    static FRESH_HOLD_VERIFY_CALL_COUNT: std::sync::Arc<std::sync::atomic::AtomicU32>;
+}
+
+/// R42a-b (G29 HIGH-1): run the SAME real, time-boxed `verify` call
+/// [`maybe_salvage_committed_work`] already runs before crediting ANY
+/// committed work — factored out of that function's construction (`
+/// VerifyParams`/time-box derivation/`is_genuine_pass`) so `maybe_hold_
+/// review`'s trunk-relative Allow override can require the identical
+/// discipline instead of trusting a stale, commit-unlinked `verify_ran`
+/// session flag (G29's finding: R28a's teardown checkpoint commits
+/// unconditionally, with no build/test check, and a session-wide verify
+/// flag has no linkage to which commit sha was checked out when it ran).
+/// Deliberately NOT a call into `maybe_salvage_committed_work` itself: that
+/// function stamps the goal's one-shot `salvage_attempted` budget and runs
+/// several salvage-specific guards (uncommitted-extra, secret scan) this
+/// confirmatory check must not spend or duplicate — it only ever decides
+/// whether to promote `maybe_hold_review`'s own Allow, never lands or
+/// credits anything itself. `false` on a genuine failure, a vacuous pass, a
+/// timeout, or when no wall budget remains to even try.
+async fn run_fresh_verify_for_hold(card: &cards::Card, worktree_path: &std::path::Path) -> bool {
+    #[cfg(test)]
+    let _ = FRESH_HOLD_VERIFY_CALL_COUNT.try_with(|count| {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+
+    let time_box = match remaining_wall_budget_secs(&card.metadata_json) {
+        WallBudgetCeiling::Remaining(0) => return false,
+        WallBudgetCeiling::Remaining(secs) => {
+            std::time::Duration::from_secs(secs.min(SALVAGE_TIME_BOX.as_secs()))
+        }
+        WallBudgetCeiling::Unbounded => SALVAGE_TIME_BOX,
+    };
+
+    let acceptance_criteria = collect_acceptance_criteria(&card.metadata_json, &card.description);
+    let verify_params = crate::agents::platform_extensions::developer::verify::VerifyParams {
+        command: None,
+        path: None,
+        timeout_secs: Some(time_box.as_secs()),
+        scope: None,
+        risk: None,
+        changed_paths: None,
+        acceptance_criteria: if acceptance_criteria.is_empty() {
+            None
+        } else {
+            Some(acceptance_criteria)
+        },
+    };
+    let verify_run =
+        tokio::time::timeout(
+            time_box,
+            crate::agents::platform_extensions::developer::verify::VerifyTool::new()
+                .verify_with_cwd(verify_params, Some(worktree_path), None),
+        )
+        .await;
+    match verify_run {
+        Ok(result) => {
+            crate::agents::platform_extensions::developer::verify::is_genuine_pass(&result)
+        }
+        Err(_) => false,
+    }
+}
+
 /// G25 MED: card metadata key counting how many times
 /// [`maybe_salvage_committed_work`] has attempted a salvage for this goal.
 /// Listed in [`goal_transition::PROTECTED_GOAL_METADATA_KEYS`] so the
@@ -18123,7 +18195,12 @@ async fn maybe_hold_review(
     } else {
         crate::cost_router::ToolTranscriptSignals::default()
     };
-    let verify_ran = session_had_successful_verify(pool, session_id).await;
+    // R42a-b (G29 HIGH-1): the trunk-relative override below can promote
+    // this to `true` on its own evidence (a fresh, genuine verify pass, or
+    // a session-recorded pass proven bound to the exact unlanded head) —
+    // `mut` so `decide_goal_done_hold` sees that promotion, not just the
+    // session-wide flag this line alone would give it.
+    let mut verify_ran = session_had_successful_verify(pool, session_id).await;
     let signals = if live.is_quiet() {
         crate::cost_router::RoutingSnapshot::from_metadata(&meta)
             .map(|s| s.signals)
@@ -18168,35 +18245,110 @@ async fn maybe_hold_review(
     // consulted when the rolling check already found commits, or when the
     // inspection itself errored (that error path is handled separately,
     // below).
+    //
+    // R42a-b (G29 HIGH-1): an unlanded commit alone is NOT evidence it was
+    // ever independently verified — R28a's teardown checkpoint commits ALL
+    // dirty tracked changes unconditionally, with no build/test check, and
+    // `verify_ran` above is a session-wide flag with no linkage to which
+    // commit sha was actually checked out when that verify happened
+    // (`session_verify_evidence`'s own doc comment). So this override now
+    // requires evidence bound to the exact unlanded head before flipping
+    // `uncommitted_work`: (a) THIS attempt's own recorded verify pass
+    // (`verify_ran`) whose `dispatch_evidence.head_commit` — the worker's
+    // true HEAD at session end — equals the worktree's CURRENT head (i.e.
+    // nothing has moved since that pass), or (b) a fresh, time-boxed verify
+    // run now, the identical discipline `maybe_salvage_committed_work`
+    // already applies before crediting ANY committed work
+    // (`run_fresh_verify_for_hold`, factored out of that same construction).
+    // Neither is attempted when the goal's own `salvage_receipt` already
+    // recorded a genuine verify FAILURE for this branch (`salvage_verify_
+    // failed`) — salvage already spent time proving this exact, still-
+    // unmoved range broken; re-verifying it here would only repeat that
+    // work for the same answer. On success, `verify_ran` is ALSO promoted
+    // to `true` (not just `uncommitted_work`) — `decide_goal_done_hold`'s
+    // Allow test requires both, and a fresh genuine pass is real evidence
+    // regardless of what the ORIGINAL session-wide flag said.
+    let mut unlanded_checkpoint_note: Option<String> = None;
     if uncommitted_work && inspection_error.is_none() {
         if let Ok(Some((_baseline, worktree))) =
             resolve_goal_baseline_and_worktree(pool, &card.metadata_json).await
         {
+            let worktree_path = std::path::Path::new(&worktree);
             if let Ok((unlanded, _trunk_head)) =
-                commits_unlanded_at_trunk(pool, card, std::path::Path::new(&worktree)).await
+                commits_unlanded_at_trunk(pool, card, worktree_path).await
             {
                 if unlanded > 0 {
-                    // R42a: keep the dirty-worktree signal honest and
-                    // separate — a real unlanded commit already satisfies
-                    // "committed work exists," so this must not fire the
-                    // ordinary "verified but uncommitted: commit your work"
-                    // Hold merely because stray tracked changes also sit on
-                    // top of it. Note the dirty leftovers rather than
-                    // discarding the signal outright: `tracked_status` is
-                    // still appended to the Hold arm's plan text below in
-                    // the (rarer) cases that still hold, and logged here so
-                    // an Allow born of this override never hides them.
-                    if !tracked_status.trim().is_empty() {
+                    let salvage_already_failed = card
+                        .metadata_json
+                        .pointer("/salvage_receipt/outcome")
+                        .and_then(|v| v.as_str())
+                        == Some("salvage_verify_failed");
+                    let verified_at_head = if salvage_already_failed {
+                        false
+                    } else {
+                        let current_head = git_in_worktree(worktree_path, &["rev-parse", "HEAD"])
+                            .await
+                            .ok()
+                            .map(|s| s.trim().to_string());
+                        let recorded_pass_at_head = verify_ran
+                            && current_head.is_some()
+                            && card
+                                .metadata_json
+                                .pointer("/dispatch_evidence/head_commit")
+                                .and_then(|v| v.as_str())
+                                == current_head.as_deref();
+                        if recorded_pass_at_head {
+                            true
+                        } else {
+                            run_fresh_verify_for_hold(card, worktree_path).await
+                        }
+                    };
+                    if verified_at_head {
+                        // R42a: keep the dirty-worktree signal honest and
+                        // separate — a real, verified unlanded commit
+                        // already satisfies "committed work exists," so
+                        // this must not fire the ordinary "verified but
+                        // uncommitted: commit your work" Hold merely
+                        // because stray tracked changes also sit on top of
+                        // it. Note the dirty leftovers rather than
+                        // discarding the signal outright: `tracked_status`
+                        // is still appended to the Hold arm's plan text
+                        // below in the (rarer) cases that still hold, and
+                        // logged here so an Allow born of this override
+                        // never hides them.
+                        if !tracked_status.trim().is_empty() {
+                            tracing::info!(
+                                target: "permagentd::brain",
+                                goal_id = %card.id,
+                                unlanded_at_trunk = unlanded,
+                                "goal has {unlanded} commit(s) unlanded at the trunk, verified \
+                                 at that exact head; allowing despite dirty tracked changes \
+                                 still sitting uncommitted on top: {tracked_status}"
+                            );
+                        }
+                        uncommitted_work = false;
+                        verify_ran = true;
+                    } else {
+                        unlanded_checkpoint_note = Some(format!(
+                            "unlanded checkpoint present but unverified: {unlanded} commit(s) \
+                             sit unlanded at the trunk, but no verified PASS is bound to this \
+                             exact head{}",
+                            if salvage_already_failed {
+                                " (salvage already recorded a verify failure for this branch — \
+                                 not re-verifying; see salvage_receipt)"
+                            } else {
+                                ""
+                            }
+                        ));
                         tracing::info!(
                             target: "permagentd::brain",
                             goal_id = %card.id,
                             unlanded_at_trunk = unlanded,
-                            "goal has {unlanded} commit(s) unlanded at the trunk; allowing \
-                             despite dirty tracked changes still sitting uncommitted on top: \
-                             {tracked_status}"
+                            salvage_already_failed,
+                            "goal has {unlanded} commit(s) unlanded at the trunk but no \
+                             verified PASS is bound to that exact head; holding"
                         );
                     }
-                    uncommitted_work = false;
                 }
             }
         }
@@ -18291,6 +18443,15 @@ async fn maybe_hold_review(
         } => {
             if !tracked_status.is_empty() {
                 inject_plan.push_str(&format!("\n\nTracked modifications:\n{tracked_status}"));
+            }
+            // R42a-b: the trunk-relative override above found an unlanded
+            // commit but could not bind a verified PASS to it (see
+            // `unlanded_checkpoint_note`'s own construction) — say so
+            // explicitly, in addition to whatever wording `decide_goal_
+            // done_hold` already chose from the ORIGINAL, commit-unlinked
+            // `verify_ran`/`uncommitted_work` pair.
+            if let Some(note) = &unlanded_checkpoint_note {
+                inject_plan.push_str(&format!("\n\n{note}"));
             }
             // Z2-1: before holding on an AC-literal mismatch, credit any
             // sibling roadmap goal this diff actually satisfies, and — if the
@@ -25673,6 +25834,77 @@ mod tests {
         (trunk, goal_dir, base_sha, fix_sha)
     }
 
+    /// R42a-b (G29 HIGH-1): the SAME shape as [`r22d_trunk_and_goal_
+    /// worktree`], except the goal branch's one unlanded commit is a
+    /// genuinely BROKEN checkpoint — R28a's teardown checkpoint
+    /// (`checkpoint_uncommitted_worker_changes`) commits ALL dirty tracked
+    /// changes unconditionally, with no build/test check, so this
+    /// reproduces exactly that: a commit that exists on the branch but
+    /// fails its own test when actually verified.
+    fn r42ab_trunk_and_goal_worktree_with_failing_commit(
+        run_id: &str,
+    ) -> (tempfile::TempDir, tempfile::TempDir, String, String) {
+        let trunk = tempfile::tempdir().unwrap();
+        let troot = trunk.path();
+        r20b_git(troot, &["init", "-q", "-b", "main"]);
+        r20b_git(troot, &["config", "user.email", "test@example.com"]);
+        r20b_git(troot, &["config", "user.name", "Test"]);
+        r20b_git(troot, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(
+            troot.join("Cargo.toml"),
+            "[package]\nname = \"r42ab-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(troot.join("src")).unwrap();
+        std::fs::write(
+            troot.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        )
+        .unwrap();
+        r20b_git(troot, &["add", "-A"]);
+        r20b_git(troot, &["commit", "-q", "-m", "base"]);
+        let base_sha = r20b_git(troot, &["rev-parse", "HEAD"]);
+
+        let goal_dir = tempfile::tempdir().unwrap();
+        let clone_out = std::process::Command::new("git")
+            .args(["clone", "-q"])
+            .arg(troot)
+            .arg(goal_dir.path())
+            .output()
+            .expect("git clone must succeed for this test");
+        assert!(
+            clone_out.status.success(),
+            "git clone failed: {}",
+            String::from_utf8_lossy(&clone_out.stderr)
+        );
+        let gpath = goal_dir.path();
+        r20b_git(gpath, &["config", "user.email", "test@example.com"]);
+        r20b_git(gpath, &["config", "user.name", "Test"]);
+        r20b_git(gpath, &["config", "commit.gpgsign", "false"]);
+        let branch = format!("goal/{run_id}");
+        r20b_git(gpath, &["checkout", "-q", "-b", &branch]);
+        // A genuinely FAILING assertion — the checkpoint's content is
+        // broken, not the salvageable fix `r22d_trunk_and_goal_worktree`
+        // builds.
+        std::fs::write(
+            gpath.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n\n#[test]\nfn it_adds() { \
+             assert_eq!(add(2, 2), 5); }\n",
+        )
+        .unwrap();
+        r20b_git(
+            gpath,
+            &[
+                "commit",
+                "-q",
+                "-am",
+                "checkpoint: uncommitted worker changes at session end",
+            ],
+        );
+        let checkpoint_sha = r20b_git(gpath, &["rev-parse", "HEAD"]);
+        (trunk, goal_dir, base_sha, checkpoint_sha)
+    }
+
     /// The coordinator's first required test: attempt 1 committed a real
     /// fix; a later redispatch's ROLLING baseline (Y16b resumes from the
     /// branch's own prior tip) now equals that same commit, so
@@ -25909,7 +26141,14 @@ mod tests {
     /// (a) The goal branch carries a real, unlanded commit; the ROLLING
     /// baseline was reset (Y16b) to that same commit, so `rev-list
     /// baseline..HEAD` reads empty — but `commits_unlanded_at_trunk` still
-    /// finds it. Worktree otherwise clean. Must Allow, not Hold.
+    /// finds it. Worktree otherwise clean. `dispatch_evidence.head_commit`
+    /// (this SAME attempt's own recorded HEAD, per its doc comment) equals
+    /// the worktree's current HEAD, and this session's verify genuinely
+    /// passed — R42a-b's evidence-bound override (a): a verified PASS
+    /// recorded AT this exact head. Must Allow, not Hold, and must never
+    /// pay for a fresh verify to get there (the `FRESH_HOLD_VERIFY_CALL_
+    /// COUNT` seam stays at 0) — proving the cheap, already-recorded-
+    /// evidence path is taken instead of always re-verifying.
     #[tokio::test]
     async fn maybe_hold_review_allows_unlanded_trunk_commit_when_rolling_baseline_equals_tip() {
         let pool = test_pool().await;
@@ -25945,11 +26184,24 @@ mod tests {
         stamp_successful_verify(&pool, &card.id).await;
 
         let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
-        let held = maybe_hold_review(&pool, &card, false, None).await.unwrap();
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let held = FRESH_HOLD_VERIFY_CALL_COUNT
+            .scope(
+                call_count.clone(),
+                maybe_hold_review(&pool, &card, false, None),
+            )
+            .await
+            .unwrap();
         assert!(
             held.is_none(),
             "a real, unlanded commit at the trunk must Allow even though the rolling \
              baseline == HEAD reads as \"nothing committed\": {held:?}"
+        );
+        assert_eq!(
+            call_count.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a verify PASS already recorded at this exact head must Allow WITHOUT paying for \
+             a fresh verify"
         );
     }
 
@@ -26083,6 +26335,211 @@ mod tests {
             "a real, unlanded commit at the trunk must still Allow even with a stray dirty \
              edit on top — decide_goal_hold's own intent is committed work, not a spotless \
              worktree: {held:?}"
+        );
+    }
+
+    // ── Lane R42a-b (G29 HIGH-1): the trunk-relative override requires a ────
+    // verified PASS bound to the exact unlanded head, not just "some commit
+    // exists somewhere unlanded" — closes the gap G29's review found in
+    // R42a's own override (a stale, never-independently-verified checkpoint
+    // commit, or ANY unrelated verify pass elsewhere in the session, could
+    // credit committed work before this lane).
+
+    /// (b) The one unlanded commit is a genuinely BROKEN checkpoint (R28a's
+    /// unconditional teardown checkpoint, reproduced by
+    /// `r42ab_trunk_and_goal_worktree_with_failing_commit`). This session's
+    /// OWN recorded verify pass is real but bound to a DIFFERENT commit
+    /// (`dispatch_evidence.head_commit` set to the base sha, not the
+    /// checkpoint) — option (a) cannot fire — so the override must fall to
+    /// a fresh, time-boxed verify, which genuinely fails against this
+    /// broken checkpoint. Must Hold, naming the unverified checkpoint.
+    #[tokio::test]
+    async fn maybe_hold_review_holds_unlanded_checkpoint_when_fresh_verify_fails() {
+        let pool = test_pool().await;
+        let (trunk, goal_dir, base_sha, checkpoint_sha) =
+            r42ab_trunk_and_goal_worktree_with_failing_commit("r42ab-hold-fresh-fail");
+
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(trunk.path().to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": goal_dir.path().to_string_lossy(),
+                // Bound to the BASE commit, not the checkpoint that is
+                // actually unlanded — this session's verify evidence (below)
+                // is real, but never proven to have checked this exact head.
+                "head_commit": base_sha,
+                "commits": [],
+                "baseline_commit": checkpoint_sha,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        stamp_successful_verify(&pool, &card.id).await;
+
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let held = maybe_hold_review(&pool, &card, false, None).await.unwrap();
+        let plan = held
+            .expect("an unlanded checkpoint commit that fails a fresh verify must Hold, not Allow");
+        assert!(
+            plan.contains("unlanded checkpoint present but unverified"),
+            "must name the unverified-checkpoint reason: {plan}"
+        );
+    }
+
+    /// (c) The one unlanded commit is the SAME genuinely passing fix
+    /// `r22d_trunk_and_goal_worktree` builds. This session's own recorded
+    /// verify pass is real but — same as (b) — bound to the base commit,
+    /// not this fix, so option (a) cannot fire. A fresh, time-boxed verify
+    /// run now against the goal worktree genuinely passes. Must Allow, and
+    /// must actually have paid for that fresh verify (`FRESH_HOLD_VERIFY_
+    /// CALL_COUNT >= 1`) rather than trusting the unrelated recorded pass.
+    #[tokio::test]
+    async fn maybe_hold_review_allows_unlanded_commit_when_fresh_verify_passes_and_recorded_verify_is_not_bound_to_head(
+    ) {
+        let pool = test_pool().await;
+        let (trunk, goal_dir, base_sha, fix_sha) =
+            r22d_trunk_and_goal_worktree("r42ab-allow-fresh-pass");
+
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(trunk.path().to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": goal_dir.path().to_string_lossy(),
+                // Bound to the BASE commit, not the fix that is actually
+                // unlanded — proves the override cannot lean on this
+                // session's generic `verify_ran` flag alone.
+                "head_commit": base_sha,
+                "commits": [],
+                "baseline_commit": fix_sha,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        stamp_successful_verify(&pool, &card.id).await;
+
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let held = FRESH_HOLD_VERIFY_CALL_COUNT
+            .scope(
+                call_count.clone(),
+                maybe_hold_review(&pool, &card, false, None),
+            )
+            .await
+            .unwrap();
+        assert!(
+            held.is_none(),
+            "a fresh verify pass against the actually-unlanded commit must Allow even though \
+             this session's own recorded verify was bound to a different head: {held:?}"
+        );
+        assert!(
+            call_count.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "the Allow must be earned by an actual fresh verify call, not by trusting the \
+             unrelated recorded pass"
+        );
+    }
+
+    /// (d) The goal's own `salvage_receipt` already recorded a genuine
+    /// verify FAILURE (`salvage_verify_failed`) for this branch — salvage
+    /// already spent time proving this exact, still-unmoved range broken.
+    /// Even with a session verify recorded AT this exact head (the (a)
+    /// shape, which would otherwise Allow immediately), the override must
+    /// refuse outright and never re-verify: Hold, and the fresh-verify seam
+    /// (`FRESH_HOLD_VERIFY_CALL_COUNT`) must stay at 0.
+    #[tokio::test]
+    async fn maybe_hold_review_holds_without_reverifying_when_salvage_already_recorded_a_failure() {
+        let pool = test_pool().await;
+        let (trunk, goal_dir, _base_sha, fix_sha) =
+            r22d_trunk_and_goal_worktree("r42ab-hold-salvage-already-failed");
+
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(trunk.path().to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": goal_dir.path().to_string_lossy(),
+                // Matches the CURRENT head, deliberately the same shape as
+                // test (a) — proves `salvage_already_failed` refuses the
+                // override even when the cheap head-match path would
+                // otherwise have fired.
+                "head_commit": fix_sha,
+                "commits": [],
+                "baseline_commit": fix_sha,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        stamp_successful_verify(&pool, &card.id).await;
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "salvage_receipt".to_string(),
+                serde_json::json!({
+                    "outcome": "salvage_verify_failed",
+                    "note": "salvage already ran a genuine verify against this range and it \
+                              failed",
+                    "recorded_at": chrono::Utc::now().to_rfc3339(),
+                }),
+            );
+        })
+        .await
+        .unwrap();
+
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let held = FRESH_HOLD_VERIFY_CALL_COUNT
+            .scope(
+                call_count.clone(),
+                maybe_hold_review(&pool, &card, false, None),
+            )
+            .await
+            .unwrap();
+        let plan = held.expect(
+            "a goal whose salvage_receipt already recorded a verify failure must Hold, never \
+             Allow via the override",
+        );
+        assert!(
+            plan.contains("unlanded checkpoint present but unverified"),
+            "must name the unverified-checkpoint reason: {plan}"
+        );
+        assert!(
+            plan.contains("salvage already recorded a verify failure"),
+            "must name WHY it is not re-verifying: {plan}"
+        );
+        assert_eq!(
+            call_count.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "must never pay for a fresh verify against a range salvage already proved broken"
         );
     }
 
