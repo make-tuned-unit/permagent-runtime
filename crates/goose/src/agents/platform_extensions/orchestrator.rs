@@ -18346,7 +18346,19 @@ async fn maybe_hold_review(
                         .pointer("/salvage_receipt/outcome")
                         .and_then(|v| v.as_str())
                         == Some("salvage_verify_failed");
-                    let verified_at_head = if salvage_already_failed {
+                    // R42a-c (G30 review, MEDIUM): a live dispatched worker is
+                    // still writing into this exact worktree — spawning the
+                    // fresh-verify build/test subprocess now races the
+                    // worker's own uncommitted edits and wastes a real build
+                    // against a moving target. `goal_worker_is_live` is the
+                    // SAME process-global registry Y4b already trusts for
+                    // liveness elsewhere (`goal_status`'s `session_alive`);
+                    // deferring here just skips this one redundant verify —
+                    // the worker's own eventual dispatch completion re-runs
+                    // this Hold check once the worktree stops moving.
+                    let worker_still_live =
+                        !salvage_already_failed && goal_worker_is_live(&card.id);
+                    let verified_at_head = if salvage_already_failed || worker_still_live {
                         false
                     } else {
                         let current_head = git_in_worktree(worktree_path, &["rev-parse", "HEAD"])
@@ -18391,6 +18403,9 @@ async fn maybe_hold_review(
                         }
                         uncommitted_work = false;
                         verify_ran = true;
+                    } else if worker_still_live {
+                        unlanded_checkpoint_note =
+                            Some("worker still live; verify deferred".to_string());
                     } else {
                         unlanded_checkpoint_note = Some(format!(
                             "unlanded checkpoint present but unverified: {unlanded} commit(s) \
@@ -26677,6 +26692,114 @@ mod tests {
             call_count.load(std::sync::atomic::Ordering::SeqCst),
             0,
             "must never pay for a fresh verify against a range salvage already proved broken"
+        );
+    }
+
+    /// R42a-c (G30 review, MEDIUM): `run_fresh_verify_for_hold` spawns a
+    /// real build/test subprocess against the goal worktree — if a worker
+    /// this process itself dispatched is still live and writing to that
+    /// exact worktree, the fresh verify races the worker's own edits
+    /// instead of confirming a settled head. Same unlanded-commit shape as
+    /// test (c) above (a genuinely passing fix), but with a live worker
+    /// registered in `GOAL_WORKERS` (Y4b's registry, the same one `goal_
+    /// status`'s `session_alive` trusts) for this card: the override must
+    /// Hold with "worker still live; verify deferred" WITHOUT spending the
+    /// fresh-verify seam. Once that worker's handle is taken — the same
+    /// state a genuinely completed dispatch leaves behind — a second call
+    /// against the identical unlanded commit must fall through to the
+    /// fresh verify and Allow, proving the seam wasn't merely broken.
+    // `GOAL_WORKERS` is process-global; serialize against the other tests
+    // that touch it (same convention as `goal_status_reports_a_registered_
+    // goal_worker_as_alive_and_leaves_it_alone`).
+    #[tokio::test]
+    #[serial_test::serial(goal_workers)]
+    async fn maybe_hold_review_defers_fresh_verify_while_goal_worker_is_live_then_verifies_once_gone(
+    ) {
+        let pool = test_pool().await;
+        let (trunk, goal_dir, base_sha, fix_sha) =
+            r22d_trunk_and_goal_worktree("r42ac-defer-while-live");
+
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(trunk.path().to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                "worktree_path": goal_dir.path().to_string_lossy(),
+                // Bound to the BASE commit, not the fix that is actually
+                // unlanded, so neither `recorded_pass_at_head` nor
+                // `salvage_already_failed` can explain a Hold here — only
+                // the live-worker guard can.
+                "head_commit": base_sha,
+                "commits": [],
+                "baseline_commit": fix_sha,
+                "files_changed": 1,
+                "insertions": 1,
+                "deletions": 0,
+            }),
+        )
+        .await
+        .unwrap();
+        stamp_successful_verify(&pool, &card.id).await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        register_goal_worker(
+            &card.id,
+            "r42ac-live-session",
+            goal_engine::GoalKill::None,
+            None,
+        );
+        assert!(goal_worker_is_live(&card.id));
+
+        let live_call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let held_while_live = FRESH_HOLD_VERIFY_CALL_COUNT
+            .scope(
+                live_call_count.clone(),
+                maybe_hold_review(&pool, &card, false, None),
+            )
+            .await
+            .unwrap();
+        let plan = held_while_live
+            .expect("a live worker's worktree must Hold, never Allow via a racing verify");
+        assert!(
+            plan.contains("worker still live; verify deferred"),
+            "must name the deferral reason: {plan}"
+        );
+        assert_eq!(
+            live_call_count.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "must never spawn the fresh verify while the dispatching worker is still live"
+        );
+
+        // The worker is gone now (a completed/cancelled dispatch clears its
+        // `GOAL_WORKERS` entry the same way) — the identical unlanded commit
+        // must now earn its Allow the normal way, by actually paying for a
+        // fresh verify.
+        take_goal_worker(&card.id);
+        assert!(!goal_worker_is_live(&card.id));
+
+        let gone_call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let held_once_gone = FRESH_HOLD_VERIFY_CALL_COUNT
+            .scope(
+                gone_call_count.clone(),
+                maybe_hold_review(&pool, &card, false, None),
+            )
+            .await
+            .unwrap();
+        assert!(
+            held_once_gone.is_none(),
+            "once the worker is gone, a fresh verify pass against the actually-unlanded commit \
+             must Allow: {held_once_gone:?}"
+        );
+        assert!(
+            gone_call_count.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "must actually spend the fresh-verify seam once the worker is no longer live"
         );
     }
 
