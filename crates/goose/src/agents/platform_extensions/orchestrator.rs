@@ -5035,11 +5035,18 @@ pub(crate) enum WorkerPromptProfile {
     Compact,
 }
 
-/// R48c: explicit override env var (the design's "explicit env/pack flag"
-/// selection path) — an eval tier or operator can pin `compact` (case
-/// insensitive) regardless of whether a model context limit is known yet.
-/// Zero hits repo-wide before this lane, matching "A45 design" Q2's finding
-/// that no worker-profile override existed.
+/// R48i: `PERMAGENT_WORKER_PROFILE=compact` is a FORCE-OVERRIDE for tests
+/// and experiments only — it always wins over whatever this dispatch's
+/// routing actually resolved. It is deliberately NOT how an ordinary mixed
+/// tier gets its local dispatches compacted any more: `Tier::pack_env()`
+/// used to export it process-wide for the whole run (R48f), which is
+/// exactly the R48i bug — every dispatch in that process, cloud-routed ones
+/// included, inherited the same compact brief regardless of what model
+/// actually ran them. The per-dispatch signals below (`worker_prompt_
+/// profile`'s `model_context_limit`/`provider_is_local` params) are now the
+/// primary selection path; this env var is for a human or an eval harness
+/// to pin `compact` deliberately, not for a tier to announce "this run has
+/// a local worker in it somewhere".
 pub(crate) const WORKER_PROMPT_PROFILE_ENV: &str = "PERMAGENT_WORKER_PROFILE";
 
 /// R48c: the model context-limit ceiling at or under which `worker_prompt_
@@ -5047,21 +5054,33 @@ pub(crate) const WORKER_PROMPT_PROFILE_ENV: &str = "PERMAGENT_WORKER_PROFILE";
 /// MiniCPM5-2B probe measured overflowing against (`## A45 design` Q1/Q4).
 pub(crate) const COMPACT_PROFILE_CONTEXT_LIMIT: u64 = 32_768;
 
-/// R48c: pure selection function — an explicit `env_override` of `"compact"`
-/// always wins (covers a worker whose model isn't known ahead of dispatch,
-/// e.g. a pack-pinned local tier); otherwise a known `model_context_limit`
-/// at or under `COMPACT_PROFILE_CONTEXT_LIMIT` selects `Compact`. An unknown
-/// limit (`None` — no explicit model configured on the worker persona) or a
-/// limit above the ceiling keeps `Default`, so a coordinator/cloud worker
-/// with no local-tier pin renders byte-identically to before this lane.
+/// R48i: pure selection function, now keyed on the model that ACTUALLY runs
+/// this dispatch rather than a worker persona's merely-configured pin. An
+/// explicit `env_override` of `"compact"` always wins — see
+/// `WORKER_PROMPT_PROFILE_ENV`'s own doc comment for why that's a force
+/// override now, not the primary signal. Otherwise `Compact` when either
+/// `provider_is_local` (the resolved provider is a local runtime —
+/// `cost_router::is_local_provider`) or a known `model_context_limit` sits
+/// at or under `COMPACT_PROFILE_CONTEXT_LIMIT`. `model_context_limit: None`
+/// with `provider_is_local: false` (nothing resolved, or a cloud/coordinator
+/// model with an unknown limit) keeps `Default`, so a coordinator/cloud
+/// worker with no local-tier route renders byte-identically to before this
+/// lane. Call sites in `dispatch_goal_fn` OR two calls of this function
+/// together (once for the RESOLVED route, once for an explicit per-tier/
+/// persona pin — see that call site's own comment) to implement the full
+/// "compact iff A or B or C" rule from one small function.
 pub(crate) fn worker_prompt_profile(
     model_context_limit: Option<u64>,
+    provider_is_local: bool,
     env_override: Option<&str>,
 ) -> WorkerPromptProfile {
     if env_override
         .map(|v| v.eq_ignore_ascii_case("compact"))
         .unwrap_or(false)
     {
+        return WorkerPromptProfile::Compact;
+    }
+    if provider_is_local {
         return WorkerPromptProfile::Compact;
     }
     match model_context_limit {
@@ -6248,32 +6267,11 @@ pub(crate) async fn dispatch_goal_fn(
         )
     });
 
-    // R48c: decide the worker prompt profile before the brief below is
-    // built, so a compact-tier worker never has the unbounded code-map/
-    // digest blocks assembled only to discard them downstream. Two
-    // independent signals, either selects `Compact` (`worker_prompt_
-    // profile`'s own doc comment has the precedence): an explicit
-    // `PERMAGENT_WORKER_PROFILE=compact` override, or the worker persona's
-    // own EXPLICITLY configured model (`worker_cfg.model`, agent.yaml)
-    // read against the 32,768 ceiling. A worker with no explicit model pin
-    // resolves its model later, via role/pack routing this function runs
-    // well after the brief is built — that goal keeps `Default` here,
-    // matching "coordinator/cloud workers keep today's profile".
-    let worker_profile_env = std::env::var(WORKER_PROMPT_PROFILE_ENV).ok();
-    let worker_model_context_limit =
-        worker_cfg
-            .and_then(|w| w.model.as_deref())
-            .and_then(|model| {
-                crate::model::ModelConfig::new(model).ok().map(|mc| {
-                    mc.with_canonical_limits(
-                        worker_cfg.and_then(|w| w.provider.as_deref()).unwrap_or(""),
-                    )
-                    .context_limit() as u64
-                })
-            });
-    let worker_profile =
-        worker_prompt_profile(worker_model_context_limit, worker_profile_env.as_deref());
-    let compact_worker_profile = worker_profile == WorkerPromptProfile::Compact;
+    // R48i: hoisted from its old declaration immediately above the match
+    // (still used there too) so the routing-resolution block below — which
+    // needs to know whether this dispatch even ROUTES a model at all — can
+    // read it before the brief is built. See that block's own comment.
+    let engine_kind = worker_cfg.map(|worker| &worker.engine);
 
     // Look up project for root_path context
     let project = crate::projects::get_project(&pool, &card.project_id)
@@ -6292,6 +6290,327 @@ pub(crate) async fn dispatch_goal_fn(
 
     let root_path = project.root_path.as_deref().unwrap_or("(not specified)");
 
+    // Verify-loop escalation state (the #739 ACTION), read here — ahead of
+    // the routing-resolution block just below, which needs it too — rather
+    // than at its old spot inside the brief-building section further down.
+    let escalation_state = card
+        .metadata_json
+        .as_object()
+        .and_then(crate::cost_router::GoalEscalationState::from_metadata);
+
+    // R48i (HARNESS_LOOP_LOG.md "Lane R48g"/"Lane R48c"/"Lane R48d"/"Lane
+    // R48b" — the compact-worker-profile chain): resolve the role/model
+    // routing decision for THIS dispatch here, before the brief below is
+    // built, instead of inside the InternalSubagent match arm the way
+    // R48c/R48d/R48b left it. That old position made `worker_prompt_
+    // profile` decide compact-vs-default from either the process-global
+    // `PERMAGENT_WORKER_PROFILE` env (R48f's mixed-tier export, set for the
+    // WHOLE run, not this dispatch) or the worker persona's merely-
+    // CONFIGURED model pin — never from what this dispatch's routing
+    // actually resolved. In a mixed tier that made a CLOUD-routed dispatch
+    // (and an R48b fallback-to-cloud redispatch) inherit the local worker's
+    // compact brief too, silently dropping the code-map/digest context a
+    // cloud model should get. Moving the resolution here means the code
+    // map/digest bounding below — and the `InternalSubagentEngine.compact_
+    // worker_profile` flag passed at spawn — both see the REAL resolved
+    // model, not a guess made before routing ran.
+    //
+    // Only an InternalSubagent-routed dispatch resolves a model through the
+    // cost router at all — an external/supervised CLI worker owns its own
+    // model flag in `agent.yaml` and the role router cannot override it
+    // (unchanged from R48d/R48b). `is_internal_route` mirrors the match
+    // arms below exactly, so this block runs in precisely the cases that
+    // used to run it (no new escalation-state DB writes or audit lines for
+    // an external/supervised worker that never had them before).
+    let is_internal_route = !matches!(
+        engine_kind,
+        Some(agent_identity::WorkerEngineKind::ExternalCli { .. })
+            | Some(agent_identity::WorkerEngineKind::SupervisedCli { .. })
+            | Some(agent_identity::WorkerEngineKind::Pending)
+    );
+    let mut role: Option<crate::cost_router::WorkflowRole> = None;
+    let mut resolved: Option<(
+        crate::cost_router::RoleModel,
+        crate::cost_router::RoleSource,
+    )> = None;
+    // R48d: the routing decision actually applied to this dispatch, if any
+    // (InternalSubagent only — an external/supervised CLI worker owns its
+    // own model flag). Recorded onto the audit line and `capability_
+    // snapshot.cost_routing` after the match, alongside the existing
+    // cheapest_capable/pack_honored fields.
+    let mut routing_choice: Option<RoutingChoice> = None;
+    // R48b: set when this dispatch overrode a repeated local attempt to
+    // the coordinator/cloud tier (see `should_fallback_to_coordinator_
+    // tier`) — read after the match both to stamp the one-shot
+    // `worker_fallback_used` guardrail on the claim and to increment the
+    // `fallbacks` receipt counter alongside `routed_local`/`routed_cloud`.
+    let mut worker_fallback_applied: Option<WorkerFallbackReason> = None;
+    if is_internal_route {
+        // Resolve the worker's workflow role → its model (#730 wiring): the
+        // hand-CONFIGURED mapping wins; otherwise the recommender-DERIVED
+        // best-fit map (ruling 2026-08-18 — the cheapest model the
+        // user actually has that clears the role's floor, local or cloud);
+        // otherwise None ⇒ the engine clones the parent session model. Never
+        // a baked-in vendor default: the derived map is built only from
+        // keyed providers and installed local models. The map is computed
+        // ONCE per dispatch (cached process-wide) and the routing receipt
+        // records which source picked the model.
+        //
+        // X-cost-1 (HARNESS_LOOP_LOG.md "Lane G4 review" finding 4 / Lane
+        // U's U4): a HEADLESS dispatch (`policy` installed) now routes
+        // through `resolve_dispatch_role_model`, which consults
+        // `PERMAGENT_PACK_*` (via `cost_router::delegate::delegate_routing`)
+        // at the same precedence an ordinary `delegate`/`summon` call uses
+        // — role pin → pack pin → gated escalation → the T1 session
+        // fallback. A DAEMON dispatch (`policy: None`) is unchanged: it
+        // still calls `role_model_or_derived` directly (configured, else
+        // the always-on derived best-fit map, else the session) —
+        // `PERMAGENT_PACK_*` is still never consulted there, matching every
+        // other daemon call site's byte-identical-behavior contract (Lane
+        // U's report).
+        let derived = crate::cost_router::derived_role_map().await;
+        // R48d: an explicit per-goal `worker_tier` (goal_advance{action:
+        // dispatch, worker_tier, reason}) outranks the worker's own persona
+        // role outright — the coordinator's own routing call, when it makes
+        // one (HARNESS_LOOP_LOG.md "A45 design", Addendum (b)). `explicit_
+        // routing` is `None` for the ordinary case (omitted/"auto"), in
+        // which the existing precedence below (persona role, else the
+        // first-dispatch reassessment) applies unchanged. Already validated
+        // against the roster at `goal_advance` time, before it was ever
+        // persisted.
+        let explicit_routing = explicit_routing_choice(&card.metadata_json);
+        if let Some(rc) = explicit_routing.as_ref() {
+            tracing::info!(
+                target: "permagentd::brain",
+                card_id,
+                routing_choice = rc.tier.as_str(),
+                reason = %rc.reason,
+                "goal dispatched with an explicit worker_tier",
+            );
+        }
+        let worker_role = worker_cfg.and_then(|w| w.routing_role());
+        role = explicit_routing.as_ref().map(|rc| rc.tier).or(worker_role);
+        resolved = role.and_then(|r| resolve_dispatch_role_model(r, &derived, policy));
+        routing_choice = explicit_routing.clone();
+
+        // Verify-loop escalation override: an escalated re-dispatch runs
+        // the model for the climbed tier (configured, else derived). This is
+        // never a baked default — `escalate_verify_fix_loop` only marks a
+        // swap when the next tier actually resolves (else it parks), so an
+        // escalated goal reaching here has a mapped model.
+        if let Some(tier) = escalation_state
+            .as_ref()
+            .filter(|s| s.is_escalated())
+            .and_then(|s| s.current_tier)
+        {
+            let esc_role = crate::cost_router::workflow_role_for_tier(tier);
+            if let Some(hit) = resolve_dispatch_role_model(esc_role, &derived, policy) {
+                role = Some(esc_role);
+                resolved = Some(hit);
+                routing_choice = Some(RoutingChoice {
+                    tier: esc_role,
+                    reason: "verify-loop escalation".to_string(),
+                });
+            }
+        } else if escalation_state.is_none() {
+            if let Some(rc) = explicit_routing.as_ref() {
+                // Explicit per-goal tier already applied above; still
+                // seed the escalation ladder from it, exactly like the
+                // default-rule branch below, so a later verify failure
+                // has a real rung to climb from.
+                let seed = crate::cost_router::GoalEscalationState::seed(Some(
+                    crate::cost_router::tier_for_workflow_role(rc.tier),
+                ));
+                if let Err(e) = persist_escalation_state(&pool, card_id, &seed, None).await {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        card_id,
+                        error = %e,
+                        "failed to seed verify-escalation state (non-fatal)",
+                    );
+                }
+            } else {
+                // First dispatch of a fresh goal with no explicit tier:
+                // seed the escalation ladder position, and pick the rung
+                // from the GOAL rather than from the worker's static
+                // role. The worker's role says what KIND of work it
+                // does; it says nothing about whether this particular
+                // goal is a README or a concurrency rewrite, so every
+                // goal a worker took started on the same rung.
+                //
+                // R48d: `default_worker_tier_for_goal` is the same
+                // deterministic, zero-LLM rule `assess_goal` always was
+                // (free text can only lower the tier; only structure and
+                // explicit tags can raise it), refined into a concrete
+                // `WorkflowRole` directly rather than an abstract `Tier`.
+                let (assessed_role, assessed_reason) =
+                    crate::cost_router::default_worker_tier_for_goal(
+                        &card.title,
+                        &card.description,
+                        &card.metadata_json,
+                    );
+                if let Some(hit) = resolve_dispatch_role_model(assessed_role, &derived, policy) {
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        card_id,
+                        tier = crate::cost_router::tier_for_workflow_role(assessed_role).as_str(),
+                        routing_choice = assessed_role.as_str(),
+                        reason = assessed_reason,
+                        provider = %hit.0.provider,
+                        model = %hit.0.model,
+                        source = hit.1.as_str(),
+                        "goal assessed to a starting tier",
+                    );
+                    role = Some(assessed_role);
+                    resolved = Some(hit);
+                    routing_choice = Some(RoutingChoice {
+                        tier: assessed_role,
+                        reason: assessed_reason.to_string(),
+                    });
+                }
+                let seed = crate::cost_router::GoalEscalationState::seed(Some(
+                    crate::cost_router::tier_for_workflow_role(assessed_role),
+                ));
+                if let Err(e) = persist_escalation_state(&pool, card_id, &seed, None).await {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        card_id,
+                        error = %e,
+                        "failed to seed verify-escalation state (non-fatal)",
+                    );
+                }
+            }
+        }
+        // R48b (HARNESS_LOOP_LOG.md "A45 design" Q5): a goal that started
+        // on the LOCAL worker tier and whose most recent attempt ended with
+        // a failure a local model cannot fix by repeating itself (context-
+        // exceeded, the wall/turn ceiling, or a failed verify with nothing
+        // committed) gets ONE redispatch on the coordinator/cloud tier
+        // instead of a third identical local attempt — never for a
+        // reviewer rejection (see `classify_worker_fallback_reason`'s own
+        // doc comment). Counted within the existing attempt cap: this only
+        // changes WHICH model runs this attempt, not how many attempts the
+        // goal gets. Checked LAST, after every other routing precedence
+        // above has already set `role`/`resolved` for this dispatch — an
+        // explicit per-goal `worker_tier` or a live verify-loop escalation
+        // that already moved this dispatch off Local wins outright (the
+        // `role == Some(Local)` guard below); this rule only fires when the
+        // goal is still about to repeat the identical local tier that just
+        // failed it. R48i: this is also the reason the profile decision
+        // below MUST happen after this block, not before it — a fallback
+        // redispatch changes the resolved model, so it must also change
+        // the resolved profile, and it does, by construction (the profile
+        // reads `resolved` after this block has had its say).
+        if role == Some(crate::cost_router::WorkflowRole::Local) {
+            let prior_attempt_count = card
+                .metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let prior_tier_was_local = card
+                .metadata_json
+                .pointer("/capability_snapshot/cost_routing/routing_choice")
+                .and_then(serde_json::Value::as_str)
+                == Some(crate::cost_router::WorkflowRole::Local.as_str());
+            let fallback_already_used = card
+                .metadata_json
+                .get("worker_fallback_used")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let prior_last_error = card
+                .metadata_json
+                .get("last_error")
+                .and_then(|v| v.as_str());
+            if let Some(fallback_reason) = should_fallback_to_coordinator_tier(
+                prior_last_error,
+                prior_attempt_count,
+                prior_tier_was_local,
+                fallback_already_used,
+            ) {
+                if let Some(hit) = resolve_dispatch_role_model(
+                    crate::cost_router::WorkflowRole::Orchestrate,
+                    &derived,
+                    policy,
+                ) {
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        card_id,
+                        from = crate::cost_router::WorkflowRole::Local.as_str(),
+                        to = crate::cost_router::WorkflowRole::Orchestrate.as_str(),
+                        reason = fallback_reason.as_str(),
+                        "worker_fallback from={} to={} reason={}",
+                        crate::cost_router::WorkflowRole::Local.as_str(),
+                        crate::cost_router::WorkflowRole::Orchestrate.as_str(),
+                        fallback_reason.as_str()
+                    );
+                    role = Some(crate::cost_router::WorkflowRole::Orchestrate);
+                    resolved = Some(hit);
+                    routing_choice = Some(RoutingChoice {
+                        tier: crate::cost_router::WorkflowRole::Orchestrate,
+                        reason: format!("worker_fallback: {}", fallback_reason.as_str()),
+                    });
+                    worker_fallback_applied = Some(fallback_reason);
+                }
+                // No baked default: if the coordinator/cloud (HARD) tier
+                // has no configured/derived model either,
+                // `resolve_dispatch_role_model` returns `None` and the
+                // dispatch simply proceeds on the local tier it already
+                // resolved — matching every other cost_router rule's
+                // guardrail (never invent a vendor default).
+            }
+        }
+    }
+
+    // R48i: the worker prompt profile is now a per-dispatch decision, not a
+    // process-global one. Two independent inputs, either selects `Compact`:
+    // (1) the RESOLVED route above — this dispatch's actual model, via
+    // `resolved`'s `(provider, model)` — checked against both `cost_router::
+    // is_local_provider` and `ModelConfig::with_canonical_limits`'s context
+    // limit; `resolved: None` (nothing routed — an external/supervised CLI
+    // worker, or an InternalSubagent role with no configured/derived model)
+    // contributes neither signal, keeping `Default` by construction. (2) an
+    // explicit per-tier override: the worker PERSONA's own explicitly
+    // configured model/provider (`worker_cfg.model`/`.provider`, agent.yaml
+    // — R48c's original signal, kept so a persona can force compact even
+    // when its role happens to route elsewhere or nothing resolves). The
+    // `PERMAGENT_WORKER_PROFILE` env var, applied to both calls below, is a
+    // force-override on top of either — see `WORKER_PROMPT_PROFILE_ENV`'s
+    // doc comment.
+    let model_context_limit_for = |provider: &str, model: &str| -> Option<u64> {
+        crate::model::ModelConfig::new(model)
+            .ok()
+            .map(|mc| mc.with_canonical_limits(provider).context_limit() as u64)
+    };
+    let (route_context_limit, route_provider_is_local) = match resolved.as_ref() {
+        Some((rm, _)) => (
+            model_context_limit_for(&rm.provider, &rm.model),
+            crate::cost_router::is_local_provider(&rm.provider),
+        ),
+        None => (None, false),
+    };
+    let persona_provider = worker_cfg.and_then(|w| w.provider.as_deref()).unwrap_or("");
+    let persona_context_limit = worker_cfg
+        .and_then(|w| w.model.as_deref())
+        .and_then(|model| model_context_limit_for(persona_provider, model));
+    let persona_provider_is_local = crate::cost_router::is_local_provider(persona_provider);
+    let worker_profile_env = std::env::var(WORKER_PROMPT_PROFILE_ENV).ok();
+    let compact_worker_profile = worker_prompt_profile(
+        route_context_limit,
+        route_provider_is_local,
+        worker_profile_env.as_deref(),
+    ) == WorkerPromptProfile::Compact
+        || worker_prompt_profile(
+            persona_context_limit,
+            persona_provider_is_local,
+            worker_profile_env.as_deref(),
+        ) == WorkerPromptProfile::Compact;
+    tracing::info!(
+        target: "permagentd::brain",
+        card_id,
+        worker_profile = if compact_worker_profile { "compact" } else { "default" },
+        "dispatch worker prompt profile resolved",
+    );
+
     // Build instructions
     let mut instructions = format!(
         "Goal: {}\n\nDescription: {}\nProject: {}\nProject root: {}",
@@ -6304,14 +6623,11 @@ pub(crate) async fn dispatch_goal_fn(
     if let Some(role_block) = super::role_brief::role_brief_from_metadata(&card.metadata_json) {
         instructions = format!("{role_block}\n\n{instructions}");
     }
-    // Verify-loop escalation (the #739 ACTION): read the goal's per-goal
-    // escalation state. On an escalated RE-dispatch, carry the prior (weaker)
-    // attempt's diff + verify failure forward as context (R2) so the stronger
-    // model continues the fix rather than restarting cold.
-    let escalation_state = card
-        .metadata_json
-        .as_object()
-        .and_then(crate::cost_router::GoalEscalationState::from_metadata);
+    // Verify-loop escalation (the #739 ACTION): `escalation_state` was
+    // resolved earlier (R48i — needed ahead of the routing-resolution block
+    // above, not just here). On an escalated RE-dispatch, carry the prior
+    // (weaker) attempt's diff + verify failure forward as context (R2) so
+    // the stronger model continues the fix rather than restarting cold.
     if let Some(handoff) = escalation_state
         .as_ref()
         .filter(|s| s.is_escalated())
@@ -6522,7 +6838,7 @@ pub(crate) async fn dispatch_goal_fn(
 
     // Resolve the engine for this worker and dispatch. The engine owns *how*
     // the goal runs; the card lifecycle around it stays here.
-    // (`worker_cfg` was resolved earlier, alongside R48c's profile decision.)
+    // (`worker_cfg` was resolved earlier, alongside R48i's profile decision.)
     let timeout_secs = worker_cfg
         .and_then(|w| w.timeout_secs)
         .unwrap_or(goal_engine::DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS);
@@ -6550,7 +6866,10 @@ pub(crate) async fn dispatch_goal_fn(
     // worker's lifetime. This is still before the atomic claim below: invalid
     // metadata or an unenforceable engine costs no attempt.
     let dispatch_scope = super::dispatch_scope::extension_scope_from_metadata(&card.metadata_json)?;
-    let engine_kind = worker_cfg.map(|worker| &worker.engine);
+    // R48i: `engine_kind`/`routing_choice`/`worker_fallback_applied` are all
+    // resolved earlier now (see the routing-resolution block above,
+    // hoisted so the worker prompt profile can be derived from the same
+    // resolved model) — reused here unchanged.
     if let Some(engine_label) = dispatch_scope
         .as_ref()
         .and_then(|_| super::dispatch_scope::unenforceable_engine_label(engine_kind))
@@ -6566,18 +6885,6 @@ pub(crate) async fn dispatch_goal_fn(
              `worker` argument) or clear '{key}' from the card's metadata."
         ));
     }
-    // R48d: the routing decision actually applied to this dispatch, if any
-    // (InternalSubagent only — an external/supervised CLI worker owns its
-    // own model flag, see the arms below). Recorded onto the audit line and
-    // `capability_snapshot.cost_routing` after the match, alongside the
-    // existing cheapest_capable/pack_honored fields.
-    let mut routing_choice: Option<RoutingChoice> = None;
-    // R48b: set when this dispatch overrode a repeated local attempt to
-    // the coordinator/cloud tier (see `should_fallback_to_coordinator_
-    // tier`) — read after the match both to stamp the one-shot
-    // `worker_fallback_used` guardrail on the claim and to increment the
-    // `fallbacks` receipt counter alongside `routed_local`/`routed_cloud`.
-    let mut worker_fallback_applied: Option<WorkerFallbackReason> = None;
     let engine: Box<dyn goal_engine::GoalEngine> = match engine_kind {
         Some(agent_identity::WorkerEngineKind::ExternalCli { bin, args }) => {
             // External workers own their model flag in `agent.yaml`; the role
@@ -6659,217 +6966,15 @@ pub(crate) async fn dispatch_goal_fn(
             } else {
                 narrowed
             };
-            // Resolve the worker's workflow role → its model (#730 wiring): the
-            // hand-CONFIGURED mapping wins; otherwise the recommender-DERIVED
-            // best-fit map (ruling 2026-08-18 — the cheapest model the
-            // user actually has that clears the role's floor, local or cloud);
-            // otherwise None ⇒ the engine clones the parent session model. Never
-            // a baked-in vendor default: the derived map is built only from
-            // keyed providers and installed local models. The map is computed
-            // ONCE per dispatch (cached process-wide) and the routing receipt
-            // records which source picked the model.
-            //
-            // X-cost-1 (HARNESS_LOOP_LOG.md "Lane G4 review" finding 4 /
-            // Lane U's U4): a HEADLESS dispatch (`policy` installed) now
-            // routes through `resolve_dispatch_role_model`, which consults
-            // `PERMAGENT_PACK_*` (via `cost_router::delegate::delegate_routing`)
-            // at the same precedence an ordinary `delegate`/`summon` call
-            // uses — role pin → pack pin → gated escalation → the T1 session
-            // fallback. A DAEMON dispatch (`policy: None`) is unchanged: it
-            // still calls `role_model_or_derived` directly (configured, else
-            // the always-on derived best-fit map, else the session) —
-            // `PERMAGENT_PACK_*` is still never consulted there, matching
-            // every other daemon call site's byte-identical-behavior
-            // contract (Lane U's report).
+            // R48i: `role`/`resolved`/`routing_choice`/`worker_fallback_
+            // applied` were all resolved earlier now (see the routing-
+            // resolution block above `escalation_state`, hoisted ahead of
+            // the brief so the worker prompt profile can be derived from
+            // the resolved model too) — reused here unchanged. Recompute
+            // `derived` (cheap: `derived_role_map()` is cached process-
+            // wide) purely for the routing receipt below, which wants the
+            // full map's provenance, not just this dispatch's pick.
             let derived = crate::cost_router::derived_role_map().await;
-            // R48d: an explicit per-goal `worker_tier` (goal_advance{action:
-            // dispatch, worker_tier, reason}) outranks the worker's own
-            // persona role outright — the coordinator's own routing call,
-            // when it makes one (HARNESS_LOOP_LOG.md "A45 design", Addendum
-            // (b)). `explicit_routing` is `None` for the ordinary case
-            // (omitted/"auto"), in which the existing precedence below
-            // (persona role, else the first-dispatch reassessment) applies
-            // unchanged. Already validated against the roster at
-            // `goal_advance` time, before it was ever persisted.
-            let explicit_routing = explicit_routing_choice(&card.metadata_json);
-            if let Some(rc) = explicit_routing.as_ref() {
-                tracing::info!(
-                    target: "permagentd::brain",
-                    card_id,
-                    routing_choice = rc.tier.as_str(),
-                    reason = %rc.reason,
-                    "goal dispatched with an explicit worker_tier",
-                );
-            }
-            let worker_role = worker_cfg.and_then(|w| w.routing_role());
-            let mut role = explicit_routing.as_ref().map(|rc| rc.tier).or(worker_role);
-            let mut resolved = role.and_then(|r| resolve_dispatch_role_model(r, &derived, policy));
-            routing_choice = explicit_routing.clone();
-
-            // Verify-loop escalation override: an escalated re-dispatch runs
-            // the model for the climbed tier (configured, else derived). This is
-            // never a baked default — `escalate_verify_fix_loop` only marks a
-            // swap when the next tier actually resolves (else it parks), so an
-            // escalated goal reaching here has a mapped model.
-            if let Some(tier) = escalation_state
-                .as_ref()
-                .filter(|s| s.is_escalated())
-                .and_then(|s| s.current_tier)
-            {
-                let esc_role = crate::cost_router::workflow_role_for_tier(tier);
-                if let Some(hit) = resolve_dispatch_role_model(esc_role, &derived, policy) {
-                    role = Some(esc_role);
-                    resolved = Some(hit);
-                    routing_choice = Some(RoutingChoice {
-                        tier: esc_role,
-                        reason: "verify-loop escalation".to_string(),
-                    });
-                }
-            } else if escalation_state.is_none() {
-                if let Some(rc) = explicit_routing.as_ref() {
-                    // Explicit per-goal tier already applied above; still
-                    // seed the escalation ladder from it, exactly like the
-                    // default-rule branch below, so a later verify failure
-                    // has a real rung to climb from.
-                    let seed = crate::cost_router::GoalEscalationState::seed(Some(
-                        crate::cost_router::tier_for_workflow_role(rc.tier),
-                    ));
-                    if let Err(e) = persist_escalation_state(&pool, card_id, &seed, None).await {
-                        tracing::warn!(
-                            target: "permagentd::brain",
-                            card_id,
-                            error = %e,
-                            "failed to seed verify-escalation state (non-fatal)",
-                        );
-                    }
-                } else {
-                    // First dispatch of a fresh goal with no explicit tier:
-                    // seed the escalation ladder position, and pick the rung
-                    // from the GOAL rather than from the worker's static
-                    // role. The worker's role says what KIND of work it
-                    // does; it says nothing about whether this particular
-                    // goal is a README or a concurrency rewrite, so every
-                    // goal a worker took started on the same rung.
-                    //
-                    // R48d: `default_worker_tier_for_goal` is the same
-                    // deterministic, zero-LLM rule `assess_goal` always was
-                    // (free text can only lower the tier; only structure and
-                    // explicit tags can raise it), refined into a concrete
-                    // `WorkflowRole` directly rather than an abstract `Tier`.
-                    let (assessed_role, assessed_reason) =
-                        crate::cost_router::default_worker_tier_for_goal(
-                            &card.title,
-                            &card.description,
-                            &card.metadata_json,
-                        );
-                    if let Some(hit) = resolve_dispatch_role_model(assessed_role, &derived, policy)
-                    {
-                        tracing::info!(
-                            target: "permagentd::brain",
-                            card_id,
-                            tier = crate::cost_router::tier_for_workflow_role(assessed_role).as_str(),
-                            routing_choice = assessed_role.as_str(),
-                            reason = assessed_reason,
-                            provider = %hit.0.provider,
-                            model = %hit.0.model,
-                            source = hit.1.as_str(),
-                            "goal assessed to a starting tier",
-                        );
-                        role = Some(assessed_role);
-                        resolved = Some(hit);
-                        routing_choice = Some(RoutingChoice {
-                            tier: assessed_role,
-                            reason: assessed_reason.to_string(),
-                        });
-                    }
-                    let seed = crate::cost_router::GoalEscalationState::seed(Some(
-                        crate::cost_router::tier_for_workflow_role(assessed_role),
-                    ));
-                    if let Err(e) = persist_escalation_state(&pool, card_id, &seed, None).await {
-                        tracing::warn!(
-                            target: "permagentd::brain",
-                            card_id,
-                            error = %e,
-                            "failed to seed verify-escalation state (non-fatal)",
-                        );
-                    }
-                }
-            }
-            // R48b (HARNESS_LOOP_LOG.md "A45 design" Q5): a goal that
-            // started on the LOCAL worker tier and whose most recent
-            // attempt ended with a failure a local model cannot fix by
-            // repeating itself (context-exceeded, the wall/turn ceiling,
-            // or a failed verify with nothing committed) gets ONE
-            // redispatch on the coordinator/cloud tier instead of a third
-            // identical local attempt — never for a reviewer rejection
-            // (see `classify_worker_fallback_reason`'s own doc comment).
-            // Counted within the existing attempt cap: this only changes
-            // WHICH model runs this attempt, not how many attempts the
-            // goal gets. Checked LAST, after every other routing
-            // precedence above has already set `role`/`resolved` for this
-            // dispatch — an explicit per-goal `worker_tier` or a live
-            // verify-loop escalation that already moved this dispatch off
-            // Local wins outright (the `role == Some(Local)` guard below);
-            // this rule only fires when the goal is still about to repeat
-            // the identical local tier that just failed it.
-            if role == Some(crate::cost_router::WorkflowRole::Local) {
-                let prior_attempt_count = card
-                    .metadata_json
-                    .get("attempt_count")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let prior_tier_was_local = card
-                    .metadata_json
-                    .pointer("/capability_snapshot/cost_routing/routing_choice")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(crate::cost_router::WorkflowRole::Local.as_str());
-                let fallback_already_used = card
-                    .metadata_json
-                    .get("worker_fallback_used")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                let prior_last_error = card
-                    .metadata_json
-                    .get("last_error")
-                    .and_then(serde_json::Value::as_str);
-                if let Some(fallback_reason) = should_fallback_to_coordinator_tier(
-                    prior_last_error,
-                    prior_attempt_count,
-                    prior_tier_was_local,
-                    fallback_already_used,
-                ) {
-                    if let Some(hit) = resolve_dispatch_role_model(
-                        crate::cost_router::WorkflowRole::Orchestrate,
-                        &derived,
-                        policy,
-                    ) {
-                        tracing::info!(
-                            target: "permagentd::brain",
-                            card_id,
-                            from = crate::cost_router::WorkflowRole::Local.as_str(),
-                            to = crate::cost_router::WorkflowRole::Orchestrate.as_str(),
-                            reason = fallback_reason.as_str(),
-                            "worker_fallback from={} to={} reason={}",
-                            crate::cost_router::WorkflowRole::Local.as_str(),
-                            crate::cost_router::WorkflowRole::Orchestrate.as_str(),
-                            fallback_reason.as_str()
-                        );
-                        role = Some(crate::cost_router::WorkflowRole::Orchestrate);
-                        resolved = Some(hit);
-                        routing_choice = Some(RoutingChoice {
-                            tier: crate::cost_router::WorkflowRole::Orchestrate,
-                            reason: format!("worker_fallback: {}", fallback_reason.as_str()),
-                        });
-                        worker_fallback_applied = Some(fallback_reason);
-                    }
-                    // No baked default: if the coordinator/cloud (HARD)
-                    // tier has no configured/derived model either,
-                    // `resolve_dispatch_role_model` returns `None` and the
-                    // dispatch simply proceeds on the local tier it
-                    // already resolved — matching every other cost_router
-                    // rule's guardrail (never invent a vendor default).
-                }
-            }
             // The routing receipt (#211 snapshot): configured / derived (with
             // provenance) / session model — so the goal card says HOW the model
             // was chosen, not just which worker ran.
@@ -6934,6 +7039,13 @@ pub(crate) async fn dispatch_goal_fn(
     let mut cost_routing_snapshot = serde_json::json!({
         "cheapest_capable": cheapest_capable,
         "pack_honored": pack_honored,
+        // R48i: the worker prompt profile actually applied to this
+        // dispatch — `compact` or `default` — derived from the resolved
+        // route above (see that block's own doc comment), not a process-
+        // global env var. Recorded unconditionally, for every engine kind,
+        // matching `compact_worker_profile`'s own scope (it bounds the
+        // code-map/digest blocks for every profile, not only InternalSubagent).
+        "worker_profile": if compact_worker_profile { "compact" } else { "default" },
     });
     // R48d: record the routing choice actually applied to this dispatch (an
     // explicit worker_tier, a verify-loop escalation, or the default
@@ -44349,47 +44461,65 @@ mod tests {
     // ── Lane R48c ("A45 design" Q4): compact worker prompt profile ──────────
 
     /// The pure selection rule: an explicit override always wins; otherwise
-    /// a known context limit at or under the 32,768 ceiling selects
-    /// `Compact`; an unknown limit or one above the ceiling keeps `Default`.
+    /// a local provider OR a known context limit at or under the 32,768
+    /// ceiling selects `Compact`; nothing resolved (`None`/`false`) keeps
+    /// `Default`.
     #[test]
-    fn worker_prompt_profile_selects_compact_from_either_signal() {
+    fn worker_prompt_profile_selects_compact_from_any_signal() {
         // The named case from the lane brief: a model with exactly a 32,768
         // limit (the same ceiling A39's MiniCPM5-2B probe overflowed).
         assert_eq!(
-            worker_prompt_profile(Some(32_768), None),
+            worker_prompt_profile(Some(32_768), false, None),
             WorkerPromptProfile::Compact,
             "a model context limit at the 32,768 ceiling must select Compact"
         );
         // Below the ceiling too.
         assert_eq!(
-            worker_prompt_profile(Some(8_192), None),
+            worker_prompt_profile(Some(8_192), false, None),
             WorkerPromptProfile::Compact
         );
         // Above the ceiling: a cloud/coordinator-class model keeps Default.
         assert_eq!(
-            worker_prompt_profile(Some(200_000), None),
+            worker_prompt_profile(Some(200_000), false, None),
             WorkerPromptProfile::Default
         );
         // No model context limit known at all (no explicit worker_cfg.model
         // pin) and no override: Default — "coordinator/cloud workers keep
         // today's profile" by construction, not by a special case.
         assert_eq!(
-            worker_prompt_profile(None, None),
+            worker_prompt_profile(None, false, None),
             WorkerPromptProfile::Default
         );
-        // The explicit env/pack override wins even over a large limit.
+        // R48i: a local-runtime provider selects Compact even when the
+        // model's own context limit is unknown or large — a local runtime
+        // (ollama/lmstudio/…) never gets the benefit of the doubt just
+        // because its declared limit looks big.
         assert_eq!(
-            worker_prompt_profile(Some(200_000), Some("compact")),
+            worker_prompt_profile(None, true, None),
+            WorkerPromptProfile::Compact,
+            "a local-provider route must select Compact even with an unknown context limit"
+        );
+        assert_eq!(
+            worker_prompt_profile(Some(200_000), true, None),
+            WorkerPromptProfile::Compact,
+            "a local-provider route must select Compact even over a large context limit"
+        );
+        // The explicit env/pack override wins even over a large limit and a
+        // non-local provider — but see `WORKER_PROMPT_PROFILE_ENV`'s doc
+        // comment: this is now a force-override for tests/experiments, not
+        // how an ordinary mixed tier signals a local worker any more.
+        assert_eq!(
+            worker_prompt_profile(Some(200_000), false, Some("compact")),
             WorkerPromptProfile::Compact
         );
         assert_eq!(
-            worker_prompt_profile(Some(200_000), Some("COMPACT")),
+            worker_prompt_profile(Some(200_000), false, Some("COMPACT")),
             WorkerPromptProfile::Compact,
             "the override must be case-insensitive"
         );
         // An override naming anything else is not a request for Compact.
         assert_eq!(
-            worker_prompt_profile(None, Some("default")),
+            worker_prompt_profile(None, false, Some("default")),
             WorkerPromptProfile::Default
         );
     }
@@ -44425,6 +44555,72 @@ mod tests {
         );
 
         std::env::remove_var(WORKER_PROMPT_PROFILE_ENV);
+    }
+
+    /// R48i (HARNESS_LOOP_LOG.md "Lane R48g"/"Lane R48c"/"Lane R48d"/"Lane
+    /// R48b"): the four scenarios the lane brief names, expressed directly
+    /// against the pure selection rule with the exact resolved-route and
+    /// persona-pin signals `dispatch_goal_fn`'s hoisted routing-resolution
+    /// block would feed it in a mixed tier — a local-routed dispatch, a
+    /// cloud-routed dispatch, a local→cloud fallback redispatch, and the
+    /// env override forcing compact regardless of the resolved route.
+    #[test]
+    fn worker_prompt_profile_mixed_tier_scenarios() {
+        // A local-routed dispatch (WorkflowRole::Local resolved to an
+        // ollama-family provider): Compact, from the resolved provider
+        // alone — no explicit persona pin needed.
+        let local_route_limit = None; // ollama models often report no canonical limit
+        assert_eq!(
+            worker_prompt_profile(
+                local_route_limit,
+                crate::cost_router::is_local_provider("ollama"),
+                None,
+            ),
+            WorkerPromptProfile::Compact,
+            "a local-routed dispatch must select Compact"
+        );
+
+        // A cloud-routed dispatch in the SAME mixed-tier process (the R48i
+        // bug: this used to inherit Compact from the process-global env
+        // var the local worker's tier exported). With the env override
+        // gone from the resolved-route call site, a cloud provider with a
+        // large context limit keeps Default.
+        assert_eq!(
+            worker_prompt_profile(
+                Some(200_000),
+                crate::cost_router::is_local_provider("anthropic"),
+                None,
+            ),
+            WorkerPromptProfile::Default,
+            "a cloud-routed dispatch in a mixed tier must select Default"
+        );
+
+        // An R48b fallback redispatch, local → cloud: the SAME dispatch,
+        // re-evaluated after `resolved` changed from the local model to
+        // the coordinator/cloud one. Default — the fallback exists
+        // precisely so the stronger tier gets its full brief back.
+        assert_eq!(
+            worker_prompt_profile(
+                Some(200_000),
+                crate::cost_router::is_local_provider("anthropic"),
+                None,
+            ),
+            WorkerPromptProfile::Default,
+            "a local\u{2192}cloud fallback redispatch must re-evaluate to Default"
+        );
+
+        // The env override still forces Compact even on what would
+        // otherwise resolve to a cloud/default dispatch — the documented
+        // force-override for tests/experiments.
+        assert_eq!(
+            worker_prompt_profile(
+                Some(200_000),
+                crate::cost_router::is_local_provider("anthropic"),
+                Some("compact"),
+            ),
+            WorkerPromptProfile::Compact,
+            "PERMAGENT_WORKER_PROFILE=compact must still force Compact"
+        );
     }
 
     /// A block within both bounds is returned unchanged — no marker, no
@@ -44598,8 +44794,9 @@ mod tests {
     #[test]
     fn default_profile_selected_for_a_cloud_worker_leaves_blocks_untouched() {
         // A cloud worker's own configured context limit (when one is
-        // configured at all) sits far above the ceiling.
-        let profile = worker_prompt_profile(Some(200_000), None);
+        // configured at all) sits far above the ceiling, and its provider
+        // is not a local runtime.
+        let profile = worker_prompt_profile(Some(200_000), false, None);
         assert_eq!(profile, WorkerPromptProfile::Default);
 
         let block = "some code map or digest content, arbitrarily long ".repeat(200);

@@ -354,18 +354,24 @@ impl Tier {
             ));
             env.push((format!("PERMAGENT_PACK_{role}_MODEL"), model.to_string()));
         }
-        // R48f (G33): a local/ollama worker runs a much smaller context than the
-        // cloud coordinator, so it needs R48c's compact worker profile — export it
-        // alongside the pack pins rather than leaving the worker on the default.
-        if matches!(
-            self.worker_provider.as_deref(),
-            Some("ollama") | Some("local")
-        ) {
-            env.push((
-                "PERMAGENT_WORKER_PROFILE".to_string(),
-                "compact".to_string(),
-            ));
-        }
+        // R48f (G33) used to export `PERMAGENT_WORKER_PROFILE=compact` here
+        // whenever the worker pair was local/ollama, so a local worker in a
+        // mixed tier got R48c's compact worker profile. R48i removed that:
+        // it was a PROCESS-WIDE flag, so every dispatch in the run —
+        // including one this SAME mixed tier routes to the cloud/
+        // coordinator pair via `PERMAGENT_PACK_HARD_*`/`PERMAGENT_PACK_
+        // EDIT_*` above, and an R48b fallback redispatch off the local
+        // tier — inherited the local worker's compact brief too, silently
+        // losing the code-map/digest context a cloud model should get.
+        // `orchestrator::worker_prompt_profile` now derives compact-vs-
+        // default PER DISPATCH from that dispatch's actually resolved
+        // provider (`cost_router::is_local_provider`) and context limit,
+        // so a Local-tier dispatch on this same mixed tier still resolves
+        // to `ollama` and still gets Compact — without a process-wide flag
+        // reaching dispatches this tier never intended it for.
+        // `PERMAGENT_WORKER_PROFILE` remains a manual force-override (see
+        // its doc comment in `orchestrator.rs`) for tests/experiments; a
+        // tier no longer sets it on a worker's behalf.
         env
     }
 }
@@ -512,17 +518,23 @@ mod tests {
             .any(|(k, v)| k == "PERMAGENT_PACK_LOCAL_MODEL" && v == "claude-opus-4-8"));
     }
 
-    /// R48f (G33): a tier whose WORKER is local/ollama also gets R48c's compact
-    /// worker profile; a cloud-only tier must not.
+    /// R48i: neither a mixed tier's local worker NOR a cloud-only tier
+    /// exports `PERMAGENT_WORKER_PROFILE` any more — R48f's process-wide
+    /// export (superseding this test) made a CLOUD-routed dispatch on the
+    /// very same mixed tier inherit the local worker's compact brief too.
+    /// `orchestrator::worker_prompt_profile` now derives compact-vs-default
+    /// per dispatch from that dispatch's resolved provider/context limit
+    /// instead (see `pack_env`'s own doc comment for the full story).
     #[test]
-    fn pack_env_exports_the_compact_profile_for_a_local_worker() {
+    fn pack_env_no_longer_exports_a_worker_profile_for_any_tier() {
         let local_worker = Tier::builtin("dschat+minicpm").unwrap();
         assert_eq!(local_worker.worker_provider.as_deref(), Some("ollama"));
-        let env = local_worker.pack_env();
         assert!(
-            env.iter()
-                .any(|(k, v)| k == "PERMAGENT_WORKER_PROFILE" && v == "compact"),
-            "a local worker must get the compact profile: {env:?}"
+            !local_worker
+                .pack_env()
+                .iter()
+                .any(|(k, _)| k == "PERMAGENT_WORKER_PROFILE"),
+            "a mixed tier's local worker must not export a process-wide worker profile"
         );
 
         let cloud_only = Tier::builtin("frontier").unwrap();
@@ -619,17 +631,18 @@ mod tests {
     /// roles an ordinary dispatched goal worker routes through) to the WORKER
     /// pair, and `HARD`/`EDIT` (planning + the review role's fallback, and
     /// the inert main-loop role) to the COORDINATOR pair — every role set,
-    /// split across two models instead of one. R48f adds a 9th entry on a
-    /// mixed tier: the local worker's compact profile.
+    /// split across two models instead of one. R48f used to add a 9th entry
+    /// (the local worker's compact profile); R48i removed it — see
+    /// `pack_env_no_longer_exports_a_worker_profile_for_any_tier` and
+    /// `pack_env`'s own doc comment for why.
     #[test]
     fn pack_env_splits_worker_roles_from_coordinator_roles_on_a_mixed_tier() {
         let t = Tier::builtin("dschat+minicpm").unwrap();
         let env = t.pack_env();
-        assert_eq!(env.len(), 9, "8 pack pins + R48f's worker profile: {env:?}");
-        assert!(
-            env.iter()
-                .any(|(k, v)| k == "PERMAGENT_WORKER_PROFILE" && v == "compact"),
-            "a mixed tier's local worker gets the compact profile"
+        assert_eq!(
+            env.len(),
+            8,
+            "8 pack pins, no process-wide worker profile: {env:?}"
         );
 
         for role in ["MECHANICAL", "LOCAL"] {
