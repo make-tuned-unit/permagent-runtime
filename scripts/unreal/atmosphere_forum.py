@@ -6,6 +6,11 @@ ROOT=Path(__file__).resolve().parents[2]
 MODE=os.environ.get('FORUM_APPEARANCE','day')
 assert MODE in ('day','night')
 assert Path(u.Paths.get_project_file_path()).stem=='SolarForum'
+# Keep the night pass in a physically modest moonlit range so authored emissive
+# materials, lantern heads, and the horizon hologram remain the visible sources.
+NIGHT_MOON_LUX=1.0
+NIGHT_SKY_INTENSITY=.3
+NIGHT_EXPOSURE_EV100=1.5
 E=u.EditorAssetLibrary; M=u.MaterialEditingLibrary
 assets=u.AssetToolsHelpers.get_asset_tools()
 level=u.get_editor_subsystem(u.LevelEditorSubsystem)
@@ -37,7 +42,7 @@ def material(name, rgb, emission=0., metal=0., rough=.5):
     M.recompile_material(mat);E.save_loaded_asset(mat)
     return mat
 bronze=material('M_LanternBronze',(.24,.13,.045),metal=.78,rough=.34)
-lamp=material('M_WarmLantern', (1.,.43,.12),emission=12. if night else .15)
+lamp=material('M_WarmLantern', (1.,.43,.12),emission=6. if night else .15)
 stone=material('M_HonedStone',(.48,.44,.35),rough=.63)
 def mesh(name,shape,pos,scale,mat):
     a=actors.spawn_actor_from_class(u.StaticMeshActor,u.Vector(*pos));a.set_actor_label('Atmosphere/'+name)
@@ -70,19 +75,21 @@ for i,(x,y,z) in enumerate(lanterns):
 sun=next(a for a in actors.get_all_level_actors() if isinstance(a,u.DirectionalLight))
 sun.set_actor_rotation(rotation(-35,-38),False)
 sun.light_component.set_mobility(u.ComponentMobility.MOVABLE)
-for key,val in {'intensity':8. if night else 85000.,'light_source_angle':.7,'use_temperature':True,'temperature':8200. if night else 5500.,'atmosphere_sun_light':not night}.items():sun.light_component.set_editor_property(key,val)
+for key,val in {'intensity':NIGHT_MOON_LUX if night else 85000.,'light_source_angle':.7,'use_temperature':True,'temperature':9500. if night else 5500.,'atmosphere_sun_light':not night}.items():sun.light_component.set_editor_property(key,val)
 sky=next(a for a in actors.get_all_level_actors() if isinstance(a,u.SkyLight))
 sky.light_component.set_mobility(u.ComponentMobility.MOVABLE)
-sky.light_component.set_editor_property('intensity',1.5 if night else 2.3)
+sky.light_component.set_editor_property('intensity',NIGHT_SKY_INTENSITY if night else 2.3)
 sky.light_component.set_editor_property('real_time_capture',True)
 for a in actors.get_all_level_actors():
     if isinstance(a,u.SkyAtmosphere):a.set_actor_hidden_in_game(night);a.set_is_temporarily_hidden_in_editor(night)
     if isinstance(a,u.ExponentialHeightFog):
-        a.component.set_editor_property('fog_density',.0015 if night else .005)
-        a.component.set_editor_property('fog_inscattering_luminance',u.LinearColor(.015,.025,.06) if night else u.LinearColor(.5,.6,.7))
+        a.component.set_editor_property('fog_density',.0005 if night else .005)
+        a.component.set_editor_property('fog_inscattering_luminance',u.LinearColor(.006,.012,.035) if night else u.LinearColor(.5,.6,.7))
     if isinstance(a,u.PostProcessVolume):
         s=a.get_editor_property('settings')
-        for k,v in {'auto_exposure_min_brightness':1.5 if night else 13.,'auto_exposure_max_brightness':1.5 if night else 13.,'bloom_intensity':.3 if night else .12,'vignette_intensity':.08}.items():s.set_editor_property('override_'+k,True);s.set_editor_property(k,v)
+        # Fixed exposure via a pinned histogram range: UE 5.8's PostProcessSettings has no camera_aperture property, so physical-camera keys are not used.
+        exposure={'auto_exposure_method':u.AutoExposureMethod.AEM_HISTOGRAM,'auto_exposure_min_brightness':NIGHT_EXPOSURE_EV100,'auto_exposure_max_brightness':NIGHT_EXPOSURE_EV100,'auto_exposure_bias':0.0} if night else {}
+        for k,v in dict(exposure,**{'bloom_intensity':.3 if night else .12,'vignette_intensity':.08}).items():s.set_editor_property('override_'+k,True);s.set_editor_property(k,v)
         a.set_editor_property('settings',s)
 if night:
     # Directional, static star field. No bitmap, no rotating particles, no UV seam.
@@ -188,6 +195,6 @@ if not night:
         c.set_collision_profile_name('NoCollision');c.set_editor_property('cast_shadow',False);c.set_editor_property('bounds_scale',60.)
 sky.light_component.recapture_sky()
 assert level.save_current_level()
-report={'status':'complete','appearance':MODE,'map':target,'lanterns':len(lanterns),'stars':night,'sunLux':8. if night else 85000.,'exposureEV100':1.5 if night else 13.}
+report={'status':'complete','appearance':MODE,'map':target,'lanterns':len(lanterns),'stars':night,'sunLux':NIGHT_MOON_LUX if night else 85000.,'skyIntensity':NIGHT_SKY_INTENSITY if night else 2.3,'exposureEV100':NIGHT_EXPOSURE_EV100 if night else 13.,'exposureMode':'manual' if night else 'locked_auto','fogDensity':.0005 if night else .005,'lanternEmissionStrength':6. if night else .15}
 (ROOT/f'docs/design/solar-forum/unreal-atmosphere-{MODE}.json').write_text(json.dumps(report,indent=2)+'\n')
 print(report)

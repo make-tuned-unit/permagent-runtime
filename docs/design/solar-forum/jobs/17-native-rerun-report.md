@@ -130,3 +130,22 @@ resolves slots by normalized material name rather than slot index:
 The mode-specific JSON report now records both all defaulted slots and
 `unmappedForumSlots` so the next completed rerun can verify zero unmapped forum
 slots.
+
+## Night exposure fix (pending rerun)
+
+Night atmosphere and capture settings were lowered to a 1.0-lux cool moon,
+0.3 sky-light intensity, and low-density dark-blue fog. Night exposure is now
+explicitly manual at EV100 4.0 (physical camera exposure: f/1, 1/16 s, ISO
+100), with auto exposure disabled; lantern emissive strength is 6.0. Day
+lighting and exposure settings are unchanged. The atmosphere mode report now
+records the final moon, sky, fog, emissive, and exposure values.
+
+## Night exposure: completed rerun
+
+UE 5.8's `PostProcessSettings` has no `camera_aperture` property, so the
+physical-camera keys were replaced by a pinned histogram exposure
+(`auto_exposure_min_brightness = max_brightness = EV100`). EV100 4.0 left the
+architecture unreadable; the final setting is EV100 1.5 with the 1-lux cool
+moon, 0.3 sky light and dark-blue low-density fog. `unreal-forum-night.webp`
+now reads as a moonlit commons lit by the hologram, lantern bowls, strand
+lights and planter uplights.

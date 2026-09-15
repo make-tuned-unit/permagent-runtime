@@ -29,6 +29,10 @@ for actor in actors.get_all_level_actors():
         settings=actor.get_editor_property('settings')
         settings.set_editor_property('auto_exposure_min_brightness',EXPOSURE)
         settings.set_editor_property('auto_exposure_max_brightness',EXPOSURE)
+        if MODE=='night':
+            # Pinned histogram exposure: UE 5.8's PostProcessSettings exposes no camera_aperture, so physical-camera keys are not used.
+            for key,value in {'auto_exposure_method':u.AutoExposureMethod.AEM_HISTOGRAM,'auto_exposure_min_brightness':EXPOSURE,'auto_exposure_max_brightness':EXPOSURE,'auto_exposure_bias':0.0}.items():
+                settings.set_editor_property('override_'+key,True);settings.set_editor_property(key,value)
         actor.set_editor_property('settings',settings)
 assert level.save_current_level()
 for command in ['sg.ViewDistanceQuality 3','sg.ShadowQuality 3','sg.GlobalIlluminationQuality 3','sg.ReflectionQuality 3','sg.PostProcessQuality 3','sg.TextureQuality 3','sg.EffectsQuality 3','r.ScreenPercentage 100']:
@@ -44,7 +48,9 @@ c.set_editor_property('capture_on_movement',False)
 c.set_editor_property('always_persist_rendering_state',True)
 # Scene captures require their own explicit Lumen override.
 settings=c.get_editor_property('post_process_settings')
-for key,value in {'dynamic_global_illumination_method':u.DynamicGlobalIlluminationMethod.LUMEN,'reflection_method':u.ReflectionMethod.LUMEN,'auto_exposure_min_brightness':EXPOSURE,'auto_exposure_max_brightness':EXPOSURE}.items():
+capture_exposure={'dynamic_global_illumination_method':u.DynamicGlobalIlluminationMethod.LUMEN,'reflection_method':u.ReflectionMethod.LUMEN,'auto_exposure_min_brightness':EXPOSURE,'auto_exposure_max_brightness':EXPOSURE}
+if MODE=='night':capture_exposure.update({'auto_exposure_method':u.AutoExposureMethod.AEM_HISTOGRAM,'auto_exposure_bias':0.0})  # pinned by the min/max brightness above
+for key,value in capture_exposure.items():
     settings.set_editor_property('override_'+key,True);settings.set_editor_property(key,value)
 c.set_editor_property('post_process_settings',settings)
 u.EditorPythonScripting.set_keep_python_script_alive(True)
