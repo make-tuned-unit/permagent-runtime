@@ -16,6 +16,13 @@ use serde::{Deserialize, Serialize};
 
 // ── Caps (Phase 0 schema) ───────────────────────────────────────────────
 
+/// Lane R26c (A25 Q2): advisory only — no longer enforced as a rejection
+/// in [`validate_escalation`]. `specific_ask` is free to run past this and
+/// still validate; the derived headline ([`derive_headline`]) is always
+/// truncated to [`MAX_HEADLINE_CHARS`] regardless, and the untruncated text
+/// survives into `detail`. Kept as a named constant for documentation and
+/// because `EscalateParams::kind`'s own doc comment still calls this out as
+/// the informal "one-line ask" budget a well-behaved caller should aim for.
 pub const MAX_SPECIFIC_ASK_CHARS: usize = 140;
 pub const MAX_WHY_BLOCKED_CHARS: usize = 2000;
 pub const MAX_EVIDENCE_REFS: usize = 10;
@@ -121,10 +128,14 @@ pub struct EscalateParams {
     /// `requested_kind`, so an approximate kind still gets the escalation
     /// recorded rather than thrown away.
     pub kind: EscalationKind,
-    /// The one-line "add X so I can proceed" ask. This becomes the
-    /// plain-language headline the user sees: max 80 characters, no PR numbers,
-    /// branch names, file counts, or internal IDs — technical identifiers
-    /// belong in why_blocked and evidence_refs.
+    /// The one-line "add X so I can proceed" ask. Aim for 80 characters or
+    /// fewer — this becomes the plain-language headline the user sees — but
+    /// a longer ask is never rejected for that alone: it is word-boundary
+    /// truncated into the headline (with an ellipsis) and the full text is
+    /// kept alongside it, so getting the length exactly right doesn't
+    /// matter. No PR numbers, branch names, file counts, or internal
+    /// IDs anywhere in this text — technical identifiers belong in
+    /// why_blocked and evidence_refs.
     pub specific_ask: String,
     /// Why work cannot continue without it (technical detail). Max 2000 chars.
     pub why_blocked: String,
@@ -250,21 +261,45 @@ pub fn worker_display_name(roster_name: Option<&str>) -> String {
 /// - no path- or branch-like tokens (anything containing `/` or `\`)
 /// - no file counts (`12 files`)
 /// - no internal IDs (UUIDs, long hex identifiers)
+///
+/// This is the validator for a FINAL, already-sized headline (the derived
+/// `DecisionDraft::headline`, or a hand-written fallback candidate) — it is
+/// never called against a raw `specific_ask`, which may legitimately run
+/// longer than [`MAX_HEADLINE_CHARS`] and gets word-boundary truncated into
+/// a headline ([`derive_headline`]) rather than rejected. See
+/// [`headline_content_violations`] for the content-only subset
+/// `validate_escalation` runs against `specific_ask` itself (Lane R26c,
+/// A25 Q2).
 pub fn headline_violations(text: &str) -> Vec<String> {
-    let mut violations = Vec::new();
     let trimmed = text.trim();
-
     if trimmed.is_empty() {
-        violations.push("headline is empty".to_string());
-        return violations;
+        return vec!["headline is empty".to_string()];
     }
+    let mut violations = Vec::new();
     if trimmed.chars().count() > MAX_HEADLINE_CHARS {
         violations.push(format!(
             "headline exceeds {} characters",
             MAX_HEADLINE_CHARS
         ));
     }
+    violations.extend(headline_content_violations(trimmed));
+    violations
+}
 
+/// The non-length subset of [`headline_violations`]'s rules: no PR/issue
+/// numbers, no path- or branch-like tokens, no file counts, no internal
+/// IDs. `trimmed` must already be non-empty and already trimmed (callers
+/// wanting the empty-check too should use [`headline_violations`]).
+///
+/// Lane R26c (A25 Q2, M29 DeepSeek m1 `harness-testfix-inventory-suite-
+/// green`): factored out so length can stop being, on its own, a reason to
+/// reject `specific_ask` (which may legitimately run up to
+/// [`MAX_SPECIFIC_ASK_CHARS`], well past the shorter headline budget it
+/// doubles as) while every OTHER Amendment A1 rule — the ones that flag a
+/// genuinely malformed ask, not just a long one — still applies in full,
+/// checked against the complete text, not whatever survives truncation.
+fn headline_content_violations(trimmed: &str) -> Vec<String> {
+    let mut violations = Vec::new();
     let tokens: Vec<&str> = trimmed.split_whitespace().collect();
     for (i, raw_token) in tokens.iter().enumerate() {
         let token = raw_token.trim_matches(|c: char| ",.;:()[]{}'\"!?".contains(c));
@@ -308,6 +343,47 @@ pub fn headline_violations(text: &str) -> Vec<String> {
     }
 
     violations
+}
+
+/// Derive the plain-language headline from `specific_ask`.
+///
+/// Lane R26c (harness loop, A25 Q2, M29 DeepSeek m1
+/// `harness-testfix-inventory-suite-green`): the coordinator's `escalate`
+/// call had a valid `kind` and an otherwise well-formed 87-character
+/// `specific_ask` — well within [`MAX_SPECIFIC_ASK_CHARS`] (140) — but
+/// `specific_ask` doubled as the headline, which is hard-capped at
+/// [`MAX_HEADLINE_CHARS`] (80), so `headline_violations` rejected it and
+/// the whole honest escalation landed as `kind: malformed`. Never reject on
+/// length: the headline is a DERIVED display value, truncated at the LAST
+/// WORD BOUNDARY at or before the character budget (never mid-word,
+/// reserving one character for a trailing ellipsis) rather than the raw
+/// ask verbatim. Text at or under the budget is returned completely
+/// unchanged (no ellipsis appended) — truncation only ever makes the
+/// headline shorter, never alters short text. The untruncated
+/// `specific_ask` is never lost: `draft_from_payload` appends it to
+/// `detail` whenever this function actually shortened it.
+pub fn derive_headline(specific_ask: &str) -> String {
+    let trimmed = specific_ask.trim();
+    if trimmed.chars().count() <= MAX_HEADLINE_CHARS {
+        return trimmed.to_string();
+    }
+    // Reserve one character for the trailing ellipsis.
+    let budget = MAX_HEADLINE_CHARS - 1;
+    let chars: Vec<char> = trimmed.chars().collect();
+    let mut head: String = match chars[..budget].iter().rposition(|c| c.is_whitespace()) {
+        Some(i) => chars[..i].iter().collect(),
+        // No word boundary anywhere in the budget (one very long "word") —
+        // hard-cut at the budget rather than produce an empty headline.
+        None => chars[..budget].iter().collect(),
+    };
+    // Trim trailing punctuation/whitespace left dangling by the cut.
+    while matches!(head.chars().last(), Some(c) if c.is_whitespace() || ",.;:!?".contains(c)) {
+        head.pop();
+    }
+    if head.is_empty() {
+        head = chars[..budget].iter().collect();
+    }
+    format!("{head}…")
 }
 
 /// `#` immediately followed by a digit anywhere in the token.
@@ -367,15 +443,22 @@ pub fn validate_escalation(raw: &serde_json::Value) -> EscalationOutcome {
 
     let mut errors = Vec::new();
 
-    // specific_ask: Phase 0 cap plus Amendment A1 headline rules.
-    if params.specific_ask.chars().count() > MAX_SPECIFIC_ASK_CHARS {
-        errors.push(format!(
-            "specific_ask exceeds {} characters",
-            MAX_SPECIFIC_ASK_CHARS
-        ));
-    }
-    for v in headline_violations(&params.specific_ask) {
-        errors.push(format!("specific_ask (headline): {}", v));
+    // specific_ask: Amendment A1 CONTENT rules only (Lane R26c, A25 Q2).
+    // `specific_ask` doubles as the source the headline is DERIVED from
+    // (`derive_headline`, word-boundary truncated to `MAX_HEADLINE_CHARS`
+    // in `draft_from_payload`), so length alone — neither the former
+    // `MAX_SPECIFIC_ASK_CHARS` cap nor `headline_violations`'s length rule
+    // — is a rejection reason here any more; every non-length rule (no
+    // PR/issue numbers, no path/branch tokens, no file counts, no internal
+    // IDs) still is, checked against the FULL text so identifiers can't
+    // hide in the part that would get truncated away.
+    let ask_trimmed = params.specific_ask.trim();
+    if ask_trimmed.is_empty() {
+        errors.push("specific_ask (headline): headline is empty".to_string());
+    } else {
+        for v in headline_content_violations(ask_trimmed) {
+            errors.push(format!("specific_ask (headline): {}", v));
+        }
     }
 
     if params.why_blocked.trim().is_empty() {
@@ -591,7 +674,17 @@ pub fn draft_from_payload(raw: serde_json::Value, source: &DraftSource) -> Decis
     match validate_escalation(&normalized) {
         EscalationOutcome::Valid(params) => {
             let kind = map_kind(params.kind);
+            let ask_trimmed = params.specific_ask.trim();
+            // Lane R26c (A25 Q2): the headline is DERIVED (word-boundary
+            // truncated to MAX_HEADLINE_CHARS), never `specific_ask`
+            // verbatim — a long-but-valid ask must never fail on length
+            // alone. When truncation actually shortened it, the full ask
+            // survives into `detail` so nothing the caller wrote is lost.
+            let headline = derive_headline(ask_trimmed);
             let mut detail = params.why_blocked.trim().to_string();
+            if headline != ask_trimmed {
+                detail.push_str(&format!("\n\nFull ask: {ask_trimmed}"));
+            }
             if let Some(ref rk) = requested_kind {
                 detail.push_str(&format!(
                     "\n\nrequested_kind: {rk} (coerced to '{}')",
@@ -600,7 +693,7 @@ pub fn draft_from_payload(raw: serde_json::Value, source: &DraftSource) -> Decis
             }
             DecisionDraft {
                 kind,
-                headline: params.specific_ask.trim().to_string(),
+                headline,
                 detail,
                 evidence_refs: params.evidence_refs.clone(),
                 options: match kind {
@@ -1099,9 +1192,9 @@ mod tests {
 
     #[test]
     fn oversized_fields_are_malformed() {
-        let mut payload = valid_approval();
-        payload["specific_ask"] = json!("x".repeat(141));
-        assert_malformed(payload, "specific_ask exceeds 140");
+        // `specific_ask` length is deliberately NOT here any more (Lane
+        // R26c, A25 Q2): an over-length ask is truncated into the headline,
+        // never rejected — see the "── Lane R26c" test section below.
 
         let mut payload = valid_approval();
         payload["why_blocked"] = json!("x".repeat(2001));
@@ -1177,6 +1270,127 @@ mod tests {
             .validation_errors
             .iter()
             .any(|e| e.starts_with("specific_ask (headline):")));
+    }
+
+    // ── Lane R26c (A25 Q2): a long escalation ask is truncated into the
+    // headline, never treated as malformed ──────────────────────────────
+
+    /// Repairs the exact M29 defect: `harness-testfix-inventory-suite-
+    /// green`'s coordinator sent a valid `kind` and an 87-character
+    /// `specific_ask` (under `MAX_SPECIFIC_ASK_CHARS`=140, but over
+    /// `MAX_HEADLINE_CHARS`=80) and got `kind: malformed` back solely
+    /// because `specific_ask` doubled as the headline. Must now validate,
+    /// truncate at a WORD boundary (never mid-word), and keep the full ask.
+    #[test]
+    fn specific_ask_over_80_is_truncated_into_headline_not_rejected() {
+        let ask = "Approve the login page redesign so it can ship before the production freeze window ends";
+        assert_eq!(
+            ask.chars().count(),
+            87,
+            "fixture must be exactly 87 chars for this test to mean what it says"
+        );
+        let mut payload = valid_approval();
+        payload["specific_ask"] = json!(ask);
+        let draft = draft_from_payload(payload, &source());
+
+        assert_ne!(
+            draft.kind,
+            DecisionKind::Malformed,
+            "an over-length-but-otherwise-valid ask must never be malformed: {:?}",
+            draft.validation_errors
+        );
+        assert!(draft.validation_errors.is_empty());
+        assert!(draft.headline.chars().count() <= MAX_HEADLINE_CHARS);
+        assert!(
+            draft.headline.ends_with('…'),
+            "a truncated headline must say so: {}",
+            draft.headline
+        );
+        assert!(
+            headline_violations(&draft.headline).is_empty(),
+            "the derived headline must itself be Amendment-A1-clean: {}",
+            draft.headline
+        );
+        // Word-boundary, not mid-word: the headline (minus the ellipsis)
+        // must be a clean prefix of the full ask, cut exactly at a space.
+        let head = draft.headline.trim_end_matches('…');
+        assert!(
+            ask.starts_with(head),
+            "headline must be a prefix of the full ask: {head:?} vs {ask:?}"
+        );
+        assert_eq!(
+            ask.as_bytes().get(head.len()),
+            Some(&b' '),
+            "must cut at a word boundary, not mid-word: {head:?}"
+        );
+        // The full, untruncated ask is never lost.
+        assert!(
+            draft.detail.contains(ask),
+            "the full ask must survive into detail: {}",
+            draft.detail
+        );
+    }
+
+    /// The character right at the budget must NOT trigger truncation or an
+    /// ellipsis — only text that actually exceeds the budget does.
+    #[test]
+    fn specific_ask_at_exactly_80_is_unchanged() {
+        let ask =
+            "Approve the login page redesign so it can ship before the production freeze ends";
+        assert_eq!(ask.chars().count(), 80, "fixture must be exactly 80 chars");
+        let mut payload = valid_approval();
+        payload["specific_ask"] = json!(ask);
+        let draft = draft_from_payload(payload, &source());
+
+        assert_ne!(draft.kind, DecisionKind::Malformed);
+        assert_eq!(
+            draft.headline, ask,
+            "text at exactly the budget must pass through byte-for-byte, no ellipsis"
+        );
+        assert!(!draft.headline.ends_with('…'));
+        assert!(
+            !draft.detail.contains("Full ask:"),
+            "nothing was truncated, so nothing needs restating in detail"
+        );
+    }
+
+    /// `derive_headline` unit-level: same two shapes, checked directly
+    /// against the function this lane added rather than through the full
+    /// `draft_from_payload` pipeline.
+    #[test]
+    fn derive_headline_truncates_only_when_over_budget() {
+        let short = "Approve the login page redesign";
+        assert_eq!(derive_headline(short), short);
+
+        let long = "x".repeat(200);
+        let derived = derive_headline(&long);
+        assert!(derived.chars().count() <= MAX_HEADLINE_CHARS);
+        assert!(derived.ends_with('…'));
+    }
+
+    /// An empty (or whitespace-only) `specific_ask` is a genuinely unusable
+    /// ask — there is no text to derive ANY headline from — so it must
+    /// still produce the structured "malformed" error, unaffected by this
+    /// lane's length fix.
+    #[test]
+    fn empty_specific_ask_is_still_malformed() {
+        let mut payload = valid_approval();
+        payload["specific_ask"] = json!("   ");
+        assert_malformed(payload, "headline is empty");
+    }
+
+    /// A `specific_ask` well past the old 140-char `MAX_SPECIFIC_ASK_CHARS`
+    /// cap is no longer rejected either — only the derived headline is
+    /// length-bounded; the ask itself is not.
+    #[test]
+    fn specific_ask_past_the_old_140_cap_is_not_rejected() {
+        let ask = "x".repeat(200);
+        let mut payload = valid_approval();
+        payload["specific_ask"] = json!(ask);
+        let draft = draft_from_payload(payload, &source());
+        assert_ne!(draft.kind, DecisionKind::Malformed);
+        assert!(draft.validation_errors.is_empty());
+        assert!(draft.headline.chars().count() <= MAX_HEADLINE_CHARS);
     }
 
     // ── Amendment A2: worker display names ──
